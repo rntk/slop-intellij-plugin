@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import com.intellij.psi.codeStyle.NameUtil
+
 /** Starting points for progressive disclosure; the user can expand or collapse any group afterwards. */
 enum class GraphDetail(val label: String) {
     OVERVIEW("Overview"), FILE("Files"), SYMBOL("Symbols");
@@ -120,8 +122,11 @@ class GraphHierarchy(val graph: CallGraph) {
     /** Groups to expand so the file at [path] is shown. */
     fun ancestors(path: String?): Set<Int> {
         val file = graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == path } ?: return emptySet()
-        return generateSequence(parent[file.id]) { parent[it].takeIf { p -> p >= 0 } }.takeWhile { it >= 0 }.toSet()
+        return ancestors(file.id)
     }
+
+    /** Groups to expand so the node [id] is shown. */
+    fun ancestors(id: Int): Set<Int> = generateSequence(parent[id]) { parent[it] }.takeWhile { it >= 0 }.toSet()
 
     fun expansion(detail: GraphDetail, budget: Int = 40): Set<Int> = when (detail) {
         GraphDetail.OVERVIEW -> overview(budget)
@@ -148,12 +153,29 @@ class GraphHierarchy(val graph: CallGraph) {
     }
 
     /**
+     * Nodes whose name fuzzily matches [query] (camel humps, word starts and subsequences, ignoring case), best
+     * match first: names matching from their start, then by the platform's matching degree, then in tree order.
+     * A blank query matches nothing.
+     */
+    fun search(query: String): List<Int> {
+        val pattern = query.trim()
+        if (pattern.isEmpty()) return emptyList()
+        val anywhere = NameUtil.buildMatcher("*$pattern", NameUtil.MatchingCaseSensitivity.NONE)
+        val start = NameUtil.buildMatcher(pattern, NameUtil.MatchingCaseSensitivity.NONE)
+        return preorder().filter { anywhere.matches(nodes[it].name) }
+            .sortedWith(compareByDescending<Int> { start.matches(nodes[it].name) }.thenByDescending { anywhere.matchingDegree(nodes[it].name) })
+    }
+
+    /**
      * Shows roots and the members of [expanded] groups; every hidden node is folded into its nearest shown ancestor.
      * Relationships are merged per pair of shown nodes, and expanded groups are linked to their members by
      * containment edges. Users are placed left of what they depend on. [excluded] nodes and their descendants are
      * left out with their relationships, as are directories and files left without members.
+     *
+     * With [only], just those nodes are shown whatever is expanded: their descendants fold into them, other nodes are
+     * left out with their relationships, and each shown node is linked to its nearest shown ancestor.
      */
-    fun view(expanded: Set<Int>, excluded: Set<Int> = emptySet()): DetailGraph {
+    fun view(expanded: Set<Int>, excluded: Set<Int> = emptySet(), only: Set<Int>? = null): DetailGraph {
         val gone = gone(excluded)
         val live = { id: Int -> gone == null || !gone[id] }
         val liveSizes = if (gone == null) sizes else IntArray(nodes.size).also { counts ->
@@ -161,14 +183,26 @@ class GraphHierarchy(val graph: CallGraph) {
         }
         val shown = mutableListOf<Int>()
         val shownAs = IntArray(nodes.size) { -1 }
-        val stack = ArrayDeque(roots.filter(live).asReversed())
-        while (stack.isNotEmpty()) {
-            val id = stack.removeLast()
-            shownAs[id] = shown.size
-            shown += id
-            if (id in expanded) children[id].filter(live).asReversed().forEach(stack::addLast)
-            else descendants(id).filter(live).forEach { shownAs[it] = shownAs[id] }
+        if (only != null) {
+            for (id in preorder()) {
+                if (!live(id)) continue
+                if (id in only) {
+                    shownAs[id] = shown.size
+                    shown += id
+                } else if (parent[id] >= 0) shownAs[id] = shownAs[parent[id]]
+            }
+        } else {
+            val stack = ArrayDeque(roots.filter(live).asReversed())
+            while (stack.isNotEmpty()) {
+                val id = stack.removeLast()
+                shownAs[id] = shown.size
+                shown += id
+                if (id in expanded) children[id].filter(live).asReversed().forEach(stack::addLast)
+                else descendants(id).filter(live).forEach { shownAs[it] = shownAs[id] }
+            }
         }
+        // Descendants folded into each shown node of a filtered view.
+        val folded = only?.let { IntArray(shown.size).also { counts -> shownAs.forEachIndexed { id, at -> if (at >= 0 && shown[at] != id) counts[at]++ } } }
         val weights = LinkedHashMap<Pair<Int, Int>, Int>()
         val kinds = HashMap<Pair<Int, Int>, RelationKind>()
         fun link(from: Int, to: Int, kind: RelationKind) {
@@ -184,7 +218,8 @@ class GraphHierarchy(val graph: CallGraph) {
         val levels = dependencyLevels(shown.size, edges)
         val viewNodes = shown.mapIndexed { index, id ->
             val group = children[id].any(live)
-            nodes[id].copy(id = index, level = levels[index], hidden = if (group && id !in expanded) liveSizes[id] else 0,
+            if (folded != null) nodes[id].copy(id = index, level = levels[index], hidden = folded[index], expanded = false)
+            else nodes[id].copy(id = index, level = levels[index], hidden = if (group && id !in expanded) liveSizes[id] else 0,
                 expanded = group && id in expanded)
         }
         return DetailGraph(CallGraph(viewNodes, edges, graph.truncated, projectGraph = true), shown, shownAs, graph,

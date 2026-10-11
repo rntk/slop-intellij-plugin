@@ -209,6 +209,39 @@ class CallGraphModelTest {
         assertEquals(unchanged.graph, same.graph)
     }
 
+    @Test fun `search matches names fuzzily with the best match first`() {
+        val names = listOf("ProjectGraphToolWindow", "renderGraph", "reveal", "GraphHierarchy")
+        val tree = CallGraph(names.mapIndexed { id, name -> CallGraphNode(id, name, "", "", 0, true, SymbolKind.FILE, "/p/$name.kt") },
+            emptySet(), false, projectGraph = true).hierarchy()
+        assertEquals(listOf(0), tree.search("pgtw"))
+        assertEquals(listOf(1), tree.search(" rendgr "))
+        val graph = tree.search("graph")
+        assertEquals(3, graph.first())
+        assertEquals(setOf(0, 1, 3), graph.toSet())
+        assertTrue(tree.search("  ").isEmpty())
+        assertTrue(tree.search("xyz").isEmpty())
+    }
+
+    @Test fun `filtered view shows only the given nodes with their relationships`() {
+        val tree = project.hierarchy()
+        val view = tree.view(emptySet(), only = setOf(1, 4, 6))
+        assertEquals(listOf("n1", "n4", "n6"), view.graph.nodes.map { it.name })
+        assertEquals(listOf(1, 4, 6), view.sources)
+        val (n1, n4, n6) = listOf("n1", "n4", "n6").map { view.named(it) }
+        // n2 folds into n1; the file and directories are left out with their import.
+        assertEquals(n1, view.shownId(2))
+        assertEquals(null, view.shownId(0))
+        assertEquals(1, view.graph.nodes[n1].hidden)
+        assertFalse(view.graph.nodes[n1].expanded)
+        assertEquals(setOf(CallGraphEdge(n1, n4, RelationKind.CALL), CallGraphEdge(n1, n6, RelationKind.REFERENCE),
+            CallGraphEdge(n4, n6, RelationKind.CALL), CallGraphEdge(n6, n4, RelationKind.CALL)), view.graph.edges)
+        // Nested matches are linked to their nearest shown ancestor; excluded matches are left out.
+        val nested = tree.view(emptySet(), excluded = setOf(6), only = setOf(tree.roots[0], 2, 6))
+        assertEquals(listOf("a/", "n2"), nested.graph.nodes.map { it.name })
+        assertTrue(CallGraphEdge(nested.named("a/"), nested.named("n2"), RelationKind.CONTAINS) in nested.graph.edges)
+        assertTrue(tree.view(emptySet(), only = emptySet()).graph.nodes.isEmpty())
+    }
+
     @Test fun `empty project has an empty view`() {
         val view = CallGraph(emptyList(), emptySet(), false, projectGraph = true).hierarchy().view(emptySet())
         assertTrue(view.graph.nodes.isEmpty())

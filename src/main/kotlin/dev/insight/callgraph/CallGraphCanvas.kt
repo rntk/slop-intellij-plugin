@@ -54,6 +54,7 @@ private const val FAINT_ALPHA = 0.55f
 private const val MIN_STRIPE_ALPHA = 0.35
 
 private val errorColor = JBColor(Color(200, 40, 40), Color(235, 95, 95))
+private val matchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
 private val stepText = JBColor(Color.WHITE, Color(30, 30, 30))
 
 /** Theme-aware Java2D rendering of a [CallGraph]: callers on the left, callees on the right. */
@@ -69,6 +70,9 @@ class CallGraphCanvas(
     private var highlight = FileGraphHighlight(emptySet(), emptySet())
     private var decorations = GraphDecorations.NONE
     private var sections: GraphSections? = null
+    /** Search matches; when set, other nodes are muted and the file highlight and spotlight give way. */
+    private var matches: Set<Int>? = null
+    private var currentMatch: Int? = null
     private var scale = 1.0
     var zoom: Double
         get() = scale
@@ -142,6 +146,26 @@ class CallGraphCanvas(
         val box = layout?.boxes?.get(id) ?: return
         scrollRectToVisible(Rectangle((box.x * zoom).toInt(), (box.y * zoom).toInt(),
             (box.width * zoom).toInt(), (box.height * zoom).toInt()))
+    }
+
+    /** Centres the node in the viewport, first zooming in to [minZoom] if the graph is shown smaller. */
+    fun zoomTo(id: Int, minZoom: Double = 1.0) {
+        val box = layout?.boxes?.get(id) ?: return
+        if (zoom < minZoom) zoomAt(minZoom)
+        val view = viewport ?: return reveal(id)
+        moveViewport(Point((box.centerX * zoom - view.extentSize.width / 2.0).roundToInt(),
+            (box.centerY * zoom - view.extentSize.height / 2.0).roundToInt()))
+        repaint()
+    }
+
+    /**
+     * Marks search [matches] (displayed ids) and the [current] one; null clears the marks. Like [decorate], the
+     * caller sets them again after every [show].
+     */
+    fun markMatches(matches: Set<Int>?, current: Int? = null) {
+        this.matches = matches
+        currentMatch = current
+        repaint()
     }
 
     var selected: Int? = null
@@ -240,6 +264,8 @@ class CallGraphCanvas(
             ))
         }
         highlight = FileGraphHighlight(emptySet(), emptySet())
+        matches = null
+        currentMatch = null
         select(null)
         revalidate()
         repaint()
@@ -350,6 +376,7 @@ class CallGraphCanvas(
      * and the selection stays readable while a spotlight is set. Without either, nothing is muted.
      */
     private fun nodeMuted(id: Int, focus: Set<Int>?): Boolean {
+        matches?.let { return id !in it && id != selected }
         val spotlight = decorations.spotlight
         if (focus == null && spotlight == null) return false
         return (focus == null || id !in focus) && (spotlight == null || (id !in spotlight && id != selected))
@@ -360,7 +387,8 @@ class CallGraphCanvas(
      * [GraphDecorations.spotlightEdges] and, if a file is highlighted too, that file's highlighted edges stay opaque.
      */
     private fun edgeMuted(edge: CallGraphEdge, focus: Set<Int>?): Boolean =
-        if (decorations.spotlight != null) !isSpotlit(edge) && !(focus != null && isHighlighted(edge))
+        if (matches != null) selected != edge.caller && selected != edge.callee
+        else if (decorations.spotlight != null) !isSpotlit(edge) && !(focus != null && isHighlighted(edge))
         else focus != null && !isHighlighted(edge)
 
     private fun edgeRank(edge: CallGraphEdge, focus: Set<Int>?) = when {
@@ -373,7 +401,7 @@ class CallGraphCanvas(
 
     private fun isFaint(id: Int): Boolean {
         if (decorations.nodes[id]?.emphasis != Emphasis.FAINT) return false
-        return id != selected && id !in highlight.owned && id !in highlight.related && decorations.spotlight?.contains(id) != true
+        return id != selected && matches?.contains(id) != true && id !in highlight.owned && id !in highlight.related && decorations.spotlight?.contains(id) != true
     }
 
     private fun isHighlighted(edge: CallGraphEdge) = selected == edge.caller || selected == edge.callee ||
@@ -442,14 +470,16 @@ class CallGraphCanvas(
         val isRoot = graph?.projectGraph != true && node.level == 0
         val owned = node.id in highlight.owned
         val related = node.id in highlight.related
-        g.color = if (isRoot || owned) rootFill else UIUtil.getPanelBackground()
+        val matched = matches?.contains(node.id) == true
+        g.color = if (matched) matchFill else if (isRoot || owned) rootFill else UIUtil.getPanelBackground()
         g.fillRoundRect(box.x, box.y, box.width, box.height, arc, arc)
         val stripe = decoration?.colors.orEmpty().filter { it.second > 0.0 }
         if (decoration != null && stripe.isNotEmpty()) drawStripe(g, box, arc, stripe, decoration.confidence)
         val strong = decoration?.emphasis == Emphasis.STRONG
-        val marked = node.id == selected || owned || related
+        val marked = node.id == selected || owned || related || matched
         g.color = if (marked || isRoot) accent else if (strong) JBColor.foreground() else JBColor.border()
-        val borderWidth = JBUI.scale((if (marked) 2 else 1) + (if (strong) 1 else 0)).toFloat()
+        val current = if (node.id == currentMatch) 2 else 0
+        val borderWidth = JBUI.scale((if (marked) 2 else 1) + (if (strong) 1 else 0) + current).toFloat()
         g.stroke = if (node.inProject) BasicStroke(borderWidth)
         else BasicStroke(borderWidth, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(4f, 4f), 0f)
         g.drawRoundRect(box.x, box.y, box.width, box.height, arc, arc)

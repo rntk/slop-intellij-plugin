@@ -25,6 +25,8 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.pom.Navigatable
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
@@ -33,7 +35,9 @@ import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.GridLayout
+import java.awt.event.ActionEvent
 import javax.swing.*
+import javax.swing.event.DocumentEvent
 
 class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -90,6 +94,23 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private val previousStep = JButton("◀")
     private val nextStep = JButton("▶")
 
+    private val search = SearchTextField(false).apply { textEditor.columns = 24 }
+    private val searchMode = JComboBox(SearchMode.entries.toTypedArray()).apply {
+        selectedItem = SearchMode.HIGHLIGHT
+        toolTipText = "Highlight: mark matches in the graph · Filter: show only the matching nodes"
+    }
+    private val previousMatch = JButton("Previous").apply { isEnabled = false }
+    private val nextMatch = JButton("Next").apply { isEnabled = false }
+    private val matchCount = JLabel()
+    /** Hierarchy ids matching the query, best first, without those hidden by the lens; set by [render]. */
+    private var matches: List<Int> = emptyList()
+    /** The match last stepped to, as a hierarchy id. */
+    private var currentMatch: Int? = null
+    /** Suppresses [searchChanged] while the search controls are updated programmatically. */
+    private var updatingSearch = false
+    /** Redraws once typing pauses, as large graphs take a moment to lay out. */
+    private val searchTimer = Timer(250) { searchChanged() }.apply { isRepeats = false }
+
     init {
         border = JBUI.Borders.empty(8)
         flowChoice.renderer = object : DefaultListCellRenderer() {
@@ -102,8 +123,31 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         for (control in listOf(hideTests, hideUtilities)) control.addActionListener { lensChanged() }
         previousStep.apply { toolTipText = "Previous step of the flow"; addActionListener { stepFlow(-1) } }
         nextStep.apply { toolTipText = "Next step of the flow"; addActionListener { stepFlow(1) } }
+        search.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) { if (!updatingSearch) searchTimer.restart() }
+        })
+        search.textEditor.apply {
+            toolTipText = "Fuzzy search by name: camel humps (\"PGT\"), word starts and subsequences · Enter: next · Shift+Enter: previous"
+            for ((stroke, delta) in listOf("ENTER" to 1, "shift ENTER" to -1)) {
+                inputMap.put(KeyStroke.getKeyStroke(stroke), stroke)
+                actionMap.put(stroke, object : AbstractAction() {
+                    override fun actionPerformed(e: ActionEvent?) = stepMatch(delta)
+                })
+            }
+        }
+        searchMode.addActionListener { searchChanged() }
+        previousMatch.apply { toolTipText = "Previous match (Shift+Enter)"; addActionListener { stepMatch(-1) } }
+        nextMatch.apply { toolTipText = "Next match (Enter)"; addActionListener { stepMatch(1) } }
         add(JPanel(BorderLayout(0, 4)).apply {
             add(JPanel(BorderLayout(0, 4)).apply {
+                add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                    add(JLabel("Search:"))
+                    add(search)
+                    add(searchMode)
+                    add(previousMatch)
+                    add(nextMatch)
+                    add(matchCount)
+                }, BorderLayout.SOUTH)
                 add(toolbar(), BorderLayout.NORTH)
                 add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
                     add(JLabel("Colour:"))
@@ -241,10 +285,60 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         if (shownNow != null) {
             canvas.select(shownNow)
             SwingUtilities.invokeLater { if (!disposed) canvas.reveal(shownNow) }
-        } else {
-            val parents = generateSequence(tree.parent[target]) { tree.parent[it] }.takeWhile { it >= 0 }.toSet()
-            render(target, expanded + parents)
+        } else render(target, expanded + tree.ancestors(target))
+    }
+
+    private val filtering: Boolean get() = searchMode.selectedItem == SearchMode.FILTER && search.text.isNotBlank()
+
+    /** A new query or mode: matches are recomputed by [render], starting over from the first one. */
+    private fun searchChanged() {
+        if (updatingSearch) return
+        searchTimer.stop()
+        currentMatch = null
+        rerender()
+    }
+
+    /**
+     * Selects the previous or next match, wrapping around, and zooms the canvas to it. Starts after the selection when
+     * it is a match; groups folding the match are expanded first.
+     */
+    private fun stepMatch(delta: Int) {
+        val tree = hierarchy ?: return
+        if (searchTimer.isRunning) searchChanged()
+        if (matches.isEmpty()) return
+        val current = canvas.selected?.let { view?.sources?.getOrNull(it) }?.let(matches::indexOf)?.takeIf { it >= 0 }
+            ?: currentMatch?.let(matches::indexOf) ?: -1
+        val target = matches[if (current < 0) (if (delta > 0) 0 else matches.lastIndex) else Math.floorMod(current + delta, matches.size)]
+        currentMatch = target
+        if (view?.shownId(target)?.let { view?.sources?.getOrNull(it) } == target) markMatches()
+        else render(target, expanded + tree.ancestors(target))
+        val id = view?.shownId(target) ?: return
+        canvas.select(id)
+        SwingUtilities.invokeLater { if (!disposed) canvas.zoomTo(id) }
+    }
+
+    /** Marks the matches on the canvas (folded ones on the group holding them) and updates the search controls. */
+    private fun markMatches() {
+        val shown = view ?: return
+        val active = search.text.isNotBlank()
+        canvas.markMatches(if (active) matches.mapNotNullTo(hashSetOf(), shown::shownId) else null, currentMatch?.let(shown::shownId))
+        val index = currentMatch?.let(matches::indexOf) ?: -1
+        matchCount.text = when {
+            !active -> ""
+            matches.isEmpty() -> "No matches"
+            index >= 0 -> "${index + 1} of ${matches.size}"
+            else -> if (matches.size == 1) "1 match" else "${matches.size} matches"
         }
+        previousMatch.isEnabled = matches.isNotEmpty()
+        nextMatch.isEnabled = matches.isNotEmpty()
+    }
+
+    /** Leaves the filter, keeping the query highlighted, and shows [source] expanded in the full graph. */
+    private fun showInGraph(source: Int) {
+        val tree = hierarchy ?: return
+        updatingSearch = true
+        try { searchMode.selectedItem = SearchMode.HIGHLIGHT } finally { updatingSearch = false }
+        setExpanded(expanded + tree.ancestors(source) + source, source)
     }
 
     private fun currentFile(): VirtualFile? = FileEditorManager.getInstance(project).selectedEditor?.file
@@ -276,14 +370,18 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         if (ids != null) expandedKeys = ids.mapTo(hashSetOf(), tree::key)
         val snapshot = enrichment.latest
         val excluded = snapshot?.let { lens(emptySet()) { EnrichmentLens.hiddenSymbols(it, tree.graph, options) } }.orEmpty()
-        val shown = tree.view(expanded, excluded)
+        val found = tree.search(search.text)
+        val shown = tree.view(expanded, excluded, found.toHashSet().takeIf { filtering })
         view = shown
+        // Matches hidden by the lens cannot be shown.
+        matches = found.filter { shown.shownId(it) != null }
         val sections = if (viewChoice.selectedItem != GraphView.SECTIONS) null else lens(null) {
             SectionLens.sections(tree, shown, sectionBy.selectedItem as SectionBy, snapshot, project.name, options)
         }
         canvas.show(shown.graph, shown.weights, sections)
         canvas.decorate(snapshot?.let { lens(GraphDecorations.NONE) { EnrichmentLens.decorate(it, tree.graph, shown, options) } } ?: GraphDecorations.NONE)
         highlight()
+        markMatches()
         val target = focus?.let(shown::shownId)
         target?.let(canvas::select)
         SwingUtilities.invokeLater { if (!disposed) target?.let(canvas::reveal) ?: canvas.revealFile() }
@@ -299,7 +397,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         selection.text = if (graph != null && node != null) {
             val outgoing = graph.edges.filter { it.caller == node.id && it.kind != RelationKind.CONTAINS }.groupingBy { it.kind }.eachCount()
             val incoming = graph.edges.count { it.callee == node.id && it.kind != RelationKind.CONTAINS }
-            val inside = if (node.hidden > 0) " · ${node.hidden} inside, Enter to expand" else ""
+            val inside = if (node.hidden > 0) " · ${node.hidden} inside, Enter to ${if (filtering) "show in full graph" else "expand"}" else ""
             "${node.kind.name.lowercase()} ${node.name} · $incoming incoming · " +
                 outgoing.entries.joinToString { "${it.value} ${it.key.name.lowercase()}" } + inside +
                 (view?.sources?.getOrNull(node.id)?.let(::annotationSummary)?.let { " · $it" } ?: "")
@@ -357,6 +455,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         val source = view?.sources?.getOrNull(id) ?: return
         when {
             !tree.isGroup(source) -> navigate(source)
+            filtering -> showInGraph(source)
             source in expanded -> setExpanded(expanded - source, source)
             else -> setExpanded(expanded + source, source)
         }
@@ -377,12 +476,13 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
             add(item("Side by side") {
                 openSourceCallChain(project, built, tree.sourceCallChain(source), tree.nodes[source].name)
             })
-            if (tree.isGroup(source)) {
+            if (filtering) add(item("Show in full graph") { showInGraph(source) })
+            else if (tree.isGroup(source)) {
                 if (source in open) add(item("Collapse") { setExpanded(open - source, source) })
                 else add(item("Expand") { setExpanded(open + source, source) })
                 add(item("Expand all inside") { setExpanded(open + tree.groupsWithin(source), source) })
             }
-            tree.parent[source].takeIf { it >= 0 }?.let { parent ->
+            tree.parent[source].takeIf { it >= 0 && !filtering }?.let { parent ->
                 add(item("Collapse into ${tree.nodes[parent].name}") { setExpanded(open - parent, parent) })
             }
             if (result?.pointers?.getOrNull(source) != null) add(item("Open source") { navigate(source) })
@@ -411,11 +511,16 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         }
     }
 
-    override fun dispose() { disposed = true; job?.cancel(); enrichJob?.cancel() }
+    override fun dispose() { disposed = true; searchTimer.stop(); job?.cancel(); enrichJob?.cancel() }
 
     /** A flow list entry; null stands for "(none)". */
     private class FlowChoice(val flow: Flow?) {
         override fun toString() = flow?.name ?: "(none)"
+    }
+
+    private enum class SearchMode(val label: String) {
+        HIGHLIGHT("Highlight"), FILTER("Filter");
+        override fun toString() = label
     }
 
     private companion object {
