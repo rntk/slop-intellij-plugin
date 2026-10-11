@@ -5,6 +5,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
+import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmProtocolException
 import dev.insight.llm.LlmTool
@@ -44,6 +45,9 @@ class ToolChatRunner(
     tools: List<ChatTool>,
     private val maxToolRounds: Int = 12,
     private val maxToolResultChars: Int = 16_000,
+    private val maxContextChars: Int = 64_000,
+    private val maxHistoryChars: Int = 24_000,
+    private val maxContextRetries: Int = 3,
 ) {
     private val tools = tools.associateBy { it.definition.name }
 
@@ -51,41 +55,60 @@ class ToolChatRunner(
         require(this.tools.size == tools.size) { "Tool names must be unique" }
         require(maxToolRounds >= 0) { "Max tool rounds must not be negative" }
         require(maxToolResultChars > 0) { "Max tool result size must be positive" }
+        require(maxContextChars > 0) { "Max context size must be positive" }
+        require(maxHistoryChars >= 0) { "Max history size must not be negative" }
+        require(maxContextRetries >= 0) { "Max context retries must not be negative" }
     }
 
     suspend fun run(messages: List<LlmMessage>, onToolCall: suspend (ToolCallEvent) -> Unit = {}): ToolChatResult {
         require(messages.isNotEmpty()) { "At least one message is required" }
-        val conversation = messages.toMutableList()
+        val window = ChatContextWindow(messages, maxContextChars, maxHistoryChars)
         val transcript = mutableListOf<LlmMessage>()
+        var requestCount = 0
         // Schemas stay in every request, including the last one, so earlier calls remain interpretable.
         val definitions = tools.values.map { it.definition }
         for (round in 0..maxToolRounds) {
             val exhausted = round == maxToolRounds && definitions.isNotEmpty()
-            val completion = complete(CompletionRequest(
+            fun request(context: List<LlmMessage>) = CompletionRequest(
                 // A user note rather than a system message: several chat templates require system messages first.
-                messages = if (exhausted) conversation + LlmMessage.user(TOOL_ROUNDS_EXHAUSTED) else conversation.toList(),
+                messages = if (exhausted) context + LlmMessage.user(TOOL_ROUNDS_EXHAUSTED) else context,
                 tools = definitions,
                 toolChoice = if (exhausted) ToolChoice.None else null,
-            ))
+            )
+            suspend fun completeWithWindow(): Completion {
+                var retries = 0
+                while (true) {
+                    val candidate = window.fit(::request)
+                    requestCount++
+                    try {
+                        return complete(candidate)
+                    } catch (error: LlmApiException) {
+                        if (!error.isContextOverflow() || retries >= maxContextRetries || !window.shrink(candidate)) throw error
+                        retries++
+                    }
+                }
+            }
+            val completion = completeWithWindow()
             if (completion.toolCalls.isEmpty()) {
                 val reply = completion.content.trim()
                 if (reply.isEmpty()) throw LlmProtocolException("The model returned an empty reply")
-                return ToolChatResult(reply, completion.finishReason, transcript, round + 1)
+                return ToolChatResult(reply, completion.finishReason, transcript, requestCount)
             }
             if (round == maxToolRounds) throw LlmProtocolException("The model exceeded the tool-call round limit")
             val calls = completion.toolCalls.mapIndexed { index, call ->
                 if (call.id.isNullOrBlank()) call.copy(id = "call_${round + 1}_${index + 1}") else call
             }
             val assistant = LlmMessage.assistant(completion.content, calls, completion.reasoning)
-            conversation += assistant
+            val roundMessages = mutableListOf(assistant)
             transcript += assistant.copy(reasoning = null)
             for (call in calls) {
                 val (result, failed) = execute(call.name, call.arguments)
                 val toolMessage = LlmMessage.tool(call.id!!, result)
-                conversation += toolMessage
+                roundMessages += toolMessage
                 transcript += toolMessage
                 onToolCall(ToolCallEvent(call.name, call.arguments, result, failed))
             }
+            window.addRound(roundMessages)
         }
         error("unreachable")
     }
@@ -117,22 +140,20 @@ class ToolChatRunner(
 }
 
 /**
- * Keeps the most recent user-visible turns within a character budget. Tool events and notices are
+ * Keeps complete recent user-visible turns within a character budget, clipping the latest turn rather
+ * than dropping it (see [recentTurns]). Tool events and notices are
  * not replayed: earlier tool output multiplies token use and is rarely relevant to the next question.
  */
 fun compactHistory(history: List<ChatMessage>, maxChars: Int = 24_000, maxMessages: Int = 20): List<LlmMessage> {
-    val kept = mutableListOf<LlmMessage>()
-    var remaining = maxChars
-    for (message in history.asReversed()) {
-        if (kept.size >= maxMessages || remaining <= 0) break
-        val content = message.text.trim().take(remaining)
-        if (content.isEmpty()) continue
-        kept += when (message.role) {
+    require(maxChars >= 0 && maxMessages >= 0) { "History budgets must not be negative" }
+    val messages = history.mapNotNull { message ->
+        val content = message.text.trim()
+        if (content.isEmpty()) return@mapNotNull null
+        when (message.role) {
             ChatMessage.USER -> LlmMessage.user(content)
             ChatMessage.ASSISTANT -> LlmMessage.assistant(content)
-            else -> continue
+            else -> null
         }
-        remaining -= content.length
     }
-    return kept.asReversed()
+    return recentTurns(historyTurns(messages), maxChars, maxMessages).flatten()
 }

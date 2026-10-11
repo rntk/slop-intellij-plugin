@@ -124,7 +124,22 @@ class ToolChatRunnerTest {
             compactHistory(history),
         )
         assertEquals(listOf(LlmMessage.user("new question"), LlmMessage.assistant("new answer")), compactHistory(history, maxMessages = 2))
-        assertEquals(listOf(LlmMessage.user("ne"), LlmMessage.assistant("new answer")), compactHistory(history, maxChars = 12))
+        // The latest turn survives a small budget; short messages are not clipped to nothing.
+        assertEquals(listOf(LlmMessage.user("new question"), LlmMessage.assistant("new answer")), compactHistory(history, maxChars = 12))
+        assertEquals(emptyList<LlmMessage>(), compactHistory(history, maxChars = 0))
+    }
+
+    @Test fun `history clips an oversized latest turn and keeps the start of each message`() {
+        val history = listOf(
+            ChatMessage(ChatMessage.USER, "old question"),
+            ChatMessage(ChatMessage.ASSISTANT, "old answer"),
+            ChatMessage(ChatMessage.USER, "x".repeat(1000)),
+            ChatMessage(ChatMessage.ASSISTANT, "short answer"),
+        )
+        val kept = compactHistory(history, maxChars = 500)
+        assertEquals(2, kept.size)
+        assertEquals("x".repeat(488) + "\n[Truncated 512 characters.]", kept[0].content)
+        assertEquals("short answer", kept[1].content)
     }
 
     @Test fun `backend sends system prompt, history and question, and marks truncated replies`() = runBlocking {

@@ -21,7 +21,7 @@ class ProjectToolsTest : BasePlatformTestCase() {
 
     fun `test tool definitions are valid function schemas`() {
         val tools = projectTools(project)
-        assertEquals(listOf("list_files", "read_file", "search_text"), tools.map { it.definition.name })
+        assertEquals(listOf("list_files", "read_file", "search_text", "open_file"), tools.map { it.definition.name })
         tools.forEach { assertEquals("object", it.definition.parameters["type"].asString) }
     }
 
@@ -59,5 +59,33 @@ class ProjectToolsTest : BasePlatformTestCase() {
         assertEquals("app/Main.kt:2: greet(\"World\")", call("search_text", """{"query":"world","glob":"*.kt"}"""))
         assertTrue(call("search_text", """{"query":"greet","max_results":1}""").endsWith("[More matches not shown; narrow the search.]"))
         assertEquals("No matches for 'absent'.", call("search_text", """{"query":"absent"}"""))
+    }
+
+    fun `test search text supports regular expressions`() {
+        assertEquals("app/Greeter.kt:1: fun greet(name: String) = println(\"Hello, \$name\")", call("search_text", """{"query":"^fun\\s+GREET\\(","regex":true}"""))
+        assertEquals("No matches for 'greet\\('.", call("search_text", """{"query":"greet\\(","regex":"true","glob":"*.md"}"""))
+        assertTrue(invalid("search_text", """{"query":"greet(","regex":true}""").contains("regular expression"))
+        assertTrue(invalid("search_text", """{"query":"greet","regex":"yes"}""").contains("true or false"))
+    }
+
+    fun `test open file shows the location in the editor`() {
+        assertEquals("Opened app/Main.kt at line 2 in the user's editor.", call("open_file", """{"path":"app/Main.kt","line":2,"column":5}"""))
+        val editor = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor!!
+        assertEquals("app/Main.kt", editor.virtualFile.path.substringAfter("/src/"))
+        assertEquals(com.intellij.openapi.editor.LogicalPosition(1, 4), editor.caretModel.logicalPosition)
+        assertFalse(editor.selectionModel.hasSelection())
+
+        assertEquals("Opened app/Main.kt at lines 1-3 in the user's editor.", call("open_file", """{"path":"app/Main.kt","line":1,"end_line":3}"""))
+        assertEquals("fun main() {\n    greet(\"World\")\n}", editor.selectionModel.selectedText)
+
+        // Columns past the end of the line stop at the line end.
+        call("open_file", """{"path":"app/Greeter.kt","column":500}""")
+        val greeter = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor!!
+        assertEquals(greeter.document.getLineEndOffset(0), greeter.caretModel.offset)
+
+        assertTrue(invalid("open_file", """{"path":"app/Main.kt","line":9}""").contains("only 4 lines"))
+        assertTrue(invalid("open_file", """{"path":"app/Main.kt","line":3,"end_line":2}""").contains("end_line"))
+        assertTrue(invalid("open_file", """{"path":"app"}""").contains("directory"))
+        assertTrue(invalid("open_file", """{"path":"missing.kt"}""").contains("No project file"))
     }
 }
