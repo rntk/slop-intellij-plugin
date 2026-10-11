@@ -24,6 +24,10 @@ class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPo
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
+    suspend fun buildProject(): CallGraphResult = withBackgroundProgress(project, "Building application graph") {
+        smartReadAction(project) { ProjectGraphAnalyzer.build(project) }
+    }
+
     /**
      * Explores the graph in the background. Each expansion runs in its own read action that waits
      * for indexing, so typing and indexing are not blocked for the whole search.

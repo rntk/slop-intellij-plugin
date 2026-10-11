@@ -117,7 +117,7 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
         }, BorderLayout.NORTH)
         add(JBScrollPane(canvas).apply { border = JBUI.Borders.customLine(JBColor.border()) }, BorderLayout.CENTER)
         add(JLabel("Callers are on the left, callees on the right. Double-click a node to open its source; " +
-            "dashed nodes are library code."), BorderLayout.SOUTH)
+            "dashed nodes are library code. Drag or use arrows to pan; scroll to zoom."), BorderLayout.SOUTH)
         listOf(direction, depth).forEach { it.addActionListener { rebuild() } }
         libraries.addActionListener { rebuild() }
         refresh.addActionListener { rebuild() }

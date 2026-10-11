@@ -12,6 +12,7 @@ data class GraphLayout(val boxes: Map<Int, Rectangle>, val size: Dimension)
  * Columns are ordered by the average row of their neighbours closer to the root to reduce crossings.
  */
 fun layoutCallGraph(graph: CallGraph, metrics: LayoutMetrics): GraphLayout {
+    if (graph.nodes.isEmpty()) return GraphLayout(emptyMap(), Dimension(0, 0))
     val columns = graph.nodes.groupBy { it.level }.mapValues { (_, nodes) -> nodes.map { it.id }.toMutableList() }
     val neighbours = HashMap<Int, MutableList<Int>>()
     for (edge in graph.edges) {

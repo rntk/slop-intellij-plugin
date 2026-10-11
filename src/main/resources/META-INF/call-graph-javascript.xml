@@ -1,0 +1,5 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="dev.insight">
+        <callGraphLanguageSupport implementation="dev.insight.callgraph.javascript.JavaScriptCallGraphSupport"/>
+    </extensions>
+</idea-plugin>

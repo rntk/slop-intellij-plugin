@@ -16,9 +16,16 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdeaCommunity("2025.2.4")
+        // Ultimate is required to compile against Go and JavaScript/TypeScript (both need
+        // com.intellij.modules.ultimate). Every language dependency is optional at runtime,
+        // so the artifact still installs in Community, PyCharm, GoLand, WebStorm, etc.
+        intellijIdeaUltimate("2025.2.4")
         // Optional language support for the call graph (see META-INF/call-graph-*.xml).
-        bundledPlugins("com.intellij.java", "org.jetbrains.kotlin")
+        bundledPlugins("com.intellij.java", "org.jetbrains.kotlin", "JavaScript")
+        // PythonCore requires TOML; without it the Python plugin does not load in tests.
+        bundledPlugin("org.toml.lang")
+        // Marketplace plugins matching the target build (IU-252.27397.103).
+        plugins("PythonCore:252.27397.103", "org.jetbrains.plugins.go:252.27397.103")
         testFramework(TestFrameworkType.Platform)
         testFramework(TestFrameworkType.Plugin.Java)
     }
@@ -40,5 +47,5 @@ intellijPlatform {
             untilBuild = "262.*"
         }
     }
-    pluginVerification { ides { recommended() } }
+    pluginVerification { ides { create(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaUltimate, "2025.3.6") } }
 }

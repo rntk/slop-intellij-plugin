@@ -5,17 +5,25 @@
     <description><![CDATA[
         A Kotlin workbench with a project chat sidebar and an editor-area visualization dashboard.
         This initial version uses local demo responses and explicitly labeled sample data.
-        <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a Java or Kotlin function.
+        <br/>Application Graph shows Java, Kotlin, Python, Go, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
+        <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
     ]]></description>
     <depends>com.intellij.modules.platform</depends>
-    <!-- Language support for the call graph is optional, so the plugin also loads in IDEs without Java or Kotlin. -->
+    <!-- Language support for the call graph is optional, so the plugin loads in any IDE and covers whichever languages it has. -->
     <depends optional="true" config-file="call-graph-java.xml">com.intellij.java</depends>
     <depends optional="true" config-file="call-graph-kotlin.xml">org.jetbrains.kotlin</depends>
+    <!-- PyCharm (Community/Professional) and the Python plugins all provide the python module. -->
+    <depends optional="true" config-file="call-graph-python.xml">com.intellij.modules.python</depends>
+    <depends optional="true" config-file="call-graph-go.xml">org.jetbrains.plugins.go</depends>
+    <!-- The JavaScript plugin covers both JavaScript and TypeScript. -->
+    <depends optional="true" config-file="call-graph-javascript.xml">JavaScript</depends>
     <extensionPoints>
         <extensionPoint qualifiedName="dev.insight.callGraphLanguageSupport"
                         interface="dev.insight.callgraph.CallGraphLanguageSupport" dynamic="true"/>
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
+                    factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
         <toolWindow id="Insight Chat" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>

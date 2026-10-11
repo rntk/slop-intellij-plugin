@@ -20,7 +20,7 @@ The sidebar supports multiline messages, Ctrl+Enter / Cmd+Enter to send, and **N
 ./gradlew test buildPlugin verifyPluginStructure
 ```
 
-The installable ZIP is written to `build/distributions/`. Install it using **Settings → Plugins → gear → Install Plugin from Disk**. The compatibility range is IntelliJ IDEA 2025.2–2026.2 (`252`–`262.*`), compiled against Community 2025.2.4 (the lowest supported platform, Java 21). Change the target and compatibility bounds in `build.gradle.kts` as you validate additional IDE versions.
+The installable ZIP is written to `build/distributions/`. Install it using **Settings → Plugins → gear → Install Plugin from Disk**. The compatibility range is IntelliJ IDEA 2025.2–2026.2 (`252`–`262.*`), compiled against IntelliJ IDEA Ultimate 2025.2.4 (the lowest supported platform, Java 21) plus the PythonCore and Go Marketplace plugins at the same build. Ultimate is needed only to compile the Go and JavaScript/TypeScript support; every language is an optional dependency, so the ZIP also installs in Community, PyCharm, GoLand, WebStorm and other IntelliJ-based IDEs. Change the target and compatibility bounds in `build.gradle.kts` as you validate additional IDE versions.
 
 For binary API compatibility checks (downloads additional IDEs):
 
@@ -34,7 +34,13 @@ Requires Docker with BuildKit (Docker Desktop or Docker Engine with Buildx). Run
 
 ### Shell script
 
-On Linux or WSL, use the executable `docker.sh` helper. It runs Docker through `sudo`, builds the development image using Docker's layer cache, and mounts the current project for Gradle tasks. Run the script as your regular user: `sudo docker run` uses your UID/GID so build output belongs to you. The Gradle distribution, dependencies, and the IntelliJ IDEA SDK (about 1.4 GB to download, several GB unpacked) are cached in the project's `.gradle/` directory, so only the first run downloads them; delete `.gradle/` to force a fresh download. Requires Bash and `sudo` in addition to Docker.
+On Linux or WSL, use the executable `docker.sh` helper. It runs Docker through `sudo`, builds the development image using Docker's layer cache, and mounts the current project for Gradle tasks. Run the script as your regular user: the build container uses your UID/GID so build output belongs to you. Requires Bash, `sudo`, `flock` (util-linux), and `cksum` (coreutils) in addition to Docker.
+
+The Gradle distribution, dependencies, and IntelliJ IDEA SDK (about 1.4 GB to download, several GB unpacked) are stored in a persistent Docker volume named `insight-workbench-gradle-<UID>-<project-path-checksum>`. The helper prints its name on each run. [Docker volumes](https://docs.docker.com/engine/storage/volumes/) survive container removal, so downloads are reused. The first run after switching from the old `.gradle/docker/` cache downloads dependencies again; that old cache is left untouched and is no longer used by the helper. To reset the new cache, finish all builds and run `sudo docker volume rm <printed-volume-name>`.
+
+IntelliJ can remain open with its normal Gradle user home (usually `~/.gradle`). Docker's global cache and writable Java home live in the volume, and its project cache uses `.gradle/docker-project/`, separate from IntelliJ's `.gradle/` project cache. Concurrent helper invocations wait on a host lock because separate containers cannot coordinate [Gradle cache locks](https://docs.gradle.org/current/userguide/dependency_caching.html#sec:cache_locking). Source files and `build/` output remain shared, so avoid simultaneous host and Docker compilation or cleaning.
+
+Earlier versions could report lock timeouts naming a host daemon such as PID 1092 in `.gradle/docker/caches/`, even with IntelliJ closed: Gradle daemons can outlive the command that started them. The current helper bypasses that directory entirely. To retire an old host daemon, wait for its build to finish and run `./gradlew -g "$PWD/.gradle/docker" --stop` on the host. Do not delete lock files while Gradle is running. `Picked up JAVA_TOOL_OPTIONS: -Duser.home=...` and the single-use daemon message are expected: the script supplies a writable Java home directory for container processes, and `--no-daemon` can still fork a temporary JVM.
 
 ```sh
 ./docker.sh help             # Show commands and usage.
@@ -113,7 +119,7 @@ docker run --rm \
 docker run --rm insight-workbench-dev tasks --all
 ```
 
-On Linux, bind-mounted output is owned by the container's root user. To write it as your own user, add `--user "$(id -u):$(id -g)" -e GRADLE_USER_HOME=/workspace/.gradle` to the bind-mounted commands and omit the `/root/.gradle` volume mount; Gradle will use the project's local cache instead.
+On Linux, bind-mounted output is owned by the container's root user. To write it as your own user, use `./docker.sh`, which sets your UID/GID, a writable home for forked Java processes, and separate Docker Gradle caches.
 
 The container workflow runs without a display. To test the plugin UI, run `./gradlew runIde` on a host with JDK 21 and a desktop session, or install the exported ZIP using **Settings → Plugins → gear → Install Plugin from Disk**. Binary compatibility checks and unit tests do not replace this manual UI check.
 
@@ -126,28 +132,36 @@ docker volume rm insight-workbench-gradle
 
 Docker references: [multi-stage builds and targets](https://docs.docker.com/build/building/multi-stage/) and [local artifact export](https://docs.docker.com/build/exporters/local-tar/).
 
+## Application graph
+
+Open **View → Tool Windows → Application Graph** to see the whole project (Java, Kotlin, Python, Go, JavaScript, TypeScript), including disconnected declarations. File, class, function, property, parameter, local variable, and type alias nodes are connected by containment, imports, inheritance, calls, and resolved symbol references. Opening or switching source files fills that file’s nodes and outlines their direct dependencies and users. The graph stays visible while navigating source; double-click nodes to open declarations. Use **Current file** to scroll to the active file and the zoom control to inspect larger projects. Drag the graph to pan, or click it and use the arrow keys (Shift for faster movement). The scroll wheel zooms around the cursor; the toolbar zooms around the viewport centre. Imports use dashed edges and references use dotted edges. Use **Detail** to switch between **Symbols** (every declaration, as above) and **Files** (one node per source file, with users placed left of the files they depend on). In the file view, all relationships between two files merge into a single edge, drawn as the strongest kind: inheritance, then call, reference, import. Switching detail reuses the last analysis without rebuilding.
+
+The graph rebuilds after PSI changes with a short debounce, runs in a cancellable background smart read action, and waits for indexing. It covers project content without the function view’s depth/node limits. External library symbols and unresolved references are omitted. Relationships reflect static resolution; runtime dispatch, reflection, and wildcard imports to packages are not expanded.
+
 ## Call graph
 
-Put the caret in a Java or Kotlin function (or on a call to it) and choose **Show Call Graph** from the editor context menu, the Structure view context menu, or **Tools**. A tab opens in the editor area with callers on the left of the selected function and callees on the right. Use the toolbar to choose direction, depth (1–5), and whether library calls are shown. Double-click a node to open its source; select a node and use **Focus selected** to explore from it. Searches run in the background with a progress indicator, wait for indexing to finish, and stop at 150 functions.
+Put the caret in a function in any supported language (or on a call to it) and choose **Show Call Graph** from the editor context menu, the Structure view context menu, or **Tools**. A tab opens in the editor area with callers on the left of the selected function and callees on the right. Use the toolbar to choose direction, depth (1–5), and whether library calls are shown. Double-click a node to open its source; select a node and use **Focus selected** to explore from it. Searches run in the background with a progress indicator, wait for indexing to finish, and stop at 150 functions.
 
 How it is built, and the platform APIs it relies on:
 
 - **Callers** (`CallGraphAnalyzer.callers`): `ReferencesSearch` over `GlobalSearchScope.projectScope`. Each reference is mapped to its enclosing function. This is language neutral; with the Kotlin plugin installed it finds Java→Kotlin and Kotlin→Java usages. References in comments and imports are skipped.
-- **Callees** (`CallGraphAnalyzer.callees`): a PSI walk of the function body. A small language extension resolves each call site: `PsiCall.resolveMethod()` for Java, and `KtCallElement`/operator/callable references resolved through PSI references for Kotlin.
-- **Language support** is the `dev.insight.callGraphLanguageSupport` extension point, registered from optional `<depends>` descriptors (`META-INF/call-graph-java.xml`, `call-graph-kotlin.xml`). The plugin still loads in IDEs without Java or Kotlin. Add another language by implementing `CallGraphLanguageSupport`.
+- **Callees** (`CallGraphAnalyzer.callees`): a PSI walk of the function body. A small language extension resolves each call site: `PsiCall.resolveMethod()` for Java; `KtCallElement`/operator/callable references for Kotlin; `PyCallExpression.multiResolveCalleeFunction` for Python (class calls map to `__init__`); `GoCallExpr` callee references for Go; `JSCallExpression`/`new` for JavaScript and TypeScript (classes map to their constructor).
+- **Language support** is the `dev.insight.callGraphLanguageSupport` extension point, registered from optional `<depends>` descriptors (`META-INF/call-graph-java.xml`, `-kotlin`, `-python`, `-go`, `-javascript`). Each is active only when the IDE has that language plugin, so the same artifact works in IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc. Add another language by implementing `CallGraphLanguageSupport`.
 - **Kotlin K2 mode**: the `supportsKotlinPluginMode supportsK2="true"` declaration must be in the main `plugin.xml`. In K2 mode (the default) the Kotlin plugin skips the optional `call-graph-kotlin.xml` if the declaration is only there, and Kotlin functions then get no callees. `PluginDescriptorTest` guards this.
-- **Tests**: `JavaCallGraphTest` and `KotlinCallGraphTest` run the analyzer on real PSI. The Java test uses the JDK running the tests, because the default light-fixture `mockJDK-1.7` is not shipped with the IDE distribution used for plugin tests.
+- **Tests**: `JavaCallGraphTest`, `KotlinCallGraphTest`, `PythonCallGraphTest`, `GoCallGraphTest`, and `JavaScriptCallGraphTest` run the analyzer and the application graph on real PSI. The Java test uses the JDK running the tests, because the default light-fixture `mockJDK-1.7` is not shipped with the IDE distribution used for plugin tests. PythonCore loads in tests only together with the bundled `org.toml.lang` plugin. The Go test needs no Go SDK: it turns off Go modules integration and uses a GOPATH folder inside the test project so cross-package imports resolve.
 - **Threading**: `withBackgroundProgress` plus one `smartReadAction` per node expansion, so the UI stays responsive and the search never holds a long read lock.
 - **Rendering**: `CallGraphLayout.kt` (pure layered layout with crossing reduction, unit tested) and `CallGraphCanvas.kt` (Java2D, same approach as the dashboard charts).
 
 Known limitations: calls made through an overridden or interface method are attributed to the declaration the code resolves to (overriders are not expanded); calls in field or property initializers are not attributed to a function; library functions are shown as leaves; Kotlin implicit constructors and property getters without a body are not nodes.
+
+Language notes: Go imports resolve to package directories, so an import links to every file in that directory. Go interface methods are function nodes, so calls through interfaces stay visible. JavaScript/TypeScript treat variables, fields, and object properties that hold an arrow or function expression as functions; anonymous callbacks belong to the enclosing function. CommonJS `exports.f = …` assignments are not nodes, and `require()` gives only a file-level import edge. Python attributes assigned via `self.x = …` are properties of the class; repeated assignments to one name give one node. Dynamic calls (Python duck typing, JavaScript without types) appear only when the IDE can resolve them statically.
 
 Other SDK options evaluated:
 
 - **Call Hierarchy** (`LanguageCallHierarchy`, `CallHierarchyProvider`, Java/Kotlin `CallerMethodsTreeStructure`): this is what **Navigate → Call Hierarchy** uses. The tree structures are built by the hierarchy browser (`createHierarchyTreeStructure` is protected), so they are not a convenient API for feeding a custom graph. They also show a tree, not a graph.
 - **UAST** (`UMethod`, `UCallExpression.resolve()`): a single implementation could cover Java, Kotlin, Groovy, and Scala. It is a good replacement for the two language extensions if more JVM languages are needed.
 - **Kotlin Analysis API** (`analyze { … }`): exact K2 resolution, including implicit invokes and property accessors. Use it if the Kotlin PSI reference approach proves insufficient.
-- **Diagrams API** (`com.intellij.diagram`): ships only with IntelliJ IDEA Ultimate, so it is not usable with the Community target.
+- **Diagrams API** (`com.intellij.diagram`): ships only with IntelliJ IDEA Ultimate. The build now compiles against Ultimate, but using it would make the plugin unusable in Community and the other IDEs.
 
 ## Extend
 
@@ -160,6 +174,6 @@ Other SDK options evaluated:
 - `META-INF/plugin.xml`: tool window, editor provider, and action registration.
 - `callgraph/`: call graph action, analysis, layout, and editor tab (see **Call graph** above).
 
-The call graph reads project source locally through the IDE PSI and indexes; no project source is transmitted. A real model integration and real project analysis are future implementation work. This scaffold targets a local IDE; remote development/split mode needs separate design and validation.
+The call graph reads project source locally through the IDE PSI and indexes; no project source is transmitted. A real model integration is future implementation work. This scaffold targets a local IDE; remote development/split mode needs separate design and validation.
 
 JetBrains references: [quick start](https://plugins.jetbrains.com/docs/intellij/plugins-quick-start.html), [tool windows](https://plugins.jetbrains.com/docs/intellij/tool-windows.html), [Gradle platform plugin](https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html), and [Kotlin support](https://plugins.jetbrains.com/docs/intellij/using-kotlin.html).
