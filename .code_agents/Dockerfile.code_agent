@@ -1,0 +1,49 @@
+# Generated for project: app
+# Strategy: A (extends project Dockerfile: eclipse-temurin:21-jdk-jammy development stage)
+# Tech stack: Java 21 / Kotlin (JVM toolchain 21), Gradle wrapper, IntelliJ Platform plugin
+# (org.jetbrains.intellij.platform 2.10.5, IntelliJ IDEA Community 2025.2.4)
+# Test/quality tools: JUnit 4, ./gradlew test buildPlugin verifyPluginStructure
+#
+# Shared base image for AI coding agents. Contains system packages, the JDK,
+# and warmed Gradle wrapper cache so agent images rebuild fast.
+# This image sets NO entrypoint; each agent Dockerfile sets its own.
+#
+# Build (from project root, build context must stay the project root):
+#   docker build -f .code_agents/Dockerfile.code_agent -t "$(basename $(pwd))-code-agent:latest" .
+
+FROM eclipse-temurin:21-jdk-jammy
+
+# System packages: project needs (fontconfig, libfreetype6 for Java2D/Swing
+# headless builds/tests) + agent needs (git, curl, ripgrep, iputils-ping).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        fontconfig \
+        libfreetype6 \
+        git \
+        curl \
+        ripgrep \
+        iputils-ping \
+        ca-certificates \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user required by agent images (project base image has none).
+RUN useradd -m -u 1000 -s /bin/bash appuser
+
+ENV GRADLE_USER_HOME=/home/appuser/.gradle
+
+WORKDIR /app
+RUN chown -R appuser:appuser /app /home/appuser
+
+# Warm the checksum-verified Gradle wrapper cache (no global Gradle install).
+COPY --chown=appuser:appuser gradlew gradlew.bat ./
+COPY --chown=appuser:appuser gradle/ ./gradle/
+RUN chmod +x gradlew
+
+USER appuser
+RUN ./gradlew --no-daemon --version
+
+# Project dependency manifests: Gradle resolves third-party deps at build
+# time via the wrapper, so no separate install step is needed beyond the
+# wrapper warmup above. Copying manifests keeps the layer cache-friendly.
+COPY --chown=appuser:appuser build.gradle.kts settings.gradle.kts gradle.properties ./

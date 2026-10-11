@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+# Generated for project: app, agent: muse-code-cli
+# Strategy: A (FROM shared base .code_agents/Dockerfile.code_agent, which
+# reproduces the project Dockerfile's eclipse-temurin:21-jdk-jammy environment)
+# Base image: app-code-agent:latest (override with --build-arg BASE_IMAGE=...)
+# Tech stack: Java 21 / Kotlin, Gradle wrapper (deps pre-installed in base)
+# Required env vars: none (authenticate within the CLI; config persists in ~/.config/muse)
+#
+# Build (from project root):
+#   docker build --no-cache --build-arg BASE_IMAGE="app-code-agent:latest" \
+#     -f .code_agents/Dockerfile.muse-code-cli -t "$(basename $(pwd))-muse-code-cli:latest" .
+# Run (via helper):
+#   ./.code_agents/agent.sh run
+# Run (manual):
+#   docker run --rm -it -v $(pwd):/app \
+#     -v $HOME/.config/muse:/home/appuser/.config/muse \
+#     app-muse-code-cli:latest --yolo
+#
+# Notes:
+# - Runs as non-root appuser (UID 1000); reference path /home/ubuntu/.config/muse
+#   adapted to this image's appuser home.
+
+ARG BASE_IMAGE=app-code-agent:latest
+FROM ${BASE_IMAGE}
+
+ARG MUSE_VERSION=latest
+
+USER appuser
+ENV PATH="/home/appuser/.local/bin:${PATH}"
+
+# The installer is downloaded to a file first (no piping into a shell);
+# no checksum is published for it.
+RUN curl -fsSL -o /tmp/muse-install.sh https://dev.meta.ai/install.sh \
+    && bash /tmp/muse-install.sh \
+    && rm -f /tmp/muse-install.sh \
+    && command -v muse
+
+WORKDIR /app
+
+ENTRYPOINT ["muse"]

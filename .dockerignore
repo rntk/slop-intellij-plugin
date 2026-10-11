@@ -1,0 +1,11 @@
+.git/
+.gradle/
+.intellijPlatform/
+.kotlin/
+.idea/
+build/
+out/
+docker-artifacts/
+*.iml
+.env
+.env.*

@@ -1,0 +1,6 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="dev.insight">
+        <callGraphLanguageSupport implementation="dev.insight.callgraph.kotlin.KotlinCallGraphSupport"/>
+    </extensions>
+    <!-- K2 compatibility is declared once in plugin.xml, where the plugin structure check reads it. -->
+</idea-plugin>

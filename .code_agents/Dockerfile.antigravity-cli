@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+# Generated for project: app, agent: antigravity-cli
+# Strategy: A (FROM shared base .code_agents/Dockerfile.code_agent, which
+# reproduces the project Dockerfile's eclipse-temurin:21-jdk-jammy environment)
+# Base image: app-code-agent:latest (override with --build-arg BASE_IMAGE=...)
+# Tech stack: Java 21 / Kotlin, Gradle wrapper (deps pre-installed in base)
+# Required env vars: none (authenticate via the CLI's login flow; credentials persist in ~/.gemini)
+#
+# Build (from project root):
+#   docker build --no-cache --build-arg BASE_IMAGE="app-code-agent:latest" \
+#     -f .code_agents/Dockerfile.antigravity-cli -t "$(basename $(pwd))-antigravity-cli:latest" .
+# Run (via helper):
+#   ./.code_agents/agent.sh run
+# Run (manual):
+#   docker run --rm -it -v $(pwd):/app \
+#     -v $HOME/.gemini:/home/appuser/.gemini \
+#     -v "$HOME/.config/Antigravity:/home/appuser/.config/Antigravity" \
+#     -v "$HOME/.config/Antigravity IDE:/home/appuser/.config/Antigravity IDE" \
+#     app-antigravity-cli:latest --dangerously-skip-permissions
+#
+# Notes:
+# - Runs as non-root appuser (UID 1000); reference path /home/ubuntu/.gemini
+#   adapted to this image's appuser home.
+
+ARG BASE_IMAGE=app-code-agent:latest
+FROM ${BASE_IMAGE}
+
+ARG AGY_VERSION=latest
+
+# Tools required by the Antigravity install script
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/home/appuser/.local/bin:${PATH}"
+
+USER appuser
+
+# The installer is downloaded to a file first (no piping into a shell);
+# Google publishes no checksum for it.
+RUN curl -fsSL -o /tmp/agy-install.sh https://antigravity.google/cli/install.sh \
+    && bash /tmp/agy-install.sh \
+    && rm -f /tmp/agy-install.sh \
+    && test -x /home/appuser/.local/bin/agy
+
+WORKDIR /app
+
+ENTRYPOINT ["agy"]

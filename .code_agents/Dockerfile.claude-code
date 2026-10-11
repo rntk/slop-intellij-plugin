@@ -1,0 +1,42 @@
+# Generated for project: app, agent: claude-code
+# Strategy: A (FROM shared base .code_agents/Dockerfile.code_agent, which
+# reproduces the project Dockerfile's eclipse-temurin:21-jdk-jammy environment)
+# Base image: app-code-agent:latest (override with --build-arg BASE_IMAGE=...)
+# Tech stack: Java 21 / Kotlin, Gradle wrapper (deps pre-installed in base)
+# Required env vars (set at runtime, NOT in image): ANTHROPIC_API_KEY
+#
+# Build (from project root):
+#   docker build --no-cache --build-arg BASE_IMAGE="app-code-agent:latest" \
+#     -f .code_agents/Dockerfile.claude-code -t "$(basename $(pwd))-claude-code:latest" .
+# Run (via helper):
+#   ./.code_agents/agent.sh run
+# Run (manual):
+#   export ANTHROPIC_API_KEY="YOUR_API_KEY"
+#   docker run --rm -it -v $(pwd):/app \
+#     -v $HOME/.claude:/home/appuser/.claude \
+#     -v $HOME/.claude/.claude.json:/home/appuser/.claude.json \
+#     -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+#     app-claude-code:latest --verbose --dangerously-skip-permissions
+#
+# Notes:
+# - Container runs as non-root user appuser (UID 1000); config persists in
+#   host ~/.claude (adapted from reference /home/ubuntu/.claude to this
+#   image's appuser home).
+# - Install method follows the reference Dockerfile (claude.ai/install.sh,
+#   launcher lands in ~/.local/bin, on PATH below).
+
+ARG BASE_IMAGE=app-code-agent:latest
+FROM ${BASE_IMAGE}
+
+ARG CLAUDE_VERSION=latest
+
+# Installer places launcher in ~/.local/bin (appuser home on this image).
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+USER appuser
+
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+WORKDIR /app
+
+ENTRYPOINT ["claude"]
