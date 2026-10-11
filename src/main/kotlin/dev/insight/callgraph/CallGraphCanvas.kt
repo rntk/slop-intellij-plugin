@@ -61,6 +61,7 @@ class CallGraphCanvas(
     private val onSelect: (Int?) -> Unit,
     private val onOpen: (Int) -> Unit,
     private val popup: ((Int) -> JPopupMenu?)? = null,
+    private val menuOnClick: Boolean = false,
 ) : JPanel() {
     private var graph: CallGraph? = null
     private var weights: Map<CallGraphEdge, Int> = emptyMap()
@@ -179,6 +180,7 @@ class CallGraphCanvas(
                 if (!dragged && SwingUtilities.isLeftMouseButton(e)) {
                     select(nodeAt(e.point))
                     if (e.clickCount == 2) selected?.let(onOpen)
+                    else if (menuOnClick) selected?.let { popup?.invoke(it)?.show(this@CallGraphCanvas, e.x, e.y) }
                 }
                 start = null
                 cursor = Cursor.getDefaultCursor()

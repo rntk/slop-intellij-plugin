@@ -88,6 +88,31 @@ class CallGraphCanvasTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(0, opened)
     }
 
+    fun `test application node menu opens on a single click but not a drag or background click`() {
+        val menuIds = mutableListOf<Int>()
+        val canvas = CallGraphCanvas({}, {}, popup = { menuIds += it; null }, menuOnClick = true)
+        canvas.show(CallGraph(listOf(CallGraphNode(0, "entry", "", "", 0, true)), emptySet(), false))
+        val viewport = JViewport().apply {
+            size = Dimension(100, 80)
+            view = canvas
+            viewSize = canvas.preferredSize
+        }
+        val point = Point(30, 30)
+        canvas.mouseListeners.forEach { it.mousePressed(mouse(canvas, MouseEvent.MOUSE_PRESSED, point)) }
+        canvas.mouseListeners.forEach { it.mouseReleased(mouse(canvas, MouseEvent.MOUSE_RELEASED, point)) }
+        assertEquals(listOf(0), menuIds)
+        canvas.mouseListeners.forEach { it.mousePressed(mouse(canvas, MouseEvent.MOUSE_PRESSED, point)) }
+        canvas.mouseMotionListeners.forEach { it.mouseDragged(mouse(canvas, MouseEvent.MOUSE_DRAGGED, Point(60, 60))) }
+        canvas.mouseListeners.forEach { it.mouseReleased(mouse(canvas, MouseEvent.MOUSE_RELEASED, Point(60, 60))) }
+        assertEquals(listOf(0), menuIds)
+        val background = Point(0, 0)
+        canvas.mouseListeners.forEach { it.mousePressed(mouse(canvas, MouseEvent.MOUSE_PRESSED, background)) }
+        canvas.mouseListeners.forEach { it.mouseReleased(mouse(canvas, MouseEvent.MOUSE_RELEASED, background)) }
+        assertEquals(listOf(0), menuIds)
+        assertNull(canvas.selected)
+        assertNotNull(viewport.view)
+    }
+
     fun `test sections view lays out titled columns, paints them and explains a section on hover`() {
         val files = listOf("Intake.kt" to listOf("receive", "validate"), "Care.kt" to listOf("coordinate", "house", "treat", "employ"),
             "Exit.kt" to listOf("relocate", "settle"))

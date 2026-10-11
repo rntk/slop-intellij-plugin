@@ -32,6 +32,7 @@
                                  instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->
     <extensions defaultExtensionNs="org.jetbrains.kotlin">

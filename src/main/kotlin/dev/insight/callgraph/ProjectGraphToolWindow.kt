@@ -71,7 +71,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private val status = JLabel("Building application graph…")
     private val activeFile = JLabel()
     private val selection = JLabel(HINT)
-    private val canvas = CallGraphCanvas(onSelect = ::describe, onOpen = ::activate, popup = ::menu)
+    private val canvas = CallGraphCanvas(onSelect = ::describe, onOpen = ::activate, popup = ::menu, menuOnClick = true)
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
     private val enrichButton = JButton("Enrich")
@@ -125,7 +125,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         add(JPanel(BorderLayout(0, 4)).apply {
             add(selection, BorderLayout.NORTH)
             add(JPanel(GridLayout(0, 1, 0, 4)).apply {
-                add(JLabel("Double-click or Enter: expand/collapse a group (+N), open a symbol · right-click for more · drag/arrows to pan · scroll to zoom"))
+                add(JLabel("Click: node menu / Side by side · Enter: expand/collapse a group, open a symbol · drag/arrows to pan · scroll to zoom"))
                 add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
                 add(JLabel("Stripe: colour-by · ▶ entry point · numbered: flow step · red dashed: error path"))
                 add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
@@ -299,7 +299,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         selection.text = if (graph != null && node != null) {
             val outgoing = graph.edges.filter { it.caller == node.id && it.kind != RelationKind.CONTAINS }.groupingBy { it.kind }.eachCount()
             val incoming = graph.edges.count { it.callee == node.id && it.kind != RelationKind.CONTAINS }
-            val inside = if (node.hidden > 0) " · ${node.hidden} inside, double-click to expand" else ""
+            val inside = if (node.hidden > 0) " · ${node.hidden} inside, Enter to expand" else ""
             "${node.kind.name.lowercase()} ${node.name} · $incoming incoming · " +
                 outgoing.entries.joinToString { "${it.value} ${it.key.name.lowercase()}" } + inside +
                 (view?.sources?.getOrNull(node.id)?.let(::annotationSummary)?.let { " · $it" } ?: "")
@@ -370,9 +370,13 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private fun menu(id: Int): JPopupMenu? {
         val tree = hierarchy ?: return null
         val source = view?.sources?.getOrNull(id) ?: return null
+        val built = result ?: return null
         val open = expanded
         fun item(text: String, action: () -> Unit) = JMenuItem(text).apply { addActionListener { action() } }
         return JPopupMenu().apply {
+            add(item("Side by side") {
+                openSourceCallChain(project, built, tree.sourceCallChain(source), tree.nodes[source].name)
+            })
             if (tree.isGroup(source)) {
                 if (source in open) add(item("Collapse") { setExpanded(open - source, source) })
                 else add(item("Expand") { setExpanded(open + source, source) })
@@ -415,6 +419,6 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     }
 
     private companion object {
-        const val HINT = "Double-click a group to expand it, or a symbol to open its source."
+        const val HINT = "Click a node for Side by side. Enter expands a group or opens a symbol's source."
     }
 }
