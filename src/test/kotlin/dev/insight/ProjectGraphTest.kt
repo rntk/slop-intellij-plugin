@@ -47,14 +47,21 @@ class ProjectGraphTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(entry.id in switched.related)
         assertFalse(entry.id in switched.owned)
 
-        val files = graph.atDetail(GraphDetail.FILE)
-        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE })
+        val files = graph.hierarchy().let { it.view(it.expansion(GraphDetail.FILE)) }
+        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE || it.kind == SymbolKind.DIRECTORY })
         val sourceNode = files.graph.nodes.single { it.name == "Source.java" }
         val targetNode = files.graph.nodes.single { it.name == "Target.java" }
         assertEquals(sourceFile.id, files.sources[sourceNode.id])
         assertEquals(1, files.graph.edges.count { it.caller == sourceNode.id && it.callee == targetNode.id })
         assertEquals(RelationKind.INHERITS, files.graph.edges.single { it.caller == sourceNode.id }.kind)
         assertTrue(targetNode.level > sourceNode.level)
+
+        // Fully collapsed, the sample package is one group that the current file depends on.
+        val top = graph.hierarchy().view(emptySet())
+        val sample = top.graph.nodes.single { it.kind == SymbolKind.DIRECTORY }
+        assertEquals("sample/", sample.name)
+        assertTrue(sample.hidden > 0)
+        assertTrue(sample.id in top.highlightFile(sourceFile.filePath).related)
     }
 
     fun `test Kotlin properties classes and nested functions are declarations`() {

@@ -8,7 +8,8 @@ import dev.insight.callgraph.LayoutMetrics
 import dev.insight.callgraph.exploreCalls
 import dev.insight.callgraph.layoutCallGraph
 import dev.insight.callgraph.highlightFile
-import dev.insight.callgraph.atDetail
+import dev.insight.callgraph.DetailGraph
+import dev.insight.callgraph.hierarchy
 import dev.insight.callgraph.GraphDetail
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
@@ -95,39 +96,111 @@ class CallGraphModelTest {
         assertTrue(layoutCallGraph(graph, LayoutMetrics(100, 20, 30, 10, 5)).boxes.isEmpty())
         assertTrue(graph.highlightFile(null).owned.isEmpty())
         assertTrue(graph.highlightFile("/missing.kt").related.isEmpty())
-        assertTrue(graph.atDetail(GraphDetail.FILE).graph.nodes.isEmpty())
     }
 
-    @Test fun `file detail collapses symbols into one node per file and merges relationships`() {
-        fun node(id: Int, kind: SymbolKind, path: String) = CallGraphNode(id, "n$id", "", "", 0, true, kind, path)
-        // a.kt: 0 file, 1 class, 2 fun · b.kt: 3 file, 4 fun · c.kt: 5 file, 6 fun
-        val graph = CallGraph(listOf(
-            node(0, SymbolKind.FILE, "/a.kt"), node(1, SymbolKind.CLASS, "/a.kt"), node(2, SymbolKind.FUNCTION, "/a.kt"),
-            node(3, SymbolKind.FILE, "/b.kt"), node(4, SymbolKind.FUNCTION, "/b.kt"),
-            node(5, SymbolKind.FILE, "/c.kt"), node(6, SymbolKind.FUNCTION, "/c.kt"),
-        ), setOf(
-            CallGraphEdge(0, 1, RelationKind.CONTAINS), CallGraphEdge(1, 2, RelationKind.CONTAINS),
-            CallGraphEdge(3, 4, RelationKind.CONTAINS), CallGraphEdge(5, 6, RelationKind.CONTAINS),
-            CallGraphEdge(0, 4, RelationKind.IMPORT), CallGraphEdge(2, 4, RelationKind.CALL),
-            CallGraphEdge(2, 1, RelationKind.REFERENCE), CallGraphEdge(4, 6, RelationKind.REFERENCE),
-            CallGraphEdge(6, 4, RelationKind.CALL),
-        ), false, projectGraph = true)
+    private fun node(id: Int, kind: SymbolKind, path: String) = CallGraphNode(id, "n$id", "", "", 0, true, kind, path)
 
-        assertEquals(graph, graph.atDetail(GraphDetail.SYMBOL).graph)
-        val files = graph.atDetail(GraphDetail.FILE)
-        assertEquals(listOf(0, 3, 5), files.sources)
-        assertEquals(listOf(0, 1, 2), files.graph.nodes.map { it.id })
-        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE })
-        assertTrue(files.graph.projectGraph)
-        // Import + call between a and b become one call edge; same-file and containment edges disappear.
-        assertEquals(setOf(CallGraphEdge(0, 1, RelationKind.CALL), CallGraphEdge(1, 2, RelationKind.REFERENCE),
-            CallGraphEdge(2, 1, RelationKind.CALL)), files.graph.edges)
-        // Users sit left of their dependencies; the b <-> c cycle does not loop forever.
-        val levels = files.graph.nodes.map { it.level }
-        assertEquals(0, levels[0])
-        assertTrue(levels[1] > levels[0])
-        val highlight = files.graph.highlightFile("/b.kt")
-        assertEquals(setOf(1), highlight.owned)
-        assertEquals(setOf(0, 2), highlight.related)
+    // src/a/A.kt: 0 file, 1 class, 2 fun · src/a/B.kt: 3 file, 4 fun · src/b/c/C.kt: 5 file, 6 fun
+    private val project = CallGraph(listOf(
+        node(0, SymbolKind.FILE, "/p/src/a/A.kt"), node(1, SymbolKind.CLASS, "/p/src/a/A.kt"), node(2, SymbolKind.FUNCTION, "/p/src/a/A.kt"),
+        node(3, SymbolKind.FILE, "/p/src/a/B.kt"), node(4, SymbolKind.FUNCTION, "/p/src/a/B.kt"),
+        node(5, SymbolKind.FILE, "/p/src/b/c/C.kt"), node(6, SymbolKind.FUNCTION, "/p/src/b/c/C.kt"),
+    ), setOf(
+        CallGraphEdge(0, 1, RelationKind.CONTAINS), CallGraphEdge(1, 2, RelationKind.CONTAINS),
+        CallGraphEdge(3, 4, RelationKind.CONTAINS), CallGraphEdge(5, 6, RelationKind.CONTAINS),
+        CallGraphEdge(0, 4, RelationKind.IMPORT), CallGraphEdge(2, 4, RelationKind.CALL),
+        CallGraphEdge(2, 1, RelationKind.REFERENCE), CallGraphEdge(4, 6, RelationKind.CALL),
+        CallGraphEdge(2, 6, RelationKind.REFERENCE), CallGraphEdge(6, 4, RelationKind.CALL),
+    ), false, projectGraph = true)
+
+    private fun DetailGraph.named(name: String) = graph.nodes.single { it.name == name }.id
+
+    @Test fun `hierarchy groups files into directories below the shared root and merges single child chains`() {
+        val tree = project.hierarchy()
+        assertEquals(listOf("a/", "b/c/"), tree.roots.map { tree.nodes[it].name })
+        assertTrue(tree.roots.all { tree.nodes[it].kind == SymbolKind.DIRECTORY })
+        val a = tree.roots[0]
+        assertEquals(listOf(0, 3), tree.children[a])
+        assertEquals(listOf(1), tree.children[0])
+        assertEquals(listOf(2), tree.children[1])
+        assertEquals("2 files", tree.nodes[a].location)
+        assertEquals(setOf(a), tree.ancestors("/p/src/a/A.kt"))
+        assertTrue(tree.ancestors("/missing.kt").isEmpty())
+    }
+
+    @Test fun `collapsed groups fold their descendants and merge relationships`() {
+        val tree = project.hierarchy()
+        val top = tree.view(emptySet())
+        assertEquals(listOf("a/", "b/c/"), top.graph.nodes.map { it.name })
+        assertTrue(top.graph.projectGraph)
+        val a = top.named("a/")
+        val c = top.named("b/c/")
+        assertEquals(5, top.graph.nodes[a].hidden)
+        assertFalse(top.graph.nodes[a].expanded)
+        // A call and a reference from a/ into b/c/ become one call edge counting both.
+        val down = CallGraphEdge(a, c, RelationKind.CALL)
+        assertEquals(setOf(down, CallGraphEdge(c, a, RelationKind.CALL)), top.graph.edges)
+        assertEquals(2, top.weights[down])
+        assertEquals(a, top.shownId(2))
+        assertEquals(tree.roots, top.sources)
+        val highlight = top.highlightFile("/p/src/b/c/C.kt")
+        assertEquals(setOf(c), highlight.owned)
+        assertEquals(setOf(a), highlight.related)
+    }
+
+    @Test fun `expanded groups stay shown and link to their members`() {
+        val tree = project.hierarchy()
+        val view = tree.view(setOf(tree.roots[0]))
+        assertEquals(listOf("a/", "n0", "n3", "b/c/"), view.graph.nodes.map { it.name })
+        val (a, fileA, fileB, c) = listOf("a/", "n0", "n3", "b/c/").map { view.named(it) }
+        assertTrue(view.graph.nodes[a].expanded)
+        assertEquals(0, view.graph.nodes[a].hidden)
+        assertEquals(2, view.graph.nodes[fileA].hidden)
+        assertEquals(0, view.sources[fileA])
+        assertEquals(setOf(
+            CallGraphEdge(a, fileA, RelationKind.CONTAINS), CallGraphEdge(a, fileB, RelationKind.CONTAINS),
+            CallGraphEdge(fileA, fileB, RelationKind.CALL), CallGraphEdge(fileB, c, RelationKind.CALL),
+            CallGraphEdge(fileA, c, RelationKind.REFERENCE), CallGraphEdge(c, fileB, RelationKind.CALL),
+        ), view.graph.edges)
+        // Users sit left of what they depend on; groups sit left of their members.
+        val levels = view.graph.nodes.map { it.level }
+        assertTrue(levels[fileA] > levels[a])
+        assertTrue(levels[fileB] > levels[fileA])
+        val all = tree.view(tree.expansion(GraphDetail.SYMBOL))
+        assertEquals(project.nodes.size + 2, all.graph.nodes.size)
+        assertTrue(all.graph.nodes.none { it.hidden > 0 })
+    }
+
+    @Test fun `detail presets choose which groups start expanded`() {
+        val tree = project.hierarchy()
+        assertEquals(tree.roots.toSet(), tree.expansion(GraphDetail.FILE))
+        assertEquals(tree.expansion(GraphDetail.SYMBOL), tree.expansion(GraphDetail.OVERVIEW))
+        // With room for four nodes the smaller group is expanded first and the larger one stays folded.
+        val c = tree.roots[1]
+        assertEquals(setOf(c, 5), tree.expansion(GraphDetail.OVERVIEW, budget = 4))
+        assertEquals(4, tree.view(tree.expansion(GraphDetail.OVERVIEW, budget = 4)).graph.nodes.size)
+        assertEquals(setOf(c, 5), tree.groupsWithin(c))
+    }
+
+    @Test fun `expanded groups are identified by stable keys across rebuilds`() {
+        val tree = project.hierarchy()
+        val expanded = setOf(tree.roots[1], 0)
+        val keys = expanded.map(tree::key)
+        val rebuilt = project.copy(edges = project.edges + CallGraphEdge(4, 2, RelationKind.CALL)).hierarchy()
+        assertEquals(expanded, rebuilt.ids(keys))
+    }
+
+    @Test fun `empty project has an empty view`() {
+        val view = CallGraph(emptyList(), emptySet(), false, projectGraph = true).hierarchy().view(emptySet())
+        assertTrue(view.graph.nodes.isEmpty())
+        assertTrue(view.highlightFile("/a.kt").owned.isEmpty())
+    }
+
+    @Test fun `layout of a long dependency chain does not overflow the stack`() {
+        val size = 100_000
+        val files = (0 until size).map { node(it, SymbolKind.FILE, "/p/f$it.kt") }
+        val chain = CallGraph(files, (1 until size).mapTo(linkedSetOf()) { CallGraphEdge(it - 1, it, RelationKind.CALL) }, false, true)
+        val view = chain.hierarchy().view(emptySet())
+        assertEquals(size - 1, view.graph.nodes.last().level)
     }
 }

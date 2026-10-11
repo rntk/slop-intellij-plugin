@@ -73,4 +73,31 @@ class CallGraphCanvasTest : LightJavaCodeInsightFixtureTestCase() {
         repeat(30) { canvas.actionMap.get("shift DOWN").actionPerformed(null) }
         assertEquals(canvas.preferredSize.height - viewport.extentSize.height, viewport.viewPosition.y)
     }
+
+    fun `test right click selects the node and shows its menu and Enter opens the selection`() {
+        var opened: Int? = null
+        var menuFor: Int? = null
+        val canvas = CallGraphCanvas({}, { opened = it }, popup = { menuFor = it; null })
+        canvas.show(CallGraph(listOf(CallGraphNode(0, "a", "", "", 0, true), CallGraphNode(1, "b", "", "", 1, true)), setOf(CallGraphEdge(0, 1)), false),
+            mapOf(CallGraphEdge(0, 1) to 12))
+        val press = MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, System.currentTimeMillis(), 0, 30, 30, 1, true, MouseEvent.BUTTON3)
+        canvas.mouseListeners.forEach { it.mousePressed(press) }
+        assertEquals(0, menuFor)
+        assertEquals(0, canvas.selected)
+        canvas.actionMap.get("open").actionPerformed(null)
+        assertEquals(0, opened)
+    }
+
+    fun `test highlighting a file keeps it, its neighbours and the selection in focus`() {
+        val canvas = CallGraphCanvas({}, {})
+        canvas.show(CallGraph((0..4).map { CallGraphNode(it, "n$it", "", "", it, true) },
+            setOf(CallGraphEdge(0, 1), CallGraphEdge(2, 3), CallGraphEdge(3, 4)), false))
+        assertNull(canvas.focus())
+        canvas.highlight(FileGraphHighlight(setOf(0), setOf(1)))
+        assertEquals(setOf(0, 1), canvas.focus())
+        canvas.select(3)
+        assertEquals(setOf(0, 1, 2, 3, 4), canvas.focus())
+        canvas.highlight(FileGraphHighlight(emptySet(), emptySet()))
+        assertNull(canvas.focus())
+    }
 }

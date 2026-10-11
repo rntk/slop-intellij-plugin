@@ -162,8 +162,8 @@ class PythonCallGraphTest : BasePlatformTestCase() {
         assertTrue(CallGraphEdge(run.id, helper.id, RelationKind.CALL) in graph.edges)
         assertTrue(CallGraphEdge(run.id, work.id, RelationKind.CALL) in graph.edges)
 
-        val files = graph.atDetail(GraphDetail.FILE)
-        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE })
+        val files = graph.hierarchy().let { it.view(it.expansion(GraphDetail.FILE)) }
+        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE || it.kind == SymbolKind.DIRECTORY })
         val childNode = files.graph.nodes.single { it.name == "child.py" }
         val baseNode = files.graph.nodes.single { it.name == "base.py" }
         assertEquals(1, files.graph.edges.count { it.caller == childNode.id && it.callee == baseNode.id })

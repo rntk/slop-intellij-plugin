@@ -5,7 +5,7 @@ enum class CallDirection(val label: String) {
     override fun toString() = label
 }
 
-enum class SymbolKind { FILE, CLASS, FUNCTION, PROPERTY, PARAMETER, VARIABLE, SYMBOL }
+enum class SymbolKind { DIRECTORY, FILE, CLASS, FUNCTION, PROPERTY, PARAMETER, VARIABLE, SYMBOL }
 enum class RelationKind { CALL, CONTAINS, IMPORT, INHERITS, REFERENCE }
 
 /** [level] is 0 for the root, negative for callers and positive for callees. */
@@ -18,6 +18,10 @@ data class CallGraphNode(
     val inProject: Boolean,
     val kind: SymbolKind = SymbolKind.FUNCTION,
     val filePath: String? = null,
+    /** Number of descendants folded into a collapsed group of a [DetailGraph]; 0 otherwise. */
+    val hidden: Int = 0,
+    /** True for an expanded group of a [DetailGraph]; its members are shown next to it. */
+    val expanded: Boolean = false,
 )
 
 data class CallGraphEdge(val caller: Int, val callee: Int, val kind: RelationKind = RelationKind.CALL)
@@ -36,54 +40,6 @@ fun CallGraph.highlightFile(path: String?): FileGraphHighlight {
         if (edge.callee in owned && edge.caller !in owned) related += edge.caller
     }
     return FileGraphHighlight(owned, related)
-}
-
-enum class GraphDetail(val label: String) {
-    FILE("Files"), SYMBOL("Symbols");
-    override fun toString() = label
-}
-
-/** [graph] node ids index [sources], the ids of the matching nodes in the graph it was derived from. */
-data class DetailGraph(val graph: CallGraph, val sources: List<Int>)
-
-/** When several relationships connect two files, the edge shows the first kind in this order. */
-private val fileRelationPriority = listOf(RelationKind.INHERITS, RelationKind.CALL, RelationKind.REFERENCE, RelationKind.IMPORT)
-
-fun CallGraph.atDetail(detail: GraphDetail): DetailGraph = when (detail) {
-    GraphDetail.SYMBOL -> DetailGraph(this, nodes.map { it.id })
-    GraphDetail.FILE -> fileGraph()
-}
-
-/**
- * Collapses symbols into their files: one node per FILE node, and one edge per pair of distinct files
- * with any relationship between their symbols. Users are placed left of the files they depend on.
- */
-private fun CallGraph.fileGraph(): DetailGraph {
-    val files = nodes.filter { it.kind == SymbolKind.FILE }
-    val indexByPath = files.withIndex().associate { (index, node) -> node.filePath to index }
-    val fileOf = nodes.associate { it.id to indexByPath[it.filePath] }
-    val merged = LinkedHashMap<Pair<Int, Int>, RelationKind>()
-    for (edge in edges) {
-        if (edge.kind == RelationKind.CONTAINS) continue
-        val from = fileOf[edge.caller] ?: continue
-        val to = fileOf[edge.callee] ?: continue
-        if (from == to) continue
-        merged.merge(from to to, edge.kind) { a, b -> minOf(a, b, compareBy(fileRelationPriority::indexOf)) }
-    }
-    // Longest chain of users above each file; edges closing a cycle are ignored.
-    val users = merged.keys.groupBy({ it.second }, { it.first })
-    val levels = IntArray(files.size) { -1 }
-    val visiting = BooleanArray(files.size)
-    fun level(file: Int): Int {
-        if (levels[file] >= 0) return levels[file]
-        visiting[file] = true
-        levels[file] = users[file].orEmpty().filterNot { visiting[it] }.maxOfOrNull { level(it) + 1 } ?: 0
-        visiting[file] = false
-        return levels[file]
-    }
-    val fileNodes = files.mapIndexed { index, node -> node.copy(id = index, level = level(index)) }
-    val fileEdges = merged.mapTo(linkedSetOf()) { (pair, kind) -> CallGraphEdge(pair.first, pair.second, kind) }
-    return DetailGraph(copy(nodes = fileNodes, edges = fileEdges), files.map { it.id })
 }
 
 data class Exploration<T>(val items: List<T>, val levels: List<Int>, val edges: Set<CallGraphEdge>, val truncated: Boolean)

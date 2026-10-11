@@ -131,8 +131,8 @@ class GoCallGraphTest : BasePlatformTestCase() {
         // Import specs resolve to the package directory; the edge goes to every file in it.
         assertTrue(CallGraphEdge(mainFile.id, utilFile.id, RelationKind.IMPORT) in graph.edges)
 
-        val files = graph.atDetail(GraphDetail.FILE)
-        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE })
+        val files = graph.hierarchy().let { it.view(it.expansion(GraphDetail.FILE)) }
+        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE || it.kind == SymbolKind.DIRECTORY })
         val mainNode = files.graph.nodes.single { it.name == "main.go" }
         val helpersNode = files.graph.nodes.single { it.name == "helpers.go" }
         val utilNode = files.graph.nodes.single { it.name == "util.go" }

@@ -9,7 +9,7 @@ data class GraphLayout(val boxes: Map<Int, Rectangle>, val size: Dimension)
 
 /**
  * Layered layout: callers to the left of the root, callees to the right, one column per level.
- * Columns are ordered by the average row of their neighbours closer to the root to reduce crossings.
+ * Columns are ordered by the average row of their neighbours closer to the root (on the same side) to reduce crossings.
  */
 fun layoutCallGraph(graph: CallGraph, metrics: LayoutMetrics): GraphLayout {
     if (graph.nodes.isEmpty()) return GraphLayout(emptyMap(), Dimension(0, 0))
@@ -26,9 +26,9 @@ fun layoutCallGraph(graph: CallGraph, metrics: LayoutMetrics): GraphLayout {
     val maxLevel = columns.keys.max()
     for (level in (-1 downTo minLevel) + (1..maxLevel)) {
         val column = columns[level] ?: continue
-        val inner = if (level < 0) level + 1 else level - 1
+        val inner = if (level < 0) level + 1..0 else 0 until level
         val rank = column.associateWith { id ->
-            neighbours[id].orEmpty().filter { levelOf[it] == inner }.mapNotNull { row[it] }.average().takeUnless { it.isNaN() }
+            neighbours[id].orEmpty().filter { levelOf.getValue(it) in inner }.mapNotNull { row[it] }.average().takeUnless { it.isNaN() }
                 ?: Double.MAX_VALUE
         }
         column.sortBy { rank.getValue(it) }

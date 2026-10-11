@@ -118,8 +118,8 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
             boxConstructor.id, RelationKind.CALL) in graph.edges)
         assertTrue(CallGraphEdge(arrow.id, leaf.id, RelationKind.CALL) in graph.edges)
 
-        val files = graph.atDetail(GraphDetail.FILE)
-        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE })
+        val files = graph.hierarchy().let { it.view(it.expansion(GraphDetail.FILE)) }
+        assertTrue(files.graph.nodes.all { it.kind == SymbolKind.FILE || it.kind == SymbolKind.DIRECTORY })
         val mainNode = files.graph.nodes.single { it.name == "main.$extension" }
         val libNode = files.graph.nodes.single { it.name == "lib.$extension" }
         assertEquals(1, files.graph.edges.count { it.caller == mainNode.id && it.callee == libNode.id })
@@ -178,7 +178,7 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
         val use = node("use", SymbolKind.FUNCTION)
         assertTrue(CallGraphEdge(bRun.id, m.id, RelationKind.CALL) in graph.edges)
         assertTrue(CallGraphEdge(use.id, run.single { it.filePath == baseFile.filePath }.id, RelationKind.CALL) in graph.edges)
-        val files = graph.atDetail(GraphDetail.FILE)
+        val files = graph.hierarchy().let { it.view(it.expansion(GraphDetail.FILE)) }
         val derivedNode = files.graph.nodes.single { it.name == "derived.ts" }
         val baseNode = files.graph.nodes.single { it.name == "base.ts" }
         assertEquals(1, files.graph.edges.count { it.caller == derivedNode.id && it.callee == baseNode.id })
