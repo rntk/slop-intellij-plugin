@@ -12,7 +12,7 @@ Requires JDK 21. Open this directory as a Gradle project in IntelliJ IDEA and us
 
 In the development IDE, open a project, then select **Insight Chat** on the right tool window bar. Click **Open dashboard**, or use **Tools → Open Insight Dashboard**. The dashboard opens as a normal editor tab alongside your code. You can expand the work area using IntelliJ's existing **Distraction Free Mode** or **Full Screen** actions.
 
-The sidebar supports multiline messages, Ctrl+Enter / Cmd+Enter to send, and **New chat**. The dashboard includes a 7/14-day activity chart, coverage bars, a module relationship graph, and a selectable module list. All values and assistant responses are explicitly demo content.
+The sidebar supports multiline messages, Ctrl+Enter / Cmd+Enter to send, **Stop**, and **New chat**. Without a configured LLM server, assistant responses are demo content; see **LLM chat (llama.cpp)** to connect one. The dashboard includes a 7/14-day activity chart, coverage bars, a module relationship graph, and a selectable module list. All dashboard values are explicitly demo content.
 
 ## Build and check
 
@@ -169,17 +169,101 @@ Other SDK options evaluated:
 - **Kotlin Analysis API** (`analyze { … }`): exact K2 resolution, including implicit invokes and property accessors. Use it if the Kotlin PSI reference approach proves insufficient.
 - **Diagrams API** (`com.intellij.diagram`): ships only with IntelliJ IDEA Ultimate. The build now compiles against Ultimate, but using it would make the plugin unusable in Community and the other IDEs.
 
+## LLM chat (llama.cpp)
+
+The chat answers with an LLM when a server is configured in **Settings → Tools → Insight Chat** (or **LLM settings** in the sidebar). Without a server URL it keeps the local demo responses. Start a llama.cpp server with tool calling enabled, then enter its URL, for example `http://127.0.0.1:8080`:
+
+```sh
+llama-server -m model.gguf --jinja --port 8080
+```
+
+`--jinja` enables the chat template needed for tool calls. Any OpenAI-compatible `/v1/chat/completions` server also works. The model name is optional (llama-server uses its loaded model). An optional API key (`llama-server --api-key`) is stored in the IDE password safe and is sent only over HTTPS or to localhost.
+
+Each question runs a tool loop, like the browser example in `llm_example/`: the model can call read-only project tools, the plugin runs them and sends the results back, and this repeats until the model answers in text. The sidebar shows each tool call as it happens, and **Stop** cancels the turn, including the in-flight HTTP request.
+
+- `list_files`: project content files, optionally under a directory or matching a name glob.
+- `read_file`: a numbered line range of a text file (at most 400 lines per call), including unsaved editor changes.
+- `search_text`: case-insensitive plain-text search, returning `path:line: text`.
+
+The tools only see project content (sources, tests, resources); excluded folders, paths with `..`, and files outside the project are rejected. Invalid arguments, unknown tools, and tool failures are returned to the model as errors so it can correct itself. After 12 rounds of tool calls, a final request disables new calls (`tool_choice: "none"`) so the model must answer. Each tool result is capped at 16,000 characters. Up to 20 earlier user and assistant messages (24,000 characters) are replayed; tool output from earlier turns is not.
+
+**Privacy:** file contents the model asks for are sent to the configured server. Use a local llama.cpp server to keep source on your machine.
+
+Code layout:
+
+- `llm/LlamaCppClient.kt`: coroutine client for `/v1/chat/completions` with function tools. It accepts a host, a `/v1` base, or a full endpoint URL. It sends `cache_prompt` so llama.cpp reuses the KV cache for the unchanged prompt prefix. It retries 408, 429, and 5xx responses (llama-server returns 503 while loading a model) with exponential backoff, honouring `Retry-After` up to 60 seconds. Other HTTP failures throw `LlmApiException` with the server's response body. Unusable responses throw `LlmProtocolException`. Truncated replies are returned with `FinishReason.TRUNCATED`. Cancellation cancels the HTTP request.
+- `llm/LlmModels.kt`, `llm/LlmJson.kt`: provider-neutral messages, tools, and results, and the wire format. Responses tolerate server quirks: tool arguments as JSON strings or objects, `call_id`, `<think>` tags, and `reasoning_content`. Reasoning is replayed on tool-call follow-ups. Usage includes llama.cpp `timings` (cached and evaluated prompt tokens).
+- `chat/ToolChat.kt`: `ChatTool`, `ToolChatRunner` (the tool loop), and history compaction. The runner takes any `suspend (CompletionRequest) -> Completion` function, so it can be tested without a server.
+- `chat/ProjectTools.kt`: the project tools. Add a tool by implementing `ChatTool` and adding it to `projectTools`.
+- `chat/LlmChatBackend.kt`: system prompt, request assembly, and user-facing error messages.
+- `chat/ChatSettings.kt`: application settings and the settings page.
+
+```kotlin
+val client = LlamaCppClient("http://127.0.0.1:8080")
+// From a coroutine owned by the feature's service:
+val result = ToolChatRunner(client::complete, projectTools(project))
+    .run(listOf(LlmMessage.system("You help with this project."), LlmMessage.user("Where is main defined?")))
+println(result.reply)
+```
+
+Tests use a local HTTP server and a scripted fake model (`LlamaCppClientTest`, `ToolChatRunnerTest`) and a light project fixture (`ProjectToolsTest`); they need no LLM server.
+
+## Decisions API client
+
+`dev.insight.decisions.DecisionsClient` is a standalone, coroutine-based client for
+the [TypeSafe System One HTTP API](https://docs.typesafe.ai/api), referenced by
+`jev.md`. Future plugin features can share a client and call `evaluate` with a
+`DecisionRequest`. It supports Noul, Choice, and Score questions in one request,
+with answers returned under the supplied question IDs and token usage included.
+
+```kotlin
+import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionQuestion
+import dev.insight.decisions.DecisionRequest
+import dev.insight.decisions.DecisionsClient
+
+// Obtain apiKey from the feature's credential provider.
+val client = DecisionsClient(apiKey)
+// Call from a coroutine owned by the feature's service.
+val response = client.evaluate(DecisionRequest(
+    state = "Help! My payouts have been failing for 3 days.",
+    questions = mapOf("urgent" to DecisionQuestion.Noul("Does this convey urgency?")),
+))
+val urgency = (response.answers.getValue("urgent") as DecisionAnswer.Noul).noul
+```
+
+The default model is `jev-latest`; each request can override it. For structured
+state, instructions, and criteria, supply Gson `JsonElement` values. Choice
+criteria are maps of option names to descriptions (or null), and Score criteria
+are ordered lists of level descriptions. Invalid requests fail before network
+access; malformed or mismatched responses throw `DecisionProtocolException`.
+
+Calls suspend without blocking the UI thread, and coroutine cancellation cancels
+the HTTP request or retry wait. Defaults are a 10-second connection timeout,
+60-second timeout per attempt, and at most two retries for HTTP 429/529, with
+exponential backoff or `Retry-After` (capped at 60 seconds). Constructor options
+allow a different endpoint, request timeout, retry count, or caller-owned HTTP
+transport with redirects disabled. Other HTTP failures throw
+`DecisionApiException`, exposing the status, response body, and `Retry-After`;
+network errors and timeouts propagate as Java IO exceptions. Exception messages
+omit the API response body; inspect it explicitly when handling validation errors.
+
+This module does not register a service or store credentials. Features should
+provide credentials and own their coroutine lifetimes when integrating it.
+Tests use a local HTTP server and require no API key or paid API calls.
+
 ## Extend
 
-- `chat/ChatBackend.kt`: provider interface and local demo implementation. Inject your real backend in `ChatService`; backend calls already run on IO, with updates on the EDT. Add streaming, cancellation, authentication, and provider configuration here as needed.
-- `chat/ChatService.kt`: per-project conversation shared by sidebar views. History is kept in memory for the project session. Listeners are detached when content is disposed; the platform cancels the service coroutine scope when the project closes.
+- `chat/ChatBackend.kt`: backend interface and local demo implementation. `ChatService` picks `LlmChatBackend` or the demo from the settings on each question; backend calls run on IO, with updates on the EDT. Streaming is not implemented yet.
+- `chat/ChatService.kt`: per-project conversation shared by sidebar views, including tool-call events and notices (shown, never sent to the model). History is kept in memory for the project session; **Stop** cancels the running turn. Listeners are detached when content is disposed; the platform cancels the service coroutine scope when the project closes.
 - `dashboard/DashboardEditor.kt`: custom editor provider and project-scoped virtual file. Opening the dashboard repeatedly reuses the same tab.
 - `dashboard/DashboardPanel.kt`: dashboard layout and interactions.
 - `dashboard/Charts.kt`: theme-aware Java2D renderers; add new views or replace them with a chart library as the visualization requirements become clearer.
 - `dashboard/DemoData.kt`: replace this sample source with an analysis service that collects data in background tasks and publishes immutable snapshots to the UI.
-- `META-INF/plugin.xml`: tool window, editor provider, and action registration.
+- `llm/`, `chat/ToolChat.kt`, `chat/ProjectTools.kt`: LLM client, tool loop, and project tools (see **LLM chat (llama.cpp)** above).
+- `META-INF/plugin.xml`: tool window, settings page, editor provider, and action registration.
 - `callgraph/`: call graph action, analysis, layout, and editor tab (see **Call graph** above).
 
-The call graph reads project source locally through the IDE PSI and indexes; no project source is transmitted. A real model integration is future implementation work. This scaffold targets a local IDE; remote development/split mode needs separate design and validation.
+The call graph reads project source locally through the IDE PSI and indexes; no project source is transmitted. The chat sends questions, recent conversation, and the file contents its tools return to the configured LLM server only. This scaffold targets a local IDE; remote development/split mode needs separate design and validation.
 
 JetBrains references: [quick start](https://plugins.jetbrains.com/docs/intellij/plugins-quick-start.html), [tool windows](https://plugins.jetbrains.com/docs/intellij/tool-windows.html), [Gradle platform plugin](https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html), and [Kotlin support](https://plugins.jetbrains.com/docs/intellij/using-kotlin.html).

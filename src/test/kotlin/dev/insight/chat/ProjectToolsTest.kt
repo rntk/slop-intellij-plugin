@@ -1,0 +1,63 @@
+package dev.insight.chat
+
+import com.google.gson.JsonParser
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import kotlinx.coroutines.runBlocking
+
+class ProjectToolsTest : BasePlatformTestCase() {
+    private fun call(name: String, arguments: String): String = runBlocking {
+        projectTools(project).single { it.definition.name == name }.call(JsonParser.parseString(arguments).asJsonObject)
+    }
+
+    private fun invalid(name: String, arguments: String): String =
+        org.junit.Assert.assertThrows(ToolInputException::class.java) { call(name, arguments) }.message!!
+
+    override fun setUp() {
+        super.setUp()
+        myFixture.addFileToProject("app/Main.kt", "fun main() {\n    greet(\"World\")\n}\n")
+        myFixture.addFileToProject("app/Greeter.kt", "fun greet(name: String) = println(\"Hello, \$name\")\n")
+        myFixture.addFileToProject("docs/notes.md", "Greeting conventions\n")
+    }
+
+    fun `test tool definitions are valid function schemas`() {
+        val tools = projectTools(project)
+        assertEquals(listOf("list_files", "read_file", "search_text"), tools.map { it.definition.name })
+        tools.forEach { assertEquals("object", it.definition.parameters["type"].asString) }
+    }
+
+    fun `test list files returns project relative paths with filters and limits`() {
+        assertEquals("app/Greeter.kt\napp/Main.kt\ndocs/notes.md", call("list_files", "{}"))
+        assertEquals("app/Greeter.kt\napp/Main.kt", call("list_files", """{"directory":"app"}"""))
+        assertEquals("docs/notes.md", call("list_files", """{"glob":"*.md"}"""))
+        assertEquals("app/Greeter.kt\n[2 more files not shown.]", call("list_files", """{"max_results":"1"}"""))
+        assertEquals("No matching files.", call("list_files", """{"glob":"*.java"}"""))
+        assertTrue(invalid("list_files", """{"directory":"app/Main.kt"}""").contains("not a directory"))
+    }
+
+    fun `test read file returns numbered line ranges`() {
+        assertEquals(
+            "app/Main.kt (lines 1-4 of 4)\n1| fun main() {\n2|     greet(\"World\")\n3| }\n4| ",
+            call("read_file", """{"path":"app/Main.kt"}"""),
+        )
+        assertEquals("app/Main.kt (lines 2-2 of 4)\n2|     greet(\"World\")", call("read_file", """{"path":"./app/Main.kt","start_line":2,"end_line":2}"""))
+        assertTrue(invalid("read_file", """{"path":"app/Main.kt","start_line":9}""").contains("only 4 lines"))
+        assertTrue(invalid("read_file", """{"path":"app"}""").contains("directory"))
+        assertTrue(invalid("read_file", "{}").contains("path is required"))
+        assertTrue(invalid("read_file", """{"path":"app/Main.kt","start_line":"two"}""").contains("integer"))
+    }
+
+    fun `test paths outside the project are rejected`() {
+        assertTrue(invalid("read_file", """{"path":"app/../../etc/passwd"}""").contains(".."))
+        assertTrue(invalid("read_file", """{"path":"missing.kt"}""").contains("No project file"))
+    }
+
+    fun `test search text finds case insensitive matches`() {
+        assertEquals(
+            "app/Greeter.kt:1: fun greet(name: String) = println(\"Hello, \$name\")\napp/Main.kt:2: greet(\"World\")\ndocs/notes.md:1: Greeting conventions",
+            call("search_text", """{"query":"GREET"}"""),
+        )
+        assertEquals("app/Main.kt:2: greet(\"World\")", call("search_text", """{"query":"world","glob":"*.kt"}"""))
+        assertTrue(call("search_text", """{"query":"greet","max_results":1}""").endsWith("[More matches not shown; narrow the search.]"))
+        assertEquals("No matches for 'absent'.", call("search_text", """{"query":"absent"}"""))
+    }
+}

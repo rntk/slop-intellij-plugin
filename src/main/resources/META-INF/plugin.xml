@@ -4,7 +4,9 @@
     <vendor>Insight Workbench</vendor>
     <description><![CDATA[
         A Kotlin workbench with a project chat sidebar and an editor-area visualization dashboard.
-        This initial version uses local demo responses and explicitly labeled sample data.
+        The chat answers with a llama.cpp (or other OpenAI-compatible) server configured in Settings → Tools → Insight Chat,
+        using read-only tools to list, search, and read project files; without a server it uses local demo responses.
+        The dashboard shows explicitly labeled sample data.
         <br/>Application Graph shows Java, Kotlin, Python, Go, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
         <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
     ]]></description>
@@ -26,6 +28,8 @@
                     factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
         <toolWindow id="Insight Chat" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
+        <applicationConfigurable parentId="tools" id="dev.insight.chat" displayName="Insight Chat"
+                                 instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
     </extensions>
