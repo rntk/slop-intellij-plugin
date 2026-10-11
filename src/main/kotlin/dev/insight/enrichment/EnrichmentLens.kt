@@ -65,7 +65,7 @@ object EnrichmentLens {
     private val ramp = listOf(
         0xDCE9F5 to 0x2B3A4A, 0xA9C9E6 to 0x34557A, 0x6FA3D2 to 0x4A78AA, 0x3B7BBF to 0x6EA0D6, 0x1A4F8F to 0xA6CBF2,
     ).map { (light, dark) -> JBColor(Color(light), Color(dark)) }
-    private val importanceNames = listOf("Trivial", "Minor", "Supporting", "Important", "Core")
+    internal val importanceNames = listOf("Trivial", "Minor", "Supporting", "Important", "Core")
 
     /**
      * Ids in `graph` (the current build's [CallGraph], whose ids equal [dev.insight.callgraph.GraphHierarchy] ids for
@@ -224,7 +224,7 @@ object EnrichmentLens {
     ).joinToString(" · ").ifEmpty { null }
 
     /** Colour value of each annotated symbol under one [ColorBy], with its legend order. */
-    private class Colouring(private val by: ColorBy, domains: List<Domain>) {
+    internal class Colouring(private val by: ColorBy, domains: List<Domain>) {
         private val domainIds = domains.map { it.id }
         private val domainNames = domains.associate { it.id to it.name }
         private val layers = Questions.layers.keys.toList()
@@ -293,7 +293,7 @@ object EnrichmentLens {
     }
 
     /** Maps absolute node paths to the project-relative paths that [GroupLabel]s are keyed by, using the snapshot's facts. */
-    private class RelativePaths(snapshot: EnrichmentSnapshot) {
+    internal class RelativePaths(snapshot: EnrichmentSnapshot) {
         private val prefixes = snapshot.input.facts.values.mapNotNull { facts ->
             val absolute = snapshot.graph.nodes.getOrNull(facts.id)?.filePath ?: return@mapNotNull null
             val relative = facts.path ?: return@mapNotNull null

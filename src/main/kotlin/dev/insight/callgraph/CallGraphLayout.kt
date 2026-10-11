@@ -5,7 +5,8 @@ import java.awt.Rectangle
 
 data class LayoutMetrics(val nodeWidth: Int, val nodeHeight: Int, val columnGap: Int, val rowGap: Int, val margin: Int)
 
-data class GraphLayout(val boxes: Map<Int, Rectangle>, val size: Dimension)
+/** [sections] is set by [layoutSections] only. */
+data class GraphLayout(val boxes: Map<Int, Rectangle>, val size: Dimension, val sections: SectionFrames? = null)
 
 /**
  * Layered layout: callers to the left of the root, callees to the right, one column per level.

@@ -67,6 +67,7 @@ class CallGraphCanvas(
     private var layout: GraphLayout? = null
     private var highlight = FileGraphHighlight(emptySet(), emptySet())
     private var decorations = GraphDecorations.NONE
+    private var sections: GraphSections? = null
     private var scale = 1.0
     var zoom: Double
         get() = scale
@@ -130,8 +131,9 @@ class CallGraphCanvas(
     }
 
     fun revealFile() {
-        val id = graph?.nodes?.firstOrNull { it.id in highlight.owned && it.kind == SymbolKind.FILE }?.id
-            ?: highlight.owned.firstOrNull()
+        val boxes = layout?.boxes.orEmpty()
+        val id = graph?.nodes?.firstOrNull { it.id in highlight.owned && it.kind == SymbolKind.FILE && it.id in boxes }?.id
+            ?: highlight.owned.firstOrNull { it in boxes }
         reveal(id ?: return)
     }
 
@@ -208,12 +210,26 @@ class CallGraphCanvas(
         }
     }
 
-    /** Edges with a [weights] entry above 1 stand for several merged relationships and are drawn thicker. */
-    fun show(graph: CallGraph?, weights: Map<CallGraphEdge, Int> = emptyMap()) {
+    /**
+     * Edges with a [weights] entry above 1 stand for several merged relationships and are drawn thicker. With
+     * [sections], nodes are arranged in titled columns instead of the free layered layout.
+     */
+    fun show(graph: CallGraph?, weights: Map<CallGraphEdge, Int> = emptyMap(), sections: GraphSections? = null) {
         this.graph = graph
         this.weights = weights
+        this.sections = sections
         layout = graph?.let {
-            layoutCallGraph(it, LayoutMetrics(
+            if (sections != null) layoutSections(it, sections, SectionMetrics(
+                nodeWidth = JBUI.scale(210),
+                nodeHeight = JBUI.scale(46),
+                columnGap = JBUI.scale(70),
+                rowGap = JBUI.scale(18),
+                padding = JBUI.scale(36),
+                sectionGap = JBUI.scale(10),
+                margin = JBUI.scale(20),
+                maxRows = 12,
+            ), sectionText)
+            else layoutCallGraph(it, LayoutMetrics(
                 nodeWidth = JBUI.scale(220),
                 nodeHeight = JBUI.scale(46),
                 columnGap = JBUI.scale(180),
@@ -249,7 +265,7 @@ class CallGraphCanvas(
     override fun getPreferredSize(): Dimension = layout?.size?.let { Dimension((it.width * zoom).toInt(), (it.height * zoom).toInt()) } ?: Dimension(0, 0)
 
     override fun getToolTipText(event: MouseEvent): String? {
-        val node = nodeAt(event.point)?.let { graph?.nodes?.get(it) } ?: return null
+        val node = nodeAt(event.point)?.let { graph?.nodes?.get(it) } ?: return sectionTooltip(event.point)
         val lines = listOf("<b>${StringUtil.escapeXmlEntities(node.name)}</b>", StringUtil.escapeXmlEntities(node.container), StringUtil.escapeXmlEntities(node.location),
             node.kind.name.lowercase(),
             if (node.inProject) "" else "Library code") +
@@ -270,7 +286,11 @@ class CallGraphCanvas(
             val muted = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, MUTED_ALPHA)
             val faint = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, FAINT_ALPHA)
             val focus = focus()
-            val edges = if (decorations.hiddenEdges.isEmpty()) graph.edges else graph.edges.filter { it !in decorations.hiddenEdges }
+            val frames = layout?.sections
+            val sections = sections
+            if (frames != null && sections != null) drawSections(canvas, sections, frames)
+            // In sections, nodes without a section (such as expanded files) have no box and their edges are skipped.
+            val edges = graph.edges.filter { it !in decorations.hiddenEdges && it.caller in boxes && it.callee in boxes }
             // Muted edges first, so highlighted ones are drawn on top of them.
             for (edge in edges.sortedBy { edgeRank(it, focus) }) {
                 val highlighted = isHighlighted(edge)
@@ -304,7 +324,7 @@ class CallGraphCanvas(
             // Step markers and stacked cards reach slightly outside the box.
             val reach = JBUI.scale(8)
             for (node in graph.nodes) {
-                val box = boxes.getValue(node.id)
+                val box = boxes[node.id] ?: continue
                 if (clip != null && !clip.intersects(Rectangle(box).apply { grow(reach, reach) })) continue
                 canvas.composite = when {
                     nodeMuted(node.id, focus) -> muted
@@ -533,6 +553,191 @@ class CallGraphCanvas(
             g.drawString(entry.label, x + padding + swatch + JBUI.scale(6), top + (row - metrics.height) / 2 + metrics.ascent)
         }
     }
+
+    private val bannerFont get() = font.deriveFont(Font.BOLD, font.size2D + 8f)
+    private val titleFont get() = font.deriveFont(Font.BOLD, font.size2D + 1f)
+    private val boldFont get() = font.deriveFont(Font.BOLD)
+    private val smallFont get() = font.deriveFont(font.size2D - 1f)
+    private val textPadding get() = JBUI.scale(10)
+
+    /** Annotation of a section: bold headline running into the plain description. */
+    private fun annotationRuns(section: Section) = listOfNotNull(section.headline?.let { TextRun(it, boldFont) },
+        section.description?.let { TextRun(it, font) })
+
+    private fun factRuns(section: Section) = listOf(TextRun(section.facts.joinToString(" · "), smallFont)).takeIf { section.facts.isNotEmpty() }
+
+    private fun itemRuns(item: FooterItem) = listOfNotNull(TextRun(item.headline, boldFont), item.text?.let { TextRun(it, font) })
+
+    private fun footerColumns(footer: SectionFooter) = footer.items.size.coerceIn(1, 4)
+
+    private fun footerColumnWidth(footer: SectionFooter, width: Int): Int {
+        val columns = footerColumns(footer)
+        return (width - 2 * textPadding - (columns - 1) * 2 * textPadding) / columns
+    }
+
+    private fun lineHeight(font: Font) = getFontMetrics(font).height
+
+    private val sectionText = object : SectionText {
+        override fun banner(sections: GraphSections, width: Int): Int = 2 * textPadding + lineHeight(bannerFont) +
+            (sections.subtitle?.let { wrap(listOf(TextRun(it, font)), width - 2 * textPadding).size * lineHeight(font) } ?: 0)
+
+        override fun title(): Int = lineHeight(titleFont) + 2 * textPadding
+
+        override fun annotation(section: Section, width: Int): Int {
+            val text = wrap(annotationRuns(section), width).size * lineHeight(font)
+            val facts = factRuns(section)?.let { wrap(it, width).size * lineHeight(smallFont) + textPadding / 2 } ?: 0
+            return if (text + facts == 0) 0 else text + facts + 2 * textPadding
+        }
+
+        override fun footer(footer: SectionFooter, width: Int): Int {
+            val itemWidth = footerColumnWidth(footer, width)
+            val rows = footer.items.chunked(footerColumns(footer)).sumOf { row -> row.maxOf { wrap(itemRuns(it), itemWidth).size } }
+            return 3 * textPadding + lineHeight(boldFont) + rows * lineHeight(font) + (footer.items.size - 1) / footerColumns(footer) * textPadding
+        }
+    }
+
+    /** Banner, section columns with title bands and annotations, and the footer, painted below edges and nodes. */
+    private fun drawSections(g: Graphics2D, sections: GraphSections, frames: SectionFrames) {
+        val clip = g.clipBounds
+        val banner = frames.banner
+        if (clip == null || clip.intersects(banner)) {
+            g.color = accent
+            g.fillRect(banner.x, banner.y, banner.width, banner.height)
+            g.color = stepText
+            g.font = bannerFont
+            var y = banner.y + textPadding
+            drawCentered(g, fit(sections.title, g.fontMetrics, banner.width - 2 * textPadding), banner.x, banner.width, y)
+            y += g.fontMetrics.height
+            sections.subtitle?.let { drawLines(g, wrap(listOf(TextRun(it, font)), banner.width - 2 * textPadding), banner.x, banner.width, y, center = true) }
+        }
+        for ((index, column) in frames.columns.withIndex()) {
+            if (clip != null && !clip.intersects(column)) continue
+            val section = sections.sections.getOrNull(index) ?: continue
+            val tint = section.color
+            g.color = tint?.let { ColorUtil.withAlpha(it, 0.10) } ?: ColorUtil.withAlpha(JBColor.foreground(), if (index % 2 == 0) 0.035 else 0.06)
+            g.fillRect(column.x, column.y, column.width, column.height)
+            g.color = tint?.let { ColorUtil.withAlpha(it, 0.35) } ?: ColorUtil.withAlpha(JBColor.foreground(), 0.10)
+            g.fillRect(column.x, column.y, column.width, frames.titleHeight)
+            g.color = JBColor.foreground()
+            g.font = titleFont
+            drawCentered(g, fit(section.title, g.fontMetrics, column.width - 2 * textPadding), column.x, column.width, column.y + textPadding)
+            val width = column.width - JBUI.scale(36)
+            var y = column.y + frames.titleHeight + textPadding
+            val annotation = wrap(annotationRuns(section), width)
+            y = drawLines(g, annotation, column.x, column.width, y, center = true)
+            factRuns(section)?.let {
+                g.color = UIUtil.getContextHelpForeground()
+                drawLines(g, wrap(it, width), column.x, column.width, y + textPadding / 2, center = true)
+            }
+        }
+        val footer = frames.footer ?: return
+        val content = sections.footer ?: return
+        if (clip != null && !clip.intersects(footer)) return
+        g.color = ColorUtil.withAlpha(JBColor.foreground(), 0.06)
+        g.fillRect(footer.x, footer.y, footer.width, footer.height)
+        g.font = boldFont
+        val metrics = g.fontMetrics
+        var y = footer.y + textPadding
+        val titleWidth = metrics.stringWidth(content.title)
+        g.color = JBColor.foreground()
+        drawCentered(g, content.title, footer.x, footer.width, y)
+        // Arrows on both sides of the title, as the footer applies across all sections.
+        val middle = y + metrics.height / 2.0
+        val gap = JBUI.scale(16)
+        val left = footer.x + textPadding.toDouble()
+        val right = footer.maxX - textPadding
+        val titleLeft = footer.centerX - titleWidth / 2.0 - gap
+        val titleRight = footer.centerX + titleWidth / 2.0 + gap
+        g.stroke = BasicStroke(1f)
+        if (titleLeft - left > gap) {
+            g.draw(java.awt.geom.Line2D.Double(left, middle, titleLeft, middle))
+            g.draw(java.awt.geom.Line2D.Double(titleRight, middle, right, middle))
+            arrowHead(g, Point2D.Double(left + gap, middle), Point2D.Double(left, middle))
+            arrowHead(g, Point2D.Double(right - gap, middle), Point2D.Double(right, middle))
+        }
+        y += metrics.height + textPadding
+        val columns = footerColumns(content)
+        val itemWidth = footerColumnWidth(content, footer.width)
+        for (row in content.items.chunked(columns)) {
+            var bottom = y
+            for ((index, item) in row.withIndex()) {
+                g.color = JBColor.foreground()
+                val x = footer.x + textPadding + index * (itemWidth + 2 * textPadding)
+                bottom = max(bottom, drawLines(g, wrap(itemRuns(item), itemWidth), x, itemWidth, y, center = false))
+            }
+            y = bottom + textPadding
+        }
+    }
+
+    private fun drawCentered(g: Graphics2D, text: String, x: Int, width: Int, top: Int) {
+        val metrics = g.fontMetrics
+        g.drawString(text, x + (width - metrics.stringWidth(text)) / 2, top + metrics.ascent)
+    }
+
+    /** Draws wrapped lines from [top], centred in or left-aligned at [x]; returns the bottom of the last line. */
+    private fun drawLines(g: Graphics2D, lines: List<List<TextRun>>, x: Int, width: Int, top: Int, center: Boolean): Int {
+        var y = top
+        for (line in lines) {
+            // Words of one font are drawn as one string, so spacing follows the font's own metrics.
+            val segments = mutableListOf<TextRun>()
+            for (word in line) {
+                val last = segments.lastOrNull()
+                if (last != null && last.font == word.font) segments[segments.lastIndex] = TextRun("${last.text} ${word.text}", word.font)
+                else segments += word
+            }
+            val widths = segments.mapIndexed { index, segment ->
+                val metrics = g.getFontMetrics(segment.font)
+                metrics.stringWidth(segment.text) + if (index > 0) metrics.charWidth(' ') else 0
+            }
+            var left = if (center) x + (width - widths.sum()) / 2 else x
+            for ((index, segment) in segments.withIndex()) {
+                val metrics = g.getFontMetrics(segment.font)
+                if (index > 0) left += metrics.charWidth(' ')
+                g.font = segment.font
+                g.drawString(segment.text, left, y + metrics.ascent)
+                left += metrics.stringWidth(segment.text)
+            }
+            y += line.maxOf { lineHeight(it.font) }
+        }
+        return y
+    }
+
+    /** Greedy word wrap of mixed-font text into lines of single words; a word wider than [width] gets its own line. */
+    private fun wrap(runs: List<TextRun>, width: Int): List<List<TextRun>> {
+        val lines = mutableListOf<MutableList<TextRun>>()
+        var current = mutableListOf<TextRun>()
+        var used = 0
+        for (run in runs) {
+            val metrics = getFontMetrics(run.font)
+            for (word in run.text.split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+                val wordWidth = metrics.stringWidth(word)
+                val needed = if (current.isEmpty()) wordWidth else used + metrics.charWidth(' ') + wordWidth
+                if (current.isNotEmpty() && needed > width) {
+                    lines += current
+                    current = mutableListOf()
+                    used = wordWidth
+                } else used = needed
+                current += TextRun(word, run.font)
+            }
+        }
+        if (current.isNotEmpty()) lines += current
+        return lines
+    }
+
+    private fun sectionTooltip(point: Point): String? {
+        val frames = layout?.sections ?: return null
+        val sections = sections ?: return null
+        val x = point.x / zoom
+        val y = point.y / zoom
+        val index = frames.columns.indexOfFirst { it.contains(x, y) && y < it.y + frames.titleHeight + frames.annotationHeight }
+        val section = sections.sections.getOrNull(index) ?: return null
+        val lines = listOf("<b>${StringUtil.escapeXmlEntities(section.title)}</b>") +
+            listOfNotNull(section.headline, section.description, section.facts.joinToString(" · ").ifEmpty { null }).map(StringUtil::escapeXmlEntities) +
+            section.tooltip?.lines().orEmpty().filter { it.isNotBlank() }.map(StringUtil::escapeXmlEntities)
+        return lines.joinToString("<br>", "<html>", "</html>")
+    }
+
+    private class TextRun(val text: String, val font: Font)
 
     private fun fit(text: String, metrics: FontMetrics, width: Int): String {
         if (metrics.stringWidth(text) <= width) return text

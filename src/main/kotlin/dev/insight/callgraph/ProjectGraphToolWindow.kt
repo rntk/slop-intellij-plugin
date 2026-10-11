@@ -11,6 +11,8 @@ import dev.insight.enrichment.EnrichmentLens
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.enrichment.Flow
 import dev.insight.enrichment.LensOptions
+import dev.insight.enrichment.SectionBy
+import dev.insight.enrichment.SectionLens
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -50,6 +52,20 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private var expandedKeys: Set<String>? = null
     private var view: DetailGraph? = null
     private val detail = JComboBox(GraphDetail.entries.toTypedArray()).apply { selectedItem = GraphDetail.OVERVIEW }
+    private val viewChoice = JComboBox(GraphView.entries.toTypedArray()).apply {
+        selectedItem = GraphView.GRAPH
+        toolTipText = "Graph: free layered layout · Sections: titled columns grouped by file, folder or enrichment judgment"
+    }
+    private val sectionBy = JComboBox(SectionBy.entries.toTypedArray()).apply {
+        selectedItem = SectionBy.FILE
+        isEnabled = false
+        renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(list: JList<*>?, value: Any?, index: Int, selected: Boolean, focused: Boolean): Component =
+                super.getListCellRendererComponent(list, value, index, selected, focused).also {
+                    if (index >= 0 && (value as? SectionBy)?.enriched == true && enrichment.latest == null) text = "$value (needs Enrich)"
+                }
+        }
+    }
     private var job: Job? = null
     private var disposed = false
     private val status = JLabel("Building application graph…")
@@ -112,6 +128,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
                 add(JLabel("Double-click or Enter: expand/collapse a group (+N), open a symbol · right-click for more · drag/arrows to pan · scroll to zoom"))
                 add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
                 add(JLabel("Stripe: colour-by · ▶ entry point · numbered: flow step · red dashed: error path"))
+                add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
             }, BorderLayout.CENTER)
         }, BorderLayout.SOUTH)
         project.messageBus.connect(this).apply {
@@ -128,6 +145,15 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private fun toolbar() = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
         add(JLabel("Detail:"))
         add(detail.apply { addActionListener { resetDetail() } })
+        add(JLabel("View:"))
+        add(viewChoice.apply {
+            addActionListener {
+                sectionBy.isEnabled = selectedItem == GraphView.SECTIONS
+                rerender()
+            }
+        })
+        add(JLabel("by"))
+        add(sectionBy.apply { addActionListener { rerender() } })
         add(JButton("Refresh").apply { addActionListener { rebuild() } })
         add(JButton("Current file").apply { addActionListener { showCurrentFile() } })
         add(enrichButton.apply {
@@ -252,7 +278,10 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         val excluded = snapshot?.let { lens(emptySet()) { EnrichmentLens.hiddenSymbols(it, tree.graph, options) } }.orEmpty()
         val shown = tree.view(expanded, excluded)
         view = shown
-        canvas.show(shown.graph, shown.weights)
+        val sections = if (viewChoice.selectedItem != GraphView.SECTIONS) null else lens(null) {
+            SectionLens.sections(tree, shown, sectionBy.selectedItem as SectionBy, snapshot, project.name, options)
+        }
+        canvas.show(shown.graph, shown.weights, sections)
         canvas.decorate(snapshot?.let { lens(GraphDecorations.NONE) { EnrichmentLens.decorate(it, tree.graph, shown, options) } } ?: GraphDecorations.NONE)
         highlight()
         val target = focus?.let(shown::shownId)
