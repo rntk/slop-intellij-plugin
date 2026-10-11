@@ -190,6 +190,25 @@ class CallGraphModelTest {
         assertEquals(expanded, rebuilt.ids(keys))
     }
 
+    @Test fun `excluded nodes and groups they empty are left out with their relationships`() {
+        val tree = project.hierarchy()
+        val all = tree.view(tree.expansion(GraphDetail.SYMBOL), excluded = setOf(1))
+        // File A.kt held only the excluded class, so it disappears too.
+        assertEquals(listOf("a/", "n3", "n4", "b/c/", "n5", "n6"), all.graph.nodes.map { it.name })
+        listOf(0, 1, 2).forEach { assertEquals(null, all.shownId(it)) }
+        val (fn4, fn6) = listOf("n4", "n6").map { all.named(it) }
+        assertEquals(setOf(CallGraphEdge(fn4, fn6, RelationKind.CALL), CallGraphEdge(fn6, fn4, RelationKind.CALL)),
+            all.graph.edges.filterTo(hashSetOf()) { it.kind != RelationKind.CONTAINS })
+
+        val top = tree.view(emptySet(), excluded = setOf(1))
+        assertEquals(2, top.graph.nodes[top.named("a/")].hidden)
+        assertEquals(2, top.graph.nodes[top.named("b/c/")].hidden)
+        assertEquals(listOf("a/"), tree.view(emptySet(), excluded = setOf(5)).graph.nodes.map { it.name })
+        val unchanged = tree.view(setOf(tree.roots[0]))
+        val same = tree.view(setOf(tree.roots[0]), excluded = emptySet())
+        assertEquals(unchanged.graph, same.graph)
+    }
+
     @Test fun `empty project has an empty view`() {
         val view = CallGraph(emptyList(), emptySet(), false, projectGraph = true).hierarchy().view(emptySet())
         assertTrue(view.graph.nodes.isEmpty())

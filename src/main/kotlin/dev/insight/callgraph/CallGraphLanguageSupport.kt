@@ -24,6 +24,9 @@ interface CallGraphLanguageSupport {
 
     fun relationKind(element: PsiElement): RelationKind? = null
 
+    /** Overridden declarations, resolved with the language's type substitution rules. */
+    fun superMethods(element: PsiElement): List<PsiElement> = emptyList()
+
     companion object {
         val EP_NAME = ExtensionPointName<CallGraphLanguageSupport>("dev.insight.callGraphLanguageSupport")
     }

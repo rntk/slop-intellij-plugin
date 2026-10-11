@@ -125,6 +125,13 @@ class LlamaCppClientTest {
         assertTrue(headers.keys.none { it.equals("Authorization", true) })
     }
 
+    @Test fun `sends the response format as given`() = runBlocking {
+        respond(200 to reply("""{"role":"assistant","content":"{}"}"""))
+        val format = JsonParser.parseString("""{"type":"json_schema","json_schema":{"schema":{"type":"object"}}}""").asJsonObject
+        client().complete(CompletionRequest(listOf(LlmMessage.user("Hi")), responseFormat = format))
+        assertEquals(format, requests.single().second["response_format"])
+    }
+
     @Test fun `decodes tool calls, reasoning, think tags and llama cpp usage`() = runBlocking {
         respond(200 to reply(
             """{"role":"assistant","content":"<think>Plan it.</think>Checking.","reasoning_content":"Look up weather.",

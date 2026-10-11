@@ -11,7 +11,7 @@ class EndpointsTest {
     }
 
     @Test fun `decisions host is hardcoded`() {
-        assertEquals(URI.create("http://192.168.0.147:18989"), Endpoints.DECISIONS_ENDPOINT)
+        assertEquals(URI.create("http://192.168.0.147:18989/v1/systemone"), Endpoints.DECISIONS_ENDPOINT)
     }
 
     @Test fun `hardcoded llm host builds the client chat-completions url`() {

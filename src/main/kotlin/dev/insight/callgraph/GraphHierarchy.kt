@@ -110,7 +110,7 @@ class GraphHierarchy(val graph: CallGraph) {
     fun groupsWithin(id: Int): Set<Int> = (descendants(id) + id).filterTo(hashSetOf(), ::isGroup)
 
     /** Stable identity across rebuilds, used to keep the user's expanded groups when the project changes. */
-    fun key(id: Int): String = nodes[id].let { "${it.kind}|${it.filePath}|${it.container}|${it.name}" }
+    fun key(id: Int): String = stableKey(nodes[id])
 
     fun ids(keys: Collection<String>): Set<Int> {
         val wanted = keys.toHashSet()
@@ -150,18 +150,24 @@ class GraphHierarchy(val graph: CallGraph) {
     /**
      * Shows roots and the members of [expanded] groups; every hidden node is folded into its nearest shown ancestor.
      * Relationships are merged per pair of shown nodes, and expanded groups are linked to their members by
-     * containment edges. Users are placed left of what they depend on.
+     * containment edges. Users are placed left of what they depend on. [excluded] nodes and their descendants are
+     * left out with their relationships, as are directories and files left without members.
      */
-    fun view(expanded: Set<Int>): DetailGraph {
+    fun view(expanded: Set<Int>, excluded: Set<Int> = emptySet()): DetailGraph {
+        val gone = gone(excluded)
+        val live = { id: Int -> gone == null || !gone[id] }
+        val liveSizes = if (gone == null) sizes else IntArray(nodes.size).also { counts ->
+            for (id in preorder().asReversed()) if (live(id)) parent[id].takeIf { it >= 0 }?.let { counts[it] += counts[id] + 1 }
+        }
         val shown = mutableListOf<Int>()
         val shownAs = IntArray(nodes.size) { -1 }
-        val stack = ArrayDeque(roots.asReversed())
+        val stack = ArrayDeque(roots.filter(live).asReversed())
         while (stack.isNotEmpty()) {
             val id = stack.removeLast()
             shownAs[id] = shown.size
             shown += id
-            if (id in expanded) children[id].asReversed().forEach(stack::addLast)
-            else descendants(id).forEach { shownAs[it] = shownAs[id] }
+            if (id in expanded) children[id].filter(live).asReversed().forEach(stack::addLast)
+            else descendants(id).filter(live).forEach { shownAs[it] = shownAs[id] }
         }
         val weights = LinkedHashMap<Pair<Int, Int>, Int>()
         val kinds = HashMap<Pair<Int, Int>, RelationKind>()
@@ -177,16 +183,31 @@ class GraphHierarchy(val graph: CallGraph) {
         val edges = weights.keys.mapTo(linkedSetOf()) { CallGraphEdge(it.first, it.second, kinds.getValue(it)) }
         val levels = dependencyLevels(shown.size, edges)
         val viewNodes = shown.mapIndexed { index, id ->
-            val group = isGroup(id)
-            nodes[id].copy(id = index, level = levels[index], hidden = if (group && id !in expanded) sizes[id] else 0,
+            val group = children[id].any(live)
+            nodes[id].copy(id = index, level = levels[index], hidden = if (group && id !in expanded) liveSizes[id] else 0,
                 expanded = group && id in expanded)
         }
         return DetailGraph(CallGraph(viewNodes, edges, graph.truncated, projectGraph = true), shown, shownAs, graph,
             edges.associateWith { weights.getValue(it.caller to it.callee) })
     }
+
+    /** Null when nothing is excluded; otherwise flags [excluded], their descendants and directories or files emptied by them. */
+    private fun gone(excluded: Set<Int>): BooleanArray? {
+        if (excluded.none { it in nodes.indices }) return null
+        val gone = BooleanArray(nodes.size)
+        for (id in preorder()) if (id in excluded || parent[id].let { it >= 0 && gone[it] }) gone[id] = true
+        for (id in preorder().asReversed()) {
+            val kind = nodes[id].kind
+            if ((kind == SymbolKind.DIRECTORY || kind == SymbolKind.FILE) && children[id].isNotEmpty() && children[id].all { gone[it] }) gone[id] = true
+        }
+        return gone
+    }
 }
 
 fun CallGraph.hierarchy() = GraphHierarchy(this)
+
+/** Identity of a node that survives rebuilds of the graph: kind, file, container and name. Overloads share a key. */
+fun stableKey(node: CallGraphNode): String = "${node.kind}|${node.filePath}|${node.container}|${node.name}"
 
 /** Longest chain of users above each node; edges closing a cycle are ignored. Iterative so large graphs cannot overflow the stack. */
 internal fun dependencyLevels(size: Int, edges: Collection<CallGraphEdge>): IntArray {

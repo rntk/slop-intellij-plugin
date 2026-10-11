@@ -18,7 +18,7 @@ object Endpoints {
     const val LLM_BASE_URL = "http://192.168.0.147:8989"
 
     /** Decisions API endpoint. */
-    val DECISIONS_ENDPOINT: java.net.URI = java.net.URI.create("http://192.168.0.147:18989")
+    val DECISIONS_ENDPOINT: java.net.URI = java.net.URI.create("http://192.168.0.147:18989/v1/systemone")
 }
 
 /**

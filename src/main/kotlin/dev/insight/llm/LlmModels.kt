@@ -48,6 +48,11 @@ data class CompletionRequest(
     val parallelToolCalls: Boolean? = null,
     val temperature: Double? = null,
     val maxTokens: Int? = null,
+    /**
+     * OpenAI `response_format`, for example `{"type":"json_object"}` or
+     * `{"type":"json_schema","json_schema":{"schema":{...}}}`; llama.cpp enforces it with a grammar.
+     */
+    val responseFormat: JsonObject? = null,
 )
 
 /** Provider finish reasons mapped to one vocabulary. UNKNOWN is not treated as truncation: some servers omit it. */

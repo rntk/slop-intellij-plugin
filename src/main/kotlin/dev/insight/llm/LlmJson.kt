@@ -29,6 +29,7 @@ internal object LlmJson {
         body.add("messages", JsonArray().apply { request.messages.forEach { add(message(it)) } })
         request.temperature?.let { body.addProperty("temperature", it) }
         request.maxTokens?.let { body.addProperty("max_tokens", it) }
+        request.responseFormat?.let { body.add("response_format", it) }
         // llama.cpp reuses the KV cache for the shared prompt prefix; other servers ignore the flag.
         if (cachePrompt) body.addProperty("cache_prompt", true)
         // tool_choice and parallel_tool_calls are rejected by some servers when no tools are sent.

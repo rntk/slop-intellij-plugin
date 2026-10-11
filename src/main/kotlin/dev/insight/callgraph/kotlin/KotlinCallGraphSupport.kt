@@ -6,6 +6,7 @@ import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.RelationKind
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.asJava.elements.KtLightElement
+import org.jetbrains.kotlin.asJava.toLightMethods
 import org.jetbrains.kotlin.psi.KtAnnotationEntry
 import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallElement
@@ -63,4 +64,7 @@ class KotlinCallGraphSupport : CallGraphLanguageSupport {
     }
 
     override fun unwrap(element: PsiElement): PsiElement? = (element as? KtLightElement<*, *>)?.kotlinOrigin
+
+    override fun superMethods(element: PsiElement): List<PsiElement> =
+        (element as? KtNamedFunction)?.toLightMethods()?.flatMap { it.findSuperMethods().toList() }.orEmpty()
 }

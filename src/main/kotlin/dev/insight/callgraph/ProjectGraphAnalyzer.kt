@@ -1,5 +1,6 @@
 package dev.insight.callgraph
 
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -48,6 +49,9 @@ object ProjectGraphAnalyzer {
                 ProgressManager.checkCanceled()
                 if (element is PsiComment) return
                 if (element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS)
+                for (method in supports.flatMap { it.superMethods(element) }) {
+                    emit(element, source(method), RelationKind.INHERITS)
+                }
                 var context: PsiElement? = element
                 var relation: RelationKind? = null
                 while (context != null && context !== file && relation == null) {
@@ -58,13 +62,22 @@ object ProjectGraphAnalyzer {
                 val call = supports.firstNotNullOfOrNull { it.resolveCall(element) }
                 if (call != null) emit(from, source(call), relation ?: RelationKind.CALL)
                 for (reference in element.references) {
-                    val target = reference.resolve() ?: continue
+                    val target = resolve(reference) ?: continue
                     // Method references and calls carry CALL edges; other symbol uses carry REFERENCE edges.
                     emit(from, source(target), relation ?: if (call != null) RelationKind.CALL else RelationKind.REFERENCE)
                 }
                 super.visitElement(element)
             }
         })
+    }
+
+    /** Some references (for example Kotlin imports of packages without directories) throw while resolving; skip them. */
+    private fun resolve(reference: PsiReference): PsiElement? = try {
+        reference.resolve()
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (_: Exception) {
+        null
     }
 
     fun build(project: Project): CallGraphResult {

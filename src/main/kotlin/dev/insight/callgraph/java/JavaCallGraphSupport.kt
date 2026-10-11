@@ -32,6 +32,9 @@ class JavaCallGraphSupport : CallGraphLanguageSupport {
 
     override fun isFunction(element: PsiElement) = element is PsiMethod
 
+    override fun superMethods(element: PsiElement): List<PsiElement> =
+        (element as? PsiMethod)?.findSuperMethods()?.toList().orEmpty()
+
     override fun resolveCall(element: PsiElement): PsiElement? = when (element) {
         is PsiCall -> element.resolveMethod()
         is PsiMethodReferenceExpression -> element.resolve() as? PsiMethod

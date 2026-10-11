@@ -1,6 +1,7 @@
 package dev.insight.callgraph
 
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -20,9 +21,12 @@ import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.ActionEvent
+import java.awt.geom.Area
 import java.awt.geom.CubicCurve2D
 import java.awt.geom.Path2D
 import java.awt.geom.Point2D
+import java.awt.geom.Rectangle2D
+import java.awt.geom.RoundRectangle2D
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.AbstractAction
@@ -43,6 +47,15 @@ private val rootFill = JBColor(Color(232, 232, 252), Color(58, 58, 92))
 /** Opacity of nodes and edges outside the highlighted file's neighbourhood, so the highlight stands out. */
 private const val MUTED_ALPHA = 0.25f
 
+/** Opacity of [Emphasis.FAINT] nodes that are not selected, highlighted or spotlighted. */
+private const val FAINT_ALPHA = 0.55f
+
+/** The colour stripe stays at least this opaque, however low the confidence. */
+private const val MIN_STRIPE_ALPHA = 0.35
+
+private val errorColor = JBColor(Color(200, 40, 40), Color(235, 95, 95))
+private val stepText = JBColor(Color.WHITE, Color(30, 30, 30))
+
 /** Theme-aware Java2D rendering of a [CallGraph]: callers on the left, callees on the right. */
 class CallGraphCanvas(
     private val onSelect: (Int?) -> Unit,
@@ -53,6 +66,7 @@ class CallGraphCanvas(
     private var weights: Map<CallGraphEdge, Int> = emptyMap()
     private var layout: GraphLayout? = null
     private var highlight = FileGraphHighlight(emptySet(), emptySet())
+    private var decorations = GraphDecorations.NONE
     private var scale = 1.0
     var zoom: Double
         get() = scale
@@ -93,6 +107,26 @@ class CallGraphCanvas(
     fun highlight(value: FileGraphHighlight) {
         highlight = value
         repaint()
+    }
+
+    /**
+     * Paints the enrichment overlay on top of the graph. The overlay refers to displayed ids, so the caller sets it
+     * again (or [GraphDecorations.NONE]) after every [show].
+     */
+    fun decorate(value: GraphDecorations) {
+        decorations = value
+        updateScrollMode()
+        repaint()
+    }
+
+    /** The legend is painted at a fixed spot of the viewport, which blit scrolling would smear. */
+    private fun updateScrollMode() {
+        viewport?.scrollMode = if (decorations.legend.isEmpty()) JViewport.BLIT_SCROLL_MODE else JViewport.SIMPLE_SCROLL_MODE
+    }
+
+    override fun addNotify() {
+        super.addNotify()
+        updateScrollMode()
     }
 
     fun revealFile() {
@@ -218,7 +252,8 @@ class CallGraphCanvas(
         val node = nodeAt(event.point)?.let { graph?.nodes?.get(it) } ?: return null
         val lines = listOf("<b>${StringUtil.escapeXmlEntities(node.name)}</b>", StringUtil.escapeXmlEntities(node.container), StringUtil.escapeXmlEntities(node.location),
             node.kind.name.lowercase(),
-            if (node.inProject) "" else "Library code")
+            if (node.inProject) "" else "Library code") +
+            decorations.nodes[node.id]?.tooltip?.lines().orEmpty().filter { it.isNotBlank() }.map { StringUtil.escapeXmlEntities(it) }
         return lines.filter { it.isNotEmpty() }.joinToString("<br>", "<html>", "</html>") { it }
     }
 
@@ -233,31 +268,90 @@ class CallGraphCanvas(
             canvas.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
             val base = canvas.composite
             val muted = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, MUTED_ALPHA)
+            val faint = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, FAINT_ALPHA)
             val focus = focus()
+            val edges = if (decorations.hiddenEdges.isEmpty()) graph.edges else graph.edges.filter { it !in decorations.hiddenEdges }
             // Muted edges first, so highlighted ones are drawn on top of them.
-            for (edge in graph.edges.sortedBy { isHighlighted(it) }) {
+            for (edge in edges.sortedBy { edgeRank(it, focus) }) {
                 val highlighted = isHighlighted(edge)
-                canvas.composite = if (focus != null && !highlighted) muted else base
-                canvas.color = if (highlighted) accent else if (edge.kind == RelationKind.CONTAINS) JBColor.border() else JBColor.GRAY
+                val spotlit = isSpotlit(edge)
+                val style = decorations.edges[edge]?.takeIf { edge.kind != RelationKind.CONTAINS }
+                canvas.composite = if (edgeMuted(edge, focus)) muted else base
+                canvas.color = when {
+                    highlighted || spotlit -> accent
+                    edge.kind == RelationKind.CONTAINS -> JBColor.border()
+                    style == EdgeStyle.ERROR -> errorColor
+                    style == EdgeStyle.MAIN -> JBColor.foreground()
+                    style == EdgeStyle.INCIDENTAL -> ColorUtil.withAlpha(JBColor.GRAY, 0.5)
+                    else -> JBColor.GRAY
+                }
                 // Merged relationships get up to three extra pixels, growing with the logarithm of their count.
                 val merged = min(3, log2((weights[edge] ?: 1).toDouble()).toInt())
-                val width = JBUI.scale((if (highlighted) 2 else 1) + merged).toFloat()
-                canvas.stroke = when (edge.kind) {
-                    RelationKind.IMPORT -> BasicStroke(width, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
+                val main = if (style == EdgeStyle.MAIN) 1 else 0
+                var width = JBUI.scale((if (highlighted || spotlit) 2 else 1) + merged + main).toFloat()
+                if (style == EdgeStyle.INCIDENTAL && !highlighted && !spotlit) width *= 0.7f
+                canvas.stroke = when {
+                    style == EdgeStyle.ERROR -> BasicStroke(width, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
+                        10f, floatArrayOf(6f, 4f), 0f)
+                    edge.kind == RelationKind.IMPORT -> BasicStroke(width, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
                         10f, floatArrayOf(8f, 4f), 0f)
-                    RelationKind.REFERENCE -> BasicStroke(width, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
+                    edge.kind == RelationKind.REFERENCE -> BasicStroke(width, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
                         10f, floatArrayOf(2f, 4f), 0f)
                     else -> BasicStroke(width)
                 }
                 drawEdge(canvas, boxes.getValue(edge.caller), boxes.getValue(edge.callee))
             }
+            // Step markers and stacked cards reach slightly outside the box.
+            val reach = JBUI.scale(8)
             for (node in graph.nodes) {
                 val box = boxes.getValue(node.id)
-                if (clip != null && !clip.intersects(box)) continue
-                canvas.composite = if (focus != null && node.id !in focus) muted else base
+                if (clip != null && !clip.intersects(Rectangle(box).apply { grow(reach, reach) })) continue
+                canvas.composite = when {
+                    nodeMuted(node.id, focus) -> muted
+                    isFaint(node.id) -> faint
+                    else -> base
+                }
                 drawNode(canvas, node, box)
             }
         } finally { canvas.dispose() }
+        if (decorations.legend.isNotEmpty()) {
+            val overlay = g.create() as Graphics2D
+            try {
+                overlay.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                drawLegend(overlay, decorations.legend)
+            } finally { overlay.dispose() }
+        }
+    }
+
+    /**
+     * Muting combines the file highlight ([focus]) and the spotlight: a node is kept when either set includes it,
+     * and the selection stays readable while a spotlight is set. Without either, nothing is muted.
+     */
+    private fun nodeMuted(id: Int, focus: Set<Int>?): Boolean {
+        val spotlight = decorations.spotlight
+        if (focus == null && spotlight == null) return false
+        return (focus == null || id !in focus) && (spotlight == null || (id !in spotlight && id != selected))
+    }
+
+    /**
+     * Without a spotlight, edges are muted outside the file highlight as before. With one, only
+     * [GraphDecorations.spotlightEdges] and, if a file is highlighted too, that file's highlighted edges stay opaque.
+     */
+    private fun edgeMuted(edge: CallGraphEdge, focus: Set<Int>?): Boolean =
+        if (decorations.spotlight != null) !isSpotlit(edge) && !(focus != null && isHighlighted(edge))
+        else focus != null && !isHighlighted(edge)
+
+    private fun edgeRank(edge: CallGraphEdge, focus: Set<Int>?) = when {
+        edgeMuted(edge, focus) -> 0
+        isHighlighted(edge) || isSpotlit(edge) -> 2
+        else -> 1
+    }
+
+    private fun isSpotlit(edge: CallGraphEdge) = decorations.spotlight != null && edge in decorations.spotlightEdges
+
+    private fun isFaint(id: Int): Boolean {
+        if (decorations.nodes[id]?.emphasis != Emphasis.FAINT) return false
+        return id != selected && id !in highlight.owned && id !in highlight.related && decorations.spotlight?.contains(id) != true
     }
 
     private fun isHighlighted(edge: CallGraphEdge) = selected == edge.caller || selected == edge.callee ||
@@ -313,6 +407,7 @@ class CallGraphCanvas(
 
     private fun drawNode(g: Graphics2D, node: CallGraphNode, box: Rectangle) {
         val arc = JBUI.scale(10)
+        val decoration = decorations.nodes[node.id]
         if (node.hidden > 0) {
             // Collapsed groups look like a stack of cards.
             val offset = JBUI.scale(4)
@@ -327,33 +422,116 @@ class CallGraphCanvas(
         val related = node.id in highlight.related
         g.color = if (isRoot || owned) rootFill else UIUtil.getPanelBackground()
         g.fillRoundRect(box.x, box.y, box.width, box.height, arc, arc)
-        g.color = if (node.id == selected || isRoot || owned || related) accent else JBColor.border()
-        g.stroke = if (node.inProject) BasicStroke(JBUI.scale(if (node.id == selected || owned || related) 2 else 1).toFloat())
-        else BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(4f, 4f), 0f)
+        val stripe = decoration?.colors.orEmpty().filter { it.second > 0.0 }
+        if (decoration != null && stripe.isNotEmpty()) drawStripe(g, box, arc, stripe, decoration.confidence)
+        val strong = decoration?.emphasis == Emphasis.STRONG
+        val marked = node.id == selected || owned || related
+        g.color = if (marked || isRoot) accent else if (strong) JBColor.foreground() else JBColor.border()
+        val borderWidth = JBUI.scale((if (marked) 2 else 1) + (if (strong) 1 else 0)).toFloat()
+        g.stroke = if (node.inProject) BasicStroke(borderWidth)
+        else BasicStroke(borderWidth, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(4f, 4f), 0f)
         g.drawRoundRect(box.x, box.y, box.width, box.height, arc, arc)
 
         val padding = JBUI.scale(8)
-        val textWidth = box.width - 2 * padding
-        var nameWidth = textWidth
+        val left = box.x + padding + if (stripe.isNotEmpty()) JBUI.scale(3) else 0
+        var right = box.maxX.toInt() - padding
+        val line = box.y + box.height / 2 - JBUI.scale(3)
         val badge = when {
             node.hidden > 0 -> "+${node.hidden}"
-            node.expanded -> "\u2212"
+            node.expanded -> "−"
             else -> null
         }
+        g.color = UIUtil.getContextHelpForeground()
         if (badge != null) {
             g.font = font.deriveFont(font.size2D - 1f)
-            g.color = UIUtil.getContextHelpForeground()
             val badgeWidth = g.fontMetrics.stringWidth(badge)
-            g.drawString(badge, box.maxX.toInt() - padding - badgeWidth, box.y + box.height / 2 - JBUI.scale(3))
-            nameWidth -= badgeWidth + padding
+            g.drawString(badge, right - badgeWidth, line)
+            right -= badgeWidth + padding
+        }
+        val badges = decoration?.badges.orEmpty()
+        if (badges.isNotEmpty()) {
+            g.font = font.deriveFont(Font.BOLD, font.size2D - 1f)
+            val badgesWidth = g.fontMetrics.stringWidth(badges)
+            g.drawString(badges, right - badgesWidth, line)
+            right -= badgesWidth + padding
         }
         g.font = font.deriveFont(Font.BOLD)
+        var nameLeft = left
+        if (decoration?.entryPoint == true) {
+            val marker = if (g.font.canDisplay('▶')) "▶" else ">"
+            g.color = accent
+            g.drawString(marker, nameLeft, line)
+            nameLeft += g.fontMetrics.stringWidth(marker) + JBUI.scale(4)
+        }
         g.color = if (node.inProject) JBColor.foreground() else UIUtil.getContextHelpForeground()
-        g.drawString(fit(node.name, g.fontMetrics, nameWidth), box.x + padding, box.y + box.height / 2 - JBUI.scale(3))
+        g.drawString(fit(node.name, g.fontMetrics, right - nameLeft), nameLeft, line)
         g.font = font.deriveFont(font.size2D - 1f)
         g.color = UIUtil.getContextHelpForeground()
-        val detail = if (graph?.projectGraph == true) "${node.kind.name.lowercase()} · ${node.location}" else node.container.ifEmpty { node.location }
-        g.drawString(fit(detail, g.fontMetrics, textWidth), box.x + padding, box.y + box.height / 2 + g.fontMetrics.ascent)
+        val detail = decoration?.label
+            ?: if (graph?.projectGraph == true) "${node.kind.name.lowercase()} · ${node.location}" else node.container.ifEmpty { node.location }
+        g.drawString(fit(detail, g.fontMetrics, box.maxX.toInt() - padding - left), left, box.y + box.height / 2 + g.fontMetrics.ascent)
+        decoration?.step?.let { drawStep(g, box, it) }
+    }
+
+    /** A vertical stripe on the node's left edge, split by share and clipped to the rounded box. */
+    private fun drawStripe(g: Graphics2D, box: Rectangle, arc: Int, colors: List<Pair<Color, Double>>, confidence: Double) {
+        val alpha = confidence.coerceIn(MIN_STRIPE_ALPHA, 1.0)
+        val outline = Area(RoundRectangle2D.Double(box.x.toDouble(), box.y.toDouble(), box.width.toDouble(), box.height.toDouble(),
+            arc.toDouble(), arc.toDouble()))
+        val total = colors.sumOf { it.second }
+        val width = JBUI.scale(5).toDouble()
+        var top = box.y.toDouble()
+        for ((index, entry) in colors.withIndex()) {
+            val bottom = if (index == colors.lastIndex) box.maxY else top + box.height * entry.second / total
+            val part = Area(Rectangle2D.Double(box.x.toDouble(), top, width, bottom - top)).apply { intersect(outline) }
+            g.color = ColorUtil.withAlpha(entry.first, alpha * entry.first.alpha / 255.0)
+            g.fill(part)
+            top = bottom
+        }
+    }
+
+    /** Numbered accent circle centred on the node's top-left corner. */
+    private fun drawStep(g: Graphics2D, box: Rectangle, step: Int) {
+        g.font = font.deriveFont(Font.BOLD, font.size2D - 2f)
+        val text = step.toString()
+        val metrics = g.fontMetrics
+        val diameter = max(JBUI.scale(16), metrics.stringWidth(text) + JBUI.scale(6))
+        val x = box.x - diameter / 2
+        val y = box.y - diameter / 2
+        g.color = accent
+        g.fillOval(x, y, diameter, diameter)
+        g.color = stepText
+        g.drawString(text, x + (diameter - metrics.stringWidth(text)) / 2, y + (diameter - metrics.height) / 2 + metrics.ascent)
+    }
+
+    /** Colour swatch and label per entry in the top-left corner of the visible area, unaffected by zoom and scrolling. */
+    private fun drawLegend(g: Graphics2D, legend: List<LegendEntry>) {
+        val area = visibleRect
+        if (area.isEmpty) return
+        g.font = font.deriveFont(font.size2D - 1f)
+        val metrics = g.fontMetrics
+        val margin = JBUI.scale(8)
+        val padding = JBUI.scale(6)
+        val swatch = JBUI.scale(10)
+        val row = max(metrics.height, swatch) + JBUI.scale(2)
+        val entries = legend.take(max(1, (area.height - 2 * margin - 2 * padding) / row))
+        val width = padding * 2 + swatch + JBUI.scale(6) + entries.maxOf { metrics.stringWidth(it.label) }
+        val height = padding * 2 + row * entries.size
+        val x = area.x + margin
+        val y = area.y + margin
+        val arc = JBUI.scale(8)
+        g.color = ColorUtil.withAlpha(UIUtil.getPanelBackground(), 0.85)
+        g.fillRoundRect(x, y, width, height, arc, arc)
+        g.color = JBColor.border()
+        g.stroke = BasicStroke(1f)
+        g.drawRoundRect(x, y, width, height, arc, arc)
+        for ((index, entry) in entries.withIndex()) {
+            val top = y + padding + index * row
+            g.color = entry.color
+            g.fillRoundRect(x + padding, top + (row - swatch) / 2, swatch, swatch, JBUI.scale(3), JBUI.scale(3))
+            g.color = JBColor.foreground()
+            g.drawString(entry.label, x + padding + swatch + JBUI.scale(6), top + (row - metrics.height) / 2 + metrics.ascent)
+        }
     }
 
     private fun fit(text: String, metrics: FontMetrics, width: Int): String {

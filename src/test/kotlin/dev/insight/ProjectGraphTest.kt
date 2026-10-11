@@ -4,6 +4,52 @@ import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
 
 class ProjectGraphTest : LightJavaCodeInsightFixtureTestCase() {
+    fun `test generic Java overrides resolve substituted signatures without including overloads`() {
+        myFixture.configureByText("Backend.java", """
+            interface Backend<T> { void reply(T value); }
+            abstract class Middle<U> implements Backend<U> { public abstract void reply(U value); }
+            class StringBackend extends Middle<String> {
+                public void reply(String value) {}
+                public void reply(int value) {}
+            }
+        """.trimIndent())
+        val graph = ProjectGraphAnalyzer.build(project).graph
+        val methods = graph.nodes.filter { it.kind == SymbolKind.FUNCTION && it.name.startsWith("reply") }
+        fun method(owner: String, parameter: String): CallGraphNode {
+            val ownerId = graph.nodes.single { it.kind == SymbolKind.CLASS && it.name.substringBefore('<') == owner }.id
+            return methods.single {
+                parameter in it.name && CallGraphEdge(ownerId, it.id, RelationKind.CONTAINS) in graph.edges
+            }
+        }
+        val base = method("Backend", "T")
+        val middle = method("Middle", "U")
+        val implementation = method("StringBackend", "String")
+        val overload = method("StringBackend", "int")
+        assertTrue(CallGraphEdge(middle.id, base.id, RelationKind.INHERITS) in graph.edges)
+        assertTrue(CallGraphEdge(implementation.id, middle.id, RelationKind.INHERITS) in graph.edges)
+        val dispatch = dev.insight.enrichment.overrides(graph)
+        assertTrue(implementation.id in dispatch.getValue(base.id))
+        assertFalse(overload.id in dispatch.getValue(base.id))
+    }
+
+    fun `test generic Kotlin overrides resolve substituted signatures`() {
+        myFixture.configureByText("Backend.kt", """
+            interface Backend<T> { fun reply(value: T) }
+            class StringBackend : Backend<String> {
+                override fun reply(value: String) {}
+                fun reply(value: Int) {}
+            }
+        """.trimIndent())
+        val graph = ProjectGraphAnalyzer.build(project).graph
+        val methods = graph.nodes.filter { it.kind == SymbolKind.FUNCTION && it.name.startsWith("reply(") }
+        val base = methods.single { it.container == "Backend" }
+        val implementation = methods.single { it.container == "StringBackend" && "String" in it.name }
+        val overload = methods.single { it.container == "StringBackend" && "Int" in it.name }
+        assertTrue(CallGraphEdge(implementation.id, base.id, RelationKind.INHERITS) in graph.edges)
+        assertEquals(listOf(implementation.id), dev.insight.enrichment.overrides(graph)[base.id])
+        assertFalse(graph.edges.any { it.caller == overload.id && it.kind == RelationKind.INHERITS })
+    }
+
     fun `test full project includes disconnected symbols and cross file relationships`() {
         myFixture.addClass("""
             package sample;
