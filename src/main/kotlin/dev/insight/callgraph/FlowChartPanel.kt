@@ -23,6 +23,11 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
+import com.google.gson.Gson
+import dev.insight.chat.ChartChatContext
+import dev.insight.chat.ChatPanel
+import dev.insight.chat.ChatSession
+import dev.insight.chat.ToolInputException
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -88,6 +93,35 @@ internal class FlowChartPanel(
     private val matchCount = JLabel()
     private data class ChartMatch(val node: Int? = null, val region: String? = null, val name: String)
     private var matches: List<ChartMatch> = emptyList()
+    private var chatRevision = 0
+    private val chatScope = CoroutineScope(service.scope.coroutineContext + SupervisorJob(service.scope.coroutineContext[Job]))
+    private val chatContext = object : ChartChatContext {
+        private fun graph(): CallGraph {
+            if (disposed) throw ToolInputException("Chart closed")
+            if (building()) throw ToolInputException("Graph is rebuilding; retry after it finishes")
+            return result?.graph ?: throw ToolInputException("Graph is not ready yet")
+        }
+
+        override suspend fun state(offset: Int): String = withContext(Dispatchers.EDT) {
+            if (disposed) throw ToolInputException("Chart closed")
+            val graph = result?.graph
+            if (graph == null || building()) "{\"status\":\"Graph is building; tools will be available when it finishes\"}"
+            else chartChatState(chatRevision, graph, flowCanvas, offset)
+        }
+
+        override suspend fun find(query: String, offset: Int): String = withContext(Dispatchers.EDT) {
+            val found = graph().nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION &&
+                listOf(it.name, it.container, it.filePath.orEmpty()).any { text -> text.contains(query, ignoreCase = true) } }
+            Gson().toJson(mapOf("revision" to chatRevision, "total" to found.size, "offset" to offset,
+                "next_offset" to (offset + 20).takeIf { it < found.size },
+                "nodes" to found.drop(offset).take(20).map(::chartNodeData)))
+        }
+
+        override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
+            applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes)
+        }
+    }
+    private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
 
     init {
         border = JBUI.Borders.empty(8)
@@ -99,12 +133,17 @@ internal class FlowChartPanel(
                 JLabel("Colour:"), colorBy, JLabel("Flow:"), flowChoice,
                 addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
                 previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
-            add(row(callsButton, callersButton, removeButton, clearButton))
+            add(row(callsButton, callersButton, removeButton, clearButton,
+                JButton("Clear chat highlights").apply { addActionListener { flowCanvas.highlightChat(emptySet()) } }))
             add(row(compact, summarizeButton, collapseButton, summaryNotice))
             add(row(JLabel("Search chart:"), search, previousMatch, nextMatch, matchCount))
             add(status)
         }, BorderLayout.NORTH)
-        add(JBScrollPane(flowCanvas), BorderLayout.CENTER)
+        add(com.intellij.ui.OnePixelSplitter(false, 0.72f).apply {
+            firstComponent = JBScrollPane(flowCanvas)
+            secondComponent = chatPanel
+            chatPanel.minimumSize = java.awt.Dimension(JBUI.scale(260), 0)
+        }, BorderLayout.CENTER)
         add(selection, BorderLayout.SOUTH)
         colorBy.addActionListener { if (!updatingLens) renderFlow() }
         flowChoice.addActionListener {
@@ -140,6 +179,7 @@ internal class FlowChartPanel(
     }
 
     fun showResult(built: CallGraphResult) {
+        chatRevision++
         result?.let { moveFlowChart(it.graph, built.graph) }
         result = built
         enrichButton.isEnabled = !enriching
@@ -434,7 +474,7 @@ internal class FlowChartPanel(
         flowCanvas.remap { id -> previous.nodes.getOrNull(id)?.let { ids[stableKey(it)] } }
     }
 
-    override fun dispose() { disposed = true; flowJob?.cancel(); summaryJob?.cancel() }
+    override fun dispose() { disposed = true; chatScope.cancel(); chatPanel.dispose(); flowJob?.cancel(); summaryJob?.cancel() }
     private class FlowLensFor(val graph: CallGraph, val snapshot: EnrichmentSnapshot?, val colorBy: ColorBy, val lens: FlowChartLens)
     private companion object {
         const val FLOW_HINT = "Click to select · Enter opens source · Up/Down step · Left toggles callers · Right/Space toggles calls · Delete removes column"

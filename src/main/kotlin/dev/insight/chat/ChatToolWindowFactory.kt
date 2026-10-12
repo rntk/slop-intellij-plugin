@@ -38,8 +38,11 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-private class ChatPanel(project: Project) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
-    private val service = project.service<ChatService>()
+class ChatPanel(
+    project: Project,
+    private val service: ChatSession = project.service<ChatService>(),
+    private val chartMode: Boolean = false,
+) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
     private val transcript = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
     private val scroll = JBScrollPane(transcript)
     val input = JBTextArea(3, 24).apply {
@@ -56,9 +59,9 @@ private class ChatPanel(project: Project) : JPanel(BorderLayout(0, JBUI.scale(12
     init {
         border = JBUI.Borders.empty(12)
         add(JPanel(BorderLayout(0, 8)).apply {
-            add(heading("Insight Chat"), BorderLayout.NORTH)
+            add(heading(if (chartMode) "Chart Chat" else "Insight Chat"), BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 4)).apply {
-                add(JButton("Open dashboard").apply { addActionListener { openDashboard(project) } })
+                if (!chartMode) add(JButton("Open dashboard").apply { addActionListener { openDashboard(project) } })
                 add(clear)
                 add(JButton("LLM settings").apply {
                     addActionListener {

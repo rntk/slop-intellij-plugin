@@ -17,8 +17,17 @@ import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 
 @Service(Service.Level.PROJECT)
-class ChatService(private val project: Project, private val scope: CoroutineScope) {
-    private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."))
+class ChatService(project: Project, scope: CoroutineScope) : ChatSession(project, scope)
+
+/** An independently owned conversation, reusable by the sidebar and chart. */
+open class ChatSession(
+    private val project: Project,
+    private val scope: CoroutineScope,
+    private val chart: ChartChatContext? = null,
+) {
+    private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, if (chart == null)
+        "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
+        else "Ask about this flow chart. I can highlight steps, add project functions, and show calls or callers."))
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     private var turn: Job? = null
     var busy: Boolean = false
@@ -94,7 +103,9 @@ class ChatService(private val project: Project, private val scope: CoroutineScop
             apiKey = settings.apiKey,
             requestTimeout = Duration.ofSeconds(state.requestTimeoutSeconds.coerceIn(10, 3600).toLong()),
         )
-        return LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
+        return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
+        else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name == "read_file" },
+            chartChatSystemPrompt(project.name), context = chart::snapshot)
     }
 
     private fun describe(event: ToolCallEvent): String {

@@ -45,6 +45,12 @@ private val decisionBorder = JBColor(Color(0xE0B050), Color(0x8A7340))
 private val searchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
 private val selectionFill = JBColor(Color(0xEEF3FD), Color(0x2B3445))
 private val mutedText = JBColor(Color(0x6E737A), Color(0x9DA2A8))
+private const val MAX_ATTACH_TRIES = 12
+
+/** How a function joined the chart: shown in the calls ([Kind.CALLS]) or callers ([Kind.CALLERS]) of the step [via]. */
+data class FlowAttachment(val via: Int, val kind: Kind) {
+    enum class Kind { CALLS, CALLERS }
+}
 
 /**
  * Theme-aware Java2D rendering of a [FlowBoard]: functions placed on the chart, each a column laid out by
@@ -76,6 +82,10 @@ class FlowChartCanvas(
     internal var searchMatches: Set<Int>? = null
         private set
     private var regionMatches: Set<String> = emptySet()
+    internal var chatHighlights: Set<Int> = emptySet()
+        private set
+
+    fun highlightChat(nodes: Set<Int>) { chatHighlights = nodes; repaint() }
 
     fun markRegionMatches(keys: Set<String>) { regionMatches = keys; repaint() }
 
@@ -185,6 +195,7 @@ class FlowChartCanvas(
      * the old graph no longer apply, so the chart is drawn again by the next [show].
      */
     fun remap(id: (Int) -> Int?) {
+        chatHighlights = chatHighlights.mapNotNullTo(hashSetOf(), id)
         board = board.map(id)
         selectedNode = selectedNode?.let(id)
         selectedRegion = null
@@ -199,6 +210,31 @@ class FlowChartCanvas(
         selectNode(start.node)
     }
 
+    /**
+     * Shows [node] as a continuation of the chart rather than a column of its own: below a visible step that calls it
+     * (opening that step's calls or the compact subflow holding the call), or above a visible step it calls (opening
+     * that step's callers). Earlier steps are tried first. Returns how it was attached, or null when no visible step
+     * can show it, for example when it is unconnected or folded as a helper; the board is then unchanged.
+     */
+    fun attach(node: Int): FlowAttachment? {
+        val source = source ?: return null
+        val chart = chart ?: return null
+        if (chart.step(node) != null) return null
+        fun visible(ids: Iterable<Int>) = ids.distinct().mapNotNull(chart::step).sortedBy { it.number }.map { it.node }
+        val candidates = chart.regions.filter { !it.expanded && it.plan.evidence.sites.any { site -> site.callee == node } }
+            .map { FlowAttachment(it.plan.evidence.owner, FlowAttachment.Kind.CALLS) to
+                board.copy(openRegions = board.openRegions + it.plan.evidence.key) } +
+            visible(source.callers[node].orEmpty()).map { FlowAttachment(it, FlowAttachment.Kind.CALLS) to
+                board.copy(openCalls = board.openCalls + it) } +
+            visible(source.calls[node].orEmpty().map { it.callee }).map { FlowAttachment(it, FlowAttachment.Kind.CALLERS) to
+                board.copy(openCallers = board.openCallers + it) }
+        val (attachment, next) = candidates.asSequence().filter { (_, next) -> next != board }.take(MAX_ATTACH_TRIES)
+            .firstOrNull { (_, next) -> buildFlowChart(next, source).step(node) != null } ?: return null
+        update(next)
+        selectNode(node)
+        return attachment
+    }
+
     /** Shows what each of [nodes] calls, wherever its step is. */
     fun openCalls(nodes: Set<Int>) {
         if (!board.openCalls.containsAll(nodes)) update(board.copy(openCalls = board.openCalls + nodes))
@@ -209,7 +245,10 @@ class FlowChartCanvas(
         if (board.starts.any { it.node == node }) update(board.copy(starts = board.starts.filter { it.node != node }))
     }
 
-    fun clear() = update(FlowBoard(compact = board.compact))
+    fun clear() {
+        chatHighlights = emptySet()
+        update(FlowBoard(compact = board.compact))
+    }
 
     fun setCompact(compact: Boolean) = update(board.copy(compact = compact))
 
@@ -562,7 +601,7 @@ class FlowChartCanvas(
     }
 
     private fun paintCard(g: Graphics2D, box: FlowCardBox, selected: Boolean = box.step.node == selectedNode,
-        matching: Boolean = searchMatches?.contains(box.step.node) == true) {
+        matching: Boolean = searchMatches?.contains(box.step.node) == true || box.step.node in chatHighlights) {
         val bounds = box.bounds
         if (selected || matching) {
             val pad = JBUI.scale(4)
