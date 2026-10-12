@@ -54,8 +54,8 @@ internal class FlowChartPanel(
     private var flowJob: Job? = null
     /** Calls for the flow chart, made from [result], the latest enrichment and the colouring; see [renderFlow]. */
     private var flowLens: FlowLensFor? = null
-    /** Call sites and current source facts of flow chart steps, read once per build. */
-    private val callSites = HashMap<Int, List<CallSite>>()
+    /** Call sites, exits and current source facts of flow chart steps, read once per build. */
+    private val callSites = HashMap<Int, List<SourceSite>>()
     private val stepFacts = HashMap<Int, SymbolFacts>()
     private val stepsRead = hashSetOf<Int>()
     /** A symbol sent to the flow chart from the editor, waiting for a finished graph build; see [addToChart]. */
@@ -247,7 +247,7 @@ internal class FlowChartPanel(
             } catch (e: Exception) {
                 // Without call sites the calls keep the graph's order and have no branches.
                 thisLogger().warn("Reading call sites failed", e)
-                emptyMap<Int, List<CallSite>>() to emptyMap()
+                emptyMap<Int, List<SourceSite>>() to emptyMap()
             }
             if (result !== built || disposed) return@launch
             stepsRead += missing

@@ -5,6 +5,7 @@ import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import com.intellij.psi.PsiWhiteSpace
 
 /** [BRANCH]: `if` and `?:`; [CASE]: `when`, `switch`, `match` and `select`; [ERROR]: `catch` and `except`. */
 enum class ControlKind { BRANCH, CASE, LOOP, ERROR }
@@ -26,11 +27,26 @@ data class ControlFrame(
     val subject: String? = null,
 )
 
+/** Something in a function body inside [frames], listed outermost first; [offset] is where it ends in the source. */
+sealed interface SourceSite {
+    val offset: Int
+    val frames: List<ControlFrame>
+}
+
 /**
- * A call of [callee] (a graph id) inside [frames], listed outermost first. [offset] is where the call ends in the source,
- * so ordering by it puts nested and chained calls (`a(b())`, `b().a()`) in evaluation order.
+ * A call of [callee] (a graph id). Ordering by [offset] puts nested and chained calls (`a(b())`, `b().a()`) in
+ * evaluation order.
  */
-data class CallSite(val callee: Int, val offset: Int, val frames: List<ControlFrame> = emptyList())
+data class CallSite(val callee: Int, override val offset: Int, override val frames: List<ControlFrame> = emptyList()) : SourceSite
+
+/**
+ * A `return`, `throw` or `raise` ([keyword]) ending the innermost branch of [frames]: that branch leaves the function
+ * instead of continuing below its decision. [text] is the statement, shortened for display.
+ */
+data class ExitSite(override val offset: Int, override val frames: List<ControlFrame>, val keyword: String, val text: String) : SourceSite
+
+/** Source order; an exit comes after the calls it ends with, such as `return f()`. */
+val sourceOrder: Comparator<SourceSite> = compareBy<SourceSite> { it.offset }.thenBy { it is ExitSite }
 
 /**
  * Finds call sites and the conditions, loops and error handlers around them. Language-agnostic: control structures are
@@ -41,10 +57,10 @@ object CallSiteAnalyzer {
     private val supports get() = CallGraphLanguageSupport.EP_NAME.extensionList
 
     /**
-     * Read action only. Call sites in each of [callers] whose callee is one of [callees], ordered by [CallSite.offset]. Calls inside
-     * nested functions and classes belong to those and are left out.
+     * Read action only. Call sites in each of [callers] whose callee is one of [callees], and the exits ending branches
+     * ([exit]), in [sourceOrder]. Calls inside nested functions and classes belong to those and are left out.
      */
-    fun collect(result: CallGraphResult, callers: Collection<Int>, callees: Collection<Int>): Map<Int, List<CallSite>> {
+    fun collect(result: CallGraphResult, callers: Collection<Int>, callees: Collection<Int>): Map<Int, List<SourceSite>> {
         val targets = HashMap<Triple<String, Int, SymbolKind>, Int>()
         for (id in callees) {
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: continue
@@ -59,10 +75,10 @@ object CallSiteAnalyzer {
             }
             return null
         }
-        val sites = LinkedHashMap<Int, List<CallSite>>()
+        val sites = LinkedHashMap<Int, List<SourceSite>>()
         for (id in callers.distinct()) {
             val function = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: continue
-            val found = mutableListOf<CallSite>()
+            val found = mutableListOf<SourceSite>()
             function.accept(object : PsiRecursiveElementWalkingVisitor() {
                 override fun visitElement(element: PsiElement) {
                     ProgressManager.checkCanceled()
@@ -70,10 +86,11 @@ object CallSiteAnalyzer {
                     if (element !== function && ProjectGraphAnalyzer.kind(element).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS }) return
                     val callee = supports.firstNotNullOfOrNull { it.resolveCall(element) }?.let(::target)
                     if (callee != null && callee != id) found += CallSite(callee, element.textRange.endOffset, frames(element, function))
+                    else exit(element, function)?.let(found::add)
                     super.visitElement(element)
                 }
             })
-            sites[id] = found.sortedBy { it.offset }
+            sites[id] = found.sortedWith(sourceOrder)
         }
         return sites
     }
@@ -106,6 +123,42 @@ object CallSiteAnalyzer {
             parent = parent.parent
         }
         return inner.asReversed()
+    }
+
+    /**
+     * [element] as an exit when it is a `return`, `throw` or `raise` ending a branch of an `if`, a case of a
+     * `when`/`switch`/`match` or a `catch`/`except`: that branch then certainly leaves [function]. Anything less certain
+     * is left out, so the chart never ends a path that may go on: an exit inside an expression (`x ?: return`), followed
+     * by other statements, ending a loop body or a `try` block, or leaving a lambda rather than [function].
+     */
+    internal fun exit(element: PsiElement, function: PsiElement): ExitSite? {
+        if (words(element).none { it in EXITS }) return null
+        val text = element.text.trim()
+        val keyword = text.takeWhile { it.isLetter() }
+        if (keyword !in EXIT_KEYWORDS || text.startsWith("return@")) return null
+        val path = generateSequence(element.parent) { it.parent }.takeWhile { it !== function && it !is PsiFile }.toList()
+        if (path.lastOrNull()?.parent !== function || path.any { parent -> words(parent).any { it in LAMBDAS } }) return null
+        // Up through blocks, where the exit must be the last statement, to the branch or case it ends.
+        var child = element
+        for (parent in path) {
+            val words = words(parent)
+            if (words.none { it in PARTS }) {
+                if ("If" in words || words.any { it in SWITCHES }) break
+                if ("Try" in words && words(child).any { it == "Catch" || it == "Except" }) break
+                return null
+            }
+            if (lastStatement(parent) !== child) return null
+            if (words.any { it in CASES }) break
+            child = parent
+        }
+        val frames = frames(element, function)
+        if (frames.lastOrNull()?.kind.let { it == null || it == ControlKind.LOOP }) return null
+        return ExitSite(element.textRange.endOffset, frames, keyword, ControlText.clip(text))
+    }
+
+    /** The last child of [element] other than whitespace, comments and closing `}` or `;`. */
+    private fun lastStatement(element: PsiElement): PsiElement? = generateSequence(element.lastChild) { it.prevSibling }.firstOrNull { child ->
+        child !is PsiWhiteSpace && child !is PsiComment && !(child.firstChild == null && child.text.trim().let { it.isEmpty() || it == "}" || it == ";" })
     }
 
     /**
@@ -192,6 +245,10 @@ object CallSiteAnalyzer {
     private val SWITCHES = setOf("Switch", "When", "Match", "Select")
     private val CASES = setOf("Case", "Entry", "Clause", "Rule")
     private val LOOPS = setOf("For", "Foreach", "While", "Loop")
+    private val EXITS = setOf("Return", "Throw", "Raise")
+    private val EXIT_KEYWORDS = setOf("return", "throw", "raise")
+    /** Words of lambdas and function literals, whose `return` leaves them rather than the enclosing function. */
+    private val LAMBDAS = setOf("Lambda", "Function", "Closure")
 }
 
 /** PSI-free reading of control-structure headers such as `if (a) {`, `elif b:`, `case X ->` or `for x in xs:`. */

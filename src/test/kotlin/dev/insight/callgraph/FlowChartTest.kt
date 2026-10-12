@@ -8,13 +8,13 @@ class FlowChartTest {
     private fun edges(vararg calls: Pair<Int, Int>) = calls.map { (from, to) -> CallGraphEdge(from, to) }
 
     /** Calls by caller with callees in [order], callers from the same edges, cards titled `n<id>`. */
-    private fun source(edges: List<CallGraphEdge>, sites: Map<Int, List<CallSite>> = emptyMap(), order: List<Int> = (0..20).toList(),
+    private fun source(edges: List<CallGraphEdge>, sites: Map<Int, List<SourceSite>> = emptyMap(), order: List<Int> = (0..20).toList(),
         card: (Int) -> FlowCard = { FlowCard("n$it") }) =
         FlowSource(edges.sortedBy { order.indexOf(it.callee) }.groupBy { it.caller },
             edges.filter { it.kind == RelationKind.CALL }.groupBy { it.callee }.mapValues { (_, e) -> e.map { it.caller } }, sites, card)
 
     /** Node 0 placed on the chart with every function's calls open. */
-    private fun chart(edges: List<CallGraphEdge>, sites: Map<Int, List<CallSite>> = emptyMap(), order: List<Int> = (0..20).toList()) =
+    private fun chart(edges: List<CallGraphEdge>, sites: Map<Int, List<SourceSite>> = emptyMap(), order: List<Int> = (0..20).toList()) =
         buildFlowChart(FlowBoard(listOf(FlowStart(0, "Flow", "What it does")), openCalls = (0..20).toSet()), source(edges, sites, order))
 
     private val FlowChart.root get() = lanes.single().root
@@ -24,7 +24,7 @@ class FlowChartTest {
 
     /**
      * Compact text of an item tree: steps `n<id>#<number>` with open callers in `[…]` before and open calls in `(…)`
-     * after, refs `->number`, decisions `?question[label: …|…]`, loops `loop label{…}`.
+     * after, refs `->number`, decisions `?question[label: …|…]`, loops `loop label{…}`, exits `!keyword`.
      */
     private fun render(item: FlowItem): String = when (item) {
         is FlowStep -> (item.upstream?.joinToString(" ", "[", "] ", transform = ::render) ?: "") + "n${item.node}#${item.number}" +
@@ -32,6 +32,36 @@ class FlowChartTest {
         is FlowRef -> "->${item.number}"
         is FlowDecision -> "?${item.question}" + item.branches.joinToString("|", "[", "]") { b -> b.label + ":" + b.items.joinToString(" ", transform = ::render) }
         is FlowLoop -> "loop ${item.label}{" + item.items.joinToString(" ", transform = ::render) + "}"
+        is FlowExit -> "!${item.keyword}"
+    }
+
+    /** `if (path == "<label>") { call(callee); return }` at [at], as in a request router. */
+    private fun guard(at: Int, label: String, callee: Int): List<SourceSite> {
+        val frame = listOf(branch(at, at, label, subject = label))
+        return listOf(CallSite(callee, at + 5, frame), ExitSite(at + 5, frame, "return", "return"))
+    }
+
+    @Test fun `a branch ending in an exit ends there, and guards without calls are decisions too`() {
+        val sites = mapOf(0 to guard(10, "a", 1) + guard(20, "b", 2) + listOf(
+            ExitSite(32, listOf(branch(30, 30, "!ready", subject = "!ready")), "throw", "throw Busy()"),
+            CallSite(3, 40),
+        ))
+        val chart = chart(edges(0 to 1, 0 to 2, 0 to 3), sites)
+        // The exit follows the call it ends with, though both end at the same offset.
+        assertEquals("n0#1(?a?[yes:n1#2 !return|no:] ?b?[yes:n2#3 !return|no:] ?!ready?[yes:!throw|no:] n3#4)", render(chart.root))
+        val decisions = chart.root.items.filterIsInstance<FlowDecision>()
+        assertTrue(decisions.all { ends(it.branches[0].items) && !ends(it.branches[1].items) })
+    }
+
+    @Test fun `exits end the error branch of a try, and a decision ends only when every branch does`() {
+        val error = ControlFrame(ControlKind.ERROR, 5, 8, "ValueError")
+        val sites = mapOf(0 to listOf(CallSite(1, 10, listOf(error)), ExitSite(11, listOf(error), "return", "return")))
+        val chart = chart(edges(0 to 1), sites)
+        assertEquals("n0#1(?Fails?[no:|on error ValueError:n1#2 !return])", render(chart.root))
+        assertFalse(ends(chart.root.items))
+        val both = FlowDecision(DecisionKind.CONDITION, "x?", listOf(FlowBranch("yes", BranchKind.CASE, listOf(FlowExit("return", "return"))),
+            FlowBranch("no", BranchKind.OTHERWISE, listOf(FlowExit("raise", "raise")))))
+        assertTrue(ends(listOf(both)))
     }
 
     @Test fun `steps follow call sites in source order, then calls without a known site in the order of the calls`() {
@@ -212,6 +242,34 @@ class FlowChartTest {
         assertTrue(geometry.shapes.filterIsInstance<FlowFrame>().isNotEmpty())
         // Each step inside 0 is called only by 0, so no caller pills.
         assertTrue(geometry.shapes.filterIsInstance<FlowPill>().none { it.callers })
+    }
+
+    @Test fun `guards keep the spine straight through the path that goes on, and their exits join nothing`() {
+        val sites = mapOf(0 to guard(10, "a", 1) + guard(20, "b", 2) + listOf(CallSite(3, 40)))
+        val geometry = layoutFlowChart(chart(edges(0 to 1, 0 to 2, 0 to 3), sites), metrics, measure)
+        assertApart(geometry)
+        val decisions = geometry.shapes.filterIsInstance<FlowDecisionBox>().map { it.bounds }
+        val spine = geometry.cards.getValue(3).dot.x
+        assertTrue(decisions.all { it.centerX.toInt() == spine })
+        // The `no` paths sit on the spine; each `yes` path stands aside and stops at its exit.
+        val pills = geometry.shapes.filterIsInstance<FlowPill>()
+        assertTrue(pills.filter { it.text == "no" }.all { it.bounds.centerX.toInt() == spine })
+        val exits = pills.filter { it.style == FlowPillStyle.EXIT }
+        assertEquals(2, exits.size)
+        val segments = geometry.shapes.filterIsInstance<FlowSegment>()
+        for (exit in exits) {
+            assertTrue(exit.bounds.centerX.toInt() < spine)
+            val x = exit.bounds.centerX.toInt()
+            val bottom = exit.bounds.y + exit.bounds.height
+            // Neither a line down from the exit nor a merge line reaching over to it.
+            assertTrue("nothing leaves $exit", segments.none { s ->
+                minOf(s.from.x, s.to.x) <= x && x <= maxOf(s.from.x, s.to.x) && minOf(s.from.y, s.to.y) in bottom..bottom + metrics.gap
+            })
+        }
+        // The spine stays solid through the `no` paths.
+        assertTrue(segments.filter { it.from.x == spine && it.to.x == spine }.all { it.style == FlowLineStyle.NORMAL })
+        // Branches still flow into the decision below the first one.
+        assertTrue(decisions[0].maxY < decisions[1].y && decisions[1].maxY < geometry.cards.getValue(3).bounds.y)
     }
 
     @Test fun `closed calls are a pill naming how many functions are called`() {

@@ -41,7 +41,8 @@ interface FlowMeasure {
 }
 
 enum class FlowLineStyle { NORMAL, OTHERWISE, ERROR }
-enum class FlowPillStyle { SUBFLOW, LOOP, CASE, OTHERWISE, ERROR, END }
+/** [EXIT]: a branch leaving the function by `return`; [THROW]: by `throw` or `raise`. */
+enum class FlowPillStyle { SUBFLOW, LOOP, CASE, OTHERWISE, ERROR, END, EXIT, THROW }
 
 sealed interface FlowShape
 data class FlowSegment(val from: Point, val to: Point, val style: FlowLineStyle = FlowLineStyle.NORMAL) : FlowShape
@@ -50,7 +51,7 @@ data class FlowDot(val center: Point, val step: FlowStep) : FlowShape
 data class FlowCardBox(val step: FlowStep, val bounds: Rectangle, val leftOfSpine: Boolean, val dot: Point) : FlowShape
 /** [toggle] is the function whose calls (or, with [callers], whose direct callers) the pill shows or hides. */
 data class FlowPill(val bounds: Rectangle, val text: String, val style: FlowPillStyle, val toggle: Int? = null,
-    val callers: Boolean = false) : FlowShape
+    val callers: Boolean = false, val tooltip: String? = null) : FlowShape
 data class FlowDecisionBox(val bounds: Rectangle, val decision: FlowDecision) : FlowShape
 data class FlowFrame(val bounds: Rectangle, val loop: Boolean) : FlowShape
 data class FlowRefBox(val bounds: Rectangle, val ref: FlowRef, val dot: Point) : FlowShape
@@ -67,7 +68,8 @@ data class FlowGeometry(val size: Dimension, val shapes: List<FlowShape>) {
  * timeline: the steps hang off a vertical spine, alternating left and right on the main spine. A step's open calls
  * follow it inside a frame headed by a pill on the spine (just the pill while closed); its open callers stand above it
  * in columns that join into it, below a pill that shows or hides them. A decision forks the spine into branch columns
- * side by side, which join again below it.
+ * side by side, which join again below it; a branch that leaves the function stops at its exit pill instead, and the
+ * spine runs on through the branches that continue, so a guard clause reads as a side exit off a straight path.
  */
 fun layoutFlowChart(chart: FlowChart, metrics: FlowMetrics, measure: FlowMeasure): FlowGeometry = FlowLayouter(metrics, measure).layout(chart)
 
@@ -78,8 +80,11 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
     private val lines = mutableListOf<FlowShape>()
     private val front = mutableListOf<FlowShape>()
 
-    /** Extents left and right of the spine, height, and how to place it with the spine at x and the top at y. */
-    private abstract class Block(val left: Int, val right: Int, val height: Int) {
+    /**
+     * Extents left and right of the spine, height, and how to place it with the spine at x and the top at y. The flow
+     * goes on below an [open] block; a closed one ends in an exit.
+     */
+    private abstract class Block(val left: Int, val right: Int, val height: Int, val open: Boolean = true) {
         abstract fun place(x: Int, y: Int)
     }
 
@@ -110,6 +115,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
         when (item) {
             is FlowStep -> listOfNotNull(callers(item, parent), step(item, alternate), subflow(item, alternate))
             is FlowRef -> listOf(ref(item))
+            is FlowExit -> listOf(exit(item))
             is FlowDecision -> listOf(decision(item, parent))
             is FlowLoop -> listOf(frame("↻ " + item.label, blocks(item.items, alternate, parent), FlowPillStyle.LOOP, null, loop = true))
         }
@@ -166,13 +172,13 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
 
     private fun sequence(blocks: List<Block>, style: FlowLineStyle = FlowLineStyle.NORMAL): Block {
         val height = blocks.sumOf { it.height } + m.gap * (blocks.size - 1).coerceAtLeast(0)
-        return object : Block(blocks.maxOfOrNull { it.left } ?: 0, blocks.maxOfOrNull { it.right } ?: 0, height) {
+        return object : Block(blocks.maxOfOrNull { it.left } ?: 0, blocks.maxOfOrNull { it.right } ?: 0, height, blocks.lastOrNull()?.open ?: true) {
             override fun place(x: Int, y: Int) {
                 var top = y
                 blocks.forEachIndexed { index, block ->
                     block.place(x, top)
                     top += block.height
-                    if (index < blocks.lastIndex) line(x, top, x, top + m.gap, style)
+                    if (index < blocks.lastIndex && block.open) line(x, top, x, top + m.gap, style)
                     top += m.gap
                 }
             }
@@ -218,7 +224,10 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
     /** A pill centred on the spine at x with its top at y. */
     private fun pillAt(x: Int, y: Int, width: Int) = Rectangle(x - width / 2, y, width, m.pillHeight)
 
-    /** Content in a rounded frame whose top edge carries a pill on the spine. */
+    /**
+     * Content in a rounded frame whose top edge carries a pill on the spine. The flow goes on below the frame even when
+     * its content ends in an exit: that leaves the function called, not the one framing it, and a loop may not run at all.
+     */
     private fun frame(text: String, content: List<Block>, style: FlowPillStyle, toggle: Int?, loop: Boolean): Block {
         val pillWidth = pillWidth(text)
         val inner = sequence(content)
@@ -231,7 +240,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                 line(x, y, x, y + m.pillHeight + m.gap)
                 front += FlowPill(pillAt(x, y, pillWidth), text, style, toggle)
                 inner.place(x, y + m.pillHeight + m.gap)
-                line(x, y + m.pillHeight + m.gap + inner.height, x, y + height)
+                if (inner.open) line(x, y + m.pillHeight + m.gap + inner.height, x, y + height)
             }
         }
     }
@@ -246,6 +255,15 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                 val dot = Point(x, y + height / 2)
                 front += FlowRefBox(Rectangle(x + m.gutter, y, width, height), ref, dot)
             }
+        }
+    }
+
+    /** A pill where the flow leaves the function; nothing joins below it. */
+    private fun exit(exit: FlowExit): Block {
+        val width = pillWidth(exit.keyword)
+        val style = if (exit.keyword == "return") FlowPillStyle.EXIT else FlowPillStyle.THROW
+        return object : Block(width / 2, width - width / 2, m.pillHeight, open = false) {
+            override fun place(x: Int, y: Int) { front += FlowPill(pillAt(x, y, width), exit.keyword, style, tooltip = exit.text) }
         }
     }
 
@@ -280,7 +298,10 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
             centres += cursor + column.left
             cursor += column.left + column.right + m.branchGap
         }
-        val spine = (centres.first() + centres.last()) / 2
+        // Branches that go on join below the decision; the spine runs through them, so a guard's exit stands aside.
+        val going = columns.indices.filter { columns[it].content?.open != false }
+        val through = going.ifEmpty { columns.indices.toList() }
+        val spine = (centres[through.first()] + centres[through.last()]) / 2
         val total = cursor - m.branchGap
         val left = maxOf(spine, shapeWidth / 2)
         val right = maxOf(total - spine, shapeWidth - shapeWidth / 2)
@@ -289,13 +310,13 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
         val columnTop = bar + m.gap
         val merge = columnTop + columnsHeight + m.gap
         val height = merge + m.gap
-        return object : Block(left, right, height) {
+        return object : Block(left, right, height, open = going.isNotEmpty()) {
             override fun place(x: Int, y: Int) {
                 front += FlowDecisionBox(Rectangle(x - shapeWidth / 2, y, shapeWidth, m.decisionHeight), decision)
                 line(x, y + m.decisionHeight, x, y + bar)
                 val xs = centres.map { x - spine + it }
                 line(xs.first(), y + bar, xs.last(), y + bar)
-                line(xs.first(), y + merge, xs.last(), y + merge)
+                if (going.isNotEmpty()) line(xs[going.first()], y + merge, xs[going.last()], y + merge)
                 columns.forEachIndexed { index, column ->
                     val cx = xs[index]
                     val top = y + columnTop
@@ -306,16 +327,18 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                         BranchKind.ERROR -> FlowPillStyle.ERROR
                     })
                     val content = column.content
+                    // Past a side exit the path that goes on is the main one, even through an `else`.
+                    val style = if (going.size < columns.size && index in going) FlowLineStyle.NORMAL else column.style
                     if (content == null) {
-                        line(cx, y + bar, cx, y + merge, column.style)
+                        line(cx, y + bar, cx, y + merge, style)
                     } else {
                         val start = top + m.pillHeight + m.gap
-                        line(cx, y + bar, cx, start, column.style)
+                        line(cx, y + bar, cx, start, style)
                         content.place(cx, start)
-                        line(cx, start + content.height, cx, y + merge, column.style)
+                        if (content.open) line(cx, start + content.height, cx, y + merge, style)
                     }
                 }
-                line(x, y + merge, x, y + height)
+                if (going.isNotEmpty()) line(x, y + merge, x, y + height)
             }
         }
     }

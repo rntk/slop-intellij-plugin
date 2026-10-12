@@ -347,6 +347,7 @@ class FlowChartCanvas(
                 .joinToString("<br>", "<html>", "</html>")
         }
         is FlowPill -> when {
+            shape.tooltip != null -> "<html>Leaves the function: <code>${StringUtil.escapeXmlEntities(shape.tooltip)}</code></html>"
             shape.callers -> if (shape.toggle in board.openCallers) "Hide callers" else "Show direct callers"
             shape.toggle == null -> null
             shape.toggle in board.openCalls -> "Hide what this function calls"
@@ -507,7 +508,9 @@ class FlowChartCanvas(
             FlowPillStyle.CASE -> Triple(background, spineColor, JBColor.foreground())
             FlowPillStyle.OTHERWISE -> Triple(background, otherwiseColor, mutedText)
             FlowPillStyle.ERROR -> Triple(background, errorColor, errorColor)
-            FlowPillStyle.END -> Triple(spineColor, spineColor, JBColor.foreground())
+            // Exits are terminals like End: filled, nothing below them.
+            FlowPillStyle.END, FlowPillStyle.EXIT -> Triple(spineColor, spineColor, JBColor.foreground())
+            FlowPillStyle.THROW -> Triple(ColorUtil.withAlpha(errorColor, 0.18), errorColor, errorColor)
         }
         g.color = fill
         g.fill(shape)

@@ -2,10 +2,10 @@ package dev.insight.enrichment
 
 import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallSite
 import dev.insight.callgraph.FlowCard
 import dev.insight.callgraph.FlowSource
 import dev.insight.callgraph.FlowStart
+import dev.insight.callgraph.SourceSite
 import dev.insight.callgraph.SymbolKind
 
 /**
@@ -34,8 +34,8 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
             .groupBy { it.callee }.mapValues { (_, edges) -> edges.map { it.caller }.distinct().sorted() }
     }
 
-    /** The calls with [callSites] read from source, and cards using [facts] (of the current build) where present, else the snapshot's. */
-    fun source(callSites: Map<Int, List<CallSite>> = emptyMap(), facts: Map<Int, SymbolFacts> = emptyMap()): FlowSource =
+    /** The calls with [callSites] (and exits) read from source, and cards using [facts] (of the current build) where present, else the snapshot's. */
+    fun source(callSites: Map<Int, List<SourceSite>> = emptyMap(), facts: Map<Int, SymbolFacts> = emptyMap()): FlowSource =
         FlowSource(calls, callers, callSites) { card(it, facts[it]) }
 
     /** The column for enrichment flow [flowId]: its entry under the flow's name, or null when it no longer exists. */
