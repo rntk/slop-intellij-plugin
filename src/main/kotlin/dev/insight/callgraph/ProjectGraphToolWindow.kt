@@ -1,7 +1,12 @@
 package dev.insight.callgraph
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.insight.enrichment.ColorBy
@@ -9,7 +14,11 @@ import dev.insight.enrichment.Domain
 import dev.insight.enrichment.EdgeFilter
 import dev.insight.enrichment.EnrichmentLens
 import dev.insight.enrichment.EnrichmentService
+import dev.insight.enrichment.EnrichmentSnapshot
 import dev.insight.enrichment.Flow
+import dev.insight.enrichment.FlowChartLens
+import dev.insight.enrichment.SymbolFacts
+import dev.insight.enrichment.SymbolFactsExtractor
 import dev.insight.enrichment.LensOptions
 import dev.insight.enrichment.SectionBy
 import dev.insight.enrichment.SectionLens
@@ -23,6 +32,13 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiNamedElement
+import com.intellij.psi.SmartPointerManager
+import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.pom.Navigatable
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.DocumentAdapter
@@ -38,6 +54,56 @@ import java.awt.GridLayout
 import java.awt.event.ActionEvent
 import javax.swing.*
 import javax.swing.event.DocumentEvent
+
+private const val TOOL_WINDOW_ID = "Application Graph"
+
+/**
+ * Adds the symbol at the caret, the symbol referenced at the caret, or the selected declaration to the flow chart of the
+ * Application Graph tool window. Inside a parameter or local variable, the declaration around it is added.
+ */
+class AddToFlowChartAction : AnAction() {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        e.presentation.isEnabledAndVisible = project != null && target(e)?.let { inContent(project, it) } == true
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val element = target(e) ?: return
+        val pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element)
+        val window = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID) ?: return
+        window.activate {
+            window.contentManager.contents.firstNotNullOfOrNull { it.component as? ProjectGraphPanel }?.addToChart(pointer)
+        }
+    }
+
+    private fun target(e: AnActionEvent): PsiElement? {
+        e.getData(CommonDataKeys.PSI_ELEMENT)?.let(::declaration)?.let { return it }
+        val file = e.getData(CommonDataKeys.PSI_FILE) ?: return null
+        val offset = e.getData(CommonDataKeys.CARET)?.offset ?: return null
+        return declaration(file.findElementAt(offset) ?: return null)
+    }
+
+    /** The innermost declaration around [element] that the flow chart can show. */
+    private fun declaration(element: PsiElement): PsiElement? {
+        var current: PsiElement? = element.navigationElement
+        while (current != null && current !is PsiFile) {
+            if (ProjectGraphAnalyzer.kind(current) in CHART_KINDS) return current
+            current = current.parent
+        }
+        return null
+    }
+
+    /** The application graph covers project content only. */
+    private fun inContent(project: Project, element: PsiElement): Boolean =
+        element.containingFile?.virtualFile?.let { ProjectFileIndex.getInstance(project).isInContent(it) } == true
+
+    private companion object {
+        val CHART_KINDS = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
+    }
+}
 
 class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -58,7 +124,8 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private val detail = JComboBox(GraphDetail.entries.toTypedArray()).apply { selectedItem = GraphDetail.OVERVIEW }
     private val viewChoice = JComboBox(GraphView.entries.toTypedArray()).apply {
         selectedItem = GraphView.GRAPH
-        toolTipText = "Graph: free layered layout · Sections: titled columns grouped by file, folder or enrichment judgment"
+        toolTipText = "Graph: free layered layout · Sections: titled columns grouped by file, folder or enrichment judgment · " +
+            "Flow chart: functions and flows added to the chart, explored through their calls and callers"
     }
     private val sectionBy = JComboBox(SectionBy.entries.toTypedArray()).apply {
         selectedItem = SectionBy.FILE
@@ -76,6 +143,19 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
     private val activeFile = JLabel()
     private val selection = JLabel(HINT)
     private val canvas = CallGraphCanvas(onSelect = ::describe, onOpen = ::activate, popup = ::menu, menuOnClick = true)
+    private val flowCanvas: FlowChartCanvas = FlowChartCanvas(onSelect = ::describeStep, onOpen = { navigate(it) }, popup = ::flowMenu, onChart = ::loadSteps,
+        emptyText = "Nothing on the chart yet. Right-click a function in the Graph view and choose Add to flow chart, or pick a flow above.")
+    private val scroll = JBScrollPane(canvas)
+    /** Reads call sites and docs of steps that appeared on the flow chart. */
+    private var flowJob: Job? = null
+    /** Calls for the flow chart, made from [result], the latest enrichment and the colouring; see [renderFlow]. */
+    private var flowLens: FlowLensFor? = null
+    /** Call sites and current source facts of flow chart steps, read once per build. */
+    private val callSites = HashMap<Int, List<CallSite>>()
+    private val stepFacts = HashMap<Int, SymbolFacts>()
+    private val stepsRead = hashSetOf<Int>()
+    /** A symbol sent to the flow chart from the editor, waiting for a finished graph build; see [addToChart]. */
+    private var pendingChart: SmartPsiElementPointer<PsiElement>? = null
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
     private val enrichButton = JButton("Enrich")
@@ -119,7 +199,12 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
                     (it as JComponent).toolTipText = (value as? FlowChoice)?.flow?.description
                 }
         }
-        for (control in listOf(colorBy, edgeFilter, flowChoice)) control.addActionListener { lensChanged() }
+        for (control in listOf(colorBy, edgeFilter)) control.addActionListener { lensChanged() }
+        flowChoice.addActionListener {
+            if (updatingLens) return@addActionListener
+            lensChanged()
+            if (flowView) selectedFlow()?.let(::addFlow)
+        }
         for (control in listOf(hideTests, hideUtilities)) control.addActionListener { lensChanged() }
         previousStep.apply { toolTipText = "Previous step of the flow"; addActionListener { stepFlow(-1) } }
         nextStep.apply { toolTipText = "Next step of the flow"; addActionListener { stepFlow(1) } }
@@ -165,7 +250,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
             add(activeFile, BorderLayout.CENTER)
             add(status, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        add(JBScrollPane(canvas), BorderLayout.CENTER)
+        add(scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, 4)).apply {
             add(selection, BorderLayout.NORTH)
             add(JPanel(GridLayout(0, 1, 0, 4)).apply {
@@ -173,6 +258,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
                 add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
                 add(JLabel("Stripe: colour-by · ▶ entry point · numbered: flow step · red dashed: error path"))
                 add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
+                add(JLabel("Flow chart: Add to flow chart in the graph, or pick a flow · pills above a step show callers, below it calls · right-click for more · Ctrl+wheel to zoom"))
             }, BorderLayout.CENTER)
         }, BorderLayout.SOUTH)
         project.messageBus.connect(this).apply {
@@ -193,7 +279,11 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         add(viewChoice.apply {
             addActionListener {
                 sectionBy.isEnabled = selectedItem == GraphView.SECTIONS
+                val shown = if (flowView) flowCanvas else canvas
+                if (scroll.viewport.view !== shown) scroll.setViewportView(shown)
+                updateFlowControls()
                 rerender()
+                if (flowView && flowCanvas.board.starts.isEmpty()) selectedFlow()?.let(::addFlow)
             }
         })
         add(JLabel("by"))
@@ -212,11 +302,11 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
             selectedItem = "100%"
             var updating = false
             addActionListener {
-                if (!updating) canvas.zoom = selectedItem.toString().removeSuffix("%").toDouble() / 100
+                if (!updating) (if (flowView) flowCanvas::zoom else canvas::zoom).set(selectedItem.toString().removeSuffix("%").toDouble() / 100)
             }
-            canvas.addPropertyChangeListener("zoom") {
+            for (target in listOf(canvas, flowCanvas)) target.addPropertyChangeListener("zoom") { event ->
                 updating = true
-                try { model.setSelectedItem("${kotlin.math.round(canvas.zoom * 100).toInt()}%") }
+                try { model.setSelectedItem("${kotlin.math.round(event.newValue as Double * 100).toInt()}%") }
                 finally { updating = false }
             }
         })
@@ -233,10 +323,12 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
 
     private fun selectedFlow(): Flow? = (flowChoice.selectedItem as? FlowChoice)?.flow
 
+    private val flowView: Boolean get() = viewChoice.selectedItem == GraphView.FLOW
+
     private fun updateFlowControls() {
         val flow = selectedFlow()
         flowChoice.toolTipText = flow?.description
-        previousStep.isEnabled = flow != null && enrichment.latest != null
+        previousStep.isEnabled = if (flowView) flowCanvas.chart != null else flow != null && enrichment.latest != null
         nextStep.isEnabled = previousStep.isEnabled
     }
 
@@ -273,6 +365,10 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
      * the selection is not in the flow. Groups folding the node are expanded first; the source opens without taking focus.
      */
     private fun stepFlow(delta: Int) {
+        if (flowView) {
+            flowCanvas.step(delta)?.let { navigate(it, focus = false) }
+            return
+        }
         val tree = hierarchy ?: return
         val flow = selectedFlow() ?: return
         val snapshot = enrichment.latest ?: return
@@ -389,6 +485,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         val files = base.nodes.count { it.kind == SymbolKind.FILE }
         status.text = "${shown.graph.nodes.size} nodes shown · ${shown.graph.edges.size} relationships · " +
             "${base.nodes.size - files} symbols in $files files"
+        if (flowView) renderFlow()
     }
 
     private fun describe(id: Int?) {
@@ -418,6 +515,128 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
             flows.takeIf { it > 0 }?.let { "in $it flow(s)" },
         ).joinToString(" · ")
     }
+
+    /**
+     * Draws the flow chart with the calls of the current graph, described by the latest enrichment. The calls are
+     * prepared once per graph, enrichment and colouring; call sites and docs are read by [loadSteps].
+     */
+    private fun renderFlow() {
+        val built = result
+        if (built == null) {
+            flowCanvas.show(null, "Building application graph…")
+            return
+        }
+        val snapshot = enrichment.latest
+        val made = flowLens?.takeIf { it.graph === built.graph && it.snapshot === snapshot && it.colorBy == options.colorBy }
+            ?: lens<FlowLensFor?>(null) { FlowLensFor(built.graph, snapshot, options.colorBy, FlowChartLens(snapshot, built.graph, options.colorBy)) }
+        flowLens = made
+        if (made == null) flowCanvas.show(null, "Could not draw the flow chart.")
+        else lens(Unit) { flowCanvas.show(made.lens.source(callSites, stepFacts)) }
+        updateFlowControls()
+    }
+
+    /**
+     * Reads, in the background, the call sites (the order of calls and the conditions around them) and current docs of
+     * steps that are new on [chart], then draws it again. One read runs at a time; the next picks up what is still missing.
+     */
+    private fun loadSteps(chart: FlowChart?) {
+        updateFlowControls()
+        val built = result ?: return
+        val lens = flowLens?.lens ?: return
+        if (chart == null || flowJob?.isActive == true) return
+        val missing = chart.steps.map { it.node }.filter { it !in stepsRead }
+        if (missing.isEmpty()) return
+        flowJob = service.scope.launch(Dispatchers.EDT) {
+            val (sites, facts) = try {
+                smartReadAction(project) {
+                    val callees = missing.flatMap { id -> lens.calls[id].orEmpty().map { it.callee } }
+                    CallSiteAnalyzer.collect(built, missing, callees) to SymbolFactsExtractor.extract(project, built, only = missing.toSet())
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Without call sites the calls keep the graph's order and have no branches.
+                thisLogger().warn("Reading call sites failed", e)
+                emptyMap<Int, List<CallSite>>() to emptyMap()
+            }
+            if (result !== built || disposed) return@launch
+            stepsRead += missing
+            callSites += sites
+            stepFacts += facts
+            flowJob = null
+            if (flowView) renderFlow()
+        }
+    }
+
+    /** Places [start] on the flow chart, switching to it. */
+    private fun addToChart(start: FlowStart) {
+        // Added before switching, so switching does not also add the chosen flow to an empty chart.
+        flowCanvas.add(start)
+        if (!flowView) viewChoice.selectedItem = GraphView.FLOW
+        flowCanvas.requestFocusInWindow()
+        SwingUtilities.invokeLater { if (!disposed) flowCanvas.selectNode(start.node) }
+    }
+
+    /**
+     * Places the symbol [pointer] points to on the flow chart. While the graph is (re)building, for example right after
+     * the symbol was written, it is placed once the build finishes.
+     */
+    fun addToChart(pointer: SmartPsiElementPointer<PsiElement>) {
+        pendingChart = pointer
+        placePending()
+    }
+
+    private fun placePending() {
+        val pointer = pendingChart ?: return
+        val built = result
+        if (built == null || job?.isActive == true) return
+        pendingChart = null
+        val element = pointer.element ?: return
+        val path = element.containingFile?.virtualFile?.path
+        val node = built.graph.nodes.firstOrNull { it.filePath == path && built.pointers.getOrNull(it.id)?.element == element }
+        if (node == null) {
+            status.text = "${(element as? PsiNamedElement)?.name ?: "This symbol"} is not in the application graph."
+            return
+        }
+        addToChart(FlowStart(node.id))
+    }
+
+    private fun addFlow(flow: Flow) {
+        flowLens?.lens?.start(flow.id)?.let(::addToChart)
+    }
+
+    private fun describeStep(source: Int?) {
+        val node = source?.let { result?.graph?.nodes?.getOrNull(it) }
+        selection.text = if (node == null) FLOW_HINT
+            else listOfNotNull("${node.kind.name.lowercase()} ${node.name}", node.location.ifEmpty { null }, annotationSummary(source))
+                .joinToString(" · ")
+    }
+
+    /** The menu of a step or reference to [source], or of the chart itself for null. */
+    private fun flowMenu(source: Int?): JPopupMenu? = JPopupMenu().apply {
+        fun item(text: String, action: () -> Unit) = add(JMenuItem(text).apply { addActionListener { action() } })
+        val board = flowCanvas.board
+        val step = source?.let { flowCanvas.chart?.step(it) }
+        if (source != null) {
+            if (result?.pointers?.getOrNull(source) != null) item("Open source") { navigate(source) }
+            item("Show in graph") {
+                val tree = hierarchy ?: return@item
+                viewChoice.selectedItem = GraphView.GRAPH
+                render(source, expanded + tree.ancestors(source))
+            }
+        }
+        if (step != null && (step.calls > 0 || step.callers > 0)) {
+            addSeparator()
+            if (step.calls > 0) item(if (step.node in board.openCalls) "Hide calls" else "Show calls (${step.calls})") { flowCanvas.toggleCalls(step.node) }
+            if (step.callers > 0) item(if (step.node in board.openCallers) "Hide callers" else "Show callers (${step.callers})") { flowCanvas.toggleCallers(step.node) }
+        }
+        if (source != null) {
+            addSeparator()
+            if (board.starts.any { it.node == source }) item("Remove column") { flowCanvas.removeColumn(source) }
+            else item("Open in new column") { flowCanvas.add(FlowStart(source)) }
+        }
+        if (board.starts.isNotEmpty()) item("Clear chart") { flowCanvas.clear() }
+    }.takeIf { it.componentCount > 0 }
 
     private fun enrich() {
         val built = result ?: return
@@ -486,6 +705,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
                 add(item("Collapse into ${tree.nodes[parent].name}") { setExpanded(open - parent, parent) })
             }
             if (result?.pointers?.getOrNull(source) != null) add(item("Open source") { navigate(source) })
+            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Add to flow chart") { addToChart(FlowStart(source)) })
         }.takeIf { it.componentCount > 0 }
     }
 
@@ -498,10 +718,13 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
             try {
                 val built = service.buildProject()
                 val tree = built.graph.hierarchy()
+                result?.let { previous -> moveFlowChart(previous.graph, built.graph) }
                 result = built
                 hierarchy = tree
                 if (expandedKeys == null) expandedKeys = tree.expansion(detail.selectedItem as GraphDetail).mapTo(hashSetOf(), tree::key)
                 render(null)
+                // This job is still active here; place a symbol sent from the editor once it has finished.
+                SwingUtilities.invokeLater { if (!disposed) placePending() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -511,12 +734,27 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
         }
     }
 
-    override fun dispose() { disposed = true; searchTimer.stop(); job?.cancel(); enrichJob?.cancel() }
+    /** Keeps the flow chart across a rebuild: its functions are matched by [stableKey]; call sites and docs are read again. */
+    private fun moveFlowChart(previous: CallGraph, next: CallGraph) {
+        flowJob?.cancel()
+        flowJob = null
+        callSites.clear()
+        stepFacts.clear()
+        stepsRead.clear()
+        val ids = HashMap<String, Int>()
+        next.nodes.forEach { ids.putIfAbsent(stableKey(it), it.id) }
+        flowCanvas.remap { id -> previous.nodes.getOrNull(id)?.let { ids[stableKey(it)] } }
+    }
+
+    override fun dispose() { disposed = true; searchTimer.stop(); job?.cancel(); enrichJob?.cancel(); flowJob?.cancel() }
 
     /** A flow list entry; null stands for "(none)". */
     private class FlowChoice(val flow: Flow?) {
         override fun toString() = flow?.name ?: "(none)"
     }
+
+    /** The [lens] made for [graph], [snapshot] and [colorBy]. */
+    private class FlowLensFor(val graph: CallGraph, val snapshot: EnrichmentSnapshot?, val colorBy: ColorBy, val lens: FlowChartLens)
 
     private enum class SearchMode(val label: String) {
         HIGHLIGHT("Highlight"), FILTER("Filter");
@@ -525,5 +763,7 @@ private class ProjectGraphPanel(private val project: Project) : JPanel(BorderLay
 
     private companion object {
         const val HINT = "Click a node for Side by side. Enter expands a group or opens a symbol's source."
+        const val FLOW_HINT = "Click a step to select it; double-click or Enter opens its source. Up/Down move between steps; " +
+            "Left toggles callers; Right or Space toggles calls; Delete removes a column."
     }
 }

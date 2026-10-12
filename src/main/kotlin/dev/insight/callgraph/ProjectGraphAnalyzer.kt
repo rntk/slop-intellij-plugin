@@ -23,13 +23,13 @@ object ProjectGraphAnalyzer {
         return elements
     }
 
-    private fun kind(element: PsiElement): SymbolKind? = if (element is PsiFile) SymbolKind.FILE
+    internal fun kind(element: PsiElement): SymbolKind? = if (element is PsiFile) SymbolKind.FILE
         else supports.firstNotNullOfOrNull { it.symbolKind(element) }
 
-    private fun source(element: PsiElement): PsiElement =
+    internal fun source(element: PsiElement): PsiElement =
         supports.firstNotNullOfOrNull { it.unwrap(element) } ?: element.navigationElement
 
-    private fun key(element: PsiElement): Triple<String, Int, SymbolKind>? {
+    internal fun key(element: PsiElement): Triple<String, Int, SymbolKind>? {
         val target = source(element)
         return target.containingFile?.virtualFile?.path?.let { Triple(it, target.textOffset, kind(target) ?: return null) }
     }

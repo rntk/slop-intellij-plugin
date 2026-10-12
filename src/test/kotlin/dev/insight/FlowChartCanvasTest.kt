@@ -1,0 +1,151 @@
+package dev.insight
+
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.callgraph.*
+import java.awt.Point
+import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
+
+class FlowChartCanvasTest : BasePlatformTestCase() {
+    /** 0 → 1 → (2, 3); 0 → 4; callers 5 → 0 and 6 → 0; 5 → 8; 7 → 5 → 7. */
+    private fun source(): FlowSource {
+        val edges = listOf(0 to 1, 1 to 2, 1 to 3, 0 to 4, 5 to 0, 6 to 0, 5 to 8, 7 to 5, 5 to 7).map { (from, to) -> CallGraphEdge(from, to) }
+        return FlowSource(edges.groupBy { it.caller }, edges.groupBy { it.callee }.mapValues { (_, e) -> e.map { it.caller } }) {
+            FlowCard("Service.step$it", "file.kt:$it", "Does step $it.")
+        }
+    }
+
+    private fun canvas(opened: MutableList<Int> = mutableListOf()) = FlowChartCanvas({}, { opened += it }).apply {
+        show(source())
+        add(FlowStart(0, "Flow", "Does things"))
+        size = preferredSize
+    }
+
+    private fun FlowChartCanvas.nodes() = geometry!!.cards.keys
+
+    private fun FlowChartCanvas.pill(node: Int, callers: Boolean) =
+        geometry!!.shapes.filterIsInstance<FlowPill>().single { it.toggle == node && it.callers == callers }
+
+    private fun paint(canvas: FlowChartCanvas) {
+        val image = BufferedImage(canvas.width.coerceAtLeast(1), canvas.height.coerceAtLeast(1), BufferedImage.TYPE_INT_ARGB)
+        val g = image.createGraphics()
+        try { canvas.paint(g) } finally { g.dispose() }
+    }
+
+    private fun click(canvas: FlowChartCanvas, point: Point, clicks: Int = 1) {
+        val press = MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0, 0, point.x, point.y, clicks, false, MouseEvent.BUTTON1)
+        val release = MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0, 0, point.x, point.y, clicks, false, MouseEvent.BUTTON1)
+        canvas.mouseListeners.forEach { it.mousePressed(press) }
+        canvas.mouseListeners.forEach { it.mouseReleased(release) }
+    }
+
+    private fun centre(bounds: java.awt.Rectangle) = Point(bounds.centerX.toInt(), bounds.centerY.toInt())
+
+    fun `test painting leaves the layout unchanged`() {
+        val canvas = canvas()
+        canvas.toggleCalls(1)
+        val before = canvas.geometry
+        val shapes = before!!.shapes.toString()
+        repeat(3) { paint(canvas) }
+        assertEquals(shapes, canvas.geometry!!.shapes.toString())
+        assertEquals(before.size, canvas.geometry!!.size)
+    }
+
+    fun `test an added function shows its direct calls and is selected`() {
+        val canvas = canvas()
+        assertEquals(setOf(0, 1, 4), canvas.nodes())
+        assertEquals(0, canvas.selectedNode)
+        assertEquals("Flow", canvas.chart!!.lanes.single().title)
+    }
+
+    fun `test clicking a card selects it, a double click opens it and arrows step through the chart`() {
+        val opened = mutableListOf<Int>()
+        val canvas = canvas(opened)
+        canvas.toggleCalls(1)
+        click(canvas, centre(canvas.geometry!!.cards.getValue(1).bounds))
+        assertEquals(1, canvas.selectedNode)
+        click(canvas, centre(canvas.geometry!!.cards.getValue(2).bounds), clicks = 2)
+        assertEquals(listOf(2), opened)
+        assertEquals(3, canvas.step(1))
+        assertEquals(3, canvas.selectedNode)
+        assertEquals(4, canvas.step(5))
+        assertEquals(0, canvas.step(-10))
+    }
+
+    fun `test the calls pill shows and hides calls, and a hidden selection is cleared`() {
+        val canvas = canvas()
+        val closed = canvas.geometry!!
+        click(canvas, centre(canvas.pill(1, callers = false).bounds))
+        assertEquals(setOf(0, 1, 2, 3, 4), canvas.nodes())
+        assertTrue(canvas.geometry!!.size.height > closed.size.height)
+        canvas.select(3)
+        click(canvas, centre(canvas.pill(1, callers = false).bounds))
+        assertEquals(setOf(0, 1, 4), canvas.nodes())
+        assertNull(canvas.selectedNode)
+    }
+
+    fun `test callers open level by level and a caller opens its own calls on the same chart`() {
+        val canvas = canvas()
+        click(canvas, centre(canvas.pill(0, callers = true).bounds))
+        assertEquals(0, canvas.selectedNode)
+        assertTrue(canvas.nodes().containsAll(listOf(5, 6)))
+        assertFalse(7 in canvas.nodes())
+        // The caller's calls: the function below it is a reference, its other call a new step.
+        click(canvas, centre(canvas.pill(5, callers = false).bounds))
+        assertTrue(8 in canvas.nodes())
+        assertTrue(canvas.geometry!!.shapes.filterIsInstance<FlowRefBox>().any { it.ref.node == 0 })
+        // The caller's callers, then a cycle back to it.
+        click(canvas, centre(canvas.pill(5, callers = true).bounds))
+        assertTrue(7 in canvas.nodes())
+        click(canvas, centre(canvas.pill(7, callers = true).bounds))
+        val reference = canvas.geometry!!.shapes.filterIsInstance<FlowRefBox>().single { it.ref.node == 5 }
+        click(canvas, centre(reference.bounds))
+        assertEquals(5, canvas.selectedNode)
+        // Hiding the callers of 0 hides everything above it but remembers what was open.
+        canvas.toggleCallers(0)
+        assertNull(canvas.selectedNode)
+        assertEquals(setOf(0, 1, 4), canvas.nodes())
+        canvas.toggleCallers(0)
+        assertTrue(canvas.nodes().containsAll(listOf(5, 6, 7, 8)))
+        paint(canvas)
+    }
+
+    fun `test a function opened in a new column heads it and is a reference in the first`() {
+        val canvas = canvas()
+        canvas.add(FlowStart(4))
+        assertEquals(2, canvas.chart!!.lanes.size)
+        assertEquals(4, canvas.selectedNode)
+        assertTrue(canvas.geometry!!.cards.getValue(4).bounds.x > canvas.geometry!!.cards.getValue(0).bounds.x)
+        assertEquals(4, canvas.geometry!!.shapes.filterIsInstance<FlowRefBox>().single().ref.node)
+        canvas.add(FlowStart(4))
+        assertEquals(2, canvas.chart!!.lanes.size)
+        canvas.removeColumn(4)
+        assertEquals(1, canvas.chart!!.lanes.size)
+        assertTrue(4 in canvas.nodes())
+        assertTrue(canvas.geometry!!.shapes.none { it is FlowRefBox })
+    }
+
+    fun `test the board and selection survive a new source and a rebuilt graph`() {
+        val canvas = canvas()
+        canvas.toggleCalls(1)
+        canvas.select(2)
+        canvas.show(source())
+        assertEquals(setOf(0, 1, 2, 3, 4), canvas.nodes())
+        assertEquals(2, canvas.selectedNode)
+        // In the rebuilt graph every id moved up by 10 and node 3 is gone.
+        canvas.remap { if (it == 3) null else it + 10 }
+        val moved = source().let { s ->
+            FlowSource(s.calls.entries.associate { (k, v) -> k + 10 to v.filter { it.callee != 3 }.map { CallGraphEdge(it.caller + 10, it.callee + 10) } },
+                emptyMap()) { FlowCard("Service.step${it - 10}") }
+        }
+        canvas.show(moved)
+        assertEquals(setOf(10, 11, 12, 14), canvas.nodes())
+        assertEquals(12, canvas.selectedNode)
+        canvas.show(null, "Building")
+        assertNull(canvas.geometry)
+        canvas.show(moved)
+        canvas.clear()
+        assertNull(canvas.chart)
+        assertNull(canvas.selectedNode)
+    }
+}

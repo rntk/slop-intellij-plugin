@@ -50,43 +50,14 @@ class FlowTracer(
         progress: EnrichmentProgress = EnrichmentProgress.NONE,
     ): FlowResult {
         val graph = input.graph
-        val calls = graph.edges.filter { it.kind == RelationKind.CALL && it.caller != it.callee }.groupBy { it.caller }
-            .mergeDispatch(overrides(graph, input.facts))
-        val entries = graph.nodes.filter { node ->
-            node.kind == SymbolKind.FUNCTION && node.inProject &&
-                (nodes[node.id]?.entryPoint?.let { it >= options.entryThreshold } == true ||
-                    heuristics[node.id]?.tags.orEmpty().any { it.startsWith("entry:") }) &&
-                (options.includeTests || !isTest(nodes[node.id], heuristics[node.id]))
-        }.map { it.id }.toSet()
-
-        fun follows(edge: CallGraphEdge): Boolean {
-            val callee = graph.nodes.getOrNull(edge.callee) ?: return false
-            if (!callee.inProject || callee.kind == SymbolKind.FILE || callee.kind == SymbolKind.DIRECTORY) return false
-            if ((nodes[edge.callee]?.utility ?: 0.0) >= options.utilityThreshold) return false
-            val annotation = edges[edge] ?: return true
-            return annotation.errorPath < 0.5 && annotation.continuesOperation >= options.continueThreshold
-        }
+        val calls = flowCalls(graph, input.facts)
+        val entries = flowEntries(graph, nodes, heuristics, options)
+        val follows = flowFilter(graph, nodes, edges, options)
 
         val traced = entries.mapIndexedNotNull { index, entry ->
             progress.report("Tracing flows", index + 1, entries.size)
-            val members = linkedSetOf(entry)
-            val flowEdges = linkedSetOf<CallGraphEdge>()
-            var frontier = listOf(entry)
-            for (depth in 1..options.maxDepth) {
-                val next = mutableListOf<Int>()
-                for (caller in frontier) for (edge in calls[caller].orEmpty()) {
-                    if (!follows(edge)) continue
-                    if (edge.callee !in members) {
-                        if (members.size >= options.maxFlowNodes) continue
-                        members += edge.callee
-                        if (edge.callee !in entries) next += edge.callee
-                    }
-                    flowEdges += edge
-                }
-                if (next.isEmpty()) break
-                frontier = next
-            }
-            members.takeIf { it.size >= options.minFlowNodes }?.let { Traced(entry, it.toList(), flowEdges) }
+            val (members, flowEdges) = walkFlow(entry, calls, follows, entries, options)
+            members.takeIf { it.size >= options.minFlowNodes }?.let { Traced(entry, it, flowEdges) }
         }
 
         val importance = { id: Int -> nodes[id]?.importance?.normalized ?: 0.5 }
@@ -116,10 +87,6 @@ class FlowTracer(
     }
 
     private class Traced(val entry: Int, val nodes: List<Int>, val edges: Set<CallGraphEdge>)
-
-    private fun isTest(annotation: NodeAnnotation?, heuristics: Heuristics?) =
-        heuristics?.tags.orEmpty().contains("test") || (annotation?.concerns?.get("test") ?: 0.0) > 0.5 ||
-            annotation?.phase?.choice == "test"
 
     private suspend fun name(
         input: EnrichmentInput,
@@ -196,6 +163,69 @@ class FlowTracer(
         val schema: JsonObject = JsonSchemas.obj("flows" to JsonSchemas.array(JsonSchemas.obj(
             "id" to JsonSchemas.integer(), "name" to JsonSchemas.string(), "description" to JsonSchemas.string())))
     }
+}
+
+/** In-project CALL edges by caller, plus an INHERITS edge from each base method to its implementations (see [overrides]). */
+internal fun flowCalls(graph: CallGraph, facts: Map<Int, SymbolFacts> = emptyMap()): Map<Int, List<CallGraphEdge>> =
+    graph.edges.filter { it.kind == RelationKind.CALL && it.caller != it.callee }.groupBy { it.caller }
+        .mergeDispatch(overrides(graph, facts))
+
+/** Functions that start a flow: likely entry points or `entry:` heuristic tags, without tests unless [FlowOptions.includeTests]. */
+internal fun flowEntries(graph: CallGraph, nodes: Map<Int, NodeAnnotation>, heuristics: Map<Int, Heuristics>, options: FlowOptions): Set<Int> =
+    graph.nodes.filter { node ->
+        node.kind == SymbolKind.FUNCTION && node.inProject &&
+            (nodes[node.id]?.entryPoint?.let { it >= options.entryThreshold } == true ||
+                heuristics[node.id]?.tags.orEmpty().any { it.startsWith("entry:") }) &&
+            (options.includeTests || !isTest(nodes[node.id], heuristics[node.id]))
+    }.map { it.id }.toSet()
+
+private fun isTest(annotation: NodeAnnotation?, heuristics: Heuristics?) =
+    heuristics?.tags.orEmpty().contains("test") || (annotation?.concerns?.get("test") ?: 0.0) > 0.5 ||
+        annotation?.phase?.choice == "test"
+
+/**
+ * Whether a flow continues along a call: the callee is in-project code and not a generic utility, and the call is
+ * not mostly on an error path and continues the caller's operation. Without judgments every in-project call is followed.
+ */
+internal fun flowFilter(graph: CallGraph, nodes: Map<Int, NodeAnnotation>, edges: Map<CallGraphEdge, EdgeAnnotation>, options: FlowOptions) =
+    { edge: CallGraphEdge ->
+        val callee = graph.nodes.getOrNull(edge.callee)
+        when {
+            callee == null || !callee.inProject || callee.kind == SymbolKind.FILE || callee.kind == SymbolKind.DIRECTORY -> false
+            (nodes[edge.callee]?.utility ?: 0.0) >= options.utilityThreshold -> false
+            else -> edges[edge]?.let { it.errorPath < 0.5 && it.continuesOperation >= options.continueThreshold } ?: true
+        }
+    }
+
+/**
+ * Breadth-first walk from [entry] along the [calls] accepted by [follows], up to [FlowOptions.maxDepth] levels and
+ * [FlowOptions.maxFlowNodes] members. Members in [stops] (other entry points) are included but not expanded.
+ */
+internal fun walkFlow(
+    entry: Int,
+    calls: Map<Int, List<CallGraphEdge>>,
+    follows: (CallGraphEdge) -> Boolean,
+    stops: Set<Int>,
+    options: FlowOptions,
+): Pair<List<Int>, Set<CallGraphEdge>> {
+    val members = linkedSetOf(entry)
+    val flowEdges = linkedSetOf<CallGraphEdge>()
+    var frontier = listOf(entry)
+    for (depth in 1..options.maxDepth) {
+        val next = mutableListOf<Int>()
+        for (caller in frontier) for (edge in calls[caller].orEmpty()) {
+            if (!follows(edge)) continue
+            if (edge.callee !in members) {
+                if (members.size >= options.maxFlowNodes) continue
+                members += edge.callee
+                if (edge.callee !in stops) next += edge.callee
+            }
+            flowEdges += edge
+        }
+        if (next.isEmpty()) break
+        frontier = next
+    }
+    return members.toList() to flowEdges
 }
 
 /**

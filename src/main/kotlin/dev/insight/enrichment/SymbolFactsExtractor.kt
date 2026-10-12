@@ -45,8 +45,11 @@ object SymbolFactsExtractor {
         val imports: List<String>,
     )
 
-    /** Must be called inside a read action. Nodes that are outside the project or no longer resolve are skipped. */
-    fun extract(project: Project, result: CallGraphResult, budget: FactsBudget = FactsBudget()): Map<Int, SymbolFacts> {
+    /**
+     * Must be called inside a read action. Nodes that are outside the project or no longer resolve are skipped, as are
+     * nodes not in [only] when it is given (their overload ordinals in [SymbolFacts.key] may then differ).
+     */
+    fun extract(project: Project, result: CallGraphResult, budget: FactsBudget = FactsBudget(), only: Set<Int>? = null): Map<Int, SymbolFacts> {
         val index = ProjectFileIndex.getInstance(project)
         val importsByFile = HashMap<PsiFile, List<String>>()
         val seen = HashMap<String, Int>()
@@ -54,6 +57,7 @@ object SymbolFactsExtractor {
         for (node in result.graph.nodes.sortedBy { it.id }) {
             ProgressManager.checkCanceled()
             if (!node.inProject || node.kind !in KINDS) continue
+            if (only != null && node.id !in only) continue
             val element = result.pointers.getOrNull(node.id)?.element?.takeIf { it.isValid } ?: continue
             val file = element.containingFile ?: continue
             val path = relativePath(project, index, file)

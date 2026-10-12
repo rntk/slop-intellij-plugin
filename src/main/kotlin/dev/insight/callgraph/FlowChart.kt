@@ -1,0 +1,249 @@
+package dev.insight.callgraph
+
+import java.awt.Color
+
+/** Text of one step's card in a [FlowChart]. */
+data class FlowCard(
+    val title: String,
+    /** Small accent line above the title, such as the step number and file. */
+    val meta: String? = null,
+    val description: String? = null,
+    /** Small print under the description: layer, domain, concerns. */
+    val details: String? = null,
+    val tooltip: String? = null,
+    /** Colour of the step's dot, for example its domain; the accent colour when null. */
+    val color: Color? = null,
+)
+
+sealed interface FlowItem
+
+/**
+ * A function on the chart, numbered in reading order. It calls [calls] functions, listed in [items] while its calls
+ * are open, and has [callers] direct callers, listed in [upstream] while they are open (null while closed).
+ */
+data class FlowStep(
+    val node: Int,
+    val number: Int,
+    val card: FlowCard,
+    val items: List<FlowItem> = emptyList(),
+    val calls: Int = 0,
+    val callers: Int = 0,
+    val upstream: List<FlowItem>? = null,
+) : FlowItem
+
+/** Another occurrence of a function already shown as step [number]. */
+data class FlowRef(val node: Int, val number: Int, val title: String) : FlowItem
+
+/** A fork: one of [branches] runs, then the flow continues below. */
+data class FlowDecision(val kind: DecisionKind, val question: String, val branches: List<FlowBranch>) : FlowItem
+
+/** [items] may be empty: the branch skips straight to the end of the decision. */
+data class FlowBranch(val label: String, val kind: BranchKind, val items: List<FlowItem> = emptyList())
+
+/** Calls repeated by a loop. */
+data class FlowLoop(val label: String, val items: List<FlowItem>) : FlowItem
+
+/** [CONDITION]: `if` or `when`/`switch`; [DISPATCH]: a call of a base method runs one of its implementations; [ERROR]: a `catch`. */
+enum class DecisionKind { CONDITION, DISPATCH, ERROR }
+
+/** [OTHERWISE]: `else`, `default`, or the implicit path when no condition holds; [ERROR]: the error handler. */
+enum class BranchKind { CASE, OTHERWISE, ERROR }
+
+/** A function placed on the chart as a column of its own, under [title] (its card title when null), such as a named flow. */
+data class FlowStart(val node: Int, val title: String? = null, val description: String? = null)
+
+/**
+ * What the chart shows: the functions placed on it, in column order, and the functions whose calls ([openCalls]) or
+ * direct callers ([openCallers]) are shown, wherever they appear.
+ */
+data class FlowBoard(
+    val starts: List<FlowStart> = emptyList(),
+    val openCalls: Set<Int> = emptySet(),
+    val openCallers: Set<Int> = emptySet(),
+) {
+    /** The board with ids moved by [id] (for example into a rebuilt graph); functions it maps to null are dropped. */
+    fun map(id: (Int) -> Int?): FlowBoard = FlowBoard(
+        starts.mapNotNull { start -> id(start.node)?.let { start.copy(node = it) } }.distinctBy { it.node },
+        openCalls.mapNotNullTo(hashSetOf(), id),
+        openCallers.mapNotNullTo(hashSetOf(), id),
+    )
+}
+
+/** The calls the chart explores. */
+data class FlowSource(
+    /**
+     * Calls by caller. Calls without a known call site are listed in this order; an INHERITS edge means the base
+     * method (the caller) runs that implementation.
+     */
+    val calls: Map<Int, List<CallGraphEdge>>,
+    /** Direct callers by callee. */
+    val callers: Map<Int, List<Int>>,
+    /** Call sites by caller; calls of callers without sites keep the order of [calls] and have no branches. */
+    val callSites: Map<Int, List<CallSite>> = emptyMap(),
+    val card: (Int) -> FlowCard,
+)
+
+/** One column of the chart: a placed function with what is open around it. */
+data class FlowLane(val title: String, val description: String?, val root: FlowStep)
+
+data class FlowChart(val lanes: List<FlowLane>) {
+    /** Every step, upstream ones included, in [FlowStep.number] order. */
+    val steps: List<FlowStep> by lazy { buildList { lanes.forEach { collect(it.root, this) } }.sortedBy { it.number } }
+
+    private val byNode by lazy { steps.associateBy { it.node } }
+
+    /** The step of [node]; a function is a step at most once. */
+    fun step(node: Int): FlowStep? = byNode[node]
+
+    private fun collect(item: FlowItem, into: MutableList<FlowStep>) {
+        if (item is FlowStep) {
+            item.upstream.orEmpty().forEach { collect(it, into) }
+            into += item
+        }
+        children(item).forEach { collect(it, into) }
+    }
+}
+
+/** Items directly inside [item]: a step's callees, every branch of a decision, a loop's body. */
+fun children(item: FlowItem): List<FlowItem> = when (item) {
+    is FlowStep -> item.items
+    is FlowDecision -> item.branches.flatMap { it.items }
+    is FlowLoop -> item.items
+    is FlowRef -> emptyList()
+}
+
+/** Number of steps inside [item], at any depth. */
+fun stepsWithin(item: FlowItem): Int = children(item).sumOf { (if (it is FlowStep) 1 else 0) + stepsWithin(it) }
+
+/**
+ * Arranges the [board] as columns read top to bottom, one per placed function. A step with open callers has them
+ * above it, side by side; a step with open calls is followed by what it calls, in source order from
+ * [FlowSource.callSites]: calls under a condition, a loop or an error handler become [FlowDecision]s and [FlowLoop]s,
+ * and an INHERITS edge (a base method dispatching to implementations) becomes a fork over the implementations. Every
+ * function is a [FlowStep] once (placed functions at the top of their columns, others where first reached) and a
+ * [FlowRef] elsewhere. Steps are numbered in reading order: callers before the function, calls after it. PSI-free.
+ */
+fun buildFlowChart(board: FlowBoard, source: FlowSource): FlowChart {
+    val builder = FlowChartBuilder(board, source)
+    val lanes = board.starts.map { start ->
+        val root = builder.step(start.node)
+        FlowLane(start.title ?: root.card.title, start.description, root)
+    }
+    return FlowChart(builder.numbered(lanes))
+}
+
+private class FlowChartBuilder(private val board: FlowBoard, private val source: FlowSource) {
+    /** Functions that already have their step; placed functions are claimed first so they head their columns. */
+    private val claimed = board.starts.mapTo(hashSetOf()) { it.node }
+    private val cards = HashMap<Int, FlowCard>()
+
+    private fun cardOf(node: Int) = cards.getOrPut(node) { source.card(node) }
+
+    private fun item(node: Int): FlowItem = if (claimed.add(node)) step(node) else FlowRef(node, 0, cardOf(node).title)
+
+    /** The step of [node], which must already be claimed. Numbers are assigned by [numbered]. */
+    fun step(node: Int): FlowStep {
+        val callers = source.callers[node].orEmpty().filter { it != node }.distinct()
+        val upstream = if (node in board.openCallers) callers.map(::item) else null
+        val calls = source.calls[node].orEmpty().filter { it.callee != node }
+        val items = if (node in board.openCalls) items(node, calls) else emptyList()
+        return FlowStep(node, 0, cardOf(node), items, calls.mapTo(hashSetOf()) { it.callee }.size, callers.size, upstream)
+    }
+
+    private fun items(node: Int, edges: List<CallGraphEdge>): List<FlowItem> {
+        val rank = edges.withIndex().reversed().associate { it.value.callee to it.index }
+        val calls = edges.filter { it.kind != RelationKind.INHERITS }.mapTo(linkedSetOf()) { it.callee }
+        val sites = source.callSites[node].orEmpty().filter { it.callee in calls }.sortedBy { it.offset }.distinctBy { it.callee to it.frames }
+        val result = group(sites, 0).toMutableList()
+        val sited = sites.mapTo(hashSetOf()) { it.callee }
+        (calls - sited).forEach { result += item(it) }
+        val implementations = edges.filter { it.kind == RelationKind.INHERITS }.map { it.callee }.distinct().sortedBy { rank[it] }
+        if (implementations.size == 1) result += item(implementations.single())
+        else if (implementations.size > 1) result += FlowDecision(DecisionKind.DISPATCH, "Which implementation?", implementations.map { id ->
+            val title = cardOf(id).title
+            FlowBranch(if ('.' in title) title.substringBeforeLast('.') else title, BranchKind.CASE, listOf(item(id)))
+        })
+        return result
+    }
+
+    /** [lanes] with steps numbered in reading order and references pointing at their steps. */
+    fun numbered(lanes: List<FlowLane>): List<FlowLane> {
+        val numbers = HashMap<Int, Int>()
+        fun count(item: FlowItem) {
+            if (item is FlowStep) {
+                item.upstream.orEmpty().forEach(::count)
+                numbers[item.node] = numbers.size + 1
+            }
+            children(item).forEach(::count)
+        }
+        lanes.forEach { count(it.root) }
+        fun renumber(item: FlowItem): FlowItem = when (item) {
+            is FlowStep -> item.copy(number = numbers.getValue(item.node), items = item.items.map(::renumber),
+                upstream = item.upstream?.map(::renumber))
+            is FlowRef -> item.copy(number = numbers[item.node] ?: 0)
+            is FlowDecision -> item.copy(branches = item.branches.map { it.copy(items = it.items.map(::renumber)) })
+            is FlowLoop -> item.copy(items = item.items.map(::renumber))
+        }
+        return lanes.map { it.copy(root = renumber(it.root) as FlowStep) }
+    }
+
+    /** Items for [sites] (in source order) whose control frames above [depth] are the same. */
+    private fun group(sites: List<CallSite>, depth: Int): List<FlowItem> {
+        val result = mutableListOf<FlowItem>()
+        var i = 0
+        while (i < sites.size) {
+            val frame = sites[i].frames.getOrNull(depth)
+            if (frame == null) {
+                result += item(sites[i++].callee)
+                continue
+            }
+            var j = i + 1
+            while (j < sites.size && sites[j].frames.getOrNull(depth)?.construct == frame.construct) j++
+            val chunk = sites.subList(i, j)
+            result += if (frame.kind == ControlKind.LOOP) FlowLoop(frame.label, group(chunk, depth + 1)) else decision(chunk, depth)
+            i = j
+        }
+        return result
+    }
+
+    private fun decision(sites: List<CallSite>, depth: Int): FlowDecision {
+        val first = sites.first().frames[depth]
+        // Branches in source order; their items are built in that order so steps are numbered as they are read.
+        val branches = sites.groupBy { it.frames[depth].branch }.toSortedMap().values.map { it.first().frames[depth] to group(it, depth + 1) }
+        if (first.kind == ControlKind.ERROR) {
+            return FlowDecision(DecisionKind.ERROR, "Fails?", listOf(FlowBranch("no", BranchKind.OTHERWISE)) +
+                branches.map { (frame, items) -> FlowBranch(ControlText.clip("on error " + frame.label), BranchKind.ERROR, items) })
+        }
+        val conditions = branches.filter { !it.first.otherwise }
+        val otherwise = branches.firstOrNull { it.first.otherwise }?.second
+        if (first.kind == ControlKind.BRANCH && conditions.size <= 1 && first.subject != null && conditions.all { it.first.label == first.subject }) {
+            return FlowDecision(DecisionKind.CONDITION, first.subject + "?", listOf(
+                FlowBranch("yes", BranchKind.CASE, conditions.firstOrNull()?.second.orEmpty()),
+                FlowBranch("no", BranchKind.OTHERWISE, otherwise.orEmpty()),
+            ))
+        }
+        // `x == "a"`, `x == "b"`… reads better as the question `x?` with answers `"a"`, `"b"`.
+        val compared = conditions.map { comparison.matchEntire(it.first.label) }
+        val subject = compared.firstOrNull()?.groupValues?.get(1)?.takeIf { left ->
+            conditions.size > 1 && compared.all { it != null && it.groupValues[1] == left }
+        }
+        val question = when {
+            subject != null -> "$subject?"
+            first.kind == ControlKind.CASE -> first.subject?.let { "$it?" } ?: "Which case?"
+            else -> "Which condition?"
+        }
+        val cases = conditions.mapIndexed { index, (frame, items) ->
+            FlowBranch(if (subject != null) compared[index]!!.groupValues[2] else frame.label, BranchKind.CASE, items)
+        }
+        val fallback = when {
+            otherwise != null -> FlowBranch(if (first.kind == ControlKind.CASE) "default" else "else", BranchKind.OTHERWISE, otherwise)
+            first.kind == ControlKind.CASE -> FlowBranch("other cases", BranchKind.OTHERWISE)
+            else -> FlowBranch("otherwise", BranchKind.OTHERWISE)
+        }
+        return FlowDecision(DecisionKind.CONDITION, question, cases + fallback)
+    }
+
+    private companion object {
+        val comparison = Regex("""(.+?)\s*===?\s*(.+)""")
+    }
+}
