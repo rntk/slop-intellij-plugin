@@ -6,7 +6,7 @@ import java.awt.Rectangle
 
 /** How the canvas arranges the displayed graph. */
 enum class GraphView(val label: String) {
-    GRAPH("Graph"), SECTIONS("Sections"), FLOW("Flow chart");
+    GRAPH("Graph"), SECTIONS("Sections");
     override fun toString() = label
 }
 

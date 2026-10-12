@@ -41,6 +41,7 @@ private val errorColor = JBColor(Color(200, 40, 40), Color(235, 95, 95))
 private val pillFill = JBColor(Color(0xE8F0FE), Color(0x2E3A4F))
 private val decisionFill = JBColor(Color(0xFFF4D6), Color(0x4A4130))
 private val decisionBorder = JBColor(Color(0xE0B050), Color(0x8A7340))
+private val searchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
 private val selectionFill = JBColor(Color(0xEEF3FD), Color(0x2B3445))
 private val mutedText = JBColor(Color(0x6E737A), Color(0x9DA2A8))
 
@@ -70,6 +71,14 @@ class FlowChartCanvas(
     internal var geometry: FlowGeometry? = null
         private set
     private var scale = 1.0
+    internal var searchMatches: Set<Int>? = null
+        private set
+
+    /** Highlights matching cards while keeping their surrounding steps and branches visible. */
+    fun markMatches(nodes: Set<Int>?) {
+        searchMatches = nodes
+        repaint()
+    }
 
     /** The function whose step is selected. */
     var selectedNode: Int? = null
@@ -468,12 +477,12 @@ class FlowChartCanvas(
 
     private fun paintCard(g: Graphics2D, box: FlowCardBox) {
         val bounds = box.bounds
-        if (box.step.node == selectedNode) {
+        if (box.step.node == selectedNode || searchMatches?.contains(box.step.node) == true) {
             val pad = JBUI.scale(4)
             val arc = JBUI.scale(10).toDouble()
             val shape = RoundRectangle2D.Double((bounds.x - pad).toDouble(), (bounds.y - pad).toDouble(), (bounds.width + pad * 2).toDouble(),
                 (bounds.height + pad * 2).toDouble(), arc, arc)
-            g.color = selectionFill
+            g.color = if (searchMatches?.contains(box.step.node) == true) searchFill else selectionFill
             g.fill(shape)
             g.color = ColorUtil.withAlpha(accent, 0.6)
             g.stroke = BasicStroke(JBUIScale.scale(1f))

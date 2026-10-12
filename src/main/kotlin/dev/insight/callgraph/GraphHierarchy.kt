@@ -157,14 +157,7 @@ class GraphHierarchy(val graph: CallGraph) {
      * match first: names matching from their start, then by the platform's matching degree, then in tree order.
      * A blank query matches nothing.
      */
-    fun search(query: String): List<Int> {
-        val pattern = query.trim()
-        if (pattern.isEmpty()) return emptyList()
-        val anywhere = NameUtil.buildMatcher("*$pattern", NameUtil.MatchingCaseSensitivity.NONE)
-        val start = NameUtil.buildMatcher(pattern, NameUtil.MatchingCaseSensitivity.NONE)
-        return preorder().filter { anywhere.matches(nodes[it].name) }
-            .sortedWith(compareByDescending<Int> { start.matches(nodes[it].name) }.thenByDescending { anywhere.matchingDegree(nodes[it].name) })
-    }
+    fun search(query: String): List<Int> = fuzzyNameSearch(query, preorder()) { nodes[it].name }
 
     /**
      * Shows roots and the members of [expanded] groups; every hidden node is folded into its nearest shown ancestor.
@@ -293,4 +286,14 @@ class DetailGraph(
         val owned = highlight.owned.mapNotNullTo(hashSetOf(), ::shownId)
         return FileGraphHighlight(owned, highlight.related.mapNotNullTo(hashSetOf(), ::shownId) - owned)
     }
+}
+
+/** Shared name matching for graph symbols and the steps currently visible on a flow chart. */
+internal fun fuzzyNameSearch(query: String, ids: Iterable<Int>, name: (Int) -> String): List<Int> {
+    val pattern = query.trim()
+    if (pattern.isEmpty()) return emptyList()
+    val anywhere = NameUtil.buildMatcher("*$pattern", NameUtil.MatchingCaseSensitivity.NONE)
+    val start = NameUtil.buildMatcher(pattern, NameUtil.MatchingCaseSensitivity.NONE)
+    return ids.filter { anywhere.matches(name(it)) }
+        .sortedWith(compareByDescending<Int> { start.matches(name(it)) }.thenByDescending { anywhere.matchingDegree(name(it)) })
 }
