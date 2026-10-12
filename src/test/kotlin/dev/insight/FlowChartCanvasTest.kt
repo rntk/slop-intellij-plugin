@@ -148,4 +148,42 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         assertNull(canvas.chart)
         assertNull(canvas.selectedNode)
     }
+
+    fun `test compact cards expand on click retain evidence and collapse with the frame pill`() {
+        val sites = listOf(CallSite(1, 10), CallSite(2, 20), CallSite(1, 30))
+        val candidate = FlowRegionEvidence(0, sites)
+        val plan = FlowRegionPlan(candidate, "Store user data", "Writes a user record.", inferred = true)
+        val opened = mutableListOf<Int>()
+        val canvas = FlowChartCanvas({}, { opened += it }).apply {
+            setCompact(true)
+            show(FlowSource(mapOf(0 to listOf(CallGraphEdge(0, 1), CallGraphEdge(0, 2))), emptyMap(),
+                mapOf(0 to sites), mapOf(candidate.key to listOf(plan))) { FlowCard("f$it") })
+            add(FlowStart(0))
+            size = preferredSize
+        }
+        assertEquals(setOf(0), canvas.nodes())
+        val region = canvas.geometry!!.shapes.filterIsInstance<FlowRegionBox>().single()
+        val compactHeight = canvas.preferredSize.height
+        assertNull(canvas.step(1))
+        assertEquals(candidate.key, canvas.selectedRegion)
+        assertEquals(0, canvas.step(-1))
+        assertTrue(canvas.selectRegion(candidate.key))
+        canvas.markRegionMatches(setOf(candidate.key))
+        paint(canvas)
+        click(canvas, centre(region.bounds))
+        assertEquals(setOf(0, 1, 2), canvas.nodes())
+        assertEquals(candidate.key, canvas.selectedRegion)
+        assertTrue(canvas.preferredSize.height > compactHeight)
+        assertTrue(opened.isEmpty())
+        val pill = canvas.geometry!!.shapes.filterIsInstance<FlowPill>().single { it.regionKey == candidate.key }
+        click(canvas, centre(pill.bounds))
+        assertEquals(setOf(0), canvas.nodes())
+        canvas.setCompact(false)
+        assertEquals(setOf(0, 1, 2), canvas.nodes())
+        assertNull(canvas.selectedRegion)
+        canvas.setCompact(true)
+        canvas.clear()
+        assertTrue(canvas.board.compact)
+        paint(canvas)
+    }
 }

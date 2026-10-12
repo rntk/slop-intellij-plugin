@@ -49,9 +49,10 @@ data class FlowSegment(val from: Point, val to: Point, val style: FlowLineStyle 
 data class FlowDot(val center: Point, val step: FlowStep) : FlowShape
 /** A card left of the spine has its text aligned towards the spine. */
 data class FlowCardBox(val step: FlowStep, val bounds: Rectangle, val leftOfSpine: Boolean, val dot: Point) : FlowShape
+data class FlowRegionBox(val region: FlowRegion, val bounds: Rectangle, val leftOfSpine: Boolean, val dot: Point) : FlowShape
 /** [toggle] is the function whose calls (or, with [callers], whose direct callers) the pill shows or hides. */
 data class FlowPill(val bounds: Rectangle, val text: String, val style: FlowPillStyle, val toggle: Int? = null,
-    val callers: Boolean = false, val tooltip: String? = null) : FlowShape
+    val callers: Boolean = false, val tooltip: String? = null, val regionKey: String? = null) : FlowShape
 data class FlowDecisionBox(val bounds: Rectangle, val decision: FlowDecision) : FlowShape
 data class FlowFrame(val bounds: Rectangle, val loop: Boolean) : FlowShape
 data class FlowRefBox(val bounds: Rectangle, val ref: FlowRef, val dot: Point) : FlowShape
@@ -118,6 +119,9 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
             is FlowExit -> listOf(exit(item))
             is FlowDecision -> listOf(decision(item, parent))
             is FlowLoop -> listOf(frame("↻ " + item.label, blocks(item.items, alternate, parent), FlowPillStyle.LOOP, null, loop = true))
+            is FlowRegion -> listOfNotNull(region(item, alternate), if (item.expanded)
+                frame("▾ ${item.plan.title}", blocks(item.items, alternate, parent), FlowPillStyle.SUBFLOW, null,
+                    loop = false, regionKey = item.plan.evidence.key) else null)
         }
     }
 
@@ -185,7 +189,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
         }
     }
 
-    private fun step(step: FlowStep, alternate: Boolean): Block {
+    private fun step(step: FlowStep, alternate: Boolean, region: FlowRegion? = null): Block {
         val left = alternate && nextLeft
         if (alternate) nextLeft = !nextLeft
         val textHeight = measure.card(step, m.cardWidth)
@@ -196,11 +200,16 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                 val dot = Point(x, y + measure.firstLine())
                 line(x, y, x, y + height)
                 val bounds = Rectangle(if (left) x - wide else x + m.gutter, y, m.cardWidth, textHeight)
-                front += FlowDot(dot, step)
-                front += FlowCardBox(step, bounds, left, dot)
+                if (region == null) {
+                    front += FlowDot(dot, step)
+                    front += FlowCardBox(step, bounds, left, dot)
+                } else front += FlowRegionBox(region, bounds, left, dot)
             }
         }
     }
+
+    private fun region(region: FlowRegion, alternate: Boolean): Block =
+        step(region.presentation(), alternate, region)
 
     /** The calls of [step] in a frame headed by a pill that hides them, or just a pill showing them while closed. */
     private fun subflow(step: FlowStep, alternate: Boolean): Block? {
@@ -228,7 +237,8 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
      * Content in a rounded frame whose top edge carries a pill on the spine. The flow goes on below the frame even when
      * its content ends in an exit: that leaves the function called, not the one framing it, and a loop may not run at all.
      */
-    private fun frame(text: String, content: List<Block>, style: FlowPillStyle, toggle: Int?, loop: Boolean): Block {
+    private fun frame(text: String, content: List<Block>, style: FlowPillStyle, toggle: Int?, loop: Boolean,
+        regionKey: String? = null): Block {
         val pillWidth = pillWidth(text)
         val inner = sequence(content)
         val left = maxOf(inner.left, pillWidth / 2) + m.framePadding
@@ -238,7 +248,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
             override fun place(x: Int, y: Int) {
                 back += FlowFrame(Rectangle(x - left, y + m.pillHeight / 2, left + right, height - m.pillHeight / 2), loop)
                 line(x, y, x, y + m.pillHeight + m.gap)
-                front += FlowPill(pillAt(x, y, pillWidth), text, style, toggle)
+                front += FlowPill(pillAt(x, y, pillWidth), text, style, toggle, regionKey = regionKey)
                 inner.place(x, y + m.pillHeight + m.gap)
                 if (inner.open) line(x, y + m.pillHeight + m.gap + inner.height, x, y + height)
             }

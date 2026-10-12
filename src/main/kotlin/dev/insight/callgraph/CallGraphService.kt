@@ -7,6 +7,7 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.psi.PsiElement
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
+import com.intellij.psi.util.PsiModificationTracker
 import kotlinx.coroutines.CoroutineScope
 
 data class CallGraphRequest(
@@ -24,8 +25,21 @@ class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPo
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
+    /** The last application graph and the PSI modification count it was built at. */
+    @Volatile private var latestProject: Pair<Long, CallGraphResult>? = null
+
     suspend fun buildProject(): CallGraphResult = withBackgroundProgress(project, "Building application graph") {
-        smartReadAction(project) { ProjectGraphAnalyzer.build(project) }
+        smartReadAction(project) {
+            val stamp = PsiModificationTracker.getInstance(project).modificationCount
+            ProjectGraphAnalyzer.build(project).also { latestProject = stamp to it }
+        }
+    }
+
+    /** The last application graph while no code changed since it was built, otherwise a fresh one. */
+    suspend fun currentProject(): CallGraphResult {
+        val latest = latestProject
+        val stamp = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount }
+        return latest?.takeIf { it.first == stamp }?.second ?: buildProject()
     }
 
     /**

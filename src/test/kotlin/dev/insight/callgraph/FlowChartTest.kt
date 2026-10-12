@@ -11,7 +11,7 @@ class FlowChartTest {
     private fun source(edges: List<CallGraphEdge>, sites: Map<Int, List<SourceSite>> = emptyMap(), order: List<Int> = (0..20).toList(),
         card: (Int) -> FlowCard = { FlowCard("n$it") }) =
         FlowSource(edges.sortedBy { order.indexOf(it.callee) }.groupBy { it.caller },
-            edges.filter { it.kind == RelationKind.CALL }.groupBy { it.callee }.mapValues { (_, e) -> e.map { it.caller } }, sites, card)
+            edges.filter { it.kind == RelationKind.CALL }.groupBy { it.callee }.mapValues { (_, e) -> e.map { it.caller } }, sites, card = card)
 
     /** Node 0 placed on the chart with every function's calls open. */
     private fun chart(edges: List<CallGraphEdge>, sites: Map<Int, List<SourceSite>> = emptyMap(), order: List<Int> = (0..20).toList()) =
@@ -33,6 +33,7 @@ class FlowChartTest {
         is FlowDecision -> "?${item.question}" + item.branches.joinToString("|", "[", "]") { b -> b.label + ":" + b.items.joinToString(" ", transform = ::render) }
         is FlowLoop -> "loop ${item.label}{" + item.items.joinToString(" ", transform = ::render) + "}"
         is FlowExit -> "!${item.keyword}"
+        is FlowRegion -> "region ${item.plan.title}{" + item.items.joinToString(" ", transform = ::render) + "}"
     }
 
     /** `if (path == "<label>") { call(callee); return }` at [at], as in a request router. */

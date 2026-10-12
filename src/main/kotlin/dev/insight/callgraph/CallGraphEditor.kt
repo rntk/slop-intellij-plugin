@@ -100,6 +100,9 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
     private val libraries = JBCheckBox("Library calls")
     private val refresh = JButton("Refresh")
     private val focus = JButton("Focus selected").apply { isEnabled = false }
+    private val exploreFlow = JButton("Explore flow").apply {
+        toolTipText = "Explore the selected function, or the root, as compact expandable subflows"
+    }
     private val title = heading("Call graph", 22f)
     private val status = JLabel(" ")
     private var result: CallGraphResult? = null
@@ -111,7 +114,7 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
         add(JPanel(BorderLayout(0, 8)).apply {
             add(title, BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
-                add(direction); add(JLabel("Depth")); add(depth); add(libraries); add(refresh); add(focus)
+                add(direction); add(JLabel("Depth")); add(depth); add(libraries); add(refresh); add(focus); add(exploreFlow)
             }, BorderLayout.CENTER)
             add(status, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
@@ -123,6 +126,10 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
         refresh.addActionListener { rebuild() }
         focus.addActionListener {
             canvas.selected?.let { result?.pointers?.getOrNull(it) }?.let { root = it; rebuild() }
+        }
+        exploreFlow.addActionListener {
+            val pointer = canvas.selected?.let { result?.pointers?.getOrNull(it) } ?: root
+            openFlowChart(project, pointer)
         }
         rebuild()
     }
@@ -156,6 +163,7 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
 
     private fun selectionChanged(id: Int?) {
         focus.isEnabled = id != null && id != 0 && result?.graph?.nodes?.getOrNull(id)?.inProject == true
+        exploreFlow.isEnabled = id == null || result?.graph?.nodes?.getOrNull(id)?.inProject == true
     }
 
     private fun navigate(id: Int) {

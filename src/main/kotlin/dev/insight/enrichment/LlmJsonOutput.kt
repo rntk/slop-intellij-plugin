@@ -36,6 +36,7 @@ suspend fun completeJson(
     schema: JsonObject?,
     maxTokens: Int,
     attempts: Int = 2,
+    temperature: Double = 0.2,
 ): JsonObject {
     val format = JsonObject().apply {
         if (schema == null) addProperty("type", "json_object")
@@ -49,7 +50,7 @@ suspend fun completeJson(
     repeat(attempts) {
         val request = CompletionRequest(
             listOf(LlmMessage.system(system), LlmMessage.user(user)),
-            temperature = 0.2, maxTokens = budget, responseFormat = format,
+            temperature = temperature, maxTokens = budget, responseFormat = format,
         )
         val completion = try {
             complete(request)
@@ -133,6 +134,8 @@ internal object JsonSchemas {
     fun array(items: JsonObject): JsonObject = JsonObject().apply { addProperty("type", "array"); add("items", items) }
     fun string(): JsonObject = JsonObject().apply { addProperty("type", "string") }
     fun integer(): JsonObject = JsonObject().apply { addProperty("type", "integer") }
+    fun boolean(): JsonObject = JsonObject().apply { addProperty("type", "boolean") }
+    fun enum(values: List<String>): JsonObject = string().apply { add("enum", com.google.gson.JsonArray().apply { values.forEach(::add) }) }
 }
 
 internal fun JsonObject.jsonText(key: String): String? =

@@ -57,5 +57,11 @@
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
         </action>
+        <action id="Insight.OpenSideBySide" class="dev.insight.callgraph.OpenSideBySideAction"
+                text="Open Side by Side" description="Open the symbol at the caret side by side with its callers and the functions it calls"
+                icon="/icons/insight.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

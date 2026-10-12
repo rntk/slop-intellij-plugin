@@ -312,6 +312,8 @@ internal class Remapped(
     val edges: Map<CallGraphEdge, EdgeAnnotation>,
     val flows: List<Flow>,
     val facts: Map<Int, SymbolFacts> = emptyMap(),
+    val summaries: Map<Int, FunctionSummary> = emptyMap(),
+    val effects: Map<Int, Effects> = emptyMap(),
 ) {
     fun isTest(id: Int): Boolean {
         if ("test" in tags[id].orEmpty()) return true
@@ -327,7 +329,7 @@ internal class Remapped(
             val enrichment = snapshot.enrichment
             if (snapshot.graph === graph) {
                 return Remapped(enrichment.nodes, enrichment.heuristics.mapValues { it.value.tags }, enrichment.visibility,
-                    enrichment.edges, enrichment.flows, snapshot.input.facts)
+                    enrichment.edges, enrichment.flows, snapshot.input.facts, enrichment.summaries, enrichment.effects)
             }
             val current = HashMap<String, Int>()
             graph.nodes.forEach { current.putIfAbsent(stableKey(it), it.id) }
@@ -355,6 +357,8 @@ internal class Remapped(
                 enrichment.edges.entries.mapNotNull { (edge, value) -> edge.moved()?.let { it to value } }.toMap(),
                 flows,
                 snapshot.input.facts.moved(),
+                enrichment.summaries.moved(),
+                enrichment.effects.moved(),
             )
         }
     }

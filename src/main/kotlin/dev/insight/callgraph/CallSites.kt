@@ -37,7 +37,9 @@ sealed interface SourceSite {
  * A call of [callee] (a graph id). Ordering by [offset] puts nested and chained calls (`a(b())`, `b().a()`) in
  * evaluation order.
  */
-data class CallSite(val callee: Int, override val offset: Int, override val frames: List<ControlFrame> = emptyList()) : SourceSite
+data class CallSite(val callee: Int, override val offset: Int, override val frames: List<ControlFrame> = emptyList(),
+    /** Bounded source at this occurrence, including arguments; useful when the owner's excerpt is truncated. */
+    val text: String? = null) : SourceSite
 
 /**
  * A `return`, `throw` or `raise` ([keyword]) ending the innermost branch of [frames]: that branch leaves the function
@@ -85,7 +87,8 @@ object CallSiteAnalyzer {
                     if (element is PsiComment) return
                     if (element !== function && ProjectGraphAnalyzer.kind(element).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS }) return
                     val callee = supports.firstNotNullOfOrNull { it.resolveCall(element) }?.let(::target)
-                    if (callee != null && callee != id) found += CallSite(callee, element.textRange.endOffset, frames(element, function))
+                    if (callee != null && callee != id) found += CallSite(callee, element.textRange.endOffset, frames(element, function),
+                        element.text.take(600))
                     else exit(element, function)?.let(found::add)
                     super.visitElement(element)
                 }

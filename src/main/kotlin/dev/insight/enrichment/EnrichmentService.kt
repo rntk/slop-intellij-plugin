@@ -8,6 +8,7 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphResult
+import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.chat.ChatSettings
 import dev.insight.core.Endpoints
 import dev.insight.core.decisionsClient
@@ -34,6 +35,11 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
 
     /** Where [enrich] writes the readable [EnrichmentReport]; outside the project so nothing is added to version control. */
     val reportPath: Path get() = Path.of(PathManager.getSystemPath(), "insight-enrichment", "${project.locationHash}-report.json")
+
+    /** Reuses the existing LLM endpoint and persistent cache; never runs network requests on the EDT. */
+    suspend fun summarizeSubflows(candidates: List<FlowRegionEvidence>, facts: Map<Int, SymbolFacts>,
+        known: Map<Int, FunctionSummary> = emptyMap()): SubflowSummaries =
+        withContext(Dispatchers.IO) { SubflowSummarizer(llm()::complete, cache).summarize(candidates, facts, known) }
 
     suspend fun enrich(result: CallGraphResult, options: EnrichmentOptions = EnrichmentOptions()): EnrichmentSnapshot =
         withBackgroundProgress(project, "Enriching application graph") {

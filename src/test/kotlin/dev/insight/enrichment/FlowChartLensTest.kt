@@ -46,9 +46,9 @@ class FlowChartLensTest {
         assertEquals(setOf(2, 6), callees(lens, 1))
     }
 
-    @Test fun `with enrichment calls skip utilities and error paths, but callers include every call`() {
+    @Test fun `with enrichment utilities and error paths remain explorable along with all callers`() {
         val lens = FlowChartLens(snapshot(), graph)
-        assertEquals(setOf(1), callees(lens, 0))
+        assertEquals(setOf(1, 3, 4), callees(lens, 0))
         assertEquals(listOf(0), lens.callers[3])
         assertEquals(listOf(0), lens.callers[4])
         assertEquals(listOf(1), lens.callers[6])
@@ -63,7 +63,7 @@ class FlowChartLensTest {
         assertEquals("▶ entry point · service.py:1", entry.meta)
         assertEquals("Handles a request.", entry.description)
         assertEquals("api · network", entry.details)
-        assertEquals(listOf("Service.handle", "Service.load", "Service.parse", "Service.render"), chart.steps.map { it.card.title })
+        assertEquals(listOf("Service.handle", "Service.load", "Service.parse", "Service.render", "Service.format", "Service.report"), chart.steps.map { it.card.title })
         assertEquals("service.py:2", lens.card(1).meta)
     }
 
@@ -81,5 +81,31 @@ class FlowChartLensTest {
         val lens = FlowChartLens(snapshot, graph)
         assertEquals(FlowStart(0, "Handle a request", "Loads and parses."), lens.start("f1"))
         assertNull(lens.start("missing"))
+    }
+
+    @Test fun `summaries title compact cards, and only effect-free logging or plumbing is folded`() {
+        val base = snapshot()
+        val enrichment = base.enrichment.copy(
+            summaries = mapOf(
+                0 to FunctionSummary("Handle request", "Serves one request.", FunctionRole.CORE, single = false),
+                3 to FunctionSummary("Format output", null, FunctionRole.PLUMBING, single = true),
+                4 to FunctionSummary("Report failure", null, FunctionRole.LOGGING, single = true),
+            ),
+            effects = mapOf(4 to Effects(emptySet(), setOf("storage")), 0 to Effects(setOf("network"), setOf("network", "storage"))),
+        )
+        val lens = FlowChartLens(EnrichmentSnapshot(graph, base.input, enrichment, base.report), graph)
+        assertEquals(setOf(3), lens.folded)
+        val card = lens.compactCard(0)
+        assertEquals("Handle request", card.title)
+        assertEquals("▶ entry point · Service.handle · LLM summary", card.meta)
+        assertTrue(card.details!!.startsWith("core · "))
+        assertTrue(card.details!!.endsWith("network · storage via calls"))
+        assertEquals("handle", lens.card(0).title.substringAfter('.'))
+        val stale = base.input.facts.getValue(0).copy(sourceHash = "edited")
+        assertTrue("summary predates source edits" in lens.compactCard(0, stale).meta!!)
+        assertTrue(lens.freshSummaries(mapOf(0 to stale)).isEmpty())
+        // Opening skips the folded helper and does not open single steps.
+        assertEquals(setOf(0, 1), lens.openCalls(0, budget = 10))
+        assertEquals(setOf(0), FlowChartLens(base, graph).openCalls(0))
     }
 }

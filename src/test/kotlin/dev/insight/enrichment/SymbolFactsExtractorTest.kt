@@ -193,4 +193,18 @@ class SymbolFactsExtractorTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(before.key, after.key)
         assertNotNull(file)
     }
+
+    fun `test full source hash invalidates summaries when an edit is beyond the excerpt`() {
+        val source = "class Store { void save() { " + "int count = 0;" + " ".repeat(120) + "count++; } }"
+        val file = myFixture.addFileToProject("Store.java", source)
+        val budget = FactsBudget(codeChars = 30)
+        val before = extract(budget).find(SymbolKind.FUNCTION, "save").single()
+        assertTrue(before.codeTruncated)
+        myFixture.saveText(file.virtualFile, source.replace("count++;", "count--;"))
+        com.intellij.psi.PsiDocumentManager.getInstance(project).commitAllDocuments()
+        val after = extract(budget).find(SymbolKind.FUNCTION, "save").single()
+        assertEquals(before.code, after.code)
+        assertEquals(before.contentHash, after.contentHash)
+        assertFalse(before.sourceHash == after.sourceHash)
+    }
 }

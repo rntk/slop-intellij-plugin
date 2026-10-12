@@ -27,6 +27,7 @@ import javax.swing.AbstractAction
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JMenuItem
 import javax.swing.JViewport
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -61,6 +62,7 @@ class FlowChartCanvas(
     private val onChart: (FlowChart?) -> Unit = {},
     /** Shown while nothing is on the chart. */
     private val emptyText: String = "Nothing on the chart yet.",
+    private val onRegionSelect: (FlowRegion?) -> Unit = {},
 ) : JPanel() {
     var board = FlowBoard()
         private set
@@ -73,6 +75,9 @@ class FlowChartCanvas(
     private var scale = 1.0
     internal var searchMatches: Set<Int>? = null
         private set
+    private var regionMatches: Set<String> = emptySet()
+
+    fun markRegionMatches(keys: Set<String>) { regionMatches = keys; repaint() }
 
     /** Highlights matching cards while keeping their surrounding steps and branches visible. */
     fun markMatches(nodes: Set<Int>?) {
@@ -82,6 +87,8 @@ class FlowChartCanvas(
 
     /** The function whose step is selected. */
     var selectedNode: Int? = null
+        private set
+    var selectedRegion: String? = null
         private set
 
     private val metaFont get() = UIUtil.getLabelFont()
@@ -153,12 +160,12 @@ class FlowChartCanvas(
                 override fun actionPerformed(e: ActionEvent?) = action()
             })
         }
-        key("ENTER") { selectedNode?.let(onOpen) }
+        key("ENTER") { selectedRegion?.let(::toggleRegion) ?: selectedNode?.let(onOpen) }
         key("DOWN") { step(1) }
         key("UP") { step(-1) }
-        key("SPACE") { selectedNode?.let(::toggleCalls) }
-        key("RIGHT") { selectedNode?.let(::toggleCalls) }
-        key("LEFT") { selectedNode?.let(::toggleCallers) }
+        key("SPACE") { selectedRegion?.let(::toggleRegion) ?: selectedNode?.let(::toggleCalls) }
+        key("RIGHT") { selectedRegion?.let { if (it !in board.openRegions) toggleRegion(it) } ?: selectedNode?.let(::toggleCalls) }
+        key("LEFT") { selectedRegion?.let { if (it in board.openRegions) toggleRegion(it) } ?: selectedNode?.let(::toggleCallers) }
         key("DELETE") { selectedNode?.let(::removeColumn) }
         key("BACK_SPACE") { selectedNode?.let(::removeColumn) }
     }
@@ -180,6 +187,7 @@ class FlowChartCanvas(
     fun remap(id: (Int) -> Int?) {
         board = board.map(id)
         selectedNode = selectedNode?.let(id)
+        selectedRegion = null
         source = null
     }
 
@@ -191,12 +199,37 @@ class FlowChartCanvas(
         selectNode(start.node)
     }
 
+    /** Shows what each of [nodes] calls, wherever its step is. */
+    fun openCalls(nodes: Set<Int>) {
+        if (!board.openCalls.containsAll(nodes)) update(board.copy(openCalls = board.openCalls + nodes))
+    }
+
     /** Takes the column of [node] off the chart; what is open elsewhere stays open. */
     fun removeColumn(node: Int) {
         if (board.starts.any { it.node == node }) update(board.copy(starts = board.starts.filter { it.node != node }))
     }
 
-    fun clear() = update(FlowBoard())
+    fun clear() = update(FlowBoard(compact = board.compact))
+
+    fun setCompact(compact: Boolean) = update(board.copy(compact = compact))
+
+    fun collapseRegions() = update(board.copy(openRegions = emptySet()))
+
+    fun toggleRegion(key: String) = update(board.copy(
+        openRegions = if (key in board.openRegions) board.openRegions - key else board.openRegions + key))
+
+    fun selectRegion(key: String): Boolean {
+        val box = geometry?.shapes?.filterIsInstance<FlowRegionBox>()?.firstOrNull { it.region.plan.evidence.key == key }
+            ?: return false
+        select(null)
+        selectedRegion = key
+        onRegionSelect(box.region)
+        val bounds = box.bounds
+        scrollRectToVisible(Rectangle((bounds.x * zoom).toInt(), (bounds.y * zoom).toInt(),
+            (bounds.width * zoom).toInt(), (bounds.height * zoom).toInt()))
+        repaint()
+        return true
+    }
 
     /** Shows or hides what [node] calls, wherever its step is. */
     fun toggleCalls(node: Int) =
@@ -218,6 +251,10 @@ class FlowChartCanvas(
         if (selectedNode != null && geometry?.cards?.containsKey(selectedNode) != true) {
             selectedNode = null
             onSelect(null)
+        }
+        if (selectedRegion != null && chart?.regions?.none { it.plan.evidence.key == selectedRegion } != false) {
+            selectedRegion = null
+            onRegionSelect(null)
         }
         repaint()
         onChart(chart)
@@ -242,6 +279,8 @@ class FlowChartCanvas(
 
     /** Selects the step of [node] (null clears) and reports it. */
     fun select(node: Int?) {
+        selectedRegion = null
+        onRegionSelect(null)
         val next = node?.takeIf { geometry?.cards?.containsKey(it) == true }
         if (next == selectedNode) return
         selectedNode = next
@@ -259,11 +298,18 @@ class FlowChartCanvas(
 
     /** Moves the selection [delta] steps in reading order, from the first or last step when nothing is selected. */
     fun step(delta: Int): Int? {
-        val steps = chart?.steps?.takeIf { it.isNotEmpty() } ?: return null
-        val current = selectedNode?.let { node -> steps.indexOfFirst { it.node == node } } ?: -1
-        val target = steps[if (current < 0) (if (delta > 0) 0 else steps.lastIndex) else (current + delta).coerceIn(steps.indices)]
-        selectNode(target.node)
-        return target.node
+        val cards = chart?.visibleCards?.takeIf { it.isNotEmpty() } ?: return null
+        val current = cards.indexOfFirst { item -> when (item) {
+            is FlowStep -> item.node == selectedNode
+            is FlowRegion -> item.plan.evidence.key == selectedRegion
+            else -> false
+        } }
+        val target = cards[if (current < 0) (if (delta > 0) 0 else cards.lastIndex) else (current + delta).coerceIn(cards.indices)]
+        return when (target) {
+            is FlowStep -> { selectNode(target.node); target.node }
+            is FlowRegion -> { selectRegion(target.plan.evidence.key); null }
+            else -> null
+        }
     }
 
     fun reveal(node: Int) {
@@ -307,7 +353,8 @@ class FlowChartCanvas(
         return geometry?.shapes?.lastOrNull { shape ->
             when (shape) {
                 is FlowCardBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
-                is FlowPill -> shape.toggle != null && shape.bounds.contains(x, y)
+                is FlowRegionBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
+                is FlowPill -> (shape.toggle != null || shape.regionKey != null) && shape.bounds.contains(x, y)
                 is FlowRefBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
                 is FlowDecisionBox -> shape.bounds.contains(x, y)
                 else -> false
@@ -321,7 +368,13 @@ class FlowChartCanvas(
                 select(shape.step.node)
                 if (clicks == 2) onOpen(shape.step.node)
             }
-            is FlowPill -> shape.toggle?.let { if (shape.callers) toggleCallers(it) else toggleCalls(it) }
+            is FlowRegionBox -> {
+                selectRegion(shape.region.plan.evidence.key)
+                toggleRegion(shape.region.plan.evidence.key)
+                onRegionSelect(chart?.regions?.firstOrNull { it.plan.evidence.key == selectedRegion })
+            }
+            is FlowPill -> if (shape.regionKey != null) toggleRegion(shape.regionKey)
+                else shape.toggle?.let { if (shape.callers) toggleCallers(it) else toggleCalls(it) }
             is FlowRefBox -> selectNode(shape.ref.node)
             else -> select(null)
         }
@@ -330,6 +383,21 @@ class FlowChartCanvas(
     private fun showPopup(e: MouseEvent): Boolean {
         if (!e.isPopupTrigger || popup == null) return false
         requestFocusInWindow()
+        val region = (shapeAt(e.point) as? FlowRegionBox)?.region
+        if (region != null) {
+            val menu = JPopupMenu()
+            menu.add(JMenuItem(if (region.expanded) "Collapse subflow" else "Expand subflow").apply {
+                addActionListener { toggleRegion(region.plan.evidence.key) }
+            })
+            menu.add(JMenuItem("Open owning function").apply { addActionListener { onOpen(region.plan.evidence.owner) } })
+            region.plan.evidence.sites.forEach { site ->
+                menu.add(JMenuItem("Open ${source?.card?.invoke(site.callee)?.title} · offset ${site.offset}").apply {
+                    addActionListener { onOpen(site.callee) }
+                })
+            }
+            menu.show(this, e.x, e.y)
+            return true
+        }
         val node = when (val shape = shapeAt(e.point)) {
             is FlowCardBox -> shape.step.node
             is FlowRefBox -> shape.ref.node
@@ -341,12 +409,21 @@ class FlowChartCanvas(
     }
 
     override fun getToolTipText(event: MouseEvent): String? = when (val shape = shapeAt(event.point)) {
+        is FlowRegionBox -> {
+            val evidence = shape.region.plan.evidence
+            val text = listOf(shape.region.plan.title, shape.region.plan.description.orEmpty(),
+                "Grounded in ${source?.card?.invoke(evidence.owner)?.title}; ordered call occurrences:") +
+                evidence.sites.map { "${source?.card?.invoke(it.callee)?.title} · offset ${it.offset}" +
+                    it.text?.replace(Regex("\\s+"), " ")?.take(180)?.let { code -> ": $code" }.orEmpty() }
+            text.filter { it.isNotBlank() }.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
+        }
         is FlowCardBox -> shape.step.card.let { card ->
             (listOf("<b>${StringUtil.escapeXmlEntities(card.title)}</b>") + listOfNotNull(card.meta, card.tooltip ?: card.description, card.details)
                 .flatMap { it.lines() }.filter { it.isNotBlank() }.map { StringUtil.escapeXmlEntities(it) })
                 .joinToString("<br>", "<html>", "</html>")
         }
         is FlowPill -> when {
+            shape.regionKey != null -> "Collapse subflow"
             shape.tooltip != null -> "<html>Leaves the function: <code>${StringUtil.escapeXmlEntities(shape.tooltip)}</code></html>"
             shape.callers -> if (shape.toggle in board.openCallers) "Hide callers" else "Show direct callers"
             shape.toggle == null -> null
@@ -363,7 +440,7 @@ class FlowChartCanvas(
     /** The card's lines at [width]: step number and meta, title, description and details, each wrapped and capped. */
     private fun cardLines(step: FlowStep, width: Int): List<TextLine> = buildList {
         val card = step.card
-        listOfNotNull("Step ${step.number}", card.meta).joinToString(" · ").let { meta -> wrap(meta, getFontMetrics(metaFont), width, 2).forEach { add(TextLine(it, metaFont, accent)) } }
+        listOfNotNull("Step ${step.number}".takeIf { step.number > 0 }, card.meta).joinToString(" · ").let { meta -> wrap(meta, getFontMetrics(metaFont), width, 2).forEach { add(TextLine(it, metaFont, accent)) } }
         wrap(card.title, getFontMetrics(titleFont), width, 2).forEach { add(TextLine(it, titleFont, JBColor.foreground())) }
         card.description?.let { text -> wrap(text, getFontMetrics(textFont), width, 3).forEach { add(TextLine(it, textFont, mutedText)) } }
         card.details?.let { text -> wrap(text, getFontMetrics(smallFont), width, 2).forEach { add(TextLine(it, smallFont, mutedText)) } }
@@ -402,6 +479,13 @@ class FlowChartCanvas(
                     is FlowSegment -> paintSegment(canvas, shape)
                     is FlowDot -> paintDot(canvas, shape.center, shape.step.card.color ?: accent, shape.step.node == selectedNode, hollow = false)
                     is FlowCardBox -> paintCard(canvas, shape)
+                    is FlowRegionBox -> {
+                        val presentation = shape.region.presentation()
+                        paintDot(canvas, shape.dot, accent, shape.region.plan.evidence.key == selectedRegion, hollow = true)
+                        paintCard(canvas, FlowCardBox(presentation, shape.bounds, shape.leftOfSpine, shape.dot),
+                            selected = shape.region.plan.evidence.key == selectedRegion,
+                            matching = shape.region.plan.evidence.key in regionMatches)
+                    }
                     is FlowPill -> paintPill(canvas, shape)
                     is FlowDecisionBox -> paintDecision(canvas, shape)
                     is FlowRefBox -> paintRef(canvas, shape)
@@ -417,6 +501,7 @@ class FlowChartCanvas(
         is FlowSegment -> Rectangle(shape.from).apply { add(shape.to) }
         is FlowDot -> Rectangle(shape.center)
         is FlowCardBox -> shape.bounds
+        is FlowRegionBox -> shape.bounds
         is FlowPill -> shape.bounds
         is FlowDecisionBox -> shape.bounds
         is FlowRefBox -> Rectangle(shape.bounds).apply { add(shape.dot) }
@@ -476,14 +561,15 @@ class FlowChartCanvas(
         } else g.fillOval(center.x - radius, center.y - radius, radius * 2, radius * 2)
     }
 
-    private fun paintCard(g: Graphics2D, box: FlowCardBox) {
+    private fun paintCard(g: Graphics2D, box: FlowCardBox, selected: Boolean = box.step.node == selectedNode,
+        matching: Boolean = searchMatches?.contains(box.step.node) == true) {
         val bounds = box.bounds
-        if (box.step.node == selectedNode || searchMatches?.contains(box.step.node) == true) {
+        if (selected || matching) {
             val pad = JBUI.scale(4)
             val arc = JBUI.scale(10).toDouble()
             val shape = RoundRectangle2D.Double((bounds.x - pad).toDouble(), (bounds.y - pad).toDouble(), (bounds.width + pad * 2).toDouble(),
                 (bounds.height + pad * 2).toDouble(), arc, arc)
-            g.color = if (searchMatches?.contains(box.step.node) == true) searchFill else selectionFill
+            g.color = if (matching) searchFill else selectionFill
             g.fill(shape)
             g.color = ColorUtil.withAlpha(accent, 0.6)
             g.stroke = BasicStroke(JBUIScale.scale(1f))

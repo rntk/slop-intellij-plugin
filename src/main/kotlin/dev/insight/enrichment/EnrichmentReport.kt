@@ -37,7 +37,7 @@ object EnrichmentReport {
                 val id = facts.id
                 val annotation = enrichment.nodes[id]
                 val tags = enrichment.heuristics[id]?.tags.orEmpty()
-                if (annotation == null && tags.isEmpty()) return@forEach
+                if (annotation == null && tags.isEmpty() && id !in enrichment.summaries) return@forEach
                 add(JsonObject().apply {
                     addProperty("key", facts.key)
                     addProperty("name", name(id))
@@ -53,6 +53,13 @@ object EnrichmentReport {
                         a.importance?.let { addProperty("importance", it.score.round()) }
                         a.entryPoint?.let { addProperty("entryPoint", it.round()) }
                         a.utility?.let { addProperty("utility", it.round()) }
+                    }
+                    enrichment.summaries[id]?.let { add("summary", FunctionSummarizer.encode(it)) }
+                    enrichment.effects[id]?.let { e ->
+                        add("effects", JsonObject().apply {
+                            add("own", JsonArray().apply { e.own.sorted().forEach(::add) })
+                            add("reached", JsonArray().apply { e.reached.sorted().forEach(::add) })
+                        })
                     }
                     enrichment.visibility[id]?.let { addProperty("visibility", it.round()) }
                     enrichment.metrics[id]?.let { addProperty("fanIn", it.fanIn); addProperty("fanOut", it.fanOut) }

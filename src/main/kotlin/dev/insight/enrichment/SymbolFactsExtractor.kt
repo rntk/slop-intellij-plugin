@@ -43,6 +43,8 @@ object SymbolFactsExtractor {
         val doc: String?,
         val annotations: List<String>,
         val imports: List<String>,
+        val sourceHash: String,
+        val codeTruncated: Boolean,
     )
 
     /**
@@ -74,6 +76,7 @@ object SymbolFactsExtractor {
                 node.id, if (ordinal == 0) base else "$base#$ordinal", node.kind, node.name, node.container, path, language,
                 cap(signature, budget.signatureChars), code(element.text, parsed, node.kind, budget), doc, parsed.annotations,
                 importsByFile.getOrPut(file) { imports(file.text) },
+                hash(signature, element.text, doc), element.textLength > budget.codeChars,
             )
         }
         val children = result.graph.edges.asSequence()
@@ -87,7 +90,7 @@ object SymbolFactsExtractor {
         }
         return drafts.mapValues { (_, d) ->
             SymbolFacts(d.id, d.key, d.kind, d.name, d.container, d.path, d.language, d.signature, d.code, d.doc,
-                d.annotations, d.imports, hash(d.signature, d.code, d.doc))
+                d.annotations, d.imports, hash(d.signature, d.code, d.doc), d.sourceHash, d.codeTruncated)
         }
     }
 

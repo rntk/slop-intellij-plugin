@@ -17,6 +17,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.SmartPsiElementPointer
+import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.pom.Navigatable
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.SearchTextField
@@ -49,9 +50,15 @@ internal class FlowChartPanel(
     private val status = JLabel("Building application graph…")
     private val selection = JLabel(FLOW_HINT)
     internal val flowCanvas = FlowChartCanvas(::describeStep, { navigate(it) }, ::flowMenu, ::loadSteps,
-        "Add a function from the graph, editor or Structure view, or choose an enriched flow above.")
+        "Add a function from the graph, editor or Structure view, or choose an enriched flow above.", ::describeRegion)
     /** Reads call sites and docs of steps that appeared on the flow chart. */
     private var flowJob: Job? = null
+    private var summaryJob: Job? = null
+    private val regionPlans = HashMap<String, List<FlowRegionPlan>>()
+    private val compact = JCheckBox("Compact subflows", true)
+    private val summarizeButton = JButton("Summarize subflows")
+    private val collapseButton = JButton("Collapse subflows")
+    private val summaryNotice = JLabel("Expand a subflow to inspect its calls. Summarize adds LLM interpretations.")
     /** Calls for the flow chart, made from [result], the latest enrichment and the colouring; see [renderFlow]. */
     private var flowLens: FlowLensFor? = null
     /** Call sites, exits and current source facts of flow chart steps, read once per build. */
@@ -79,7 +86,8 @@ internal class FlowChartPanel(
     private val previousMatch = JButton("Previous")
     private val nextMatch = JButton("Next")
     private val matchCount = JLabel()
-    private var matches: List<Int> = emptyList()
+    private data class ChartMatch(val node: Int? = null, val region: String? = null, val name: String)
+    private var matches: List<ChartMatch> = emptyList()
 
     init {
         border = JBUI.Borders.empty(8)
@@ -92,6 +100,7 @@ internal class FlowChartPanel(
                 addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
                 previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
             add(row(callsButton, callersButton, removeButton, clearButton))
+            add(row(compact, summarizeButton, collapseButton, summaryNotice))
             add(row(JLabel("Search chart:"), search, previousMatch, nextMatch, matchCount))
             add(status)
         }, BorderLayout.NORTH)
@@ -107,6 +116,12 @@ internal class FlowChartPanel(
         callersButton.addActionListener { flowCanvas.selectedNode?.let(flowCanvas::toggleCallers) }
         removeButton.addActionListener { flowCanvas.selectedNode?.let(flowCanvas::removeColumn) }
         clearButton.addActionListener { flowCanvas.clear() }
+        compact.addActionListener { flowCanvas.setCompact(compact.isSelected) }
+        collapseButton.addActionListener { flowCanvas.collapseRegions() }
+        summarizeButton.toolTipText = "Send bounded source excerpts to the existing LLM server; grouping is validated against source call occurrences."
+        summarizeButton.addActionListener {
+            if (summaryJob?.isActive == true) summaryJob?.cancel() else summarizeSubflows()
+        }
         search.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) { updateSearch() }
         })
@@ -119,6 +134,7 @@ internal class FlowChartPanel(
             })
         }
         enrichButton.isEnabled = false
+        flowCanvas.setCompact(true)
         refreshLens()
         updateFlowControls()
     }
@@ -167,16 +183,24 @@ internal class FlowChartPanel(
         callersButton.text = if (node in flowCanvas.board.openCallers) "Hide callers" else "Show callers"
         removeButton.isEnabled = flowCanvas.board.starts.any { it.node == node }
         clearButton.isEnabled = flowCanvas.board.starts.isNotEmpty()
+        collapseButton.isEnabled = flowCanvas.board.openRegions.isNotEmpty()
+        summarizeButton.isEnabled = summaryJob?.isActive == true || (compact.isSelected && candidates().isNotEmpty())
+        summarizeButton.text = if (summaryJob?.isActive == true) "Stop summary" else "Summarize subflows"
         status.text = if (result == null) "Building application graph…"
-            else flowCanvas.chart?.let { "${it.lanes.size} columns · ${it.steps.size} steps" } ?: "Add a function or flow to start a chart."
+            else flowCanvas.chart?.let { "${it.lanes.size} columns · ${it.steps.size} function steps · ${it.regions.size} subflows · static in-project calls" }
+                ?: "Add a function or flow to start a chart."
         updateSearch()
     }
 
     private fun updateSearch() {
         val nodes = result?.graph?.nodes.orEmpty()
-        matches = fuzzyNameSearch(search.text, flowCanvas.chart?.steps.orEmpty().map { it.node }) { nodes[it].name }
-        flowCanvas.markMatches(matches.toSet().takeIf { search.text.isNotBlank() })
-        val index = matches.indexOf(flowCanvas.selectedNode)
+        val visible = flowCanvas.chart?.steps.orEmpty().map { ChartMatch(node = it.node, name = nodes[it.node].name) } +
+            flowCanvas.chart?.regions.orEmpty().map { ChartMatch(region = it.plan.evidence.key, name = it.plan.title) }
+        matches = fuzzyNameSearch(search.text, visible.indices.toList()) { visible[it].name }.map { visible[it] }
+        flowCanvas.markMatches(matches.mapNotNull { it.node }.toSet().takeIf { search.text.isNotBlank() })
+        flowCanvas.markRegionMatches(matches.mapNotNull { it.region }.toSet())
+        val index = matches.indexOfFirst { (it.node != null && it.node == flowCanvas.selectedNode) ||
+            (it.region != null && it.region == flowCanvas.selectedRegion) }
         matchCount.text = when {
             search.text.isBlank() -> ""
             matches.isEmpty() -> "No matches"
@@ -189,9 +213,11 @@ internal class FlowChartPanel(
 
     private fun stepMatch(delta: Int) {
         if (matches.isEmpty()) return
-        val index = matches.indexOf(flowCanvas.selectedNode)
+        val index = matches.indexOfFirst { (it.node != null && it.node == flowCanvas.selectedNode) ||
+            (it.region != null && it.region == flowCanvas.selectedRegion) }
         val next = if (index < 0) (if (delta > 0) 0 else matches.lastIndex) else Math.floorMod(index + delta, matches.size)
-        flowCanvas.selectNode(matches[next])
+        val match = matches[next]
+        match.node?.let(flowCanvas::selectNode) ?: match.region?.let(flowCanvas::selectRegion)
     }
 
     private fun <T> lens(fallback: T, block: () -> T): T = try { block() } catch (e: Throwable) {
@@ -221,7 +247,7 @@ internal class FlowChartPanel(
             ?: lens<FlowLensFor?>(null) { FlowLensFor(built.graph, snapshot, colour, FlowChartLens(snapshot, built.graph, colour)) }
         flowLens = made
         if (made == null) flowCanvas.show(null, "Could not draw the flow chart.")
-        else lens(Unit) { flowCanvas.show(made.lens.source(callSites, stepFacts)) }
+        else lens(Unit) { flowCanvas.show(made.lens.source(callSites, stepFacts, regionPlans)) }
         updateFlowControls()
     }
 
@@ -258,9 +284,76 @@ internal class FlowChartPanel(
         }
     }
 
+    /**
+     * Only the structural regions on the chart are eligible, as drawn (folded helpers left out); deeper source is read
+     * when the user drills down.
+     */
+    private fun candidates(): List<FlowRegionEvidence> = flowCanvas.chart?.regions.orEmpty()
+        .filter { !it.plan.inferred }.map { it.plan.evidence }.filter { it.key !in regionPlans }.distinctBy { it.key }
+
+    private fun summarizeSubflows() {
+        val built = result ?: return
+        val lens = flowLens?.lens ?: return
+        val pending = candidates()
+        val batch = pending.take(24)
+        if (batch.isEmpty()) return
+        summaryNotice.text = "Summarizing ${batch.size} bounded regions…"
+        summarizeButton.text = "Stop summary"
+        summaryJob = service.scope.launch(Dispatchers.EDT) {
+            try {
+                val ids = batch.flatMap { listOf(it.owner) + it.sites.map(CallSite::callee) }.toSet()
+                val (facts, currentSites, stamp) = smartReadAction(project) {
+                    val owners = batch.map { it.owner }.distinct()
+                    val callees = owners.flatMap { lens.calls[it].orEmpty().map(CallGraphEdge::callee) }
+                    Triple(SymbolFactsExtractor.extract(project, built, only = ids),
+                        CallSiteAnalyzer.collect(built, owners, callees), PsiModificationTracker.getInstance(project).modificationCount)
+                }
+                val folded = if (flowCanvas.board.compact) lens.folded else emptySet()
+                val current = currentSites.flatMap { (owner, sites) -> flowRegionCandidates(owner, sites, folded) }.toSet()
+                if (batch.any { it !in current }) {
+                    summaryNotice.text = "Source changed; refresh the chart before summarizing."
+                    return@launch
+                }
+                val summaries = enrichment.summarizeSubflows(batch, facts, lens.freshSummaries(facts))
+                if (disposed || result !== built) return@launch
+                val unchanged = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount == stamp }
+                if (!unchanged || disposed || result !== built) {
+                    summaryNotice.text = "Source changed during summary; stale interpretations were discarded."
+                    return@launch
+                }
+                regionPlans += summaries.plans
+                stepFacts += facts
+                renderFlow()
+                val accepted = summaries.plans.values.sumOf { it.size }
+                summaryNotice.text = "$accepted LLM subflows · ${summaries.failedBlocks} regions kept structural" +
+                    (if (summaries.rejectedGroups > 0) " · ${summaries.rejectedGroups} invalid groups rejected" else "") +
+                    (if (pending.size > batch.size) " · summarize again for remaining regions" else "")
+            } catch (e: CancellationException) {
+                if (!disposed && result === built) summaryNotice.text = "Summary stopped; existing subflows retained."
+                throw e
+            } catch (e: Exception) {
+                thisLogger().warn("Summarizing subflows failed", e)
+                if (!disposed && result === built) summaryNotice.text = "Could not summarize; structural groups remain available."
+            } finally {
+                if (summaryJob === coroutineContext.job) summaryJob = null
+                if (!disposed) updateFlowControls()
+            }
+        }
+    }
+
+    private fun describeRegion(region: FlowRegion?) {
+        if (region == null) return
+        val evidence = region.plan.evidence
+        selection.text = "${region.plan.title} · ${evidence.sites.size} call occurrences in " +
+            (flowLens?.lens?.card(evidence.owner)?.title ?: "function") + " · right-click for source evidence"
+        updateFlowControls()
+    }
+
     /** Places [start] on the flow chart, switching to it. */
     fun addToChart(start: FlowStart) {
         flowCanvas.add(start)
+        // With summaries, a placed function opens down its main path within a budget; without, only its own calls.
+        if (flowCanvas.board.compact) flowLens?.lens?.let { flowCanvas.openCalls(it.openCalls(start.node)) }
         activateChart()
         flowCanvas.requestFocusInWindow()
         SwingUtilities.invokeLater { if (!disposed) flowCanvas.selectNode(start.node) }
@@ -330,6 +423,9 @@ internal class FlowChartPanel(
     private fun moveFlowChart(previous: CallGraph, next: CallGraph) {
         flowJob?.cancel()
         flowJob = null
+        summaryJob?.cancel()
+        regionPlans.clear()
+        summaryNotice.text = "Source changed; subflow summaries will be recomputed on request."
         callSites.clear()
         stepFacts.clear()
         stepsRead.clear()
@@ -338,7 +434,7 @@ internal class FlowChartPanel(
         flowCanvas.remap { id -> previous.nodes.getOrNull(id)?.let { ids[stableKey(it)] } }
     }
 
-    override fun dispose() { disposed = true; flowJob?.cancel() }
+    override fun dispose() { disposed = true; flowJob?.cancel(); summaryJob?.cancel() }
     private class FlowLensFor(val graph: CallGraph, val snapshot: EnrichmentSnapshot?, val colorBy: ColorBy, val lens: FlowChartLens)
     private companion object {
         const val FLOW_HINT = "Click to select · Enter opens source · Up/Down step · Left toggles callers · Right/Space toggles calls · Delete removes column"

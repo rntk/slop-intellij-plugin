@@ -70,12 +70,15 @@ data class FlowBoard(
     val starts: List<FlowStart> = emptyList(),
     val openCalls: Set<Int> = emptySet(),
     val openCallers: Set<Int> = emptySet(),
+    val compact: Boolean = false,
+    val openRegions: Set<String> = emptySet(),
 ) {
     /** The board with ids moved by [id] (for example into a rebuilt graph); functions it maps to null are dropped. */
     fun map(id: (Int) -> Int?): FlowBoard = FlowBoard(
         starts.mapNotNull { start -> id(start.node)?.let { start.copy(node = it) } }.distinctBy { it.node },
         openCalls.mapNotNullTo(hashSetOf(), id),
         openCallers.mapNotNullTo(hashSetOf(), id),
+        compact = compact, // Region occurrence ids are specific to a source snapshot.
     )
 }
 
@@ -92,6 +95,15 @@ data class FlowSource(
      * Call sites and exits by caller; calls of callers without sites keep the order of [calls] and have no branches.
      */
     val callSites: Map<Int, List<SourceSite>> = emptyMap(),
+    /** Candidate key → validated subgroups; an empty list means no coherent group was found. */
+    val regionPlans: Map<String, List<FlowRegionPlan>> = emptyMap(),
+    /**
+     * Callees that compact boards leave out of their callers, counted on the caller's card instead: helpers such as
+     * logging and plumbing that reach no visible side effect. Control structure and exits are never folded.
+     */
+    val folded: Set<Int> = emptySet(),
+    /** Card of a function on compact boards, such as its summary; [card] when null. */
+    val compactCard: ((Int) -> FlowCard)? = null,
     val card: (Int) -> FlowCard,
 )
 
@@ -99,6 +111,24 @@ data class FlowSource(
 data class FlowLane(val title: String, val description: String?, val root: FlowStep)
 
 data class FlowChart(val lanes: List<FlowLane>) {
+    /** Function and region cards in reading order, for keyboard navigation through the compact view. */
+    val visibleCards: List<FlowItem> by lazy { buildList {
+        fun collect(item: FlowItem) {
+            if (item is FlowStep) item.upstream.orEmpty().forEach(::collect)
+            if (item is FlowStep || item is FlowRegion) add(item)
+            children(item).forEach(::collect)
+        }
+        lanes.forEach { collect(it.root) }
+    } }
+    /** Visible regions, including those inside expanded regions. */
+    val regions: List<FlowRegion> by lazy { buildList {
+        fun collect(item: FlowItem) {
+            if (item is FlowRegion) add(item)
+            if (item is FlowStep) item.upstream.orEmpty().forEach(::collect)
+            children(item).forEach(::collect)
+        }
+        lanes.forEach { collect(it.root) }
+    } }
     /** Every step, upstream ones included, in [FlowStep.number] order. */
     val steps: List<FlowStep> by lazy { buildList { lanes.forEach { collect(it.root, this) } }.sortedBy { it.number } }
 
@@ -121,6 +151,7 @@ fun children(item: FlowItem): List<FlowItem> = when (item) {
     is FlowStep -> item.items
     is FlowDecision -> item.branches.flatMap { it.items }
     is FlowLoop -> item.items
+    is FlowRegion -> item.items
     is FlowRef, is FlowExit -> emptyList()
 }
 
@@ -149,8 +180,15 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
     /** Functions that already have their step; placed functions are claimed first so they head their columns. */
     private val claimed = board.starts.mapTo(hashSetOf()) { it.node }
     private val cards = HashMap<Int, FlowCard>()
+    private val codeCards = HashMap<Int, FlowCard>()
+    private val folded = if (board.compact) source.folded else emptySet()
 
-    private fun cardOf(node: Int) = cards.getOrPut(node) { source.card(node) }
+    private fun cardOf(node: Int) = cards.getOrPut(node) {
+        source.compactCard?.takeIf { board.compact }?.invoke(node) ?: codeCardOf(node)
+    }
+
+    /** The card naming the code itself, for labels derived from code names. */
+    private fun codeCardOf(node: Int) = codeCards.getOrPut(node) { source.card(node) }
 
     private fun item(node: Int): FlowItem = if (claimed.add(node)) step(node) else FlowRef(node, 0, cardOf(node).title)
 
@@ -159,22 +197,28 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
         val callers = source.callers[node].orEmpty().filter { it != node }.distinct()
         val upstream = if (node in board.openCallers) callers.map(::item) else null
         val calls = source.calls[node].orEmpty().filter { it.callee != node }
-        val items = if (node in board.openCalls) items(node, calls) else emptyList()
-        return FlowStep(node, 0, cardOf(node), items, calls.mapTo(hashSetOf()) { it.callee }.size, callers.size, upstream)
+        val open = node in board.openCalls
+        val items = if (open) items(node, calls) else emptyList()
+        val hidden = calls.filter { it.kind != RelationKind.INHERITS && it.callee in folded }.mapTo(hashSetOf()) { it.callee }.size
+        val card = cardOf(node).let { card ->
+            if (!open || hidden == 0) card
+            else card.copy(details = listOfNotNull(card.details, "+$hidden helper call${if (hidden == 1) "" else "s"} folded").joinToString(" · "))
+        }
+        return FlowStep(node, 0, card, items, calls.mapTo(hashSetOf()) { it.callee }.size, callers.size, upstream)
     }
 
     private fun items(node: Int, edges: List<CallGraphEdge>): List<FlowItem> {
         val rank = edges.withIndex().reversed().associate { it.value.callee to it.index }
-        val calls = edges.filter { it.kind != RelationKind.INHERITS }.mapTo(linkedSetOf()) { it.callee }
+        val calls = edges.filter { it.kind != RelationKind.INHERITS && it.callee !in folded }.mapTo(linkedSetOf()) { it.callee }
         val sites = source.callSites[node].orEmpty().filter { it !is CallSite || it.callee in calls }.sortedWith(sourceOrder)
-            .distinctBy { if (it is CallSite) it.callee to it.frames else it.offset }
-        val result = group(sites, 0).toMutableList()
+            .distinctBy { if (it is CallSite) it.copy(text = null) else it }
+        val result = group(node, sites, 0).toMutableList()
         val sited = sites.mapNotNullTo(hashSetOf()) { (it as? CallSite)?.callee }
         (calls - sited).forEach { result += item(it) }
         val implementations = edges.filter { it.kind == RelationKind.INHERITS }.map { it.callee }.distinct().sortedBy { rank[it] }
         if (implementations.size == 1) result += item(implementations.single())
         else if (implementations.size > 1) result += FlowDecision(DecisionKind.DISPATCH, "Which implementation?", implementations.map { id ->
-            val title = cardOf(id).title
+            val title = codeCardOf(id).title
             FlowBranch(if ('.' in title) title.substringBeforeLast('.') else title, BranchKind.CASE, listOf(item(id)))
         })
         return result
@@ -198,16 +242,40 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
             is FlowExit -> item
             is FlowDecision -> item.copy(branches = item.branches.map { it.copy(items = it.items.map(::renumber)) })
             is FlowLoop -> item.copy(items = item.items.map(::renumber))
+            is FlowRegion -> item.copy(items = item.items.map(::renumber))
         }
         return lanes.map { it.copy(root = renumber(it.root) as FlowStep) }
     }
 
     /** Items for [sites] (in source order) whose control frames above [depth] are the same. */
-    private fun group(sites: List<SourceSite>, depth: Int): List<FlowItem> {
+    private fun group(owner: Int, sites: List<SourceSite>, depth: Int): List<FlowItem> {
         val result = mutableListOf<FlowItem>()
         var i = 0
         while (i < sites.size) {
             val frame = sites[i].frames.getOrNull(depth)
+            if (frame == null && sites[i] is CallSite && board.compact) {
+                var end = i + 1
+                while (end < sites.size && sites[end] is CallSite && sites[end].frames.getOrNull(depth) == null) end++
+                val run = sites.subList(i, end).filterIsInstance<CallSite>()
+                for (chunk in run.chunked(FlowRegionEvidence.MAX_REGION_CALLS)) {
+                    if (chunk.size == 1) { result += item(chunk.single().callee); continue }
+                    val candidate = FlowRegionEvidence(owner, chunk)
+                    val proposals = source.regionPlans[candidate.key]
+                    val plans = if (proposals == null) listOf(FlowRegionPlan(candidate,
+                        "Calls in ${codeCardOf(owner).title.substringAfterLast('.')}", "Expand to inspect ${chunk.size} call occurrences."))
+                        else validateRegionPlans(candidate, proposals)
+                    var at = 0
+                    while (at < chunk.size) {
+                        val plan = plans.firstOrNull { it.evidence.sites.first() == chunk[at] }
+                        if (plan == null) { result += item(chunk[at++].callee); continue }
+                        val expanded = plan.evidence.key in board.openRegions
+                        result += FlowRegion(plan, expanded, if (expanded) plan.evidence.sites.map { item(it.callee) } else emptyList())
+                        at += plan.evidence.sites.size
+                    }
+                }
+                i = end
+                continue
+            }
             if (frame == null) {
                 result += when (val site = sites[i++]) {
                     is CallSite -> item(site.callee)
@@ -218,16 +286,16 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
             var j = i + 1
             while (j < sites.size && sites[j].frames.getOrNull(depth)?.construct == frame.construct) j++
             val chunk = sites.subList(i, j)
-            result += if (frame.kind == ControlKind.LOOP) FlowLoop(frame.label, group(chunk, depth + 1)) else decision(chunk, depth)
+            result += if (frame.kind == ControlKind.LOOP) FlowLoop(frame.label, group(owner, chunk, depth + 1)) else decision(owner, chunk, depth)
             i = j
         }
         return result
     }
 
-    private fun decision(sites: List<SourceSite>, depth: Int): FlowDecision {
+    private fun decision(owner: Int, sites: List<SourceSite>, depth: Int): FlowDecision {
         val first = sites.first().frames[depth]
         // Branches in source order; their items are built in that order so steps are numbered as they are read.
-        val branches = sites.groupBy { it.frames[depth].branch }.toSortedMap().values.map { it.first().frames[depth] to group(it, depth + 1) }
+        val branches = sites.groupBy { it.frames[depth].branch }.toSortedMap().values.map { it.first().frames[depth] to group(owner, it, depth + 1) }
         if (first.kind == ControlKind.ERROR) {
             return FlowDecision(DecisionKind.ERROR, "Fails?", listOf(FlowBranch("no", BranchKind.OTHERWISE)) +
                 branches.map { (frame, items) -> FlowBranch(ControlText.clip("on error " + frame.label), BranchKind.ERROR, items) })

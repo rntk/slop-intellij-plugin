@@ -6,6 +6,9 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.readAction
+import com.intellij.codeInsight.hint.HintManager
+import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.components.service
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.insight.enrichment.ColorBy
@@ -52,11 +55,21 @@ import javax.swing.event.DocumentEvent
 
 private const val TOOL_WINDOW_ID = "Application Graph"
 
+/** Shared by editor actions and the call graph's semantic exploration entry point. */
+fun openFlowChart(project: Project, pointer: SmartPsiElementPointer<PsiElement>) {
+    val window = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID) ?: return
+    window.activate {
+        val content = window.contentManager.contents.firstOrNull { it.component is FlowChartPanel } ?: return@activate
+        window.contentManager.setSelectedContent(content)
+        (content.component as FlowChartPanel).addToChart(pointer)
+    }
+}
+
 /**
- * Adds the symbol at the caret, the symbol referenced at the caret, or the selected declaration to the dedicated Flow Chart panel in the
- * Application Graph tool window. Inside a parameter or local variable, the declaration around it is added.
+ * An editor or structure view action on the symbol at the caret, the symbol referenced at the caret, or the selected declaration.
+ * Inside a parameter or local variable, it acts on the declaration around it.
  */
-class AddToFlowChartAction : AnAction() {
+abstract class GraphSymbolAction : AnAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
@@ -67,14 +80,10 @@ class AddToFlowChartAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val element = target(e) ?: return
-        val pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element)
-        val window = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID) ?: return
-        window.activate {
-            val content = window.contentManager.contents.firstOrNull { it.component is FlowChartPanel } ?: return@activate
-            window.contentManager.setSelectedContent(content)
-            (content.component as FlowChartPanel).addToChart(pointer)
-        }
+        perform(e, project, SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element))
     }
+
+    protected abstract fun perform(e: AnActionEvent, project: Project, pointer: SmartPsiElementPointer<PsiElement>)
 
     private fun target(e: AnActionEvent): PsiElement? {
         e.getData(CommonDataKeys.PSI_ELEMENT)?.let(::declaration)?.let { return it }
@@ -83,7 +92,7 @@ class AddToFlowChartAction : AnAction() {
         return declaration(file.findElementAt(offset) ?: return null)
     }
 
-    /** The innermost declaration around [element] that the flow chart can show. */
+    /** The innermost declaration around [element] that the application graph can show. */
     private fun declaration(element: PsiElement): PsiElement? {
         var current: PsiElement? = element.navigationElement
         while (current != null && current !is PsiFile) {
@@ -99,6 +108,40 @@ class AddToFlowChartAction : AnAction() {
 
     private companion object {
         val CHART_KINDS = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
+    }
+}
+
+/** Adds the symbol to the dedicated Flow Chart panel in the Application Graph tool window. */
+class AddToFlowChartAction : GraphSymbolAction() {
+    override fun perform(e: AnActionEvent, project: Project, pointer: SmartPsiElementPointer<PsiElement>) = openFlowChart(project, pointer)
+}
+
+/**
+ * Opens the symbol and what it calls side by side, as the application graph's node menu does, without the tool window.
+ * Reuses the last application graph while the code is unchanged, otherwise builds one in the background.
+ */
+class OpenSideBySideAction : GraphSymbolAction() {
+    override fun perform(e: AnActionEvent, project: Project, pointer: SmartPsiElementPointer<PsiElement>) {
+        val editor = e.getData(CommonDataKeys.EDITOR)
+        val service = project.service<CallGraphService>()
+        service.scope.launch(Dispatchers.EDT) {
+            val built = service.currentProject()
+            val found = readAction {
+                val element = pointer.element ?: return@readAction null
+                val path = element.containingFile?.virtualFile?.path
+                val node = built.graph.nodes.firstOrNull { it.filePath == path && built.pointers.getOrNull(it.id)?.element == element }
+                    ?: return@readAction null
+                val tree = built.graph.hierarchy()
+                tree.sourceCallChain(node.id) to tree.nodes[node.id].name
+            }
+            if (found == null) {
+                val text = "This symbol is not in the application graph."
+                if (editor != null && !editor.isDisposed) HintManager.getInstance().showInformationHint(editor, text)
+                else StatusBar.Info.set(text, project)
+                return@launch
+            }
+            openSourceCallChain(project, built, found.first, found.second)
+        }
     }
 }
 

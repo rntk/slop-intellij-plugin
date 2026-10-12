@@ -17,19 +17,23 @@ data class EnrichmentOptions(
     val nodes: Boolean = true,
     val edges: Boolean = true,
     val flows: Boolean = true,
+    /** Bottom-up function summaries for the compact flow chart; one generative request per batch of uncached functions. */
+    val summaries: Boolean = true,
     /** Edge judgments cost one request each; beyond this, edges of the least visible callers are skipped. */
     val maxEdges: Int = 4000,
     val decisionConcurrency: Int = 4,
     /** Extra attempts for decisions requests that time out. */
     val timeoutRetries: Int = 2,
     val flowOptions: FlowOptions = FlowOptions(),
+    val summaryOptions: SummaryOptions = SummaryOptions(),
 )
 
 /**
  * Runs every enrichment phase over PSI-free [EnrichmentInput]. Rules and structure come first because they are free;
  * generative labels precede the taxonomy that they summarise; the taxonomy precedes node judgments that choose a
- * domain; node and edge judgments precede the flows traced over them. Each phase degrades on failure instead of
- * failing the run. [complete] may be null to skip the generative phases.
+ * domain; node and edge judgments precede the flows traced over them. Function summaries are written bottom-up after
+ * visibility is known, which ranks them when [SummaryOptions.maxFunctions] applies; rule effects need no model. Each
+ * phase degrades on failure instead of failing the run. [complete] may be null to skip the generative phases.
  */
 class EnrichmentPipeline(
     private val evaluate: suspend (DecisionRequest) -> DecisionResponse,
@@ -63,6 +67,11 @@ class EnrichmentPipeline(
         val edges = if (options.edges) {
             EdgeEnricher(::evaluateWithRetry, cache, options.decisionConcurrency).enrich(input, judgedEdges(input, visibility), progress)
         } else null
+        val calls = flowCalls(graph, input.facts)
+        val effects = Effects.compute(graph, calls, input.facts, heuristics)
+        val summaries = if (options.summaries && complete != null) {
+            FunctionSummarizer(complete, cache, options.summaryOptions).summarize(input, calls, heuristics, visibility, progress)
+        } else null
         val flows = if (options.flows) {
             FlowTracer(complete, cache, options.flowOptions).trace(input, annotations, edges?.annotations.orEmpty(), heuristics, progress)
         } else null
@@ -77,12 +86,14 @@ class EnrichmentPipeline(
             flows = flows?.flows.orEmpty(),
             groupLabels = labels?.labels.orEmpty(),
             visibility = visibility,
+            summaries = summaries?.summaries.orEmpty(),
+            effects = effects,
             stats = EnrichmentStats(
                 nodeRequests = nodes?.requests ?: 0,
                 edgeRequests = edges?.requests ?: 0,
-                llmRequests = (labels?.requests ?: 0) + (if (domains.isNotEmpty()) 1 else 0) + (flows?.llmRequests ?: 0),
-                cacheHits = (nodes?.cacheHits ?: 0) + (edges?.cacheHits ?: 0),
-                failures = (nodes?.failures ?: 0) + (edges?.failures ?: 0) + (labels?.failures ?: 0) + (flows?.failures ?: 0),
+                llmRequests = (labels?.requests ?: 0) + (if (domains.isNotEmpty()) 1 else 0) + (flows?.llmRequests ?: 0) + (summaries?.requests ?: 0),
+                cacheHits = (nodes?.cacheHits ?: 0) + (edges?.cacheHits ?: 0) + (summaries?.cacheHits ?: 0),
+                failures = (nodes?.failures ?: 0) + (edges?.failures ?: 0) + (labels?.failures ?: 0) + (flows?.failures ?: 0) + (summaries?.failures ?: 0),
                 inputTokens = (nodes?.inputTokens ?: 0) + (edges?.inputTokens ?: 0),
                 durationMillis = System.currentTimeMillis() - started,
             ),

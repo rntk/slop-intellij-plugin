@@ -31,6 +31,9 @@ data class SymbolFacts(
     val imports: List<String> = emptyList(),
     /** Hash of [signature], [code] and [doc]; cached judgments are reused while it is unchanged. */
     val contentHash: String,
+    /** Full declaration hash: semantic summary caches must also notice edits beyond the excerpt budget. */
+    val sourceHash: String = contentHash,
+    val codeTruncated: Boolean = false,
 )
 
 data class EnrichmentInput(
@@ -127,6 +130,10 @@ data class Enrichment(
     /** 0..1 composite of importance and structure with [VisibilityWeights.DEFAULT]; recomputable without inference. */
     val visibility: Map<Int, Double>,
     val stats: EnrichmentStats,
+    /** Bottom-up function summaries by node id; model interpretations, see [FunctionSummarizer]. */
+    val summaries: Map<Int, FunctionSummary> = emptyMap(),
+    /** Rule-derived side effects by node id, see [Effects]. */
+    val effects: Map<Int, Effects> = emptyMap(),
 )
 
 /** Progress callback: a short phase name and completed/total units within that phase. */
