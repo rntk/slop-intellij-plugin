@@ -6,6 +6,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.insight.enrichment.CanvasLine
@@ -139,12 +141,20 @@ internal class CanvasPanel(
             generate.text = "Cancel"
             status.text = "Grouping source into topics…"
             try {
-                val data = enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
-                    progress = EnrichmentProgress { phase, done, total ->
-                        SwingUtilities.invokeLater {
-                            if (!disposed && revision == requestRevision && job?.isActive == true) status.text = "$phase · $done / $total"
-                        }
-                    })
+                val data = withBackgroundProgress(project, "Generating canvas") {
+                    reportRawProgress { reporter ->
+                        reporter.text("Grouping source into topics…")
+                        enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
+                            progress = EnrichmentProgress { phase, done, total ->
+                                reporter.text(phase)
+                                reporter.details("$done / $total")
+                                reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                SwingUtilities.invokeLater {
+                                    if (!disposed && revision == requestRevision && job?.isActive == true) status.text = "$phase · $done / $total"
+                                }
+                            })
+                    }
+                }
                 ensureActive()
                 if (!disposed && result === built && revision == requestRevision) {
                     readingView.data = data
