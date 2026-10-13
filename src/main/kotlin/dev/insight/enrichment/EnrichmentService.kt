@@ -4,11 +4,13 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphResult
 import dev.insight.callgraph.FlowRegionEvidence
+import dev.insight.callgraph.SymbolKind
 import dev.insight.chat.ChatSettings
 import dev.insight.core.Endpoints
 import dev.insight.core.decisionsClient
@@ -40,6 +42,40 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
     suspend fun summarizeSubflows(candidates: List<FlowRegionEvidence>, facts: Map<Int, SymbolFacts>,
         known: Map<Int, FunctionSummary> = emptyMap()): SubflowSummaries =
         withContext(Dispatchers.IO) { SubflowSummarizer(llm()::complete, cache).summarize(candidates, facts, known) }
+
+    /** Copies full physical source lines under a read action, then groups and summarizes them off the EDT. */
+    suspend fun generateCanvas(result: CallGraphResult, nodeIds: List<Int>? = null, flow: Flow? = null,
+        progress: EnrichmentProgress = EnrichmentProgress.NONE): CanvasData {
+        val selected = nodeIds ?: flow?.nodes
+        val sources = smartReadAction(project) {
+            val lineStarts = hashMapOf<com.intellij.psi.PsiFile, IntArray>()
+            result.graph.nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION && (selected == null || it.id in selected) }
+                .mapNotNull { node ->
+                    ProgressManager.checkCanceled()
+                    val element = result.pointers.getOrNull(node.id)?.element?.takeIf { it.isValid } ?: return@mapNotNull null
+                    val file = element.containingFile ?: return@mapNotNull null
+                    val virtual = file.virtualFile ?: return@mapNotNull null
+                    val offset = element.textRange.startOffset
+                    val starts = lineStarts.getOrPut(file) {
+                        val positions = mutableListOf(0)
+                        file.text.forEachIndexed { index, char -> if (char == '\n') positions += index + 1 }
+                        positions.toIntArray()
+                    }
+                    val found = starts.binarySearch(offset)
+                    val startLine = (if (found >= 0) found else -found - 2) + 1
+                    val relative = project.basePath?.trimEnd('/')?.let { virtual.path.removePrefix("$it/") } ?: virtual.path
+                    val qualified = listOf(node.container, node.name).filter { it.isNotBlank() }.joinToString(".")
+                    node.id to CanvasSource(node.id, element.text, virtual.path, relative, qualified, startLine,
+                        "$relative::$qualified")
+                }.toMap()
+        }
+        val snapshot = latest?.takeIf { it.graph === result.graph }
+        val roles = snapshot?.enrichment?.groupLabels.orEmpty().mapValues { it.value.summary.orEmpty() }
+        val graph = if (flow == null) result.graph else result.graph.copy(edges = flow.edges)
+        val document = CanvasDocumentBuilder.build(graph, sources, selected, roles)
+        if (document.lines.isEmpty()) return CanvasData(document, emptyList())
+        return withContext(Dispatchers.IO) { CanvasPipeline(llm()::complete, cache).generate(document, progress) }
+    }
 
     suspend fun enrich(result: CallGraphResult, options: EnrichmentOptions = EnrichmentOptions()): EnrichmentSnapshot =
         withBackgroundProgress(project, "Enriching application graph") {

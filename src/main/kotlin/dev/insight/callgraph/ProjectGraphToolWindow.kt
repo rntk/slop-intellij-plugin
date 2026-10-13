@@ -26,6 +26,9 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.vcs.changes.ChangeListListener
+import com.intellij.ui.components.JBTextField
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
@@ -62,6 +65,23 @@ fun openFlowChart(project: Project, pointer: SmartPsiElementPointer<PsiElement>)
         val content = window.contentManager.contents.firstOrNull { it.component is FlowChartPanel } ?: return@activate
         window.contentManager.setSelectedContent(content)
         (content.component as FlowChartPanel).addToChart(pointer)
+    }
+}
+
+/** Tools menu: opens the application graph and highlights the local changes and their callers and callees. */
+class ShowChangesInGraphAction : DumbAwareAction() {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = e.project != null }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val window = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID) ?: return
+        window.activate {
+            val content = window.contentManager.contents.firstOrNull { it.component is ProjectGraphPanel } ?: return@activate
+            window.contentManager.setSelectedContent(content)
+            (content.component as ProjectGraphPanel).showChanges()
+        }
     }
 }
 
@@ -160,6 +180,13 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
         chartContent.setDisposer(chart)
         toolWindow.contentManager.addContent(content)
         toolWindow.contentManager.addContent(chartContent)
+        val reading = CanvasPanel(project,
+            activateCanvas = { toolWindow.contentManager.contents.firstOrNull { it.component is CanvasPanel }?.let { toolWindow.contentManager.setSelectedContent(it) } },
+            refresh = { panel.rebuild() }, enrich = panel::enrich)
+        panel.canvasPanel = reading
+        val canvasContent = ContentFactory.getInstance().createContent(reading, "Canvas", false)
+        canvasContent.setDisposer(reading)
+        toolWindow.contentManager.addContent(canvasContent)
         panel.rebuild()
     }
 }
@@ -195,6 +222,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     private val canvas = CallGraphCanvas(onSelect = ::describe, onOpen = ::activate, popup = ::menu, menuOnClick = true)
     private val scroll = JBScrollPane(canvas)
     lateinit var flowPanel: FlowChartPanel
+    lateinit var canvasPanel: CanvasPanel
     var activateGraph: () -> Unit = {}
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
@@ -229,6 +257,31 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     /** Redraws once typing pauses, as large graphs take a moment to lay out. */
     private val searchTimer = Timer(250) { searchChanged() }.apply { isRepeats = false }
 
+    private val diffService = project.service<DiffService>()
+    /** The last change set mapped onto the graph; ignored by [render] once the graph is rebuilt. */
+    private var diff: DiffResult? = null
+    private var diffJob: Job? = null
+    private val changesMode = JComboBox(ChangesMode.entries.toTypedArray()).apply {
+        selectedItem = ChangesMode.OFF
+        toolTipText = "Highlight: emphasize changed symbols and their callers and callees · Changed only: show just those"
+    }
+    private val changesBase = JBTextField(8).apply {
+        emptyText.text = "HEAD"
+        toolTipText = if (DiffBaseProvider.available) "Revision to compare the working tree with (branch, tag or commit); empty for local changes vs HEAD. Enter to apply."
+            else "Comparing with another revision needs the Git plugin; local changes are compared with HEAD."
+        isEnabled = DiffBaseProvider.available
+    }
+    private val changesHops = JComboBox(arrayOf("1", "2", "3", "All")).apply {
+        selectedItem = "All"
+        toolTipText = "Caller and callee hops kept around changed symbols"
+    }
+    private val changesStatus = JLabel()
+    /** Suppresses [changesModeChanged] while the mode is switched programmatically. */
+    private var updatingChanges = false
+    /** Recomputes after the IDE's change list updates, for example after a commit or an external edit. */
+    private val changesTimer = Timer(1000) { if (changesMode.selectedItem != ChangesMode.OFF && changesBase.text.isBlank()) refreshChanges() }
+        .apply { isRepeats = false }
+
     init {
         border = JBUI.Borders.empty(8)
         for (control in listOf(colorBy, edgeFilter)) control.addActionListener { lensChanged() }
@@ -254,15 +307,21 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         searchMode.addActionListener { searchChanged() }
         previousMatch.apply { toolTipText = "Previous match (Shift+Enter)"; addActionListener { stepMatch(-1) } }
         nextMatch.apply { toolTipText = "Next match (Enter)"; addActionListener { stepMatch(1) } }
+        changesMode.addActionListener { changesModeChanged() }
+        changesBase.addActionListener { refreshChanges() }
+        changesHops.addActionListener { refreshChanges() }
         add(JPanel(BorderLayout(0, 4)).apply {
             add(JPanel(BorderLayout(0, 4)).apply {
-                add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                    add(JLabel("Search:"))
-                    add(search)
-                    add(searchMode)
-                    add(previousMatch)
-                    add(nextMatch)
-                    add(matchCount)
+                add(JPanel(BorderLayout(0, 4)).apply {
+                    add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                        add(JLabel("Search:"))
+                        add(search)
+                        add(searchMode)
+                        add(previousMatch)
+                        add(nextMatch)
+                        add(matchCount)
+                    }, BorderLayout.NORTH)
+                    add(changesRow(), BorderLayout.SOUTH)
                 }, BorderLayout.SOUTH)
                 add(toolbar(), BorderLayout.NORTH)
                 add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
@@ -289,6 +348,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
                 add(JLabel("Stripe: colour-by · ▶ entry point · numbered: flow step · red dashed: error path"))
                 add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
+                add(JLabel("Changes: Δ / amber stripe: changed symbol (files show +added −removed) · faint: not a caller or callee of a change"))
             }, BorderLayout.CENTER)
         }, BorderLayout.SOUTH)
         project.messageBus.connect(this).apply {
@@ -296,6 +356,9 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 override fun selectionChanged(event: FileEditorManagerEvent) { highlight(event.newFile); canvas.revealFile() }
             })
             subscribe(PsiModificationTracker.TOPIC, PsiModificationTracker.Listener { SwingUtilities.invokeLater { rebuild(600) } })
+            subscribe(ChangeListListener.TOPIC, object : ChangeListListener {
+                override fun changeListUpdateDone() { SwingUtilities.invokeLater { if (!disposed) changesTimer.restart() } }
+            })
         }
         refreshLens()
         highlight()
@@ -325,6 +388,76 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             addActionListener { openReport() }
         })
         add(zoomControl({ canvas.zoom }, { canvas.zoom = it }, canvas))
+    }
+
+    private fun changesRow() = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+        add(JLabel("Changes:"))
+        add(changesMode)
+        add(JLabel("vs"))
+        add(changesBase)
+        add(JLabel("Hops:"))
+        add(changesHops)
+        add(JButton("Refresh changes").apply {
+            toolTipText = "Compare again and map the changed lines onto the graph"
+            addActionListener { refreshChanges() }
+        })
+        add(changesStatus)
+    }
+
+    /** Turns on highlighting of the local changes, as the Tools menu action does. */
+    fun showChanges() {
+        if (changesMode.selectedItem == ChangesMode.OFF) changesMode.selectedItem = ChangesMode.HIGHLIGHT
+        else refreshChanges()
+    }
+
+    private fun changesModeChanged() {
+        if (updatingChanges) return
+        if (changesMode.selectedItem == ChangesMode.OFF) {
+            diffJob?.cancel()
+            changesStatus.text = ""
+            rerender()
+        } else if (diff?.graph?.let { it === result?.graph } == true) rerender()
+        else refreshChanges()
+    }
+
+    /** The current diff while it belongs to the shown graph and the changes are on. */
+    private fun activeDiff(): DiffResult? =
+        diff?.takeIf { changesMode.selectedItem != ChangesMode.OFF && it.graph != null && it.graph === hierarchy?.graph }
+
+    private val changedOnly: Boolean
+        get() = changesMode.selectedItem == ChangesMode.CHANGED_ONLY && activeDiff()?.changed?.isNotEmpty() == true
+
+    /** Shows a subset of the graph (search filter or changed only), where groups do not expand in place. */
+    private val onlyView: Boolean get() = filtering || changedOnly
+
+    /** Maps the VCS changes onto the current graph in the background; does nothing while the changes are off. */
+    private fun refreshChanges() {
+        if (disposed || changesMode.selectedItem == ChangesMode.OFF) return
+        val built = result ?: return
+        diffJob?.cancel()
+        changesStatus.text = "Comparing…"
+        val request = DiffRequest(changesBase.text.trim().takeIf { it.isNotEmpty() }, (changesHops.selectedItem as String).toIntOrNull())
+        diffJob = service.scope.launch(Dispatchers.EDT) {
+            try {
+                val computed = diffService.compute(built, request)
+                if (disposed || result !== built) return@launch
+                diff = computed
+                changesStatus.text = when {
+                    computed.files.isEmpty() -> "No changes vs ${computed.base}"
+                    else -> "${computed.files.size} file(s) vs ${computed.base}: +${computed.added} −${computed.removed} · " +
+                        if (computed.changed.isEmpty()) "no changed symbols, showing the full graph"
+                        else "${computed.changed.size} changed symbol(s), ${computed.neighborhood.size} with callers and callees"
+                }
+                rerender()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                thisLogger().info("Mapping changes failed", e)
+                diff = null
+                changesStatus.text = "Changes unavailable: ${e.message ?: e.javaClass.simpleName}"
+                rerender()
+            }
+        }
     }
 
     /** Reads the lens controls into [options] and redraws. */
@@ -445,6 +578,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         val tree = hierarchy ?: return
         updatingSearch = true
         try { searchMode.selectedItem = SearchMode.HIGHLIGHT } finally { updatingSearch = false }
+        updatingChanges = true
+        try { if (changesMode.selectedItem == ChangesMode.CHANGED_ONLY) changesMode.selectedItem = ChangesMode.HIGHLIGHT } finally { updatingChanges = false }
         setExpanded(expanded + tree.ancestors(source) + source, source)
     }
 
@@ -478,7 +613,10 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         val snapshot = enrichment.latest
         val excluded = snapshot?.let { lens(emptySet()) { EnrichmentLens.hiddenSymbols(it, tree.graph, options) } }.orEmpty()
         val found = tree.search(search.text)
-        val shown = tree.view(expanded, excluded, found.toHashSet().takeIf { filtering })
+        val changes = activeDiff()
+        val filter = found.toHashSet().takeIf { filtering }
+        val affected = changes?.takeIf { changedOnly }?.let { changedOnlyNodes(tree, it) }
+        val shown = tree.view(expanded, excluded, if (filter != null && affected != null) filter.intersect(affected) else filter ?: affected)
         view = shown
         // Matches hidden by the lens cannot be shown.
         matches = found.filter { shown.shownId(it) != null }
@@ -486,7 +624,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             SectionLens.sections(tree, shown, sectionBy.selectedItem as SectionBy, snapshot, project.name, options)
         }
         canvas.show(shown.graph, shown.weights, sections)
-        canvas.decorate(snapshot?.let { lens(GraphDecorations.NONE) { EnrichmentLens.decorate(it, tree.graph, shown, options) } } ?: GraphDecorations.NONE)
+        val decorations = snapshot?.let { lens(GraphDecorations.NONE) { EnrichmentLens.decorate(it, tree.graph, shown, options) } } ?: GraphDecorations.NONE
+        canvas.decorate(changes?.let { lens(decorations) { decorateDiff(decorations, shown, it) } } ?: decorations)
         highlight()
         markMatches()
         val target = focus?.let(shown::shownId)
@@ -504,7 +643,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         selection.text = if (graph != null && node != null) {
             val outgoing = graph.edges.filter { it.caller == node.id && it.kind != RelationKind.CONTAINS }.groupingBy { it.kind }.eachCount()
             val incoming = graph.edges.count { it.callee == node.id && it.kind != RelationKind.CONTAINS }
-            val inside = if (node.hidden > 0) " · ${node.hidden} inside, Enter to ${if (filtering) "show in full graph" else "expand"}" else ""
+            val inside = if (node.hidden > 0) " · ${node.hidden} inside, Enter to ${if (onlyView) "show in full graph" else "expand"}" else ""
             "${node.kind.name.lowercase()} ${node.name} · $incoming incoming · " +
                 outgoing.entries.joinToString { "${it.value} ${it.key.name.lowercase()}" } + inside +
                 (view?.sources?.getOrNull(node.id)?.let(::annotationSummary)?.let { " · $it" } ?: "")
@@ -531,6 +670,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         enrichJob?.cancel()
         enrichButton.isEnabled = false
         flowPanel.setBusy(true)
+        canvasPanel.setBusy(true)
         enrichJob = service.scope.launch(Dispatchers.EDT) {
             try {
                 val snapshot = enrichment.enrich(built)
@@ -541,6 +681,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 reportButton.isEnabled = true
                 refreshLens()
                 flowPanel.refreshLens()
+                canvasPanel.refreshLens()
                 rerender()
             } catch (e: CancellationException) {
                 throw e
@@ -548,8 +689,9 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 thisLogger().warn("Enrichment failed", e)
                 status.text = "Enrichment failed: ${e.message ?: e.javaClass.simpleName}"
                 flowPanel.setStatus(status.text)
+                canvasPanel.setStatus(status.text)
             } finally {
-                if (!disposed) { enrichButton.isEnabled = true; flowPanel.setBusy(false) }
+                if (!disposed) { enrichButton.isEnabled = true; flowPanel.setBusy(false); canvasPanel.setBusy(false) }
             }
         }
     }
@@ -565,7 +707,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         val source = view?.sources?.getOrNull(id) ?: return
         when {
             !tree.isGroup(source) -> navigate(source)
-            filtering -> showInGraph(source)
+            onlyView -> showInGraph(source)
             source in expanded -> setExpanded(expanded - source, source)
             else -> setExpanded(expanded + source, source)
         }
@@ -586,17 +728,18 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             add(item("Side by side") {
                 openSourceCallChain(project, built, tree.sourceCallChain(source), tree.nodes[source].name)
             })
-            if (filtering) add(item("Show in full graph") { showInGraph(source) })
+            if (onlyView) add(item("Show in full graph") { showInGraph(source) })
             else if (tree.isGroup(source)) {
                 if (source in open) add(item("Collapse") { setExpanded(open - source, source) })
                 else add(item("Expand") { setExpanded(open + source, source) })
                 add(item("Expand all inside") { setExpanded(open + tree.groupsWithin(source), source) })
             }
-            tree.parent[source].takeIf { it >= 0 && !filtering }?.let { parent ->
+            tree.parent[source].takeIf { it >= 0 && !onlyView }?.let { parent ->
                 add(item("Collapse into ${tree.nodes[parent].name}") { setExpanded(open - parent, parent) })
             }
             if (result?.pointers?.getOrNull(source) != null) add(item("Open source") { navigate(source) })
             if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Add to flow chart") { flowPanel.addToChart(FlowStart(source)) })
+            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Open in canvas") { canvasPanel.openFunction(source) })
         }.takeIf { it.componentCount > 0 }
     }
 
@@ -607,6 +750,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             delay(debounce)
             status.text = "Building application graph…"
             flowPanel.setStatus(status.text)
+            canvasPanel.setBuilding()
             try {
                 val built = service.buildProject()
                 val tree = built.graph.hierarchy()
@@ -614,21 +758,29 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 hierarchy = tree
                 if (expandedKeys == null) expandedKeys = tree.expansion(detail.selectedItem as GraphDetail).mapTo(hashSetOf(), tree::key)
                 render(null)
+                refreshChanges()
                 flowPanel.showResult(built)
+                canvasPanel.showResult(built)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 thisLogger().warn("Application graph failed", e)
                 status.text = "Could not build graph. Use Refresh to retry."
                 flowPanel.setStatus(status.text)
+                canvasPanel.setStatus(status.text)
             }
         }
     }
 
-    override fun dispose() { disposed = true; searchTimer.stop(); job?.cancel(); enrichJob?.cancel() }
+    override fun dispose() { disposed = true; searchTimer.stop(); changesTimer.stop(); job?.cancel(); enrichJob?.cancel(); diffJob?.cancel() }
 
     private enum class SearchMode(val label: String) {
         HIGHLIGHT("Highlight"), FILTER("Filter");
+        override fun toString() = label
+    }
+
+    private enum class ChangesMode(val label: String) {
+        OFF("Off"), HIGHLIGHT("Highlight"), CHANGED_ONLY("Changed only");
         override fun toString() = label
     }
 

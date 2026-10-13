@@ -46,4 +46,15 @@ class PluginDescriptorTest {
         assertEquals("plugin.xml", file)
         assertEquals("true", element.getAttribute("supportsK2"))
     }
+
+    /** The plugin must still load without Git, so Git code is only registered through the optional descriptor. */
+    @Test fun `git integration for the diff is optional`() {
+        val git = childElements(loadDescriptor("plugin.xml")).single { it.tagName == "depends" && it.textContent.trim() == "Git4Idea" }
+        assertEquals("true", git.getAttribute("optional"))
+        assertEquals("diff-git.xml", git.getAttribute("config-file"))
+        val providers = childElements(loadDescriptor("diff-git.xml"))
+            .filter { it.tagName == "extensions" && it.getAttribute("defaultExtensionNs") == "dev.insight" }
+            .flatMap { childElements(it) }.toList()
+        assertEquals(listOf("diffBaseProvider"), providers.map { it.tagName })
+    }
 }

@@ -24,6 +24,8 @@ dependencies {
         bundledPlugins("com.intellij.java", "org.jetbrains.kotlin", "JavaScript")
         // PythonCore requires TOML; without it the Python plugin does not load in tests.
         bundledPlugin("org.toml.lang")
+        // Optional: comparing the working tree with a named Git revision (see META-INF/diff-git.xml).
+        bundledPlugin("Git4Idea")
         // Marketplace plugins matching the target build (IU-252.27397.103).
         plugins("PythonCore:252.27397.103", "org.jetbrains.plugins.go:252.27397.103")
         testFramework(TestFrameworkType.Platform)
