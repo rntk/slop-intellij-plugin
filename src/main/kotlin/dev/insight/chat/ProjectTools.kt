@@ -143,13 +143,13 @@ private class ReadFileTool(private val files: ProjectFiles) : ProjectTool(
     """{"type":"object","properties":{
         "path":{"type":"string","description":"Project-relative file path, as returned by list_files or search_text."},
         "start_line":{"type":"integer","description":"First line to read, 1-based (default 1)."},
-        "end_line":{"type":"integer","description":"Last line to read, inclusive (default start_line + 299). At most $MAX_LINES lines per call."}
+        "end_line":{"type":"integer","description":"Last line to read, inclusive (default start_line + 79). At most $MAX_LINES lines per call."}
     },"required":["path"],"additionalProperties":false}""",
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")
         val start = arguments.int("start_line") ?: 1
-        val end = arguments.int("end_line") ?: (start + 299)
+        val end = arguments.int("end_line") ?: (start + 79)
         if (start < 1 || end < start) throw ToolInputException("start_line must be at least 1 and not after end_line")
         return readAction {
             val file = files.resolve(path)

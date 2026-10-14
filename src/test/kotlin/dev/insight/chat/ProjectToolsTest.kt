@@ -46,6 +46,14 @@ class ProjectToolsTest : BasePlatformTestCase() {
         assertTrue(invalid("read_file", """{"path":"app/Main.kt","start_line":"two"}""").contains("integer"))
     }
 
+    fun `test default read range is eighty lines`() {
+        myFixture.addFileToProject("app/Long.txt", (1..150).joinToString("\n") { "line $it" })
+        val result = call("read_file", """{"path":"app/Long.txt"}""")
+        assertTrue(result.startsWith("app/Long.txt (lines 1-80 of 150)"))
+        assertTrue(result.endsWith("80| line 80"))
+        assertFalse(result.contains("81|"))
+    }
+
     fun `test paths outside the project are rejected`() {
         assertTrue(invalid("read_file", """{"path":"app/../../etc/passwd"}""").contains(".."))
         assertTrue(invalid("read_file", """{"path":"missing.kt"}""").contains("No project file"))

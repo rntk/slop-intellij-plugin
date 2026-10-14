@@ -41,7 +41,7 @@ data class EntryPointResult(
 )
 
 /** A project file identified by its canonical project-relative path and a hash of its current content. */
-data class FileId(val path: String, val hash: String)
+data class FileId(val path: String, val hash: String, val lineCount: Int? = null)
 
 /** The project as the finder sees it. Paths are project-relative. */
 interface ProjectSnapshot {

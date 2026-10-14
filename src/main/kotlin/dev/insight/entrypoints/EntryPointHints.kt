@@ -33,7 +33,7 @@ object EntryPointHints {
         data class Candidate(val id: Int, val path: String, val line: Int?, val name: String)
         val candidates = graph.nodes.mapNotNull { node ->
             if (node.kind != SymbolKind.FUNCTION || !node.inProject || node.id in called) return@mapNotNull null
-            val path = node.filePath?.let(relative)?.takeUnless(::isTest) ?: return@mapNotNull null
+            val path = node.filePath?.let(relative)?.takeUnless { isTest(it) || FileTree.isNoise(it) } ?: return@mapNotNull null
             val name = listOf(node.container, node.name).filter { it.isNotBlank() }.joinToString(".")
             Candidate(node.id, path, node.location.substringAfterLast(':', "").toIntOrNull(), name)
         }
@@ -43,7 +43,7 @@ object EntryPointHints {
         val namedIds = named.mapTo(hashSetOf()) { it.id }
         // Reach is costly on large graphs, so it is measured only for the uncalled functions that call the most.
         val reach = candidates.asSequence()
-            .filter { it.id !in namedIds && callees[it.id].orEmpty().isNotEmpty() }
+            .filter { it.id !in namedIds && !graph.nodes[it.id].name.substringBefore('(').trim().startsWith('_') && callees[it.id].orEmpty().isNotEmpty() }
             .sortedByDescending { callees[it.id].orEmpty().size }
             .take(300)
             .map { it to reachable(it.id, callees) }

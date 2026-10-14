@@ -30,6 +30,7 @@ object FileTree {
     fun render(paths: List<String>, maxChars: Int): String {
         val root = Dir()
         for (path in paths) {
+            if (isNoise(path)) continue
             val parts = path.trim('/').split('/').filter { it.isNotEmpty() }
             if (parts.isEmpty()) continue
             var dir = root
@@ -93,4 +94,19 @@ object FileTree {
 
     /** File names that often declare or are entry points. */
     internal fun isLandmark(name: String) = LANDMARK.matches(name)
+
+    private val TOOL_DIRS = setOf(".git", ".idea", ".gradle", ".traverse-cache", "__pycache__", ".pytest_cache",
+        ".mypy_cache", ".ruff_cache", "node_modules", ".venv")
+    private val OUTPUT_DIRS = setOf("venv", "build", "dist", "target", "vendor", "coverage")
+    private val APP_DIRS = setOf("frontend", "backend", "client", "server", "web", "app")
+    private val WORKSPACE_DIRS = setOf("packages", "apps", "services", "modules")
+
+    /** Ambiguous names such as build are output only at the root or conventional app/workspace roots. */
+    internal fun isNoise(path: String): Boolean {
+        val dirs = path.replace('\\', '/').removePrefix("./").split('/').dropLast(1)
+        if (dirs.any { it in TOOL_DIRS }) return true
+        return dirs.withIndex().any { (i, name) ->
+            name in OUTPUT_DIRS && (i == 0 || i == 1 && dirs[0] in APP_DIRS || i == 2 && dirs[0] in WORKSPACE_DIRS)
+        }
+    }
 }

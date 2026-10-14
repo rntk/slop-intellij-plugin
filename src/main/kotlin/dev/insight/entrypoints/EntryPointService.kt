@@ -33,7 +33,9 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
                 })
             }
         }.orEmpty()
-        val tools = projectTools(project).filter { it.definition.name in setOf(EntryPointFinder.LIST_TOOL, EntryPointFinder.READ_TOOL) }
+        val tools = projectTools(project).filter {
+            it.definition.name in setOf(EntryPointFinder.LIST_TOOL, EntryPointFinder.READ_TOOL, EntryPointFinder.SEARCH_TOOL)
+        }
         return withContext(Dispatchers.IO) {
             when (api) {
                 EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
@@ -56,8 +58,9 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
             val file = try { files.resolve(path) } catch (_: ToolInputException) { return@readAction null }
             if (file.isDirectory) return@readAction null
             // Binary or very large files are identified by size and timestamp instead of content.
-            val content = files.text(file) ?: "${file.length}:${file.timeStamp}"
-            FileId(files.display(file), EntryPointFinder.digest(content))
+            val text = files.text(file)
+            val content = text ?: "${file.length}:${file.timeStamp}"
+            FileId(files.display(file), EntryPointFinder.digest(content), text?.lines()?.size)
         }
     }
 }
