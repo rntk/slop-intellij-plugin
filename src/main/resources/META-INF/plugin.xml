@@ -33,6 +33,9 @@
                     factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
         <toolWindow id="Insight Chat" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
+        <!-- Raw request/response traffic of the LLM and Decisions APIs, for debugging. -->
+        <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/insight.svg"
+                    factoryClass="dev.insight.apilog.ApiLogToolWindowFactory"/>
         <applicationConfigurable parentId="tools" id="dev.insight.chat" displayName="Insight Chat"
                                  instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>

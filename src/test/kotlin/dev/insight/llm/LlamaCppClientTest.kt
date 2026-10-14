@@ -3,6 +3,7 @@ package dev.insight.llm
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
+import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -231,5 +232,19 @@ class LlamaCppClientTest {
             job.cancelAndJoin()
             assertTrue(job.isCancelled)
         }
+    }
+
+    @Test fun `traffic log records each attempt with raw bodies and without the API key`() = runBlocking {
+        respond(503 to """{"error":"loading model"}""", 200 to reply("""{"role":"assistant","content":"Hi"}"""))
+        val traffic = ApiTrafficLog("LLM")
+        LlamaCppClient(baseUrl, apiKey = "secret", maxRetries = 1, traffic = traffic)
+            .complete(CompletionRequest(listOf(LlmMessage.user("Hello"))))
+        val (loading, ok) = traffic.entries()
+        assertEquals(503 to 200, loading.status to ok.status)
+        assertEquals("""{"error":"loading model"}""", loading.responseBody)
+        assertTrue(ok.responseBody!!.contains("\"Hi\""))
+        assertEquals("Hello", JsonParser.parseString(ok.requestBody).asJsonObject.getAsJsonArray("messages")[0].asJsonObject["content"].asString)
+        assertEquals(listOf(0, 1), traffic.entries().map { it.attempt })
+        assertFalse(traffic.entries().toString().contains("secret"))
     }
 }

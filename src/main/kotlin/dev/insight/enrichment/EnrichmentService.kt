@@ -1,5 +1,6 @@
 package dev.insight.enrichment
 
+import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
@@ -98,7 +99,8 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
         }
 
     // Hosts are hardcoded for now (see Endpoints). The local decisions server accepts any bearer token.
-    private fun decisions() = decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4)
+    private fun decisions() =
+        decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4, traffic = ApiLogs.decisions)
 
     private fun llm() = configuredLlmClient()
 }
@@ -111,5 +113,6 @@ internal fun configuredLlmClient(): LlamaCppClient {
         model = settings.state.model.orEmpty(),
         apiKey = settings.apiKey,
         requestTimeout = Duration.ofSeconds(settings.state.requestTimeoutSeconds.coerceIn(60, 3600).toLong()),
+        traffic = ApiLogs.llm,
     )
 }

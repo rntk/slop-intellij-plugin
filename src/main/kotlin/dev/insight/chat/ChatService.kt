@@ -1,5 +1,6 @@
 package dev.insight.chat
 
+import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
@@ -102,6 +103,7 @@ open class ChatSession(
             model = state.model.orEmpty(),
             apiKey = settings.apiKey,
             requestTimeout = Duration.ofSeconds(state.requestTimeoutSeconds.coerceIn(10, 3600).toLong()),
+            traffic = ApiLogs.llm,
         )
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
         else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },

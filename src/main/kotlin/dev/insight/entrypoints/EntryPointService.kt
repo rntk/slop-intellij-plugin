@@ -1,5 +1,6 @@
 package dev.insight.entrypoints
 
+import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
@@ -38,7 +39,8 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
                 EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
                     .find(project.name, hints, progress)
                 EntryPointApi.DECISIONS -> DecisionsEntryPointFinder(
-                    decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4)::evaluate,
+                    decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4,
+                        traffic = ApiLogs.decisions)::evaluate,
                     IdeSnapshot(files),
                     { path -> readAction { files.text(files.resolve(path)) } },
                     cache = decisionsCache,

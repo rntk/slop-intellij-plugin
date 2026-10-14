@@ -1,5 +1,6 @@
 package dev.insight.decisions
 
+import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
@@ -26,6 +27,7 @@ class DecisionApiException(
  * Calls suspend without blocking the EDT; cancellation cancels the in-flight HTTP future.
  * Supply credentials at construction time from the caller's credential store.
  * The default HTTP transport is shared. A supplied transport remains caller-owned.
+ * When [traffic] is set, every HTTP attempt is recorded there with its raw request and response.
  */
 class DecisionsClient(
     private val apiKey: String,
@@ -33,6 +35,7 @@ class DecisionsClient(
     private val requestTimeout: Duration = Duration.ofSeconds(60),
     private val maxRetries: Int = 2,
     private val httpClient: HttpClient = sharedHttpClient,
+    private val traffic: ApiTrafficLog? = null,
 ) {
     init {
         require(apiKey.isNotBlank() && '\r' !in apiKey && '\n' !in apiKey) { "A valid API key is required" }
@@ -63,8 +66,22 @@ class DecisionsClient(
             .build()
         var attempt = 0
         while (true) {
-            val response = send(httpRequest)
-            if (response.statusCode() in 200..299) return DecisionJson.decode(response.body(), questions)
+            val call = traffic?.begin(httpRequest, body, attempt)
+            val response = try {
+                send(httpRequest)
+            } catch (e: Throwable) {
+                call?.fail(e)
+                throw e
+            }
+            if (response.statusCode() in 200..299) {
+                return try {
+                    DecisionJson.decode(response.body(), questions).also { call?.respond(response) }
+                } catch (e: Throwable) {
+                    call?.respond(response, e)
+                    throw e
+                }
+            }
+            call?.respond(response)
             val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
             if (response.statusCode() !in setOf(429, 529) || attempt >= maxRetries) {
                 throw DecisionApiException(response.statusCode(), response.body(), retryAfter)

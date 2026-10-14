@@ -1,5 +1,6 @@
 package dev.insight.llm
 
+import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
@@ -53,6 +54,7 @@ fun chatCompletionsUri(baseUrl: String): URI {
  * [model] is optional: llama-server answers with its loaded model when it is empty. [apiKey] matches
  * `llama-server --api-key` and is sent only over HTTPS or to localhost.
  * The default HTTP transport is shared. A supplied transport remains caller-owned.
+ * When [traffic] is set, every HTTP attempt is recorded there with its raw request and response.
  */
 class LlamaCppClient(
     baseUrl: String,
@@ -62,6 +64,7 @@ class LlamaCppClient(
     private val requestTimeout: Duration = Duration.ofSeconds(120),
     private val maxRetries: Int = 2,
     private val httpClient: HttpClient = sharedHttpClient,
+    private val traffic: ApiTrafficLog? = null,
 ) {
     val endpoint: URI = chatCompletionsUri(baseUrl)
 
@@ -92,9 +95,23 @@ class LlamaCppClient(
             .build()
         var attempt = 0
         while (true) {
-            val response = send(httpRequest)
+            val call = traffic?.begin(httpRequest, body, attempt)
+            val response = try {
+                send(httpRequest)
+            } catch (e: Throwable) {
+                call?.fail(e)
+                throw e
+            }
             val status = response.statusCode()
-            if (status in 200..299) return LlmJson.decode(response.body())
+            if (status in 200..299) {
+                return try {
+                    LlmJson.decode(response.body()).also { call?.respond(response) }
+                } catch (e: Throwable) {
+                    call?.respond(response, e)
+                    throw e
+                }
+            }
+            call?.respond(response)
             val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
             if (!(status == 408 || status == 429 || status in 500..599) || attempt >= maxRetries) {
                 throw LlmApiException(status, response.body(), retryAfter)

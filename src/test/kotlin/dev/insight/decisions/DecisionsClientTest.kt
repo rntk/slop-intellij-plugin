@@ -3,6 +3,7 @@ package dev.insight.decisions
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import com.sun.net.httpserver.HttpServer
+import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -207,6 +208,51 @@ class DecisionsClientTest {
             assertTrue(job.isCancelled)
             assertEquals(1, calls.get())
         }
+    }
+
+    @Test fun `traffic log pairs each attempt with its raw response and redacts the key`() = runBlocking {
+        val calls = AtomicInteger()
+        server.createContext("/v1/systemone") { exchange ->
+            exchange.requestBody.readAllBytes()
+            val bytes = (if (calls.incrementAndGet() == 1) "busy" else success).toByteArray()
+            exchange.responseHeaders.add("Retry-After", "0")
+            exchange.sendResponseHeaders(if (calls.get() == 1) 429 else 200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        val traffic = ApiTrafficLog("Decisions")
+        DecisionsClient("test-secret", endpoint, Duration.ofSeconds(5), 2, traffic = traffic).evaluate(request)
+        val (busy, ok) = traffic.entries()
+        assertEquals(listOf(0, 1), listOf(busy.attempt, ok.attempt))
+        assertEquals(429, busy.status)
+        assertEquals("busy", busy.responseBody)
+        assertEquals(200, ok.status)
+        assertEquals(success, ok.responseBody)
+        assertEquals(DecisionJson.encode(request), ok.requestBody)
+        assertFalse(traffic.entries().toString().contains("test-secret"))
+        assertEquals("Bearer <redacted>", ok.requestHeaders.entries.first { it.key.equals("Authorization", true) }.value)
+    }
+
+    @Test fun `traffic log records rejected responses and transport failures`() = runBlocking {
+        val traffic = ApiTrafficLog("Decisions")
+        respond(200, "not json")
+        assertThrows(DecisionProtocolException::class.java) {
+            runBlocking { DecisionsClient("k", endpoint, traffic = traffic).evaluate(request) }
+        }
+        server.removeContextIfPresent()
+        server.createContext("/v1/systemone") { exchange ->
+            exchange.requestBody.readAllBytes()
+            Thread.sleep(1000)
+            exchange.close()
+        }
+        assertThrows(HttpTimeoutException::class.java) {
+            runBlocking { DecisionsClient("k", endpoint, Duration.ofMillis(100), traffic = traffic).evaluate(request) }
+        }
+        val (rejected, timedOut) = traffic.entries()
+        assertEquals("not json", rejected.responseBody)
+        assertTrue(rejected.error!!.startsWith("DecisionProtocolException"))
+        assertNull(timedOut.status)
+        assertTrue(timedOut.error!!.startsWith("HttpTimeoutException"))
+        assertFalse(timedOut.pending)
     }
 
     private fun HttpServer.removeContextIfPresent() {

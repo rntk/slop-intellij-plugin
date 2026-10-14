@@ -31,7 +31,8 @@ fun decisionsClient(
     requestTimeout: Duration = Duration.ofSeconds(60),
     maxRetries: Int = 2,
     httpClient: HttpClient = sharedHttpClient,
-): DecisionsClient = DecisionsClient(apiKey, Endpoints.DECISIONS_ENDPOINT, requestTimeout, maxRetries, httpClient)
+    traffic: ApiTrafficLog? = null,
+): DecisionsClient = DecisionsClient(apiKey, Endpoints.DECISIONS_ENDPOINT, requestTimeout, maxRetries, httpClient, traffic)
 
 private val sharedHttpClient: HttpClient by lazy {
     HttpClient.newBuilder()
