@@ -55,7 +55,7 @@ internal class FlowChartPanel(
     private val status = JLabel("Building application graph…")
     private val selection = JLabel(FLOW_HINT)
     internal val flowCanvas = FlowChartCanvas(::describeStep, { navigate(it) }, ::flowMenu, ::loadSteps,
-        "Add a function from the graph, editor or Structure view, or choose an enriched flow above.", ::describeRegion)
+        "Add a function from the graph, editor or Structure view, or choose an enriched flow above.", ::describeRegion, ::openScopedChat)
     /** Reads call sites and docs of steps that appeared on the flow chart. */
     private var flowJob: Job? = null
     private var summaryJob: Job? = null
@@ -122,6 +122,70 @@ internal class FlowChartPanel(
         }
     }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
+    private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
+    private val scopedChats = mutableMapOf<ChatPanel, CoroutineScope>()
+
+    /** Every invocation gets an independent history and a fixed source anchor. */
+    private fun openScopedChat(target: FlowChatTarget) {
+        val built = result ?: return
+        if (building() || disposed) return
+        val revision = chatRevision
+        val sourceStamp = PsiModificationTracker.getInstance(project).modificationCount
+        val ids = (target.nodes + listOfNotNull(target.owner)).toSet()
+        val fragment = flowCanvas.chart?.steps.orEmpty().filter { it.node in ids }.map { step -> mapOf(
+            "node_id" to step.node, "step_number" to step.number, "label" to step.card.title,
+            "description" to step.card.description, "details" to step.card.details,
+            "calls_open" to (step.node in flowCanvas.board.openCalls),
+            "callers_open" to (step.node in flowCanvas.board.openCallers),
+        ) }
+        chatScope.launch(Dispatchers.EDT) {
+            val captured = try {
+                smartReadAction(project) {
+                    if (PsiModificationTracker.getInstance(project).modificationCount != sourceStamp)
+                        throw ToolInputException("Source changed while opening scoped chat; choose To chat again")
+                    scopedChartContext(project, built, revision, target)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                thisLogger().warn("Could not capture chart chat context", e)
+                status.text = "Could not capture chart context; try again."
+                return@launch
+            }
+            if (disposed) return@launch
+            val context = object : ChartChatContext by chatContext {
+                override suspend fun snapshot(): String {
+                    val current = chatContext.snapshot()
+                    val stale = withContext(Dispatchers.EDT) {
+                        revision != chatRevision || building() ||
+                            PsiModificationTracker.getInstance(project).modificationCount != sourceStamp
+                    }
+                    return Gson().toJson(mapOf("scoped_context" to com.google.gson.JsonParser.parseString(captured),
+                        "captured_chart_fragment" to fragment, "scope_is_stale" to stale,
+                        "current_chart" to com.google.gson.JsonParser.parseString(current)))
+                }
+            }
+            val scope = CoroutineScope(chatScope.coroutineContext + SupervisorJob(chatScope.coroutineContext[Job]))
+            val panel = ChatPanel(project, ChatSession(project, scope, context), chartMode = true,
+                scopeLabel = "${target.kind}: ${target.label.orEmpty().take(100)}")
+            scopedChats[panel] = scope
+            val title = target.label?.take(25)?.ifBlank { null } ?: target.kind
+            chatTabs.addTab(title, panel)
+            chatTabs.setTabComponentAt(chatTabs.indexOfComponent(panel), JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                add(JLabel(title))
+                add(JButton("×").apply {
+                    toolTipText = "Close scoped chat"
+                    addActionListener {
+                        scopedChats.remove(panel)?.cancel()
+                        panel.dispose()
+                        chatTabs.remove(panel)
+                    }
+                })
+            })
+            chatTabs.selectedComponent = panel
+            panel.input.requestFocusInWindow()
+        }
+    }
 
     init {
         border = JBUI.Borders.empty(8)
@@ -141,8 +205,8 @@ internal class FlowChartPanel(
         }, BorderLayout.NORTH)
         add(com.intellij.ui.OnePixelSplitter(false, 0.72f).apply {
             firstComponent = JBScrollPane(flowCanvas)
-            secondComponent = chatPanel
-            chatPanel.minimumSize = java.awt.Dimension(JBUI.scale(260), 0)
+            secondComponent = chatTabs
+            chatTabs.minimumSize = java.awt.Dimension(JBUI.scale(260), 0)
         }, BorderLayout.CENTER)
         add(selection, BorderLayout.SOUTH)
         colorBy.addActionListener { if (!updatingLens) renderFlow() }
@@ -474,7 +538,15 @@ internal class FlowChartPanel(
         flowCanvas.remap { id -> previous.nodes.getOrNull(id)?.let { ids[stableKey(it)] } }
     }
 
-    override fun dispose() { disposed = true; chatScope.cancel(); chatPanel.dispose(); flowJob?.cancel(); summaryJob?.cancel() }
+    override fun dispose() {
+        disposed = true
+        chatScope.cancel()
+        scopedChats.keys.forEach { it.dispose() }
+        scopedChats.clear()
+        chatPanel.dispose()
+        flowJob?.cancel()
+        summaryJob?.cancel()
+    }
     private class FlowLensFor(val graph: CallGraph, val snapshot: EnrichmentSnapshot?, val colorBy: ColorBy, val lens: FlowChartLens)
     private companion object {
         const val FLOW_HINT = "Click to select · Enter opens source · Up/Down step · Left toggles callers · Right/Space toggles calls · Delete removes column"

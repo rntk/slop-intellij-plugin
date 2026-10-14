@@ -5,6 +5,7 @@ import dev.insight.callgraph.*
 import java.awt.Point
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import javax.swing.JMenuItem
 
 class FlowChartCanvasTest : BasePlatformTestCase() {
     /** 0 → 1 → (2, 3); 0 → 4; callers 5 → 0 and 6 → 0; 5 → 8; 7 → 5 → 7. */
@@ -15,7 +16,8 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    private fun canvas(opened: MutableList<Int> = mutableListOf()) = FlowChartCanvas({}, { opened += it }).apply {
+    private fun canvas(opened: MutableList<Int> = mutableListOf()) = FlowChartCanvas({}, { opened += it },
+        onToChat = { error("Left-click must not open scoped chat") }).apply {
         show(source())
         add(FlowStart(0, "Flow", "Does things"))
         size = preferredSize
@@ -40,6 +42,74 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
     }
 
     private fun centre(bounds: java.awt.Rectangle) = Point(bounds.centerX.toInt(), bounds.centerY.toInt())
+
+    fun `test chat menu captures cards callers and connectors at the current zoom`() {
+        val targets = mutableListOf<FlowChatTarget>()
+        val canvas = FlowChartCanvas({}, {}, onToChat = { targets += it }).apply {
+            show(source())
+            add(FlowStart(0))
+            toggleCallers(0)
+            zoom = 1.5
+        }
+        fun scaled(point: Point) = Point((point.x * canvas.zoom).toInt(), (point.y * canvas.zoom).toInt())
+        val caller = canvas.geometry!!.cards.getValue(5)
+        val menu = canvas.contextMenuAt(scaled(centre(caller.bounds)))!!
+        menu.components.filterIsInstance<JMenuItem>().single { it.text == "To chat" }.doClick()
+        assertEquals(listOf(5), targets.single().nodes)
+        assertEquals(5, targets.single().owner)
+        val segment = canvas.geometry!!.shapes.filterIsInstance<FlowSegment>().first {
+            canvas.geometry!!.chatTargets[it]?.owner == 1 && it.from.distance(it.to) > 16
+        }
+        val middle = Point((segment.from.x + segment.to.x) / 2, (segment.from.y + segment.to.y) / 2)
+        val target = canvas.chatTargetAt(scaled(middle))!!
+        assertEquals("connector", target.kind)
+        assertEquals(1, target.owner)
+        assertNotNull(canvas.contextMenuAt(scaled(middle)))
+        canvas.selectNode(4)
+        assertEquals(5, targets.single().owner)
+    }
+
+    fun `test region chat scopes keep their owning function and occurrence evidence`() {
+        val sites = listOf(CallSite(1, 10), CallSite(2, 20))
+        val source = FlowSource(mapOf(0 to listOf(CallGraphEdge(0, 1), CallGraphEdge(0, 2))), emptyMap(),
+            callSites = mapOf(0 to sites)) { FlowCard("function$it") }
+        val canvas = FlowChartCanvas({}, {}, onToChat = {}).apply {
+            show(source)
+            setCompact(true)
+            add(FlowStart(0))
+        }
+        val box = canvas.geometry!!.shapes.filterIsInstance<FlowRegionBox>().single()
+        val target = canvas.chatTargetAt(centre(box.bounds))!!
+        assertEquals("region", target.kind)
+        assertEquals(0, target.owner)
+        assertEquals(listOf(1, 2), target.nodes)
+        assertEquals(sites, target.region!!.sites)
+        canvas.contextMenuAt(centre(box.bounds))!!.components.filterIsInstance<JMenuItem>()
+            .single { it.text == "Expand subflow" }.doClick()
+        assertNotNull(canvas.chart!!.step(1))
+        assertEquals(sites, target.region!!.sites)
+    }
+
+    fun `test decision and branch connectors retain owner instead of a nearby callee`() {
+        val frame = ControlFrame(ControlKind.BRANCH, 10, 12, "ready")
+        val canvas = FlowChartCanvas({}, {}, onToChat = {}).apply {
+            show(FlowSource(mapOf(0 to listOf(CallGraphEdge(0, 1))), emptyMap(),
+                callSites = mapOf(0 to listOf(CallSite(1, 30, listOf(frame))))) { FlowCard("function$it") })
+            add(FlowStart(0))
+        }
+        val decision = canvas.geometry!!.shapes.filterIsInstance<FlowDecisionBox>().single()
+        val target = canvas.chatTargetAt(centre(decision.bounds))!!
+        assertEquals("decision", target.kind)
+        assertEquals(0, target.owner)
+        assertEquals("Which condition?", target.label)
+        val branch = canvas.geometry!!.shapes.filterIsInstance<FlowPill>().first { it.style == FlowPillStyle.CASE }
+        assertEquals(0, canvas.chatTargetAt(centre(branch.bounds))!!.owner)
+        val branchLines = canvas.geometry!!.shapes.filterIsInstance<FlowSegment>().filter {
+            canvas.geometry!!.chatTargets[it]?.kind == "decision"
+        }
+        assertTrue(branchLines.isNotEmpty())
+        assertTrue(branchLines.all { canvas.geometry!!.chatTargets[it]!!.owner == 0 })
+    }
 
     fun `test painting leaves the layout unchanged`() {
         val canvas = canvas()
@@ -154,7 +224,8 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         val candidate = FlowRegionEvidence(0, sites)
         val plan = FlowRegionPlan(candidate, "Store user data", "Writes a user record.", inferred = true)
         val opened = mutableListOf<Int>()
-        val canvas = FlowChartCanvas({}, { opened += it }).apply {
+        val canvas = FlowChartCanvas({}, { opened += it },
+            onToChat = { error("Left-click must not open scoped chat") }).apply {
             setCompact(true)
             show(FlowSource(mapOf(0 to listOf(CallGraphEdge(0, 1), CallGraphEdge(0, 2))), emptyMap(),
                 mapOf(0 to sites), mapOf(candidate.key to listOf(plan))) { FlowCard("f$it") })

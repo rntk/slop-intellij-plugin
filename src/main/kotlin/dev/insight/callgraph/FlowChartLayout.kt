@@ -58,8 +58,15 @@ data class FlowFrame(val bounds: Rectangle, val loop: Boolean) : FlowShape
 data class FlowRefBox(val bounds: Rectangle, val ref: FlowRef, val dot: Point) : FlowShape
 data class FlowBanner(val bounds: Rectangle, val lane: FlowLane) : FlowShape
 
+/** Semantic provenance for any rendered element, including visual connectors. */
+data class FlowChatTarget(
+    val kind: String, val owner: Int?, val nodes: List<Int> = emptyList(),
+    val label: String? = null, val region: FlowRegionEvidence? = null,
+)
+
 /** [shapes] are in painting order: frames, lines, then everything drawn over them. */
-data class FlowGeometry(val size: Dimension, val shapes: List<FlowShape>) {
+data class FlowGeometry(val size: Dimension, val shapes: List<FlowShape>,
+    val chatTargets: Map<FlowShape, FlowChatTarget> = emptyMap()) {
     /** Cards by function. */
     val cards: Map<Int, FlowCardBox> by lazy { shapes.filterIsInstance<FlowCardBox>().associateBy { it.step.node } }
 }
@@ -80,12 +87,26 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
     private val back = mutableListOf<FlowShape>()
     private val lines = mutableListOf<FlowShape>()
     private val front = mutableListOf<FlowShape>()
+    private val chatTargets = java.util.IdentityHashMap<FlowShape, FlowChatTarget>()
+
+    /** Nested blocks retain their more specific provenance; a parent owns the remaining connectors. */
+    private fun scoped(block: Block, target: FlowChatTarget): Block = object : Block(block.left, block.right, block.height, block.open) {
+        init { this.target = target }
+        override fun place(x: Int, y: Int) {
+            val counts = listOf(back.size, lines.size, front.size)
+            block.place(x, y)
+            listOf(back, lines, front).forEachIndexed { index, shapes ->
+                for (i in counts[index] until shapes.size) chatTargets.putIfAbsent(shapes[i], target)
+            }
+        }
+    }
 
     /**
      * Extents left and right of the spine, height, and how to place it with the spine at x and the top at y. The flow
      * goes on below an [open] block; a closed one ends in an exit.
      */
     private abstract class Block(val left: Int, val right: Int, val height: Int, val open: Boolean = true) {
+        var target: FlowChatTarget? = null
         abstract fun place(x: Int, y: Int)
     }
 
@@ -95,25 +116,41 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
         var bottom = 0
         for (lane in chart.lanes) {
             nextLeft = true
-            val body = sequence(blocks(listOf(lane.root), alternate = true, parent = null) + end())
+            val target = FlowChatTarget("function", lane.root.node, listOf(lane.root.node), lane.title)
+            val body = scoped(sequence(blocks(listOf(lane.root), alternate = true, parent = null) + end()), target)
             val bannerHeight = measure.banner(lane, m.bannerWidth)
             val spine = x + maxOf(body.left, m.bannerWidth / 2)
-            front += FlowBanner(Rectangle(spine - m.bannerWidth / 2, m.margin, m.bannerWidth, bannerHeight), lane)
+            val banner = FlowBanner(Rectangle(spine - m.bannerWidth / 2, m.margin, m.bannerWidth, bannerHeight), lane)
+            front += banner
+            chatTargets[banner] = target
             val top = m.margin + bannerHeight + m.gap * 2
             body.place(spine, top)
             x = spine + maxOf(body.right, m.bannerWidth - m.bannerWidth / 2) + m.laneGap
             bottom = maxOf(bottom, top + body.height)
         }
-        return FlowGeometry(Dimension(x - m.laneGap + m.margin, bottom + m.margin), back + lines + front)
+        return FlowGeometry(Dimension(x - m.laneGap + m.margin, bottom + m.margin), back + lines + front, chatTargets)
     }
 
-    private fun line(x1: Int, y1: Int, x2: Int, y2: Int, style: FlowLineStyle = FlowLineStyle.NORMAL) {
-        if (x1 != x2 || y1 != y2) lines += FlowSegment(Point(x1, y1), Point(x2, y2), style)
+    private fun line(x1: Int, y1: Int, x2: Int, y2: Int, style: FlowLineStyle = FlowLineStyle.NORMAL, target: FlowChatTarget? = null) {
+        if (x1 != x2 || y1 != y2) {
+            val segment = FlowSegment(Point(x1, y1), Point(x2, y2), style)
+            lines += segment
+            if (target != null) chatTargets[segment] = target
+        }
     }
 
     /** Blocks of [items] inside the calls of [parent] (null at the top of a column). */
     private fun blocks(items: List<FlowItem>, alternate: Boolean, parent: Int?): List<Block> = items.flatMap { item ->
-        when (item) {
+        val target = when (item) {
+            is FlowStep -> FlowChatTarget("function", item.node, listOf(item.node), item.card.title)
+            is FlowRef -> FlowChatTarget("reference", parent, listOf(item.node), item.title)
+            is FlowRegion -> FlowChatTarget("region", item.plan.evidence.owner,
+                item.plan.evidence.sites.map { it.callee }.distinct(), item.plan.title, item.plan.evidence)
+            is FlowDecision -> FlowChatTarget("decision", parent, label = item.question)
+            is FlowLoop -> FlowChatTarget("loop", parent, label = item.label)
+            is FlowExit -> FlowChatTarget("exit", parent, label = item.text)
+        }
+        val result = when (item) {
             is FlowStep -> listOfNotNull(callers(item, parent), step(item, alternate), subflow(item, alternate))
             is FlowRef -> listOf(ref(item))
             is FlowExit -> listOf(exit(item))
@@ -123,6 +160,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                 frame("▾ ${item.plan.title}", blocks(item.items, alternate, parent), FlowPillStyle.SUBFLOW, null,
                     loop = false, regionKey = item.plan.evidence.key) else null)
         }
+        result.map { scoped(it, target) }
     }
 
     /**
@@ -142,13 +180,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
             }
         }
         if (upstream.isNullOrEmpty()) return toggle
-        val columns = upstream.map { caller ->
-            when (caller) {
-                is FlowStep -> sequence(listOfNotNull(callers(caller, null), step(caller, alternate = false), subflow(caller, alternate = false)))
-                is FlowRef -> ref(caller)
-                else -> error("Callers are steps or references")
-            }
-        }
+        val columns = upstream.map { caller -> sequence(blocks(listOf(caller), alternate = false, parent = null)) }
         var cursor = 0
         val centres = columns.map { column ->
             val centre = cursor + column.left
@@ -182,7 +214,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
                 blocks.forEachIndexed { index, block ->
                     block.place(x, top)
                     top += block.height
-                    if (index < blocks.lastIndex && block.open) line(x, top, x, top + m.gap, style)
+                    if (index < blocks.lastIndex && block.open) line(x, top, x, top + m.gap, style, block.target)
                     top += m.gap
                 }
             }

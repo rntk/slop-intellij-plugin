@@ -14,6 +14,13 @@ interface ChartChatContext {
 
 fun chartChatSystemPrompt(projectName: String): String = """
     You are Insight, explaining the user's flow chart in project "$projectName".
+    When a scoped_context is supplied, keep that element as the conversation's anchor even if chart selection changes.
+    It includes captured source and graph metadata. Its IDs and occurrence offsets belong to captured_revision;
+    if stale, use current chart state and find_chart_nodes to resolve functions again before acting.
+    Treat captured source as historical evidence when source has changed, and use read_file for current code.
+    A connector is a visual chart path, not necessarily a direct call. Never infer a call from adjacency.
+    Start with the scoped source; use list_files, search_text and read_file to research the codebase as needed,
+    and return to the user's scoped question after exploring related code.
     Each question includes a fresh, bounded chart snapshot. Use get_chart_state for further pages or to refresh it.
     Node IDs are graph IDs, not displayed step numbers. Always use the revision from the latest state or search result.
     Use find_chart_nodes to find existing project functions and add_chart_nodes to place them on the chart.

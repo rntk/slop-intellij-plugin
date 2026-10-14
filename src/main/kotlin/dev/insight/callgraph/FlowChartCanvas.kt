@@ -69,6 +69,7 @@ class FlowChartCanvas(
     /** Shown while nothing is on the chart. */
     private val emptyText: String = "Nothing on the chart yet.",
     private val onRegionSelect: (FlowRegion?) -> Unit = {},
+    private val onToChat: ((FlowChatTarget) -> Unit)? = null,
 ) : JPanel() {
     var board = FlowBoard()
         private set
@@ -393,9 +394,12 @@ class FlowChartCanvas(
             when (shape) {
                 is FlowCardBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
                 is FlowRegionBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
-                is FlowPill -> (shape.toggle != null || shape.regionKey != null) && shape.bounds.contains(x, y)
+                is FlowPill -> shape.bounds.contains(x, y)
                 is FlowRefBox -> shape.bounds.contains(x, y) || shape.dot.distance(x.toDouble(), y.toDouble()) <= reach
                 is FlowDecisionBox -> shape.bounds.contains(x, y)
+                is FlowBanner -> shape.bounds.contains(x, y)
+                is FlowSegment -> java.awt.geom.Line2D.ptSegDist(shape.from.x.toDouble(), shape.from.y.toDouble(),
+                    shape.to.x.toDouble(), shape.to.y.toDouble(), point.x / zoom, point.y / zoom) <= JBUI.scale(5) / zoom
                 else -> false
             }
         }
@@ -419,31 +423,59 @@ class FlowChartCanvas(
         }
     }
 
-    private fun showPopup(e: MouseEvent): Boolean {
-        if (!e.isPopupTrigger || popup == null) return false
-        requestFocusInWindow()
-        val region = (shapeAt(e.point) as? FlowRegionBox)?.region
-        if (region != null) {
-            val menu = JPopupMenu()
-            menu.add(JMenuItem(if (region.expanded) "Collapse subflow" else "Expand subflow").apply {
-                addActionListener { toggleRegion(region.plan.evidence.key) }
-            })
-            menu.add(JMenuItem("Open owning function").apply { addActionListener { onOpen(region.plan.evidence.owner) } })
-            region.plan.evidence.sites.forEach { site ->
-                menu.add(JMenuItem("Open ${source?.card?.invoke(site.callee)?.title} · offset ${site.offset}").apply {
-                    addActionListener { onOpen(site.callee) }
-                })
-            }
-            menu.show(this, e.x, e.y)
-            return true
-        }
-        val node = when (val shape = shapeAt(e.point)) {
+    internal fun chatTargetAt(point: Point): FlowChatTarget? {
+        val shape = shapeAt(point) ?: return null
+        val target = geometry?.chatTargets?.get(shape) ?: return null
+        return if (shape is FlowSegment) target.copy(kind = "connector",
+            label = "${target.label.orEmpty()} · ${shape.style.name.lowercase()} connector") else target
+    }
+
+    /** Used by the platform context-menu gesture. */
+    internal fun contextMenuAt(point: Point): JPopupMenu? {
+        val shape = shapeAt(point)
+        val region = (shape as? FlowRegionBox)?.region
+        val node = when (shape) {
             is FlowCardBox -> shape.step.node
             is FlowRefBox -> shape.ref.node
             else -> null
         }
-        if (node != null) select(node)
-        popup.invoke(node)?.show(this, e.x, e.y)
+        val menu = if (region != null) JPopupMenu().apply {
+            add(JMenuItem(if (region.expanded) "Collapse subflow" else "Expand subflow").apply {
+                addActionListener { toggleRegion(region.plan.evidence.key) }
+            })
+            add(JMenuItem("Open owning function").apply { addActionListener { onOpen(region.plan.evidence.owner) } })
+            region.plan.evidence.sites.forEach { site ->
+                add(JMenuItem("Open ${source?.card?.invoke(site.callee)?.title} · offset ${site.offset}").apply {
+                    addActionListener { onOpen(site.callee) }
+                })
+            }
+        } else popup?.invoke(node) ?: JPopupMenu()
+        if (shape is FlowPill) {
+            shape.toggle?.let { id ->
+                menu.add(JMenuItem(if (shape.callers) "Toggle callers" else "Toggle calls").apply {
+                    addActionListener { if (shape.callers) toggleCallers(id) else toggleCalls(id) }
+                })
+            }
+            shape.regionKey?.let { key ->
+                menu.add(JMenuItem("Toggle subflow").apply { addActionListener { toggleRegion(key) } })
+            }
+        }
+        val target = chatTargetAt(point)
+        if (target != null && onToChat != null) {
+            menu.insert(JMenuItem("To chat").apply { addActionListener { onToChat.invoke(target) } }, 0)
+        }
+        return menu.takeIf { it.componentCount > 0 }
+    }
+
+    private fun showPopup(e: MouseEvent): Boolean {
+        if (!e.isPopupTrigger || (popup == null && onToChat == null)) return false
+        requestFocusInWindow()
+        when (val shape = shapeAt(e.point)) {
+            is FlowCardBox -> select(shape.step.node)
+            is FlowRefBox -> select(shape.ref.node)
+            else -> Unit
+        }
+        contextMenuAt(e.point)?.show(this, e.x, e.y)
         return true
     }
 

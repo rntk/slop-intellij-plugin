@@ -104,7 +104,7 @@ open class ChatSession(
             requestTimeout = Duration.ofSeconds(state.requestTimeoutSeconds.coerceIn(10, 3600).toLong()),
         )
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
-        else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name == "read_file" },
+        else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
             chartChatSystemPrompt(project.name), context = chart::snapshot)
     }
 
