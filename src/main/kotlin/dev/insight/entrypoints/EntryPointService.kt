@@ -15,6 +15,10 @@ import java.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Finds the project's entry points on the current code, reusing earlier work only where the files are unchanged. */
 @Service(Service.Level.PROJECT)
@@ -22,6 +26,10 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
     val cache = EntryPointCache()
     val decisionsCache = EntryPointDecisionCache()
     private val files = ProjectFiles(project)
+    private val results = mutableMapOf<EntryPointApi, EntryPointResult>()
+    private val known = MutableStateFlow<List<EntryPoint>>(emptyList())
+    /** Successful results from both APIs; failed or cancelled searches retain previous results. */
+    val entryPoints = known.asStateFlow()
 
     /** [graph] supplies call-graph hints when the application graph is built; the search works without it. */
     suspend fun find(graph: CallGraphResult?, progress: EntryPointProgress = EntryPointProgress.NONE,
@@ -36,7 +44,7 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
         val tools = projectTools(project).filter {
             it.definition.name in setOf(EntryPointFinder.LIST_TOOL, EntryPointFinder.READ_TOOL, EntryPointFinder.SEARCH_TOOL)
         }
-        return withContext(Dispatchers.IO) {
+        val result = withContext(Dispatchers.IO) {
             when (api) {
                 EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
                     .find(project.name, hints, progress)
@@ -49,6 +57,12 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
                 ).find(project.name, hints, progress)
             }
         }
+        currentCoroutineContext().ensureActive()
+        synchronized(results) {
+            results[api] = result
+            known.value = results.values.flatMap { it.entryPoints }.distinct()
+        }
+        return result
     }
 
     private class IdeSnapshot(private val files: ProjectFiles) : ProjectSnapshot {

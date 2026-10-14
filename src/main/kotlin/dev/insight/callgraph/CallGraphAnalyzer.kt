@@ -74,7 +74,7 @@ object CallGraphAnalyzer {
             ?.takeIf { element.textOffset in 0..it.textLength }
             ?.let { it.getLineNumber(element.textOffset) + 1 }
         val location = listOfNotNull(file?.name, line).joinToString(":")
-        return CallGraphNode(id, name, container, location, level, isInProject(project, element))
+        return CallGraphNode(id, name, container, location, level, isInProject(project, element), filePath = file?.virtualFile?.path)
     }
 
     fun isInProject(project: Project, element: PsiElement): Boolean {

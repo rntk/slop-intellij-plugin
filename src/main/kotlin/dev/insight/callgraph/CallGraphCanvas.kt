@@ -471,13 +471,14 @@ class CallGraphCanvas(
         val owned = node.id in highlight.owned
         val related = node.id in highlight.related
         val matched = matches?.contains(node.id) == true
-        g.color = if (matched) matchFill else if (isRoot || owned) rootFill else UIUtil.getPanelBackground()
+        val start = decoration?.entryPoint == true
+        g.color = if (matched) matchFill else if (isRoot || owned || start) rootFill else UIUtil.getPanelBackground()
         g.fillRoundRect(box.x, box.y, box.width, box.height, arc, arc)
         val stripe = decoration?.colors.orEmpty().filter { it.second > 0.0 }
         if (decoration != null && stripe.isNotEmpty()) drawStripe(g, box, arc, stripe, decoration.confidence)
-        val strong = decoration?.emphasis == Emphasis.STRONG
+        val strong = decoration?.emphasis == Emphasis.STRONG || start
         val marked = node.id == selected || owned || related || matched
-        g.color = if (marked || isRoot) accent else if (strong) JBColor.foreground() else JBColor.border()
+        g.color = if (marked || isRoot || start) accent else if (strong) JBColor.foreground() else JBColor.border()
         val current = if (node.id == currentMatch) 2 else 0
         val borderWidth = JBUI.scale((if (marked) 2 else 1) + (if (strong) 1 else 0) + current).toFloat()
         g.stroke = if (node.inProject) BasicStroke(borderWidth)
@@ -509,8 +510,8 @@ class CallGraphCanvas(
         }
         g.font = font.deriveFont(Font.BOLD)
         var nameLeft = left
-        if (decoration?.entryPoint == true) {
-            val marker = if (g.font.canDisplay('▶')) "▶" else ">"
+        if (start) {
+            val marker = if (g.font.canDisplay('▶')) "▶ Start" else "> Start"
             g.color = accent
             g.drawString(marker, nameLeft, line)
             nameLeft += g.fontMetrics.stringWidth(marker) + JBUI.scale(4)

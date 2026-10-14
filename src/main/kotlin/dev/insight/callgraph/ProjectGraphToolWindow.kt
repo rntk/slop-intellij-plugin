@@ -47,6 +47,7 @@ import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import dev.insight.entrypoints.EntryPointsPanel
+import dev.insight.entrypoints.EntryPointService
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
@@ -198,6 +199,8 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
 
 internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
+    private val entryPoints = project.service<EntryPointService>()
+    private var entryPointJob: Job? = null
     private var result: CallGraphResult? = null
     val latestResult: CallGraphResult? get() = result
     private var hierarchy: GraphHierarchy? = null
@@ -352,7 +355,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             add(JPanel(GridLayout(0, 1, 0, 4)).apply {
                 add(JLabel("Click: node menu / Side by side · Enter: expand/collapse a group, open a symbol · drag/arrows to pan · scroll to zoom"))
                 add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
-                add(JLabel("Stripe: colour-by · ▶ entry point · numbered: flow step · red dashed: error path"))
+                add(JLabel("Stripe: colour-by · ▶ Start: entry point (groups contain starting points) · numbered: flow step · red dashed: error path"))
                 add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
                 add(JLabel("Changes: Δ / amber stripe: changed symbol (files show +added −removed) · faint: not a caller or callee of a change"))
             }, BorderLayout.CENTER)
@@ -368,6 +371,9 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         }
         refreshLens()
         highlight()
+        entryPointJob = service.scope.launch(Dispatchers.EDT) {
+            entryPoints.entryPoints.collect { if (!disposed) render(null) }
+        }
     }
 
     private fun toolbar() = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
@@ -631,7 +637,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         }
         canvas.show(shown.graph, shown.weights, sections)
         val decorations = snapshot?.let { lens(GraphDecorations.NONE) { EnrichmentLens.decorate(it, tree.graph, shown, options) } } ?: GraphDecorations.NONE
-        canvas.decorate(changes?.let { lens(decorations) { decorateDiff(decorations, shown, it) } } ?: decorations)
+        val withChanges = changes?.let { lens(decorations) { decorateDiff(decorations, shown, it) } } ?: decorations
+        canvas.decorate(EntryPointLens.decorate(withChanges, tree.graph, entryPoints.entryPoints.value, project.basePath, shown::shownId))
         highlight()
         markMatches()
         val target = focus?.let(shown::shownId)
@@ -778,7 +785,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         }
     }
 
-    override fun dispose() { disposed = true; searchTimer.stop(); changesTimer.stop(); job?.cancel(); enrichJob?.cancel(); diffJob?.cancel() }
+    override fun dispose() { disposed = true; searchTimer.stop(); changesTimer.stop(); job?.cancel(); enrichJob?.cancel(); diffJob?.cancel(); entryPointJob?.cancel() }
 
     private enum class SearchMode(val label: String) {
         HIGHLIGHT("Highlight"), FILTER("Filter");

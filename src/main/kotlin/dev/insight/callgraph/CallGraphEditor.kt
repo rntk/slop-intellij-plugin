@@ -26,6 +26,7 @@ import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.insight.ui.heading
+import dev.insight.entrypoints.EntryPointService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -108,6 +109,10 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
     private var result: CallGraphResult? = null
     private val canvas = CallGraphCanvas(onSelect = ::selectionChanged, onOpen = ::navigate)
     private var job: Job? = null
+    private val entryPoints = project.service<EntryPointService>()
+    private val entryPointJob = project.service<CallGraphService>().scope.launch(Dispatchers.EDT) {
+        entryPoints.entryPoints.collect { decorateEntryPoints() }
+    }
 
     init {
         border = JBUI.Borders.empty(20)
@@ -119,7 +124,7 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
             add(status, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(JBScrollPane(canvas).apply { border = JBUI.Borders.customLine(JBColor.border()) }, BorderLayout.CENTER)
-        add(JLabel("Callers are on the left, callees on the right. Double-click a node to open its source; " +
+        add(JLabel("Callers are on the left, callees on the right. ▶ Start marks an entry point. Double-click a node to open its source; " +
             "dashed nodes are library code. Drag or use arrows to pan; scroll to zoom."), BorderLayout.SOUTH)
         listOf(direction, depth).forEach { it.addActionListener { rebuild() } }
         libraries.addActionListener { rebuild() }
@@ -144,6 +149,7 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
                 val built = service.build(root, request)
                 result = built
                 canvas.show(built?.graph)
+                decorateEntryPoints()
                 status.text = built?.let(::summary) ?: "The function no longer exists."
                 built?.graph?.root?.let { title.text = "${it.name}  ${it.container}" }
             } catch (e: CancellationException) {
@@ -170,5 +176,11 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
         (result?.pointers?.getOrNull(id)?.element?.navigationElement as? Navigatable)?.takeIf { it.canNavigate() }?.navigate(true)
     }
 
-    fun dispose() { job?.cancel() }
+    private fun decorateEntryPoints() {
+        canvas.decorate(result?.graph?.let {
+            EntryPointLens.decorate(GraphDecorations.NONE, it, entryPoints.entryPoints.value, project.basePath)
+        } ?: GraphDecorations.NONE)
+    }
+
+    fun dispose() { job?.cancel(); entryPointJob.cancel() }
 }
