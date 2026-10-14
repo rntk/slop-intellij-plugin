@@ -2,6 +2,7 @@ package dev.insight.entrypoints
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -134,7 +135,10 @@ internal class EntryPointsPanel(
 
         private fun open() {
             val entry = list.selectedValue ?: return
-            val file = try { ProjectFiles(project).resolve(entry.path) } catch (_: ToolInputException) { return }
+            // resolve() queries the project file index, which requires a read action even on the EDT.
+            val file = runReadAction {
+                try { ProjectFiles(project).resolve(entry.path) } catch (_: ToolInputException) { null }
+            } ?: return
             OpenFileDescriptor(project, file, entry.line - 1, 0).navigate(true)
         }
 

@@ -43,6 +43,30 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
 
     private fun centre(bounds: java.awt.Rectangle) = Point(bounds.centerX.toInt(), bounds.centerY.toInt())
 
+    fun `test entrypoint updates reserve label space and preserve chart navigation`() {
+        val source = source()
+        val canvas = canvas()
+        canvas.selectNode(1)
+        val board = canvas.board
+        val height = canvas.geometry!!.cards.getValue(1).bounds.height
+        canvas.show(source.copy(card = { id -> source.card(id).copy(entryPoint = id == 1,
+            tooltip = if (id == 1) "Entry point: Host callback" else null) }))
+        assertEquals(board, canvas.board)
+        assertEquals(1, canvas.selectedNode)
+        val bounds = canvas.geometry!!.cards.getValue(1).bounds
+        assertTrue(bounds.height > height)
+        assertFalse(canvas.chart!!.step(0)!!.card.entryPoint)
+        val point = centre(bounds)
+        val hover = MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0, 0, point.x, point.y, 0, false)
+        assertTrue(canvas.getToolTipText(hover)!!.contains("Host callback"))
+        canvas.size = canvas.preferredSize
+        paint(canvas)
+        click(canvas, point, 2)
+        canvas.show(source)
+        assertEquals(height, canvas.geometry!!.cards.getValue(1).bounds.height)
+        assertEquals(1, canvas.selectedNode)
+    }
+
     fun `test chat menu captures cards callers and connectors at the current zoom`() {
         val targets = mutableListOf<FlowChatTarget>()
         val canvas = FlowChartCanvas({}, {}, onToChat = { targets += it }).apply {

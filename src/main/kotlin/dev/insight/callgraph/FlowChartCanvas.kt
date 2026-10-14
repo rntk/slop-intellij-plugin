@@ -44,6 +44,7 @@ private val decisionFill = JBColor(Color(0xFFF4D6), Color(0x4A4130))
 private val decisionBorder = JBColor(Color(0xE0B050), Color(0x8A7340))
 private val searchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
 private val selectionFill = JBColor(Color(0xEEF3FD), Color(0x2B3445))
+private val startColor = JBColor(Color(0x237A46), Color(0x73CF99))
 private val mutedText = JBColor(Color(0x6E737A), Color(0x9DA2A8))
 private const val MAX_ATTACH_TRIES = 12
 
@@ -511,7 +512,9 @@ class FlowChartCanvas(
     /** The card's lines at [width]: step number and meta, title, description and details, each wrapped and capped. */
     private fun cardLines(step: FlowStep, width: Int): List<TextLine> = buildList {
         val card = step.card
-        listOfNotNull("Step ${step.number}".takeIf { step.number > 0 }, card.meta).joinToString(" · ").let { meta -> wrap(meta, getFontMetrics(metaFont), width, 2).forEach { add(TextLine(it, metaFont, accent)) } }
+        if (card.entryPoint) add(TextLine("▶ START · Entry point", metaFont.deriveFont(Font.BOLD), startColor))
+        val cardMeta = if (card.entryPoint) card.meta?.removePrefix("▶ entry point")?.removePrefix(" · ")?.takeIf { it.isNotBlank() } else card.meta
+        listOfNotNull("Step ${step.number}".takeIf { step.number > 0 }, cardMeta).joinToString(" · ").let { meta -> wrap(meta, getFontMetrics(metaFont), width, 2).forEach { add(TextLine(it, metaFont, accent)) } }
         wrap(card.title, getFontMetrics(titleFont), width, 2).forEach { add(TextLine(it, titleFont, JBColor.foreground())) }
         card.description?.let { text -> wrap(text, getFontMetrics(textFont), width, 3).forEach { add(TextLine(it, textFont, mutedText)) } }
         card.details?.let { text -> wrap(text, getFontMetrics(smallFont), width, 2).forEach { add(TextLine(it, smallFont, mutedText)) } }
@@ -548,7 +551,10 @@ class FlowChartCanvas(
                 when (shape) {
                     is FlowFrame -> paintFrame(canvas, shape)
                     is FlowSegment -> paintSegment(canvas, shape)
-                    is FlowDot -> paintDot(canvas, shape.center, shape.step.card.color ?: accent, shape.step.node == selectedNode, hollow = false)
+                    is FlowDot -> {
+                        paintDot(canvas, shape.center, shape.step.card.color ?: accent, shape.step.node == selectedNode, hollow = false)
+                        if (shape.step.card.entryPoint) paintStartRing(canvas, shape.center)
+                    }
                     is FlowCardBox -> paintCard(canvas, shape)
                     is FlowRegionBox -> {
                         val presentation = shape.region.presentation()
@@ -632,6 +638,13 @@ class FlowChartCanvas(
         } else g.fillOval(center.x - radius, center.y - radius, radius * 2, radius * 2)
     }
 
+    private fun paintStartRing(g: Graphics2D, center: Point) {
+        val radius = JBUI.scale(10)
+        g.color = startColor
+        g.stroke = BasicStroke(JBUIScale.scale(2f))
+        g.drawOval(center.x - radius, center.y - radius, radius * 2, radius * 2)
+    }
+
     private fun paintCard(g: Graphics2D, box: FlowCardBox, selected: Boolean = box.step.node == selectedNode,
         matching: Boolean = searchMatches?.contains(box.step.node) == true || box.step.node in chatHighlights) {
         val bounds = box.bounds
@@ -645,6 +658,13 @@ class FlowChartCanvas(
             g.color = ColorUtil.withAlpha(accent, 0.6)
             g.stroke = BasicStroke(JBUIScale.scale(1f))
             g.draw(shape)
+        }
+        if (box.step.card.entryPoint) {
+            val pad = JBUI.scale(3)
+            g.color = startColor
+            g.stroke = BasicStroke(JBUIScale.scale(2f))
+            g.drawRoundRect(bounds.x - pad, bounds.y - pad, bounds.width + pad * 2, bounds.height + pad * 2,
+                JBUI.scale(8), JBUI.scale(8))
         }
         var y = bounds.y
         for (line in cardLines(box.step, bounds.width)) {
@@ -708,9 +728,11 @@ class FlowChartCanvas(
     }
 
     private fun paintRef(g: Graphics2D, box: FlowRefBox) {
+        val start = source?.card?.invoke(box.ref.node)?.entryPoint == true
         paintDot(g, box.dot, mutedText, selected = false, hollow = true)
+        if (start) paintStartRing(g, box.dot)
         g.font = smallFont
-        g.color = mutedText
+        g.color = if (start) startColor else mutedText
         val fm = g.fontMetrics
         g.drawString("↺ step ${box.ref.number} · ${box.ref.title}", box.bounds.x, box.bounds.y + (box.bounds.height - fm.height) / 2 + fm.ascent)
     }

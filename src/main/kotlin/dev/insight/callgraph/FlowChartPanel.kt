@@ -11,6 +11,7 @@ import dev.insight.enrichment.Flow
 import dev.insight.enrichment.FlowChartLens
 import dev.insight.enrichment.SymbolFacts
 import dev.insight.enrichment.SymbolFactsExtractor
+import dev.insight.entrypoints.EntryPointService
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
@@ -49,6 +50,8 @@ internal class FlowChartPanel(
 ) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
     private val enrichment = project.service<EnrichmentService>()
+    private val entryPoints = project.service<EntryPointService>()
+    private var entryPointJob: Job? = null
     private var result: CallGraphResult? = null
     private var disposed = false
     private var enriching = false
@@ -240,6 +243,14 @@ internal class FlowChartPanel(
         flowCanvas.setCompact(true)
         refreshLens()
         updateFlowControls()
+        entryPointJob = service.scope.launch(Dispatchers.EDT) {
+            entryPoints.entryPoints.collect {
+                if (!disposed) {
+                    flowLens = null
+                    renderFlow()
+                }
+            }
+        }
     }
 
     fun showResult(built: CallGraphResult) {
@@ -348,7 +359,8 @@ internal class FlowChartPanel(
         val snapshot = enrichment.latest
         val colour = colorBy.selectedItem as ColorBy
         val made = flowLens?.takeIf { it.graph === built.graph && it.snapshot === snapshot && it.colorBy == colour }
-            ?: lens<FlowLensFor?>(null) { FlowLensFor(built.graph, snapshot, colour, FlowChartLens(snapshot, built.graph, colour)) }
+            ?: lens<FlowLensFor?>(null) { FlowLensFor(built.graph, snapshot, colour, FlowChartLens(snapshot, built.graph, colour,
+                EntryPointLens.decorate(GraphDecorations.NONE, built.graph, entryPoints.entryPoints.value, project.basePath))) }
         flowLens = made
         if (made == null) flowCanvas.show(null, "Could not draw the flow chart.")
         else lens(Unit) { flowCanvas.show(made.lens.source(callSites, stepFacts, regionPlans)) }
@@ -540,6 +552,7 @@ internal class FlowChartPanel(
 
     override fun dispose() {
         disposed = true
+        entryPointJob?.cancel()
         chatScope.cancel()
         scopedChats.keys.forEach { it.dispose() }
         scopedChats.clear()

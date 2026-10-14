@@ -6,6 +6,7 @@ import dev.insight.callgraph.FlowCard
 import dev.insight.callgraph.FlowRegionPlan
 import dev.insight.callgraph.FlowSource
 import dev.insight.callgraph.FlowStart
+import dev.insight.callgraph.GraphDecorations
 import dev.insight.callgraph.SourceSite
 import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.budgetedOpenCalls
@@ -16,7 +17,8 @@ import dev.insight.callgraph.budgetedOpenCalls
  * retained, including utilities and error paths; compact boards fold regions and effect-free helpers into counts
  * without deleting evidence, and turning compact off shows every call. PSI-free and unit-testable.
  */
-class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph, colorBy: ColorBy = ColorBy.DOMAIN) {
+class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph, colorBy: ColorBy = ColorBy.DOMAIN,
+    private val entryPoints: GraphDecorations = GraphDecorations.NONE) {
     private val lens = snapshot?.let { Remapped.of(it, graph) }
     private val domains = snapshot?.enrichment?.domains.orEmpty()
     private val colours = EnrichmentLens.Colouring(colorBy, domains)
@@ -31,12 +33,15 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
     val summaries: Map<Int, FunctionSummary> = lens?.summaries.orEmpty()
     private val effects: Map<Int, Effects> = lens?.effects.orEmpty()
 
+    private fun isEntryPoint(id: Int) = entryPoints.nodes[id]?.entryPoint == true ||
+        (lens?.nodes?.get(id)?.entryPoint ?: 0.0) >= EnrichmentLens.ENTRY_POINT
+
     /**
      * Helpers the compact chart folds into their callers: summarized as logging or plumbing, and reaching no storage or
      * network effect by rules. A model role alone never hides a call that writes or talks to the outside.
      */
     val folded: Set<Int> = summaries.filter { (id, summary) ->
-        summary.role in FunctionRole.FOLDED && effects[id]?.reached.orEmpty().none { it in Effects.VISIBLE }
+        !isEntryPoint(id) && summary.role in FunctionRole.FOLDED && effects[id]?.reached.orEmpty().none { it in Effects.VISIBLE }
     }.keys
 
     init {
@@ -108,7 +113,7 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
         val symbol = current ?: lens?.facts?.get(id)
         val annotation = lens?.nodes?.get(id)
         val meta = listOfNotNull(
-            "▶ entry point".takeIf { (annotation?.entryPoint ?: 0.0) >= EnrichmentLens.ENTRY_POINT },
+            "▶ entry point".takeIf { isEntryPoint(id) },
             "creates".takeIf { node.kind == SymbolKind.CLASS },
             node.location.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
@@ -122,6 +127,7 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
             ).joinToString(" · ")
         }.let { judged -> listOfNotNull(judged?.ifEmpty { null }, effectText(id)).joinToString(" · ") }
         val tooltip = listOfNotNull(
+            entryPoints.nodes[id]?.tooltip,
             symbol?.signature?.takeIf { it.isNotBlank() },
             symbol?.doc,
             annotation?.importance?.let { "importance ${"%.1f".format(java.util.Locale.ROOT, it.score)}/${it.max}" },
@@ -133,6 +139,7 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
             details = details?.ifEmpty { null },
             tooltip = tooltip,
             color = annotation?.let(colours::value)?.let { colours.color(it.first) },
+            entryPoint = isEntryPoint(id),
         )
     }
 

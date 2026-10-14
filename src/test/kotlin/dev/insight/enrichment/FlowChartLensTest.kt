@@ -6,6 +6,10 @@ import dev.insight.callgraph.CallGraphNode
 import dev.insight.callgraph.CallSite
 import dev.insight.callgraph.FlowBoard
 import dev.insight.callgraph.FlowStart
+import dev.insight.callgraph.EntryPointLens
+import dev.insight.callgraph.GraphDecorations
+import dev.insight.entrypoints.EntryPoint
+import dev.insight.entrypoints.EntryPointKind
 import dev.insight.callgraph.buildFlowChart
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
@@ -39,6 +43,39 @@ class FlowChartLensTest {
         return EnrichmentSnapshot(graph, EnrichmentInput("demo", graph, facts), enrichment, Path.of("report.json"))
     }
     private fun callees(lens: FlowChartLens, id: Int) = lens.calls[id].orEmpty().map { it.callee }.toSet()
+
+    @Test fun `discovered entrypoints mark nested code and compact cards without enrichment`() {
+        val entry = EntryPoint("service.py", 2, "load", EntryPointKind.HANDLER, "Load event", "Invoked by the host", 0.9)
+        val decorations = EntryPointLens.decorate(GraphDecorations.NONE, graph, listOf(entry), "/p")
+        val lens = FlowChartLens(null, graph, entryPoints = decorations)
+        val chart = buildFlowChart(FlowBoard(listOf(FlowStart(0)), openCalls = setOf(0)), lens.source())
+        assertFalse(chart.step(0)!!.card.entryPoint)
+        val card = chart.step(1)!!.card
+        assertTrue(card.entryPoint)
+        assertTrue(lens.compactCard(1).entryPoint)
+        assertTrue(card.tooltip!!.contains("Load event (Handler)"))
+        assertTrue(card.tooltip!!.contains("Invoked by the host"))
+        assertFalse(FlowChartLens(null, graph).card(1).entryPoint)
+    }
+
+    @Test fun `entrypoint helpers stay visible and summaries preserve their start metadata`() {
+        val base = snapshot()
+        val enriched = EnrichmentSnapshot(graph, base.input, base.enrichment.copy(summaries = mapOf(
+            0 to FunctionSummary("Handle event", null, FunctionRole.PLUMBING, false),
+            3 to FunctionSummary("Format output", null, FunctionRole.LOGGING, false),
+        )), base.report)
+        val lens = FlowChartLens(enriched, graph)
+        assertTrue(lens.card(0).entryPoint)
+        assertTrue(lens.compactCard(0).entryPoint)
+        assertFalse(0 in lens.folded)
+        assertTrue(3 in lens.folded)
+        val entry = EntryPoint("service.py", 4, "format", EntryPointKind.HANDLER, "Format event", "Host callback", 0.9)
+        val discovered = FlowChartLens(enriched, graph, entryPoints =
+            EntryPointLens.decorate(GraphDecorations.NONE, graph, listOf(entry), "/p"))
+        assertFalse(3 in discovered.folded)
+        assertTrue(discovered.compactCard(3).entryPoint)
+        assertTrue(discovered.compactCard(3).tooltip!!.contains("Format event"))
+    }
 
     @Test fun `without enrichment every in-project call is followed, including calls from locals`() {
         val lens = FlowChartLens(null, graph)

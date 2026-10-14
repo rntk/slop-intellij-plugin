@@ -13,6 +13,8 @@ data class FlowCard(
     val tooltip: String? = null,
     /** Colour of the step's dot, for example its domain; the accent colour when null. */
     val color: Color? = null,
+    /** Known execution entry, independent of whether this step was placed as a chart column. */
+    val entryPoint: Boolean = false,
 )
 
 sealed interface FlowItem
