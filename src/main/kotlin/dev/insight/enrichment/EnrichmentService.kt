@@ -100,14 +100,16 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
     // Hosts are hardcoded for now (see Endpoints). The local decisions server accepts any bearer token.
     private fun decisions() = decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4)
 
-    /** Runs on IO: reading the API key from the password safe can block. */
-    private fun llm(): LlamaCppClient {
-        val settings = ChatSettings.getInstance()
-        return LlamaCppClient(
-            baseUrl = Endpoints.LLM_BASE_URL,
-            model = settings.state.model.orEmpty(),
-            apiKey = settings.apiKey,
-            requestTimeout = Duration.ofSeconds(settings.state.requestTimeoutSeconds.coerceIn(60, 3600).toLong()),
-        )
-    }
+    private fun llm() = configuredLlmClient()
+}
+
+/** The LLM client for background analyses. Call on IO: reading the API key from the password safe can block. */
+internal fun configuredLlmClient(): LlamaCppClient {
+    val settings = ChatSettings.getInstance()
+    return LlamaCppClient(
+        baseUrl = Endpoints.LLM_BASE_URL,
+        model = settings.state.model.orEmpty(),
+        apiKey = settings.apiKey,
+        requestTimeout = Duration.ofSeconds(settings.state.requestTimeoutSeconds.coerceIn(60, 3600).toLong()),
+    )
 }

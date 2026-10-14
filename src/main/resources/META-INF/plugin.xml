@@ -8,6 +8,7 @@
         using read-only tools to list, search, and read project files; without a server it uses local demo responses.
         The dashboard shows explicitly labeled sample data.
         <br/>Application Graph shows Java, Kotlin, Python, Go, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
+        <br/>Entry Points (an Application Graph tab) compares application entry points found with the LLM API and Decisions API.
         <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
     ]]></description>
     <depends>com.intellij.modules.platform</depends>

@@ -46,6 +46,7 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
+import dev.insight.entrypoints.EntryPointsPanel
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
@@ -187,6 +188,10 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
         val canvasContent = ContentFactory.getInstance().createContent(reading, "Canvas", false)
         canvasContent.setDisposer(reading)
         toolWindow.contentManager.addContent(canvasContent)
+        val entryPoints = EntryPointsPanel(project) { panel.latestResult }
+        val entryContent = ContentFactory.getInstance().createContent(entryPoints, "Entry Points", false)
+        entryContent.setDisposer(entryPoints)
+        toolWindow.contentManager.addContent(entryContent)
         panel.rebuild()
     }
 }
@@ -194,6 +199,7 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
 internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
     private var result: CallGraphResult? = null
+    val latestResult: CallGraphResult? get() = result
     private var hierarchy: GraphHierarchy? = null
     /** Expanded groups by [GraphHierarchy.key], so they survive rebuilds after edits; null until the first build. */
     private var expandedKeys: Set<String>? = null
