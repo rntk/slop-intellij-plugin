@@ -5,6 +5,21 @@ import java.nio.file.Path
 
 /** Matches discovered source locations, then lifts their start markers into the displayed groups. */
 object EntryPointLens {
+    /** With [exact], require a unique path/line/symbol match; decorations can use softer display fallbacks. */
+    fun targets(graph: CallGraph, entry: EntryPoint, projectPath: String?, exact: Boolean = false): List<CallGraphNode> {
+        if (projectPath == null) return emptyList()
+        val path = normalize(Path.of(projectPath).resolve(entry.path).toString())
+        val nodes = graph.nodes.filter { it.inProject && it.filePath?.let(::normalize) == path }
+        val symbols = nodes.filter { it.kind != SymbolKind.FILE && it.kind != SymbolKind.DIRECTORY }
+        val atLine = symbols.filter { it.location.substringAfterLast(':').toIntOrNull() == entry.line }
+        val named = symbols.filter { symbol(it.name) == symbol(entry.symbol) && entry.symbol.isNotBlank() }
+        // Flow roots must agree on path, declaration line and symbol, with no ambiguous matches.
+        if (exact) return atLine.filter { it in named }.singleOrNull()?.let(::listOf).orEmpty()
+        return atLine.filter { it in named }.ifEmpty { atLine }
+            .ifEmpty { named.singleOrNull()?.let(::listOf).orEmpty() }
+            .ifEmpty { nodes.filter { it.kind == SymbolKind.FILE } }
+    }
+
     fun decorate(
         base: GraphDecorations,
         graph: CallGraph,
@@ -13,20 +28,9 @@ object EntryPointLens {
         shownId: (Int) -> Int? = { it },
     ): GraphDecorations {
         if (entries.isEmpty() || projectPath == null) return base
-        val byPath = graph.nodes.filter { it.inProject && it.filePath != null }
-            .groupBy { normalize(it.filePath!!) }
         val matched = linkedMapOf<Int, MutableList<Pair<CallGraphNode, EntryPoint>>>()
         for (entry in entries) {
-            val path = normalize(Path.of(projectPath).resolve(entry.path).toString())
-            val nodes = byPath[path].orEmpty()
-            val symbols = nodes.filter { it.kind != SymbolKind.FILE && it.kind != SymbolKind.DIRECTORY }
-            val atLine = symbols.filter { it.location.substringAfterLast(':').toIntOrNull() == entry.line }
-            val named = symbols.filter { symbol(it.name) == symbol(entry.symbol) && entry.symbol.isNotBlank() }
-            // Exact locations disambiguate overloads. Only use a name fallback when it is unique in this file.
-            val targets = atLine.filter { it in named }.ifEmpty { atLine }
-                .ifEmpty { named.singleOrNull()?.let(::listOf).orEmpty() }
-                .ifEmpty { nodes.filter { it.kind == SymbolKind.FILE } }
-            for (node in targets) shownId(node.id)?.let { id ->
+            for (node in targets(graph, entry, projectPath)) shownId(node.id)?.let { id ->
                 matched.getOrPut(id) { mutableListOf() } += node to entry
             }
         }

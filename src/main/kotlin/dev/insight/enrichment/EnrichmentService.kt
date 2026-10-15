@@ -98,6 +98,16 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
             }
         }
 
+    /** Splits discovered starts without requiring a full enrichment run. */
+    suspend fun splitFlows(result: CallGraphResult, entries: List<dev.insight.entrypoints.EntryPoint>,
+        progress: (String) -> Unit = {}): dev.insight.callgraph.ApplicationFlowResult {
+        val facts = smartReadAction(project) { SymbolFactsExtractor.extract(project, result) }
+        return withContext(Dispatchers.IO) {
+            dev.insight.callgraph.ApplicationFlowSplitter(llm()::complete, cache)
+                .split(result.graph, entries, project.basePath, facts, latest, progress)
+        }
+    }
+
     // Hosts are hardcoded for now (see Endpoints). The local decisions server accepts any bearer token.
     private fun decisions() =
         decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4, traffic = ApiLogs.decisions)

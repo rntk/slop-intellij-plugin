@@ -193,6 +193,13 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
         val entryContent = ContentFactory.getInstance().createContent(entryPoints, "Entry Points", false)
         entryContent.setDisposer(entryPoints)
         toolWindow.contentManager.addContent(entryContent)
+        val flows = ApplicationFlowsPanel(project, latest = { panel.latestResult }, building = { panel.isBuilding },
+            refresh = { panel.rebuild() }, showInGraph = panel::showInGraph,
+            addToChart = { chart.addToChart(FlowStart(it)) }, openInCanvas = reading::openFunction)
+        panel.flowsPanel = flows
+        val flowsContent = ContentFactory.getInstance().createContent(flows, "Flows", false)
+        flowsContent.setDisposer(flows)
+        toolWindow.contentManager.addContent(flowsContent)
         panel.rebuild()
     }
 }
@@ -232,6 +239,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     private val scroll = JBScrollPane(canvas)
     lateinit var flowPanel: FlowChartPanel
     lateinit var canvasPanel: CanvasPanel
+    lateinit var flowsPanel: ApplicationFlowsPanel
     var activateGraph: () -> Unit = {}
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
@@ -774,6 +782,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 refreshChanges()
                 flowPanel.showResult(built)
                 canvasPanel.showResult(built)
+                flowsPanel.graphChanged()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
