@@ -17,6 +17,84 @@ class FlowChartChatTest : BasePlatformTestCase() {
         })
     }
 
+    fun `test notes and links validate targets update state and clear on graph rebuild`() {
+        val canvas = canvas()
+        applyChartChatAction(graph, canvas, 1, "add_chart_nodes", 1, listOf(0, 2))
+        val height = canvas.geometry!!.cards.getValue(0).bounds.height
+        fun note(revision: Int = 1, target: Int? = null, text: String = "Input from Example.kt:1") =
+            applyChartAnnotation(graph, canvas, 1, revision, 0, target, text)
+        assertThrows(ToolInputException::class.java) { note(revision = 0) }
+        assertThrows(ToolInputException::class.java) { note(target = 9) }
+        assertThrows(ToolInputException::class.java) { note(target = 0) }
+        assertTrue(canvas.chatNotes.isEmpty())
+        note()
+        note(target = 2, text = "Request payload, Example.kt:2")
+        note(target = 2, text = "Updated payload")
+        assertEquals(1, canvas.chatLinks.size)
+        assertTrue(canvas.geometry!!.cards.getValue(0).bounds.height > height)
+        val state = JsonParser.parseString(chartChatState(1, graph, canvas, 0)).asJsonObject
+        assertEquals(1, state["annotation_links_total"].asInt)
+        assertEquals(2, graph.edges.size)
+        note(text = "")
+        assertTrue(canvas.chatNotes.isEmpty())
+        applyChartChatAction(graph, canvas, 1, "clear_chart_annotations", 1, emptyList())
+        assertTrue(canvas.chatLinks.isEmpty())
+        note()
+        canvas.remap { it }
+        assertTrue(canvas.chatNotes.isEmpty())
+    }
+
+    fun `test details expose hidden relationships and expansion reports progress`() {
+        val details = JsonParser.parseString(chartNodeDetails(graph, 1, 1, 1, 0)).asJsonObject
+        assertEquals(2, details["relationships_total"].asInt)
+        assertEquals(setOf("caller", "callee"), details["relationships"].asJsonArray.map { it.asJsonObject["direction"].asString }.toSet())
+        assertThrows(ToolInputException::class.java) { chartNodeDetails(graph, 2, 1, 1, 0) }
+        val canvas = canvas()
+        applyChartChatAction(graph, canvas, 1, "add_chart_nodes", 1, listOf(0))
+        val result = JsonParser.parseString(applyChartChatAction(graph, canvas, 1, "expand_chart_calls", 1, listOf(0))).asJsonObject
+        assertEquals(0, result["added_node_ids"].asJsonArray.size())
+    }
+
+    fun `test details omit library and non-function neighbours before pagination`() {
+        val graph = graph.copy(
+            nodes = graph.nodes.map {
+                when (it.id) {
+                    3 -> it.copy(inProject = false)
+                    4 -> it.copy(kind = SymbolKind.PROPERTY)
+                    else -> it
+                }
+            },
+            edges = linkedSetOf(CallGraphEdge(1, 3), CallGraphEdge(4, 1),
+                CallGraphEdge(1, 5, RelationKind.REFERENCE)) + graph.edges,
+        )
+        val details = JsonParser.parseString(chartNodeDetails(graph, 1, 1, 1, 0)).asJsonObject
+        assertEquals(2, details["relationships_total"].asInt)
+        assertEquals(listOf(0, 2), details["relationships"].asJsonArray.map {
+            it.asJsonObject["node"].asJsonObject["node_id"].asInt
+        })
+        val next = JsonParser.parseString(chartNodeDetails(graph, 1, 1, 1, 1)).asJsonObject
+        assertEquals(2, next["relationships_total"].asInt)
+        assertEquals(2, next["relationships"].asJsonArray.single().asJsonObject["node"].asJsonObject["node_id"].asInt)
+        assertFalse(next.has("next_offset"))
+    }
+
+    fun `test links report visibility when columns disappear and return`() {
+        val canvas = canvas()
+        canvas.add(FlowStart(0))
+        canvas.add(FlowStart(9))
+        applyChartAnnotation(graph, canvas, 1, 1, 0, 9, "Related processing")
+        fun linkVisible(): Boolean {
+            val state = JsonParser.parseString(chartChatState(1, graph, canvas, 0)).asJsonObject
+            assertEquals(1, state["annotation_links_total"].asInt)
+            return state["annotation_links"].asJsonArray.single().asJsonObject["visible"].asBoolean
+        }
+        assertTrue(linkVisible())
+        canvas.removeColumn(9)
+        assertFalse(linkVisible())
+        canvas.add(FlowStart(9))
+        assertTrue(linkVisible())
+    }
+
     fun `test actions reject stale IDs and invalid batches without changing the chart`() {
         val canvas = canvas()
         assertThrows(ToolInputException::class.java) { applyChartChatAction(graph, canvas, 2, "add_chart_nodes", 1, listOf(0)) }

@@ -9,6 +9,8 @@ interface ChartChatContext {
     suspend fun snapshot(): String = state(0)
     suspend fun state(offset: Int): String
     suspend fun find(query: String, offset: Int): String
+    suspend fun describe(revision: Int, node: Int, offset: Int): String = throw ToolInputException("Node details unavailable")
+    suspend fun annotate(revision: Int, node: Int, target: Int?, text: String): String = throw ToolInputException("Annotations unavailable")
     suspend fun apply(action: String, revision: Int, nodes: List<Int>): String
 }
 
@@ -42,6 +44,16 @@ fun chartChatSystemPrompt(projectName: String): String = """
     for "where is Y handled" highlight the steps involved. Then answer in a few sentences that point at what is
     highlighted, by name, instead of listing every step in text. Skip chart changes when they would add nothing, such as
     for a simple fact about one step, and keep the chart and the text consistent.
+    For data-flow requests, trace actual methods from input through request construction, transport, tool execution
+    and response/UI updates. Read implementations first. Class/constructor nodes are not substitutes for methods.
+    Resolve qualified names such as ChatSession.send and ToolChatRunner.run. Use get_chart_node_details to inspect
+    static callers/callees, then add relevant methods and intermediate steps in batches. If expansion adds no nodes,
+    investigate source and other methods instead of repeating it. Search within relevant source directories.
+    Use set_chart_note for data entering/leaving a step, including source path:line evidence. Use set_chart_link
+    for source-verified data-flow or callback relationships missing from static analysis. These dashed explanatory
+    arrows are assistant annotations, never static-call evidence. Do not invent relationships to fill gaps.
+    Notes and links are upserts; empty text removes one. clear_chart_annotations removes all annotations.
+    Verify the final chart with get_chart_state. Report successful changes and unresolved gaps in a few sentences.
     Answer concisely in plain text; the chat panel does not render Markdown.
 """.trimIndent()
 
@@ -65,7 +77,28 @@ fun chartTools(context: ChartChatContext): List<ChatTool> {
                 ?.trim()?.takeIf(String::isNotEmpty) ?: throw ToolInputException("query must be a nonempty string")
             context.find(query.take(200), it.nonnegativeInt("offset", 0))
         },
-    ) + listOf(
+        tool("get_chart_node_details", "Inspect a function and its static callers/callees, including hidden nodes (paged).",
+            """"revision":{"type":"integer"},"node_id":{"type":"integer"},$offset""", "\"revision\",\"node_id\"") {
+            context.describe(it.nonnegativeInt("revision"), it.nonnegativeInt("node_id"), it.nonnegativeInt("offset", 0))
+        },
+        tool("clear_chart_annotations", "Remove all assistant notes and explanatory arrows.",
+            """"revision":{"type":"integer"}""", "\"revision\"") {
+            context.apply("clear_chart_annotations", it.nonnegativeInt("revision"), emptyList())
+        },
+    ) + listOf(false, true).map { link ->
+        tool(if (link) "set_chart_link" else "set_chart_note",
+            if (link) "Upsert a labeled, dashed explanatory arrow between visible functions. Not a static call. Empty text removes it."
+            else "Upsert a note on a visible function, including source evidence. Empty text removes it.",
+            """"revision":{"type":"integer"},"node_id":{"type":"integer"},"text":{"type":"string","maxLength":400}""" +
+                (if (link) ""","target_id":{"type":"integer"}""" else ""),
+            "\"revision\",\"node_id\",\"text\"" + (if (link) ",\"target_id\"" else "")) {
+            val text = it.get("text")?.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString
+                ?: throw ToolInputException("text must be a string")
+            if (text.length > 400) throw ToolInputException("text must be at most 400 characters")
+            context.annotate(it.nonnegativeInt("revision"), it.nonnegativeInt("node_id"),
+                if (link) it.nonnegativeInt("target_id") else null, text.trim())
+        }
+    } + listOf(
         "add_chart_nodes" to "Add existing project functions, connected to visible steps they call or are called by; unconnected ones become new columns. Does not create code or invented nodes.",
         "highlight_chart_nodes" to "Replace chart highlights with visible function IDs and scroll to the first. Use it to point at the steps your answer is about instead of describing them at length. Empty IDs clear highlights.",
         "expand_chart_calls" to "Show calls for visible function IDs, preserving already open calls.",

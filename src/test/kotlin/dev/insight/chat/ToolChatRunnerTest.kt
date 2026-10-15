@@ -92,15 +92,64 @@ class ToolChatRunnerTest {
         val last = model.requests.last()
         assertEquals(ToolChoice.None, last.toolChoice)
         assertEquals(listOf("echo"), last.tools.map { it.name })
-        assertEquals(LlmRole.USER, last.messages.last().role)
+        assertEquals(LlmRole.TOOL, last.messages.last().role)
+        assertEquals(listOf(LlmMessage.user("Hi")), last.messages.filter { it.role == LlmRole.USER })
+        assertEquals(listOf(LlmMessage.user("Hi")) + result.transcript, last.messages)
+    }
+
+    @Test fun `default limits tool execution to twelve rounds`() = runBlocking {
+        val tool = EchoTool()
+        val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
+        val model = FakeModel(*(List(12) { looping } + Completion("Done.")).toTypedArray())
+        val result = ToolChatRunner(model::complete, listOf(tool)).run(listOf(LlmMessage.user("Hi")))
+
+        assertEquals("Done.", result.reply)
+        assertEquals(12, tool.received.size)
+        assertEquals(13, result.requestCount)
+        assertTrue(model.requests.dropLast(1).all { it.toolChoice == null })
+        assertEquals(ToolChoice.None, model.requests.last().toolChoice)
+        assertTrue(model.requests.all { request ->
+            request.messages.filter { it.role == LlmRole.USER } == listOf(LlmMessage.user("Hi"))
+        })
+    }
+
+    @Test fun `retries with a user note when the server ignores tool choice`() = runBlocking {
+        val tool = EchoTool()
+        val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
+        val model = FakeModel(looping, looping, Completion("Done."))
+        val result = ToolChatRunner(model::complete, listOf(tool), maxToolRounds = 1)
+            .run(listOf(LlmMessage.system("SYSTEM"), LlmMessage.user("Hi")))
+        assertEquals("Done.", result.reply)
+        assertEquals(3, result.requestCount)
+        assertEquals(1, tool.received.size)
+        assertEquals(2, result.transcript.size)
+        val retry = model.requests.last()
+        assertEquals(ToolChoice.None, retry.toolChoice)
+        assertEquals(model.requests[1].tools, retry.tools)
+        assertEquals(model.requests[1].messages, retry.messages.dropLast(1))
+        assertEquals(LlmRole.USER, retry.messages.last().role)
+        assertTrue(retry.messages.last().content.contains("Answer now"))
+    }
+
+    @Test fun `backend forwards an explicit larger tool round budget`() = runBlocking {
+        val tool = EchoTool()
+        val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
+        val model = FakeModel(*(List(100) { looping } + Completion("Done.")).toTypedArray())
+        val backend = LlmChatBackend(model::complete, listOf(tool), "SYSTEM", maxToolRounds = 100)
+        assertEquals("Done.", backend.reply(listOf(ChatMessage(ChatMessage.USER, "Hi"))))
+        assertEquals(100, tool.received.size)
+        assertEquals(101, model.requests.size)
+        assertEquals(ToolChoice.None, model.requests.last().toolChoice)
     }
 
     @Test fun `fails when the model keeps calling tools after the limit`() {
         val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
-        val model = FakeModel(looping, looping)
+        val model = FakeModel(looping, looping, looping)
+        val tool = EchoTool()
         assertThrows(LlmProtocolException::class.java) {
-            runBlocking { ToolChatRunner(model::complete, listOf(EchoTool()), maxToolRounds = 1).run(listOf(LlmMessage.user("Hi"))) }
+            runBlocking { ToolChatRunner(model::complete, listOf(tool), maxToolRounds = 1).run(listOf(LlmMessage.user("Hi"))) }
         }
+        assertEquals(1, tool.received.size)
     }
 
     @Test fun `truncates oversized tool results`() = runBlocking {

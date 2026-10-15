@@ -12,6 +12,11 @@ class ChartToolsTest {
     private class Context : ChartChatContext {
         var revision = 1
         val actions = mutableListOf<Triple<String, Int, List<Int>>>()
+        val annotations = mutableListOf<String>()
+        override suspend fun annotate(revision: Int, node: Int, target: Int?, text: String): String {
+            annotations += "$revision:$node:$target:$text"
+            return "ok"
+        }
         override suspend fun state(offset: Int) = "revision=$revision offset=$offset"
         override suspend fun find(query: String, offset: Int) = "$query offset=$offset"
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String {
@@ -42,11 +47,30 @@ class ChartToolsTest {
         val context = Context()
         val tools = chartTools(context).associateBy { it.definition.name }
         assertEquals(setOf("get_chart_state", "find_chart_nodes", "add_chart_nodes", "highlight_chart_nodes",
-            "expand_chart_calls", "expand_chart_callers"), tools.keys)
+            "expand_chart_calls", "expand_chart_callers", "get_chart_node_details", "set_chart_note",
+            "set_chart_link", "clear_chart_annotations"), tools.keys)
         assertEquals("revision=1 offset=20", tools.getValue("get_chart_state").call(JsonParser.parseString("""{"offset":20}""").asJsonObject))
         assertEquals("save offset=0", tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"query":"save"}""").asJsonObject))
         tools.getValue("highlight_chart_nodes").call(JsonParser.parseString("""{"revision":1,"node_ids":[]}""").asJsonObject)
         assertTrue(context.actions.single().third.isEmpty())
+    }
+
+    @Test fun `annotation tools validate arguments before dispatch and allow deletion`() = runBlocking {
+        val context = Context()
+        val tools = chartTools(context).associateBy { it.definition.name }
+        for (json in listOf(
+            """{"revision":1,"node_id":2,"text":"payload"}""",
+            """{"revision":1,"node_id":2,"target_id":-1,"text":"payload"}""",
+            """{"revision":1,"node_id":2,"target_id":3,"text":42}""",
+            """{"revision":1,"node_id":2,"target_id":3,"text":"${"x".repeat(401)}"}""",
+        )) {
+            try { tools.getValue("set_chart_link").call(JsonParser.parseString(json).asJsonObject); fail(json) }
+            catch (_: ToolInputException) { }
+        }
+        assertTrue(context.annotations.isEmpty())
+        tools.getValue("set_chart_note").call(JsonParser.parseString("""{"revision":1,"node_id":2,"text":"input"}""").asJsonObject)
+        tools.getValue("set_chart_link").call(JsonParser.parseString("""{"revision":1,"node_id":2,"target_id":3,"text":""}""").asJsonObject)
+        assertEquals(listOf("1:2:null:input", "1:2:3:"), context.annotations)
     }
 
     @Test fun `fresh chart state is supplied on every turn without altering saved history`() = runBlocking {

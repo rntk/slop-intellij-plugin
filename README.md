@@ -181,6 +181,14 @@ Other SDK options evaluated:
 - **Kotlin Analysis API** (`analyze { … }`): exact K2 resolution, including implicit invokes and property accessors. Use it if the Kotlin PSI reference approach proves insufficient.
 - **Diagrams API** (`com.intellij.diagram`): ships only with IntelliJ IDEA Ultimate. The build now compiles against Ultimate, but using it would make the plugin unusable in Community and the other IDEs.
 
+Chart chat can inspect hidden callers/callees with `get_chart_node_details`, attach source-grounded notes
+with `set_chart_note`, and draw directed explanatory arrows with `set_chart_link`. Notes and link labels
+appear on function cards; arrows are dashed and represent assistant explanations, not static call evidence.
+Use empty text to remove a note/link, or `clear_chart_annotations` to remove all annotations. Annotations
+belong to the current chart session and are cleared when the chart is cleared or its graph is rebuilt.
+Node discovery accepts qualified method names (for example, `ToolChatRunner.run`), and expansion results
+report added node IDs so chat can recognize when it needs to investigate a different method.
+
 ## LLM chat (llama.cpp)
 
 The chat answers with an LLM when a server is configured in **Settings → Tools → Insight Chat** (or **LLM settings** in the sidebar). Without a server URL it keeps the local demo responses. Start a llama.cpp server with tool calling enabled, then enter its URL, for example `http://127.0.0.1:8080`:
@@ -197,7 +205,7 @@ Each question runs a tool loop, like the browser example in `llm_example/`: the 
 - `read_file`: a numbered line range of a text file (at most 400 lines per call), including unsaved editor changes.
 - `search_text`: case-insensitive plain-text search, returning `path:line: text`.
 
-The tools only see project content (sources, tests, resources); excluded folders, paths with `..`, and files outside the project are rejected. Invalid arguments, unknown tools, and tool failures are returned to the model as errors so it can correct itself. After 12 rounds of tool calls, a final request disables new calls (`tool_choice: "none"`) so the model must answer. Each tool result is capped at 16,000 characters. Up to 20 earlier user and assistant messages (24,000 characters) are replayed; tool output from earlier turns is not.
+The tools only see project content (sources, tests, resources); excluded folders, paths with `..`, and files outside the project are rejected. Invalid arguments, unknown tools, and tool failures are returned to the model as errors so it can correct itself. After 12 rounds of tool calls (100 for chart chat), a final request disables new calls (`tool_choice: "none"`). If the server still returns tool calls, one retry adds a user note asking it to answer with the information already gathered. Each tool result is capped at 16,000 characters. Up to 20 earlier user and assistant messages (24,000 characters) are replayed; tool output from earlier turns is not.
 
 **Privacy:** file contents the model asks for are sent to the configured server. Use a local llama.cpp server to keep source on your machine.
 

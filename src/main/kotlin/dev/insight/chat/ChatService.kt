@@ -107,7 +107,7 @@ open class ChatSession(
         )
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
         else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
-            chartChatSystemPrompt(project.name), context = chart::snapshot)
+            chartChatSystemPrompt(project.name), maxToolRounds = 100, context = chart::snapshot)
     }
 
     private fun describe(event: ToolCallEvent): String {

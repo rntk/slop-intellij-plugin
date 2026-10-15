@@ -38,12 +38,12 @@ data class ToolChatResult(
  * Runs the assistant/tool loop for one turn: request a completion, execute any tool calls, send the
  * results back, and repeat until the model answers in text. Tool failures are reported to the model
  * rather than failing the turn. After [maxToolRounds] rounds of calls, one final request disables new
- * calls so the model answers with what it has.
+ * calls through the API's tool choice. If the server ignores it, retry once with an answer-now note.
  */
 class ToolChatRunner(
     private val complete: suspend (CompletionRequest) -> Completion,
     tools: List<ChatTool>,
-    private val maxToolRounds: Int = 12,
+    private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     private val maxToolResultChars: Int = 16_000,
     private val maxContextChars: Int = 64_000,
     private val maxHistoryChars: Int = 24_000,
@@ -69,9 +69,10 @@ class ToolChatRunner(
         val definitions = tools.values.map { it.definition }
         for (round in 0..maxToolRounds) {
             val exhausted = round == maxToolRounds && definitions.isNotEmpty()
+            var answerNow = false
             fun request(context: List<LlmMessage>) = CompletionRequest(
-                // A user note rather than a system message: several chat templates require system messages first.
-                messages = if (exhausted) context + LlmMessage.user(TOOL_ROUNDS_EXHAUSTED) else context,
+                // A user note: several chat templates require system messages first.
+                messages = if (answerNow) context + LlmMessage.user(TOOL_ROUNDS_EXHAUSTED) else context,
                 tools = definitions,
                 toolChoice = if (exhausted) ToolChoice.None else null,
             )
@@ -88,7 +89,12 @@ class ToolChatRunner(
                     }
                 }
             }
-            val completion = completeWithWindow()
+            var completion = completeWithWindow()
+            if (exhausted && completion.toolCalls.isNotEmpty()) {
+                // Discard the rejected completion: its calls must never execute or enter the transcript.
+                answerNow = true
+                completion = completeWithWindow()
+            }
             if (completion.toolCalls.isEmpty()) {
                 val reply = completion.content.trim()
                 if (reply.isEmpty()) throw LlmProtocolException("The model returned an empty reply")
@@ -132,10 +138,11 @@ class ToolChatRunner(
         if (result.length <= maxToolResultChars) result
         else result.take(maxToolResultChars) + "\n[Truncated ${result.length - maxToolResultChars} characters.]"
 
-    private companion object {
-        val LOG = logger<ToolChatRunner>()
-        const val TOOL_ROUNDS_EXHAUSTED =
+    companion object {
+        const val DEFAULT_MAX_TOOL_ROUNDS = 12
+        private const val TOOL_ROUNDS_EXHAUSTED =
             "The tool-call limit for this turn is reached. Do not call tools. Answer now using the information you have."
+        private val LOG = logger<ToolChatRunner>()
     }
 }
 

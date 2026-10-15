@@ -114,7 +114,7 @@ internal class FlowChartPanel(
 
         override suspend fun find(query: String, offset: Int): String = withContext(Dispatchers.EDT) {
             val found = graph().nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION &&
-                listOf(it.name, it.container, it.filePath.orEmpty()).any { text -> text.contains(query, ignoreCase = true) } }
+                listOf(it.name, "${it.container}.${it.name}", it.filePath.orEmpty()).any { text -> text.contains(query, ignoreCase = true) } }
             Gson().toJson(mapOf("revision" to chatRevision, "total" to found.size, "offset" to offset,
                 "next_offset" to (offset + 20).takeIf { it < found.size },
                 "nodes" to found.drop(offset).take(20).map(::chartNodeData)))
@@ -122,6 +122,14 @@ internal class FlowChartPanel(
 
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
             applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes)
+        }
+
+        override suspend fun describe(revision: Int, node: Int, offset: Int): String = withContext(Dispatchers.EDT) {
+            chartNodeDetails(graph(), chatRevision, revision, node, offset)
+        }
+
+        override suspend fun annotate(revision: Int, node: Int, target: Int?, text: String): String = withContext(Dispatchers.EDT) {
+            applyChartAnnotation(graph(), flowCanvas, chatRevision, revision, node, target, text)
         }
     }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)

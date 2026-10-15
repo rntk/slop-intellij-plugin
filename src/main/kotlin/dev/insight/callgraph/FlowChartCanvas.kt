@@ -89,6 +89,24 @@ class FlowChartCanvas(
 
     fun highlightChat(nodes: Set<Int>) { chatHighlights = nodes; repaint() }
 
+    internal val chatNotes = linkedMapOf<Int, String>()
+    internal val chatLinks = linkedMapOf<Pair<Int, Int>, String>()
+
+    internal fun annotateChat(node: Int, target: Int?, text: String) {
+        if (target == null) {
+            if (text.isEmpty()) chatNotes.remove(node) else chatNotes[node] = text
+        } else {
+            if (text.isEmpty()) chatLinks.remove(node to target) else chatLinks[node to target] = text
+        }
+        update(board)
+    }
+
+    internal fun clearChatAnnotations() {
+        chatNotes.clear()
+        chatLinks.clear()
+        update(board)
+    }
+
     fun markRegionMatches(keys: Set<String>) { regionMatches = keys; repaint() }
 
     /** Highlights matching cards while keeping their surrounding steps and branches visible. */
@@ -197,6 +215,9 @@ class FlowChartCanvas(
      * the old graph no longer apply, so the chart is drawn again by the next [show].
      */
     fun remap(id: (Int) -> Int?) {
+        // Explanations are source-dependent; do not carry them into a rebuilt graph.
+        chatNotes.clear()
+        chatLinks.clear()
         chatHighlights = chatHighlights.mapNotNullTo(hashSetOf(), id)
         board = board.map(id)
         selectedNode = selectedNode?.let(id)
@@ -248,6 +269,8 @@ class FlowChartCanvas(
     }
 
     fun clear() {
+        chatNotes.clear()
+        chatLinks.clear()
         chatHighlights = emptySet()
         update(FlowBoard(compact = board.compact))
     }
@@ -490,7 +513,11 @@ class FlowChartCanvas(
             text.filter { it.isNotBlank() }.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
         }
         is FlowCardBox -> shape.step.card.let { card ->
-            (listOf("<b>${StringUtil.escapeXmlEntities(card.title)}</b>") + listOfNotNull(card.meta, card.tooltip ?: card.description, card.details)
+            (listOf("<b>${StringUtil.escapeXmlEntities(card.title)}</b>") + (listOfNotNull(card.meta, card.tooltip ?: card.description, card.details,
+                chatNotes[shape.step.node]?.let { "Assistant note: $it" }) +
+                chatLinks.filterKeys { it.first == shape.step.node }.map { (ends, text) ->
+                    "Assistant link → ${source?.card?.invoke(ends.second)?.title ?: ends.second}: $text"
+                })
                 .flatMap { it.lines() }.filter { it.isNotBlank() }.map { StringUtil.escapeXmlEntities(it) })
                 .joinToString("<br>", "<html>", "</html>")
         }
@@ -518,6 +545,14 @@ class FlowChartCanvas(
         wrap(card.title, getFontMetrics(titleFont), width, 2).forEach { add(TextLine(it, titleFont, JBColor.foreground())) }
         card.description?.let { text -> wrap(text, getFontMetrics(textFont), width, 3).forEach { add(TextLine(it, textFont, mutedText)) } }
         card.details?.let { text -> wrap(text, getFontMetrics(smallFont), width, 2).forEach { add(TextLine(it, smallFont, mutedText)) } }
+        chatNotes[step.node]?.let { text ->
+            wrap("Assistant note: $text", getFontMetrics(textFont), width, 12).forEach { add(TextLine(it, textFont, accent)) }
+        }
+        chatLinks.filterKeys { it.first == step.node }.forEach { (ends, text) ->
+            val target = source?.card?.invoke(ends.second)?.title ?: ends.second.toString()
+            wrap("Assistant link → $target: $text", getFontMetrics(textFont), width, 12)
+                .forEach { add(TextLine(it, textFont, accent)) }
+        }
     }
 
     private val measure = object : FlowMeasure {
@@ -546,6 +581,7 @@ class FlowChartCanvas(
             canvas.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
             val clip = canvas.clipBounds
             val reach = JBUI.scale(12)
+            paintChatLinks(canvas, geometry)
             for (shape in geometry.shapes) {
                 if (clip != null && !clip.intersects(Rectangle(bounds(shape)).apply { grow(reach, reach) })) continue
                 when (shape) {
@@ -570,6 +606,28 @@ class FlowChartCanvas(
                 }
             }
         } finally { canvas.dispose() }
+    }
+
+    private fun paintChatLinks(g: Graphics2D, geometry: FlowGeometry) {
+        val previous = g.stroke
+        g.color = accent
+        for ((ends, _) in chatLinks) {
+            val from = geometry.cards[ends.first]?.bounds ?: continue
+            val to = geometry.cards[ends.second]?.bounds ?: continue
+            val x1 = from.centerX
+            val y1 = if (to.centerY >= from.centerY) from.maxY else from.minY
+            val x2 = to.centerX
+            val y2 = if (to.centerY >= from.centerY) to.minY else to.maxY
+            g.stroke = BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, floatArrayOf(6f, 5f), 0f)
+            g.draw(java.awt.geom.Line2D.Double(x1, y1, x2, y2))
+            val angle = kotlin.math.atan2(y2 - y1, x2 - x1)
+            g.stroke = BasicStroke(1.5f)
+            for (delta in listOf(-0.5, 0.5)) {
+                g.draw(java.awt.geom.Line2D.Double(x2, y2,
+                    x2 - 10 * kotlin.math.cos(angle + delta), y2 - 10 * kotlin.math.sin(angle + delta)))
+            }
+        }
+        g.stroke = previous
     }
 
     /** Bounds of [shape]; may be the shape's own rectangle, so callers must not change it. */
