@@ -29,11 +29,11 @@ import dev.insight.chat.ChartChatContext
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
 import dev.insight.chat.ToolInputException
+import dev.insight.ui.CollapsibleControls
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
-import java.awt.GridLayout
 import java.awt.event.ActionEvent
 import javax.swing.*
 import javax.swing.event.DocumentEvent
@@ -66,7 +66,8 @@ internal class FlowChartPanel(
     private val compact = JCheckBox("Compact subflows", true)
     private val summarizeButton = JButton("Summarize subflows")
     private val collapseButton = JButton("Collapse subflows")
-    private val summaryNotice = JLabel("Expand a subflow to inspect its calls. Summarize adds LLM interpretations.")
+    /** Progress and outcome of summarizing; shown beside the status so it stays visible with Subflows collapsed. */
+    private val summaryNotice = JLabel()
     /** Calls for the flow chart, made from [result], the latest enrichment and the colouring; see [renderFlow]. */
     private var flowLens: FlowLensFor? = null
     /** Call sites, exits and current source facts of flow chart steps, read once per build. */
@@ -134,6 +135,8 @@ internal class FlowChartPanel(
     }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
     private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
+    private lateinit var chatSection: CollapsibleControls.Section
+    private lateinit var searchSection: CollapsibleControls.Section
     private val scopedChats = mutableMapOf<ChatPanel, CoroutineScope>()
 
     /** Every invocation gets an independent history and a fixed source anchor. */
@@ -193,6 +196,7 @@ internal class FlowChartPanel(
                     }
                 })
             })
+            chatSection.reveal()
             chatTabs.selectedComponent = panel
             panel.input.requestFocusInWindow()
         }
@@ -201,18 +205,25 @@ internal class FlowChartPanel(
     init {
         border = JBUI.Borders.empty(8)
         fun row(vararg controls: Component) = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply { controls.forEach(::add) }
-        add(JPanel(GridLayout(0, 1, 0, 4)).apply {
-            add(row(JButton("Refresh").apply { addActionListener { refresh() } },
-                enrichButton.apply { addActionListener { enrich() } },
-                reportButton.apply { addActionListener { openReport() } },
-                JLabel("Colour:"), colorBy, JLabel("Flow:"), flowChoice,
-                addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
-                previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
-            add(row(callsButton, callersButton, removeButton, clearButton,
-                JButton("Clear chat highlights").apply { addActionListener { flowCanvas.highlightChat(emptySet()) } }))
-            add(row(compact, summarizeButton, collapseButton, summaryNotice))
-            add(row(JLabel("Search chart:"), search, previousMatch, nextMatch, matchCount))
-            add(status)
+        add(JPanel(BorderLayout(0, 4)).apply {
+            add(CollapsibleControls(project, "insight.chart.controls").apply {
+                section("view", "View", row(JButton("Refresh").apply { addActionListener { refresh() } },
+                    enrichButton.apply { addActionListener { enrich() } },
+                    reportButton.apply { addActionListener { openReport() } },
+                    JLabel("Colour:"), colorBy, JLabel("Flow:"), flowChoice,
+                    addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
+                    previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
+                section("edit", "Edit", row(callsButton, callersButton, removeButton, clearButton,
+                    JButton("Clear chat highlights").apply { addActionListener { flowCanvas.highlightChat(emptySet()) } }))
+                section("subflows", "Subflows", row(compact, summarizeButton, collapseButton,
+                    JLabel("Expand a subflow to inspect its calls. Summarize adds LLM interpretations.")))
+                searchSection = section("search", "Search", row(JLabel("Search chart:"), search, previousMatch, nextMatch, matchCount))
+                chatSection = toggle("chat", "Chat", chatTabs)
+            }, BorderLayout.NORTH)
+            add(JPanel(BorderLayout(0, 4)).apply {
+                add(status, BorderLayout.NORTH)
+                add(summaryNotice, BorderLayout.SOUTH)
+            }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(com.intellij.ui.OnePixelSplitter(false, 0.72f).apply {
             firstComponent = JBScrollPane(flowCanvas)
@@ -330,6 +341,7 @@ internal class FlowChartPanel(
             index >= 0 -> "${index + 1} of ${matches.size}"
             else -> "${matches.size} matches"
         }
+        searchSection.hint = matchCount.text
         previousMatch.isEnabled = matches.isNotEmpty()
         nextMatch.isEnabled = matches.isNotEmpty()
     }

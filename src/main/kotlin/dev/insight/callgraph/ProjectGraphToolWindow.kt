@@ -49,6 +49,7 @@ import com.intellij.ui.content.ContentFactory
 import dev.insight.entrypoints.EntryPointsPanel
 import dev.insight.entrypoints.EntryPointService
 import com.intellij.util.ui.JBUI
+import dev.insight.ui.CollapsibleControls
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -293,6 +294,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         toolTipText = "Caller and callee hops kept around changed symbols"
     }
     private val changesStatus = JLabel()
+    private lateinit var searchSection: CollapsibleControls.Section
+    private lateinit var changesSection: CollapsibleControls.Section
     /** Suppresses [changesModeChanged] while the mode is switched programmatically. */
     private var updatingChanges = false
     /** Recomputes after the IDE's change list updates, for example after a commit or an external edit. */
@@ -324,48 +327,44 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         searchMode.addActionListener { searchChanged() }
         previousMatch.apply { toolTipText = "Previous match (Shift+Enter)"; addActionListener { stepMatch(-1) } }
         nextMatch.apply { toolTipText = "Next match (Enter)"; addActionListener { stepMatch(1) } }
-        changesMode.addActionListener { changesModeChanged() }
+        changesMode.addActionListener {
+            changesSection.hint = changesMode.selectedItem.takeIf { it != ChangesMode.OFF }?.toString().orEmpty()
+            changesModeChanged()
+        }
         changesBase.addActionListener { refreshChanges() }
         changesHops.addActionListener { refreshChanges() }
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(JPanel(BorderLayout(0, 4)).apply {
-                add(JPanel(BorderLayout(0, 4)).apply {
-                    add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                        add(JLabel("Search:"))
-                        add(search)
-                        add(searchMode)
-                        add(previousMatch)
-                        add(nextMatch)
-                        add(matchCount)
-                    }, BorderLayout.NORTH)
-                    add(changesRow(), BorderLayout.SOUTH)
-                }, BorderLayout.SOUTH)
-                add(toolbar(), BorderLayout.NORTH)
-                add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                    add(JLabel("Colour:"))
-                    add(colorBy)
-                    add(hideTests)
-                    add(hideUtilities)
-                    add(JLabel("Calls:"))
-                    add(edgeFilter)
-                    add(JLabel("Flow:"))
-                    add(flowChoice)
-                    add(previousStep)
-                    add(nextStep)
-                }, BorderLayout.CENTER)
+            add(CollapsibleControls(project, "insight.graph.controls").apply {
+                section("view", "View", toolbar())
+                section("filters", "Filters", JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                    add(JLabel("Colour:")); add(colorBy)
+                    add(hideTests); add(hideUtilities)
+                    add(JLabel("Calls:")); add(edgeFilter)
+                    add(JLabel("Flow:")); add(flowChoice); add(previousStep); add(nextStep)
+                })
+                searchSection = section("search", "Search", JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                    add(JLabel("Search:")); add(search); add(searchMode)
+                    add(previousMatch); add(nextMatch); add(matchCount)
+                })
+                changesSection = section("changes", "Changes", changesRow(), expanded = false)
             }, BorderLayout.NORTH)
             add(activeFile, BorderLayout.CENTER)
-            add(status, BorderLayout.SOUTH)
+            add(JPanel(BorderLayout(0, 4)).apply {
+                add(status, BorderLayout.NORTH)
+                add(changesStatus, BorderLayout.SOUTH)
+            }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, 4)).apply {
             add(selection, BorderLayout.NORTH)
-            add(JPanel(GridLayout(0, 1, 0, 4)).apply {
-                add(JLabel("Click: node menu / Side by side · Enter: expand/collapse a group, open a symbol · drag/arrows to pan · scroll to zoom"))
-                add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
-                add(JLabel("Stripe: colour-by · ▶ Start: entry point (groups contain starting points) · numbered: flow step · red dashed: error path"))
-                add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
-                add(JLabel("Changes: Δ / amber stripe: changed symbol (files show +added −removed) · faint: not a caller or callee of a change"))
+            add(CollapsibleControls(project, "insight.graph.controls").apply {
+                section("legend", "Legend", JPanel(GridLayout(0, 1, 0, 4)).apply {
+                    add(JLabel("Click: node menu / Side by side · Enter: expand/collapse a group, open a symbol · drag/arrows to pan · scroll to zoom"))
+                    add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
+                    add(JLabel("Stripe: colour-by · ▶ Start: entry point (groups contain starting points) · numbered: flow step · red dashed: error path"))
+                    add(JLabel("Sections view: one titled column per file, folder, domain, layer, phase or importance · hover a title for details"))
+                    add(JLabel("Changes: Δ / amber stripe: changed symbol (files show +added −removed) · faint: not a caller or callee of a change"))
+                }, expanded = false)
             }, BorderLayout.CENTER)
         }, BorderLayout.SOUTH)
         project.messageBus.connect(this).apply {
@@ -421,11 +420,11 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             toolTipText = "Compare again and map the changed lines onto the graph"
             addActionListener { refreshChanges() }
         })
-        add(changesStatus)
     }
 
     /** Turns on highlighting of the local changes, as the Tools menu action does. */
     fun showChanges() {
+        changesSection.reveal()
         if (changesMode.selectedItem == ChangesMode.OFF) changesMode.selectedItem = ChangesMode.HIGHLIGHT
         else refreshChanges()
     }
@@ -587,6 +586,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             index >= 0 -> "${index + 1} of ${matches.size}"
             else -> if (matches.size == 1) "1 match" else "${matches.size} matches"
         }
+        searchSection.hint = if (filtering) "filtering · ${matchCount.text}" else matchCount.text
         previousMatch.isEnabled = matches.isNotEmpty()
         nextMatch.isEnabled = matches.isNotEmpty()
     }

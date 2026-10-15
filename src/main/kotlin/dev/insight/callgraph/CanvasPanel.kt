@@ -13,6 +13,7 @@ import com.intellij.util.ui.JBUI
 import dev.insight.enrichment.CanvasLine
 import dev.insight.enrichment.EnrichmentProgress
 import dev.insight.enrichment.EnrichmentService
+import dev.insight.ui.CollapsibleControls
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -46,13 +47,17 @@ internal class CanvasPanel(
     init {
         border = JBUI.Borders.empty(8)
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                add(JButton("Refresh").apply { addActionListener { refresh() } })
-                add(enrichButton.apply { addActionListener { enrich() } })
-                add(JLabel("Flow:")); add(flowChoice); add(scopeLabel); add(generate)
-                add(JButton("Application scope").apply { addActionListener { root = null; flowChoice.selectedIndex = 0; scopeLabel.text = "Application functions"; invalidateReading() } })
-                add(JLabel("Depth:")); add(depth); add(mode)
-                add(zoomControl({ readingView.zoom }, { readingView.zoom = it }, readingView))
+            add(CollapsibleControls(project, "insight.canvas.controls").apply {
+                section("controls", "Controls", JPanel(BorderLayout(0, 4)).apply {
+                    add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                        add(JButton("Refresh").apply { addActionListener { refresh() } })
+                        add(enrichButton.apply { addActionListener { enrich() } })
+                        add(JLabel("Flow:")); add(flowChoice); add(scopeLabel); add(generate)
+                        add(JButton("Application scope").apply { addActionListener { root = null; flowChoice.selectedIndex = 0; scopeLabel.text = "Application functions"; invalidateReading() } })
+                        add(JLabel("Depth:")); add(depth); add(mode)
+                        add(zoomControl({ readingView.zoom }, { readingView.zoom = it }, readingView))
+                    }, BorderLayout.NORTH)
+                })
             }, BorderLayout.NORTH)
             add(status, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)

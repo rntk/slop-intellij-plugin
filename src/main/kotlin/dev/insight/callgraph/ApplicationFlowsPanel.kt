@@ -15,6 +15,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointService
+import dev.insight.ui.CollapsibleControls
 import kotlinx.coroutines.*
 import java.awt.*
 import java.awt.event.MouseWheelEvent
@@ -51,6 +52,7 @@ internal class ApplicationFlowsPanel(
         toolTipText = "Search project functions by name or path and choose where flow splitting starts"
     }
     private val discoveredButton = JButton("Use discovered entrypoints").apply { isEnabled = false }
+    private lateinit var controlsSection: CollapsibleControls.Section
 
     private fun selectedEntries(): List<EntryPoint> = manualEntry?.let(::listOf) ?: entryPoints.entryPoints.value
 
@@ -58,6 +60,7 @@ internal class ApplicationFlowsPanel(
         manualEntry = entry
         sourceLabel.text = entry?.let { "Source: ${it.title} · ${it.path}:${it.line}" } ?: "Source: discovered entrypoints"
         sourceLabel.toolTipText = sourceLabel.text
+        controlsSection.hint = entry?.let { "Source: ${it.title}" }.orEmpty()
         discoveredButton.isEnabled = entry != null
         updateStatus()
     }
@@ -136,19 +139,23 @@ internal class ApplicationFlowsPanel(
             list.revalidate()
         }
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                add(JButton("Refresh").apply { toolTipText = "Rebuild the application graph"; addActionListener { refresh() } })
-                add(splitButton)
-                add(JLabel("Show flows:"))
-                add(entryChoice)
-                add(JLabel("Zoom:"))
-                add(zoomChoice)
+            add(CollapsibleControls(project, "insight.flows.controls").apply {
+                controlsSection = section("controls", "Controls",JPanel(BorderLayout(0, 4)).apply {
+                    add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                        add(JButton("Refresh").apply { toolTipText = "Rebuild the application graph"; addActionListener { refresh() } })
+                        add(splitButton)
+                        add(JLabel("Show flows:"))
+                        add(entryChoice)
+                        add(JLabel("Zoom:"))
+                        add(zoomChoice)
+                    }, BorderLayout.NORTH)
+                    add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 4)).apply {
+                        add(chooseEntryButton)
+                        add(discoveredButton)
+                        add(sourceLabel)
+                    }, BorderLayout.CENTER)
+                })
             }, BorderLayout.NORTH)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 4)).apply {
-                add(chooseEntryButton)
-                add(discoveredButton)
-                add(sourceLabel)
-            }, BorderLayout.CENTER)
             add(status, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(scroll, BorderLayout.CENTER)
