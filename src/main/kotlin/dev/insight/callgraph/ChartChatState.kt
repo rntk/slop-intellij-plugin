@@ -33,12 +33,7 @@ internal fun chartChatState(
         "calls" to calls.take(80).map { listOf(it.caller, it.callee) }, "calls_truncated" to (calls.size > 80),
         "scene" to sceneData(canvas), "story" to storyData(canvas),
         "regions_total" to regions.size,
-        "regions" to regions.drop(offset).take(8).map { mapOf(
-            "owner" to it.plan.evidence.owner, "title" to it.plan.title.take(160),
-            "expanded" to it.expanded, "inferred" to it.plan.inferred,
-            "members" to it.plan.evidence.sites.take(8).map { site -> site.callee },
-            "members_total" to it.plan.evidence.sites.size,
-        ) },
+        "regions" to regions.drop(offset).take(8).map(::chartRegionData),
         "evidence" to "Static in-project calls only. Compact regions may hide calls; no runtime order is guaranteed. Read source for branch conditions and exits.",
     ))
 }

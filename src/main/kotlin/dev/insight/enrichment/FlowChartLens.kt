@@ -69,7 +69,8 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
     /** The calls with [callSites] (and exits) read from source, and cards using [facts] (of the current build) where present, else the snapshot's. */
     fun source(callSites: Map<Int, List<SourceSite>> = emptyMap(), facts: Map<Int, SymbolFacts> = emptyMap(),
         regionPlans: Map<String, List<FlowRegionPlan>> = emptyMap()): FlowSource =
-        FlowSource(calls, callers, callSites, regionPlans, folded, { compactCard(it, facts[it]) }) { card(it, facts[it]) }
+        FlowSource(calls, callers, callSites, regionPlans, folded, { compactCard(it, facts[it]) },
+            effectsOf = { effectsOf(it)?.let { e -> e.own + e.reached }.orEmpty() }, isEntryPoint = ::isEntryPoint) { card(it, facts[it]) }
 
     /**
      * Functions to open when [start] is placed on a compact chart: the main path down to about [budget] items. Folded

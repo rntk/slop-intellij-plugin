@@ -4,6 +4,8 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.callgraph.ChartScene
 import dev.insight.callgraph.ChartStory
+import dev.insight.callgraph.ChartCallGroup
+import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.callgraph.ExternalDirection
 import dev.insight.callgraph.ExternalKind
 import dev.insight.callgraph.ExternalLink
@@ -33,6 +35,10 @@ interface ChartChatContext {
     suspend fun functionOutline(revision: Int, nodes: List<Int>): String = throw ToolInputException("Function outline unavailable")
     suspend fun flowCatalog(revision: Int, query: String? = null, offset: Int = 0): String = throw ToolInputException("Flow catalog unavailable")
     suspend fun apply(action: String, revision: Int, nodes: List<Int>): String
+    suspend fun groupCalls(revision: Int, owner: Int, blockKey: String, groups: List<ChartCallGroup>): String =
+        throw ToolInputException("Call grouping unavailable")
+    suspend fun setRegionExpansion(revision: Int, keys: List<String>, expanded: Boolean): String =
+        throw ToolInputException("Region expansion unavailable")
     suspend fun showScene(revision: Int, scene: ChartScene): String = throw ToolInputException("Scenes unavailable")
     suspend fun clearScene(revision: Int): String = throw ToolInputException("Scenes unavailable")
     suspend fun tracePath(revision: Int, from: Int, to: Int, maxPaths: Int, maxDepth: Int): String =
@@ -73,6 +79,19 @@ fun chartChatSystemPrompt(projectName: String): String = """
 
     Method:
     - Start from the big picture (entry points, main stages), then the path that answers the question, then details on request.
+    - Default to a small overview: aim for 3-7 meaningful action cards per stage instead of exposing every helper.
+      Read get_function_flow_outline for the visible owning functions, then use group_chart_calls to turn coherent
+      consecutive call occurrences from its groupable_blocks into named, collapsed high-level cards. Use a short action
+      title and a description explaining what is hidden and why it matters, with path:line for source-dependent claims.
+      Use the exact block_key and occurrence_id strings, never function IDs or step numbers in their place. Each group
+      needs at least two occurrences in one block; leave unrelated calls ungrouped. Groups start collapsed; the user can
+      click them to drill down. Keep entry points, consequential decisions, errors and effects understandable in the overview.
+    - For "show details" or a named stage, refresh get_chart_state and use set_chart_region_expansion on its region_key;
+      expand only the requested region, inspect its functions, and collapse it again when returning to the overview.
+      For larger stages spanning branches or functions, keep an existing coordinating function collapsed with a scene
+      note and use story beats for its details. Never merge across control boundaries to meet the card budget.
+      Scene groups are background boxes only; use group_chart_calls for actual collapsible nodes. Stage scenes first,
+      then group their calls; avoid adding every grouped member as a scene target, which reveals the details again.
     - For broad questions ("what does this project do", "where do I start", "give me an overview") call get_project_map
       first and present the big picture as a story whose first beat groups the main areas and their entry points (groups
       of kind module), then one beat per main flow or area. Say what the map marks as unavailable.
@@ -172,6 +191,31 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         tool("get_chart_state", "Read current chart selection, columns, visible steps, calls, compact regions, expansion state and the current scene (paged).", offset) {
             context.state(it.nonnegativeInt("offset", 0))
         },
+        tool("group_chart_calls", "Replace one source-backed block with named high-level groups, initially collapsed and clickable " +
+            "for details. First place the owner and read get_function_flow_outline.groupable_blocks. Groups use consecutive occurrence_id " +
+            "strings in source order, within one block, with no overlaps. Ungrouped calls remain visible; groups:[] removes grouping " +
+            "for this block. Enables compact mode. Titles/descriptions are your interpretation; include source citations in descriptions. " +
+            "Undoable; cleared on board reset or graph rebuild, not saved in tours.",
+            """"revision":{"type":"integer"},"owner_node_id":{"type":"integer"},
+                "block_key":{"type":"string","maxLength":${ChartCallGroup.MAX_KEY}},
+                "groups":{"type":"array","maxItems":${ChartCallGroup.MAX_GROUPS},"items":{"type":"object","properties":{
+                    "occurrence_ids":{"type":"array","minItems":2,"maxItems":${FlowRegionEvidence.MAX_REGION_CALLS},"items":{"type":"string","maxLength":40}},
+                    "title":{"type":"string","maxLength":${ChartCallGroup.MAX_TITLE}},
+                    "description":{"type":"string","maxLength":${ChartCallGroup.MAX_DESCRIPTION}}},
+                    "required":["occurrence_ids","title"],"additionalProperties":false}}""",
+            "\"revision\",\"owner_node_id\",\"block_key\",\"groups\"") { args ->
+            context.groupCalls(args.nonnegativeInt("revision"), args.nonnegativeInt("owner_node_id"),
+                groupingText(args, "block_key", ChartCallGroup.MAX_KEY), parseChartCallGroups(args))
+        },
+        tool("set_chart_region_expansion", "Show or hide the details of existing compact regions. Use exact region_key strings " +
+            "from get_chart_state or group_chart_calls and the latest revision. Idempotent; validates all targets before changing any.",
+            """"revision":{"type":"integer"},"region_keys":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","maxLength":${ChartCallGroup.MAX_KEY}}},"expanded":{"type":"boolean"}""",
+            "\"revision\",\"region_keys\",\"expanded\"") { args ->
+            val keys = groupingStrings(args, "region_keys", 1, 20, ChartCallGroup.MAX_KEY)
+            val expanded = args.get("expanded")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+                ?: throw ToolInputException("expanded must be a boolean")
+            context.setRegionExpansion(args.nonnegativeInt("revision"), keys.distinct(), expanded)
+        },
         tool("find_chart_nodes", "Find in-project functions by name, container, source path or semantic filters (role, effect, entry_point) and enriched summaries (paged).",
             """"query":{"type":"string","description":"Substring of function name, container, path or enriched summary."},"role":{"type":"string","enum":["core","validation","error-handling","logging","plumbing","utility"]},"effect":{"type":"string","enum":["storage","network","throws"]},"entry_point":{"type":"boolean"},$offset""", "") { args ->
             val query = if (args.has("query") && !args.get("query").isJsonNull) {
@@ -223,7 +267,7 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             """"revision":{"type":"integer"},"node_id":{"type":"integer"},$offset""", "\"revision\",\"node_id\"") {
             context.describe(it.nonnegativeInt("revision"), it.nonnegativeInt("node_id"), it.nonnegativeInt("offset", 0))
         },
-        tool("get_function_flow_outline", "Structured control-flow and call-site outline for 1 to 5 functions: ordered call occurrences with their enclosing conditions/loops, return/throw exits, dispatch implementations and compact subflows.",
+        tool("get_function_flow_outline", "Structured control-flow and call-site outline for 1 to 5 functions: ordered call occurrences with their enclosing conditions/loops, return/throw exits, dispatch implementations, compact subflows and groupable_blocks with exact block_key/occurrence_id strings for group_chart_calls.",
             """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":5}""", "\"revision\",\"node_ids\"") { args ->
             val revision = args.nonnegativeInt("revision")
             val array = args.get("node_ids")?.takeIf { it.isJsonArray }?.asJsonArray ?: throw ToolInputException("node_ids must be an array")
@@ -329,6 +373,37 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             if (nodes.isEmpty()) throw ToolInputException("node_ids must not be empty")
             context.apply(name, revision, nodes)
         }
+    }
+}
+
+private fun groupingText(args: JsonObject, name: String, max: Int): String {
+    val text = args.get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.trim()
+        ?: throw ToolInputException("$name must be a string")
+    if (text.isEmpty() || text.length > max) throw ToolInputException("$name must be 1-$max characters")
+    return text
+}
+
+private fun groupingStrings(args: JsonObject, name: String, min: Int, max: Int, maxLength: Int): List<String> {
+    val array = args.get(name)?.takeIf { it.isJsonArray }?.asJsonArray
+        ?: throw ToolInputException("$name must be an array of strings")
+    if (array.size() !in min..max) throw ToolInputException("$name needs $min-$max strings")
+    return array.map { value ->
+        val text = value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+            ?: throw ToolInputException("$name must contain strings")
+        if (text.isBlank() || text.length > maxLength) throw ToolInputException("$name strings must be 1-$maxLength characters")
+        text
+    }
+}
+
+internal fun parseChartCallGroups(args: JsonObject): List<ChartCallGroup> {
+    val groups = args.get("groups")?.takeIf { it.isJsonArray }?.asJsonArray
+        ?: throw ToolInputException("groups must be an array")
+    if (groups.size() > ChartCallGroup.MAX_GROUPS) throw ToolInputException("Use at most ${ChartCallGroup.MAX_GROUPS} groups per block")
+    return groups.mapIndexed { i, value ->
+        val group = value.takeIf { it.isJsonObject }?.asJsonObject ?: throw ToolInputException("groups[$i] must be an object")
+        ChartCallGroup(groupingStrings(group, "occurrence_ids", 2, FlowRegionEvidence.MAX_REGION_CALLS, 40),
+            groupingText(group, "title", ChartCallGroup.MAX_TITLE),
+            if (group.has("description")) groupingText(group, "description", ChartCallGroup.MAX_DESCRIPTION) else null)
     }
 }
 

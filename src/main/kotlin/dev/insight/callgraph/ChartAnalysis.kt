@@ -236,9 +236,13 @@ internal fun chartFunctionOutline(
     regions: List<FlowRegion> = emptyList(),
     semantics: ((Int) -> NodeSemanticInfo?)? = null,
     steps: Map<Int, Int> = emptyMap(),
+    groupingSource: FlowSource? = null,
 ): String {
     if (nodes.size !in 1..5) throw ToolInputException("Give 1 to 5 node IDs")
     nodes.forEach { validateChatNode(graph, currentRevision, revision, it) }
+    val groupSource = groupingSource ?: FlowSource(graph.edges.filter { edge ->
+        edge.kind == RelationKind.CALL && graph.nodes.getOrNull(edge.callee)?.let { it.inProject && it.kind == SymbolKind.FUNCTION } == true
+    }.groupBy { it.caller }, emptyMap(), callSites = callSites) { FlowCard("") }
     val functions = nodes.map { id ->
         val node = graph.nodes[id]
         val sites = callSites[id].orEmpty().sortedWith(sourceOrder)
@@ -264,15 +268,9 @@ internal fun chartFunctionOutline(
                 graph.nodes.getOrNull(it.callee)?.let { n -> n.inProject && n.kind == SymbolKind.FUNCTION } == true
         }.map { chartNodeData(graph.nodes[it.callee]) }
         val subflows = regions.filter { it.plan.evidence.owner == id }.map { r ->
-            mapOf(
-                "key" to r.plan.evidence.key,
-                "title" to r.plan.title,
-                "description" to r.plan.description,
-                "inferred" to r.plan.inferred,
-                "expanded" to r.expanded,
-                "callee_node_ids" to r.plan.evidence.sites.map { s -> s.callee },
-            )
+            chartRegionData(r) + mapOf("key" to r.plan.evidence.key, "callee_node_ids" to r.plan.evidence.sites.map { it.callee })
         }
+        val groupable = groupSource.regionCandidates(id)
         val base = chartNodeData(node) + mapOf(
             "step_number" to steps[id],
             "visible" to (id in steps),
@@ -283,6 +281,9 @@ internal fun chartFunctionOutline(
             "exits_total" to exits.size,
             "dispatch_implementations" to implementations.take(15),
             "subflows" to subflows,
+            "groupable_blocks" to groupable.take(8).map(::groupingBlockData),
+            "groupable_blocks_total" to groupable.size,
+            "groupable_blocks_truncated" to (groupable.size > 8),
         )
         val info = semantics?.invoke(id)
         if (info != null) {

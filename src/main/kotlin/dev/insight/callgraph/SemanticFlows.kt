@@ -17,7 +17,18 @@ data class FlowRegionPlan(
 )
 
 /** A collapsed region does not build or claim its child functions until expanded. */
-data class FlowRegion(val plan: FlowRegionPlan, val expanded: Boolean, val items: List<FlowItem> = emptyList()) : FlowItem
+data class FlowRegion(val plan: FlowRegionPlan, val expanded: Boolean, val items: List<FlowItem> = emptyList(),
+    val effects: Set<String> = emptySet(), val containsEntryPoint: Boolean = false) : FlowItem
+
+/** Identifies an occurrence, including repeated calls to the same function. */
+val CallSite.occurrenceId: String get() = "$offset/$callee"
+
+/** Uses the same visible calls and folding rules as the compact chart builder. */
+fun FlowSource.regionCandidates(owner: Int): List<FlowRegionEvidence> {
+    val callees = calls[owner].orEmpty().filter { it.kind != RelationKind.INHERITS && it.callee != owner }
+        .mapTo(hashSetOf()) { it.callee }
+    return flowRegionCandidates(owner, callSites[owner].orEmpty().filter { it !is CallSite || it.callee in callees }, folded)
+}
 
 /**
  * Regions never straddle a decision, loop, exit or change of control frames. This only groups call occurrences;
@@ -60,7 +71,9 @@ internal fun FlowRegion.presentation() = FlowStep(plan.evidence.owner, 0, FlowCa
     title = (if (expanded) "▾ " else "▸ ") + plan.title,
     meta = "${plan.evidence.sites.size} call occurrences · " + if (plan.inferred) "LLM interpretation" else "structural group",
     description = plan.description,
-    details = if (expanded) "Click to collapse" else "Click to inspect source calls",
+    details = listOfNotNull(effects.takeIf { it.isNotEmpty() }?.sorted()?.joinToString(", ", postfix = " via grouped calls"),
+        "Contains entry point".takeIf { containsEntryPoint },
+        if (expanded) "Click to collapse" else "Click to inspect source calls").joinToString(" · "),
 ))
 
 /**

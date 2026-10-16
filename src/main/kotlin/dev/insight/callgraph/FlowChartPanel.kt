@@ -188,7 +188,8 @@ internal class FlowChartPanel(
             } else emptyMap()
             val combinedSites = knownSites + newSites
             return withContext(Dispatchers.Default) {
-                chartFunctionOutline(built.graph, current, revision, nodes, combinedSites, regions, semantics(lens), steps)
+                chartFunctionOutline(built.graph, current, revision, nodes, combinedSites, regions, semantics(lens), steps,
+                    groupingSource = lens?.source(combinedSites))
             }
         }
 
@@ -202,6 +203,17 @@ internal class FlowChartPanel(
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
             applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes, restorePoint::checkpoint)
         }
+
+        override suspend fun groupCalls(revision: Int, owner: Int, blockKey: String, groups: List<ChartCallGroup>): String =
+            withContext(Dispatchers.EDT) {
+                groupChartCalls(graph(), flowCanvas, chatRevision, revision, owner, blockKey, groups, restorePoint::checkpoint)
+            }
+
+        override suspend fun setRegionExpansion(revision: Int, keys: List<String>, expanded: Boolean): String =
+            withContext(Dispatchers.EDT) {
+                graph()
+                setChartRegionExpansion(flowCanvas, chatRevision, revision, keys, expanded, restorePoint::checkpoint)
+            }
 
         override suspend fun describe(revision: Int, node: Int, offset: Int): String = withContext(Dispatchers.EDT) {
             chartNodeDetails(graph(), chatRevision, revision, node, offset)
@@ -687,7 +699,8 @@ internal class FlowChartPanel(
         removeButton.isEnabled = flowCanvas.board.starts.any { it.node == node }
         clearButton.isEnabled = flowCanvas.board.starts.isNotEmpty()
         collapseButton.isEnabled = flowCanvas.board.openRegions.isNotEmpty()
-        summarizeButton.isEnabled = summaryJob?.isActive == true || (compact.isSelected && candidates().isNotEmpty())
+        compact.isSelected = flowCanvas.board.compact
+        summarizeButton.isEnabled = summaryJob?.isActive == true || (flowCanvas.board.compact && candidates().isNotEmpty())
         summarizeButton.text = if (summaryJob?.isActive == true) "Stop summary" else "Summarize subflows"
         status.text = if (result == null) "Building application graph…"
             else flowCanvas.chart?.let { "${it.lanes.size} columns · ${it.steps.size} function steps · ${it.regions.size} subflows · static in-project calls" }

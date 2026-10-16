@@ -8,6 +8,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.callgraph.*
 import java.awt.Container
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JMenuItem
 import javax.swing.JTabbedPane
 import dev.insight.chat.ChatPanel
@@ -112,6 +113,50 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             search.text = ""
             assertNull(first.flowCanvas.searchMatches)
         } finally { first.dispose(); second.dispose() }
+    }
+
+    fun `test compact controls follow chat grouping and undo`() {
+        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        try {
+            val built = result()
+            panel.showResult(built)
+            val loop = ControlFrame(ControlKind.LOOP, 30, 0, "items")
+            val sites = listOf(CallSite(1, 10), CallSite(2, 20),
+                CallSite(1, 40, listOf(loop)), CallSite(2, 50, listOf(loop)))
+            panel.flowCanvas.show(FlowSource(built.graph.edges.groupBy { it.caller }, emptyMap(),
+                mapOf(0 to sites)) { FlowCard(built.graph.nodes[it].name) })
+            panel.flowCanvas.add(FlowStart(0))
+            val compact = controls(panel).filterIsInstance<JCheckBox>().single { it.text == "Compact subflows" }
+            val summarize = button(panel, "Summarize subflows")
+            assertTrue(compact.isSelected)
+            assertTrue(summarize.isEnabled)
+            compact.doClick()
+            assertFalse(panel.flowCanvas.board.compact)
+            assertFalse(summarize.isEnabled)
+
+            val restore = ChartRestorePoint(panel.flowCanvas)
+            fun group() {
+                restore.begin()
+                groupChartCalls(built.graph, panel.flowCanvas, 1, 1, 0, FlowRegionEvidence(0, sites.take(2)).key,
+                    listOf(ChartCallGroup(sites.take(2).map { it.occurrenceId }, "Prepare request")), restore::checkpoint)
+            }
+            group()
+            assertTrue(panel.flowCanvas.board.compact)
+            assertTrue(compact.isSelected)
+            assertTrue(panel.flowCanvas.chart!!.regions.any { !it.plan.inferred })
+            assertTrue(summarize.isEnabled)
+
+            assertTrue(restore.restore())
+            assertFalse(panel.flowCanvas.board.compact)
+            assertFalse(compact.isSelected)
+            assertFalse(summarize.isEnabled)
+
+            group()
+            compact.doClick()
+            assertFalse(compact.isSelected)
+            assertFalse(panel.flowCanvas.board.compact)
+            assertFalse(summarize.isEnabled)
+        } finally { panel.dispose() }
     }
 
     fun `test editor additions wait for a graph rebuild and land in the chart`() {

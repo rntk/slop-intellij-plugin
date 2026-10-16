@@ -61,7 +61,12 @@ class ChatPanel(
     val input = JBTextArea(3, 24).apply {
         lineWrap = true
         wrapStyleWord = true
-        emptyText.text = "Ask a question…"
+        emptyText.text = "Ask a question… (@ to insert a file path)"
+    }
+    private val filePicker = ChatFilePicker(project, input)
+    private val attachFile = JButton("Add file…").apply {
+        toolTipText = "Find a project file and insert its relative path (or type @)"
+        addActionListener { filePicker.open() }
     }
     private val send = JButton("Send")
     private val stop = JButton("Stop")
@@ -94,7 +99,11 @@ class ChatPanel(
         add(scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, 8)).apply {
             add(status, BorderLayout.NORTH)
-            add(JBScrollPane(input), BorderLayout.CENTER)
+            add(JPanel(BorderLayout(0, 4)).apply {
+                add(filePicker, BorderLayout.NORTH)
+                add(JBScrollPane(input), BorderLayout.CENTER)
+                add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { add(attachFile) }, BorderLayout.SOUTH)
+            }, BorderLayout.CENTER)
             add(JPanel(GridLayout(1, 2, JBUI.scale(8), 0)).apply {
                 add(stop)
                 add(send)
@@ -116,6 +125,7 @@ class ChatPanel(
     private fun submit() {
         val text = input.text
         if (text.isBlank() || service.busy) return
+        filePicker.close()
         input.text = ""
         service.send(text)
     }
@@ -219,6 +229,7 @@ class ChatPanel(
     private var disposed = false
     override fun dispose() {
         disposed = true
+        filePicker.dispose()
         hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
         subscription.dispose()
     }

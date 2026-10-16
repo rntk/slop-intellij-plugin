@@ -389,6 +389,45 @@ class FlowChartCanvas(
     fun toggleRegion(key: String) = update(board.copy(
         openRegions = if (key in board.openRegions) board.openRegions - key else board.openRegions + key))
 
+    internal fun groupingBlocks(owner: Int): List<FlowRegionEvidence> = source?.regionCandidates(owner).orEmpty()
+
+    /** Applies an already validated replacement for one block; other blocks retain their interpretations. */
+    internal fun groupCalls(block: FlowRegionEvidence, plans: List<FlowRegionPlan>) {
+        // Enabling compact mode must keep the owning function reachable on the board.
+        fun pathToOwner(item: FlowItem): Set<Int>? {
+            if (item is FlowStep && item.node == block.owner) return setOf(item.node)
+            val path = ((item as? FlowStep)?.upstream.orEmpty() + children(item)).firstNotNullOfOrNull(::pathToOwner)
+                ?: return null
+            return if (item is FlowStep) path + item.node else path
+        }
+        val path = if (board.compact) emptySet() else chart?.lanes?.firstNotNullOfOrNull { pathToOwner(it.root) }.orEmpty()
+        val oldKeys = chart?.regions.orEmpty().filter { region ->
+            region.plan.evidence.owner == block.owner && region.plan.evidence.sites.any { it in block.sites }
+        }.map { it.plan.evidence.key }.toSet() + plans.map { it.evidence.key }
+        var next = board.copy(compact = true, openCalls = board.openCalls + block.owner,
+            openRegions = board.openRegions - oldKeys,
+            regionOverrides = board.regionOverrides + (block.key to plans))
+        val source = source
+        if (!board.compact && source != null) {
+            while (true) {
+                val preview = buildFlowChart(next, source)
+                if (preview.step(block.owner) != null) break
+                val ancestors = preview.regions.filter { !it.expanded && it.plan.evidence.sites.any { site -> site.callee in path } }
+                    .map { it.plan.evidence.key }
+                if (ancestors.isEmpty()) {
+                    // A helper folded by compact mode can still be explored as an explicit column root.
+                    next = next.copy(starts = next.starts + FlowStart(block.owner))
+                    break
+                }
+                next = next.copy(openRegions = next.openRegions + ancestors)
+            }
+        }
+        update(next)
+    }
+
+    internal fun setRegionsExpanded(keys: Set<String>, expanded: Boolean) = update(board.copy(
+        openRegions = if (expanded) board.openRegions + keys else board.openRegions - keys))
+
     fun selectRegion(key: String): Boolean {
         val box = geometry?.shapes?.filterIsInstance<FlowRegionBox>()?.firstOrNull { it.region.plan.evidence.key == key }
             ?: return false
@@ -769,7 +808,7 @@ class FlowChartCanvas(
         is FlowDot -> shape.step.node in scene.roles
         is FlowRefBox -> shape.ref.node in scene.roles
         is FlowBanner -> true
-        is FlowRegionBox -> shape.region.plan.evidence.sites.any { it.callee in scene.roles }
+        is FlowRegionBox -> shape.region.plan.evidence.owner in scene.roles || shape.region.plan.evidence.sites.any { it.callee in scene.roles }
         else -> geometry.chatTargets[shape]?.owner?.let { it in scene.roles } == true
     }
 

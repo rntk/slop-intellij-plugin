@@ -2,6 +2,7 @@ package dev.insight.chat
 
 import com.google.gson.JsonParser
 import dev.insight.callgraph.ChartScene
+import dev.insight.callgraph.ChartCallGroup
 import dev.insight.callgraph.ExternalDirection
 import dev.insight.callgraph.ExternalKind
 import dev.insight.callgraph.ExternalLink
@@ -44,6 +45,16 @@ class ChartToolsTest {
         val outlines = mutableListOf<Pair<Int, List<Int>>>()
         val catalogs = mutableListOf<Triple<Int, String?, Int>>()
         val findNodesCalls = mutableListOf<List<Any?>>()
+        val groupings = mutableListOf<List<ChartCallGroup>>()
+        val regionExpansions = mutableListOf<Pair<List<String>, Boolean>>()
+        override suspend fun groupCalls(revision: Int, owner: Int, blockKey: String, groups: List<ChartCallGroup>): String {
+            groupings += groups
+            return "grouped $revision $owner $blockKey"
+        }
+        override suspend fun setRegionExpansion(revision: Int, keys: List<String>, expanded: Boolean): String {
+            regionExpansions += keys to expanded
+            return "expanded $revision"
+        }
         override suspend fun projectMap(offset: Int) = "map offset=$offset"
         override suspend fun listTours() = "tours"
         override suspend fun playTour(name: String): String { played += name; return "played" }
@@ -92,7 +103,8 @@ class ChartToolsTest {
         assertEquals(setOf("get_chart_state", "find_chart_nodes", "get_chart_node_details", "get_function_flow_outline",
             "get_flow_catalog", "show_scene", "clear_scene", "trace_path", "reachability", "suggest_externals",
             "present_story", "suggest_followups", "get_project_map", "list_tours", "play_tour", "add_chart_nodes",
-            "expand_chart_calls", "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers"), tools.keys)
+            "expand_chart_calls", "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers",
+            "group_chart_calls", "set_chart_region_expansion"), tools.keys)
         assertEquals("revision=1 offset=20", tools.getValue("get_chart_state").call(JsonParser.parseString("""{"offset":20}""").asJsonObject))
         assertEquals("save offset=0", tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"query":"save"}""").asJsonObject))
         tools.getValue("trace_path").call(JsonParser.parseString("""{"revision":1,"from":2,"to":3}""").asJsonObject)
@@ -144,10 +156,39 @@ class ChartToolsTest {
     @Test fun `system prompt is a project-neutral guide with evidence rules`() {
         val prompt = chartChatSystemPrompt("demo")
         for (text in listOf("show_scene", "trace_path", "reachability", "badges", "path:line", "untrusted", "do not write",
-            "present_story", "suggest_followups", "[[node:ID|Name]]", "only markup", "groups", "externals", "suggest_externals", "snippets", "get_project_map", "list_tours", "play_tour", "save"))
+            "present_story", "suggest_followups", "[[node:ID|Name]]", "only markup", "groups", "externals", "suggest_externals", "snippets", "get_project_map", "list_tours", "play_tour", "save",
+            "group_chart_calls", "groupable_blocks", "set_chart_region_expansion", "drill down", "path:line"))
             assertTrue(text, prompt.contains(text))
         for (text in listOf("ChatSession.send", "ToolChatRunner", "highlight_chart_nodes", "set_chart_note"))
             assertFalse(text, prompt.contains(text))
+    }
+
+    @Test fun `group and drill tools validate entire requests before dispatch`() = runBlocking {
+        val context = Context()
+        val tools = chartTools(context).associateBy { it.definition.name }
+        val group = tools.getValue("group_chart_calls")
+        val request = """{"revision":1,"owner_node_id":0,"block_key":"0:10/1;20/2","groups":[{"title":" Store data ","description":"Writes rows. Repo.kt:12","occurrence_ids":["10/1","20/2"]}]}"""
+        for (json in listOf(request.replace("\"revision\":1,", ""), request.replace("\"title\":\" Store data \"", "\"title\":\" \""),
+            request.replace("\"10/1\",\"20/2\"", "\"10/1\""), request.replace("\"10/1\"", "1"),
+            request.replace("Store data", "x".repeat(71)), request.replace("Writes rows. Repo.kt:12", "x".repeat(301)))) {
+            try { group.call(JsonParser.parseString(json).asJsonObject); fail(json) }
+            catch (_: ToolInputException) { }
+        }
+        assertTrue(context.groupings.isEmpty())
+        assertEquals("grouped 1 0 0:10/1;20/2", group.call(JsonParser.parseString(request).asJsonObject))
+        assertEquals(listOf(ChartCallGroup(listOf("10/1", "20/2"), "Store data", "Writes rows. Repo.kt:12")), context.groupings.single())
+        group.call(JsonParser.parseString("""{"revision":1,"owner_node_id":0,"block_key":"b","groups":[]}""").asJsonObject)
+        assertTrue(context.groupings.last().isEmpty())
+        val expand = tools.getValue("set_chart_region_expansion")
+        for (json in listOf("""{"revision":1,"region_keys":[],"expanded":true}""",
+            """{"revision":1,"region_keys":[3],"expanded":true}""",
+            """{"revision":1,"region_keys":["b"],"expanded":"yes"}""",
+            """{"revision":1,"region_keys":["b"]}""")) {
+            try { expand.call(JsonParser.parseString(json).asJsonObject); fail(json) } catch (_: ToolInputException) { }
+        }
+        assertTrue(context.regionExpansions.isEmpty())
+        expand.call(JsonParser.parseString("""{"revision":1,"region_keys":["b","b"],"expanded":true}""").asJsonObject)
+        assertEquals(listOf(listOf("b") to true), context.regionExpansions)
     }
 
     @Test fun `fresh chart state is supplied on every turn without altering saved history`() = runBlocking {

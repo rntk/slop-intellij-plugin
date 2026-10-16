@@ -74,6 +74,8 @@ data class FlowBoard(
     val openCallers: Set<Int> = emptySet(),
     val compact: Boolean = false,
     val openRegions: Set<String> = emptySet(),
+    /** Chat-authored interpretations, keyed by the original bounded block; snapshot-specific and undoable. */
+    val regionOverrides: Map<String, List<FlowRegionPlan>> = emptyMap(),
 ) {
     /** The board with ids moved by [id] (for example into a rebuilt graph); functions it maps to null are dropped. */
     fun map(id: (Int) -> Int?): FlowBoard = FlowBoard(
@@ -106,6 +108,9 @@ data class FlowSource(
     val folded: Set<Int> = emptySet(),
     /** Card of a function on compact boards, such as its summary; [card] when null. */
     val compactCard: ((Int) -> FlowCard)? = null,
+    /** Lightweight facts for collapsed groups; do not build child cards just to show their effects. */
+    val effectsOf: (Int) -> Set<String> = { emptySet() },
+    val isEntryPoint: (Int) -> Boolean = { false },
     val card: (Int) -> FlowCard,
 )
 
@@ -262,7 +267,7 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
                 for (chunk in run.chunked(FlowRegionEvidence.MAX_REGION_CALLS)) {
                     if (chunk.size == 1) { result += item(chunk.single().callee); continue }
                     val candidate = FlowRegionEvidence(owner, chunk)
-                    val proposals = source.regionPlans[candidate.key]
+                    val proposals = board.regionOverrides[candidate.key] ?: source.regionPlans[candidate.key]
                     val plans = if (proposals == null) listOf(FlowRegionPlan(candidate,
                         "Calls in ${codeCardOf(owner).title.substringAfterLast('.')}", "Expand to inspect ${chunk.size} call occurrences."))
                         else validateRegionPlans(candidate, proposals)
@@ -271,7 +276,9 @@ private class FlowChartBuilder(private val board: FlowBoard, private val source:
                         val plan = plans.firstOrNull { it.evidence.sites.first() == chunk[at] }
                         if (plan == null) { result += item(chunk[at++].callee); continue }
                         val expanded = plan.evidence.key in board.openRegions
-                        result += FlowRegion(plan, expanded, if (expanded) plan.evidence.sites.map { item(it.callee) } else emptyList())
+                        result += FlowRegion(plan, expanded, if (expanded) plan.evidence.sites.map { item(it.callee) } else emptyList(),
+                            effects = plan.evidence.sites.flatMapTo(sortedSetOf()) { source.effectsOf(it.callee) },
+                            containsEntryPoint = plan.evidence.sites.any { source.isEntryPoint(it.callee) })
                         at += plan.evidence.sites.size
                     }
                 }
