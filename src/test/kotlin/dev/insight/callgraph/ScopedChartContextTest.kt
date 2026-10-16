@@ -40,4 +40,28 @@ class ScopedChartContextTest : BasePlatformTestCase() {
         assertEquals(listOf("load(1)", "load(2)"), json["call_occurrences"].asJsonArray.map { it.asJsonObject["text"].asString })
         assertEquals(1, json["static_calls"].asJsonArray.size())
     }
+
+    fun `test snippets are read from the declaration of the function and rejected outside it`() {
+        val file = myFixture.configureByText("Orders.java", "class Orders {\n  int count;\n  void save(int id) {\n" +
+            "    if (id > 0) {\n\t  db.insert(id);\n    }\n  }\n}\n") as PsiJavaFile
+        val method = file.classes.single().methods.single()
+        val pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer<PsiElement>(method)
+        val node = CallGraphNode(0, "save", "Orders", "Orders.java:3", 0, true, filePath = file.virtualFile.path)
+        val result = CallGraphResult(CallGraph(listOf(node), emptySet(), false), listOf(pointer))
+        val declaration = declarationSource(project, result, 0)!!
+        assertEquals(3, declaration.firstLine)
+        assertEquals(7, declaration.lastLine)
+        val scene = ChartScene(nodes = listOf(SceneNode(0, SceneRole.FOCUS)), snippets = listOf(SceneSnippet(0, 4, 5, "the write")))
+        val snippet = captureSnippets(scene) { declarationSource(project, result, it) }.snippets.single()
+        assertEquals(listOf("    if (id > 0) {", "\t  db.insert(id);"), snippet.lines)
+        assertTrue(snippet.path!!.endsWith("Orders.java"))
+        assertEquals(64, snippet.hash!!.length)
+        for (range in listOf(2 to 3, 7 to 8)) {
+            val error = org.junit.Assert.assertThrows(dev.insight.chat.ToolInputException::class.java) {
+                captureSnippets(scene.copy(snippets = listOf(SceneSnippet(0, range.first, range.second)))) { declarationSource(project, result, it) }
+            }
+            assertTrue(error.message!!, error.message!!.contains(":3-7"))
+        }
+        assertNull(declarationSource(project, CallGraphResult(result.graph, listOf(null)), 0))
+    }
 }

@@ -19,23 +19,20 @@ internal fun chartChatState(
         "columns_total" to board.starts.size,
         "columns" to board.starts.drop(offset).take(8).map { mapOf("node_id" to it.node, "title" to it.title?.take(160)) },
         "steps_total" to steps.size, "offset" to offset,
-        "next_offset" to (offset + 8).takeIf { it < maxOf(steps.size, regions.size, board.starts.size, canvas.chatLinks.size) },
+        "next_offset" to (offset + 8).takeIf { it < maxOf(steps.size, regions.size, board.starts.size) },
         "steps" to page.map { step -> chartNodeData(graph.nodes[step.node]) + mapOf(
             "step_number" to step.number, "label" to step.card.title.take(160),
             "description" to step.card.description?.take(160), "effects_and_details" to step.card.details?.take(120),
             "calls_open" to (step.node in board.openCalls), "callers_open" to (step.node in board.openCallers),
-            "highlighted" to (step.node in canvas.chatHighlights),
-            "assistant_note" to canvas.chatNotes[step.node],
+            "scene_role" to canvas.scene.roles[step.node]?.role?.name?.lowercase(),
+            "badge" to canvas.scene.roles[step.node]?.badge,
+            "assistant_note" to canvas.scene.noteOf[step.node],
+            "entry_point" to step.card.entryPoint,
             "calls_count" to step.calls, "callers_count" to step.callers,
         ) },
         "calls" to calls.take(80).map { listOf(it.caller, it.callee) }, "calls_truncated" to (calls.size > 80),
+        "scene" to sceneData(canvas), "story" to storyData(canvas),
         "regions_total" to regions.size,
-        "annotation_links_total" to canvas.chatLinks.size,
-        "annotation_links" to canvas.chatLinks.entries.drop(offset).take(8).map { (ends, text) ->
-            mapOf("from" to ends.first, "to" to ends.second, "text" to text,
-                "visible" to (canvas.geometry?.cards?.let { ends.first in it && ends.second in it } == true),
-                "evidence" to "assistant explanation, not a static call")
-        },
         "regions" to regions.drop(offset).take(8).map { mapOf(
             "owner" to it.plan.evidence.owner, "title" to it.plan.title.take(160),
             "expanded" to it.expanded, "inferred" to it.plan.inferred,
@@ -55,8 +52,11 @@ internal fun chartNodeData(node: CallGraphNode): Map<String, Any?> = mapOf(
 /** Validate every target before applying any change; callers run on the EDT. */
 internal fun applyChartChatAction(
     graph: CallGraph, canvas: FlowChartCanvas, currentRevision: Int, action: String, revision: Int, nodes: List<Int>,
+    beforeChange: () -> Unit = {},
 ): String {
     if (revision != currentRevision) throw ToolInputException("Stale graph revision; get_chart_state and resolve node IDs again")
+    if (action !in setOf("add_chart_nodes", "expand_chart_calls", "expand_chart_callers"))
+        throw ToolInputException("Unknown chart action: $action")
     nodes.forEach { id ->
         val node = graph.nodes.getOrNull(id)
         if (node == null || !node.inProject || node.kind != SymbolKind.FUNCTION)
@@ -64,18 +64,13 @@ internal fun applyChartChatAction(
         if (action != "add_chart_nodes" && canvas.chart?.step(id) == null)
             throw ToolInputException("Function $id is not visible; add it to the chart first")
     }
+    beforeChange()
     val before = canvas.chart?.steps.orEmpty().map { it.node }.toSet()
     var placements: List<Map<String, Any?>>? = null
     when (action) {
-        "clear_chart_annotations" -> canvas.clearChatAnnotations()
         "add_chart_nodes" -> placements = addConnected(graph, canvas, nodes)
-        "highlight_chart_nodes" -> {
-            canvas.highlightChat(nodes.toSet())
-            nodes.firstOrNull()?.let(canvas::selectNode)
-        }
         "expand_chart_calls" -> canvas.openCalls(nodes.toSet())
         "expand_chart_callers" -> nodes.filter { it !in canvas.board.openCallers }.forEach(canvas::toggleCallers)
-        else -> throw ToolInputException("Unknown chart action: $action")
     }
     return Gson().toJson(mapOf("ok" to true, "revision" to currentRevision, "action" to action, "node_ids" to nodes,
         "visible_steps" to canvas.chart?.steps?.size,
@@ -98,23 +93,10 @@ internal fun chartNodeDetails(graph: CallGraph, currentRevision: Int, revision: 
         }))
 }
 
-private fun validateChatNode(graph: CallGraph, currentRevision: Int, revision: Int, node: Int) {
+internal fun validateChatNode(graph: CallGraph, currentRevision: Int, revision: Int, node: Int) {
     if (revision != currentRevision) throw ToolInputException("Stale graph revision; refresh and resolve IDs again")
     if (graph.nodes.getOrNull(node)?.let { it.inProject && it.kind == SymbolKind.FUNCTION } != true)
         throw ToolInputException("Unknown in-project function ID: $node")
-}
-
-internal fun applyChartAnnotation(graph: CallGraph, canvas: FlowChartCanvas, currentRevision: Int,
-    revision: Int, node: Int, target: Int?, text: String): String {
-    listOfNotNull(node, target).forEach {
-        validateChatNode(graph, currentRevision, revision, it)
-        if (text.isNotEmpty() && canvas.chart?.step(it) == null) throw ToolInputException("Function $it is not visible; add it first")
-    }
-    if (text.length > 400) throw ToolInputException("Use at most 400 characters")
-    if (node == target) throw ToolInputException("An explanatory arrow needs two different functions")
-    canvas.annotateChat(node, target, text)
-    return Gson().toJson(mapOf("ok" to true, "revision" to revision, "node_id" to node, "target_id" to target,
-        "text" to text, "evidence" to "assistant explanation, not a static call"))
 }
 
 /**
@@ -122,7 +104,7 @@ internal fun applyChartAnnotation(graph: CallGraph, canvas: FlowChartCanvas, cur
  * existing steps; only functions with no visible caller or callee become columns. Functions of the batch can connect
  * to each other: the next column is one no other pending function calls, and the rest are then tried against it.
  */
-private fun addConnected(graph: CallGraph, canvas: FlowChartCanvas, nodes: List<Int>): List<Map<String, Any?>> {
+internal fun addConnected(graph: CallGraph, canvas: FlowChartCanvas, nodes: List<Int>): List<Map<String, Any?>> {
     val placements = linkedMapOf<Int, Map<String, Any?>>()
     nodes.filter { canvas.chart?.step(it) != null }.forEach { placements[it] = mapOf("node_id" to it, "placement" to "already_visible") }
     var pending = nodes.filter { it !in placements }

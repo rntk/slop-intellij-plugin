@@ -33,8 +33,22 @@ class FlowChartLens(snapshot: EnrichmentSnapshot?, private val graph: CallGraph,
     val summaries: Map<Int, FunctionSummary> = lens?.summaries.orEmpty()
     private val effects: Map<Int, Effects> = lens?.effects.orEmpty()
 
-    private fun isEntryPoint(id: Int) = entryPoints.nodes[id]?.entryPoint == true ||
+    /** Named flows of the enrichment, remapped to the current build (what the flow selector offers); null without a snapshot. */
+    val flows: List<Flow>? get() = lens?.flows
+
+    /** Discovered entry points (matched to graph nodes) or enrichment entry-point judgments. */
+    fun isEntryPoint(id: Int) = entryPoints.nodes[id]?.entryPoint == true ||
         (lens?.nodes?.get(id)?.entryPoint ?: 0.0) >= EnrichmentLens.ENTRY_POINT
+
+    /** Whether any entry point information is available: discovered entry points or an enrichment snapshot. */
+    val knowsEntryPoints: Boolean get() = entryPoints.nodes.values.any { it.entryPoint } || lens != null
+
+    /** Rule effects of [id], or null without an enrichment snapshot; see [Effects]. */
+    fun effectsOf(id: Int): Effects? = if (lens == null) null else effects[id] ?: Effects(emptySet(), emptySet())
+
+    /** The snapshot's imports that give [id] its own storage or network effect, by effect. */
+    fun effectImports(id: Int): Map<String, List<String>> =
+        lens?.facts?.get(id)?.let(HeuristicRules::concernImports).orEmpty().filterKeys { it in Effects.VISIBLE }
 
     /**
      * Helpers the compact chart folds into their callers: summarized as logging or plumbing, and reaching no storage or

@@ -47,3 +47,18 @@ internal fun scopedChartContext(project: Project, result: CallGraphResult, revis
         "evidence" to "Captured source and static graph evidence. Visual connectors do not prove direct calls or runtime order. Source and occurrence offsets describe the captured version; read_file supplies current code.",
     ))
 }
+
+/** The current declaration of function [id] with its file lines; null without valid source. Callers hold a read action. */
+internal fun declarationSource(project: Project, result: CallGraphResult, id: Int): DeclarationSource? {
+    val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: return null
+    val file = element.containingFile ?: return null
+    val document = PsiDocumentManager.getInstance(project).getDocument(file) ?: return null
+    val range = element.textRange ?: return null
+    val first = document.getLineNumber(range.startOffset)
+    val last = document.getLineNumber((range.endOffset - 1).coerceAtLeast(range.startOffset))
+    val path = (result.graph.nodes.getOrNull(id)?.filePath ?: file.virtualFile?.path ?: file.name)
+        .let { path -> project.basePath?.let { path.removePrefix("$it/") } ?: path }
+    return DeclarationSource(path, first + 1, (first..last).map { line ->
+        document.getText(com.intellij.openapi.util.TextRange(document.getLineStartOffset(line), document.getLineEndOffset(line)))
+    })
+}

@@ -143,14 +143,18 @@ object HeuristicRules {
         if (annotations.any { it in routeAnnotations } || facts.annotations.any(routeDecorator::matches) ||
             goHandler.containsMatchIn(facts.signature)) add("entry:route")
         if (isListener(facts, name, annotations)) add("entry:listener")
+        concernImports(facts).keys.forEach { add("concern:$it") }
+    }
+
+    /** The imports that give [facts] each concern: imported by its file and mentioned by its code. */
+    fun concernImports(facts: SymbolFacts): Map<String, List<String>> {
         val text = facts.signature + "\n" + facts.code
         val imports = facts.imports.flatMap(::normalize)
-        importConcerns.forEach { (concern, prefixes) ->
-            val used = imports.any { import ->
+        return importConcerns.mapValues { (_, prefixes) ->
+            imports.filter { import ->
                 prefixes.any { import == it || import.startsWith("$it.") || import.startsWith("$it/") } && mentions(text, import)
-            }
-            if (used) add("concern:$concern")
-        }
+            }.distinct()
+        }.filterValues { it.isNotEmpty() }
     }
 
     /** Graph names of Java and Kotlin functions carry their parameter types, such as `main(String[])`. */

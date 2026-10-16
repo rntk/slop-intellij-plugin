@@ -281,4 +281,89 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         assertTrue(canvas.board.compact)
         paint(canvas)
     }
+
+    fun `test scenes render typed links badges dimming and caption and explain links in tooltips`() {
+        val canvas = canvas()
+        canvas.toggleCallers(0)
+        val height = canvas.geometry!!.cards.getValue(1).bounds.height
+        canvas.showScene(ChartScene("How step 2 is reached", listOf(SceneNode(0, SceneRole.SOURCE, "1"), SceneNode(1, SceneRole.FOCUS, "2"),
+            SceneNode(2, SceneRole.SINK, "3"), SceneNode(5, SceneRole.PROBLEM)),
+            SceneLinkKind.entries.mapIndexed { i, kind -> SceneLink(listOf(0, 1, 5, 0, 1)[i], listOf(1, 2, 0, 2, 4)[i], kind, "label $i") },
+            listOf(SceneNote(1, "Reads the request, file.kt:1")), dimOthers = true))
+        assertTrue(canvas.geometry!!.cards.getValue(1).bounds.height > height)
+        canvas.size = canvas.preferredSize
+        paint(canvas)
+        canvas.zoom = 0.5
+        paint(canvas)
+        val point = centre(canvas.geometry!!.cards.getValue(1).bounds).let { Point((it.x * 0.5).toInt(), (it.y * 0.5).toInt()) }
+        val tooltip = canvas.getToolTipText(MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0, 0, point.x, point.y, 0, false))!!
+        assertTrue(tooltip, tooltip.contains("Static call") && tooltip.contains("data link (explanation)") && tooltip.contains("file.kt:1"))
+        val saved = canvas.saveState()
+        canvas.clear()
+        assertTrue(canvas.scene.isEmpty)
+        canvas.restoreState(saved)
+        assertEquals(saved.scene, canvas.scene)
+        assertEquals(saved.board, canvas.board)
+    }
+
+    fun `test group boxes cluster per column and around contiguous members and never take clicks`() {
+        val canvas = canvas()
+        canvas.add(FlowStart(5))
+        val geometry = canvas.geometry!!
+        val cards = geometry.cards
+        assertEquals(setOf(0, 1, 4, 5, 7, 8), cards.keys)
+        assertEquals(2, geometry.lanes.size)
+        // 0 and 1 follow each other; 4 is separated from 0 by 1; 5 is in the second column.
+        assertEquals(listOf(cards.getValue(0).bounds.union(cards.getValue(1).bounds)), groupClusters(geometry, listOf(0, 1)))
+        assertEquals(2, groupClusters(geometry, listOf(0, 4)).size)
+        val spread = groupClusters(geometry, listOf(1, 5))
+        assertEquals(listOf(cards.getValue(1).bounds, cards.getValue(5).bounds), spread)
+        assertTrue(spread.none { box -> cards.filterKeys { it !in setOf(1, 5) }.values.any { it.bounds.intersects(box) } })
+
+        canvas.showScene(ChartScene(nodes = listOf(SceneNode(0, SceneRole.FOCUS)), dimOthers = true,
+            groups = listOf(SceneGroup("Intake", listOf(0, 1), SceneGroupKind.STAGE), SceneGroup("Elsewhere", listOf(4, 5)))))
+        val boxes = canvas.overlay!!.groups
+        assertEquals(listOf(0, 1, 1), boxes.map { it.group })
+        assertTrue(boxes[0].bounds.contains(cards.getValue(0).bounds) && boxes[0].bounds.contains(cards.getValue(1).bounds))
+        canvas.size = canvas.preferredSize
+        paint(canvas)
+        // A click inside a group box but off its cards clears the selection; a card inside it still selects.
+        val box = boxes[0].bounds
+        click(canvas, Point(box.x + 2, box.y + 2))
+        assertNull(canvas.selectedNode)
+        click(canvas, centre(cards.getValue(1).bounds))
+        assertEquals(1, canvas.selectedNode)
+    }
+
+    fun `test externals snippets and link chips are stacked without overlapping cards or each other`() {
+        val canvas = canvas()
+        val snippet = SceneSnippet(1, 3, 5, "the write", "src/Service.kt", listOf("\tif (ready) {", "\t\tsave(it)", "\t}"), "hash")
+        canvas.showScene(ChartScene(nodes = listOf(SceneNode(0, SceneRole.SOURCE), SceneNode(1, SceneRole.SINK)),
+            links = listOf(SceneLink(0, 1, SceneLinkKind.DATA, "request")), dimOthers = true,
+            externals = listOf(
+                SceneExternal("db", ExternalKind.DATABASE, "Orders DB", listOf(ExternalLink(1, ExternalDirection.OUT, "insert")), verified = true),
+                SceneExternal("api", ExternalKind.NETWORK, "Billing API", listOf(ExternalLink(1, ExternalDirection.BOTH), ExternalLink(4, ExternalDirection.IN))),
+                SceneExternal("ui", ExternalKind.UI, "Order form", listOf(ExternalLink(0, ExternalDirection.IN)))),
+            snippets = listOf(snippet, snippet.copy(startLine = 4, endLine = 4, caption = null))))
+        val overlay = canvas.overlay!!
+        assertEquals(3, overlay.externals.size)
+        assertEquals(2, overlay.snippets.size)
+        val placed = overlay.solid
+        val cards = canvas.geometry!!.cards.values.map { it.bounds }
+        for ((i, a) in placed.withIndex()) {
+            assertTrue(cards.none(a::intersects))
+            assertTrue(placed.drop(i + 1).none(a::intersects))
+        }
+        val card1 = canvas.geometry!!.cards.getValue(1).bounds
+        val db = overlay.externals.first().bounds
+        assertTrue(db.x > card1.x + card1.width)
+        assertTrue(canvas.preferredSize.width >= placed.maxOf { it.x + it.width })
+        canvas.size = canvas.preferredSize
+        paint(canvas)
+        val tooltip = canvas.getToolTipText(MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0, 0, db.centerX.toInt(), db.centerY.toInt(), 0, false))!!
+        assertTrue(tooltip, tooltip.contains("Orders DB") && tooltip.contains("rule effects confirm"))
+        canvas.remap { it }
+        assertTrue(canvas.scene.externals.isEmpty() && canvas.scene.snippets.isEmpty())
+        assertNull(canvas.overlay)
+    }
 }

@@ -11,11 +11,17 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
+import com.intellij.ui.ColorUtil
+import com.intellij.ui.JBColor
+import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.dashboard.openDashboard
 import dev.insight.ui.heading
 import java.awt.BorderLayout
+import java.awt.Color
+import java.awt.Dimension
+import java.awt.Rectangle
 import java.awt.FlowLayout
 import java.awt.GridLayout
 import java.awt.event.ActionEvent
@@ -23,10 +29,13 @@ import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.JEditorPane
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.KeyStroke
+import javax.swing.Scrollable
 import javax.swing.SwingUtilities
+import javax.swing.event.HyperlinkEvent
 
 class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -44,7 +53,10 @@ class ChatPanel(
     private val chartMode: Boolean = false,
     private val scopeLabel: String? = null,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
-    private val transcript = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    // Chart replies are wrapping HTML panes, so the chart transcript follows the viewport width.
+    private val transcript = (if (chartMode) WidthTrackingPanel() else JPanel()).apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    /** The chart reference under the mouse, cleared before the transcript is rebuilt. */
+    private var hovered: Pair<Int, Int>? = null
     private val scroll = JBScrollPane(transcript)
     val input = JBTextArea(3, 24).apply {
         lineWrap = true
@@ -54,6 +66,9 @@ class ChatPanel(
     private val send = JButton("Send")
     private val stop = JButton("Stop")
     private val clear = JButton("New chat")
+    private val undoChart = JButton("Undo chart changes").apply {
+        toolTipText = "Restore the chart (steps, expansion, scene and selection) to before the last reply changed it"
+    }
     private val status = JLabel()
     private val subscription: Disposable
 
@@ -67,6 +82,7 @@ class ChatPanel(
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 4)).apply {
                 if (!chartMode) add(JButton("Open dashboard").apply { addActionListener { openDashboard(project) } })
                 add(clear)
+                if (chartMode) add(undoChart)
                 add(JButton("LLM settings").apply {
                     addActionListener {
                         ShowSettingsUtil.getInstance().showSettingsDialog(project, ChatSettingsConfigurable::class.java)
@@ -87,6 +103,7 @@ class ChatPanel(
         send.addActionListener { submit() }
         stop.addActionListener { service.stop() }
         clear.addActionListener { service.clear() }
+        undoChart.addActionListener { service.restoreChart() }
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ctrl ENTER"), "send")
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("meta ENTER"), "send")
         input.actionMap.put("send", object : AbstractAction() {
@@ -104,20 +121,25 @@ class ChatPanel(
     }
 
     private fun render() {
+        hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
+        hovered = null
         transcript.removeAll()
-        service.messages.forEach { message ->
+        val messages = service.messages
+        val lastReply = messages.indexOfLast { it.role == ChatMessage.ASSISTANT }
+        messages.forEachIndexed { index, message ->
             if (message.role == ChatMessage.TOOL) {
                 // Tool calls are compact progress lines rather than full messages.
                 transcript.add(JBLabel("Tool · ${message.text}", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER).apply {
                     border = JBUI.Borders.empty(2, 8)
                     alignmentX = LEFT_ALIGNMENT
                 })
-                return@forEach
+                return@forEachIndexed
             }
+            val chart = service.chartContext?.takeIf { chartMode && message.role == ChatMessage.ASSISTANT }
             transcript.add(JPanel(BorderLayout(0, 6)).apply {
                 border = JBUI.Borders.empty(8)
                 add(heading(if (message.role == ChatMessage.USER) "You" else "Insight", 13f), BorderLayout.NORTH)
-                add(JBTextArea(message.text).apply {
+                add(if (chart != null) replyPane(message, chart) else JBTextArea(message.text).apply {
                     isEditable = false
                     lineWrap = true
                     wrapStyleWord = true
@@ -127,19 +149,81 @@ class ChatPanel(
                 }, BorderLayout.CENTER)
                 alignmentX = LEFT_ALIGNMENT
             })
+            if (index == lastReply && !service.busy && service.followups.isNotEmpty()) transcript.add(JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                border = JBUI.Borders.empty(0, 8, 8, 8)
+                alignmentX = LEFT_ALIGNMENT
+                service.followups.forEach { question ->
+                    add(JButton(question).apply {
+                        font = JBUI.Fonts.smallFont()
+                        toolTipText = "Ask: $question"
+                        alignmentX = LEFT_ALIGNMENT
+                        addActionListener { if (!service.busy) service.send(question) }
+                    })
+                }
+            })
         }
         send.isEnabled = !service.busy
         stop.isEnabled = service.busy
         clear.isEnabled = !service.busy
+        undoChart.isEnabled = service.chartRestorable
         status.text = if (service.busy) "Preparing response…" else "${service.backendLabel} · Ctrl/⌘+Enter to send"
         transcript.revalidate()
         transcript.repaint()
-        SwingUtilities.invokeLater { if (!disposed) scroll.verticalScrollBar.value = scroll.verticalScrollBar.maximum }
+        SwingUtilities.invokeLater {
+            if (disposed) return@invokeLater
+            // HTML panes know their wrapped height only once they have a width.
+            if (chartMode) { transcript.components.forEach { it.invalidate() }; scroll.validate() }
+            scroll.verticalScrollBar.value = scroll.verticalScrollBar.maximum
+        }
+    }
+
+    /**
+     * An assistant reply with [[node:ID|Label]] references as links: everything else is escaped text. Clicking a reference
+     * selects its step, hovering emphasises it; references are resolved against the reply's graph revision.
+     */
+    internal fun replyPane(message: ChatMessage, chart: ChartChatContext): JEditorPane {
+        val body = chatReferenceHtml(message.text, message.revision) { node -> message.revision?.let { chart.referenceName(it, node) } }
+        return JEditorPane().apply {
+            editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
+            isEditable = false
+            isOpaque = false
+            border = JBUI.Borders.empty()
+            putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+            font = UIUtil.getLabelFont()
+            foreground = UIUtil.getLabelForeground()
+            text = "<html><head><style>a { color: ${ColorUtil.toHtmlColor(JBUI.CurrentTheme.Link.Foreground.ENABLED)}; " +
+                "background-color: ${ColorUtil.toHtmlColor(referenceFill)}; text-decoration: none; }</style></head><body>$body</body></html>"
+            addHyperlinkListener { event ->
+                val (revision, node) = parseChatReferenceLink(event.description) ?: return@addHyperlinkListener
+                when (event.eventType) {
+                    HyperlinkEvent.EventType.ACTIVATED -> service.openReference(revision, node)
+                    HyperlinkEvent.EventType.ENTERED -> { hovered = revision to node; chart.hoverReference(revision, node) }
+                    HyperlinkEvent.EventType.EXITED -> { hovered = null; chart.hoverReference(revision, null) }
+                    else -> Unit
+                }
+            }
+        }
     }
 
     private var disposed = false
     override fun dispose() {
         disposed = true
+        hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
         subscription.dispose()
+    }
+
+    /** Lays out its rows at the viewport width, so wrapping replies never scroll sideways. */
+    private class WidthTrackingPanel : JPanel(), Scrollable {
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visible: Rectangle, orientation: Int, direction: Int) = JBUI.scale(16)
+        override fun getScrollableBlockIncrement(visible: Rectangle, orientation: Int, direction: Int) =
+            if (orientation == javax.swing.SwingConstants.VERTICAL) visible.height else visible.width
+        override fun getScrollableTracksViewportWidth() = true
+        override fun getScrollableTracksViewportHeight() = false
+    }
+
+    private companion object {
+        val referenceFill = JBColor(Color(0xE8F0FE), Color(0x2E3A4F))
     }
 }

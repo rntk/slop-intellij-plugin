@@ -1,7 +1,10 @@
 package dev.insight.chat
 
-/** [USER] and [ASSISTANT] messages are conversation; [TOOL] events and [NOTICE]s are shown but never sent to a model. */
-data class ChatMessage(val role: String, val text: String) {
+/**
+ * [USER] and [ASSISTANT] messages are conversation; [TOOL] events and [NOTICE]s are shown but never sent to a model.
+ * [revision] is the chart graph revision an assistant reply's function references belong to.
+ */
+data class ChatMessage(val role: String, val text: String, val revision: Int? = null) {
     companion object {
         const val USER = "user"
         const val ASSISTANT = "assistant"

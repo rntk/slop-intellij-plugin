@@ -24,12 +24,19 @@ open class ChatSession(
 ) {
     private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
-        else "Ask about this flow chart. I can highlight steps, add project functions, and show calls or callers."))
+        else "Ask about this flow chart. I show the answer on the chart: paths, entry points, data flows and the steps involved."))
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     private var turn: Job? = null
     var busy: Boolean = false
         private set
     val messages: List<ChatMessage> get() = history.toList()
+    /** Follow-up questions the latest reply suggested; cleared when a message is sent or the chat is cleared. */
+    var followups: List<String> = emptyList()
+        private set
+    /** Written by suggest_followups during a turn, published when the reply succeeds. */
+    @Volatile private var proposed: List<String> = emptyList()
+    /** The chart this session explains, for resolving references in replies (EDT); null outside the chart chat. */
+    internal val chartContext: ChartChatContext? get() = chart
 
     /** Short description of the active backend for the chat status line. */
     val backendLabel: String
@@ -39,7 +46,10 @@ open class ChatSession(
     fun send(text: String) {
         if (busy || text.isBlank()) return
         history += ChatMessage(ChatMessage.USER, text.trim())
+        followups = emptyList()
+        proposed = emptyList()
         busy = true
+        chart?.beginReply()
         notifyViews()
         val request = messages.filter { it.role == ChatMessage.USER || it.role == ChatMessage.ASSISTANT }
         turn = scope.launch(Dispatchers.EDT) {
@@ -52,7 +62,8 @@ open class ChatSession(
                         }
                     }
                 }
-                history += ChatMessage(ChatMessage.ASSISTANT, reply)
+                history += ChatMessage(ChatMessage.ASSISTANT, reply, chart?.revision)
+                followups = proposed
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -74,9 +85,27 @@ open class ChatSession(
         notifyViews()
     }
 
+    /** Whether the chart changes of the latest reply can be undone; EDT. */
+    val chartRestorable: Boolean get() = !busy && chart?.restorable == true
+
+    fun restoreChart() {
+        if (busy || chart == null) return
+        history += ChatMessage(ChatMessage.NOTICE, if (chart.restore()) "Chart restored to before the last reply."
+            else "Nothing to restore: this chat made no chart change since, or another chat or a rebuild changed the chart after it.")
+        notifyViews()
+    }
+
+    /** Shows the function a reply referenced on the chart, or a notice when it is stale or unknown; EDT. */
+    fun openReference(revision: Int, node: Int) {
+        val notice = chart?.openReference(revision, node) ?: return
+        history += ChatMessage(ChatMessage.NOTICE, notice)
+        notifyViews()
+    }
+
     fun clear() {
         if (busy) return
         history.clear()
+        followups = emptyList()
         notifyViews()
     }
 
@@ -87,11 +116,14 @@ open class ChatSession(
 
     private fun notifyViews() = listeners.forEach { it() }
 
+    /** Chart tools whose follow-up suggestions belong to this session. */
+    internal fun sessionChartTools(chart: ChartChatContext) = chartTools(chart) { proposed = it }
+
     /** Runs on IO: reading the API key from the password safe can block. */
-    private fun createBackend(): ChatBackend {
+    internal open fun createBackend(): ChatBackend {
         val client = ChatSettings.getInstance().createClient()
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
-        else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
+        else LlmChatBackend(client::complete, sessionChartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
             chartChatSystemPrompt(project.name), maxToolRounds = 100, context = chart::snapshot)
     }
 

@@ -64,9 +64,9 @@ data class FlowChatTarget(
     val label: String? = null, val region: FlowRegionEvidence? = null,
 )
 
-/** [shapes] are in painting order: frames, lines, then everything drawn over them. */
+/** [shapes] are in painting order: frames, lines, then everything drawn over them. [lanes]: x extents of the columns. */
 data class FlowGeometry(val size: Dimension, val shapes: List<FlowShape>,
-    val chatTargets: Map<FlowShape, FlowChatTarget> = emptyMap()) {
+    val chatTargets: Map<FlowShape, FlowChatTarget> = emptyMap(), val lanes: List<IntRange> = emptyList()) {
     /** Cards by function. */
     val cards: Map<Int, FlowCardBox> by lazy { shapes.filterIsInstance<FlowCardBox>().associateBy { it.step.node } }
 }
@@ -114,6 +114,7 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
         if (chart.lanes.isEmpty()) return FlowGeometry(Dimension(0, 0), emptyList())
         var x = m.margin
         var bottom = 0
+        val lanes = mutableListOf<IntRange>()
         for (lane in chart.lanes) {
             nextLeft = true
             val target = FlowChatTarget("function", lane.root.node, listOf(lane.root.node), lane.title)
@@ -125,10 +126,11 @@ private class FlowLayouter(private val m: FlowMetrics, private val measure: Flow
             chatTargets[banner] = target
             val top = m.margin + bannerHeight + m.gap * 2
             body.place(spine, top)
-            x = spine + maxOf(body.right, m.bannerWidth - m.bannerWidth / 2) + m.laneGap
+            lanes += x..spine + maxOf(body.right, m.bannerWidth - m.bannerWidth / 2)
+            x = lanes.last().last + m.laneGap
             bottom = maxOf(bottom, top + body.height)
         }
-        return FlowGeometry(Dimension(x - m.laneGap + m.margin, bottom + m.margin), back + lines + front, chatTargets)
+        return FlowGeometry(Dimension(x - m.laneGap + m.margin, bottom + m.margin), back + lines + front, chatTargets, lanes)
     }
 
     private fun line(x1: Int, y1: Int, x2: Int, y2: Int, style: FlowLineStyle = FlowLineStyle.NORMAL, target: FlowChatTarget? = null) {

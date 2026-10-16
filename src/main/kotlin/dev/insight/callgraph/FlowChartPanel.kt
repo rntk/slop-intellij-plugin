@@ -4,6 +4,15 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.service
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileChooser.FileChooserFactory
+import com.intellij.openapi.fileChooser.FileSaverDescriptor
+import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.ui.Messages
 import dev.insight.enrichment.ColorBy
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.enrichment.EnrichmentSnapshot
@@ -100,7 +109,11 @@ internal class FlowChartPanel(
     private var matches: List<ChartMatch> = emptyList()
     private var chatRevision = 0
     private val chatScope = CoroutineScope(service.scope.coroutineContext + SupervisorJob(service.scope.coroutineContext[Job]))
-    private val chatContext = object : ChartChatContext {
+    /** The chat sessions of this chart; a restore point only undoes the latest chat change and never across a rebuild. */
+    private val restoreGroup = ChartRestorePoint.Group { chatRevision }
+    /** Chart tools for one chat session; each session owns its restore point. */
+    private inner class SessionChartContext : ChartChatContext {
+        private val restorePoint = ChartRestorePoint(flowCanvas, restoreGroup)
         private fun graph(): CallGraph {
             if (disposed) throw ToolInputException("Chart closed")
             if (building()) throw ToolInputException("Graph is rebuilding; retry after it finishes")
@@ -123,17 +136,223 @@ internal class FlowChartPanel(
         }
 
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
-            applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes)
+            applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes, restorePoint::checkpoint)
         }
 
         override suspend fun describe(revision: Int, node: Int, offset: Int): String = withContext(Dispatchers.EDT) {
             chartNodeDetails(graph(), chatRevision, revision, node, offset)
         }
 
-        override suspend fun annotate(revision: Int, node: Int, target: Int?, text: String): String = withContext(Dispatchers.EDT) {
-            applyChartAnnotation(graph(), flowCanvas, chatRevision, revision, node, target, text)
+        override suspend fun showScene(revision: Int, scene: ChartScene): String {
+            val read = captured(revision, listOf(scene), story = false).single()
+            return withContext(Dispatchers.EDT) {
+                val graph = graph()
+                applyChartScene(graph, flowCanvas, chatRevision, revision, read, effects(graph), restorePoint::checkpoint)
+            }
+        }
+
+        private fun effects(graph: CallGraph) = groundingEffects(graph)
+
+        /**
+         * Checks [scenes] on the EDT, then reads their snippets from source in a background read action. The scenes are
+         * applied afterwards on the EDT, where a rebuild in between fails the revision check.
+         */
+        private suspend fun captured(revision: Int, scenes: List<ChartScene>, story: Boolean): List<ChartScene> {
+            if (scenes.none { it.snippets.isNotEmpty() }) return scenes
+            val built = withContext(Dispatchers.EDT) {
+                val graph = graph()
+                if (revision != chatRevision) throw ToolInputException("Stale graph revision; get_chart_state and resolve node IDs again")
+                if (story) checkStoryBeats(graph, scenes.map { StoryBeat("", it) }, effects(graph), captured = false)
+                else checkChartScene(graph, scenes.single(), effects(graph), captured = false)
+                result ?: throw ToolInputException("Graph is not ready yet")
+            }
+            return smartReadAction(project) {
+                scenes.mapIndexed { i, scene ->
+                    val read = { captureSnippets(scene) { declarationSource(project, built, it) } }
+                    if (story) storyBeat(i, read) else read()
+                }
+            }
+        }
+
+        override suspend fun clearScene(revision: Int): String = withContext(Dispatchers.EDT) {
+            graph()
+            clearChartScene(flowCanvas, chatRevision, revision, restorePoint::checkpoint)
+        }
+
+        /** Captures the immutable graph, lens and visible steps on the EDT; the bounded search runs in the background. */
+        private suspend fun <T> analyze(block: (CallGraph, Int, Map<Int, Int>, FlowChartLens?) -> T): T {
+            val (captured, lens) = withContext(Dispatchers.EDT) {
+                val graph = graph()
+                Triple(graph, chatRevision, flowCanvas.chart?.steps.orEmpty().associate { it.node to it.number }) to
+                    flowLens?.takeIf { it.graph === graph }?.lens
+            }
+            return withContext(Dispatchers.Default) { block(captured.first, captured.second, captured.third, lens) }
+        }
+
+        override suspend fun tracePath(revision: Int, from: Int, to: Int, maxPaths: Int, maxDepth: Int): String =
+            analyze { graph, current, steps, _ -> chartTracePath(graph, current, revision, from, to, maxPaths, maxDepth, steps) }
+
+        override suspend fun reachability(revision: Int, node: Int): String = analyze { graph, current, steps, lens ->
+            val effects = lens?.takeIf { it.effectsOf(node) != null }?.let { l -> { id: Int -> l.effectsOf(id)?.let { it.own to it.reached } } }
+            chartReachability(graph, current, revision, node, lens?.takeIf { it.knowsEntryPoints }?.let { it::isEntryPoint }, effects, steps)
+        }
+
+        override suspend fun suggestExternals(revision: Int, nodes: List<Int>): String = analyze { graph, current, steps, lens ->
+            chartExternalEffects(graph, current, revision, nodes, { id ->
+                lens?.effectsOf(id)?.let { RuleEffects(it.own, it.reached, lens.effectImports(id)) } }, steps)
+        }
+
+        override suspend fun presentStory(revision: Int, title: String, beats: List<StoryBeat>): String {
+            val read = captured(revision, beats.map { it.scene }, story = true)
+            return withContext(Dispatchers.EDT) {
+                val graph = graph()
+                presentChartStory(graph, flowCanvas, chatRevision, revision, title,
+                    beats.zip(read) { beat, scene -> beat.copy(scene = scene) }, effects(graph), restorePoint::checkpoint)
+            }
+        }
+
+        override suspend fun projectMap(offset: Int): String = analyze { graph, current, _, lens ->
+            chartProjectMap(graph, current, offset, projectMapData(graph, lens))
+        }
+
+        override suspend fun listTours(): String = withContext(Dispatchers.EDT) { tourListData(tours.tours) }
+
+        override suspend fun playTour(name: String): String = this@FlowChartPanel.playTour(name, restorePoint::checkpoint)
+
+        override fun beginReply() = restorePoint.begin()
+        override val restorable: Boolean get() = !disposed && restorePoint.available
+        override fun restore(): Boolean = !disposed && !building() && restorePoint.restore()
+
+        override val revision: Int get() = chatRevision
+        override fun referenceName(revision: Int, node: Int) =
+            chartReferenceName(result?.graph?.takeIf { !building() }, chatRevision, revision, node)
+        override fun openReference(revision: Int, node: Int): String? {
+            if (disposed) return "Chart closed."
+            val graph = result?.graph?.takeIf { !building() } ?: return "The graph is rebuilding; try again when it finishes."
+            return openChartReference(graph, flowCanvas, chatRevision, revision, node)
+        }
+        override fun hoverReference(revision: Int, node: Int?) {
+            if (!disposed) flowCanvas.hover(node?.takeIf { revision == chatRevision })
         }
     }
+    /** Own plus reached rule effects for grounding externals; null without enrichment of the current graph. EDT. */
+    private fun groundingEffects(graph: CallGraph): ((Int) -> Set<String>?)? = flowLens?.takeIf { it.graph === graph }?.lens
+        ?.let { lens -> { id: Int -> lens.effectsOf(id)?.let { it.own + it.reached } } }
+
+    /** Discovery, enrichment and flow selector data for [chartProjectMap]; PSI-free, safe off the EDT. */
+    private fun projectMapData(graph: CallGraph, lens: FlowChartLens?): ProjectMapData {
+        fun function(node: CallGraphNode) = node.inProject && node.kind == SymbolKind.FUNCTION
+        val discovered = entryPoints.entryPoints.value.flatMap { entry ->
+            EntryPointLens.targets(graph, entry, project.basePath).filter(::function)
+                .map { MapEntryPoint(it.id, entry.title, entry.kind.label, "discovery") }
+        }
+        val judged = lens?.takeIf { it.knowsEntryPoints }?.let { l ->
+            graph.nodes.filter { function(it) && l.isEntryPoint(it.id) }.map {
+                MapEntryPoint(it.id, l.summaries[it.id]?.label ?: FlowChartLens.title(graph, it.id), "enrichment judgment", "enrichment")
+            }
+        }
+        val enriched = lens?.flows != null
+        return ProjectMapData(if (discovered.isEmpty() && judged == null) null else (discovered + judged.orEmpty()).distinctBy { it.node },
+            lens?.flows?.map { MapFlow(it.name, it.description, it.entry, it.nodes.size) },
+            lens?.takeIf { enriched }?.let { l -> { id: Int -> l.effectsOf(id)?.own } },
+            lens?.summaries?.takeIf { it.isNotEmpty() }?.let { s -> { id: Int -> s[id]?.label } }, project.basePath)
+    }
+
+    private val tours = project.service<ChartTourStore>()
+
+    private fun built(): CallGraphResult {
+        if (disposed) throw ToolInputException("Chart closed")
+        if (building()) throw ToolInputException("Graph is rebuilding; retry after it finishes")
+        return result ?: throw ToolInputException("Graph is not ready yet")
+    }
+
+    /**
+     * Resolves saved tour [name] against the current graph on the EDT, reads its snippets again in a background read
+     * action, then shows it as a story with a notice of what was skipped; a rebuild in between fails instead.
+     */
+    internal suspend fun playTour(name: String, beforeChange: () -> Unit = {}): String {
+        val (built, play) = withContext(Dispatchers.EDT) {
+            val tour = tours.find(name) ?: throw ToolInputException("No saved tour named \"$name\"; list_tours shows the saved tours")
+            val built = built()
+            built to resolveTour(tour, built.graph, groundingEffects(built.graph))
+        }
+        val read = if (play.beats.none { it.scene.snippets.isNotEmpty() }) play
+            else smartReadAction(project) { recaptureTourSnippets(play) { declarationSource(project, built, it) } }
+        return withContext(Dispatchers.EDT) {
+            if (built() !== built) throw ToolInputException("The graph was rebuilt while the tour was loading; play it again")
+            playChartTour(built.graph, flowCanvas, chatRevision, read, groundingEffects(built.graph), beforeChange) { notice ->
+                tourNotice = flowCanvas.story?.beats to notice
+                updateStoryBar()
+            }
+        }
+    }
+
+    internal fun saveTour(name: String): SavedTour? {
+        val story = flowCanvas.story ?: return null
+        return savedTour(name.trim().take(SavedTour.MAX_NAME), story).also {
+            tours.put(it)
+            status.text = "Saved tour \"${it.name}\"; replay it from Tours."
+        }
+    }
+
+    private fun askSaveTour() {
+        val story = flowCanvas.story ?: return
+        val name = Messages.showInputDialog(this, "Tour name:", "Save Tour", null, story.title.take(SavedTour.MAX_NAME), null)
+            ?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (tours.find(name) != null && Messages.showYesNoDialog(this,
+                "Replace the saved tour \"$name\"?", "Save Tour", null) != Messages.YES) return
+        saveTour(name)
+    }
+
+    /** Saved tours: play, rename, delete and export each. */
+    internal fun toursMenu(): JPopupMenu = JPopupMenu().apply {
+        fun item(text: String, action: () -> Unit) = JMenuItem(text).apply { addActionListener { action() } }
+        val saved = tours.tours
+        if (saved.isEmpty()) add(JMenuItem("No saved tours; save a story with Save tour on its bar").apply { isEnabled = false })
+        saved.forEach { tour ->
+            add(JMenu("${tour.name} · ${tour.beats.size} beats").apply {
+                add(item("Play") {
+                    chatScope.launch(Dispatchers.EDT) {
+                        try { playTour(tour.name) } catch (e: ToolInputException) { status.text = e.message }
+                    }
+                })
+                add(item("Rename…") {
+                    Messages.showInputDialog(this@FlowChartPanel, "New name:", "Rename Tour", null, tour.name, null)?.let { name ->
+                        if (!tours.rename(tour.name, name)) status.text = "Could not rename: the name is empty or already used."
+                    }
+                })
+                add(item("Delete") {
+                    if (Messages.showYesNoDialog(this@FlowChartPanel, "Delete the saved tour \"${tour.name}\"?", "Delete Tour", null) == Messages.YES)
+                        tours.delete(tour.name)
+                })
+                addSeparator()
+                add(item("Copy as Markdown") {
+                    CopyPasteManager.getInstance().setContents(java.awt.datatransfer.StringSelection(tourMarkdown(tour, project.basePath)))
+                    status.text = "Copied tour \"${tour.name}\" as Markdown."
+                })
+                add(item("Export as Markdown…") {
+                    val target = FileChooserFactory.getInstance().createSaveFileDialog(
+                        FileSaverDescriptor("Export Tour", "Save the tour as Markdown", "md"), project)
+                        .save(tour.name.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "tour" } + ".md") ?: return@item
+                    val text = tourMarkdown(tour, project.basePath)
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        java.nio.file.Files.writeString(target.file.toPath(), text)
+                    }
+                })
+            })
+        }
+    }
+
+    private val toursAction = object : DumbAwareAction("Tours", "Play, rename, delete or export saved tours", null) {
+        init { templatePresentation.putClientProperty(ActionUtil.SHOW_TEXT_IN_TOOLBAR, true) }
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun actionPerformed(e: AnActionEvent) {
+            val anchor = e.inputEvent?.component ?: flowCanvas
+            toursMenu().show(anchor, 0, anchor.height)
+        }
+    }
+
+    private val chatContext: ChartChatContext = SessionChartContext()
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
     private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
     private lateinit var chatSection: CollapsibleControls.Section
@@ -168,7 +387,7 @@ internal class FlowChartPanel(
                 return@launch
             }
             if (disposed) return@launch
-            val context = object : ChartChatContext by chatContext {
+            val context = object : ChartChatContext by SessionChartContext() {
                 override suspend fun snapshot(): String {
                     val current = chatContext.snapshot()
                     val stale = withContext(Dispatchers.EDT) {
@@ -203,21 +422,90 @@ internal class FlowChartPanel(
         }
     }
 
+    private val storyTitle = JLabel().apply { font = font.deriveFont(java.awt.Font.BOLD) }
+    private val storyPosition = JLabel()
+    private val storyPrevious = JButton("◀").apply { toolTipText = "Previous beat (Page Up or Alt+Left on the chart)" }
+    private val storyNext = JButton("▶").apply { toolTipText = "Next beat (Page Down or Alt+Right on the chart)" }
+    private val storyCaption = com.intellij.ui.components.JBTextArea().apply {
+        isEditable = false
+        lineWrap = true
+        wrapStyleWord = true
+        isOpaque = false
+        columns = 20
+    }
+    /** What a replayed tour skipped or dropped, shown while that tour's story is open. */
+    internal val storyNotice = com.intellij.ui.components.JBTextArea().apply {
+        isEditable = false
+        lineWrap = true
+        wrapStyleWord = true
+        isOpaque = false
+        columns = 20
+        foreground = com.intellij.ui.JBColor.GRAY
+        isVisible = false
+    }
+    /** The beats of the replayed tour the notice belongs to, and the notice. */
+    private var tourNotice: Pair<List<StoryBeat>?, String?> = null to null
+    internal val saveTourButton = JButton("Save tour").apply {
+        toolTipText = "Save this story as a named tour of the project; replay it from Tours"
+        addActionListener { askSaveTour() }
+    }
+    /** The active chat story: title, beat position and caption, stepped without the assistant. */
+    internal val storyBar = JPanel(BorderLayout(JBUI.scale(8), JBUI.scale(2))).apply {
+        border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(com.intellij.ui.JBColor.border()), JBUI.Borders.empty(4, 6))
+        add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+            add(storyTitle); add(storyPrevious); add(storyPosition); add(storyNext); add(saveTourButton)
+        }, BorderLayout.NORTH)
+        add(JPanel(BorderLayout(0, JBUI.scale(2))).apply {
+            isOpaque = false
+            add(storyCaption, BorderLayout.CENTER)
+            add(storyNotice, BorderLayout.SOUTH)
+        }, BorderLayout.CENTER)
+        add(JButton("×").apply {
+            toolTipText = "Close the story; the current beat stays on the chart"
+            addActionListener { flowCanvas.closeStory() }
+        }, BorderLayout.EAST)
+        isVisible = false
+    }
+
+    private fun updateStoryBar() {
+        val story = flowCanvas.story
+        storyBar.isVisible = story != null
+        if (story?.beats !== tourNotice.first) tourNotice = null to null
+        storyNotice.text = tourNotice.second.orEmpty()
+        storyNotice.isVisible = tourNotice.second != null
+        if (story != null) {
+            storyTitle.text = story.title
+            storyPosition.text = "${story.index + 1}/${story.beats.size}"
+            storyCaption.text = story.beat.caption
+            storyPrevious.isEnabled = story.index > 0
+            storyNext.isEnabled = story.index < story.beats.lastIndex
+        }
+        storyBar.revalidate()
+        storyBar.repaint()
+    }
+
     init {
         border = JBUI.Borders.empty(8)
+        flowCanvas.onStoryChange = ::updateStoryBar
+        storyPrevious.addActionListener { flowCanvas.stepStory(-1) }
+        storyNext.addActionListener { flowCanvas.stepStory(1) }
         fun row(vararg controls: Component) = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply { controls.forEach(::add) }
         add(JPanel(BorderLayout(0, 4)).apply {
             add(CollapsibleControls(project, "insight.chart.controls", this@FlowChartPanel).apply {
                 command(PanelCommand("Refresh", "Rebuild the application graph") { refresh() })
                 command(enrichAction)
                 command(reportAction)
+                command(toursAction)
                 separator()
                 section("view", "View", row(
                     JLabel("Colour:"), colorBy, JLabel("Flow:"), flowChoice,
                     addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
                     previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
                 section("edit", "Edit", row(callsButton, callersButton, removeButton, clearButton,
-                    JButton("Clear chat highlights").apply { addActionListener { flowCanvas.highlightChat(emptySet()) } }))
+                    JButton("Clear chat scene").apply {
+                        toolTipText = "Remove the assistant's emphasis, badges, notes and links"
+                        addActionListener { flowCanvas.showScene(ChartScene()) }
+                    }))
                 section("subflows", "Subflows", row(compact, summarizeButton, collapseButton,
                     JLabel("Expand a subflow to inspect its calls. Summarize adds LLM interpretations.")))
                 searchSection = section("search", "Search", row(JLabel("Search chart:"), search, previousMatch, nextMatch, matchCount))
@@ -229,7 +517,10 @@ internal class FlowChartPanel(
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(com.intellij.ui.OnePixelSplitter(false, 0.72f).apply {
-            firstComponent = JBScrollPane(flowCanvas)
+            firstComponent = JPanel(BorderLayout()).apply {
+                add(storyBar, BorderLayout.NORTH)
+                add(JBScrollPane(flowCanvas), BorderLayout.CENTER)
+            }
             secondComponent = chatTabs
             chatTabs.minimumSize = java.awt.Dimension(JBUI.scale(260), 0)
         }, BorderLayout.CENTER)

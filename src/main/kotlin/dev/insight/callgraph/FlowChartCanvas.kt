@@ -7,6 +7,7 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.ui.accent
+import java.awt.AlphaComposite
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
@@ -46,6 +47,45 @@ private val searchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
 private val selectionFill = JBColor(Color(0xEEF3FD), Color(0x2B3445))
 private val startColor = JBColor(Color(0x237A46), Color(0x73CF99))
 private val mutedText = JBColor(Color(0x6E737A), Color(0x9DA2A8))
+private val focusColor = JBColor(Color(0x2F6FDB), Color(0x6EA1F5))
+private val contextColor = JBColor(Color(0x7A8290), Color(0x9AA3B0))
+private val sourceColor = JBColor(Color(0x1F8A4C), Color(0x5FCB8A))
+private val sinkColor = JBColor(Color(0x8A3FC1), Color(0xC08BF0))
+private val problemColor = JBColor(Color(0xC8452B), Color(0xF07A5F))
+private val callLinkColor = JBColor(Color(0x50565E), Color(0xB0B5BC))
+private val dataLinkColor = JBColor(Color(0x0F8A8A), Color(0x4FC9C9))
+private val eventLinkColor = JBColor(Color(0xB7791F), Color(0xE5B45A))
+private val callbackLinkColor = JBColor(Color(0xB0397A), Color(0xE07DB5))
+private val snippetFill = JBColor(Color(0xF7F8FA), Color(0x1E1F22))
+private val groupPalette = listOf(JBColor(Color(0x3D7BD9), Color(0x6E9FE8)), JBColor(Color(0x2E9A5C), Color(0x62C08A)),
+    JBColor(Color(0xC08A1E), Color(0xD9AE57)), JBColor(Color(0x8C55C9), Color(0xB18BE6)), JBColor(Color(0x1E9696), Color(0x55C2C2)),
+    JBColor(Color(0xC4506E), Color(0xE0839B)))
+
+internal fun externalColor(kind: ExternalKind): Color = when (kind) {
+    ExternalKind.DATABASE -> sinkColor
+    ExternalKind.NETWORK -> focusColor
+    ExternalKind.FILE -> eventLinkColor
+    ExternalKind.QUEUE -> dataLinkColor
+    ExternalKind.LLM -> callbackLinkColor
+    ExternalKind.UI -> sourceColor
+    ExternalKind.OTHER -> contextColor
+}
+
+internal fun roleColor(role: SceneRole): Color = when (role) {
+    SceneRole.FOCUS -> focusColor
+    SceneRole.CONTEXT -> contextColor
+    SceneRole.SOURCE -> sourceColor
+    SceneRole.SINK -> sinkColor
+    SceneRole.PROBLEM -> problemColor
+}
+
+internal fun linkColor(kind: SceneLinkKind): Color = when (kind) {
+    SceneLinkKind.CALL -> callLinkColor
+    SceneLinkKind.DATA -> dataLinkColor
+    SceneLinkKind.EVENT -> eventLinkColor
+    SceneLinkKind.CALLBACK -> callbackLinkColor
+    SceneLinkKind.ASYNC -> accent
+}
 private const val MAX_ATTACH_TRIES = 12
 
 /** How a function joined the chart: shown in the calls ([Kind.CALLS]) or callers ([Kind.CALLERS]) of the step [via]. */
@@ -58,7 +98,8 @@ data class FlowAttachment(val via: Int, val kind: Kind) {
  * [layoutFlowChart], explored from any step. The pill below a step shows or hides what it calls; the pill above it
  * shows or hides its direct callers, so the chart grows in both directions on the same canvas. Click a step to select
  * it, double-click or Enter to open it, click a back reference to jump to its step. Drag pans; Ctrl/Cmd + wheel zooms;
- * Up/Down step through the chart; Left toggles callers, Right or Space toggles calls, Delete removes a column.
+ * Up/Down step through the chart; Left toggles callers, Right or Space toggles calls, Delete removes a column; Page
+ * Up/Down or Alt+Left/Right step through the beats of a chat story.
  */
 class FlowChartCanvas(
     private val onSelect: (Int?) -> Unit,
@@ -80,31 +121,58 @@ class FlowChartCanvas(
     private var message: String? = null
     internal var geometry: FlowGeometry? = null
         private set
+    /** Group boxes, externals and snippets of the scene placed around [geometry]; see [layoutSceneOverlay]. */
+    internal var overlay: SceneOverlay? = null
+        private set
     private var scale = 1.0
     internal var searchMatches: Set<Int>? = null
         private set
     private var regionMatches: Set<String> = emptySet()
-    internal var chatHighlights: Set<Int> = emptySet()
+    /** The assistant's current picture: emphasis, badges, notes and typed links; see [ChartScene]. */
+    var scene = ChartScene()
         private set
 
-    fun highlightChat(nodes: Set<Int>) { chatHighlights = nodes; repaint() }
-
-    internal val chatNotes = linkedMapOf<Int, String>()
-    internal val chatLinks = linkedMapOf<Pair<Int, Int>, String>()
-
-    internal fun annotateChat(node: Int, target: Int?, text: String) {
-        if (target == null) {
-            if (text.isEmpty()) chatNotes.remove(node) else chatNotes[node] = text
-        } else {
-            if (text.isEmpty()) chatLinks.remove(node to target) else chatLinks[node to target] = text
+    /** The guided tour whose current beat is the scene; any other scene change closes it. See [ChartStory]. */
+    var story: ChartStory? = null
+        private set(value) {
+            val changed = field !== value
+            field = value
+            if (changed) onStoryChange()
         }
+    /** Called when the story opens, steps or closes. */
+    internal var onStoryChange: () -> Unit = {}
+    /** A function emphasised while a chat reference to it is hovered; not part of the chart state. */
+    internal var hoveredNode: Int? = null
+        private set
+
+    /** Replaces the scene, closing the story unless [story] is the one the scene belongs to; notes change card heights. */
+    fun showScene(next: ChartScene, story: ChartStory? = null) {
+        scene = next
+        // The title caption is painted at the top of the viewport, so the viewport must not blit stale pixels.
+        if (next.title != null) viewport?.scrollMode = JViewport.SIMPLE_SCROLL_MODE
         update(board)
+        this.story = story
     }
 
-    internal fun clearChatAnnotations() {
-        chatNotes.clear()
-        chatLinks.clear()
-        update(board)
+    /** Shows the beat [delta] beats away; false at either end or without a story. */
+    fun stepStory(delta: Int): Boolean = story?.let { showStoryBeat(this, it.index + delta) } == true
+
+    /** Closes the story and keeps the current beat's scene. */
+    fun closeStory() { story = null }
+
+    fun hover(node: Int?) {
+        if (hoveredNode == node) return
+        hoveredNode = node
+        repaint()
+    }
+
+    fun saveState() = ChartCanvasState(board, scene, selectedNode, story)
+
+    fun restoreState(state: ChartCanvasState) {
+        scene = state.scene
+        update(state.board)
+        story = state.story
+        state.selected?.let(::selectNode) ?: select(null)
     }
 
     fun markRegionMatches(keys: Set<String>) { regionMatches = keys; repaint() }
@@ -198,6 +266,14 @@ class FlowChartCanvas(
         key("LEFT") { selectedRegion?.let { if (it in board.openRegions) toggleRegion(it) } ?: selectedNode?.let(::toggleCallers) }
         key("DELETE") { selectedNode?.let(::removeColumn) }
         key("BACK_SPACE") { selectedNode?.let(::removeColumn) }
+        // Disabled without a story, so the scroll pane keeps Page Up/Down then.
+        for ((stroke, delta) in listOf("PAGE_DOWN" to 1, "alt RIGHT" to 1, "PAGE_UP" to -1, "alt LEFT" to -1)) {
+            getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), "story $stroke")
+            actionMap.put("story $stroke", object : AbstractAction() {
+                override fun actionPerformed(e: ActionEvent?) { stepStory(delta) }
+                override fun isEnabled() = story != null
+            })
+        }
     }
 
     /**
@@ -216,9 +292,10 @@ class FlowChartCanvas(
      */
     fun remap(id: (Int) -> Int?) {
         // Explanations are source-dependent; do not carry them into a rebuilt graph.
-        chatNotes.clear()
-        chatLinks.clear()
-        chatHighlights = chatHighlights.mapNotNullTo(hashSetOf(), id)
+        scene = scene.map(id)
+        overlay = null
+        story = null
+        hoveredNode = null
         board = board.map(id)
         selectedNode = selectedNode?.let(id)
         selectedRegion = null
@@ -269,9 +346,8 @@ class FlowChartCanvas(
     }
 
     fun clear() {
-        chatNotes.clear()
-        chatLinks.clear()
-        chatHighlights = emptySet()
+        scene = ChartScene()
+        story = null
         update(FlowBoard(compact = board.compact))
     }
 
@@ -310,6 +386,7 @@ class FlowChartCanvas(
         val source = source
         chart = if (source == null || next.starts.isEmpty()) null else buildFlowChart(next, source)
         geometry = chart?.let { layoutFlowChart(it, metrics(), measure) }
+        overlay = geometry?.let(::layoutOverlay)
         revalidate()
         viewport?.let { it.viewSize = preferredSize }
         if (selectedNode != null && geometry?.cards?.containsKey(selectedNode) != true) {
@@ -407,7 +484,12 @@ class FlowChartCanvas(
     }
 
     override fun getPreferredSize(): Dimension =
-        geometry?.size?.let { Dimension((it.width * zoom).toInt(), (it.height * zoom).toInt()) } ?: Dimension(0, 0)
+        geometry?.size?.let { size ->
+            val extra = overlay?.bounds
+            val width = max(size.width, (extra?.maxX?.toInt() ?: 0) + JBUI.scale(28))
+            val height = max(size.height, (extra?.maxY?.toInt() ?: 0) + JBUI.scale(28))
+            Dimension((width * zoom).toInt(), (height * zoom).toInt())
+        } ?: Dimension(0, 0)
 
     /** The interactive shape under a point in component coordinates. */
     private fun shapeAt(point: Point): FlowShape? {
@@ -514,9 +596,11 @@ class FlowChartCanvas(
         }
         is FlowCardBox -> shape.step.card.let { card ->
             (listOf("<b>${StringUtil.escapeXmlEntities(card.title)}</b>") + (listOfNotNull(card.meta, card.tooltip ?: card.description, card.details,
-                chatNotes[shape.step.node]?.let { "Assistant note: $it" }) +
-                chatLinks.filterKeys { it.first == shape.step.node }.map { (ends, text) ->
-                    "Assistant link → ${source?.card?.invoke(ends.second)?.title ?: ends.second}: $text"
+                scene.noteOf[shape.step.node]?.let { "Assistant note: $it" }) +
+                scene.links.filter { it.from == shape.step.node || it.to == shape.step.node }.map { link ->
+                    "${if (link.kind == SceneLinkKind.CALL) "Static call" else "Assistant ${link.kind.name.lowercase()} link (explanation)"} " +
+                        "${source?.card?.invoke(link.from)?.title ?: link.from} → ${source?.card?.invoke(link.to)?.title ?: link.to}" +
+                        link.label?.let { ": $it" }.orEmpty()
                 })
                 .flatMap { it.lines() }.filter { it.isNotBlank() }.map { StringUtil.escapeXmlEntities(it) })
                 .joinToString("<br>", "<html>", "</html>")
@@ -531,7 +615,20 @@ class FlowChartCanvas(
         }
         is FlowRefBox -> "Shown as step ${shape.ref.number}: click to go there"
         is FlowDecisionBox -> StringUtil.escapeXmlEntities(shape.decision.question)
-        else -> null
+        else -> overlayTooltip(Point((event.point.x / zoom).toInt(), (event.point.y / zoom).toInt()))
+    }
+
+    private fun overlayTooltip(point: Point): String? {
+        val overlay = overlay ?: return null
+        val text = overlay.externals.lastOrNull { it.bounds.contains(point) }?.external?.let { external ->
+            listOf("${external.label} (${external.kind.name.lowercase()})", if (external.verified) EXTERNAL_VERIFIED else EXTERNAL_UNVERIFIED) +
+                external.connected.map { link -> "${link.direction.name.lowercase()}: ${source?.card?.invoke(link.node)?.title ?: link.node}" +
+                    link.label?.let { " · $it" }.orEmpty() }
+        } ?: overlay.snippets.lastOrNull { it.bounds.contains(point) }?.snippet?.let { snippet ->
+            listOfNotNull("${snippet.path}:${snippet.startLine}-${snippet.endLine}", snippet.caption,
+                "Source captured when the assistant showed it; it may have changed since.")
+        } ?: return null
+        return text.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
     }
 
     private class TextLine(val text: String, val font: Font, val color: Color)
@@ -545,13 +642,9 @@ class FlowChartCanvas(
         wrap(card.title, getFontMetrics(titleFont), width, 2).forEach { add(TextLine(it, titleFont, JBColor.foreground())) }
         card.description?.let { text -> wrap(text, getFontMetrics(textFont), width, 3).forEach { add(TextLine(it, textFont, mutedText)) } }
         card.details?.let { text -> wrap(text, getFontMetrics(smallFont), width, 2).forEach { add(TextLine(it, smallFont, mutedText)) } }
-        chatNotes[step.node]?.let { text ->
-            wrap("Assistant note: $text", getFontMetrics(textFont), width, 12).forEach { add(TextLine(it, textFont, accent)) }
-        }
-        chatLinks.filterKeys { it.first == step.node }.forEach { (ends, text) ->
-            val target = source?.card?.invoke(ends.second)?.title ?: ends.second.toString()
-            wrap("Assistant link → $target: $text", getFontMetrics(textFont), width, 12)
-                .forEach { add(TextLine(it, textFont, accent)) }
+        scene.noteOf[step.node]?.let { text ->
+            val color = scene.roles[step.node]?.role?.let(::roleColor) ?: accent
+            wrap("Note: $text", getFontMetrics(textFont), width, 8).forEach { add(TextLine(it, textFont, color)) }
         }
     }
 
@@ -580,10 +673,18 @@ class FlowChartCanvas(
             canvas.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
             canvas.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
             val clip = canvas.clipBounds
-            val reach = JBUI.scale(12)
-            paintChatLinks(canvas, geometry)
+            val reach = JBUI.scale(20)
+            val dimming = scene.dimOthers && scene.nodes.isNotEmpty()
+            val dimmed = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.3f)
+            val normal = canvas.composite
+            // Group boxes and externals belong to the scene, so they are never dimmed; boxes stay behind everything.
+            val overlay = overlay
+            overlay?.groups?.forEach { paintGroup(canvas, it) }
+            paintSceneLinks(canvas, geometry, chips = null)
+            overlay?.let { paintConnectors(canvas, geometry, it, chips = null) }
             for (shape in geometry.shapes) {
                 if (clip != null && !clip.intersects(Rectangle(bounds(shape)).apply { grow(reach, reach) })) continue
+                canvas.composite = if (dimming && !inScene(shape, geometry)) dimmed else normal
                 when (shape) {
                     is FlowFrame -> paintFrame(canvas, shape)
                     is FlowSegment -> paintSegment(canvas, shape)
@@ -597,7 +698,7 @@ class FlowChartCanvas(
                         paintDot(canvas, shape.dot, accent, shape.region.plan.evidence.key == selectedRegion, hollow = true)
                         paintCard(canvas, FlowCardBox(presentation, shape.bounds, shape.leftOfSpine, shape.dot),
                             selected = shape.region.plan.evidence.key == selectedRegion,
-                            matching = shape.region.plan.evidence.key in regionMatches)
+                            matching = shape.region.plan.evidence.key in regionMatches, role = null)
                     }
                     is FlowPill -> paintPill(canvas, shape)
                     is FlowDecisionBox -> paintDecision(canvas, shape)
@@ -605,29 +706,277 @@ class FlowChartCanvas(
                     is FlowBanner -> paintBanner(canvas, shape)
                 }
             }
+            canvas.composite = normal
+            val chips = ChipSpace(overlay?.solid.orEmpty().toMutableList(), chartObstacles(geometry))
+            overlay?.snippets?.forEach { paintSnippet(canvas, it) }
+            overlay?.externals?.forEach { paintExternal(canvas, it) }
+            paintSceneLinks(canvas, geometry, chips)
+            overlay?.let { paintConnectors(canvas, geometry, it, chips) }
+        } finally { canvas.dispose() }
+        if (story == null) scene.title?.let { paintCaption(g, it) }
+    }
+
+    /** Whether [shape] belongs to the scene: its cards, dots and references, and connectors inside scene functions. */
+    private fun inScene(shape: FlowShape, geometry: FlowGeometry): Boolean = when (shape) {
+        is FlowCardBox -> shape.step.node in scene.roles || shape.step.node == hoveredNode
+        is FlowDot -> shape.step.node in scene.roles
+        is FlowRefBox -> shape.ref.node in scene.roles
+        is FlowBanner -> true
+        is FlowRegionBox -> shape.region.plan.evidence.sites.any { it.callee in scene.roles }
+        else -> geometry.chatTargets[shape]?.owner?.let { it in scene.roles } == true
+    }
+
+    /** Typed scene links: without [chips] the arrows behind cards, with it their label chips on top, avoiding [chips]. */
+    private fun paintSceneLinks(g: Graphics2D, geometry: FlowGeometry, chips: ChipSpace?) {
+        val previous = g.stroke
+        for (link in scene.links) {
+            val from = geometry.cards[link.from]?.bounds ?: continue
+            val to = geometry.cards[link.to]?.bounds ?: continue
+            val color = linkColor(link.kind)
+            // Cards stacked in one column are joined on their right edges with a bulge, so the arrow is not hidden.
+            val stacked = kotlin.math.abs(from.centerX - to.centerX) < from.width / 2.0
+            val down = to.centerY >= from.centerY
+            val (x1, y1) = if (stacked) from.maxX.toDouble() to from.centerY else from.centerX to if (down) from.maxY.toDouble() else from.minY.toDouble()
+            val (x2, y2) = if (stacked) to.maxX.toDouble() to to.centerY else to.centerX to if (down) to.minY.toDouble() else to.maxY.toDouble()
+            val bulge = JBUI.scale(48) + kotlin.math.abs(y2 - y1) / 8
+            val path = Path2D.Double().apply {
+                moveTo(x1, y1)
+                if (stacked) curveTo(x1 + bulge, y1, x2 + bulge, y2, x2, y2) else lineTo(x2, y2)
+            }
+            val midX = if (stacked) maxOf(x1, x2) + bulge * 0.75 else (x1 + x2) / 2
+            val midY = (y1 + y2) / 2
+            if (chips == null) {
+                g.color = color
+                g.stroke = linkStroke(link.kind)
+                g.draw(path)
+                arrowHead(g, x2, y2, if (stacked) kotlin.math.atan2(0.0, -1.0) else kotlin.math.atan2(y2 - y1, x2 - x1))
+                continue
+            }
+            paintChip(g, if (link.kind == SceneLinkKind.CALL) link.label ?: "call" else
+                link.kind.name.lowercase() + link.label?.let { ": $it" }.orEmpty(), color, midX, midY, chips)
+        }
+        g.stroke = previous
+    }
+
+    private fun arrowHead(g: Graphics2D, x: Double, y: Double, angle: Double) {
+        g.stroke = BasicStroke(JBUIScale.scale(1.5f))
+        val head = JBUI.scale(10).toDouble()
+        for (delta in listOf(-0.5, 0.5)) g.draw(java.awt.geom.Line2D.Double(x, y,
+            x - head * kotlin.math.cos(angle + delta), y - head * kotlin.math.sin(angle + delta)))
+    }
+
+    /**
+     * A label chip centred at ([x], [y]), moved down past the snippets, externals and earlier chips of [space], and past
+     * cards and pills too when that keeps it near its line.
+     */
+    private fun paintChip(g: Graphics2D, text: String, color: Color, x: Double, y: Double, space: ChipSpace) {
+        g.font = smallFont
+        val fm = g.fontMetrics
+        val label = clipText(text, fm, JBUI.scale(180))
+        val w = fm.stringWidth(label) + JBUI.scale(10)
+        val h = fm.height + JBUI.scale(2)
+        val candidate = Rectangle((x - w / 2.0).toInt(), (y - h / 2.0).toInt(), w, h)
+        val spot = freeSpot(candidate, space.taken + space.soft, JBUI.scale(2)).takeIf { it.y - candidate.y <= h * 4 }
+            ?: freeSpot(candidate, space.taken, JBUI.scale(2))
+        space.taken += spot
+        val chip = RoundRectangle2D.Double(spot.x.toDouble(), spot.y.toDouble(), w.toDouble(), h.toDouble(), h.toDouble(), h.toDouble())
+        g.color = background
+        g.fill(chip)
+        g.color = color
+        g.stroke = BasicStroke(JBUIScale.scale(1f))
+        g.draw(chip)
+        g.drawString(label, spot.x + (w - fm.stringWidth(label)) / 2, spot.y + (h - fm.height) / 2 + fm.ascent)
+    }
+
+    private val monoFont get() = Font(Font.MONOSPACED, Font.PLAIN, smallFont.size)
+
+    /** Snippet lines with tabs expanded and their common indentation removed. */
+    private fun snippetCode(snippet: SceneSnippet): List<String> {
+        val lines = snippet.lines.orEmpty().map { it.replace("\t", "    ") }
+        val indent = lines.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
+        return lines.map { it.drop(indent) }
+    }
+
+    private fun layoutOverlay(geometry: FlowGeometry): SceneOverlay? {
+        if (scene.groups.isEmpty() && scene.externals.isEmpty() && scene.snippets.isEmpty()) return null
+        val small = getFontMetrics(smallFont)
+        val pad = JBUI.scale(6)
+        return layoutSceneOverlay(scene, geometry, JBUI.scale(8), JBUI.scale(8), small.height + JBUI.scale(2),
+            { snippet -> Dimension(JBUI.scale(340), pad * 2 + small.height * (if (snippet.caption != null) 2 else 1) +
+                getFontMetrics(monoFont).height * snippet.lines.orEmpty().size) },
+            { external -> Dimension((maxOf(small.stringWidth(externalTag(external)), getFontMetrics(smallFont.deriveFont(Font.BOLD))
+                .stringWidth(external.label)) + pad * 4).coerceIn(JBUI.scale(110), JBUI.scale(220)),
+                small.height * 2 + pad * 2 + if (external.kind == ExternalKind.DATABASE) JBUI.scale(8) else 0) })
+    }
+
+    private fun externalTag(external: SceneExternal) = external.kind.name.lowercase() + if (external.verified) " · rule effects" else " · explanation"
+
+    private fun paintGroup(g: Graphics2D, box: GroupBox) {
+        val group = scene.groups.getOrNull(box.group) ?: return
+        val color = groupPalette[box.group % groupPalette.size]
+        val r = box.bounds
+        val shape = RoundRectangle2D.Double(r.x.toDouble(), r.y.toDouble(), r.width.toDouble(), r.height.toDouble(),
+            JBUI.scale(18).toDouble(), JBUI.scale(18).toDouble())
+        g.color = ColorUtil.withAlpha(color, 0.08)
+        g.fill(shape)
+        g.color = ColorUtil.withAlpha(color, 0.35)
+        g.stroke = BasicStroke(JBUIScale.scale(1f))
+        g.draw(shape)
+        g.font = smallFont.deriveFont(Font.BOLD)
+        g.color = color
+        val fm = g.fontMetrics
+        val text = clipText(group.label + group.kind?.let { " · ${it.name.lowercase()}" }.orEmpty(), fm, r.width - JBUI.scale(16))
+        g.drawString(text, r.x + JBUI.scale(8), r.y + JBUI.scale(3) + fm.ascent)
+    }
+
+    /** Dashed connectors between externals and their cards: without [chips] the lines, with it their label chips. */
+    private fun paintConnectors(g: Graphics2D, geometry: FlowGeometry, overlay: SceneOverlay, chips: ChipSpace?) {
+        for (box in overlay.externals) {
+            val color = externalColor(box.external.kind)
+            for (link in box.external.connected) {
+                val card = geometry.cards[link.node]?.bounds ?: continue
+                val (x1, y1) = card.maxX to card.centerY
+                val (x2, y2) = box.bounds.x.toDouble() to box.bounds.centerY
+                if (chips != null) {
+                    link.label?.let { paintChip(g, it, color, (x1 + x2) / 2, (y1 + y2) / 2, chips) }
+                    continue
+                }
+                g.color = color
+                g.stroke = linkStroke(SceneLinkKind.DATA)
+                g.draw(java.awt.geom.Line2D.Double(x1, y1, x2, y2))
+                val angle = kotlin.math.atan2(y2 - y1, x2 - x1)
+                if (link.direction != ExternalDirection.IN) arrowHead(g, x2, y2, angle)
+                if (link.direction != ExternalDirection.OUT) arrowHead(g, x1, y1, angle + Math.PI)
+            }
+        }
+    }
+
+    /** A cylinder for databases, a pill for other systems; dashed while it is an explanation. */
+    private fun paintExternal(g: Graphics2D, box: ExternalBox) {
+        val external = box.external
+        val color = externalColor(external.kind)
+        val r = box.bounds
+        val shape: java.awt.Shape = if (external.kind == ExternalKind.DATABASE) {
+            val cap = JBUI.scale(8).toDouble()
+            Path2D.Double().apply {
+                moveTo(r.x.toDouble(), r.y + cap / 2)
+                curveTo(r.x.toDouble(), r.y - cap / 6, r.maxX, r.y - cap / 6, r.maxX, r.y + cap / 2)
+                lineTo(r.maxX, r.maxY - cap / 2)
+                curveTo(r.maxX, r.maxY + cap / 6, r.x.toDouble(), r.maxY + cap / 6, r.x.toDouble(), r.maxY - cap / 2)
+                closePath()
+                moveTo(r.x.toDouble(), r.y + cap / 2)
+                curveTo(r.x.toDouble(), r.y + cap * 7 / 6, r.maxX, r.y + cap * 7 / 6, r.maxX, r.y + cap / 2)
+            }
+        } else RoundRectangle2D.Double(r.x.toDouble(), r.y.toDouble(), r.width.toDouble(), r.height.toDouble(), r.height.toDouble(), r.height.toDouble())
+        g.color = background
+        g.fill(shape)
+        g.color = ColorUtil.withAlpha(color, 0.14)
+        g.fill(shape)
+        g.color = color
+        g.stroke = if (external.verified) BasicStroke(JBUIScale.scale(1.5f)) else dashed(1.2f)
+        g.draw(shape)
+        val fm = getFontMetrics(smallFont)
+        val top = r.y + (r.height - fm.height * 2) / 2 + if (external.kind == ExternalKind.DATABASE) JBUI.scale(3) else 0
+        val width = r.width - JBUI.scale(16)
+        for ((i, line) in listOf(externalTag(external) to smallFont, external.label to smallFont.deriveFont(Font.BOLD)).withIndex()) {
+            g.font = line.second
+            g.color = if (i == 0) mutedText else JBColor.foreground()
+            val text = clipText(line.first, g.fontMetrics, width)
+            g.drawString(text, r.x + (r.width - g.fontMetrics.stringWidth(text)) / 2, top + fm.height * i + g.fontMetrics.ascent)
+        }
+    }
+
+    /** A monospace callout with file, line numbers and the captured lines, joined to its card by a thin pointer. */
+    private fun paintSnippet(g: Graphics2D, box: SnippetBox) {
+        val r = box.bounds
+        val snippet = box.snippet
+        val color = scene.roles[snippet.node]?.role?.let(::roleColor) ?: accent
+        val anchorY = box.card.y + JBUI.scale(10)
+        g.color = ColorUtil.withAlpha(color, 0.6)
+        g.stroke = BasicStroke(JBUIScale.scale(1f))
+        val cardX = if (box.left) box.card.x else box.card.x + box.card.width
+        val boxX = if (box.left) r.x + r.width else r.x
+        g.drawLine(cardX, anchorY, boxX, r.y + JBUI.scale(10))
+        g.fillOval(cardX - JBUI.scale(3), anchorY - JBUI.scale(3), JBUI.scale(6), JBUI.scale(6))
+        val shape = RoundRectangle2D.Double(r.x.toDouble(), r.y.toDouble(), r.width.toDouble(), r.height.toDouble(),
+            JBUI.scale(8).toDouble(), JBUI.scale(8).toDouble())
+        g.color = snippetFill
+        g.fill(shape)
+        g.color = ColorUtil.withAlpha(color, 0.6)
+        g.draw(shape)
+        val pad = JBUI.scale(6)
+        var y = r.y + pad
+        g.font = smallFont
+        g.color = mutedText
+        val small = g.fontMetrics
+        val header = "${snippet.path?.substringAfterLast('/')}:${snippet.startLine}" +
+            (if (snippet.endLine > snippet.startLine) "-${snippet.endLine}" else "")
+        g.drawString(clipText(header, small, r.width - pad * 2), r.x + pad, y + small.ascent)
+        y += small.height
+        snippet.caption?.let { caption ->
+            g.font = smallFont.deriveFont(Font.BOLD)
+            g.color = JBColor.foreground()
+            g.drawString(clipText(caption, g.fontMetrics, r.width - pad * 2), r.x + pad, y + g.fontMetrics.ascent)
+            y += small.height
+        }
+        g.font = monoFont
+        val mono = g.fontMetrics
+        val gutter = mono.stringWidth("${snippet.endLine}") + pad
+        for ((i, line) in snippetCode(snippet).withIndex()) {
+            g.color = mutedText
+            val number = "${snippet.startLine + i}"
+            g.drawString(number, r.x + pad + gutter - pad - mono.stringWidth(number), y + mono.ascent)
+            g.color = JBColor.foreground()
+            g.drawString(clipText(line, mono, r.width - pad * 2 - gutter), r.x + pad + gutter, y + mono.ascent)
+            y += mono.height
+        }
+    }
+
+    private fun linkStroke(kind: SceneLinkKind): BasicStroke {
+        fun dash(vararg pattern: Float) = BasicStroke(JBUIScale.scale(1.6f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f,
+            pattern.map { JBUIScale.scale(it) }.toFloatArray(), 0f)
+        return when (kind) {
+            SceneLinkKind.CALL -> BasicStroke(JBUIScale.scale(2f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            SceneLinkKind.DATA -> dash(7f, 4f)
+            SceneLinkKind.EVENT -> dash(2f, 4f)
+            SceneLinkKind.CALLBACK -> dash(8f, 3f, 2f, 3f)
+            SceneLinkKind.ASYNC -> dash(12f, 6f)
+        }
+    }
+
+    /** The scene title as a small caption pinned to the top of the visible area. */
+    private fun paintCaption(g: Graphics, title: String) {
+        val canvas = g.create() as Graphics2D
+        try {
+            canvas.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            canvas.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            canvas.font = metaFont.deriveFont(Font.BOLD)
+            val fm = canvas.fontMetrics
+            val visible = visibleRect.takeIf { it.width > 0 } ?: Rectangle(0, 0, width, height)
+            val pad = JBUI.scale(8)
+            val text = clipText(title, fm, max(JBUI.scale(80), visible.width - pad * 6))
+            val box = RoundRectangle2D.Double((visible.x + pad).toDouble(), (visible.y + pad).toDouble(),
+                (fm.stringWidth(text) + pad * 2).toDouble(), (fm.height + pad).toDouble(), pad * 1.5, pad * 1.5)
+            canvas.color = ColorUtil.withAlpha(background, 0.92)
+            canvas.fill(box)
+            canvas.color = ColorUtil.withAlpha(accent, 0.6)
+            canvas.stroke = BasicStroke(JBUIScale.scale(1f))
+            canvas.draw(box)
+            canvas.color = JBColor.foreground()
+            canvas.drawString(text, (box.x + pad).toFloat(), (box.y + pad / 2.0 + fm.ascent).toFloat())
         } finally { canvas.dispose() }
     }
 
-    private fun paintChatLinks(g: Graphics2D, geometry: FlowGeometry) {
-        val previous = g.stroke
-        g.color = accent
-        for ((ends, _) in chatLinks) {
-            val from = geometry.cards[ends.first]?.bounds ?: continue
-            val to = geometry.cards[ends.second]?.bounds ?: continue
-            val x1 = from.centerX
-            val y1 = if (to.centerY >= from.centerY) from.maxY else from.minY
-            val x2 = to.centerX
-            val y2 = if (to.centerY >= from.centerY) to.minY else to.maxY
-            g.stroke = BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, floatArrayOf(6f, 5f), 0f)
-            g.draw(java.awt.geom.Line2D.Double(x1, y1, x2, y2))
-            val angle = kotlin.math.atan2(y2 - y1, x2 - x1)
-            g.stroke = BasicStroke(1.5f)
-            for (delta in listOf(-0.5, 0.5)) {
-                g.draw(java.awt.geom.Line2D.Double(x2, y2,
-                    x2 - 10 * kotlin.math.cos(angle + delta), y2 - 10 * kotlin.math.sin(angle + delta)))
-            }
-        }
-        g.stroke = previous
+    private fun paintBadge(g: Graphics2D, text: String, color: Color, center: Point) {
+        g.font = smallFont.deriveFont(Font.BOLD)
+        val fm = g.fontMetrics
+        val radius = max(JBUI.scale(9), fm.stringWidth(text) / 2 + JBUI.scale(4))
+        g.color = color
+        g.fillOval(center.x - radius, center.y - radius, radius * 2, radius * 2)
+        g.color = background
+        g.stroke = BasicStroke(JBUIScale.scale(1.5f))
+        g.drawOval(center.x - radius, center.y - radius, radius * 2, radius * 2)
+        g.drawString(text, center.x - fm.stringWidth(text) / 2, center.y - fm.height / 2 + fm.ascent)
     }
 
     /** Bounds of [shape]; may be the shape's own rectangle, so callers must not change it. */
@@ -704,18 +1053,32 @@ class FlowChartCanvas(
     }
 
     private fun paintCard(g: Graphics2D, box: FlowCardBox, selected: Boolean = box.step.node == selectedNode,
-        matching: Boolean = searchMatches?.contains(box.step.node) == true || box.step.node in chatHighlights) {
+        matching: Boolean = searchMatches?.contains(box.step.node) == true, role: SceneNode? = scene.roles[box.step.node]) {
         val bounds = box.bounds
-        if (selected || matching) {
-            val pad = JBUI.scale(4)
+        val pad = JBUI.scale(4)
+        if (selected || matching || role != null) {
             val arc = JBUI.scale(10).toDouble()
             val shape = RoundRectangle2D.Double((bounds.x - pad).toDouble(), (bounds.y - pad).toDouble(), (bounds.width + pad * 2).toDouble(),
                 (bounds.height + pad * 2).toDouble(), arc, arc)
-            g.color = if (matching) searchFill else selectionFill
+            g.color = when {
+                matching -> searchFill
+                role != null -> ColorUtil.withAlpha(roleColor(role.role), if (role.role == SceneRole.CONTEXT) 0.07 else 0.14)
+                else -> selectionFill
+            }
             g.fill(shape)
-            g.color = ColorUtil.withAlpha(accent, 0.6)
-            g.stroke = BasicStroke(JBUIScale.scale(1f))
+            g.color = role?.let { roleColor(it.role) } ?: ColorUtil.withAlpha(accent, 0.6)
+            g.stroke = if (role?.role == SceneRole.CONTEXT) dashed(1f)
+                else BasicStroke(JBUIScale.scale(if (role != null) 2f else 1f))
             g.draw(shape)
+        }
+        if (box.step.node == hoveredNode) {
+            val ring = JBUI.scale(8)
+            g.color = ColorUtil.withAlpha(accent, 0.18)
+            g.fill(RoundRectangle2D.Double((bounds.x - ring).toDouble(), (bounds.y - ring).toDouble(), (bounds.width + ring * 2).toDouble(),
+                (bounds.height + ring * 2).toDouble(), JBUI.scale(14).toDouble(), JBUI.scale(14).toDouble()))
+            g.color = accent
+            g.stroke = BasicStroke(JBUIScale.scale(3f))
+            g.drawRoundRect(bounds.x - ring, bounds.y - ring, bounds.width + ring * 2, bounds.height + ring * 2, JBUI.scale(14), JBUI.scale(14))
         }
         if (box.step.card.entryPoint) {
             val pad = JBUI.scale(3)
@@ -733,6 +1096,9 @@ class FlowChartCanvas(
             g.drawString(line.text, x, y + fm.ascent)
             y += fm.height
         }
+        val badge = role?.badge ?: return
+        // On the outer top corner, away from the spine dot.
+        paintBadge(g, badge, roleColor(role.role), Point(if (box.leftOfSpine) bounds.x - pad else bounds.x + bounds.width + pad, bounds.y - pad))
     }
 
     private fun paintPill(g: Graphics2D, pill: FlowPill) {
@@ -839,3 +1205,6 @@ internal fun clipText(text: String, fm: FontMetrics, width: Int): String {
     while (end > 0 && fm.stringWidth(text.substring(0, end).trimEnd() + "…") > width) end--
     return text.substring(0, end).trimEnd() + "…"
 }
+
+/** Where label chips go: [taken] they must avoid (overlay elements, earlier chips), [soft] they avoid when nearby. */
+internal class ChipSpace(val taken: MutableList<Rectangle>, val soft: List<Rectangle>)
