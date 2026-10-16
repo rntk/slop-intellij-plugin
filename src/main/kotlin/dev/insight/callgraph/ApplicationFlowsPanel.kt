@@ -16,6 +16,7 @@ import dev.insight.enrichment.EnrichmentService
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointService
 import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.*
 import java.awt.event.MouseWheelEvent
@@ -94,8 +95,8 @@ internal class ApplicationFlowsPanel(
             .createPopup().showUnderneathOf(chooseEntryButton)
     }
 
-    private val splitButton = JButton("Split flows").apply {
-        toolTipText = "Split each selected entrypoint into logical flows with the LLM and draw every flow as its own graph"
+    private val splitAction = PanelCommand("Split flows", "Split selected entrypoints into logical flows with the LLM") {
+        if (job?.isActive == true) job?.cancel() else splitFlows()
     }
     private val entryChoice = JComboBox<EntryChoice>().apply {
         toolTipText = "Show the flows of one entrypoint, or of all of them"
@@ -129,7 +130,6 @@ internal class ApplicationFlowsPanel(
 
     init {
         border = JBUI.Borders.empty(8)
-        splitButton.addActionListener { if (job?.isActive == true) job?.cancel() else splitFlows() }
         chooseEntryButton.addActionListener { chooseEntryPoint() }
         discoveredButton.addActionListener { setManualEntry(null) }
         entryChoice.addActionListener { showFlows() }
@@ -139,11 +139,12 @@ internal class ApplicationFlowsPanel(
             list.revalidate()
         }
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(CollapsibleControls(project, "insight.flows.controls").apply {
-                controlsSection = section("controls", "Controls",JPanel(BorderLayout(0, 4)).apply {
+            add(CollapsibleControls(project, "insight.flows.controls", this@ApplicationFlowsPanel).apply {
+                command(PanelCommand("Refresh", "Rebuild the application graph") { refresh() })
+                command(splitAction)
+                separator()
+                controlsSection = section("controls", "Controls", JPanel(BorderLayout(0, 4)).apply {
                     add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                        add(JButton("Refresh").apply { toolTipText = "Rebuild the application graph"; addActionListener { refresh() } })
-                        add(splitButton)
                         add(JLabel("Show flows:"))
                         add(entryChoice)
                         add(JLabel("Zoom:"))
@@ -188,7 +189,7 @@ internal class ApplicationFlowsPanel(
             return
         }
         val request = ++generation
-        splitButton.text = "Cancel"
+        splitAction.text = "Cancel"
         chooseEntryButton.isEnabled = false
         discoveredButton.isEnabled = false
         status.text = "Splitting entrypoint flows…"
@@ -210,7 +211,7 @@ internal class ApplicationFlowsPanel(
             } finally {
                 if (!disposed && request == generation) {
                     job = null
-                    splitButton.text = "Split flows"
+                    splitAction.text = "Split flows"
                     chooseEntryButton.isEnabled = true
                     discoveredButton.isEnabled = manualEntry != null
                 }

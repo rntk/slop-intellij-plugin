@@ -118,4 +118,20 @@ class ApiTrafficLogTest {
         assertTrue(text.contains("RESPONSE 500"))
         assertTrue(text.contains("Bearer <redacted>"))
     }
+
+    @Test fun `redacts credentials without a scheme and in proxy and key headers`() {
+        val credentials = HttpRequest.newBuilder(URI("http://localhost/v1/x"))
+            .header("Authorization", "bare-s3cret").header("Proxy-Authorization", "Basic cHJveHk=")
+            .header("x-api-key", "sk-ant-s3cret").header("api-key", "azure-s3cret")
+            .POST(HttpRequest.BodyPublishers.noBody()).build()
+        val log = ApiTrafficLog("LLM")
+        log.begin(credentials, "", 0)
+        val headers = log.entries().single().requestHeaders.mapKeys { it.key.lowercase() }
+        assertEquals("<redacted>", headers["authorization"])
+        assertEquals("Basic <redacted>", headers["proxy-authorization"])
+        assertEquals("<redacted>", headers["x-api-key"])
+        assertEquals("<redacted>", headers["api-key"])
+        assertFalse(log.entries().toString().contains("s3cret"))
+        assertFalse(log.entries().toString().contains("cHJveHk="))
+    }
 }

@@ -10,7 +10,7 @@ import java.io.IOException
 class LlmProtocolException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 /**
- * OpenAI-compatible `/chat/completions` wire format, as served by llama.cpp's `llama-server`.
+ * OpenAI-compatible `/chat/completions` wire format, as served by llama.cpp's `llama-server`, OpenAI, and DeepSeek.
  * Outbound encoding accepts only the internal shape; tolerance for server quirks (JSON-string
  * arguments, `call_id`, `<think>` tags, reasoning fields) is applied only when decoding responses.
  */
@@ -18,17 +18,35 @@ internal object LlmJson {
     private val toolName = Regex("[A-Za-z0-9_-]{1,64}")
     private val thinkTag = Regex("<think\\b[^>]*>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
 
-    fun encode(request: CompletionRequest, model: String, cachePrompt: Boolean): String {
+    /** Checks shared by every provider's encoder, so invalid requests fail before network work. */
+    fun validate(request: CompletionRequest) {
         require(request.messages.isNotEmpty()) { "At least one message is required" }
         require(request.tools.map { it.name }.toSet().size == request.tools.size) { "Tool names must be unique" }
         request.tools.forEach { require(toolName.matches(it.name)) { "Invalid tool name: ${it.name}" } }
         request.temperature?.let { require(it.isFinite() && it >= 0) { "Temperature must be a non-negative number" } }
         request.maxTokens?.let { require(it > 0) { "Max tokens must be positive" } }
+        request.messages.filter { it.role == LlmRole.TOOL }
+            .forEach { require(!it.toolCallId.isNullOrBlank()) { "Tool messages require a tool call ID" } }
+    }
+
+    /**
+     * [maxTokensKey] is `max_tokens` for most servers; OpenAI reasoning models accept only `max_completion_tokens`.
+     * [replayReasoning] echoes [LlmMessage.reasoning] as `reasoning_content`. [extra] adds provider-specific fields.
+     */
+    fun encode(
+        request: CompletionRequest,
+        model: String,
+        cachePrompt: Boolean,
+        maxTokensKey: String = "max_tokens",
+        replayReasoning: Boolean = true,
+        extra: JsonObject.() -> Unit = {},
+    ): String {
+        validate(request)
         val body = JsonObject()
         if (model.isNotBlank()) body.addProperty("model", model)
-        body.add("messages", JsonArray().apply { request.messages.forEach { add(message(it)) } })
+        body.add("messages", JsonArray().apply { request.messages.forEach { add(message(it, replayReasoning)) } })
         request.temperature?.let { body.addProperty("temperature", it) }
-        request.maxTokens?.let { body.addProperty("max_tokens", it) }
+        request.maxTokens?.let { body.addProperty(maxTokensKey, it) }
         request.responseFormat?.let { body.add("response_format", it) }
         // llama.cpp reuses the KV cache for the shared prompt prefix; other servers ignore the flag.
         if (cachePrompt) body.addProperty("cache_prompt", true)
@@ -38,17 +56,15 @@ internal object LlmJson {
             request.toolChoice?.let { body.add("tool_choice", toolChoice(it)) }
             request.parallelToolCalls?.let { body.addProperty("parallel_tool_calls", it) }
         }
+        body.extra()
         return body.toString()
     }
 
-    private fun message(message: LlmMessage) = JsonObject().apply {
+    private fun message(message: LlmMessage, replayReasoning: Boolean) = JsonObject().apply {
         addProperty("role", message.role.wire)
         addProperty("content", message.content)
-        if (message.role == LlmRole.TOOL) {
-            require(!message.toolCallId.isNullOrBlank()) { "Tool messages require a tool call ID" }
-            addProperty("tool_call_id", message.toolCallId)
-        }
-        if (!message.reasoning.isNullOrEmpty()) addProperty("reasoning_content", message.reasoning)
+        if (message.role == LlmRole.TOOL) addProperty("tool_call_id", message.toolCallId)
+        if (replayReasoning && !message.reasoning.isNullOrEmpty()) addProperty("reasoning_content", message.reasoning)
         if (message.toolCalls.isNotEmpty()) {
             add("tool_calls", JsonArray().apply {
                 message.toolCalls.forEach { call ->
@@ -140,14 +156,18 @@ internal object LlmJson {
             ?: if (cacheN != null || promptN != null) (cacheN ?: 0) + (promptN ?: 0) else null
         val output = usage?.int("completion_tokens") ?: timings?.int("predicted_n")
         val total = usage?.int("total_tokens") ?: if (input != null || output != null) (input ?: 0) + (output ?: 0) else null
-        val cached = usage?.objectOrNull("prompt_tokens_details")?.int("cached_tokens") ?: cacheN
-        return LlmUsage(input, output, total, cached).takeIf { input != null || output != null || cached != null }
+        // DeepSeek reports cache hits at the top level of `usage`; OpenAI nests them under prompt_tokens_details.
+        val cached = usage?.int("prompt_cache_hit_tokens")
+            ?: usage?.objectOrNull("prompt_tokens_details")?.int("cached_tokens") ?: cacheN
+        val reasoning = usage?.objectOrNull("completion_tokens_details")?.int("reasoning_tokens")
+        return LlmUsage(input, output, total, cached, reasoningTokens = reasoning)
+            .takeIf { input != null || output != null || cached != null }
     }
-
-    private fun JsonObject.objectOrNull(key: String): JsonObject? = get(key)?.takeIf { it.isJsonObject }?.asJsonObject
-    private fun JsonObject.string(key: String): String? =
-        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
-    private fun JsonObject.int(key: String): Int? =
-        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
-            ?.takeIf { it.isFinite() && it >= 0 && it <= Int.MAX_VALUE }?.toInt()
 }
+
+internal fun JsonObject.objectOrNull(key: String): JsonObject? = get(key)?.takeIf { it.isJsonObject }?.asJsonObject
+internal fun JsonObject.string(key: String): String? =
+    get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+internal fun JsonObject.int(key: String): Int? =
+    get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
+        ?.takeIf { it.isFinite() && it >= 0 && it <= Int.MAX_VALUE }?.toInt()

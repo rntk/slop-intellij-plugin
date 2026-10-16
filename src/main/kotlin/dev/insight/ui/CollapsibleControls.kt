@@ -1,65 +1,78 @@
 package dev.insight.ui
 
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.actionSystem.*
+import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.actionSystem.toolbarLayout.ToolbarLayoutStrategy
+import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.FlowLayout
 import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JToggleButton
 
-/** A single compact strip keeps hidden controls discoverable without rebuilding their state. */
-internal class CollapsibleControls(project: Project, private val key: String) : JPanel(BorderLayout()) {
+/** Native toolbar overflow keeps commands and section toggles reachable in narrow tool windows. */
+internal class CollapsibleControls(project: Project, private val key: String, target: JComponent) : JPanel(BorderLayout()) {
     private val preferences = PropertiesComponent.getInstance(project)
-    private val strip = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
+    private val actions = DefaultActionGroup()
+    private val toolbar = ActionManager.getInstance().createActionToolbar(key, actions, true).apply {
+        setTargetComponent(target)
+        setLayoutStrategy(ToolbarLayoutStrategy.AUTOLAYOUT_STRATEGY)
+    }
     private val rows = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
 
     init {
-        add(strip, BorderLayout.NORTH)
+        add(toolbar.component, BorderLayout.NORTH)
         add(rows, BorderLayout.CENTER)
     }
 
-    /** A disclosure button and the content it shows or hides. */
-    inner class Section internal constructor(private val id: String, private val title: String,
+    fun command(action: AnAction) { actions.add(action) }
+    fun separator() { actions.addSeparator() }
+
+    inner class Section internal constructor(id: String, private val title: String,
                                              private val content: JComponent, private val expanded: Boolean) {
         private val property = "$key.$id"
-        private val button = JToggleButton(title, preferences.getBoolean(property, expanded)).apply {
-            margin = JBUI.insets(2, 6)
-        }
-
-        /** Active state shown on the button while the section is collapsed, so hidden settings are not silent. */
+        private var shown = preferences.getBoolean(property, expanded)
         var hint: String = ""
-            set(value) { if (field != value) { field = value; update() } }
+            set(value) {
+                if (field != value) {
+                    field = value
+                    toolbar.updateActionsAsync()
+                }
+            }
+        private val action = object : DumbAwareToggleAction(title) {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            init { templatePresentation.putClientProperty(ActionUtil.SHOW_TEXT_IN_TOOLBAR, true) }
+            override fun isSelected(e: AnActionEvent) = shown
+            override fun setSelected(e: AnActionEvent, state: Boolean) { setShown(state) }
+            override fun update(e: AnActionEvent) {
+                super.update(e)
+                val note = hint.takeIf { !shown && it.isNotBlank() }
+                e.presentation.text = title + note?.let { " · ${it.take(40)}" }.orEmpty()
+                e.presentation.description = "${if (shown) "Hide" else "Show"} $title" + note?.let { " ($it)" }.orEmpty()
+            }
+        }
 
         init {
-            button.addActionListener {
-                preferences.setValue(property, button.isSelected, expanded)
-                update()
-            }
-            strip.add(button)
-            update()
-        }
-
-        /** Expands the section (remembered like a click) when it is collapsed. */
-        fun reveal() {
-            if (!button.isSelected) button.doClick()
-        }
-
-        private fun update() {
-            val shown = button.isSelected
+            actions.add(action)
             content.isVisible = shown
-            val note = hint.takeIf { !shown && it.isNotBlank() }
-            button.text = "${if (shown) "▾" else "▸"} $title" + note?.let { " · ${it.take(40)}" }.orEmpty()
-            button.toolTipText = "${if (shown) "Hide" else "Show"} $title" + note?.let { " ($it)" }.orEmpty()
-            button.accessibleContext.accessibleName = button.toolTipText
+        }
+
+        fun reveal() { setShown(true) }
+
+        private fun setShown(value: Boolean) {
+            if (shown == value) return
+            shown = value
+            preferences.setValue(property, shown, expanded)
+            content.isVisible = shown
             content.parent?.revalidate()
             content.parent?.repaint()
+            toolbar.updateActionsAsync()
         }
     }
 
-    fun section(id: String, title: String, content: JComponent, expanded: Boolean = true): Section {
+    fun section(id: String, title: String, content: JComponent, expanded: Boolean = false): Section {
         val wrapper = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.emptyTop(4)
             add(content, BorderLayout.CENTER)

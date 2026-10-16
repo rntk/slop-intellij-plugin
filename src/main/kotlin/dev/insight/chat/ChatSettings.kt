@@ -10,83 +10,64 @@ import com.intellij.openapi.components.SimplePersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
-import com.intellij.openapi.options.BoundConfigurable
-import com.intellij.openapi.ui.DialogPanel
-import com.intellij.ui.dsl.builder.COLUMNS_LARGE
-import com.intellij.ui.dsl.builder.bindIntText
-import com.intellij.ui.dsl.builder.bindText
-import com.intellij.ui.dsl.builder.columns
-import com.intellij.ui.dsl.builder.panel
-import dev.insight.llm.chatCompletionsUri
+import dev.insight.apilog.ApiLogs
+import dev.insight.llm.LlmClient
+import dev.insight.llm.LlmConfiguration
+import dev.insight.llm.LlmProvider
 
-/** LLM server used by the chat. An empty [State.serverUrl] keeps the local demo backend. */
+/** Shared by chat and background analyses. Each provider keeps its own options and credentials. */
 @Service(Service.Level.APP)
 @State(name = "InsightChatSettings", storages = [Storage("insight-chat.xml", roamingType = RoamingType.DISABLED)])
 class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State()) {
-    class State : BaseState() {
+    // Inherit the original fields so existing llama.cpp settings continue to load without migration.
+    class State : ProviderState() {
+        var provider by enum(LlmProvider.LLAMA_CPP)
+        var openAi by property(ProviderState())
+        var deepSeek by property(ProviderState())
+        var anthropic by property(ProviderState())
+
+        fun options(provider: LlmProvider): ProviderState = when (provider) {
+            LlmProvider.LLAMA_CPP -> this
+            LlmProvider.OPENAI -> openAi
+            LlmProvider.DEEPSEEK -> deepSeek
+            LlmProvider.ANTHROPIC -> anthropic
+        }
+
+        fun configuration(): LlmConfiguration = options(provider).configuration(provider)
+    }
+
+    open class ProviderState : BaseState() {
         var serverUrl by string("")
         var model by string("")
         var requestTimeoutSeconds by property(120)
+        var maxRetries by property(2)
+        var maxOutputTokens by property(0)
+        var cachePrompt by property(true)
+        var serviceTier by string("")
+        var promptCacheKey by string("")
+
+        fun configuration(provider: LlmProvider) = LlmConfiguration(provider, serverUrl.orEmpty(), model.orEmpty(),
+            requestTimeoutSeconds, maxRetries, maxOutputTokens, cachePrompt, serviceTier.orEmpty(), promptCacheKey.orEmpty())
     }
 
-    val configured: Boolean get() = !state.serverUrl.isNullOrBlank()
+    /** Reading the password safe can block; call on IO outside settings dialogs. */
+    fun createClient(): LlmClient {
+        val configuration = state.configuration()
+        return configuration.createClient(apiKey(configuration.provider), ApiLogs.llm)
+    }
 
-    /** Stored in the IDE password safe, not in the settings file. Reading it can block; avoid the EDT outside dialogs. */
     var apiKey: String?
-        get() = PasswordSafe.instance.getPassword(credentials)?.takeIf { it.isNotBlank() }
-        set(value) = PasswordSafe.instance.setPassword(credentials, value?.trim()?.takeIf { it.isNotEmpty() })
+        get() = apiKey(state.provider)
+        set(value) = setApiKey(state.provider, value)
+
+    fun apiKey(provider: LlmProvider): String? = PasswordSafe.instance.getPassword(credentials(provider))?.takeIf { it.isNotBlank() }
+
+    fun setApiKey(provider: LlmProvider, value: String?) =
+        PasswordSafe.instance.setPassword(credentials(provider), value?.trim()?.takeIf { it.isNotEmpty() })
 
     companion object {
-        private val credentials = CredentialAttributes(generateServiceName("Insight Workbench", "LLM server API key"))
+        private fun credentials(provider: LlmProvider) = CredentialAttributes(generateServiceName("Insight Workbench",
+            if (provider == LlmProvider.LLAMA_CPP) "LLM server API key" else "${provider.name} API key"))
         fun getInstance(): ChatSettings = service()
-    }
-}
-
-class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
-    private val settings = ChatSettings.getInstance()
-    private var apiKey = ""
-    private var storedApiKey = ""
-
-    override fun createPanel(): DialogPanel {
-        storedApiKey = settings.apiKey.orEmpty()
-        apiKey = storedApiKey
-        val state = settings.state
-        return panel {
-            group("llama.cpp Server") {
-                row("Server URL:") {
-                    textField()
-                        .bindText({ state.serverUrl.orEmpty() }, { state.serverUrl = it.trim() })
-                        .columns(COLUMNS_LARGE)
-                        .comment("For example http://127.0.0.1:8080 for <code>llama-server</code>. Any OpenAI-compatible server works. Leave empty to use the local demo.")
-                        .validationOnApply {
-                            val error = it.text.takeIf { text -> text.isNotBlank() }
-                                ?.let { text -> runCatching { chatCompletionsUri(text) }.exceptionOrNull()?.message }
-                            error?.let { message -> error(message) }
-                        }
-                }
-                row("Model:") {
-                    textField()
-                        .bindText({ state.model.orEmpty() }, { state.model = it.trim() })
-                        .comment("Optional. llama-server answers with its loaded model when this is empty.")
-                }
-                row("API key:") {
-                    passwordField()
-                        .bindText(::apiKey)
-                        .comment("Optional; matches <code>llama-server --api-key</code>. Stored in the IDE password safe and sent only over HTTPS or to localhost.")
-                }
-                row("Request timeout (seconds):") {
-                    intTextField(10..3600).bindIntText({ state.requestTimeoutSeconds }, { state.requestTimeoutSeconds = it })
-                }
-            }
-        }
-    }
-
-    override fun apply() {
-        super.apply()
-        // Only touch the password safe on change; some OS keychains prompt on every write.
-        if (apiKey != storedApiKey) {
-            settings.apiKey = apiKey
-            storedApiKey = apiKey
-        }
     }
 }

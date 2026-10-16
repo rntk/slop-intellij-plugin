@@ -154,6 +154,6 @@ internal fun LlmApiException.isContextOverflow(): Boolean {
     return listOf(
         "context_length_exceeded", "model_context_window_exceeded", "exceeds the available context size",
         "maximum context length", "context window exceeded", "context size exceeded",
-        "exceeds the context", "too many tokens",
+        "exceeds the context", "too many tokens", "prompt is too long",
     ).any { it in detail }
 }

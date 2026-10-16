@@ -10,6 +10,8 @@ data class LlmToolCall(val id: String?, val name: String, val arguments: JsonObj
 /**
  * One message in the provider-neutral shape. Clients serialize it to their wire format.
  * [reasoning] is replayed on assistant tool-call messages; some servers need it to continue a tool loop.
+ * [thinkingBlocks] are an Anthropic response's raw `thinking`/`redacted_thinking` blocks, replayed verbatim on
+ * assistant tool-call messages; other clients ignore them.
  */
 data class LlmMessage(
     val role: LlmRole,
@@ -17,12 +19,17 @@ data class LlmMessage(
     val reasoning: String? = null,
     val toolCalls: List<LlmToolCall> = emptyList(),
     val toolCallId: String? = null,
+    val thinkingBlocks: List<JsonObject> = emptyList(),
 ) {
     companion object {
         fun system(content: String) = LlmMessage(LlmRole.SYSTEM, content)
         fun user(content: String) = LlmMessage(LlmRole.USER, content)
-        fun assistant(content: String, toolCalls: List<LlmToolCall> = emptyList(), reasoning: String? = null) =
-            LlmMessage(LlmRole.ASSISTANT, content, reasoning, toolCalls)
+        fun assistant(
+            content: String,
+            toolCalls: List<LlmToolCall> = emptyList(),
+            reasoning: String? = null,
+            thinkingBlocks: List<JsonObject> = emptyList(),
+        ) = LlmMessage(LlmRole.ASSISTANT, content, reasoning, toolCalls, thinkingBlocks = thinkingBlocks)
         fun tool(toolCallId: String, content: String) = LlmMessage(LlmRole.TOOL, content, toolCallId = toolCallId)
     }
 }
@@ -74,12 +81,16 @@ enum class FinishReason {
 /**
  * Token counts; null when the server did not report a metric. [inputTokens] includes cached tokens.
  * llama.cpp reports cache hits as `timings.cache_n` and newly evaluated prompt tokens as `timings.prompt_n`.
+ * [cacheWriteTokens] are input tokens written to the prompt cache (Anthropic); [reasoningTokens] are part of
+ * [outputTokens].
  */
 data class LlmUsage(
     val inputTokens: Int? = null,
     val outputTokens: Int? = null,
     val totalTokens: Int? = null,
     val cachedInputTokens: Int? = null,
+    val cacheWriteTokens: Int? = null,
+    val reasoningTokens: Int? = null,
 )
 
 data class Completion(
@@ -89,4 +100,6 @@ data class Completion(
     val finishReason: FinishReason = FinishReason.UNKNOWN,
     val model: String? = null,
     val usage: LlmUsage? = null,
+    /** Anthropic thinking blocks; pass them to [LlmMessage.assistant] when continuing a tool loop. */
+    val thinkingBlocks: List<JsonObject> = emptyList(),
 )

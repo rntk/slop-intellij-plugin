@@ -1,20 +1,16 @@
 package dev.insight.chat
 
-import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
-import dev.insight.core.Endpoints
-import dev.insight.llm.LlamaCppClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 
 @Service(Service.Level.PROJECT)
@@ -37,9 +33,7 @@ open class ChatSession(
 
     /** Short description of the active backend for the chat status line. */
     val backendLabel: String
-        get() = ChatSettings.getInstance().state.let { state ->
-            "LLM · ${state.model?.takeIf { it.isNotBlank() } ?: Endpoints.LLM_BASE_URL}"
-        }
+        get() = ChatSettings.getInstance().state.configuration().label
 
     /** UI callers and notifications run on the EDT; backend work runs on IO. */
     fun send(text: String) {
@@ -95,16 +89,7 @@ open class ChatSession(
 
     /** Runs on IO: reading the API key from the password safe can block. */
     private fun createBackend(): ChatBackend {
-        val settings = ChatSettings.getInstance()
-        val state = settings.state
-        // Host is hardcoded for now (see Endpoints); model, timeout, and key still come from settings.
-        val client = LlamaCppClient(
-            baseUrl = Endpoints.LLM_BASE_URL,
-            model = state.model.orEmpty(),
-            apiKey = settings.apiKey,
-            requestTimeout = Duration.ofSeconds(state.requestTimeoutSeconds.coerceIn(10, 3600).toLong()),
-            traffic = ApiLogs.llm,
-        )
+        val client = ChatSettings.getInstance().createClient()
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
         else LlmChatBackend(client::complete, chartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
             chartChatSystemPrompt(project.name), maxToolRounds = 100, context = chart::snapshot)

@@ -50,6 +50,7 @@ import dev.insight.entrypoints.EntryPointsPanel
 import dev.insight.entrypoints.EntryPointService
 import com.intellij.util.ui.JBUI
 import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -244,8 +245,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     var activateGraph: () -> Unit = {}
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
-    private val enrichButton = JButton("Enrich")
-    private val reportButton = JButton("Report")
+    private val enrichAction = PanelCommand("Enrich", "Classify symbols, calls and flows with the configured LLM; results are cached by content") { enrich() }
+    private val reportAction = PanelCommand("Report") { openReport() }
 
     private var options = LensOptions()
     /** Suppresses [lensChanged] while the controls are updated programmatically. */
@@ -294,6 +295,18 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         toolTipText = "Caller and callee hops kept around changed symbols"
     }
     private val changesStatus = JLabel()
+    private lateinit var filtersSection: CollapsibleControls.Section
+    private val filterSummary = JLabel().apply { isVisible = false }
+    private val resetFilters = PanelCommand("Reset filters", "Show tests, utilities, all calls and all flows") {
+        updatingLens = true
+        try {
+            hideTests.isSelected = false
+            hideUtilities.isSelected = false
+            edgeFilter.selectedItem = EdgeFilter.ALL
+            flowChoice.selectedIndex = 0
+        } finally { updatingLens = false }
+        lensChanged()
+    }.apply { isEnabled = false }
     private lateinit var searchSection: CollapsibleControls.Section
     private lateinit var changesSection: CollapsibleControls.Section
     /** Suppresses [changesModeChanged] while the mode is switched programmatically. */
@@ -334,9 +347,14 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         changesBase.addActionListener { refreshChanges() }
         changesHops.addActionListener { refreshChanges() }
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(CollapsibleControls(project, "insight.graph.controls").apply {
+            add(CollapsibleControls(project, "insight.graph.controls", this@ProjectGraphPanel).apply {
+                command(PanelCommand("Refresh", "Rebuild the application graph") { rebuild() })
+                command(PanelCommand("Current file") { showCurrentFile() })
+                command(enrichAction)
+                command(reportAction.apply { isEnabled = enrichment.latest != null })
+                separator()
                 section("view", "View", toolbar())
-                section("filters", "Filters", JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                filtersSection = section("filters", "Filters", JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
                     add(JLabel("Colour:")); add(colorBy)
                     add(hideTests); add(hideUtilities)
                     add(JLabel("Calls:")); add(edgeFilter)
@@ -347,17 +365,19 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                     add(previousMatch); add(nextMatch); add(matchCount)
                 })
                 changesSection = section("changes", "Changes", changesRow(), expanded = false)
+                command(resetFilters)
             }, BorderLayout.NORTH)
             add(activeFile, BorderLayout.CENTER)
             add(JPanel(BorderLayout(0, 4)).apply {
                 add(status, BorderLayout.NORTH)
+                add(filterSummary, BorderLayout.CENTER)
                 add(changesStatus, BorderLayout.SOUTH)
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, 4)).apply {
             add(selection, BorderLayout.NORTH)
-            add(CollapsibleControls(project, "insight.graph.controls").apply {
+            add(CollapsibleControls(project, "insight.graph.controls", this@ProjectGraphPanel).apply {
                 section("legend", "Legend", JPanel(GridLayout(0, 1, 0, 4)).apply {
                     add(JLabel("Click: node menu / Side by side · Enter: expand/collapse a group, open a symbol · drag/arrows to pan · scroll to zoom"))
                     add(JLabel("Filled: current file · outlined: dependencies/users · thick: many relationships · dashed: imports · dotted: references"))
@@ -396,16 +416,6 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         })
         add(JLabel("by"))
         add(sectionBy.apply { addActionListener { rerender() } })
-        add(JButton("Refresh").apply { addActionListener { rebuild() } })
-        add(JButton("Current file").apply { addActionListener { showCurrentFile() } })
-        add(enrichButton.apply {
-            toolTipText = "Classify symbols, calls and flows with the decisions API and the LLM. Results are cached by content."
-            addActionListener { enrich() }
-        })
-        add(reportButton.apply {
-            isEnabled = enrichment.latest != null
-            addActionListener { openReport() }
-        })
         add(zoomControl({ canvas.zoom }, { canvas.zoom = it }, canvas))
     }
 
@@ -495,6 +505,18 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         flowChoice.toolTipText = flow?.description
         previousStep.isEnabled = flow != null && enrichment.latest != null
         nextStep.isEnabled = previousStep.isEnabled
+        val active = buildList {
+            if (hideTests.isSelected) add("tests hidden")
+            if (hideUtilities.isSelected) add("utilities hidden")
+            if (edgeFilter.selectedItem != EdgeFilter.ALL) add(edgeFilter.selectedItem.toString())
+            if (flow != null) add("Flow: ${flowChoice.selectedItem}")
+        }
+        val summary = active.joinToString(" · ")
+        if (::filtersSection.isInitialized) filtersSection.hint = summary
+        filterSummary.text = if (active.isEmpty()) "" else "Active filters: $summary"
+        filterSummary.toolTipText = filterSummary.text
+        filterSummary.isVisible = active.isNotEmpty()
+        resetFilters.isEnabled = active.isNotEmpty()
     }
 
     /** Fills the flow list from the latest enrichment, keeping the chosen flow if it still exists, and enables the lens row accordingly. */
@@ -689,7 +711,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     fun enrich() {
         val built = result ?: return
         enrichJob?.cancel()
-        enrichButton.isEnabled = false
+        enrichAction.isEnabled = false
         flowPanel.setBusy(true)
         canvasPanel.setBusy(true)
         enrichJob = service.scope.launch(Dispatchers.EDT) {
@@ -699,7 +721,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 status.text = "Enriched ${snapshot.enrichment.nodes.size} symbols, ${snapshot.enrichment.edges.size} calls, " +
                     "${snapshot.enrichment.flows.size} flows, ${snapshot.enrichment.domains.size} areas in ${stats.durationMillis / 1000}s " +
                     "(${stats.cacheHits} cached, ${stats.failures} failed)"
-                reportButton.isEnabled = true
+                reportAction.isEnabled = true
                 refreshLens()
                 flowPanel.refreshLens()
                 canvasPanel.refreshLens()
@@ -712,7 +734,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 flowPanel.setStatus(status.text)
                 canvasPanel.setStatus(status.text)
             } finally {
-                if (!disposed) { enrichButton.isEnabled = true; flowPanel.setBusy(false); canvasPanel.setBusy(false) }
+                if (!disposed) { enrichAction.isEnabled = true; flowPanel.setBusy(false); canvasPanel.setBusy(false) }
             }
         }
     }

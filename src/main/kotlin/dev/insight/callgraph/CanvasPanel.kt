@@ -14,6 +14,7 @@ import dev.insight.enrichment.CanvasLine
 import dev.insight.enrichment.EnrichmentProgress
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -38,8 +39,10 @@ internal class CanvasPanel(
     private val scopeLabel = JLabel("Application functions")
     private val status = JLabel("Building application graph…")
     private val flowChoice = flowChoiceControl()
-    private val generate = JButton("Generate canvas")
-    private val enrichButton = JButton("Enrich")
+    private val generateAction = PanelCommand("Generate canvas", "Group source lines into topics and summarize them using the configured LLM.") {
+        if (job?.isActive == true) job?.cancel() else generateCanvas()
+    }
+    private val enrichAction = PanelCommand("Enrich") { enrich() }
     internal val readingView = CanvasReadingView(::navigate)
     private val mode = JCheckBox("Summary mode")
     private val depth = JComboBox(arrayOf(1, 2, 3, 4, 5, 6)).apply { selectedItem = 3 }
@@ -47,12 +50,14 @@ internal class CanvasPanel(
     init {
         border = JBUI.Borders.empty(8)
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(CollapsibleControls(project, "insight.canvas.controls").apply {
+            add(CollapsibleControls(project, "insight.canvas.controls", this@CanvasPanel).apply {
+                command(PanelCommand("Refresh") { refresh() })
+                command(enrichAction)
+                command(generateAction)
+                separator()
                 section("controls", "Controls", JPanel(BorderLayout(0, 4)).apply {
                     add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-                        add(JButton("Refresh").apply { addActionListener { refresh() } })
-                        add(enrichButton.apply { addActionListener { enrich() } })
-                        add(JLabel("Flow:")); add(flowChoice); add(scopeLabel); add(generate)
+                        add(JLabel("Flow:")); add(flowChoice); add(scopeLabel)
                         add(JButton("Application scope").apply { addActionListener { root = null; flowChoice.selectedIndex = 0; scopeLabel.text = "Application functions"; invalidateReading() } })
                         add(JLabel("Depth:")); add(depth); add(mode)
                         add(zoomControl({ readingView.zoom }, { readingView.zoom = it }, readingView))
@@ -63,8 +68,6 @@ internal class CanvasPanel(
         }, BorderLayout.NORTH)
         add(JBScrollPane(readingView), BorderLayout.CENTER)
         add(JLabel("Click topics to focus · Double-click source or press Enter to open · Drag to pan · Ctrl/Cmd + wheel to zoom"), BorderLayout.SOUTH)
-        generate.toolTipText = "Group source lines into topics and summarize them using the configured LLM."
-        generate.addActionListener { if (job?.isActive == true) job?.cancel() else generateCanvas() }
         flowChoice.addActionListener {
             if (!updating) {
                 root = null
@@ -76,7 +79,7 @@ internal class CanvasPanel(
         }
         depth.addActionListener { readingView.depth = depth.selectedItem as Int }
         mode.addActionListener { readingView.summaryMode = mode.isSelected }
-        generate.isEnabled = false
+        generateAction.isEnabled = false
         refreshLens()
     }
 
@@ -92,7 +95,7 @@ internal class CanvasPanel(
         scopeLabel.text = root?.let { id -> built.graph.nodes.firstOrNull { it.id == id }?.let { "Call path: ${it.name}" } }
             ?: (flowChoice.selectedItem as? FlowChoice)?.flow?.let { "${it.nodes.size} functions" } ?: "Application functions"
         status.text = "Choose a scope and Generate canvas to read its topics."
-        generate.isEnabled = true
+        generateAction.isEnabled = true
     }
 
     fun refreshLens() {
@@ -105,13 +108,13 @@ internal class CanvasPanel(
             flowChoice.model = DefaultComboBoxModel(choices.toTypedArray())
             flowChoice.selectedItem = choices.firstOrNull { it.flow?.id == selected } ?: choices.first()
             flowChoice.isEnabled = flows.isNotEmpty()
-            enrichButton.isEnabled = result != null && !enriching
+            enrichAction.isEnabled = result != null && !enriching
         } finally { updating = false }
     }
 
-    fun setBusy(busy: Boolean) { enriching = busy; enrichButton.isEnabled = !busy && result != null }
+    fun setBusy(busy: Boolean) { enriching = busy; enrichAction.isEnabled = !busy && result != null }
     fun setStatus(message: String) { status.text = message }
-    fun setBuilding() { invalidateReading(); generate.isEnabled = false; status.text = "Building application graph…" }
+    fun setBuilding() { invalidateReading(); generateAction.isEnabled = false; status.text = "Building application graph…" }
 
     fun openFunction(id: Int) {
         val node = result?.graph?.nodes?.firstOrNull { it.id == id } ?: return
@@ -127,7 +130,7 @@ internal class CanvasPanel(
     private fun invalidateReading() {
         revision++
         job?.cancel()
-        generate.text = "Generate canvas"
+        generateAction.text = "Generate canvas"
         readingView.data = null
         status.text = "Choose a scope and Generate canvas to read its topics."
     }
@@ -143,7 +146,7 @@ internal class CanvasPanel(
             seen.toList()
         }
         job = service.scope.launch(Dispatchers.EDT) {
-            generate.text = "Cancel"
+            generateAction.text = "Cancel"
             status.text = "Grouping source into topics…"
             try {
                 val data = withBackgroundProgress(project, "Generating canvas") {
@@ -172,7 +175,7 @@ internal class CanvasPanel(
             } catch (e: Exception) {
                 if (!disposed && revision == requestRevision) status.text = "Canvas failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
-                if (!disposed && revision == requestRevision) generate.text = "Generate canvas"
+                if (!disposed && revision == requestRevision) generateAction.text = "Generate canvas"
             }
         }
     }

@@ -30,6 +30,7 @@ import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
 import dev.insight.chat.ToolInputException
 import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -85,8 +86,8 @@ internal class FlowChartPanel(
     private val callersButton = JButton("Show callers")
     private val removeButton = JButton("Remove column")
     private val clearButton = JButton("Clear chart")
-    private val enrichButton = JButton("Enrich")
-    private val reportButton = JButton("Report")
+    private val enrichAction = PanelCommand("Enrich") { enrich() }
+    private val reportAction = PanelCommand("Report") { openReport() }
     private var updatingLens = false
     private val search = SearchTextField(false).apply {
         textEditor.columns = 24
@@ -206,10 +207,12 @@ internal class FlowChartPanel(
         border = JBUI.Borders.empty(8)
         fun row(vararg controls: Component) = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply { controls.forEach(::add) }
         add(JPanel(BorderLayout(0, 4)).apply {
-            add(CollapsibleControls(project, "insight.chart.controls").apply {
-                section("view", "View", row(JButton("Refresh").apply { addActionListener { refresh() } },
-                    enrichButton.apply { addActionListener { enrich() } },
-                    reportButton.apply { addActionListener { openReport() } },
+            add(CollapsibleControls(project, "insight.chart.controls", this@FlowChartPanel).apply {
+                command(PanelCommand("Refresh", "Rebuild the application graph") { refresh() })
+                command(enrichAction)
+                command(reportAction)
+                separator()
+                section("view", "View", row(
                     JLabel("Colour:"), colorBy, JLabel("Flow:"), flowChoice,
                     addFlowButton.apply { addActionListener { selectedFlow()?.let(::addFlow) } },
                     previousStep, nextStep, zoomControl({ flowCanvas.zoom }, { flowCanvas.zoom = it }, flowCanvas)))
@@ -258,7 +261,7 @@ internal class FlowChartPanel(
                 override fun actionPerformed(e: ActionEvent?) { stepMatch(delta) }
             })
         }
-        enrichButton.isEnabled = false
+        enrichAction.isEnabled = false
         flowCanvas.setCompact(true)
         refreshLens()
         updateFlowControls()
@@ -276,7 +279,7 @@ internal class FlowChartPanel(
         chatRevision++
         result?.let { moveFlowChart(it.graph, built.graph) }
         result = built
-        enrichButton.isEnabled = !enriching
+        enrichAction.isEnabled = !enriching
         refreshLens()
         SwingUtilities.invokeLater { if (!disposed) placePending() }
     }
@@ -290,14 +293,14 @@ internal class FlowChartPanel(
             flowChoice.selectedItem = choices.firstOrNull { it.flow?.id == id } ?: choices.first()
             colorBy.isEnabled = enrichment.latest != null
             flowChoice.isEnabled = enrichment.latest != null
-            reportButton.isEnabled = enrichment.latest != null
+            reportAction.isEnabled = enrichment.latest != null
         } finally { updatingLens = false }
         renderFlow()
     }
 
     fun setBusy(busy: Boolean) {
         enriching = busy
-        enrichButton.isEnabled = !busy && result != null
+        enrichAction.isEnabled = !busy && result != null
     }
 
     fun setStatus(message: String) { status.text = message }

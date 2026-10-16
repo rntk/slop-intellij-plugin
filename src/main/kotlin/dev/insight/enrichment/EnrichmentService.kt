@@ -13,9 +13,8 @@ import dev.insight.callgraph.CallGraphResult
 import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.callgraph.SymbolKind
 import dev.insight.chat.ChatSettings
-import dev.insight.core.Endpoints
 import dev.insight.core.decisionsClient
-import dev.insight.llm.LlamaCppClient
+import dev.insight.llm.LlmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -108,7 +107,7 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
         }
     }
 
-    // Hosts are hardcoded for now (see Endpoints). The local decisions server accepts any bearer token.
+    // The local decisions server accepts any bearer token.
     private fun decisions() =
         decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4, traffic = ApiLogs.decisions)
 
@@ -116,13 +115,4 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
 }
 
 /** The LLM client for background analyses. Call on IO: reading the API key from the password safe can block. */
-internal fun configuredLlmClient(): LlamaCppClient {
-    val settings = ChatSettings.getInstance()
-    return LlamaCppClient(
-        baseUrl = Endpoints.LLM_BASE_URL,
-        model = settings.state.model.orEmpty(),
-        apiKey = settings.apiKey,
-        requestTimeout = Duration.ofSeconds(settings.state.requestTimeoutSeconds.coerceIn(60, 3600).toLong()),
-        traffic = ApiLogs.llm,
-    )
-}
+internal fun configuredLlmClient(): LlmClient = ChatSettings.getInstance().createClient()

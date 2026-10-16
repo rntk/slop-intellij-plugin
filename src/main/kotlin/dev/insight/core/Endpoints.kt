@@ -4,17 +4,9 @@ import dev.insight.decisions.DecisionsClient
 import java.net.http.HttpClient
 import java.time.Duration
 
-/**
- * Temporary hardcoded service hosts.
- *
- * Kept here — at the initialisation stage — instead of inside the clients, so
- * [dev.insight.llm.LlamaCppClient] and [dev.insight.decisions.DecisionsClient]
- * stay host-agnostic and their defaults remain unchanged. Call sites must use
- * these constants (or [decisionsClient]) rather than settings or per-call URLs
- * until the hosts become configurable again.
- */
+/** Default local service hosts. The LLM host can be overridden in Insight Chat settings. */
 object Endpoints {
-    /** Base URL for LLM chat-completions requests. */
+    /** Default base URL for the llama.cpp provider. */
     const val LLM_BASE_URL = "http://192.168.0.147:8989"
 
     /** Decisions API endpoint. */

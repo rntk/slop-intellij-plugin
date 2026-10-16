@@ -104,9 +104,9 @@ class ToolChatRunner(
             val calls = completion.toolCalls.mapIndexed { index, call ->
                 if (call.id.isNullOrBlank()) call.copy(id = "call_${round + 1}_${index + 1}") else call
             }
-            val assistant = LlmMessage.assistant(completion.content, calls, completion.reasoning)
+            val assistant = LlmMessage.assistant(completion.content, calls, completion.reasoning, completion.thinkingBlocks)
             val roundMessages = mutableListOf(assistant)
-            transcript += assistant.copy(reasoning = null)
+            transcript += assistant.copy(reasoning = null, thinkingBlocks = emptyList())
             for (call in calls) {
                 val (result, failed) = execute(call.name, call.arguments)
                 val toolMessage = LlmMessage.tool(call.id!!, result)

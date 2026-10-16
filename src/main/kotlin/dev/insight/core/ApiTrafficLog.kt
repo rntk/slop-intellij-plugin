@@ -39,7 +39,7 @@ data class ApiExchange(
 /**
  * Records raw API traffic for debugging: request and response bodies, paired per HTTP attempt.
  * Keeps the newest [maxEntries] in memory and appends completed exchanges to [file] as JSON lines,
- * reloading them on construction. Credentials in `Authorization` headers are never recorded.
+ * reloading them on construction. Credentials in `Authorization`, `Proxy-Authorization`, `x-api-key` and `api-key` headers are never recorded.
  * Thread-safe; listeners run on the recording thread.
  */
 class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntries: Int = 500) {
@@ -128,7 +128,11 @@ class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntr
         private val prettyGson = GsonBuilder().disableHtmlEscaping().setPrettyPrinting().serializeNulls().create()
 
         private fun redact(headers: HttpHeaders): Map<String, String> = headers.map().mapValues { (name, values) ->
-            if (name.equals("Authorization", true)) values.joinToString(", ") { it.substringBefore(' ') + " <redacted>" }
+            // Keep the scheme ("Bearer") for debugging; a value without one is redacted whole.
+            if (name.equals("Authorization", true) || name.equals("Proxy-Authorization", true))
+                values.joinToString(", ") { if (' ' in it.trim()) it.trim().substringBefore(' ') + " <redacted>" else "<redacted>" }
+            // Anthropic sends its key in x-api-key; Azure-style gateways use api-key.
+            else if (name.equals("x-api-key", true) || name.equals("api-key", true)) "<redacted>"
             else values.joinToString(", ")
         }
 
