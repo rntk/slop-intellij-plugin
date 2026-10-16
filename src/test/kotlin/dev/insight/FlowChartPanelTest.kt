@@ -143,4 +143,31 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             assertFalse(button(panel, "Report").isEnabled)
         } finally { panel.dispose() }
     }
+
+    fun `test function outline caches source facts for nodes later added to the chart`() {
+        val file = myFixture.configureByText("Service.java", """
+            class Service {
+                /** Handles incoming orders. */
+                void handleRequest() { loadData(); }
+                /** Loads order payload from storage. */
+                void loadData() {}
+            }
+        """.trimIndent()) as PsiJavaFile
+        val methods = file.classes.single().methods
+        val pointers = methods.map { SmartPointerManager.getInstance(project).createSmartPsiElementPointer<com.intellij.psi.PsiElement>(it) }
+        val nodes = methods.mapIndexed { id, m ->
+            CallGraphNode(id, m.name, "Service", "Service.java:${id + 1}", 0, true, SymbolKind.FUNCTION, file.virtualFile.path)
+        }
+        val built = CallGraphResult(CallGraph(nodes, linkedSetOf(CallGraphEdge(0, 1)), false, projectGraph = true), pointers)
+        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        try {
+            panel.showResult(built)
+            val ctx = panel.chatContext
+            kotlinx.coroutines.runBlocking {
+                ctx.functionOutline(ctx.revision, listOf(1))
+            }
+            panel.addToChart(FlowStart(1))
+            assertEquals("Loads order payload from storage.", panel.flowCanvas.chart!!.step(1)!!.card.description)
+        } finally { panel.dispose() }
+    }
 }

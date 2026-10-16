@@ -111,6 +111,16 @@ internal class FlowChartPanel(
     private val chatScope = CoroutineScope(service.scope.coroutineContext + SupervisorJob(service.scope.coroutineContext[Job]))
     /** The chat sessions of this chart; a restore point only undoes the latest chat change and never across a rebuild. */
     private val restoreGroup = ChartRestorePoint.Group { chatRevision }
+    private data class OutlineCapture(
+        val built: CallGraphResult,
+        val current: Int,
+        val steps: Map<Int, Int>,
+        val lens: FlowChartLens?,
+        val knownSites: Map<Int, List<SourceSite>>,
+        val regions: List<FlowRegion>,
+        val missing: List<Int>,
+    )
+
     /** Chart tools for one chat session; each session owns its restore point. */
     private inner class SessionChartContext : ChartChatContext {
         private val restorePoint = ChartRestorePoint(flowCanvas, restoreGroup)
@@ -120,6 +130,21 @@ internal class FlowChartPanel(
             return result?.graph ?: throw ToolInputException("Graph is not ready yet")
         }
 
+        private fun semantics(lens: FlowChartLens?): ((Int) -> NodeSemanticInfo?)? = lens?.let { l ->
+            { id: Int ->
+                val summary = l.summaries[id]
+                val effects = l.effectsOf(id)
+                NodeSemanticInfo(
+                    summaryLabel = summary?.label,
+                    summaryDescription = summary?.description,
+                    role = summary?.role?.id,
+                    ownEffects = effects?.own.orEmpty(),
+                    reachedEffects = effects?.reached.orEmpty(),
+                    entryPoint = l.isEntryPoint(id),
+                )
+            }
+        }
+
         override suspend fun state(offset: Int): String = withContext(Dispatchers.EDT) {
             if (disposed) throw ToolInputException("Chart closed")
             val graph = result?.graph
@@ -127,12 +152,51 @@ internal class FlowChartPanel(
             else chartChatState(chatRevision, graph, flowCanvas, offset)
         }
 
-        override suspend fun find(query: String, offset: Int): String = withContext(Dispatchers.EDT) {
-            val found = graph().nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION &&
-                listOf(it.name, "${it.container}.${it.name}", it.filePath.orEmpty()).any { text -> text.contains(query, ignoreCase = true) } }
-            Gson().toJson(mapOf("revision" to chatRevision, "total" to found.size, "offset" to offset,
-                "next_offset" to (offset + 20).takeIf { it < found.size },
-                "nodes" to found.drop(offset).take(20).map(::chartNodeData)))
+        override suspend fun find(query: String, offset: Int): String = findNodes(query, offset)
+
+        override suspend fun findNodes(query: String?, offset: Int, role: String?, effect: String?, entryPoint: Boolean?): String =
+            analyze { graph, current, steps, lens -> chartFindNodes(graph, current, query, offset, role, effect, entryPoint, semantics(lens), steps) }
+
+        override suspend fun functionOutline(revision: Int, nodes: List<Int>): String {
+            val (built, current, steps, lens, knownSites, regions, missing) = withContext(Dispatchers.EDT) {
+                val built = built()
+                if (revision != chatRevision) throw ToolInputException("Stale graph revision; refresh and resolve IDs again")
+                if (nodes.size !in 1..5) throw ToolInputException("Give 1 to 5 node IDs")
+                nodes.forEach { validateChatNode(built.graph, chatRevision, revision, it) }
+                val lens = flowLens?.takeIf { it.graph === built.graph }?.lens
+                val steps = flowCanvas.chart?.steps.orEmpty().associate { it.node to it.number }
+                val regions = flowCanvas.chart?.regions.orEmpty()
+                val missing = nodes.filter { it !in stepsRead && built.pointers.getOrNull(it) != null }
+                val knownSites = HashMap(callSites)
+                OutlineCapture(built, chatRevision, steps, lens, knownSites, regions, missing)
+            }
+            val newSites = if (missing.isNotEmpty()) {
+                val (sites, facts) = smartReadAction(project) {
+                    val callees = missing.flatMap { id -> lens?.calls?.get(id).orEmpty().map { it.callee } }
+                    CallSiteAnalyzer.collect(built, missing, callees) to
+                        SymbolFactsExtractor.extract(project, built, only = missing.toSet())
+                }
+                withContext(Dispatchers.EDT) {
+                    if (result === built && !disposed) {
+                        stepsRead += missing
+                        callSites += sites
+                        stepFacts += facts
+                        if (flowCanvas.chart?.steps.orEmpty().any { it.node in missing }) renderFlow()
+                    }
+                }
+                sites
+            } else emptyMap()
+            val combinedSites = knownSites + newSites
+            return withContext(Dispatchers.Default) {
+                chartFunctionOutline(built.graph, current, revision, nodes, combinedSites, regions, semantics(lens), steps)
+            }
+        }
+
+        override suspend fun flowCatalog(revision: Int, query: String?, offset: Int): String = analyze { graph, current, steps, lens ->
+            val mapData = projectMapData(graph, lens)
+            chartFlowCatalog(graph, current, revision, query, offset,
+                lens?.flows?.map { CatalogFlow(it.id, it.name, it.description, it.entry, it.nodes) },
+                mapData.entryPoints, semantics(lens), steps)
         }
 
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
@@ -224,12 +288,23 @@ internal class FlowChartPanel(
         override fun restore(): Boolean = !disposed && !building() && restorePoint.restore()
 
         override val revision: Int get() = chatRevision
+        override val storyId: Int? get() = flowCanvas.story?.id
         override fun referenceName(revision: Int, node: Int) =
             chartReferenceName(result?.graph?.takeIf { !building() }, chatRevision, revision, node)
         override fun openReference(revision: Int, node: Int): String? {
             if (disposed) return "Chart closed."
             val graph = result?.graph?.takeIf { !building() } ?: return "The graph is rebuilding; try again when it finishes."
             return openChartReference(graph, flowCanvas, chatRevision, revision, node)
+        }
+        override fun beatTitle(revision: Int, beat: Int): String? = beatTitle(revision, beat, storyId)
+        override fun beatTitle(revision: Int, beat: Int, storyId: Int?): String? =
+            chartBeatTitle(flowCanvas.takeIf { !disposed && !building() }, chatRevision, revision, beat, storyId)
+
+        override fun openBeat(revision: Int, beat: Int): String? = openBeat(revision, beat, storyId)
+        override fun openBeat(revision: Int, beat: Int, storyId: Int?): String? {
+            if (disposed) return "Chart closed."
+            if (building() || result == null) return "The graph is rebuilding; try again when it finishes."
+            return openChartBeat(flowCanvas, chatRevision, revision, beat, storyId)
         }
         override fun hoverReference(revision: Int, node: Int?) {
             if (!disposed) flowCanvas.hover(node?.takeIf { revision == chatRevision })
@@ -352,7 +427,7 @@ internal class FlowChartPanel(
         }
     }
 
-    private val chatContext: ChartChatContext = SessionChartContext()
+    internal val chatContext: ChartChatContext = SessionChartContext()
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
     private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
     private lateinit var chatSection: CollapsibleControls.Section

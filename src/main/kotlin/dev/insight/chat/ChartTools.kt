@@ -7,6 +7,8 @@ import dev.insight.callgraph.ChartStory
 import dev.insight.callgraph.ExternalDirection
 import dev.insight.callgraph.ExternalKind
 import dev.insight.callgraph.ExternalLink
+import dev.insight.callgraph.SceneCamera
+import dev.insight.callgraph.SceneColumn
 import dev.insight.callgraph.SceneExternal
 import dev.insight.callgraph.SceneGroup
 import dev.insight.callgraph.SceneGroupKind
@@ -25,7 +27,11 @@ interface ChartChatContext {
     suspend fun snapshot(): String = state(0)
     suspend fun state(offset: Int): String
     suspend fun find(query: String, offset: Int): String
+    suspend fun findNodes(query: String?, offset: Int, role: String? = null, effect: String? = null, entryPoint: Boolean? = null): String =
+        find(query.orEmpty(), offset)
     suspend fun describe(revision: Int, node: Int, offset: Int): String = throw ToolInputException("Node details unavailable")
+    suspend fun functionOutline(revision: Int, nodes: List<Int>): String = throw ToolInputException("Function outline unavailable")
+    suspend fun flowCatalog(revision: Int, query: String? = null, offset: Int = 0): String = throw ToolInputException("Flow catalog unavailable")
     suspend fun apply(action: String, revision: Int, nodes: List<Int>): String
     suspend fun showScene(revision: Int, scene: ChartScene): String = throw ToolInputException("Scenes unavailable")
     suspend fun clearScene(revision: Int): String = throw ToolInputException("Scenes unavailable")
@@ -47,10 +53,16 @@ interface ChartChatContext {
 
     /** The graph revision that [[node:ID]] references in a finished reply belong to (EDT). */
     val revision: Int get() = 0
+    /** The active story ID that [[beat:BEAT]] references in a finished reply belong to, or null when no story is open (EDT). */
+    val storyId: Int? get() = null
     /** The function name of a reference written at [revision], or null when it is stale or unknown (EDT). */
     fun referenceName(revision: Int, node: Int): String? = null
     /** Selects the referenced function on the chart, placing it when hidden; returns a notice when it cannot (EDT). */
     fun openReference(revision: Int, node: Int): String? = "Chart references are unavailable."
+    fun beatTitle(revision: Int, beat: Int): String? = null
+    fun beatTitle(revision: Int, beat: Int, storyId: Int?): String? = beatTitle(revision, beat)
+    fun openBeat(revision: Int, beat: Int): String? = "Story beat references are unavailable."
+    fun openBeat(revision: Int, beat: Int, storyId: Int?): String? = openBeat(revision, beat)
     /** Transiently emphasises the referenced function; null clears (EDT). */
     fun hoverReference(revision: Int, node: Int?) {}
 }
@@ -71,7 +83,11 @@ fun chartChatSystemPrompt(projectName: String): String = """
       the chart, so your text can stay brief. Validated as a whole; show_scene or clear_scene closes the story.
     - Prefer one show_scene per point you make. A scene replaces the previous emphasis, badges, notes and links, places hidden
       functions as continuations of the chart, and focuses the first focus node. Roles: focus (what the answer is about),
-      context (surrounding steps), source (where data enters), sink (where it ends up: storage, network, UI), problem (bug or risk).
+      context (surrounding steps), source (where data enters), sink (where it ends up: storage, network, UI), problem (bug or risk),
+      transform (maps/enriches data), decision (routing/validation/guard), orchestrator (coordinates pipeline steps).
+    - Links can carry an optional payload chip showing the data contract or payload moving across this link (e.g. "OrderRequest -> ValidOrder").
+    - Direct the stage on scenes and beats: use columns to stage side-by-side lanes with named roots ({node, title, description}),
+      reset_board (true to clear previous columns for a clean stage), and camera ("focus_first" or "fit_scene" to frame the whole scene).
     - Scenes can also carry groups, externals and snippets. Use groups to box the layers or stages of a pipeline (a function
       in at most one group). Use externals for where data enters or leaves the code (database, network, file, queue, llm,
       ui); call suggest_externals first and connect database/network externals only to functions whose rule effects show
@@ -80,13 +96,16 @@ fun chartChatSystemPrompt(projectName: String): String = """
     - Number the steps of your explanation and give the matching nodes the same badges ("1", "2", ...), so the text can say
       "step 2 validates the request" and the user finds it on the chart.
     - Use trace_path to connect two functions and reachability to find entry points, callers and effects instead of exploring
-      call by call. Use find_chart_nodes to resolve names, get_chart_node_details for direct callers/callees, and read_file,
-      search_text and list_files to verify behaviour in source.
-    - expand_chart_calls/expand_chart_callers and add_chart_nodes are for letting the user browse further; they are idempotent.
+      call by call. Use find_chart_nodes (supports semantic filters role, effect, entry_point and matches enriched summaries)
+      to resolve names, get_chart_node_details for direct callers/callees, get_function_flow_outline to inspect ordered call sites,
+      control frames (if/loop/try), exits and compact subflows, get_flow_catalog to list named flows and their spine nodes/effects,
+      and read_file, search_text and list_files to verify behaviour in source.
+    - expand_chart_calls/expand_chart_callers and add_chart_nodes are for letting the user browse further; collapse_chart_calls
+      and collapse_chart_callers fold noisy branches. They are idempotent.
     - Keep text short: a few sentences or numbered steps that point at the chart, not a listing of every function.
       Skip chart changes when they would add nothing, such as a simple fact about one step.
-    - Refer to functions in your text as [[node:ID|Name]] (ID from the latest revision) instead of long qualified names;
-      the user clicks them to find the step on the chart.
+    - Refer to functions in your text as [[node:ID|Name]] (ID from the latest revision) instead of long qualified names, and
+      refer to story beats as [[beat:N|Label]] (1-based beat number); the user clicks them to find the step or jump to the beat on the chart.
     - End substantive answers with suggest_followups: up to 3 short questions the user is likely to ask next.
     - When a scoped_context is supplied, keep that element as the anchor even if chart selection changes. Its IDs and offsets
       belong to captured_revision; if stale, resolve functions again before acting and read current source with read_file.
@@ -102,7 +121,7 @@ fun chartChatSystemPrompt(projectName: String): String = """
     - Node IDs are graph IDs, not step numbers. Use the revision from the latest state; after a rebuild, refresh and resolve
       IDs again. Never claim a change succeeded when a tool reports an error.
 
-    Answer in plain text; the chat panel does not render Markdown or HTML. [[node:ID|Name]] references are the only markup supported.
+    Answer in plain text; the chat panel does not render Markdown or HTML. [[node:ID|Name]] and [[beat:N|Label]] references are the only markup supported.
 """.trimIndent()
 
 /** [followups] receives validated suggest_followups questions for the session's latest reply. */
@@ -125,10 +144,14 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             "required":["id"],"additionalProperties":false}},
         "links":{"type":"array","maxItems":${ChartScene.MAX_LINKS},"items":{"type":"object","properties":{
             "from":{"type":"integer"},"to":{"type":"integer"},"kind":{"type":"string","enum":${enum(SceneLinkKind.entries.toTypedArray())}},
-            "label":{"type":"string","maxLength":${ChartScene.MAX_LABEL}}},"required":["from","to","kind"],"additionalProperties":false}},
+            "label":{"type":"string","maxLength":${ChartScene.MAX_LABEL}},
+            "payload":{"type":"string","maxLength":${ChartScene.MAX_PAYLOAD},"description":"Optional data contract or payload moving across this link."}},"required":["from","to","kind"],"additionalProperties":false}},
         "notes":{"type":"array","maxItems":${ChartScene.MAX_NOTES},"items":{"type":"object","properties":{
             "node":{"type":"integer"},"text":{"type":"string","maxLength":${ChartScene.MAX_NOTE}}},"required":["node","text"],"additionalProperties":false}},
         "dim_others":{"type":"boolean","description":"Fade steps outside the scene; defaults to true."},
+        "columns":{"type":"array","maxItems":${ChartScene.MAX_COLUMNS},"description":"Optional column roots with custom titles/descriptions to stage side-by-side lanes.","items":{"type":"object","properties":{"node":{"type":"integer"},"title":{"type":"string","maxLength":${ChartScene.MAX_TITLE}},"description":{"type":"string","maxLength":${ChartScene.MAX_COLUMN_DESCRIPTION}}},"required":["node"],"additionalProperties":false}},
+        "reset_board":{"type":"boolean","description":"Clear previous columns before placing this scene; defaults to false."},
+        "camera":{"type":"string","enum":${enum(SceneCamera.entries.toTypedArray())},"description":"Viewport framing: focus_first (default) or fit_scene."},
         "groups":{"type":"array","maxItems":${ChartScene.MAX_GROUPS},"description":"Labelled boxes behind layers or stages; a function in at most one group.",
             "items":{"type":"object","properties":{"label":{"type":"string","maxLength":${ChartScene.MAX_SHORT_LABEL}},
             "nodes":{"type":"array","minItems":1,"items":{"type":"integer"}},"kind":{"type":"string","enum":${enum(SceneGroupKind.entries.toTypedArray())}}},
@@ -149,15 +172,77 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         tool("get_chart_state", "Read current chart selection, columns, visible steps, calls, compact regions, expansion state and the current scene (paged).", offset) {
             context.state(it.nonnegativeInt("offset", 0))
         },
-        tool("find_chart_nodes", "Find in-project functions by name, container or source path, including functions absent from the chart (paged).",
-            """"query":{"type":"string"},$offset""", "\"query\"") {
-            val query = it.get("query")?.takeIf { value -> value.isJsonPrimitive && value.asJsonPrimitive.isString }?.asString
-                ?.trim()?.takeIf(String::isNotEmpty) ?: throw ToolInputException("query must be a nonempty string")
-            context.find(query.take(200), it.nonnegativeInt("offset", 0))
+        tool("find_chart_nodes", "Find in-project functions by name, container, source path or semantic filters (role, effect, entry_point) and enriched summaries (paged).",
+            """"query":{"type":"string","description":"Substring of function name, container, path or enriched summary."},"role":{"type":"string","enum":["core","validation","error-handling","logging","plumbing","utility"]},"effect":{"type":"string","enum":["storage","network","throws"]},"entry_point":{"type":"boolean"},$offset""", "") { args ->
+            val query = if (args.has("query") && !args.get("query").isJsonNull) {
+                val qElem = args.get("query")
+                val text = qElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()
+                    ?: throw ToolInputException("query must be a nonempty string")
+                if (text.isEmpty()) throw ToolInputException("query must be a nonempty string")
+                text.take(200)
+            } else null
+
+            val validRoles = setOf("core", "validation", "error-handling", "logging", "plumbing", "utility")
+            val role = if (args.has("role") && !args.get("role").isJsonNull) {
+                val rElem = args.get("role")
+                val rText = rElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()?.lowercase()
+                if (rText == null || rText !in validRoles) {
+                    throw ToolInputException("role must be one of core, validation, error-handling, logging, plumbing, utility")
+                }
+                rText
+            } else null
+
+            val validEffects = setOf("storage", "network", "throws")
+            val effect = if (args.has("effect") && !args.get("effect").isJsonNull) {
+                val eElem = args.get("effect")
+                val eText = eElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()?.lowercase()
+                if (eText == null || eText !in validEffects) {
+                    throw ToolInputException("effect must be one of storage, network, throws")
+                }
+                eText
+            } else null
+
+            val entryPoint = if (args.has("entry_point") && !args.get("entry_point").isJsonNull) {
+                val epElem = args.get("entry_point")
+                epElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isBoolean }?.asBoolean
+                    ?: throw ToolInputException("entry_point must be a boolean")
+            } else null
+
+            if (query == null && role == null && effect == null && entryPoint == null) {
+                throw ToolInputException("query or a semantic filter (role, effect, entry_point) is required")
+            }
+
+            val off = args.nonnegativeInt("offset", 0)
+            if (role == null && effect == null && entryPoint == null && query != null) {
+                context.find(query, off)
+            } else {
+                context.findNodes(query, off, role, effect, entryPoint)
+            }
         },
         tool("get_chart_node_details", "Inspect a function and its static callers/callees, including hidden nodes (paged).",
             """"revision":{"type":"integer"},"node_id":{"type":"integer"},$offset""", "\"revision\",\"node_id\"") {
             context.describe(it.nonnegativeInt("revision"), it.nonnegativeInt("node_id"), it.nonnegativeInt("offset", 0))
+        },
+        tool("get_function_flow_outline", "Structured control-flow and call-site outline for 1 to 5 functions: ordered call occurrences with their enclosing conditions/loops, return/throw exits, dispatch implementations and compact subflows.",
+            """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":5}""", "\"revision\",\"node_ids\"") { args ->
+            val revision = args.nonnegativeInt("revision")
+            val array = args.get("node_ids")?.takeIf { it.isJsonArray }?.asJsonArray ?: throw ToolInputException("node_ids must be an array")
+            if (array.size() !in 1..5) throw ToolInputException("Give 1 to 5 node IDs")
+            val nodes = array.map { value ->
+                value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
+                    ?: throw ToolInputException("node_ids must contain nonnegative integers")
+            }.distinct()
+            context.functionOutline(revision, nodes)
+        },
+        tool("get_flow_catalog", "Catalog of named flows from enrichment and discovered/enriched entry points, with their spine steps, summaries and reached rule effects (paged, optional query filter).",
+            """"revision":{"type":"integer"},"query":{"type":"string"},$offset""", "\"revision\"") { args ->
+            val revision = args.nonnegativeInt("revision")
+            val query = args.get("query")?.takeIf { !it.isJsonNull }?.let { value ->
+                value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.trim()
+                    ?: throw ToolInputException("query must be a string")
+            }
+            val off = args.nonnegativeInt("offset", 0)
+            context.flowCatalog(revision, query, off)
         },
         tool("show_scene", "Show one point of your explanation on the chart: emphasize functions by role with optional step badges, " +
             "draw typed links and short notes, and fade the rest. Replaces the previous scene, places hidden functions as continuations " +
@@ -229,6 +314,8 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         "add_chart_nodes" to "Add existing project functions, connected to visible steps they call or are called by; unconnected ones become new columns. Does not create code or invented nodes.",
         "expand_chart_calls" to "Show calls for visible function IDs, preserving already open calls.",
         "expand_chart_callers" to "Show callers for visible function IDs, preserving already open callers.",
+        "collapse_chart_calls" to "Hide calls for visible function IDs to reduce chart clutter.",
+        "collapse_chart_callers" to "Hide callers for visible function IDs to reduce chart clutter.",
     ).map { (name, description) ->
         tool(name, description, mutation, "\"revision\",\"node_ids\"") { args ->
             val revision = args.nonnegativeInt("revision")
@@ -275,7 +362,8 @@ internal fun parseScene(args: JsonObject): ChartScene {
     nodes.groupBy { it.node }.filterValues { it.size > 1 }.keys.firstOrNull()?.let { throw ToolInputException("Node $it is listed twice; give it one role") }
     val links = objects("links", ChartScene.MAX_LINKS).mapIndexed { i, item ->
         SceneLink(item.nonnegativeInt("from", where = "links[$i]"), item.nonnegativeInt("to", where = "links[$i]"),
-            item.choice("kind", SceneLinkKind.entries.toTypedArray(), "links[$i]"), item.text("label", ChartScene.MAX_LABEL, "links[$i]"))
+            item.choice("kind", SceneLinkKind.entries.toTypedArray(), "links[$i]"), item.text("label", ChartScene.MAX_LABEL, "links[$i]"),
+            item.text("payload", ChartScene.MAX_PAYLOAD, "links[$i]"))
             .also { if (it.from == it.to) throw ToolInputException("links[$i] must join two different functions") }
     }.distinctBy { Triple(it.from, it.to, it.kind) }
     val notes = objects("notes", ChartScene.MAX_NOTES).mapIndexed { i, item ->
@@ -286,6 +374,21 @@ internal fun parseScene(args: JsonObject): ChartScene {
     val dim = args.get("dim_others")?.let { value ->
         value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean ?: throw ToolInputException("dim_others must be a boolean")
     } ?: true
+    val columns = objects("columns", ChartScene.MAX_COLUMNS).mapIndexed { i, item ->
+        SceneColumn(item.nonnegativeInt("node", where = "columns[$i]"),
+            item.text("title", ChartScene.MAX_TITLE, "columns[$i]"),
+            item.text("description", ChartScene.MAX_COLUMN_DESCRIPTION, "columns[$i]"))
+    }
+    columns.groupBy { it.node }.filterValues { it.size > 1 }.keys.firstOrNull()?.let {
+        throw ToolInputException("Column node $it is listed twice")
+    }
+    val resetBoard = args.get("reset_board")?.let { value ->
+        value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+            ?: throw ToolInputException("reset_board must be a boolean")
+    } ?: false
+    val camera = args.get("camera")?.takeIf { !it.isJsonNull }?.let {
+        args.choice("camera", SceneCamera.entries.toTypedArray(), "scene")
+    } ?: SceneCamera.FOCUS_FIRST
     fun JsonObject.ids(name: String, where: String) = get(name)?.takeIf { it.isJsonArray }?.asJsonArray?.map { value ->
         value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
             ?: throw ToolInputException("$where.$name must contain nonnegative integers")
@@ -324,7 +427,7 @@ internal fun parseScene(args: JsonObject): ChartScene {
             throw ToolInputException("$where spans ${end - start + 1} lines; show at most ${ChartScene.MAX_SNIPPET_LINES}, just the lines that matter")
         SceneSnippet(item.nonnegativeInt("node", where = where), start, end, item.text("caption", ChartScene.MAX_SNIPPET_CAPTION, where))
     }
-    return ChartScene(args.text("title", ChartScene.MAX_TITLE, "scene"), nodes, links, notes, dim, groups, externals, snippets)
+    return ChartScene(args.text("title", ChartScene.MAX_TITLE, "scene"), nodes, links, notes, dim, groups, externals, snippets, columns, resetBoard, camera)
 }
 
 internal const val MAX_FOLLOWUP = 80

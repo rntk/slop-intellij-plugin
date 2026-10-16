@@ -193,4 +193,72 @@ class ChartToursTest : BasePlatformTestCase() {
             store.tours.forEach { store.delete(it.name) }
         }
     }
+
+    fun `test link payload columns reset board fit camera and new roles round trip through json and markdown`() {
+        val canvas = canvas(old)
+        val scene = ChartScene(
+            title = "Transform Flow",
+            nodes = listOf(
+                SceneNode(0, SceneRole.TRANSFORM, "1"),
+                SceneNode(1, SceneRole.DECISION, "2"),
+                SceneNode(2, SceneRole.ORCHESTRATOR, "3"),
+            ),
+            links = listOf(
+                SceneLink(0, 1, SceneLinkKind.CALL, label = "transform", payload = "dto"),
+                SceneLink(0, 2, SceneLinkKind.CALL, label = "orchestrate", payload = "cmd"),
+            ),
+            columns = listOf(
+                SceneColumn(0, "Stage 1", "Initial transformation"),
+                SceneColumn(2, "Stage 2", "Orchestration"),
+            ),
+            resetBoard = true,
+            camera = SceneCamera.FIT_SCENE,
+        )
+        val beats = listOf(
+            StoryBeat("Stage One", scene),
+            StoryBeat("Stage Two", ChartScene(nodes = listOf(SceneNode(1, SceneRole.FOCUS)))),
+        )
+        presentChartStory(old, canvas, 1, 1, "Pipeline Tour", beats)
+        val story = canvas.story!!
+        val tour = savedTour("Pipeline", story, savedAt = 100)
+
+        // Verify round-trip through TourJson.write -> TourJson.read
+        val json = TourJson.write(listOf(tour))
+        val readTours = TourJson.read(json)
+        assertEquals(1, readTours.size)
+        val readTour = readTours.single()
+        assertEquals(tour, readTour)
+
+        val readScene = readTour.beats[0].scene
+        assertEquals(SceneCamera.FIT_SCENE, readScene.camera)
+        assertTrue(readScene.resetBoard)
+        assertEquals(2, readScene.columns.size)
+        assertEquals("Stage 1", readScene.columns[0].title)
+        assertEquals("Initial transformation", readScene.columns[0].description)
+        assertEquals("dto", readScene.links[0].payload)
+        assertEquals("cmd", readScene.links[1].payload)
+        assertEquals(SceneRole.TRANSFORM, readScene.nodes[0].role)
+        assertEquals(SceneRole.DECISION, readScene.nodes[1].role)
+        assertEquals(SceneRole.ORCHESTRATOR, readScene.nodes[2].role)
+
+        // Verify resolveTour preserves them
+        val resolved = resolveTour(readTour, rebuilt)
+        val resolvedScene = resolved.beats[0].scene
+        assertEquals(SceneCamera.FIT_SCENE, resolvedScene.camera)
+        assertTrue(resolvedScene.resetBoard)
+        assertEquals(2, resolvedScene.columns.size)
+        assertEquals(SceneRole.TRANSFORM, resolvedScene.nodes[0].role)
+        assertEquals(SceneRole.DECISION, resolvedScene.nodes[1].role)
+        assertEquals(SceneRole.ORCHESTRATOR, resolvedScene.nodes[2].role)
+        assertEquals("dto", resolvedScene.links[0].payload)
+        assertEquals("cmd", resolvedScene.links[1].payload)
+
+        // Verify tourMarkdown renders link payload
+        val md = tourMarkdown(tour, "/p")
+        assertTrue(md, md.contains("- `Api.handle` → `Repo.load` (call): transform [`dto`]\n"))
+        assertTrue(md, md.contains("- `Api.handle` → `Repo.save` (call): orchestrate [`cmd`]\n"))
+        assertTrue(md, md.contains("- `Api.handle` — transform, step 1 — src/Api.kt:3\n"))
+        assertTrue(md, md.contains("- `Repo.load` — decision, step 2 — src/Repo.kt:5\n"))
+        assertTrue(md, md.contains("- `Repo.save` — orchestrator, step 3 — src/Repo.kt:12\n"))
+    }
 }

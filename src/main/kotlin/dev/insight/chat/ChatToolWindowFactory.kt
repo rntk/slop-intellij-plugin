@@ -183,7 +183,11 @@ class ChatPanel(
      * selects its step, hovering emphasises it; references are resolved against the reply's graph revision.
      */
     internal fun replyPane(message: ChatMessage, chart: ChartChatContext): JEditorPane {
-        val body = chatReferenceHtml(message.text, message.revision) { node -> message.revision?.let { chart.referenceName(it, node) } }
+        val body = chatReferenceHtml(
+            message.text,
+            message.revision,
+            beatTitle = { beat -> message.revision?.let { chart.beatTitle(it, beat, message.storyId) } },
+        ) { node -> message.revision?.let { chart.referenceName(it, node) } }
         return JEditorPane().apply {
             editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
             isEditable = false
@@ -195,6 +199,12 @@ class ChatPanel(
             text = "<html><head><style>a { color: ${ColorUtil.toHtmlColor(JBUI.CurrentTheme.Link.Foreground.ENABLED)}; " +
                 "background-color: ${ColorUtil.toHtmlColor(referenceFill)}; text-decoration: none; }</style></head><body>$body</body></html>"
             addHyperlinkListener { event ->
+                parseChatBeatLink(event.description)?.let { (revision, beat) ->
+                    if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                        service.openBeat(revision, beat, message.storyId)
+                    }
+                    return@addHyperlinkListener
+                }
                 val (revision, node) = parseChatReferenceLink(event.description) ?: return@addHyperlinkListener
                 when (event.eventType) {
                     HyperlinkEvent.EventType.ACTIVATED -> service.openReference(revision, node)

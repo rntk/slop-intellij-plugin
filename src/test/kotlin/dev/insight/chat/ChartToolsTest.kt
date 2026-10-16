@@ -5,6 +5,8 @@ import dev.insight.callgraph.ChartScene
 import dev.insight.callgraph.ExternalDirection
 import dev.insight.callgraph.ExternalKind
 import dev.insight.callgraph.ExternalLink
+import dev.insight.callgraph.SceneCamera
+import dev.insight.callgraph.SceneColumn
 import dev.insight.callgraph.SceneExternal
 import dev.insight.callgraph.SceneGroup
 import dev.insight.callgraph.SceneGroupKind
@@ -39,10 +41,27 @@ class ChartToolsTest {
         }
         override suspend fun state(offset: Int) = "revision=$revision offset=$offset"
         val played = mutableListOf<String>()
+        val outlines = mutableListOf<Pair<Int, List<Int>>>()
+        val catalogs = mutableListOf<Triple<Int, String?, Int>>()
+        val findNodesCalls = mutableListOf<List<Any?>>()
         override suspend fun projectMap(offset: Int) = "map offset=$offset"
         override suspend fun listTours() = "tours"
         override suspend fun playTour(name: String): String { played += name; return "played" }
         override suspend fun find(query: String, offset: Int) = "$query offset=$offset"
+        override suspend fun findNodes(query: String?, offset: Int, role: String?, effect: String?, entryPoint: Boolean?): String {
+            findNodesCalls += listOf(query, offset, role, effect, entryPoint)
+            return "findNodes query=$query offset=$offset role=$role effect=$effect entryPoint=$entryPoint"
+        }
+        override suspend fun functionOutline(revision: Int, nodes: List<Int>): String {
+            if (revision != this.revision) throw ToolInputException("Stale revision")
+            outlines += revision to nodes
+            return "outline revision=$revision nodes=$nodes"
+        }
+        override suspend fun flowCatalog(revision: Int, query: String?, offset: Int): String {
+            if (revision != this.revision) throw ToolInputException("Stale revision")
+            catalogs += Triple(revision, query, offset)
+            return "catalog revision=$revision query=$query offset=$offset"
+        }
         override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String {
             if (revision != this.revision) throw ToolInputException("Stale revision")
             actions += Triple(action, revision, nodes)
@@ -70,8 +89,10 @@ class ChartToolsTest {
     @Test fun `scene and analysis tools replace imperative annotation tools`() = runBlocking {
         val context = Context()
         val tools = chartTools(context).associateBy { it.definition.name }
-        assertEquals(setOf("get_chart_state", "find_chart_nodes", "get_chart_node_details", "show_scene", "clear_scene",
-            "trace_path", "reachability", "suggest_externals", "present_story", "suggest_followups", "get_project_map", "list_tours", "play_tour", "add_chart_nodes", "expand_chart_calls", "expand_chart_callers"), tools.keys)
+        assertEquals(setOf("get_chart_state", "find_chart_nodes", "get_chart_node_details", "get_function_flow_outline",
+            "get_flow_catalog", "show_scene", "clear_scene", "trace_path", "reachability", "suggest_externals",
+            "present_story", "suggest_followups", "get_project_map", "list_tours", "play_tour", "add_chart_nodes",
+            "expand_chart_calls", "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers"), tools.keys)
         assertEquals("revision=1 offset=20", tools.getValue("get_chart_state").call(JsonParser.parseString("""{"offset":20}""").asJsonObject))
         assertEquals("save offset=0", tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"query":"save"}""").asJsonObject))
         tools.getValue("trace_path").call(JsonParser.parseString("""{"revision":1,"from":2,"to":3}""").asJsonObject)
@@ -91,21 +112,33 @@ class ChartToolsTest {
             """{"revision":1,"nodes":[{"id":1}],"links":[{"from":1,"to":1,"kind":"data"}]}""",
             """{"revision":1,"nodes":[{"id":1}],"links":[{"from":1,"to":2}]}""",
             """{"revision":1,"nodes":[{"id":1}],"links":[{"from":1,"to":2,"kind":"data","label":"${"x".repeat(61)}"}]}""",
+            """{"revision":1,"nodes":[{"id":1}],"links":[{"from":1,"to":2,"kind":"call","payload":"${"x".repeat(81)}"}]}""",
             """{"revision":1,"nodes":[{"id":1}],"notes":[{"node":1,"text":" "}]}""",
             """{"revision":1,"nodes":[{"id":1}],"notes":[{"node":1,"text":"a"},{"node":1,"text":"b"}]}""",
             """{"revision":1,"nodes":[{"id":1}],"dim_others":"yes"}""",
             """{"revision":1,"nodes":[{"id":1}],"title":"${"x".repeat(121)}"}""",
+            """{"revision":1,"nodes":[{"id":1}],"columns":[{"node":1},{"node":1}]}""",
+            """{"revision":1,"nodes":[{"id":1}],"columns":[${(0..8).joinToString { """{"node":$it}""" }}]}""",
+            """{"revision":1,"nodes":[{"id":1}],"reset_board":"yes"}""",
+            """{"revision":1,"nodes":[{"id":1}],"camera":"zoom_in"}""",
         )) {
             try { tool.call(JsonParser.parseString(json).asJsonObject); fail(json) }
             catch (_: ToolInputException) { }
         }
         assertTrue(context.scenes.isEmpty())
-        tool.call(JsonParser.parseString("""{"revision":1,"title":" Save path ","nodes":[{"id":1,"badge":"1"},{"id":2,"role":"SINK"}],
-            "links":[{"from":1,"to":2,"kind":"call"},{"from":1,"to":2,"kind":"call"},{"from":2,"to":3,"kind":"async","label":""}],
-            "notes":[{"node":2,"text":"Writes rows, Repo.kt:12"}]}""").asJsonObject)
-        assertEquals(ChartScene("Save path", listOf(SceneNode(1, SceneRole.FOCUS, "1"), SceneNode(2, SceneRole.SINK)),
-            listOf(SceneLink(1, 2, SceneLinkKind.CALL), SceneLink(2, 3, SceneLinkKind.ASYNC)),
-            listOf(SceneNote(2, "Writes rows, Repo.kt:12")), dimOthers = true), context.scenes.single())
+        tool.call(JsonParser.parseString("""{"revision":1,"title":" Save path ","nodes":[{"id":1,"badge":"1","role":"TRANSFORM"},{"id":2,"role":"DECISION"},{"id":3,"role":"ORCHESTRATOR"}],
+            "links":[{"from":1,"to":2,"kind":"call","payload":"p1"},{"from":1,"to":2,"kind":"call","payload":"p1"},{"from":2,"to":3,"kind":"async","label":""}],
+            "notes":[{"node":2,"text":"Writes rows, Repo.kt:12"}],
+            "columns":[{"node":1,"title":"Col 1","description":"Desc 1"}],
+            "reset_board":true,
+            "camera":"fit_scene"}""").asJsonObject)
+        assertEquals(ChartScene("Save path",
+            listOf(SceneNode(1, SceneRole.TRANSFORM, "1"), SceneNode(2, SceneRole.DECISION), SceneNode(3, SceneRole.ORCHESTRATOR)),
+            listOf(SceneLink(1, 2, SceneLinkKind.CALL, payload = "p1"), SceneLink(2, 3, SceneLinkKind.ASYNC)),
+            listOf(SceneNote(2, "Writes rows, Repo.kt:12")), dimOthers = true,
+            columns = listOf(SceneColumn(1, "Col 1", "Desc 1")),
+            resetBoard = true,
+            camera = SceneCamera.FIT_SCENE), context.scenes.single())
     }
 
     @Test fun `system prompt is a project-neutral guide with evidence rules`() {
@@ -196,6 +229,22 @@ class ChartToolsTest {
         assertEquals(4 to 12, parseChatReferenceLink("node:4:12"))
         assertNull(parseChatReferenceLink("http://example.com"))
         assertNull(parseChatReferenceLink(null))
+
+        val beatTitles = mapOf(2 to "Validation")
+        fun beatHtml(text: String, revision: Int? = 4) = chatReferenceHtml(text, revision, beatTitle = { beatTitles[it] }) { names[it] }
+        assertEquals(listOf("Stage: ", ChatBeatReference(1, null), " and ", ChatBeatReference(2, "Validation"), "."),
+            parseChatReferences("Stage: [[beat:1]] and [[beat:2|Validation]]."))
+        assertEquals("""See <a href="beat:4:2">Validation</a> and <a href="beat:4:2">Stage 2</a>""",
+            beatHtml("See [[beat:2]] and [[beat:2|Stage 2]]"))
+        assertEquals("Unknown and Beat 9", beatHtml("[[beat:9|Unknown]] and [[beat:9]]"))
+        assertEquals(4 to 2, parseChatBeatLink("beat:4:2"))
+        assertNull(parseChatBeatLink("beat:4:0"))
+        assertNull(parseChatBeatLink("node:4:2"))
+        assertNull(parseChatBeatLink(null))
+        for (malformed in listOf("[[beat:0]]", "[[beat:100]]", "[[beat:-1]]", "[[beat:x]]")) {
+            assertFalse(malformed, beatHtml(malformed).contains("<a"))
+            assertTrue(malformed, beatHtml(malformed).contains(malformed))
+        }
     }
 
     @Test fun `scene groups externals and snippets are parsed and bounded before dispatch`() = runBlocking {
@@ -278,5 +327,68 @@ class ChartToolsTest {
         val schema = tools.getValue("play_tour").definition.parameters
         assertEquals(listOf("name"), schema["required"].asJsonArray.map { it.asString })
         assertEquals(0, tools.getValue("list_tours").definition.parameters["properties"].asJsonObject.size())
+    }
+
+    @Test fun `find_chart_nodes supports semantic filters and outline and catalog validate inputs`() = runBlocking {
+        val context = Context()
+        val tools = chartTools(context).associateBy { it.definition.name }
+
+        // find_chart_nodes rejects call with neither query nor filter, and rejects blank query
+        try { tools.getValue("find_chart_nodes").call(JsonParser.parseString("{}").asJsonObject); fail() }
+        catch (e: ToolInputException) { assertTrue(e.message!!.contains("query or a semantic filter")) }
+        for (json in listOf("""{"query":""}""", """{"query":"   "}""")) {
+            try { tools.getValue("find_chart_nodes").call(JsonParser.parseString(json).asJsonObject); fail(json) }
+            catch (e: ToolInputException) { assertTrue(e.message!!.contains("query must be a nonempty string")) }
+        }
+
+        // find_chart_nodes rejects invalid filters
+        try { tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"role":"invalid"}""").asJsonObject); fail() }
+        catch (e: ToolInputException) { assertTrue(e.message!!.contains("role must be one of")) }
+
+        try { tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"effect":"invalid"}""").asJsonObject); fail() }
+        catch (e: ToolInputException) { assertTrue(e.message!!.contains("effect must be one of")) }
+
+        try { tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"entry_point":"yes"}""").asJsonObject); fail() }
+        catch (e: ToolInputException) { assertTrue(e.message!!.contains("entry_point must be a boolean")) }
+
+        // find_chart_nodes dispatches valid filters to context.findNodes
+        tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"role":"VALIDATION","effect":"storage","entry_point":true,"offset":5}""").asJsonObject)
+        assertEquals(listOf(listOf(null, 5, "validation", "storage", true)), context.findNodesCalls)
+
+        // get_function_flow_outline validates 1..5 node_ids and revision
+        for (json in listOf(
+            """{"revision":1}""",
+            """{"revision":1,"node_ids":[]}""",
+            """{"revision":1,"node_ids":[1,2,3,4,5,6]}""",
+            """{"revision":1,"node_ids":[-1]}""",
+            """{"revision":-1,"node_ids":[1]}""",
+            """{"node_ids":[1]}""",
+        )) {
+            try { tools.getValue("get_function_flow_outline").call(JsonParser.parseString(json).asJsonObject); fail(json) }
+            catch (_: ToolInputException) { }
+        }
+        tools.getValue("get_function_flow_outline").call(JsonParser.parseString("""{"revision":1,"node_ids":[1,2,2]}""").asJsonObject)
+        assertEquals(listOf(1 to listOf(1, 2)), context.outlines)
+
+        // get_flow_catalog validates revision, query, offset
+        for (json in listOf(
+            """{}""",
+            """{"revision":-1}""",
+            """{"revision":1,"query":123}""",
+            """{"revision":1,"offset":-1}""",
+        )) {
+            try { tools.getValue("get_flow_catalog").call(JsonParser.parseString(json).asJsonObject); fail(json) }
+            catch (_: ToolInputException) { }
+        }
+        tools.getValue("get_flow_catalog").call(JsonParser.parseString("""{"revision":1,"query":"checkout","offset":10}""").asJsonObject)
+        assertEquals(listOf(Triple(1, "checkout", 10)), context.catalogs)
+
+        // collapse_chart_calls and collapse_chart_callers dispatch through context.apply
+        tools.getValue("collapse_chart_calls").call(JsonParser.parseString("""{"revision":1,"node_ids":[1,2]}""").asJsonObject)
+        tools.getValue("collapse_chart_callers").call(JsonParser.parseString("""{"revision":1,"node_ids":[3]}""").asJsonObject)
+        assertEquals(listOf(
+            Triple("collapse_chart_calls", 1, listOf(1, 2)),
+            Triple("collapse_chart_callers", 1, listOf(3)),
+        ), context.actions)
     }
 }

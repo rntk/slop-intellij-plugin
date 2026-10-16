@@ -3,13 +3,13 @@ package dev.insight.callgraph
 import com.google.gson.Gson
 import dev.insight.chat.ToolInputException
 
-enum class SceneRole { FOCUS, CONTEXT, SOURCE, SINK, PROBLEM }
+enum class SceneRole { FOCUS, CONTEXT, SOURCE, SINK, PROBLEM, TRANSFORM, DECISION, ORCHESTRATOR }
 
 /** Only [CALL] is static evidence; the other kinds are assistant explanations verified by reading source. */
 enum class SceneLinkKind { CALL, DATA, EVENT, CALLBACK, ASYNC }
 
 data class SceneNode(val node: Int, val role: SceneRole, val badge: String? = null)
-data class SceneLink(val from: Int, val to: Int, val kind: SceneLinkKind, val label: String? = null)
+data class SceneLink(val from: Int, val to: Int, val kind: SceneLinkKind, val label: String? = null, val payload: String? = null)
 data class SceneNote(val node: Int, val text: String)
 
 enum class SceneGroupKind { LAYER, STAGE, MODULE }
@@ -39,6 +39,9 @@ data class DeclarationSource(val path: String, val firstLine: Int, val lines: Li
     val lastLine get() = firstLine + lines.size - 1
 }
 
+data class SceneColumn(val node: Int, val title: String? = null, val description: String? = null)
+enum class SceneCamera { FOCUS_FIRST, FIT_SCENE }
+
 /** The assistant's current picture on the chart; each scene replaces the previous one. PSI-free. */
 data class ChartScene(
     val title: String? = null,
@@ -49,11 +52,14 @@ data class ChartScene(
     val groups: List<SceneGroup> = emptyList(),
     val externals: List<SceneExternal> = emptyList(),
     val snippets: List<SceneSnippet> = emptyList(),
+    val columns: List<SceneColumn> = emptyList(),
+    val resetBoard: Boolean = false,
+    val camera: SceneCamera = SceneCamera.FOCUS_FIRST,
 ) {
     val roles: Map<Int, SceneNode> by lazy { nodes.associateBy { it.node } }
     val noteOf: Map<Int, String> by lazy { notes.associate { it.node to it.text } }
     val isEmpty get() = nodes.isEmpty() && links.isEmpty() && notes.isEmpty() && title == null && groups.isEmpty() &&
-        externals.isEmpty() && snippets.isEmpty()
+        externals.isEmpty() && snippets.isEmpty() && columns.isEmpty() && !resetBoard
 
     /**
      * The scene moved into a rebuilt graph: emphasis and groups follow their functions; source-dependent explanations
@@ -61,7 +67,9 @@ data class ChartScene(
      */
     fun map(id: (Int) -> Int?) = copy(nodes = nodes.mapNotNull { n -> id(n.node)?.let { n.copy(node = it) } }.distinctBy { it.node },
         links = emptyList(), notes = emptyList(), externals = emptyList(), snippets = emptyList(),
-        groups = groups.map { g -> g.copy(nodes = g.nodes.mapNotNull(id).distinct()) }.filter { it.nodes.isNotEmpty() })
+        groups = groups.map { g -> g.copy(nodes = g.nodes.mapNotNull(id).distinct()) }.filter { it.nodes.isNotEmpty() },
+        columns = columns.mapNotNull { c -> id(c.node)?.let { c.copy(node = it) } }.distinctBy { it.node },
+        resetBoard = false)
 
     companion object {
         const val MAX_NODES = 30
@@ -79,6 +87,9 @@ data class ChartScene(
         const val MAX_SNIPPET_LINES = 12
         const val MAX_SNIPPET_CAPTION = 80
         const val MAX_SNIPPET_LINE = 240
+        const val MAX_PAYLOAD = 80
+        const val MAX_COLUMNS = 8
+        const val MAX_COLUMN_DESCRIPTION = 160
     }
 }
 
@@ -95,11 +106,18 @@ internal fun groundingEffect(kind: ExternalKind) = when (kind) {
 }
 
 /** A guided tour: [beats] are checked scenes with captions, stepped by the user without the assistant. PSI-free. */
-class ChartStory(val title: String, val beats: List<StoryBeat>, internal val graph: CallGraph, val index: Int = 0) {
+class ChartStory(
+    val title: String,
+    val beats: List<StoryBeat>,
+    internal val graph: CallGraph,
+    val index: Int = 0,
+    val id: Int = nextId.incrementAndGet(),
+) {
     val beat get() = beats[index]
-    fun at(index: Int) = ChartStory(title, beats, graph, index)
+    fun at(index: Int) = ChartStory(title, beats, graph, index, id)
 
     companion object {
+        private val nextId = java.util.concurrent.atomic.AtomicInteger()
         const val MIN_BEATS = 2
         const val MAX_BEATS = 8
         const val MAX_CAPTION = 300
@@ -155,7 +173,7 @@ internal fun checkChartScene(graph: CallGraph, scene: ChartScene, effects: ((Int
     captured: Boolean = true): ChartScene {
     val ids = (scene.nodes.map { it.node } + scene.links.flatMap { listOf(it.from, it.to) } + scene.notes.map { it.node } +
         scene.groups.flatMap { it.nodes } + scene.externals.flatMap { e -> e.connected.map { it.node } } +
-        scene.snippets.map { it.node }).distinct()
+        scene.snippets.map { it.node } + scene.columns.map { it.node }).distinct()
     if (ids.size > ChartScene.MAX_NODES)
         throw ToolInputException("A scene can show at most ${ChartScene.MAX_NODES} functions including link, note, group, external " +
             "and snippet targets; split it into several scenes")
@@ -221,9 +239,17 @@ internal fun captureSnippets(scene: ChartScene, source: (Int) -> DeclarationSour
 
 /** Places the hidden functions of a checked [scene] as continuations of the chart, shows it and focuses its first focus node. */
 internal fun placeChartScene(graph: CallGraph, canvas: FlowChartCanvas, scene: ChartScene, story: ChartStory? = null): List<Map<String, Any?>> {
+    if (scene.resetBoard) {
+        canvas.resetBoard(scene.columns.map { FlowStart(it.node, it.title, it.description) })
+    } else if (scene.columns.isNotEmpty()) {
+        for (col in scene.columns) {
+            canvas.setColumn(FlowStart(col.node, col.title, col.description))
+        }
+    }
     val placements = addConnected(graph, canvas, scene.nodes.map { it.node }.filter { canvas.chart?.step(it) == null })
     canvas.showScene(scene, story)
     (scene.nodes.firstOrNull { it.role == SceneRole.FOCUS } ?: scene.nodes.firstOrNull())?.let { canvas.selectNode(it.node) }
+    if (scene.camera == SceneCamera.FIT_SCENE) canvas.fitScene()
     return placements
 }
 
@@ -242,12 +268,16 @@ internal fun applyChartScene(graph: CallGraph, canvas: FlowChartCanvas, currentR
     val placements = placeChartScene(graph, canvas, full)
     return Gson().toJson(mapOf("ok" to true, "revision" to currentRevision, "replaced_previous_scene" to replaced,
         "closed_story" to closedStory, "title" to full.title, "dim_others" to full.dimOthers,
+        "camera" to full.camera.name.lowercase(), "reset_board" to full.resetBoard,
+        "columns" to full.columns.map { mapOf("node_id" to it.node, "title" to it.title, "description" to it.description) },
         "applied" to mapOf("nodes" to full.nodes.size, "links" to full.links.size, "notes" to full.notes.size,
-            "groups" to full.groups.size, "externals" to full.externals.size, "snippets" to full.snippets.size),
+            "groups" to full.groups.size, "externals" to full.externals.size, "snippets" to full.snippets.size,
+            "columns" to full.columns.size),
         "implicit_context_nodes" to full.nodes.drop(scene.nodes.size).map { it.node }, "placements" to placements,
         "added_node_ids" to (canvas.chart?.steps.orEmpty().map { it.node }.toSet() - before),
         "not_visible" to full.nodes.map { it.node }.filter { canvas.chart?.step(it) == null },
         "links" to full.links.map { mapOf("from" to it.from, "to" to it.to, "kind" to it.kind.name.lowercase(),
+            "payload" to it.payload,
             "evidence" to if (it.kind == SceneLinkKind.CALL) CALL_EVIDENCE else EXPLANATION_EVIDENCE) },
         "externals" to full.externals.map(::externalData),
         "snippets" to full.snippets.map { snippetData(it) + mapOf("text" to it.lines?.joinToString("\n")) },
@@ -308,6 +338,20 @@ internal fun openChartReference(graph: CallGraph, canvas: FlowChartCanvas, curre
 internal fun chartReferenceName(graph: CallGraph?, currentRevision: Int, revision: Int, node: Int): String? =
     graph?.takeIf { revision == currentRevision }?.nodes?.getOrNull(node)?.takeIf { it.inProject && it.kind == SymbolKind.FUNCTION }?.name
 
+internal fun chartBeatTitle(canvas: FlowChartCanvas?, currentRevision: Int, revision: Int, beat: Int,
+    storyId: Int? = canvas?.story?.id): String? =
+    canvas?.takeIf { revision == currentRevision }?.story?.takeIf { storyId != null && it.id == storyId }?.beats?.getOrNull(beat - 1)?.caption
+
+internal fun openChartBeat(canvas: FlowChartCanvas, currentRevision: Int, revision: Int, beat: Int,
+    storyId: Int? = canvas.story?.id): String? {
+    if (revision != currentRevision) return "The chart was rebuilt after this message, so its story references are stale; ask again."
+    val story = canvas.story ?: return "No story is open on the chart."
+    if (storyId == null || story.id != storyId) return "A different story is now open on the chart, so this beat reference is stale."
+    if (beat !in 1..story.beats.size) return "Beat $beat is not in the current story (1..${story.beats.size})."
+    if (beat - 1 != story.index) showStoryBeat(canvas, beat - 1)
+    return null
+}
+
 internal fun clearChartScene(canvas: FlowChartCanvas, currentRevision: Int, revision: Int, beforeChange: () -> Unit = {}): String {
     if (revision != currentRevision) throw ToolInputException("Stale graph revision; get_chart_state and resolve node IDs again")
     if (!canvas.scene.isEmpty || canvas.story != null) { beforeChange(); canvas.showScene(ChartScene()) }
@@ -319,9 +363,12 @@ internal fun sceneData(canvas: FlowChartCanvas): Map<String, Any?> {
     val scene = canvas.scene
     fun visible(id: Int) = canvas.geometry?.cards?.containsKey(id) == true
     return mapOf("title" to scene.title, "dim_others" to scene.dimOthers,
+        "camera" to scene.camera.name.lowercase(), "reset_board" to scene.resetBoard,
+        "columns" to scene.columns.map { mapOf("node_id" to it.node, "title" to it.title, "description" to it.description) },
         "nodes" to scene.nodes.map { mapOf("node_id" to it.node, "role" to it.role.name.lowercase(), "badge" to it.badge,
             "step_number" to canvas.chart?.step(it.node)?.number, "visible" to visible(it.node)) },
         "links" to scene.links.map { mapOf("from" to it.from, "to" to it.to, "kind" to it.kind.name.lowercase(), "label" to it.label,
+            "payload" to it.payload,
             "visible" to (visible(it.from) && visible(it.to)),
             "evidence" to if (it.kind == SceneLinkKind.CALL) CALL_EVIDENCE else EXPLANATION_EVIDENCE) },
         "notes" to scene.notes.map { mapOf("node_id" to it.node, "text" to it.text) },

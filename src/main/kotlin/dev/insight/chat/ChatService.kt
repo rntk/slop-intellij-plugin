@@ -62,7 +62,7 @@ open class ChatSession(
                         }
                     }
                 }
-                history += ChatMessage(ChatMessage.ASSISTANT, reply, chart?.revision)
+                history += ChatMessage(ChatMessage.ASSISTANT, reply, chart?.revision, chart?.storyId)
                 followups = proposed
             } catch (e: CancellationException) {
                 throw e
@@ -98,6 +98,13 @@ open class ChatSession(
     /** Shows the function a reply referenced on the chart, or a notice when it is stale or unknown; EDT. */
     fun openReference(revision: Int, node: Int) {
         val notice = chart?.openReference(revision, node) ?: return
+        history += ChatMessage(ChatMessage.NOTICE, notice)
+        notifyViews()
+    }
+
+    /** Steps the active story on the chart to [beat] (1-based), or shows a notice when it cannot; EDT. */
+    fun openBeat(revision: Int, beat: Int, storyId: Int? = null) {
+        val notice = chart?.openBeat(revision, beat, storyId) ?: return
         history += ChatMessage(ChatMessage.NOTICE, notice)
         notifyViews()
     }

@@ -366,4 +366,29 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         assertTrue(canvas.scene.externals.isEmpty() && canvas.scene.snippets.isEmpty())
         assertNull(canvas.overlay)
     }
+
+    fun `test fitScene adjusts zoom when the scene is larger than the viewport`() {
+        val canvas = canvas()
+        canvas.add(FlowStart(5))
+        val viewport = javax.swing.JViewport().apply {
+            size = java.awt.Dimension(220, 180)
+            view = canvas
+            viewSize = canvas.preferredSize
+        }
+        canvas.showScene(ChartScene(
+            nodes = listOf(SceneNode(0, SceneRole.FOCUS), SceneNode(4, SceneRole.SINK), SceneNode(5, SceneRole.SOURCE), SceneNode(8, SceneRole.CONTEXT)),
+            camera = SceneCamera.FIT_SCENE,
+        ))
+        canvas.fitScene()
+        assertTrue("Expected zoom < 1.0 to fit multi-lane scene in small viewport, got ${canvas.zoom}", canvas.zoom < 1.0)
+        val union = listOf(0, 4, 5, 8).map { canvas.geometry!!.cards.getValue(it).bounds }.reduce { a, b -> a.union(b) }
+        val visible = java.awt.Rectangle(viewport.viewPosition, viewport.extentSize)
+        val scaledUnion = java.awt.Rectangle(
+            (union.x * canvas.zoom).toInt(),
+            (union.y * canvas.zoom).toInt(),
+            (union.width * canvas.zoom).toInt(),
+            (union.height * canvas.zoom).toInt(),
+        )
+        assertTrue("Expected viewport $visible to contain scaled scene bounds $scaledUnion", visible.contains(scaledUnion))
+    }
 }

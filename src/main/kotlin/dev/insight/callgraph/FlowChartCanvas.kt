@@ -52,6 +52,9 @@ private val contextColor = JBColor(Color(0x7A8290), Color(0x9AA3B0))
 private val sourceColor = JBColor(Color(0x1F8A4C), Color(0x5FCB8A))
 private val sinkColor = JBColor(Color(0x8A3FC1), Color(0xC08BF0))
 private val problemColor = JBColor(Color(0xC8452B), Color(0xF07A5F))
+private val transformColor = JBColor(Color(0x0E8A72), Color(0x4CC9B0))
+private val decisionRoleColor = JBColor(Color(0xC27803), Color(0xE8A838))
+private val orchestratorColor = JBColor(Color(0x5A45B0), Color(0x9B87F5))
 private val callLinkColor = JBColor(Color(0x50565E), Color(0xB0B5BC))
 private val dataLinkColor = JBColor(Color(0x0F8A8A), Color(0x4FC9C9))
 private val eventLinkColor = JBColor(Color(0xB7791F), Color(0xE5B45A))
@@ -77,6 +80,9 @@ internal fun roleColor(role: SceneRole): Color = when (role) {
     SceneRole.SOURCE -> sourceColor
     SceneRole.SINK -> sinkColor
     SceneRole.PROBLEM -> problemColor
+    SceneRole.TRANSFORM -> transformColor
+    SceneRole.DECISION -> decisionRoleColor
+    SceneRole.ORCHESTRATOR -> orchestratorColor
 }
 
 internal fun linkColor(kind: SceneLinkKind): Color = when (kind) {
@@ -310,6 +316,23 @@ class FlowChartCanvas(
         selectNode(start.node)
     }
 
+    fun setColumn(start: FlowStart) {
+        val starts = if (board.starts.any { it.node == start.node }) {
+            board.starts.map { existing ->
+                if (existing.node == start.node) {
+                    existing.copy(title = start.title ?: existing.title, description = start.description ?: existing.description)
+                } else existing
+            }
+        } else {
+            board.starts + start
+        }
+        update(board.copy(starts = starts, openCalls = board.openCalls + start.node))
+    }
+
+    fun resetBoard(starts: List<FlowStart> = emptyList()) {
+        update(FlowBoard(starts = starts.distinctBy { it.node }, openCalls = starts.mapTo(hashSetOf()) { it.node }, compact = board.compact))
+    }
+
     /**
      * Shows [node] as a continuation of the chart rather than a column of its own: below a visible step that calls it
      * (opening that step's calls or the compact subflow holding the call), or above a visible step it calls (opening
@@ -338,6 +361,14 @@ class FlowChartCanvas(
     /** Shows what each of [nodes] calls, wherever its step is. */
     fun openCalls(nodes: Set<Int>) {
         if (!board.openCalls.containsAll(nodes)) update(board.copy(openCalls = board.openCalls + nodes))
+    }
+
+    fun collapseCalls(nodes: Set<Int>) {
+        if (board.openCalls.any { it in nodes }) update(board.copy(openCalls = board.openCalls - nodes))
+    }
+
+    fun collapseCallers(nodes: Set<Int>) {
+        if (board.openCallers.any { it in nodes }) update(board.copy(openCallers = board.openCallers - nodes))
     }
 
     /** Takes the column of [node] off the chart; what is open elsewhere stays open. */
@@ -457,6 +488,21 @@ class FlowChartCanvas(
         val box = geometry?.cards?.get(node)?.bounds ?: return
         val area = Rectangle(box).apply { grow(JBUI.scale(40), JBUI.scale(40)) }
         scrollRectToVisible(Rectangle((area.x * zoom).toInt(), (area.y * zoom).toInt(), (area.width * zoom).toInt(), (area.height * zoom).toInt()))
+    }
+
+    fun fitScene() {
+        val cardBounds = scene.nodes.mapNotNull { geometry?.cards?.get(it.node)?.bounds }
+        val allBounds = overlay?.bounds?.let { cardBounds + it } ?: cardBounds
+        val union = allBounds.reduceOrNull { a, b -> a.union(b) } ?: return
+        val area = Rectangle(union).apply { grow(JBUI.scale(48), JBUI.scale(48)) }
+        val extent = viewport?.extentSize?.takeIf { it.width > 0 && it.height > 0 }
+        if (extent != null && area.width > 0 && area.height > 0) {
+            zoomAt(minOf(1.0, extent.width.toDouble() / area.width, extent.height.toDouble() / area.height))
+            moveViewport(Point((area.centerX * zoom - extent.width / 2.0).roundToInt(),
+                (area.centerY * zoom - extent.height / 2.0).roundToInt()))
+        } else {
+            scrollRectToVisible(Rectangle((area.x * zoom).toInt(), (area.y * zoom).toInt(), (area.width * zoom).toInt(), (area.height * zoom).toInt()))
+        }
     }
 
     fun zoomAt(value: Double, anchor: Point? = null) {
@@ -600,7 +646,8 @@ class FlowChartCanvas(
                 scene.links.filter { it.from == shape.step.node || it.to == shape.step.node }.map { link ->
                     "${if (link.kind == SceneLinkKind.CALL) "Static call" else "Assistant ${link.kind.name.lowercase()} link (explanation)"} " +
                         "${source?.card?.invoke(link.from)?.title ?: link.from} → ${source?.card?.invoke(link.to)?.title ?: link.to}" +
-                        link.label?.let { ": $it" }.orEmpty()
+                        link.label?.let { ": $it" }.orEmpty() +
+                        link.payload?.let { " [$it]" }.orEmpty()
                 })
                 .flatMap { it.lines() }.filter { it.isNotBlank() }.map { StringUtil.escapeXmlEntities(it) })
                 .joinToString("<br>", "<html>", "</html>")
@@ -752,8 +799,10 @@ class FlowChartCanvas(
                 arrowHead(g, x2, y2, if (stacked) kotlin.math.atan2(0.0, -1.0) else kotlin.math.atan2(y2 - y1, x2 - x1))
                 continue
             }
-            paintChip(g, if (link.kind == SceneLinkKind.CALL) link.label ?: "call" else
-                link.kind.name.lowercase() + link.label?.let { ": $it" }.orEmpty(), color, midX, midY, chips)
+            val base = if (link.kind == SceneLinkKind.CALL) link.label ?: "call" else
+                link.kind.name.lowercase() + link.label?.let { ": $it" }.orEmpty()
+            val chipText = if (link.payload != null) "$base · [${link.payload}]" else base
+            paintChip(g, chipText, color, midX, midY, chips)
         }
         g.stroke = previous
     }

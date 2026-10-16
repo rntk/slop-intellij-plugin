@@ -55,7 +55,7 @@ internal fun applyChartChatAction(
     beforeChange: () -> Unit = {},
 ): String {
     if (revision != currentRevision) throw ToolInputException("Stale graph revision; get_chart_state and resolve node IDs again")
-    if (action !in setOf("add_chart_nodes", "expand_chart_calls", "expand_chart_callers"))
+    if (action !in setOf("add_chart_nodes", "expand_chart_calls", "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers"))
         throw ToolInputException("Unknown chart action: $action")
     nodes.forEach { id ->
         val node = graph.nodes.getOrNull(id)
@@ -71,10 +71,14 @@ internal fun applyChartChatAction(
         "add_chart_nodes" -> placements = addConnected(graph, canvas, nodes)
         "expand_chart_calls" -> canvas.openCalls(nodes.toSet())
         "expand_chart_callers" -> nodes.filter { it !in canvas.board.openCallers }.forEach(canvas::toggleCallers)
+        "collapse_chart_calls" -> nodes.filter { it in canvas.board.openCalls }.forEach(canvas::toggleCalls)
+        "collapse_chart_callers" -> nodes.filter { it in canvas.board.openCallers }.forEach(canvas::toggleCallers)
     }
     return Gson().toJson(mapOf("ok" to true, "revision" to currentRevision, "action" to action, "node_ids" to nodes,
         "visible_steps" to canvas.chart?.steps?.size,
-        "added_node_ids" to (canvas.chart?.steps.orEmpty().map { it.node }.toSet() - before)) + listOfNotNull(placements?.let { "placements" to it }))
+        "added_node_ids" to (canvas.chart?.steps.orEmpty().map { it.node }.toSet() - before),
+        "removed_node_ids" to (before - canvas.chart?.steps.orEmpty().map { it.node }.toSet())) +
+        listOfNotNull(placements?.let { "placements" to it }))
 }
 
 internal fun chartNodeDetails(graph: CallGraph, currentRevision: Int, revision: Int, node: Int, offset: Int): String {

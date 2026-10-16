@@ -530,4 +530,274 @@ class FlowChartChatTest : BasePlatformTestCase() {
         val image = java.awt.image.BufferedImage(canvas.width, canvas.height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
         image.createGraphics().let { g -> try { canvas.paint(g) } finally { g.dispose() } }
     }
+
+    fun `test collapse calls and callers update board and report removed node ids`() {
+        val canvas = canvas()
+        applyChartChatAction(graph, canvas, 1, "add_chart_nodes", 1, listOf(0))
+        applyChartChatAction(graph, canvas, 1, "expand_chart_calls", 1, listOf(0))
+        applyChartChatAction(graph, canvas, 1, "expand_chart_calls", 1, listOf(1))
+        assertTrue(0 in canvas.board.openCalls && 1 in canvas.board.openCalls)
+        assertNotNull(canvas.chart?.step(1))
+        assertNotNull(canvas.chart?.step(2))
+
+        val res1 = JsonParser.parseString(applyChartChatAction(graph, canvas, 1, "collapse_chart_calls", 1, listOf(1))).asJsonObject
+        assertFalse(1 in canvas.board.openCalls)
+        assertNull(canvas.chart?.step(2))
+        assertEquals(listOf(2), res1["removed_node_ids"].asJsonArray.map { it.asInt })
+
+        val res0 = JsonParser.parseString(applyChartChatAction(graph, canvas, 1, "collapse_chart_calls", 1, listOf(0))).asJsonObject
+        assertFalse(0 in canvas.board.openCalls)
+        assertNull(canvas.chart?.step(1))
+        assertEquals(listOf(1), res0["removed_node_ids"].asJsonArray.map { it.asInt })
+
+        applyChartChatAction(graph, canvas, 1, "add_chart_nodes", 1, listOf(2))
+        applyChartChatAction(graph, canvas, 1, "expand_chart_callers", 1, listOf(2))
+        assertTrue(2 in canvas.board.openCallers)
+        assertNotNull(canvas.chart?.step(1))
+
+        val resCallers = JsonParser.parseString(applyChartChatAction(graph, canvas, 1, "collapse_chart_callers", 1, listOf(2))).asJsonObject
+        assertFalse(2 in canvas.board.openCallers)
+        assertNull(canvas.chart?.step(1))
+        assertEquals(listOf(1), resCallers["removed_node_ids"].asJsonArray.map { it.asInt })
+    }
+
+    fun `test scene columns reset board fit camera new roles and link payload`() {
+        val canvas = canvas()
+        canvas.add(FlowStart(0))
+        assertEquals(1, canvas.board.starts.size)
+
+        val scene = ChartScene(
+            title = "Pipeline",
+            nodes = listOf(
+                SceneNode(0, SceneRole.TRANSFORM, "1"),
+                SceneNode(1, SceneRole.DECISION, "2"),
+                SceneNode(2, SceneRole.ORCHESTRATOR, "3"),
+            ),
+            links = listOf(
+                SceneLink(0, 1, SceneLinkKind.CALL, label = "step1", payload = "req"),
+                SceneLink(1, 2, SceneLinkKind.CALL, label = "step2", payload = "decision_res"),
+            ),
+            columns = listOf(
+                SceneColumn(0, "Input Stage", "Entry point"),
+                SceneColumn(2, "Output Stage", "Sink point"),
+            ),
+            resetBoard = true,
+            camera = SceneCamera.FIT_SCENE,
+        )
+
+        val appliedJson = JsonParser.parseString(applyChartScene(graph, canvas, 1, 1, scene)).asJsonObject
+        assertTrue(appliedJson["ok"].asBoolean)
+        assertTrue(appliedJson["reset_board"].asBoolean)
+        assertEquals("fit_scene", appliedJson["camera"].asString)
+        val cols = appliedJson["columns"].asJsonArray
+        assertEquals(2, cols.size())
+        assertEquals(0, cols[0].asJsonObject["node_id"].asInt)
+        assertEquals("Input Stage", cols[0].asJsonObject["title"].asString)
+        val linksApplied = appliedJson["links"].asJsonArray
+        assertEquals("req", linksApplied[0].asJsonObject["payload"].asString)
+        assertEquals("decision_res", linksApplied[1].asJsonObject["payload"].asString)
+
+        assertEquals(listOf(0, 2), canvas.board.starts.map { it.node })
+
+        val data = sceneData(canvas)
+        assertEquals("fit_scene", data["camera"])
+        assertEquals(true, data["reset_board"])
+        @Suppress("UNCHECKED_CAST")
+        val nodesData = (data["nodes"] as List<Map<String, Any?>>).associate { it["node_id"] as Int to it["role"] as String }
+        assertEquals("transform", nodesData[0])
+        assertEquals("decision", nodesData[1])
+        assertEquals("orchestrator", nodesData[2])
+        @Suppress("UNCHECKED_CAST")
+        val linksData = data["links"] as List<Map<String, Any?>>
+        assertEquals("req", linksData[0]["payload"])
+        assertEquals("decision_res", linksData[1]["payload"])
+
+        val beat1 = StoryBeat("Beat 1 Caption", scene)
+        val beat2 = StoryBeat("Beat 2 Caption", ChartScene(nodes = listOf(SceneNode(1, SceneRole.FOCUS))))
+        presentChartStory(graph, canvas, 1, 1, "Story Title", listOf(beat1, beat2))
+        val firstStoryId = canvas.story!!.id
+
+        assertEquals("Beat 1 Caption", chartBeatTitle(canvas, 1, 1, 1, firstStoryId))
+        assertEquals("Beat 2 Caption", chartBeatTitle(canvas, 1, 1, 2, firstStoryId))
+        assertNull(chartBeatTitle(canvas, 1, 1, 3, firstStoryId))
+        assertNull(chartBeatTitle(canvas, 2, 1, 1, firstStoryId))
+        assertNull(chartBeatTitle(canvas, 1, 1, 1, null))
+
+        assertEquals(0, canvas.story!!.index)
+        assertNull(openChartBeat(canvas, 1, 1, 2, firstStoryId))
+        assertEquals(1, canvas.story!!.index)
+        assertEquals( firstStoryId, canvas.story!!.id)
+        assertEquals(setOf(1), canvas.scene.roles.keys)
+
+        // Presenting a replacement story in the same graph revision invalidates beat references from the first story.
+        val replacement1 = StoryBeat("Replacement Beat 1", ChartScene(nodes = listOf(SceneNode(0, SceneRole.FOCUS))))
+        val replacement2 = StoryBeat("Replacement Beat 2", ChartScene(nodes = listOf(SceneNode(2, SceneRole.FOCUS))))
+        presentChartStory(graph, canvas, 1, 1, "Second Story", listOf(replacement1, replacement2))
+        val secondStoryId = canvas.story!!.id
+        assertTrue(firstStoryId != secondStoryId)
+        assertNull(chartBeatTitle(canvas, 1, 1, 1, firstStoryId))
+        assertEquals("Replacement Beat 1", chartBeatTitle(canvas, 1, 1, 1, secondStoryId))
+        val replacedStory = openChartBeat(canvas, 1, 1, 2, firstStoryId)
+        assertTrue(replacedStory!!, replacedStory.contains("different story"))
+        assertEquals(0, canvas.story!!.index)
+
+        val stale = openChartBeat(canvas, 2, 1, 1, secondStoryId)
+        assertTrue(stale!!, stale.contains("rebuilt"))
+
+        val outOfRange = openChartBeat(canvas, 1, 1, 5, secondStoryId)
+        assertTrue(outOfRange!!, outOfRange.contains("Beat 5 is not in the current story"))
+
+        canvas.closeStory()
+        val noStory = openChartBeat(canvas, 1, 1, 1, secondStoryId)
+        assertTrue(noStory!!, noStory.contains("No story is open"))
+    }
+
+    fun `test find nodes with semantic filters`() {
+        val semantics: (Int) -> NodeSemanticInfo? = { id ->
+            when (id) {
+                0 -> NodeSemanticInfo(summaryLabel = "HTTP Controller", summaryDescription = "Handles incoming web orders", role = "source", ownEffects = setOf("network"), entryPoint = true)
+                1 -> NodeSemanticInfo(summaryLabel = "Order Validator", summaryDescription = "Validates inventory and price", role = "decision", reachedEffects = setOf("storage"), entryPoint = false)
+                2 -> NodeSemanticInfo(summaryLabel = "Database Writer", summaryDescription = "Persists order records", role = "sink", ownEffects = setOf("storage", "throws"), entryPoint = false)
+                else -> null
+            }
+        }
+
+        val byQuery = JsonParser.parseString(chartFindNodes(graph, 1, "inventory", semantics = semantics)).asJsonObject
+        assertEquals(1, byQuery["total"].asInt)
+        assertEquals(1, byQuery["nodes"].asJsonArray[0].asJsonObject["node_id"].asInt)
+        assertEquals("Order Validator", byQuery["nodes"].asJsonArray[0].asJsonObject["summary"].asString)
+
+        val byRole = JsonParser.parseString(chartFindNodes(graph, 1, null, role = "decision", semantics = semantics)).asJsonObject
+        assertEquals(1, byRole["total"].asInt)
+        assertEquals(1, byRole["nodes"].asJsonArray[0].asJsonObject["node_id"].asInt)
+
+        val byStorage = JsonParser.parseString(chartFindNodes(graph, 1, null, effect = "storage", semantics = semantics)).asJsonObject
+        assertEquals(2, byStorage["total"].asInt)
+        val storageIds = byStorage["nodes"].asJsonArray.map { it.asJsonObject["node_id"].asInt }.toSet()
+        assertEquals(setOf(1, 2), storageIds)
+
+        val byEp = JsonParser.parseString(chartFindNodes(graph, 1, null, entryPoint = true, semantics = semantics)).asJsonObject
+        assertEquals(1, byEp["total"].asInt)
+        assertEquals(0, byEp["nodes"].asJsonArray[0].asJsonObject["node_id"].asInt)
+        assertTrue(byEp["nodes"].asJsonArray[0].asJsonObject["entry_point"].asBoolean)
+
+        val combined = JsonParser.parseString(chartFindNodes(graph, 1, "Controller", role = "source", semantics = semantics)).asJsonObject
+        assertEquals(1, combined["total"].asInt)
+        assertEquals(0, combined["nodes"].asJsonArray[0].asJsonObject["node_id"].asInt)
+    }
+
+    fun `test function outline returns call sites control frames exits implementations and subflows`() {
+        val callSite1 = CallSite(1, 100, listOf(ControlFrame(ControlKind.BRANCH, 10, 20, "x > 0")), "function1()")
+        val exit1 = ExitSite(150, listOf(ControlFrame(ControlKind.BRANCH, 10, 30, "x <= 0")), "return", "return -1")
+        val callSites = mapOf(0 to listOf(callSite1, exit1))
+
+        val evidence = FlowRegionEvidence(0, listOf(CallSite(1, 100), CallSite(2, 200)))
+        val region = FlowRegion(FlowRegionPlan(evidence, "Subflow 1", "Region desc", true), false)
+
+        val graphWithInherits = graph.copy(edges = graph.edges + CallGraphEdge(0, 3, RelationKind.INHERITS))
+
+        val semantics: (Int) -> NodeSemanticInfo? = { id ->
+            if (id == 0) NodeSemanticInfo("Root Handler", "Root description", "orchestrator", ownEffects = setOf("network"), entryPoint = true) else null
+        }
+
+        val json = JsonParser.parseString(chartFunctionOutline(
+            graphWithInherits, 1, 1, listOf(0),
+            callSites = callSites,
+            regions = listOf(region),
+            semantics = semantics
+        )).asJsonObject
+
+        val fn = json["functions"].asJsonArray[0].asJsonObject
+        assertEquals(0, fn["node_id"].asInt)
+        assertEquals("Root Handler", fn["summary"].asString)
+        assertEquals("orchestrator", fn["role"].asString)
+        assertTrue(fn["call_sites_loaded"].asBoolean)
+        assertEquals(1, fn["call_sites_total"].asInt)
+        val cs = fn["call_sites"].asJsonArray[0].asJsonObject
+        assertEquals(1, cs["callee_node_id"].asInt)
+        assertEquals("function1()", cs["text"].asString)
+        assertEquals("BRANCH", cs["control_frames"].asJsonArray[0].asJsonObject["kind"].asString)
+        assertEquals("x > 0", cs["control_frames"].asJsonArray[0].asJsonObject["label"].asString)
+
+        assertEquals(1, fn["exits_total"].asInt)
+        val ex = fn["exits"].asJsonArray[0].asJsonObject
+        assertEquals("return", ex["keyword"].asString)
+        assertEquals("return -1", ex["text"].asString)
+
+        val dispatches = fn["dispatch_implementations"].asJsonArray
+        assertEquals(1, dispatches.size())
+        assertEquals(3, dispatches[0].asJsonObject["node_id"].asInt)
+
+        val subflows = fn["subflows"].asJsonArray
+        assertEquals(1, subflows.size())
+        assertEquals("Subflow 1", subflows[0].asJsonObject["title"].asString)
+        assertEquals("Region desc", subflows[0].asJsonObject["description"].asString)
+        assertTrue(subflows[0].asJsonObject["inferred"].asBoolean)
+
+        assertThrows(ToolInputException::class.java) {
+            chartFunctionOutline(graph, 1, 1, emptyList(), emptyMap())
+        }
+        assertThrows(ToolInputException::class.java) {
+            chartFunctionOutline(graph, 1, 1, listOf(0, 1, 2, 3, 4, 5), emptyMap())
+        }
+        assertThrows(ToolInputException::class.java) {
+            chartFunctionOutline(graph, 2, 1, listOf(0), emptyMap())
+        }
+    }
+
+    fun `test flow catalog returns flows with spine nodes and reached effects and entry points`() {
+        val flows = listOf(
+            CatalogFlow("flow-order", "Process Order", "Order processing pipeline", 0, listOf(0, 1, 2)),
+            CatalogFlow("flow-audit", "Audit Log", "Auditing flow", 1, listOf(1, 2)),
+        )
+        val entryPoints = listOf(
+            MapEntryPoint(0, "Order API", "HTTP", "OrderController.kt"),
+        )
+        val semantics: (Int) -> NodeSemanticInfo? = { id ->
+            when (id) {
+                0 -> NodeSemanticInfo("Order Entry", "Entry", "source", ownEffects = setOf("network"), entryPoint = true)
+                1 -> NodeSemanticInfo("Validate", "Validation", "decision")
+                2 -> NodeSemanticInfo("Save", "Persistence", "sink", ownEffects = setOf("storage"))
+                else -> null
+            }
+        }
+
+        val json = JsonParser.parseString(chartFlowCatalog(
+            graph, 1, 1, query = null, offset = 0,
+            flows = flows, entryPoints = entryPoints, semantics = semantics
+        )).asJsonObject
+
+        assertEquals(2, json["flows_total"].asInt)
+        val catalogFlows = json["flows"].asJsonArray
+        assertEquals(2, catalogFlows.size())
+        val first = catalogFlows[0].asJsonObject
+        assertEquals("flow-order", first["id"].asString)
+        assertEquals("Process Order", first["title"].asString)
+        assertEquals(0, first["entry"].asJsonObject["node_id"].asInt)
+        assertEquals(3, first["functions_total"].asInt)
+        val spine = first["spine_nodes"].asJsonArray
+        assertEquals(3, spine.size())
+        assertEquals(0, spine[0].asJsonObject["node_id"].asInt)
+        assertEquals("Order Entry", spine[0].asJsonObject["summary"].asString)
+        assertEquals("source", spine[0].asJsonObject["role"].asString)
+        val effects = first["effects_reached"].asJsonArray.map { it.asString }
+        assertEquals(listOf("network", "storage"), effects)
+
+        val epList = json["entry_points"].asJsonArray
+        assertEquals(1, epList.size())
+        assertEquals(0, epList[0].asJsonObject["node_id"].asInt)
+        assertEquals("Order API", epList[0].asJsonObject["title"].asString)
+        assertEquals("HTTP", epList[0].asJsonObject["kind"].asString)
+
+        val filtered = JsonParser.parseString(chartFlowCatalog(
+            graph, 1, 1, query = "audit", offset = 0,
+            flows = flows, entryPoints = entryPoints, semantics = semantics
+        )).asJsonObject
+        assertEquals(1, filtered["flows_total"].asInt)
+        assertEquals("flow-audit", filtered["flows"].asJsonArray[0].asJsonObject["id"].asString)
+
+        assertThrows(ToolInputException::class.java) {
+            chartFlowCatalog(graph, 2, 1, flows = flows)
+        }
+    }
 }

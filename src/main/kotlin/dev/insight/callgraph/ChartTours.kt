@@ -33,14 +33,15 @@ data class SavedTour(val name: String, val title: String, val functions: List<To
 /** IDs of every function a scene refers to, in order of first mention. */
 private fun sceneIds(scene: ChartScene) = (scene.nodes.map { it.node } + scene.links.flatMap { listOf(it.from, it.to) } +
     scene.notes.map { it.node } + scene.groups.flatMap { it.nodes } + scene.externals.flatMap { e -> e.connected.map { it.node } } +
-    scene.snippets.map { it.node }).distinct()
+    scene.snippets.map { it.node } + scene.columns.map { it.node }).distinct()
 
 /** Replaces every ID of a scene whose IDs [id] all maps; external verification is redone on play. */
 private fun ChartScene.mapAll(id: (Int) -> Int) = copy(nodes = nodes.map { it.copy(node = id(it.node)) },
     links = links.map { it.copy(from = id(it.from), to = id(it.to)) }, notes = notes.map { it.copy(node = id(it.node)) },
     groups = groups.map { g -> g.copy(nodes = g.nodes.map(id)) },
     externals = externals.map { e -> e.copy(connected = e.connected.map { it.copy(node = id(it.node)) }, verified = false) },
-    snippets = snippets.map { it.copy(node = id(it.node)) })
+    snippets = snippets.map { it.copy(node = id(it.node)) },
+    columns = columns.map { it.copy(node = id(it.node)) })
 
 /** [story] as a tour named [name]: its functions by stable identity, captured snippets kept for export. */
 internal fun savedTour(name: String, story: ChartStory, savedAt: Long = System.currentTimeMillis()): SavedTour {
@@ -113,7 +114,8 @@ internal fun resolveTour(tour: SavedTour, graph: CallGraph, effects: ((Int) -> S
         }
         val snippets = s.snippets.mapNotNull { snippet -> id(snippet.node)?.let { snippet.copy(node = it) }
             ?: run { dropped += "$where snippet of ${label(snippet.node)} (function missing)"; null } }
-        StoryBeat(beat.caption, s.copy(nodes = nodes, links = links, notes = notes, groups = groups, externals = externals, snippets = snippets))
+        val columns = s.columns.mapNotNull { c -> id(c.node)?.let { c.copy(node = it) } }.distinctBy { it.node }
+        StoryBeat(beat.caption, s.copy(nodes = nodes, links = links, notes = notes, groups = groups, externals = externals, snippets = snippets, columns = columns))
     }
     return TourPlay(tour, beats, tour.functions.filterIndexed { i, _ -> ids[i] == null }, relocated, skipped, dropped)
 }
@@ -215,6 +217,7 @@ internal fun tourMarkdown(tour: SavedTour, basePath: String? = null): String = b
             scene.links.forEach { link ->
                 append("- ").append(name(link.from)).append(" → ").append(name(link.to)).append(" (").append(link.kind.name.lowercase()).append(")")
                 link.label?.let { append(": ").append(it) }
+                if (link.payload != null) append(" [" + code(link.payload) + "]")
                 append('\n')
             }
         }
@@ -256,6 +259,7 @@ internal object TourJson {
     }
 
     private fun JsonObject.str(name: String): String? = get(name)?.takeIf { it.isJsonPrimitive }?.asString
+    private fun JsonObject.text(name: String, max: Int): String? = str(name)?.take(max)
     private fun JsonObject.int(name: String): Int = get(name).asInt
     private fun JsonObject.array(name: String): List<JsonObject> = getAsJsonArray(name)?.map { it.asJsonObject }.orEmpty()
     private fun <T : Enum<T>> choice(values: Array<T>, text: String?, default: T? = null): T =
@@ -281,15 +285,17 @@ internal object TourJson {
         "beats" to list(t.beats) { b -> obj("caption" to b.caption, "scene" to scene(b.scene)) })
 
     private fun scene(s: ChartScene) = obj("title" to s.title, "dim_others" to s.dimOthers,
+        "camera" to s.camera.name.lowercase(), "reset_board" to s.resetBoard,
         "nodes" to list(s.nodes) { obj("fn" to it.node, "role" to it.role.name.lowercase(), "badge" to it.badge) },
-        "links" to list(s.links) { obj("from" to it.from, "to" to it.to, "kind" to it.kind.name.lowercase(), "label" to it.label) },
+        "links" to list(s.links) { obj("from" to it.from, "to" to it.to, "kind" to it.kind.name.lowercase(), "label" to it.label, "payload" to it.payload) },
         "notes" to list(s.notes) { obj("fn" to it.node, "text" to it.text) },
         "groups" to list(s.groups) { obj("label" to it.label, "kind" to it.kind?.name?.lowercase(), "fns" to ints(it.nodes)) },
         "externals" to list(s.externals) { e -> obj("id" to e.id, "kind" to e.kind.name.lowercase(), "label" to e.label,
             "connected" to list(e.connected) { obj("fn" to it.node, "direction" to it.direction.name.lowercase(), "label" to it.label) }) },
         "snippets" to list(s.snippets) { obj("fn" to it.node, "start_line" to it.startLine, "end_line" to it.endLine,
             "caption" to it.caption, "path" to it.path, "hash" to it.hash,
-            "lines" to it.lines?.let { lines -> JsonArray().also { a -> lines.forEach(a::add) } }) })
+            "lines" to it.lines?.let { lines -> JsonArray().also { a -> lines.forEach(a::add) } }) },
+        "columns" to list(s.columns) { obj("node" to it.node, "title" to it.title, "description" to it.description) })
 
     private fun tour(o: JsonObject): SavedTour {
         val functions = o.array("functions").map { f ->
@@ -302,18 +308,23 @@ internal object TourJson {
     }
 
     private fun scene(o: JsonObject, size: Int): ChartScene {
-        fun JsonObject.fn(name: String = "fn") = int(name).also { require(it in 0 until size) }
-        return ChartScene(o.str("title"),
-            o.array("nodes").map { SceneNode(it.fn(), choice(SceneRole.entries.toTypedArray(), it.str("role"), SceneRole.CONTEXT), it.str("badge")) },
-            o.array("links").map { SceneLink(it.fn("from"), it.fn("to"), choice(SceneLinkKind.entries.toTypedArray(), it.str("kind")), it.str("label")) },
-            o.array("notes").map { SceneNote(it.fn(), it.str("text").orEmpty()) },
-            o.get("dim_others")?.asBoolean ?: true,
-            o.array("groups").map { g -> SceneGroup(g.str("label").orEmpty(), g.getAsJsonArray("fns").map { it.asInt.also { id -> require(id in 0 until size) } },
+        fun JsonObject.fn(name: String = "fn") = (if (has(name)) int(name) else int("fn")).also { require(it in 0 until size) }
+        return ChartScene(
+            title = o.str("title"),
+            nodes = o.array("nodes").map { SceneNode(it.fn(), choice(SceneRole.entries.toTypedArray(), it.str("role"), SceneRole.CONTEXT), it.str("badge")) },
+            links = o.array("links").map { SceneLink(it.fn("from"), it.fn("to"), choice(SceneLinkKind.entries.toTypedArray(), it.str("kind")), it.str("label"), it.text("payload", ChartScene.MAX_PAYLOAD)) },
+            notes = o.array("notes").map { SceneNote(it.fn(), it.str("text").orEmpty()) },
+            dimOthers = o.get("dim_others")?.asBoolean ?: true,
+            groups = o.array("groups").map { g -> SceneGroup(g.str("label").orEmpty(), g.getAsJsonArray("fns").map { it.asInt.also { id -> require(id in 0 until size) } },
                 g.str("kind")?.let { choice(SceneGroupKind.entries.toTypedArray(), it) }) },
-            o.array("externals").map { e -> SceneExternal(e.str("id").orEmpty(), choice(ExternalKind.entries.toTypedArray(), e.str("kind"), ExternalKind.OTHER),
+            externals = o.array("externals").map { e -> SceneExternal(e.str("id").orEmpty(), choice(ExternalKind.entries.toTypedArray(), e.str("kind"), ExternalKind.OTHER),
                 e.str("label").orEmpty(), e.array("connected").map { ExternalLink(it.fn(), choice(ExternalDirection.entries.toTypedArray(), it.str("direction"), ExternalDirection.BOTH), it.str("label")) }) },
-            o.array("snippets").map { SceneSnippet(it.fn(), it.int("start_line"), it.int("end_line"), it.str("caption"), it.str("path"),
-                it.getAsJsonArray("lines")?.map { line -> line.asString }, it.str("hash")) })
+            snippets = o.array("snippets").map { SceneSnippet(it.fn(), it.int("start_line"), it.int("end_line"), it.str("caption"), it.str("path"),
+                it.getAsJsonArray("lines")?.map { line -> line.asString }, it.str("hash")) },
+            columns = o.array("columns").map { SceneColumn(it.fn("node"), it.text("title", ChartScene.MAX_TITLE), it.text("description", ChartScene.MAX_COLUMN_DESCRIPTION)) },
+            resetBoard = o.get("reset_board")?.asBoolean ?: false,
+            camera = choice(SceneCamera.entries.toTypedArray(), o.str("camera"), SceneCamera.FOCUS_FIRST),
+        )
     }
 }
 
