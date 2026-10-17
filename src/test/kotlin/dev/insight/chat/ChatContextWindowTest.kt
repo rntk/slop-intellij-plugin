@@ -77,6 +77,22 @@ class ChatContextWindowTest {
         assertTrue(protected.last().content.contains("1 earlier conversation turns"))
     }
 
+    @Test fun `eviction target frees headroom so later rounds keep the same prefix`() {
+        fun window(target: Double) = ChatContextWindow(listOf(system, question), 1500, 24_000, evictionTarget = target).apply {
+            for (i in 1..6) addRound(round("r$i", "x".repeat(200)))
+        }
+        val exact = window(1.0)
+        val chunked = window(0.5)
+        val exactKept = exact.fit(::request)
+        val chunkedKept = chunked.fit(::request)
+        assertTrue(LlmJson.encode(exactKept, "", true).length <= 1500)
+        assertTrue(LlmJson.encode(chunkedKept, "", true).length <= 750)
+        assertTrue(chunkedKept.messages.size < exactKept.messages.size)
+        // Under budget, nothing more is evicted, so the next request extends the previous one.
+        chunked.addRound(round("next"))
+        assertEquals(chunkedKept.messages, chunked.fit(::request).messages.dropLast(2))
+    }
+
     @Test fun `older tool rounds are evicted before the latest conversation turn`() {
         val recent = listOf(LlmMessage.user("New question"), LlmMessage.assistant("New answer"))
         val window = ChatContextWindow(listOf(system) + old + recent + question, 64_000, 24_000)

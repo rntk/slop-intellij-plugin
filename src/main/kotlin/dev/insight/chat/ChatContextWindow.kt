@@ -11,12 +11,17 @@ import dev.insight.llm.LlmRole
  * rounds, and only then the latest historical turn, which usually gives the current question its
  * meaning. The system messages, current question and latest tool round are protected, even if they
  * alone exceed the budget. The server remains the authority on token limits.
+ *
+ * Every eviction rewrites the omission notice on the current question, so the server must reprocess
+ * everything after the system prompt. An [evictionTarget] below 1 evicts down to that fraction of the
+ * budget at once, leaving headroom for several rounds whose request prefix stays cacheable.
  */
 internal class ChatContextWindow(
     messages: List<LlmMessage>,
     private var maxRequestChars: Int,
     maxHistoryChars: Int,
     maxHistoryMessages: Int = 20,
+    private val evictionTarget: Double = 1.0,
 ) {
     private val system = messages.takeWhile { it.role == LlmRole.SYSTEM }
     private val question = messages.last()
@@ -29,6 +34,7 @@ internal class ChatContextWindow(
 
     init {
         require(question.role == LlmRole.USER) { "The conversation must end with a user message" }
+        require(evictionTarget > 0 && evictionTarget <= 1) { "Eviction target must be in (0, 1]" }
         val turns = historyTurns(messages.drop(system.size).dropLast(1))
         history = recentTurns(turns, maxHistoryChars, maxHistoryMessages) { rememberCalls(it); omittedTurns++ }.toMutableList()
     }
@@ -40,7 +46,9 @@ internal class ChatContextWindow(
 
     fun fit(request: (List<LlmMessage>) -> CompletionRequest): CompletionRequest {
         var candidate = request(messages())
-        while (size(candidate) > maxRequestChars && dropOldest()) candidate = request(messages())
+        if (size(candidate) <= maxRequestChars) return candidate
+        val target = (maxRequestChars * evictionTarget).toInt()
+        while (size(candidate) > target && dropOldest()) candidate = request(messages())
         return candidate
     }
 

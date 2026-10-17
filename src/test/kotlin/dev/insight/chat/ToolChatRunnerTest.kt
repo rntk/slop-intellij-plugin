@@ -42,6 +42,16 @@ class ToolChatRunnerTest {
         }
     }
 
+    @Test fun `follow-ups continue the turn a bounded number of times`() = runBlocking {
+        val model = FakeModel(Completion("First."), Completion(""), Completion("Third."))
+        var checks = 0
+        val result = ToolChatRunner(model::complete, listOf(EchoTool()), followUp = { checks++; "Not done yet." })
+            .run(listOf(LlmMessage.user("Hi")))
+        assertEquals("Third.", result.reply)
+        assertEquals(2, checks)
+        assertEquals(listOf(LlmRole.USER, LlmRole.ASSISTANT, LlmRole.USER, LlmRole.USER), model.requests.last().messages.map { it.role })
+    }
+
     @Test fun `executes tool calls and returns the final answer`() = runBlocking {
         val tool = EchoTool()
         val model = FakeModel(

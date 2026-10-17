@@ -52,6 +52,8 @@ class ChatPanel(
     private val service: ChatSession = project.service<ChatService>(),
     private val chartMode: Boolean = false,
     private val scopeLabel: String? = null,
+    private val title: String? = null,
+    private val showDashboard: Boolean = !chartMode,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
     // Chart replies are wrapping HTML panes, so the chart transcript follows the viewport width.
     private val transcript = (if (chartMode) WidthTrackingPanel() else JPanel()).apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
@@ -81,11 +83,11 @@ class ChatPanel(
         border = JBUI.Borders.empty(12)
         add(JPanel(BorderLayout(0, 8)).apply {
             add(JPanel(BorderLayout(0, 4)).apply {
-                add(heading(if (chartMode) "Chart Chat" else "Insight Chat"), BorderLayout.NORTH)
+                add(heading(title ?: if (chartMode) "Chart Chat" else "Insight Chat"), BorderLayout.NORTH)
                 scopeLabel?.let { label -> add(JLabel(label).apply { toolTipText = label }, BorderLayout.SOUTH) }
             }, BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 4)).apply {
-                if (!chartMode) add(JButton("Open dashboard").apply { addActionListener { openDashboard(project) } })
+                if (showDashboard) add(JButton("Open dashboard").apply { addActionListener { openDashboard(project) } })
                 add(clear)
                 if (chartMode) add(undoChart)
                 add(JButton("LLM settings").apply {
@@ -232,6 +234,8 @@ class ChatPanel(
         filePicker.dispose()
         hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
         subscription.dispose()
+        transcript.removeAll()
+        input.text = ""
     }
 
     /** Lays out its rows at the viewport width, so wrapping replies never scroll sideways. */

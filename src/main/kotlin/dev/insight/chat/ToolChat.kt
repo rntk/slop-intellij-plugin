@@ -39,15 +39,20 @@ data class ToolChatResult(
  * results back, and repeat until the model answers in text. Tool failures are reported to the model
  * rather than failing the turn. After [maxToolRounds] rounds of calls, one final request disables new
  * calls through the API's tool choice. If the server ignores it, retry once with an answer-now note.
+ * A [followUp] can reject an answer, e.g. when required work is missing, and continue the turn.
  */
 class ToolChatRunner(
     private val complete: suspend (CompletionRequest) -> Completion,
     tools: List<ChatTool>,
     private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
-    private val maxToolResultChars: Int = 16_000,
+    private val maxToolResultChars: Int = DEFAULT_MAX_TOOL_RESULT_CHARS,
     private val maxContextChars: Int = 64_000,
     private val maxHistoryChars: Int = 24_000,
     private val maxContextRetries: Int = 3,
+    private val evictionTarget: Double = 1.0,
+    /** Checked when the model answers; a non-null note is sent back as a user message and the turn continues. */
+    private val followUp: (suspend () -> String?)? = null,
+    private val maxFollowUps: Int = 2,
 ) {
     private val tools = tools.associateBy { it.definition.name }
 
@@ -58,13 +63,15 @@ class ToolChatRunner(
         require(maxContextChars > 0) { "Max context size must be positive" }
         require(maxHistoryChars >= 0) { "Max history size must not be negative" }
         require(maxContextRetries >= 0) { "Max context retries must not be negative" }
+        require(maxFollowUps >= 0) { "Max follow-ups must not be negative" }
     }
 
     suspend fun run(messages: List<LlmMessage>, onToolCall: suspend (ToolCallEvent) -> Unit = {}): ToolChatResult {
         require(messages.isNotEmpty()) { "At least one message is required" }
-        val window = ChatContextWindow(messages, maxContextChars, maxHistoryChars)
+        val window = ChatContextWindow(messages, maxContextChars, maxHistoryChars, evictionTarget = evictionTarget)
         val transcript = mutableListOf<LlmMessage>()
         var requestCount = 0
+        var followUps = 0
         // Schemas stay in every request, including the last one, so earlier calls remain interpretable.
         val definitions = tools.values.map { it.definition }
         for (round in 0..maxToolRounds) {
@@ -97,6 +104,19 @@ class ToolChatRunner(
             }
             if (completion.toolCalls.isEmpty()) {
                 val reply = completion.content.trim()
+                val note = if (round < maxToolRounds && followUps < maxFollowUps) followUp?.invoke() else null
+                if (note != null) {
+                    followUps++
+                    // Some providers reject empty assistant messages; a user note may follow a tool result directly.
+                    val nudge = listOfNotNull(
+                        LlmMessage.assistant(completion.content, reasoning = completion.reasoning, thinkingBlocks = completion.thinkingBlocks)
+                            .takeIf { reply.isNotEmpty() },
+                        LlmMessage.user(note),
+                    )
+                    transcript += nudge.map { it.copy(reasoning = null, thinkingBlocks = emptyList()) }
+                    window.addRound(nudge)
+                    continue
+                }
                 if (reply.isEmpty()) throw LlmProtocolException("The model returned an empty reply")
                 return ToolChatResult(reply, completion.finishReason, transcript, requestCount)
             }
@@ -139,6 +159,7 @@ class ToolChatRunner(
         else result.take(maxToolResultChars) + "\n[Truncated ${result.length - maxToolResultChars} characters.]"
 
     companion object {
+        const val DEFAULT_MAX_TOOL_RESULT_CHARS = 16_000
         const val DEFAULT_MAX_TOOL_ROUNDS = 12
         private const val TOOL_ROUNDS_EXHAUSTED =
             "The tool-call limit for this turn is reached. Do not call tools. Answer now using the information you have."

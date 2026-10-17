@@ -33,6 +33,8 @@
                     factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
         <toolWindow id="Insight Chat" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
+        <toolWindow id="Diff Review" anchor="right" icon="/icons/insight.svg"
+                    factoryClass="dev.insight.diff.DiffReviewToolWindowFactory"/>
         <!-- Raw request/response traffic of the LLM and Decisions APIs, for debugging. -->
         <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/insight.svg"
                     factoryClass="dev.insight.apilog.ApiLogToolWindowFactory"/>
@@ -47,6 +49,11 @@
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
     <actions>
+        <action id="Insight.OpenDiffReview" class="dev.insight.diff.OpenDiffReviewAction"
+                text="Open Diff Review" description="Review uncommitted changes with file and group notes"
+                icon="/icons/insight.svg">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
         <action id="Insight.OpenDashboard" class="dev.insight.dashboard.OpenDashboardAction"
                 text="Open Insight Dashboard" description="Open the Insight visualization workbench"
                 icon="/icons/insight.svg">

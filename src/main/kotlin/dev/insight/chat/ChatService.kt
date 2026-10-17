@@ -21,12 +21,14 @@ open class ChatSession(
     private val project: Project,
     private val scope: CoroutineScope,
     private val chart: ChartChatContext? = null,
+    welcome: String? = null,
 ) {
-    private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, if (chart == null)
+    private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, welcome ?: if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
         else "Ask about this flow chart. I show the answer on the chart: paths, entry points, data flows and the steps involved."))
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     private var turn: Job? = null
+    private var discarded = false
     var busy: Boolean = false
         private set
     val messages: List<ChatMessage> get() = history.toList()
@@ -44,7 +46,7 @@ open class ChatSession(
 
     /** UI callers and notifications run on the EDT; backend work runs on IO. */
     fun send(text: String) {
-        if (busy || text.isBlank()) return
+        if (discarded || busy || text.isBlank()) return
         history += ChatMessage(ChatMessage.USER, text.trim())
         followups = emptyList()
         proposed = emptyList()
@@ -70,6 +72,11 @@ open class ChatSession(
                 LOG.warn("Chat reply failed", e)
                 history += ChatMessage(ChatMessage.NOTICE, "The response failed: ${describeChatFailure(e)}")
             } finally {
+                if (discarded) {
+                    history.clear()
+                    followups = emptyList()
+                    proposed = emptyList()
+                }
                 busy = false
                 turn = null
                 notifyViews()
@@ -114,6 +121,18 @@ open class ChatSession(
         history.clear()
         followups = emptyList()
         notifyViews()
+    }
+
+    /** Permanently releases an owned conversation, including a turn cancelled before it starts. */
+    internal fun discard() {
+        discarded = true
+        turn?.cancel()
+        turn = null
+        busy = false
+        history.clear()
+        followups = emptyList()
+        proposed = emptyList()
+        listeners.clear()
     }
 
     fun subscribe(listener: () -> Unit): Disposable {
