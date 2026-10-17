@@ -15,6 +15,7 @@ data class ReviewFile(
     val before: String? = null,
     val after: String? = null,
 ) {
+    internal val diffKey get() = diffNoteKey(path)
     // Swing tree renderers call toString before applying their custom label.
     override fun toString(): String = path.substringAfterLast('/')
 }
@@ -30,7 +31,13 @@ data class DiffNote(
     internal val key get() = DiffNoteKey(paths, symbol)
 }
 
-internal data class DiffNoteKey(val paths: List<String>, val symbol: String?, val source: DiffSourceRange? = null)
+internal data class DiffNoteKey(
+    val paths: List<String>,
+    val symbol: String?,
+    val source: DiffSourceRange? = null,
+    val diff: String? = null,
+)
+internal fun diffNoteKey(path: String) = DiffNoteKey(listOf(path), null, diff = path)
 
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
 class DiffReviewState(paths: Set<String>? = null) {
@@ -45,6 +52,8 @@ class DiffReviewState(paths: Set<String>? = null) {
     val notes: List<DiffNote> get() = cards.values.toList()
     private val sourceCards = linkedMapOf<DiffSourceRange, DiffSourceBlock>()
     val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
+    private val diffCards = linkedMapOf<String, ReviewFile>()
+    val diffs: List<ReviewFile> get() = diffCards.values.toList()
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -57,6 +66,10 @@ class DiffReviewState(paths: Set<String>? = null) {
             sourceCards.entries.removeIf { (range, _) ->
                 fresh[range.path] == null || fresh[range.path]?.fingerprint != old[range.path]?.fingerprint
             }
+            diffCards.entries.removeIf { (path, _) ->
+                fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
+            }
+            diffCards.replaceAll { path, _ -> fresh.getValue(path) }
             revision++
         }
         snapshot = next
@@ -104,7 +117,14 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun removeSource(range: DiffSourceRange) { sourceCards.remove(range) }
-    fun clearNotes() { cards.clear(); sourceCards.clear() }
+    fun showDiff(path: String): ReviewFile? {
+        val file = snapshot.files.firstOrNull { it.path == path } ?: return null
+        diffCards[path] = file
+        return file
+    }
+
+    fun removeDiff(path: String) { diffCards.remove(path) }
+    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear() }
 }
 
 internal fun reviewFingerprint(vararg values: String): String {

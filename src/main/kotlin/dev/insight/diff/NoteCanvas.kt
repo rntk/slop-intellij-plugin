@@ -5,6 +5,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
@@ -37,6 +38,8 @@ internal class NoteCanvas(
     private val remove: (DiffNote) -> Unit,
     private val openSymbol: (DiffSymbol) -> Unit = {},
     private val removeSource: (DiffSourceRange) -> Unit = {},
+    private val showDiffCard: (String) -> Unit = {},
+    private val removeDiff: (String) -> Unit = {},
     private val project: Project? = null,
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
@@ -44,7 +47,9 @@ internal class NoteCanvas(
 
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
+    private var diffs = emptyList<ReviewFile>()
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
+    private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
     private var focused: DiffNoteKey? = null
     internal var zoom = 1.0
@@ -59,20 +64,31 @@ internal class NoteCanvas(
         background = UIUtil.getPanelBackground()
     }
 
-    fun showNotes(notes: List<DiffNote>, sources: List<DiffSourceBlock> = emptyList()) {
+    fun showNotes(
+        notes: List<DiffNote>,
+        sources: List<DiffSourceBlock> = emptyList(),
+        diffs: List<ReviewFile> = emptyList(),
+    ) {
         this.notes = notes
         this.sources = sources
+        this.diffs = diffs
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
         }
+        val diffsByKey = diffs.associateBy { it.diffKey }
+        diffEditors.entries.removeIf { (key, editor) ->
+            (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
+        }
         removeAll(); cards.clear()
-        if (notes.isEmpty() && sources.isEmpty()) add(emptyState().also { installNavigation(it) })
+        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty()) add(emptyState().also { installNavigation(it) })
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
-        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }))
+        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }))
         // The flow comes first so a fresh canvas starts with the overview.
-        val built = listOfNotNull(flow?.let { FLOW_KEY to flowCard(it) }).toMap() + notes.associate { it.key to card(it) } +
-            sources.associate { it.key to sourceCard(it) }
+        val built = listOfNotNull(flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+            notes.associate { it.key to card(it) } +
+            sources.associate { it.key to sourceCard(it) } +
+            diffs.associate { it.diffKey to diffCard(it) }
         // Remembered cards keep their place; new ones fill the first free slot in reading order.
         built.filterKeys { it in positions }.forEach { (paths, card) -> card.location = screen(positions.getValue(paths)) }
         val placed = built.filterKeys { it in positions }.values.mapTo(mutableListOf()) { it.bounds }
@@ -94,12 +110,20 @@ internal class NoteCanvas(
 
     /** Brings a note card to the centre and outlines it briefly. */
     internal fun focusNote(note: DiffNote) {
-        val card = cards[note.key] ?: return
+        focusCard(note.key)
+    }
+
+    internal fun focusDiff(path: String) {
+        focusCard(diffNoteKey(path))
+    }
+
+    private fun focusCard(key: DiffNoteKey) {
+        val card = cards[key] ?: return
         origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
-        focused = note.key
-        showNotes(notes, sources)
-        cards[note.key]?.let { setComponentZOrder(it, 0) }
-        Timer(1500) { if (focused == note.key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
+        focused = key
+        showNotes(notes, sources, diffs)
+        cards[key]?.let { setComponentZOrder(it, 0) }
+        Timer(1500) { if (focused == key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
     }
 
     private fun flowCard(flow: ChangeFlow): JPanel {
@@ -126,6 +150,35 @@ internal class NoteCanvas(
         card.add(body, BorderLayout.CENTER)
         card.size = Dimension(width, card.preferredSize.height)
         return card
+    }
+
+    private fun diffCard(file: ReviewFile): JPanel {
+        val width = scaled(720)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            toolTipText = "Drag to move"
+            border = JBUI.Borders.empty(8, 12, 8, 8)
+            add(JLabel("Diff snapshot · ${file.status}").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+            }, BorderLayout.CENTER)
+            add(InplaceButton(IconButton("Remove diff block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                removeDiff(file.path)
+            }.apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
+        }
+        dragBy(header, file.diffKey)
+        val editor = diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }
+        editor.resizeFor(width - scaled(4), zoom)
+        return JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground(); border = cardBorder(false)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(header, BorderLayout.NORTH)
+                add(fileRow(file.path, showDiffButton = false).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
+            }, BorderLayout.NORTH)
+            add(editor, BorderLayout.CENTER)
+            size = Dimension(width, preferredSize.height)
+        }
     }
 
     private fun sourceCard(block: DiffSourceBlock): JPanel {
@@ -206,17 +259,31 @@ internal class NoteCanvas(
     }
 
     /** File name as a link, its folder dimmed next to it; the full path stays in the tooltip. */
-    private fun fileRow(path: String): JComponent = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.X_AXIS)
+    private fun fileRow(path: String, showDiffButton: Boolean = true): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
         isOpaque = false
         toolTipText = "View changes in $path"
         val name = path.substringAfterLast('/')
-        add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
-        add(Box.createHorizontalStrut(scaled(6)))
-        add(ActionLink(name) { open(path) }.apply { font = scaledFont(JBFont.label()); toolTipText = "View changes in $path" })
-        add(Box.createHorizontalStrut(scaled(6)))
-        path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { folder ->
-            add(JLabel(folder).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); toolTipText = path })
+        add(JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
+            add(Box.createHorizontalStrut(scaled(6)))
+            add(ActionLink(name) { open(path) }.apply {
+                font = scaledFont(JBFont.label()); toolTipText = "View changes in $path"
+                minimumSize = Dimension(0, preferredSize.height)
+            })
+            path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { folder ->
+                add(Box.createHorizontalStrut(scaled(6)))
+                add(JLabel(folder).apply {
+                    font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); toolTipText = path
+                    minimumSize = Dimension(0, preferredSize.height)
+                })
+            }
+        }, BorderLayout.CENTER)
+        if (showDiffButton) {
+            add(InplaceButton(IconButton("Show diff on canvas", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) {
+                showDiffCard(path)
+            }.apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff on canvas" }, BorderLayout.EAST)
         }
     }
 
@@ -292,14 +359,14 @@ internal class NoteCanvas(
         val fixed = world(anchor)
         zoom = next
         origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes, sources)
+        showNotes(notes, sources, diffs)
         onZoomChanged(zoom)
     }
 
     fun resetView() {
         zoom = 1.0
         origin.setLocation(0.0, 0.0)
-        showNotes(notes, sources)
+        showNotes(notes, sources, diffs)
         onZoomChanged(zoom)
     }
 
@@ -311,13 +378,13 @@ internal class NoteCanvas(
         zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
             (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
         origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes, sources)
+        showNotes(notes, sources, diffs)
         onZoomChanged(zoom)
     }
 
     private fun installNavigation(component: Component) {
         // Native editor owns selection, wheel scrolling and mouse gestures within its body.
-        if (component is DiffSourceEditor) return
+        if (component is DiffSourceEditor || component is DiffFileEditor) return
         val navigation = object : MouseAdapter() {
             private var anchor: Point? = null
             override fun mousePressed(e: MouseEvent) {
@@ -356,6 +423,8 @@ internal class NoteCanvas(
     override fun dispose() {
         editors.values.forEach { it.dispose() }
         editors.clear()
+        diffEditors.values.forEach { Disposer.dispose(it) }
+        diffEditors.clear()
     }
 
     private companion object {

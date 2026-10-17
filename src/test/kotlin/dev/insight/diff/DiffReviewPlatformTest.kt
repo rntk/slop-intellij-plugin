@@ -58,6 +58,36 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
+    fun `test block diff button adds native diff card to tab canvas and expires on file change`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            val fileA = file("src/a.kt").copy(before = "val a = 1\n", after = "val a = 2\n")
+            val fileB = file("src/b.kt").copy(before = "val b = 1\n", after = "val b = 2\n")
+            val snapshot = ReviewSnapshot(listOf(fileA, fileB), emptyList())
+            tab.update(snapshot)
+            val context = tab.captureContext()
+            runWithEvents {
+                context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Explains A.")))
+                val showButton = descendants(tab).filterIsInstance<InplaceButton>()
+                    .single { it.toolTipText == "Show diff on canvas" }
+                showButton.doClick()
+                assertEquals(listOf(fileA), tab.state.diffs)
+                val diffViewer = descendants(tab).filterIsInstance<DiffFileEditor>().single()
+                assertEquals(setOf("val a = 1\n", "val a = 2\n"), diffViewer.editors.map { it.document.text }.toSet())
+
+                // Unchanged evidence for src/a.kt keeps the diff card alive when another file changes.
+                tab.update(snapshot.copy(files = listOf(fileA, fileB.copy(fingerprint = "2"))))
+                assertEquals(listOf(fileA), tab.state.diffs)
+                assertFalse(diffViewer.isDisposed)
+
+                // Changed evidence for src/a.kt removes and disposes the diff card.
+                tab.update(snapshot.copy(files = listOf(fileA.copy(fingerprint = "2"), fileB.copy(fingerprint = "2"))))
+                assertTrue(tab.state.diffs.isEmpty())
+                assertTrue(diffViewer.isDisposed)
+            }
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test grouped notes and selected paths cannot truncate file discovery through the tool runner`() {
         val files = (1..60).map { file("src/" + "long-directory/".repeat(5) + "$it.kt") }
         val selected = files.map { it.path }

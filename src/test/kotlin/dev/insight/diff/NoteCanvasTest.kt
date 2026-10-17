@@ -11,6 +11,77 @@ import javax.swing.JLabel
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
+    fun testLongPathsKeepDiffButtonsVisibleAndClickableAtEveryZoom() {
+        val paths = listOf(
+            "src/main/kotlin/dev/insight/deeply/nested/module/implementation/LongFeatureService.kt",
+            "VeryLongFeatureServiceName".repeat(12) + ".kt",
+        )
+        val requested = mutableListOf<String>()
+        val opened = mutableListOf<String>()
+        val canvas = NoteCanvas({ opened += it }, {}, showDiffCard = { requested += it }, project = project)
+            .apply { setSize(1400, 900) }
+        try {
+            val sources = paths.map { DiffSourceBlock(DiffSourceRange(it, 1, 1), "val a = 1") }
+            canvas.showNotes(paths.map { DiffNote(listOf(it), "Explanation.") }, sources)
+            for (zoom in listOf(0.25, 0.5, 1.0, 2.5)) {
+                canvas.zoomAt(zoom, Point())
+                layoutTree(canvas)
+                val buttons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
+                    .filter { it.toolTipText == "Show diff on canvas" }
+                assertEquals(4, buttons.size)
+                requested.clear()
+                buttons.forEach { button ->
+                    assertTrue("Diff button must retain its width at $zoom", button.width >= button.preferredSize.width)
+                    var child: Component = button
+                    while (child.parent !== canvas) {
+                        val parent = child.parent
+                        assertTrue("Diff button must fit inside every ancestor at $zoom", parent.contains(
+                            javax.swing.SwingUtilities.convertPoint(button, Point(button.width - 1, button.height - 1), parent)))
+                        child = parent
+                    }
+                    button.doClick()
+                }
+                assertEquals(paths + paths, requested)
+                opened.clear()
+                descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().forEach { it.doClick() }
+                assertEquals(paths + paths, opened)
+            }
+        } finally { canvas.dispose() }
+    }
+
+    fun testDiffViewerModeChangesKeepCurrentCanvasZoom() {
+        val file = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
+        val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
+        val originalToolOrder = settings.diffToolsOrder.toList()
+        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1400, 900) }
+        try {
+            canvas.showNotes(emptyList(), diffs = listOf(file))
+            val viewer = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
+            val switchTool = com.intellij.diff.impl.DiffRequestProcessor::class.java
+                .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
+            switchTool.invoke(viewer.panel, com.intellij.diff.tools.simple.SimpleDiffTool.INSTANCE)
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            for (zoom in listOf(0.5, 1.5, 0.25)) {
+                canvas.zoomAt(zoom, Point())
+                val expectedFontSize = viewer.editors.first().colorsScheme.editorFontSize2D
+                val cardBounds = canvas.components.single().bounds
+                for (tool in listOf(com.intellij.diff.tools.fragmented.UnifiedDiffTool.INSTANCE, com.intellij.diff.tools.simple.SimpleDiffTool.INSTANCE)) {
+                    val previousEditors = viewer.editors
+                    switchTool.invoke(viewer.panel, tool)
+                    com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                    val editors = viewer.editors
+                    assertEquals(if (tool is com.intellij.diff.tools.fragmented.UnifiedDiffTool) 1 else 2, editors.size)
+                    assertTrue(previousEditors.all { it.isDisposed })
+                    editors.forEach { assertEquals(expectedFontSize, it.colorsScheme.editorFontSize2D, 0.01f) }
+                    assertEquals(cardBounds, canvas.components.single().bounds)
+                }
+            }
+        } finally {
+            canvas.dispose()
+            settings.diffToolsOrder = originalToolOrder
+        }
+    }
+
     fun testSourceCardsUseNativeViewersAndReleaseOnlyRemovedEditors() {
         val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 8, 9), "val x = 1\n  println(x)")
         val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1000, 700) }
@@ -34,6 +105,48 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertFalse(other.isDisposed)
             canvas.dispose()
             assertTrue(other.isDisposed)
+        } finally { canvas.dispose() }
+    }
+
+    fun testDiffCardsOpenFromBlockButtonsUseNativeDiffViewersAndReleaseWhenRemoved() {
+        val fileA = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
+        val fileB = ReviewFile("src/b.kt", "/project/src/b.kt", null, "added", "+added\n", "1", "", "val b = 3\n")
+        val requested = mutableListOf<String>()
+        val removed = mutableListOf<String>()
+        val canvas = NoteCanvas({}, {}, showDiffCard = { requested += it }, removeDiff = { removed += it }, project = project)
+            .apply { setSize(1400, 900) }
+        try {
+            val source = DiffSourceBlock(DiffSourceRange("src/b.kt", 1, 1), "val b = 3")
+            canvas.showNotes(listOf(note), listOf(source))
+            val diffButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
+                .filter { it.toolTipText == "Show diff on canvas" }
+            assertEquals(2, diffButtons.size)
+            diffButtons.forEach { it.doClick() }
+            assertEquals(listOf("src/a.kt", "src/b.kt"), requested)
+
+            canvas.showNotes(listOf(note), listOf(source), listOf(fileA, fileB))
+            assertEquals(4, canvas.componentCount)
+            val diffViewers = descendants(canvas).filterIsInstance<DiffFileEditor>()
+            assertEquals(2, diffViewers.size)
+            val viewerA = diffViewers.single { it.file == fileA }
+            val viewerB = diffViewers.single { it.file == fileB }
+            assertTrue(viewerA.editors.isNotEmpty() && viewerA.editors.all { it.isViewer })
+            assertEquals(setOf("val a = 1\n", "val a = 2\n"), viewerA.editors.map { it.document.text }.toSet())
+
+            canvas.zoomAt(1.25, Point())
+            assertSame(viewerA, descendants(canvas).filterIsInstance<DiffFileEditor>().single { it.file == fileA })
+
+            val removeButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
+                .filter { it.toolTipText == "Remove diff block" }
+            assertEquals(2, removeButtons.size)
+            removeButtons.first().doClick()
+            assertEquals(listOf("src/a.kt"), removed)
+
+            canvas.showNotes(listOf(note), listOf(source), listOf(fileB))
+            assertTrue(viewerA.isDisposed && viewerA.editors.all { it.isDisposed })
+            assertFalse(viewerB.isDisposed)
+            canvas.dispose()
+            assertTrue(viewerB.isDisposed)
         } finally { canvas.dispose() }
     }
 
@@ -164,6 +277,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
     private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }
     private fun descendants(component: Container): List<Component> = component.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
+    }
+    private fun layoutTree(component: Container) {
+        component.doLayout()
+        component.components.filterIsInstance<Container>().forEach(::layoutTree)
     }
     private fun drag(target: Component, button: Int, from: Point, to: Point) {
         val mask = if (button == MouseEvent.BUTTON1) InputEvent.BUTTON1_DOWN_MASK else InputEvent.BUTTON2_DOWN_MASK

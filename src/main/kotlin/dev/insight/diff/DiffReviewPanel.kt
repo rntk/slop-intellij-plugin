@@ -304,13 +304,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
 
     private fun showDiff(path: String) {
         val file = state.snapshot.files.firstOrNull { it.path == path } ?: return
-        val factory = DiffContentFactory.getInstance()
-        val request = if (file.before != null && file.after != null) SimpleDiffRequest(path,
-            factory.create(project, file.before), factory.create(project, file.after),
-            file.previousPath ?: "$path · before", "$path · working tree")
-        else SimpleDiffRequest(path, factory.create(project, ""), factory.create(project, file.patch), "Before", "Content unavailable")
-        request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY, true)
-        DiffManager.getInstance().showDiff(project, request)
+        DiffManager.getInstance().showDiff(project, createDiffRequest(project, file))
     }
 
     override fun dispose() {

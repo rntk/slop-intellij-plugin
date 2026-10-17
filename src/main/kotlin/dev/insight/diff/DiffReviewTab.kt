@@ -29,11 +29,25 @@ internal class DiffReviewTab(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths)
     private var disposed = false
-    private val canvas = NoteCanvas(showDiff, { note -> state.removeNote(note.paths, note.symbol); renderCanvas() }, { symbol ->
-        LocalFileSystem.getInstance().findFileByPath(symbol.absolutePath)?.let { file ->
-            OpenFileDescriptor(project, file, symbol.offset).navigate(true)
-        }
-    }, removeSource = { range -> state.removeSource(range); renderCanvas() }, project = project)
+    private val canvas: NoteCanvas = NoteCanvas(
+        showDiff,
+        { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
+        { symbol ->
+            LocalFileSystem.getInstance().findFileByPath(symbol.absolutePath)?.let { file ->
+                OpenFileDescriptor(project, file, symbol.offset).navigate(true)
+            }
+        },
+        removeSource = { range -> state.removeSource(range); renderCanvas() },
+        showDiffCard = { path ->
+            val alreadyShown = state.diffs.any { it.path == path }
+            if (state.showDiff(path) != null) {
+                renderCanvas()
+                if (alreadyShown) canvas.focusDiff(path)
+            }
+        },
+        removeDiff = { path -> state.removeDiff(path); renderCanvas() },
+        project = project,
+    )
     private val describe = JButton("Description")
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, welcome =
@@ -121,7 +135,7 @@ internal class DiffReviewTab(
         scopeLabel.toolTipText = paths?.sorted()?.joinToString("\n") ?: "Follows all current changes, including files included in the global review."
     }
 
-    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources); canvas.highlight(selectedPaths().toSet()) }
+    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs); canvas.highlight(selectedPaths().toSet()) }
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
