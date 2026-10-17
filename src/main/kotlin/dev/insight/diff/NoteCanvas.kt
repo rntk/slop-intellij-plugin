@@ -1,6 +1,8 @@
 package dev.insight.diff
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.ui.InplaceButton
@@ -30,12 +32,21 @@ import javax.swing.*
  * A zoomable, pannable board of movable note cards; positions survive chat replies and VCS refreshes.
  * Cards have a fixed logical width; long notes scroll inside their cards.
  */
-internal class NoteCanvas(private val open: (String) -> Unit, private val remove: (List<String>) -> Unit) : JPanel(null) {
-    private val positions = mutableMapOf<List<String>, Point2D.Double>()
-    private val cards = mutableMapOf<List<String>, JPanel>()
+internal class NoteCanvas(
+    private val open: (String) -> Unit,
+    private val remove: (DiffNote) -> Unit,
+    private val openSymbol: (DiffSymbol) -> Unit = {},
+    private val removeSource: (DiffSourceRange) -> Unit = {},
+    private val project: Project? = null,
+) : JPanel(null), Disposable {
+    private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
+    private val cards = mutableMapOf<DiffNoteKey, JPanel>()
 
     private var notes = emptyList<DiffNote>()
+    private var sources = emptyList<DiffSourceBlock>()
+    private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private var highlighted = emptySet<String>()
+    private var focused: DiffNoteKey? = null
     internal var zoom = 1.0
         private set
     private val origin = Point2D.Double()
@@ -48,12 +59,20 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
         background = UIUtil.getPanelBackground()
     }
 
-    fun showNotes(notes: List<DiffNote>) {
+    fun showNotes(notes: List<DiffNote>, sources: List<DiffSourceBlock> = emptyList()) {
         this.notes = notes
+        this.sources = sources
+        val sourcesByKey = sources.associateBy { it.key }
+        editors.entries.removeIf { (key, editor) ->
+            (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
+        }
         removeAll(); cards.clear()
-        if (notes.isEmpty()) add(emptyState().also { installNavigation(it) })
-        positions.keys.retainAll(notes.map { it.paths }.toSet())
-        val built = notes.associate { it.paths to card(it) }
+        if (notes.isEmpty() && sources.isEmpty()) add(emptyState().also { installNavigation(it) })
+        val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
+        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }))
+        // The flow comes first so a fresh canvas starts with the overview.
+        val built = listOfNotNull(flow?.let { FLOW_KEY to flowCard(it) }).toMap() + notes.associate { it.key to card(it) } +
+            sources.associate { it.key to sourceCard(it) }
         // Remembered cards keep their place; new ones fill the first free slot in reading order.
         built.filterKeys { it in positions }.forEach { (paths, card) -> card.location = screen(positions.getValue(paths)) }
         val placed = built.filterKeys { it in positions }.values.mapTo(mutableListOf()) { it.bounds }
@@ -69,8 +88,73 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
 
     fun highlight(paths: Set<String>) {
         highlighted = paths
-        cards.forEach { (files, card) -> card.border = cardBorder(files.any { it in paths }) }
+        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || key.paths.any { it in paths }) }
         repaint()
+    }
+
+    /** Brings a note card to the centre and outlines it briefly. */
+    internal fun focusNote(note: DiffNote) {
+        val card = cards[note.key] ?: return
+        origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
+        focused = note.key
+        showNotes(notes, sources)
+        cards[note.key]?.let { setComponentZOrder(it, 0) }
+        Timer(1500) { if (focused == note.key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
+    }
+
+    private fun flowCard(flow: ChangeFlow): JPanel {
+        val width = scaled(CARD_WIDTH)
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            toolTipText = "Drag to move"
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel("Change flow · Verified calls between symbol notes").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Steps are the assistant's symbol notes; each arrow is a resolved call in the source snapshot. " +
+                    "Order follows the caller's source, not runtime; conditions and intermediate calls are not shown."
+            }, BorderLayout.CENTER)
+        }
+        dragBy(header, FLOW_KEY)
+        val body = JPanel(VerticalLayout(scaled(6))).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(ChangeFlowDiagram(flow, width - scaled(2 * PADDING + 4), zoom, ::focusNote))
+        }
+        card.add(header, BorderLayout.NORTH)
+        card.add(body, BorderLayout.CENTER)
+        card.size = Dimension(width, card.preferredSize.height)
+        return card
+    }
+
+    private fun sourceCard(block: DiffSourceBlock): JPanel {
+        val range = block.range
+        val width = scaled(640)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            border = JBUI.Borders.empty(8, 12, 8, 8)
+            add(JLabel("Source snapshot · ${range.side} · Lines ${range.startLine}–${range.endLine}").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+            }, BorderLayout.CENTER)
+            add(InplaceButton(IconButton("Remove source block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                removeSource(range)
+            }, BorderLayout.EAST)
+        }
+        dragBy(header, block.key)
+        val editor = editors.getOrPut(block.key) { DiffSourceEditor(block, project) }
+        editor.resizeFor(width - scaled(4), zoom)
+        return JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground(); border = cardBorder(false)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(header, BorderLayout.NORTH)
+                add(fileRow(range.path).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
+            }, BorderLayout.NORTH)
+            add(editor, BorderLayout.CENTER)
+            size = Dimension(width, preferredSize.height)
+        }
     }
 
     private fun card(note: DiffNote): JPanel {
@@ -84,10 +168,10 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
             add(JLabel("${files(note.paths.size)} · LLM interpretation").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
             }, BorderLayout.CENTER)
-            add(InplaceButton(IconButton("Remove note", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove(note.paths) }
+            add(InplaceButton(IconButton("Remove note", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove(note) }
                 .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
         }
-        dragBy(header, note.paths)
+        dragBy(header, note.key)
         val textWidth = width - scaled(2 * PADDING + 4)
         val body = JPanel(VerticalLayout(scaled(10))).apply {
             isOpaque = false
@@ -96,6 +180,13 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
                 isOpaque = false
                 note.paths.forEach { add(fileRow(it)) }
             })
+            note.evidence?.let { evidence ->
+                add(JLabel("Verified symbol · Static links · Source snapshot").apply {
+                    font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                    toolTipText = "In-project links resolved from current source when this note was added. Direct links only; no runtime order is implied. Callers are limited to this file."
+                })
+                add(DiffSymbolDiagram(evidence, textWidth, zoom, openSymbol))
+            }
             add(JTextArea(note.text).apply {
                 isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true
                 font = scaledFont(JBFont.label()); border = null
@@ -129,7 +220,7 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
         }
     }
 
-    private fun dragBy(handle: JComponent, paths: List<String>) {
+    private fun dragBy(handle: JComponent, paths: DiffNoteKey) {
         val drag = object : MouseAdapter() {
             var anchor: Point? = null
             override fun mousePressed(e: MouseEvent) {
@@ -201,14 +292,14 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
         val fixed = world(anchor)
         zoom = next
         origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes)
+        showNotes(notes, sources)
         onZoomChanged(zoom)
     }
 
     fun resetView() {
         zoom = 1.0
         origin.setLocation(0.0, 0.0)
-        showNotes(notes)
+        showNotes(notes, sources)
         onZoomChanged(zoom)
     }
 
@@ -220,11 +311,13 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
         zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
             (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
         origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes)
+        showNotes(notes, sources)
         onZoomChanged(zoom)
     }
 
     private fun installNavigation(component: Component) {
+        // Native editor owns selection, wheel scrolling and mouse gestures within its body.
+        if (component is DiffSourceEditor) return
         val navigation = object : MouseAdapter() {
             private var anchor: Point? = null
             override fun mousePressed(e: MouseEvent) {
@@ -260,10 +353,16 @@ internal class NoteCanvas(private val open: (String) -> Unit, private val remove
         if (component is Container) component.components.forEach(::installNavigation)
     }
 
+    override fun dispose() {
+        editors.values.forEach { it.dispose() }
+        editors.clear()
+    }
+
     private companion object {
         const val CARD_WIDTH = 460
         const val GAP = 20
         const val PADDING = 12
         const val MAX_BODY_HEIGHT = 520
+        val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
     }
 }

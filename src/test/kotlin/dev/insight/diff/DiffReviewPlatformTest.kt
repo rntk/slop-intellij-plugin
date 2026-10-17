@@ -31,6 +31,33 @@ import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 
 class DiffReviewPlatformTest : BasePlatformTestCase() {
+    fun `test source tool renders snapshot lines and rejects stale out of scope and closed requests`() {
+        val tab = DiffReviewTab(project, setOf("src/a.kt"), { emptyList() }, {})
+        try {
+            val snapshot = ReviewSnapshot(listOf(file("src/a.kt").copy(after = "val a = 1\nprintln(a)\n"),
+                file("src/b.kt").copy(after = "outside")), emptyList())
+            tab.update(snapshot)
+            val context = tab.captureContext()
+            val range = DiffSourceRange("src/a.kt", 2, 2)
+            runWithEvents {
+                context.showSource(range)
+                val viewer = descendants(tab).filterIsInstance<DiffSourceEditor>().single().editor
+                assertEquals("println(a)", viewer.document.text)
+                assertEquals(listOf("src/a.kt"), context.uncovered())
+                val data = JsonParser.parseString(context.state(0)).asJsonObject
+                assertEquals(1, data["source_blocks_count"].asInt)
+                rejected { context.showSource(range.copy(path = "src/b.kt")) }
+                tab.update(snapshot.copy(files = listOf(snapshot.files.first().copy(fingerprint = "2", after = "changed"))))
+                assertTrue(viewer.isDisposed)
+                assertTrue(tab.state.sources.isEmpty())
+                rejected { context.showSource(range) }
+                val current = tab.captureContext()
+                Disposer.dispose(tab)
+                rejected { current.showSource(range) }
+            }
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test grouped notes and selected paths cannot truncate file discovery through the tool runner`() {
         val files = (1..60).map { file("src/" + "long-directory/".repeat(5) + "$it.kt") }
         val selected = files.map { it.path }
@@ -218,7 +245,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             assertEquals("First topic draft", firstChat.input.text)
             assertEquals("First note", first.state.notes.single().text)
             descendants(first).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
-            descendants(first).filterIsInstance<JButton>().single { it.text == "Clear notes" }.doClick()
+            descendants(first).filterIsInstance<JButton>().single { it.text == "Clear canvas" }.doClick()
             assertTrue(first.session.messages.isEmpty())
             assertTrue(first.state.notes.isEmpty())
             assertFalse(second.session.messages.isEmpty())

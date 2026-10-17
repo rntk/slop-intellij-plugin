@@ -2,8 +2,12 @@ package dev.insight.diff
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.readAction
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
 import kotlinx.coroutines.*
@@ -25,7 +29,11 @@ internal class DiffReviewTab(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths)
     private var disposed = false
-    private val canvas = NoteCanvas(showDiff) { paths -> state.removeNote(paths); renderCanvas() }
+    private val canvas = NoteCanvas(showDiff, { note -> state.removeNote(note.paths, note.symbol); renderCanvas() }, { symbol ->
+        LocalFileSystem.getInstance().findFileByPath(symbol.absolutePath)?.let { file ->
+            OpenFileDescriptor(project, file, symbol.offset).navigate(true)
+        }
+    }, removeSource = { range -> state.removeSource(range); renderCanvas() }, project = project)
     private val describe = JButton("Description")
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, welcome =
@@ -63,7 +71,7 @@ internal class DiffReviewTab(
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
                 add(describe.apply { addActionListener { session.send("/description") } })
-                add(JButton("Clear notes").apply { addActionListener { state.clearNotes(); renderCanvas() } })
+                add(JButton("Clear canvas").apply { addActionListener { state.clearNotes(); renderCanvas() } })
                 add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
                 add(JButton("100%").apply {
                     toolTipText = "Reset canvas view"
@@ -71,13 +79,14 @@ internal class DiffReviewTab(
                     canvas.onZoomChanged = { text = "${(it * 100).toInt()}%" }
                 })
                 add(JButton("+").apply { toolTipText = "Zoom in"; addActionListener { canvas.zoomAt(canvas.zoom * 1.2) } })
-                add(JButton("Fit").apply { toolTipText = "Fit all notes"; addActionListener { canvas.fitView() } })
+                add(JButton("Fit").apply { toolTipText = "Fit all cards"; addActionListener { canvas.fitView() } })
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
         add(JSplitPane(JSplitPane.VERTICAL_SPLIT, canvas, chat).apply {
             resizeWeight = 0.65; setDividerLocation(430)
         }, BorderLayout.CENTER)
         Disposer.register(this, chat)
+        Disposer.register(this, canvas)
         Disposer.register(this, session.subscribe { updateControls() })
         updateControls()
     }
@@ -112,7 +121,7 @@ internal class DiffReviewTab(
         scopeLabel.toolTipText = paths?.sorted()?.joinToString("\n") ?: "Follows all current changes, including files included in the global review."
     }
 
-    private fun renderCanvas() { canvas.showNotes(state.notes); canvas.highlight(selectedPaths().toSet()) }
+    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources); canvas.highlight(selectedPaths().toSet()) }
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
@@ -130,7 +139,7 @@ internal class DiffReviewTab(
         return object : DiffReviewContext {
             override suspend fun state(offset: Int, patchBudget: Int): String = withContext(Dispatchers.EDT) {
                 current()
-                diffStateResult(snapshot, live.scopePaths, selected, live.notes, offset, patchBudget)
+                diffStateResult(snapshot, live.scopePaths, selected, live.notes, offset, patchBudget, live.sources)
             }
 
             override suspend fun read(paths: List<String>, offset: Int): String = withContext(Dispatchers.EDT) {
@@ -141,13 +150,42 @@ internal class DiffReviewTab(
                 diffReadResult(files, offset)
             }
 
-            override suspend fun addNotes(notes: List<DiffNote>): String = withContext(Dispatchers.EDT) {
+            override suspend fun symbols(paths: List<String>, query: String, offset: Int): String {
+                withContext(Dispatchers.EDT) { current(); paths.forEach(::file) }
+                val (result, stamp) = withContext(Dispatchers.Default) { readAction {
+                    DiffSymbols(project, snapshot).find(paths, query, offset) to PsiModificationTracker.getInstance(project).modificationCount
+                } }
+                withContext(Dispatchers.EDT) {
+                    current()
+                    if (stamp != PsiModificationTracker.getInstance(project).modificationCount)
+                        throw ToolInputException("Source changed during symbol discovery. Retry with current source.")
+                }
+                return result
+            }
+
+            override suspend fun showSource(range: DiffSourceRange): String = withContext(Dispatchers.EDT) {
                 current()
-                val added = live.addNotes(capturedRevision, notes)
+                val block = live.showSource(capturedRevision, range)
                 renderCanvas()
-                val missing = live.uncovered()
-                "Added ${added.size} note${if (added.size == 1) "" else "s"}. " + if (missing.isEmpty()) "Every file now has a note."
-                    else "${missing.size} files still have no note: ${missing.take(20).joinToString()}${if (missing.size > 20) ", …" else ""}."
+                reviewJson.toJson(mapOf("shown" to block.range, "characters" to block.text.length))
+            }
+
+            override suspend fun addNotes(notes: List<DiffNote>): String {
+                withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
+                val (resolved, stamp) = withContext(Dispatchers.Default) { readAction {
+                    DiffSymbols(project, snapshot).resolve(notes) to PsiModificationTracker.getInstance(project).modificationCount
+                } }
+                return withContext(Dispatchers.EDT) {
+                    current()
+                    if (notes.any { it.symbol != null } && stamp != PsiModificationTracker.getInstance(project).modificationCount)
+                        throw ToolInputException("Source changed while resolving notes. Retry with current source.")
+                    val added = live.addNotes(capturedRevision, resolved)
+                    renderCanvas()
+                    val missing = live.uncovered()
+                    "Added ${added.size} note${if (added.size == 1) "" else "s"}. " + (if (missing.isEmpty()) "Every file now has a note."
+                        else "${missing.size} files still have no note: ${missing.take(20).joinToString()}${if (missing.size > 20) ", …" else ""}.") +
+                        changeFlow(live.notes).summary().let { if (it.isEmpty()) "" else " $it" }
+                }
             }
 
             override suspend fun uncovered(): List<String> = withContext(Dispatchers.EDT) {

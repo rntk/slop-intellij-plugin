@@ -11,6 +11,32 @@ import javax.swing.JLabel
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
+    fun testSourceCardsUseNativeViewersAndReleaseOnlyRemovedEditors() {
+        val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 8, 9), "val x = 1\n  println(x)")
+        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1000, 700) }
+        try {
+            canvas.showNotes(listOf(note), listOf(source))
+            assertEquals(2, canvas.componentCount)
+            val viewer = descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor
+            assertTrue(viewer.isViewer)
+            assertEquals(source.text, viewer.document.text)
+            assertEquals(8, viewer.gutterComponentEx.primaryLineNumberConverter.convert(viewer, 1))
+            assertEquals(9, viewer.gutterComponentEx.primaryLineNumberConverter.convert(viewer, 2))
+            assertTrue(viewer.settings.isLineNumbersShown)
+            viewer.selectionModel.setSelection(0, 3)
+            canvas.zoomAt(1.5, Point())
+            assertSame(viewer, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
+            assertEquals("val", viewer.selectionModel.selectedText)
+            canvas.showNotes(listOf(note), listOf(source, source.copy(range = source.range.copy(side = "before"))))
+            val other = descendants(canvas).filterIsInstance<DiffSourceEditor>().single { it.editor !== viewer }.editor
+            canvas.showNotes(listOf(note), listOf(source.copy(range = source.range.copy(side = "before"))))
+            assertTrue(viewer.isDisposed)
+            assertFalse(other.isDisposed)
+            canvas.dispose()
+            assertTrue(other.isDisposed)
+        } finally { canvas.dispose() }
+    }
+
     fun testZoomKeepsCursorAnchorAndRefreshKeepsView() {
         val canvas = canvas()
         val before = canvas.components.single().bounds
@@ -56,7 +82,86 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertEquals(initial, canvas.components.single().location)
     }
 
-    private fun canvas() = NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }
+    fun testSymbolCardsKeepIndependentPositionsAndDiagramBounds() {
+        val symbol = DiffSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        val evidence = DiffSymbolEvidence(symbol, listOf(DiffSymbolLinks("Calls", (1..3).map {
+            symbol.copy(name = "callee$it", qualifiedName = "Store.callee$it", offset = 10 + it)
+        }, 20)))
+        val semantic = note.copy(symbol = symbol.selector, evidence = evidence)
+        val canvas = canvas()
+        canvas.showNotes(listOf(note, semantic))
+        assertEquals(2, canvas.componentCount)
+        val locations = canvas.components.map { it.location }
+        assertFalse(canvas.components[0].bounds.intersects(canvas.components[1].bounds))
+        val diagram = descendants(canvas).filterIsInstance<DiffSymbolDiagram>().single()
+        assertEquals(5, diagram.componentCount) // Root, three callees, one omitted count.
+        assertTrue(descendants(diagram).filterIsInstance<JLabel>().any { it.text == "+17 calls not shown" })
+        canvas.zoomAt(1.5, Point())
+        canvas.showNotes(listOf(note, semantic.copy(text = "Updated")))
+        canvas.resetView()
+        assertEquals(locations, canvas.components.map { it.location })
+        canvas.showNotes(listOf(semantic))
+        assertEquals(locations[1], canvas.components.single().location)
+    }
+
+    fun testDiagramBoundsMixedRelationshipsAndDistinguishesOwners() {
+        val symbol = DiffSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        fun neighbors(owner: String) = (1..3).map {
+            symbol.copy(qualifiedName = "$owner$it.save", offset = 10 + it)
+        }
+        val diagram = DiffSymbolDiagram(DiffSymbolEvidence(symbol, listOf(
+            DiffSymbolLinks("Callers in this file", neighbors("Caller"), 5, incoming = true),
+            DiffSymbolLinks("Calls", neighbors("Target"), 4),
+            DiffSymbolLinks("References", neighbors("Other"), 3),
+        )), 360, 1.0, {})
+        val links = descendants(diagram).filterIsInstance<com.intellij.ui.components.ActionLink>()
+        assertEquals(7, links.size) // Root plus six neighbors across all relationship groups.
+        assertTrue(links.any { it.text == "Caller1.save" })
+        assertTrue(links.any { it.text == "Target1.save" })
+        assertFalse(links.any { it.text.startsWith("Other") })
+        val labels = descendants(diagram).filterIsInstance<JLabel>().map { it.text }
+        assertTrue("+2 callers in this file not shown" in labels)
+        assertTrue("+1 calls not shown" in labels)
+        assertTrue("+3 references not shown" in labels)
+        diagram.setSize(diagram.preferredSize)
+        assertTrue(diagram.components.all { diagram.bounds.contains(it.bounds) })
+    }
+
+    fun testChangeFlowCardDrawsCallTreeWithRepeatsAndFocusesNotes() {
+        val base = DiffSymbol("src/a.kt", "/src/a.kt", "a", "A.a", dev.insight.callgraph.SymbolKind.FUNCTION, 1, 0)
+        fun step(name: String, vararg calls: String) = DiffNote(listOf("src/a.kt"), "$name does work. More detail.", "s:$name",
+            DiffSymbolEvidence(base.copy(name = name, qualifiedName = "A.$name", offset = name.hashCode()), emptyList(),
+                calls.map { "src/a.kt#A.$it:1@${it.hashCode()}" }.toSet()))
+        // a → b → c → a is a cycle, a → c shares c, and d is unrelated.
+        val notes = listOf(step("a", "b", "c", "external"), step("b", "c", "b"), step("c", "a"), step("d"))
+        val flow = changeFlow(notes)
+        assertEquals(listOf("a" to 0, "b" to 1, "c" to 2, "a" to 3, "c" to 1),
+            flow.rows.map { it.note.evidence!!.symbol.name to it.depth })
+        assertEquals(listOf(false, false, false, true, true), flow.rows.map { it.repeat })
+        assertEquals(1, flow.unlinked)
+        assertTrue(changeFlow(listOf(step("a"), note)).rows.isEmpty())
+
+        val canvas = canvas()
+        canvas.showNotes(notes)
+        assertEquals(5, canvas.componentCount) // Flow card plus four notes.
+        val diagram = descendants(canvas).filterIsInstance<ChangeFlowDiagram>().single()
+        val links = descendants(diagram).filterIsInstance<com.intellij.ui.components.ActionLink>()
+        assertEquals(listOf("A.a", "A.b", "A.c", "↺ A.a", "↺ A.c"), links.map { it.text })
+        assertTrue(descendants(diagram).filterIsInstance<JLabel>().any { it.text == "b does work" })
+        assertTrue(descendants(diagram).filterIsInstance<JLabel>().any { it.text == "1 other symbol notes have no calls to or from these" })
+        diagram.setSize(diagram.preferredSize)
+        assertTrue(diagram.components.all { diagram.bounds.contains(it.bounds) })
+
+        links[2].doClick()
+        val target = canvas.components.first { card -> descendants(card as Container).filterIsInstance<javax.swing.JTextArea>().any { it.text.startsWith("c ") } }
+        assertEquals(canvas.width / 2.0, target.bounds.centerX, 1.0)
+        canvas.showNotes(notes.take(3))
+        assertEquals(4, canvas.componentCount)
+        canvas.showNotes(listOf(notes[3]))
+        assertEquals(1, canvas.componentCount) // The flow disappears once no calls connect notes.
+    }
+
+    private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }
     private fun descendants(component: Container): List<Component> = component.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }

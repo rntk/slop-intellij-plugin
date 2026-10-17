@@ -21,7 +21,16 @@ data class ReviewFile(
 
 data class UntrackedFile(val path: String, val absolutePath: String)
 data class ReviewSnapshot(val files: List<ReviewFile>, val untracked: List<UntrackedFile>)
-data class DiffNote(val paths: List<String>, val text: String)
+data class DiffNote(
+    val paths: List<String>,
+    val text: String,
+    val symbol: String? = null,
+    val evidence: DiffSymbolEvidence? = null,
+) {
+    internal val key get() = DiffNoteKey(paths, symbol)
+}
+
+internal data class DiffNoteKey(val paths: List<String>, val symbol: String?, val source: DiffSourceRange? = null)
 
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
 class DiffReviewState(paths: Set<String>? = null) {
@@ -32,8 +41,10 @@ class DiffReviewState(paths: Set<String>? = null) {
     var refreshing = true
     var snapshot = ReviewSnapshot(emptyList(), emptyList())
         private set
-    private val cards = linkedMapOf<List<String>, DiffNote>()
+    private val cards = linkedMapOf<DiffNoteKey, DiffNote>()
     val notes: List<DiffNote> get() = cards.values.toList()
+    private val sourceCards = linkedMapOf<DiffSourceRange, DiffSourceBlock>()
+    val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -43,6 +54,9 @@ class DiffReviewState(paths: Set<String>? = null) {
             cards.entries.removeIf { (_, note) -> note.paths.any { path ->
                 fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
             } }
+            sourceCards.entries.removeIf { (range, _) ->
+                fresh[range.path] == null || fresh[range.path]?.fingerprint != old[range.path]?.fingerprint
+            }
             revision++
         }
         snapshot = next
@@ -68,17 +82,29 @@ class DiffReviewState(paths: Set<String>? = null) {
             note.paths.firstOrNull { it !in known }?.let { throw ToolInputException("${prefix}$it is not a file included in this diff.") }
             if (note.text.isBlank() || note.text.length > 2000)
                 throw ToolInputException("${prefix}Use a note of 1–2000 characters.")
-            DiffNote(note.paths.distinct().sorted(), note.text.trim())
+            if (note.symbol != null && (note.symbol.isBlank() || note.symbol.length > 500))
+                throw ToolInputException("${prefix}Use a symbol of 1–500 characters.")
+            note.copy(paths = note.paths.distinct().sorted(), text = note.text.trim(), symbol = note.symbol?.trim())
         }
-        if ((cards.keys + added.map { it.paths }).size > 200) throw ToolInputException("The canvas has reached its 200-note limit.")
-        added.forEach { cards[it.paths] = it }
+        if ((cards.keys + added.map { it.key }).toSet().size > 200) throw ToolInputException("The canvas has reached its 200-note limit.")
+        added.forEach { cards[it.key] = it }
         return added
     }
 
-    fun uncovered(): List<String> = snapshot.files.map { it.path }.filter { path -> cards.keys.none { path in it } }
+    fun uncovered(): List<String> = snapshot.files.map { it.path }.filter { path -> cards.keys.none { path in it.paths } }
 
-    fun removeNote(paths: List<String>) { cards.remove(paths.distinct().sorted()) }
-    fun clearNotes() { cards.clear() }
+    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(DiffNoteKey(paths.distinct().sorted(), symbol)) }
+    fun showSource(expected: Int, range: DiffSourceRange): DiffSourceBlock {
+        check(expected)
+        val block = resolveSourceBlock(snapshot, range)
+        if (range !in sourceCards && sourceCards.size >= 30)
+            throw ToolInputException("The canvas has reached its 30-source-block limit.")
+        sourceCards[range] = block
+        return block
+    }
+
+    fun removeSource(range: DiffSourceRange) { sourceCards.remove(range) }
+    fun clearNotes() { cards.clear(); sourceCards.clear() }
 }
 
 internal fun reviewFingerprint(vararg values: String): String {

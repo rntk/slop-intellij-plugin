@@ -11,6 +11,7 @@ internal fun diffStateResult(
     notes: List<DiffNote>,
     offset: Int,
     patchBudget: Int,
+    sources: List<DiffSourceBlock> = emptyList(),
 ): String {
     if (offset < 0 || offset > snapshot.files.size) throw ToolInputException("Offset is outside the file list")
     val selectedSet = selected.toHashSet()
@@ -26,6 +27,7 @@ internal fun diffStateResult(
     fun result(): String = reviewJson.toJson(buildMap<String, Any> {
         put("scope", if (scopePaths == null) "all changes" else "fixed file selection")
         put("total_files", snapshot.files.size)
+        if (sources.isNotEmpty()) put("source_blocks_count", sources.size)
         if (selected.isNotEmpty()) put("selected_count", selected.size)
         if (selectedPaths.isNotEmpty()) put("selected_paths", selectedPaths)
         if (pageNotes.isNotEmpty()) put("notes_count", pageNotes.size)
@@ -42,6 +44,10 @@ internal fun diffStateResult(
             file.previousPath?.let { put("previous_path", it) }
             if (file.path in selectedSet) put("selected", true)
             if (file.path in annotatedPaths) put("has_note", true)
+            sources.filter { it.range.path == file.path }.takeIf { it.isNotEmpty() }?.let { blocks ->
+                put("source_blocks", blocks.map { mapOf("side" to it.range.side,
+                    "start_line" to it.range.startLine, "end_line" to it.range.endLine) })
+            }
         }
         updatePageNotes()
         if (!fits()) {
@@ -57,7 +63,11 @@ internal fun diffStateResult(
         if (!fits()) { selectedPaths.removeAt(selectedPaths.lastIndex); break }
     }
     for (note in pageNotes.take(20)) {
-        excerpts += mapOf("paths" to note.paths, "text_excerpt" to note.text.take(160))
+        excerpts += buildMap {
+            put("paths", note.paths)
+            put("text_excerpt", note.text.take(160))
+            note.symbol?.let { put("symbol", it) }
+        }
         if (!fits()) excerpts.removeAt(excerpts.lastIndex)
     }
     var budget = patchBudget

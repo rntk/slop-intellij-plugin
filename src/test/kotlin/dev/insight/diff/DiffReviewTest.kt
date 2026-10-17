@@ -271,6 +271,23 @@ class DiffReviewTest {
         assertTrue(state.uncovered().isEmpty())
     }
 
+    @Test fun `file and symbol notes coexist replace and remove independently`() {
+        val state = state()
+        val paths = listOf("src/a.kt")
+        state.addNotes(state.revision, listOf(DiffNote(paths, "File"), DiffNote(paths, "First", "first"), DiffNote(paths, "Second", "second")))
+        assertEquals(3, state.notes.size)
+        state.addNotes(state.revision, listOf(DiffNote(paths, "Updated", "first")))
+        assertEquals(listOf("File", "Updated", "Second"), state.notes.map { it.text })
+        state.removeNote(paths, "first")
+        assertEquals(listOf(null, "second"), state.notes.map { it.symbol })
+        state.removeNote(paths)
+        assertEquals("second", state.notes.single().symbol)
+        val response = JsonParser.parseString(diffStateResult(state.snapshot, null, emptyList(), state.notes, 0, 0)).asJsonObject
+        assertEquals("second", response["notes"].asJsonArray.single().asJsonObject["symbol"].asString)
+        state.update(state.snapshot.copy(files = state.snapshot.files.map { it.copy(fingerprint = "new") }))
+        assertTrue(state.notes.isEmpty())
+    }
+
     private class Context : DiffReviewContext {
         val state = DiffReviewState().apply {
             update(ReviewSnapshot(listOf(ReviewFile("a.kt", "/a.kt", null, "modified", "-old\n+new", "1"),
@@ -329,7 +346,7 @@ class DiffReviewTest {
         val tools = diffReviewTools(context)
         val add = tools.single { it.definition.name == "add_diff_notes" }
         val noteSchema = add.definition.parameters["properties"].asJsonObject["notes"].asJsonObject["items"].asJsonObject
-        assertEquals(setOf("paths", "text"), noteSchema["properties"].asJsonObject.keySet())
+        assertEquals(setOf("paths", "text", "symbol"), noteSchema["properties"].asJsonObject.keySet())
         assertEquals(listOf("paths", "text"), noteSchema["required"].asJsonArray.map { it.asString })
         for (args in listOf(
             """{}""",
@@ -340,6 +357,10 @@ class DiffReviewTest {
             """{"notes":[{"paths":[],"text":"A"}]}""",
             """{"notes":[{"paths":["a.kt"],"text":"A"},{"paths":["a.kt","missing"],"text":"A"}]}""",
             """{"notes":[{"paths":["a.kt"],"text":"${"x".repeat(2001)}"}]}""",
+            """{"notes":[{"paths":["a.kt"],"text":"A","symbol":null}]}""",
+            """{"notes":[{"paths":["a.kt"],"text":"A","symbol":42}]}""",
+            """{"notes":[{"paths":["a.kt"],"text":"A","symbol":" "}]}""",
+            """{"notes":[{"paths":["a.kt"],"text":"A","symbol":"${"x".repeat(501)}"}]}""",
         )) {
             try { add.call(JsonParser.parseString(args).asJsonObject); fail(args) } catch (_: ToolInputException) { }
         }
@@ -360,7 +381,7 @@ class DiffReviewTest {
     @Test fun `prompt and schemas name only the current tools`() {
         val prompt = diffReviewPrompt("test")
         val names = diffReviewTools(Context()).map { it.definition.name }
-        assertEquals(listOf("get_current_diff", "read_diff_files", "add_diff_notes"), names)
+        assertEquals(listOf("get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source", "add_diff_notes"), names)
         for (name in Regex("[a-z]+(?:_[a-z]+)+").findAll(prompt).map { it.value }.filter { it.endsWith("_diff") || it.contains("_diff_") })
             assertTrue("Unknown tool $name in the prompt", name in names)
         assertFalse(diffReviewTools(Context()).any { it.definition.parameters.toString().contains("revision") })
