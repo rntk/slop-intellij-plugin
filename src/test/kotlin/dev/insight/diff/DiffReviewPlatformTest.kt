@@ -6,6 +6,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.DiffService
+import dev.insight.chat.ChatMessage
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.ToolChatRunner
@@ -303,7 +304,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             val state = DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState
             state.update(ReviewSnapshot(listOf(file("src/a.kt")), listOf(UntrackedFile("new.kt", "/project/new.kt"))))
             DiffReviewPanel::class.java.getDeclaredMethod("renderFiles").apply { isAccessible = true }.invoke(panel)
-            val tree = descendants(panel).filterIsInstance<JTree>().single()
+            val tree = descendants(panel).filterIsInstance<JTree>().single { it.name != "Change summaries" }
             val root = tree.model.root as DefaultMutableTreeNode
             val node = root.depthFirstEnumeration().toList().filterIsInstance<DefaultMutableTreeNode>().single { it.userObject is ReviewFile }
             tree.selectionPath = TreePath(node.path)
@@ -402,7 +403,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             assertEquals("Second topic draft", secondChat.input.text)
 
             // Folder selection creates a fixed scope; subsequent tree selections do not change it.
-            val tree = descendants(panel).filterIsInstance<JTree>().single()
+            val tree = descendants(panel).filterIsInstance<JTree>().single { it.name != "Change summaries" }
             val root = DefaultMutableTreeNode("Changes")
             val folder = DefaultMutableTreeNode("src").also(root::add)
             folder.add(DefaultMutableTreeNode(file("src/a.kt")))
@@ -433,6 +434,61 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             val fresh = tabs.selectedInfo!!.component as DiffReviewTab
             assertNull(fresh.state.scopePaths)
             assertTrue(fresh.state.notes.isEmpty())
+        } finally { Disposer.dispose(panel) }
+    }
+
+    fun `test summaries tab starts once per revision and shows summaries with the real name of the selection`() {
+        val panel = DiffReviewPanel(project)
+        JRootPane().contentPane.add(panel)
+        try {
+            PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
+                descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+            }, 10 /* seconds */)
+            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val tab = tabs.selectedInfo!!.component as DiffReviewTab
+            val snapshot = ReviewSnapshot(listOf(file("src/app/a.kt"), file("src/app/b.kt"), file("docs/guide.md")), emptyList())
+            (DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState).update(snapshot)
+            tab.update(snapshot)
+            val views = descendants(panel).filterIsInstance<com.intellij.ui.components.JBTabbedPane>().single()
+            assertEquals(listOf("Files", "Summaries"), (0 until views.tabCount).map(views::getTitleAt))
+
+            // Stay on the EDT so the queued turn cannot contact a backend during this test.
+            views.selectedIndex = 1
+            assertTrue(tab.session.busy)
+            assertEquals("/summaries", tab.session.messages.last { it.role == ChatMessage.USER }.text)
+            val action = descendants(panel).filterIsInstance<JButton>().single { it.text == "Summarize" }
+            assertFalse(action.isEnabled)
+            assertTrue(descendants(panel).filterIsInstance<JLabel>().any { it.text == "Summarizing… 0 of 5" })
+            tab.session.stop()
+            views.selectedIndex = 0
+            views.selectedIndex = 1
+            assertEquals("Reopening the tab does not restart the same revision", 1, tab.session.messages.count { it.text == "/summaries" })
+
+            val tree = descendants(panel).filterIsInstance<JTree>().single { it.name == "Change summaries" }
+            val nodes = tab.state.summaries.tree.nodes
+            assertEquals(listOf("./", "src/app/", "src/app/a.kt", "src/app/b.kt", "docs/guide.md"), nodes.map { it.location })
+            tab.state.summarize(tab.state.revision, nodes.associate { it.id to "Summary of ${it.location} & more" })
+            tab.update(tab.state.snapshot)
+            assertEquals("Regenerate", action.text)
+            fun rendered(row: Int) = (tree.cellRenderer.getTreeCellRendererComponent(tree, tree.getPathForRow(row).lastPathComponent,
+                false, false, false, row, false) as JLabel).text
+            assertEquals(nodes.size, tree.rowCount)
+            assertTrue(rendered(1), rendered(1).contains("Summary of src/app/ &amp; more"))
+            assertFalse(rendered(1).contains(">app<"))
+
+            tree.selectionPath = tree.getPathForRow(1)
+            val details = descendants(descendants(panel).filterIsInstance<ChangeSummariesView>().single()).filterIsInstance<com.intellij.ui.components.JBTextArea>().single()
+            assertEquals(listOf("app/ · folder · 2 files", "src/app/", "/project/src/app/", "", "Summary of src/app/ & more"), details.text.lines())
+            tree.selectionPath = tree.getPathForRow(4)
+            assertTrue(details.text, details.text.startsWith("guide.md · modified file\ndocs/guide.md\n/project/docs/guide.md"))
+
+            // A summary selects its files, like the folder it stands for.
+            tree.selectionPath = tree.getPathForRow(1)
+            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }.doClick()
+            val scoped = tabs.selectedInfo!!.component as DiffReviewTab
+            assertEquals(setOf("src/app/a.kt", "src/app/b.kt"), scoped.state.scopePaths)
+            assertTrue("Switching review tabs while Summaries is open summarizes the new tab", scoped.session.busy)
+            scoped.session.stop()
         } finally { Disposer.dispose(panel) }
     }
 

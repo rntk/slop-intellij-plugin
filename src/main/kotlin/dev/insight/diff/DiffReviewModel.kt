@@ -63,6 +63,9 @@ class DiffReviewState(paths: Set<String>? = null) {
     /** The change-flow graph of this revision with its interpretations; any change to the snapshot discards it. */
     var flows: ChangeFlows? = null
         private set
+    /** The summary tree of this revision. Summaries of unchanged subtrees survive snapshot changes; a new request discards all. */
+    var summaries = ChangeSummaries(buildSummaryTree(emptyList()))
+        private set
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -84,6 +87,8 @@ class DiffReviewState(paths: Set<String>? = null) {
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
             // Clusters and callers span files, so the graph cannot keep the unchanged part of a changed snapshot.
             flows = null
+            val tree = buildSummaryTree(next.files)
+            summaries = if (requestChanged) ChangeSummaries(tree) else summaries.retainedIn(tree)
             revision++
         }
         snapshot = next
@@ -153,6 +158,13 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun removeFlows() { flows = null }
+
+    fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+        check(expected)
+        return summaries.summarize(entries).also { summaries = it }
+    }
+
+    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree) }
 }
 
 internal fun reviewFingerprint(vararg values: String): String {

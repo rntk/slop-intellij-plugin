@@ -26,6 +26,8 @@ internal class DiffReviewTab(
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     showDiff: (String) -> Unit,
+    /** Called when this tab's summaries or chat state change. */
+    private val summariesChanged: () -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths)
@@ -57,33 +59,43 @@ internal class DiffReviewTab(
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, welcome =
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
-            "or /flows to map the change from an overview down to the code.") {
+            "/flows to map the change from an overview down to the code, or /summaries for the Summaries tree.") {
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, total) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files.size }
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val description = isDescriptionRequest(question)
                 val flows = isFlowsRequest(question)
+                val summaries = isSummariesRequest(question)
                 // The graph is built and drawn before the model runs, so the structure never depends on a reply.
                 val graph = if (flows) context.buildFlows() else null
+                val tree = if (summaries) context.startSummaries() else null
                 val client = ChatSettings.getInstance().createClient()
                 // Only this turn carries the command's instructions; the transcript keeps the command as typed.
                 val request = when {
                     description -> messages.dropLast(1) + messages.last().copy(text = descriptionRequest(question))
                     graph != null -> messages.dropLast(1) + messages.last().copy(text = flowsRequest(question, graph))
+                    tree != null -> messages.dropLast(1) + messages.last().copy(text = summariesRequest(question, tree))
                     else -> messages
                 }
-                // Code, not the model, checks that a description covers every file in scope and that flows interpret every change.
+                // Code, not the model, checks that a description covers every file in scope, that flows interpret every change
+                // and that summaries reach the root.
                 val coverage: (suspend () -> String?)? = when {
                     description -> suspend { context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, total) } }
                     flows -> suspend { context.flowsUncovered()?.takeIf { !it.complete }?.let(::flowsCoverageNote) }
+                    summaries -> suspend { context.currentSummaries()?.takeIf { !it.complete }?.let(::summariesCoverageNote) }
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(client::complete, diffReviewTools(context) + changeFlowTools(context), diffReviewPrompt(project.name),
+                val reply = LlmChatBackend(client::complete, diffReviewTools(context) + changeFlowTools(context) + changeSummaryTools(context), diffReviewPrompt(project.name),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
+                if (summaries) {
+                    val current = context.currentSummaries() ?: return reply
+                    return if (current.complete) reply else "$reply\n\n[No summary for ${current.missing().size} of ${current.total} tree nodes. " +
+                        "They show their names in the Summaries tab.]"
+                }
                 if (flows) {
                     val missing = context.flowsUncovered() ?: return reply
                     return if (missing.complete) reply else "$reply\n\n[Not interpreted: ${missing.nodes.size} functions, " +
@@ -99,7 +111,7 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/description, /flows or ask about this tab's changes…"
+        chat.input.emptyText.text = "/description, /flows, /summaries or ask about this tab's changes…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
@@ -122,7 +134,7 @@ internal class DiffReviewTab(
         }, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
-        Disposer.register(this, session.subscribe { updateControls() })
+        Disposer.register(this, session.subscribe { updateControls(); summariesChanged() })
         updateControls()
     }
 
@@ -133,6 +145,7 @@ internal class DiffReviewTab(
         state.refreshing = true
         if (stop) session.stop()
         updateControls()
+        summariesChanged()
     }
 
     /** Updates even hidden tabs, retaining only notes whose scoped evidence is unchanged. */
@@ -143,10 +156,23 @@ internal class DiffReviewTab(
         if (state.revision != previousRevision) session.stop()
         renderCanvas()
         updateControls()
+        summariesChanged()
         return previousNotes - state.notes.size
     }
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
+
+    val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
+    private var autoSummarized = -1
+
+    fun summarize() { if (canSummarize) session.send("/summaries") }
+
+    /** Opening the Summaries tab starts a missing tree once per revision; a failed or stopped run waits for the button. */
+    fun summarizeOnOpen() {
+        if (!canSummarize || state.summaries.complete || autoSummarized == state.revision) return
+        autoSummarized = state.revision
+        summarize()
+    }
 
     private fun updateControls() {
         describe.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
@@ -270,6 +296,29 @@ internal class DiffReviewTab(
 
             override suspend fun flowsUncovered(): FlowCoverage? = withContext(Dispatchers.EDT) {
                 if (disposed || live.refreshing || live.revision != capturedRevision) null else live.flows?.uncovered()
+            }
+
+            override suspend fun startSummaries(): String = withContext(Dispatchers.EDT) {
+                current()
+                // An incomplete tree is continued, so an edit only re-summarizes the changed files and the folders above them.
+                if (live.summaries.complete) { live.clearSummaries(); summariesChanged() }
+                changeSummariesJson(live.summaries, 0)
+            }
+
+            override suspend fun summaries(offset: Int): String = withContext(Dispatchers.EDT) {
+                current()
+                changeSummariesJson(live.summaries, offset)
+            }
+
+            override suspend fun summarize(entries: Map<Int, String>): String = withContext(Dispatchers.EDT) {
+                current()
+                val next = live.summarize(capturedRevision, entries)
+                summariesChanged()
+                summarizeResult(next, entries.size)
+            }
+
+            override suspend fun currentSummaries(): ChangeSummaries? = withContext(Dispatchers.EDT) {
+                if (disposed || live.refreshing || live.revision != capturedRevision) null else live.summaries
             }
         }
     }
