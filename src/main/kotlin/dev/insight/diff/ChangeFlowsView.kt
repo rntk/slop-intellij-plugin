@@ -121,6 +121,7 @@ internal class ChangeFlowsPanel(
         if (unresolved > 0) add(label("Calls not resolved in ${plural(unresolved, "file")}: the after side is not the project's current source.",
             font(JBFont.small()), help))
         if (graph.truncated) add(label("The diff exceeds the analysis limit; some functions are not shown.", font(JBFont.small()), help))
+        if (graph.nodes.any { it.stepsTruncated }) add(label("Some outlines reached the analysis limit; calls and connections may be missing.", font(JBFont.small()), help))
         val coverage = flows.uncovered()
         val required = graph.changed.count { it.trivial == null }.coerceAtMost(ChangeFlows.MAX_REQUIRED_NODES)
         add(label(if (flows.nodeNotes.isEmpty() && flows.themes.isEmpty()) "Structural view · not interpreted yet"
@@ -394,6 +395,7 @@ internal class ChangeFlowsPanel(
             add(step(step, width))
         }
         flush()
+        if (node.stepsTruncated) add(text("Outline truncated after ${steps.size} steps; later calls and connections may be missing. Open source to inspect the full function.", width, font(JBFont.small()), help))
     }
 
     private fun step(step: ChangeStep, width: Int): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {

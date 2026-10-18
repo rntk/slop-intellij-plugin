@@ -132,6 +132,45 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
         assertEquals("Shop.java", graph.cluster(vip.id)!!.file)
     }
 
+    private var exampleIndex = 0
+
+    private fun javaChange(before: String, after: String): ChangeGraph {
+        val path = "example${exampleIndex++}/Example.java"
+        val file = myFixture.addFileToProject(path, after)
+        return build(ReviewSnapshot(listOf(ReviewFile(path, file.virtualFile.path, null,
+            "modified", "patch", "1", before, after)), emptyList()))
+    }
+
+    fun testLiteralWhitespaceAndTokenBoundaryChangesAreNotTrivial() {
+        for ((old, new) in listOf("\"a b\"" to "\"a  b\"", "\"a + b\"" to "\"a+b\"",
+            "x + ++x" to "x++ + x")) {
+            val graph = javaChange("class Example { Object value(int x) { return $old; } }",
+                "class Example { Object value(int x) { return $new; } }")
+            assertNull("Literal contents and token boundaries are significant: $old -> $new", graph.changed.single().trivial)
+        }
+    }
+
+    fun testCommentOnlyEditsUsePsiEvidence() {
+        val graph = javaChange("class Example { int value() { /* old */ return 1; } }",
+            "class Example { int value() { /* new */ return 1; } }")
+        assertEquals(TrivialChange.COMMENTS, graph.changed.single().trivial)
+    }
+
+    fun testOutlineLimitsAreExplicitAndExactLimitIsComplete() {
+        for (count in listOf(ChangeFlowBuilder.MAX_STEPS, ChangeFlowBuilder.MAX_STEPS + 1)) {
+            val graph = javaChange("class Example { void run() {} void helper() {} }",
+                "class Example { void run() { ${"helper();".repeat(count)} } void helper() {} }")
+            val node = graph.changed.single()
+            assertEquals(ChangeFlowBuilder.MAX_STEPS, node.steps!!.size)
+            assertEquals(count > ChangeFlowBuilder.MAX_STEPS, node.stepsTruncated)
+            val flows = ChangeFlows(graph)
+            val page = JsonParser.parseString(changeFlowsJson(flows, 0)).asJsonObject
+            assertEquals(node.stepsTruncated, page.has("outlines_truncated"))
+            val detail = JsonParser.parseString(changeNodesJson(flows, listOf(node.id))).asJsonObject["nodes"].asJsonArray.single().asJsonObject
+            assertTrue("The tool's 60-step limit is explicit too", detail["steps_truncated"].asBoolean)
+        }
+    }
+
     fun testTabBuildsTheGraphBeforeTheModelAndDiscardsItWhenTheDiffChanges() {
         val snapshot = snapshot()
         val tab = DiffReviewTab(project, null, { emptyList() }, {})

@@ -35,7 +35,9 @@ class ChangeFlowModelTest {
 
     @Test fun `classification separates whitespace and comment edits from code changes`() {
         val base = declaration("f", text = "fun f() { return a + b }")
-        assertEquals(TrivialChange.FORMATTING, classify(base, declaration("f", text = "fun f() {\n    return a+b\n}"))!!.second)
+        val tokens = listOf("fun", "f", "(", ")", "{", "return", "a", "+", "b", "}")
+        assertEquals(TrivialChange.FORMATTING, classify(base.copy(formattingTokens = tokens),
+            declaration("f", text = "fun f() {\n    return a+b\n}").copy(formattingTokens = tokens))!!.second)
         assertEquals(TrivialChange.COMMENTS, classify(base, declaration("f", text = "fun f() { return a + b } // why"))!!.second)
         val real = classify(base, declaration("f", text = "fun f() { return a - b }"))!!
         assertEquals(ChangeStatus.MODIFIED, real.first)

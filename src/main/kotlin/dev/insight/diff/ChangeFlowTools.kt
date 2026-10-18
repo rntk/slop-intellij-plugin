@@ -146,6 +146,7 @@ internal fun changeFlowsJson(flows: ChangeFlows, offset: Int): String {
             "files_with_resolved_calls" to graph.files.count { it.calls },
         ))
         if (graph.truncated) put("truncated", "The diff exceeds the analysis limit; some functions are not in the graph.")
+        if (graph.nodes.any { it.stepsTruncated }) put("outlines_truncated", "Some outlines reached the analysis limit; later calls and connections may be missing.")
         if (offset == 0) {
             val themeOf = flows.themes.withIndex().flatMap { (index, theme) -> theme.clusters.map { it to index + 1 } }.toMap()
             put("clusters", graph.clusters.map { cluster -> buildMap {
@@ -216,6 +217,7 @@ internal fun changeNodesJson(flows: ChangeFlows, ids: List<Int>): String {
         node.trivial?.let { entry["trivial"] = it.id }
         if (node.changed) entry["lines"] = lines(node)
         node.steps?.let { steps ->
+            if (node.stepsTruncated || steps.size > 60) entry["steps_truncated"] = true
             entry["steps"] = steps.take(60).map { step ->
                 buildString {
                     append("L").append(step.line)

@@ -12,6 +12,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiNamedElement
+import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphAnalyzer
@@ -53,7 +54,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
         val index: LineIndex,
     )
 
-    private class Walked(val steps: List<RawStep>)
+    private class Walked(val steps: List<RawStep>, val truncated: Boolean)
     private class RawStep(val line: Int, val text: String, val exit: Boolean, val conditions: List<String>, val target: PsiElement?, val changed: Boolean)
 
     fun build(): ChangeGraph {
@@ -111,6 +112,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
                 declaration.header, declaration.lines.first, change.trivial, change.signature, change.added, change.removed,
                 change.test, change.element?.let { ProjectGraphAnalyzer.source(it).textOffset },
                 walk?.steps?.map { step(it, ::id) }, callers.orEmpty(), callersTruncated, callers != null, change.hunk.first, change.hunk.second,
+                stepsTruncated = walk?.truncated == true,
             )
         }
         bridges.entries.forEachIndexed { index, (_, value) ->
@@ -124,6 +126,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
                 id, relative(absolute), absolute, (element as? PsiNamedElement)?.name ?: "?", qualifiedName(element),
                 ChangeStatus.CONTEXT, header(element), LineIndex(text).line(element.textRange.startOffset),
                 test = isTest(file), offset = ProjectGraphAnalyzer.source(element).textOffset, steps = walk.steps.map { step(it, ::id) },
+                stepsTruncated = walk.truncated,
             )
         }
         val edgeList = edges.toList()
@@ -203,10 +206,31 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
                 .filter { comment -> nested.none { PsiTreeUtil.isAncestor(it, comment, false) } }.map { it.textRange }
             val code = without(element, nested.map { it.textRange } + comments)
             element to SideDeclaration(name, qualifiedName(element), kind, declarationHeader(code), own,
-                code.replace(Regex("\\s+"), " ").trim(),
+                tokens(element, nested, comments = false).joinToString("") { "${it.length}:$it" },
                 index.line(start)..index.line((element.textRange.endOffset - 1).coerceAtLeast(start)), element.textOffset,
-                nested.map { index.line(it.textRange.startOffset)..index.line((it.textRange.endOffset - 1).coerceAtLeast(it.textRange.startOffset)) })
+                nested.map { index.line(it.textRange.startOffset)..index.line((it.textRange.endOffset - 1).coerceAtLeast(it.textRange.startOffset)) },
+                formattingTokens = tokens(element, nested, comments = true))
         }
+    }
+
+    /** Compare leaves rather than source strings: whitespace inside a literal is behavior. */
+    private fun tokens(element: PsiElement, nested: List<PsiElement>, comments: Boolean): List<String> {
+        val result = mutableListOf<String>()
+        element.accept(object : PsiRecursiveElementWalkingVisitor() {
+            override fun visitElement(child: PsiElement) {
+                if (child in nested) return
+                if (child is PsiComment) {
+                    if (comments) result += child.text
+                    return
+                }
+                // Only Java is whitespace insensitive here. Other languages retain whitespace
+                // conservatively because indentation and newlines can change execution.
+                if (child is PsiWhiteSpace && element.language.id == "JAVA") return
+                if (child.firstChild == null) result += child.text
+                else super.visitElement(child)
+            }
+        })
+        return result
     }
 
     private fun header(element: PsiElement): String =
@@ -255,7 +279,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
                 ProgressManager.checkCanceled()
                 if (element is PsiComment) return
                 if (element !== function && ProjectGraphAnalyzer.kind(element).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS }) return
-                if (steps.size >= MAX_STEPS) return
+                if (steps.size > MAX_STEPS) return
                 val line = index.line(element.textRange.startOffset)
                 val target = supports.firstNotNullOfOrNull { it.resolveCall(element) }?.let(ProjectGraphAnalyzer::source)
                     ?.takeIf { ProjectGraphAnalyzer.kind(it) == SymbolKind.FUNCTION && CallGraphAnalyzer.isInProject(project, it) }
@@ -267,7 +291,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
                 super.visitElement(element)
             }
         })
-        return Walked(steps)
+        return Walked(steps.take(MAX_STEPS), steps.size > MAX_STEPS)
     }
 
     private fun conditions(frames: List<ControlFrame>): List<String> = frames.map { frame ->

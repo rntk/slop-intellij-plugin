@@ -14,7 +14,8 @@ enum class TrivialChange(val id: String) { FORMATTING("whitespace only"), COMMEN
 
 /**
  * A declaration on one side of a file, PSI-free. [text] is the declaration's own text with nested functions and classes
- * removed, so editing a local function changes that function and not its owner. [code] also drops comments.
+ * removed, so editing a local function changes that function and not its owner. [code] encodes PSI leaves without
+ * comments, retaining token boundaries and literal contents. Whitespace is ignored only for Java.
  */
 data class SideDeclaration(
     val name: String,
@@ -28,6 +29,8 @@ data class SideDeclaration(
     val offset: Int,
     /** Lines of nested functions and classes, which count towards those declarations instead. */
     val nested: List<IntRange> = emptyList(),
+    /** PSI token evidence preserving literal contents and token boundaries. */
+    val formattingTokens: List<String>? = null,
 )
 
 /** One line of a declaration's literal diff: [kind] is ' ', '+', '-' or '…' for a run of [text] unchanged lines left out. */
@@ -75,6 +78,7 @@ data class ChangeNode(
     val callersSearched: Boolean = false,
     val hunk: List<HunkLine> = emptyList(),
     val hunkTruncated: Boolean = false,
+    val stepsTruncated: Boolean = false,
 ) {
     val changed: Boolean get() = status != ChangeStatus.CONTEXT
     val churn: Int get() = added + removed
@@ -283,7 +287,7 @@ internal fun classify(before: SideDeclaration?, after: SideDeclaration?): Triple
     before == null -> Triple(ChangeStatus.ADDED, null, false)
     after == null -> Triple(ChangeStatus.DELETED, null, false)
     before.text == after.text -> null
-    spacing(before.text) == spacing(after.text) -> Triple(ChangeStatus.MODIFIED, TrivialChange.FORMATTING, false)
+    before.formattingTokens != null && before.formattingTokens == after.formattingTokens -> Triple(ChangeStatus.MODIFIED, TrivialChange.FORMATTING, false)
     before.code == after.code -> Triple(ChangeStatus.MODIFIED, TrivialChange.COMMENTS, false)
     else -> Triple(ChangeStatus.MODIFIED, null, spacing(before.header) != spacing(after.header))
 }
