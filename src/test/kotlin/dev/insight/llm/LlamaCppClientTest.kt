@@ -12,14 +12,19 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.net.InetSocketAddress
 import java.net.URI
+import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class LlamaCppClientTest {
+    @get:Rule val timeout = Timeout.seconds(30)
+
     private lateinit var server: HttpServer
     private val executor = Executors.newCachedThreadPool()
     private lateinit var baseUrl: String
@@ -42,7 +47,7 @@ class LlamaCppClientTest {
     }
 
     private fun client(model: String = "", apiKey: String? = null, retries: Int = 0) =
-        LlamaCppClient(baseUrl, model, apiKey, maxRetries = retries)
+        LlamaCppClient(baseUrl, model, apiKey, requestTimeout = Duration.ofSeconds(5), maxRetries = retries)
 
     private fun respond(vararg replies: Pair<Int, String>) {
         val calls = AtomicInteger()

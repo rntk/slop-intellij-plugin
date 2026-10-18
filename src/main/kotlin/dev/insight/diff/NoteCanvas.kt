@@ -41,6 +41,7 @@ internal class NoteCanvas(
     private val showDiffCard: (String) -> Unit = {},
     private val removeDiff: (String) -> Unit = {},
     private val project: Project? = null,
+    private val removeFlows: () -> Unit = {},
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
@@ -48,6 +49,9 @@ internal class NoteCanvas(
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
     private var diffs = emptyList<ReviewFile>()
+    private var flows: ChangeFlows? = null
+    internal val flowsView = ChangeFlowsViewState()
+    private var flowsScroll = 0
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -68,10 +72,14 @@ internal class NoteCanvas(
         notes: List<DiffNote>,
         sources: List<DiffSourceBlock> = emptyList(),
         diffs: List<ReviewFile> = emptyList(),
+        flows: ChangeFlows? = null,
     ) {
         this.notes = notes
         this.sources = sources
         this.diffs = diffs
+        if (flows?.graph !== this.flows?.graph) flowsScroll = 0
+        this.flows = flows
+        flowsView.reset(flows)
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -81,11 +89,12 @@ internal class NoteCanvas(
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
         }
         removeAll(); cards.clear()
-        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty()) add(emptyState().also { installNavigation(it) })
+        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null) add(emptyState().also { installNavigation(it) })
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
-        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }))
-        // The flow comes first so a fresh canvas starts with the overview.
-        val built = listOfNotNull(flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }) +
+            listOfNotNull(flows?.let { FLOWS_KEY }))
+        // The flows come first so a fresh canvas starts with the overview.
+        val built = listOfNotNull(flows?.let { FLOWS_KEY to flowsCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -121,7 +130,7 @@ internal class NoteCanvas(
         val card = cards[key] ?: return
         origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
         focused = key
-        showNotes(notes, sources, diffs)
+        showNotes(notes, sources, diffs, flows)
         cards[key]?.let { setComponentZOrder(it, 0) }
         Timer(1500) { if (focused == key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
     }
@@ -151,6 +160,86 @@ internal class NoteCanvas(
         card.size = Dimension(width, card.preferredSize.height)
         return card
     }
+
+    /** The change-flow graph; expanding or collapsing rebuilds only this card, in place. */
+    private fun flowsCard(flows: ChangeFlows): JPanel {
+        val width = scaled(FLOWS_WIDTH)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            toolTipText = "Drag to move"
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel("Change flows · Structure from source · LLM labels in italic").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Functions, calls, clusters, counts and outlines come from comparing and resolving the snapshot's source. " +
+                    "Arrows are statically resolved calls, not runtime order. Themes, summaries and intents are the assistant's interpretation."
+            }, BorderLayout.CENTER)
+            add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFlows() }
+                .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
+        }
+        dragBy(header, FLOWS_KEY)
+        val actions = ChangeFlowActions(
+            toggle = { key -> flowsView.toggle(key); refreshFlows() },
+            focus = { node -> flowsView.focus(flows, node); refreshFlows() },
+            openNode = { node ->
+                if (node.offset != null) openSymbol(DiffSymbol(node.path, node.absolutePath, node.name, node.qualifiedName,
+                    dev.insight.callgraph.SymbolKind.FUNCTION, node.line, node.offset))
+                else open(node.path)
+            },
+            openCaller = { caller ->
+                if (caller.absolutePath != null && caller.offset != null) openSymbol(DiffSymbol(caller.path, caller.absolutePath,
+                    caller.qualifiedName.substringAfterLast('.'), caller.qualifiedName, dev.insight.callgraph.SymbolKind.FUNCTION, caller.line, caller.offset))
+            },
+            openFile = open,
+        )
+        val inner = width - scaled(2 * PADDING + 4)
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(ChangeFlowsPanel(flows, flowsView, inner - scaled(16), zoom, actions), BorderLayout.CENTER)
+        }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        card.add(header, BorderLayout.NORTH)
+        val maxBody = scaled(MAX_FLOWS_HEIGHT)
+        if (body.preferredSize.height <= maxBody) card.add(body, BorderLayout.CENTER)
+        else card.add(JBScrollPane(body).apply {
+            border = null; isOpaque = false; viewport.isOpaque = false
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            preferredSize = Dimension(width, maxBody)
+            verticalScrollBar.unitIncrement = scaled(16)
+            // The viewport has no size yet; restore the reading position after layout.
+            val restore = flowsScroll
+            verticalScrollBar.addAdjustmentListener { flowsScroll = it.value }
+            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+        }, BorderLayout.CENTER)
+        card.size = Dimension(width, card.preferredSize.height)
+        return card
+    }
+
+    private fun refreshFlows() {
+        val flows = flows ?: return
+        val old = cards[FLOWS_KEY] ?: return
+        val index = components.indexOf(old)
+        val card = flowsCard(flows)
+        card.location = old.location
+        remove(old)
+        add(card, index.coerceAtLeast(0))
+        cards[FLOWS_KEY] = card
+        installNavigation(card)
+        card.border = cardBorder(FLOWS_KEY == focused)
+        revalidate(); repaint()
+        flowsView.reveal?.let { node ->
+            flowsView.reveal = null
+            SwingUtilities.invokeLater {
+                card.validate()
+                val target = descendantsOf(card).firstOrNull { it.name == "node:$node" } as? JComponent ?: return@invokeLater
+                target.scrollRectToVisible(Rectangle(0, 0, target.width, minOf(target.height, scaled(120))))
+            }
+        }
+    }
+
+    private fun descendantsOf(component: Container): List<Component> =
+        component.components.flatMap { listOf(it) + ((it as? Container)?.let(::descendantsOf) ?: emptyList()) }
 
     private fun diffCard(file: ReviewFile): JPanel {
         val width = scaled(720)
@@ -335,6 +424,7 @@ internal class NoteCanvas(
         listOf(
             "Select files on the left to inspect changes.",
             "Click Description or type /description below to add notes.",
+            "Click Flows or type /flows to map the change from overview to code.",
             "Drag a note's header to arrange it; drag the background to pan.",
             "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
         ).forEach { add(JLabel(it).apply { foreground = UIUtil.getContextHelpForeground() }) }
@@ -359,14 +449,14 @@ internal class NoteCanvas(
         val fixed = world(anchor)
         zoom = next
         origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes, sources, diffs)
+        showNotes(notes, sources, diffs, flows)
         onZoomChanged(zoom)
     }
 
     fun resetView() {
         zoom = 1.0
         origin.setLocation(0.0, 0.0)
-        showNotes(notes, sources, diffs)
+        showNotes(notes, sources, diffs, flows)
         onZoomChanged(zoom)
     }
 
@@ -378,7 +468,7 @@ internal class NoteCanvas(
         zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
             (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
         origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes, sources, diffs)
+        showNotes(notes, sources, diffs, flows)
         onZoomChanged(zoom)
     }
 
@@ -433,5 +523,8 @@ internal class NoteCanvas(
         const val PADDING = 12
         const val MAX_BODY_HEIGHT = 520
         val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
+        val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
+        const val FLOWS_WIDTH = 640
+        const val MAX_FLOWS_HEIGHT = 760
     }
 }

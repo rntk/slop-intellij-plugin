@@ -8,6 +8,9 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class FileEnrichmentCacheTest {
     @get:Rule val folder = TemporaryFolder()
@@ -85,8 +88,19 @@ class FileEnrichmentCacheTest {
 
     @Test fun `concurrent writers are all persisted`() {
         val cache = FileEnrichmentCache(path())
-        (0 until 8).map { t -> Thread { repeat(50) { cache.putEdge("$t-$it", EdgeAnnotation(it / 100.0, 0.5)); if (it % 10 == 0) cache.flush() } } }
-            .onEach { it.start() }.forEach { it.join() }
+        val executor = Executors.newFixedThreadPool(8) { task ->
+            Thread(task, "cache-test-writer").apply { isDaemon = true }
+        }
+        try {
+            val writers = (0 until 8).map { t -> Callable {
+                repeat(50) {
+                    cache.putEdge("$t-$it", EdgeAnnotation(it / 100.0, 0.5))
+                    if (it % 10 == 0) cache.flush()
+                }
+            } }
+            // Bound the whole batch and propagate failures from every writer.
+            executor.invokeAll(writers, 10, TimeUnit.SECONDS).forEach { it.get() }
+        } finally { executor.shutdownNow() }
         cache.flush()
         val reloaded = FileEnrichmentCache(path())
         assertEquals(EdgeAnnotation(0.49, 0.5), reloaded.edge("7-49"))

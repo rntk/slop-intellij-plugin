@@ -19,11 +19,11 @@ class ChatSessionTest : BasePlatformTestCase() {
         }
         try {
             session.send("Private review topic")
-            PlatformTestUtil.waitWithEventsDispatching("Backend should start", { started.isCompleted }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Backend should start", { started.isCompleted }, 5 /* seconds */)
             session.discard()
             assertTrue(session.messages.isEmpty())
             assertFalse(session.busy)
-            PlatformTestUtil.waitWithEventsDispatching("Backend should be cancelled", { cancelled.isCompleted }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Backend should be cancelled", { cancelled.isCompleted }, 5 /* seconds */)
             PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
             assertTrue(session.messages.isEmpty())
             assertTrue(session.followups.isEmpty())

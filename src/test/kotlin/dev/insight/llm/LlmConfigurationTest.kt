@@ -7,11 +7,15 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.net.InetSocketAddress
 import java.net.URI
 
 class LlmConfigurationTest {
+    @get:Rule val timeout = Timeout.seconds(30)
+
     private lateinit var server: HttpServer
     private lateinit var baseUrl: String
     private val requests = mutableListOf<Pair<String, JsonObject>>()

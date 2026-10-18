@@ -180,7 +180,7 @@ class ChartToursTest : BasePlatformTestCase() {
             val menu = panel.toursMenu().components.filterIsInstance<JMenu>().single()
             assertTrue(menu.text.startsWith("Orders"))
             menu.menuComponents.filterIsInstance<JMenuItem>().single { it.text == "Play" }.doClick()
-            PlatformTestUtil.waitWithEventsDispatching("Tour should play", { panel.flowCanvas.story != null }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Tour should play", { panel.flowCanvas.story != null }, 5 /* seconds */)
             assertEquals(listOf("Entry", "Save"), panel.flowCanvas.story!!.beats.map { it.caption })
             assertTrue(panel.storyNotice.isVisible)
             assertTrue(panel.storyNotice.text, panel.storyNotice.text.contains("app.Audit.audit") && panel.storyNotice.text.contains("Audit"))

@@ -198,7 +198,7 @@ class DiffSymbolsTest : BasePlatformTestCase() {
         var failure: Throwable? = null
         val job = scope.launch { try { action() } catch (e: Throwable) { failure = e } }
         try {
-            PlatformTestUtil.waitWithEventsDispatching("Symbol tools should finish", { job.isCompleted }, 10000)
+            PlatformTestUtil.waitWithEventsDispatching("Symbol tools should finish", { job.isCompleted }, 10 /* seconds */)
             failure?.let { throw it }
         } finally { scope.cancel() }
     }

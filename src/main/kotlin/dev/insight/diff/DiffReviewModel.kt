@@ -60,6 +60,9 @@ class DiffReviewState(paths: Set<String>? = null) {
     val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
     private val diffCards = linkedMapOf<String, ReviewFile>()
     val diffs: List<ReviewFile> get() = diffCards.values.toList()
+    /** The change-flow graph of this revision with its interpretations; any change to the snapshot discards it. */
+    var flows: ChangeFlows? = null
+        private set
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -79,6 +82,8 @@ class DiffReviewState(paths: Set<String>? = null) {
                 requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
             }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
+            // Clusters and callers span files, so the graph cannot keep the unchanged part of a changed snapshot.
+            flows = null
             revision++
         }
         snapshot = next
@@ -133,7 +138,21 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear() }
+    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null }
+
+    fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
+        check(expected)
+        return ChangeFlows(graph).also { flows = it }
+    }
+
+    /** Validates the batch against the current graph; a rejected batch leaves every interpretation unchanged. */
+    fun annotateFlows(expected: Int, update: FlowAnnotationUpdate): ChangeFlows {
+        check(expected)
+        val current = flows ?: throw ToolInputException("There is no change-flow graph. Ask the user to run /flows.")
+        return current.annotate(update).also { flows = it }
+    }
+
+    fun removeFlows() { flows = null }
 }
 
 internal fun reviewFingerprint(vararg values: String): String {

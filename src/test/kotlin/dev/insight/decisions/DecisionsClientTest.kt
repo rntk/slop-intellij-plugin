@@ -13,7 +13,9 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.http.HttpTimeoutException
@@ -22,6 +24,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class DecisionsClientTest {
+    @get:Rule val timeout = Timeout.seconds(30)
+
     private lateinit var server: HttpServer
     private val executor = Executors.newCachedThreadPool()
     private lateinit var endpoint: URI
@@ -78,7 +82,7 @@ class DecisionsClientTest {
         }
         val state = JsonParser.parseString("""{"text":"Payment failed","items":[1,true,null]}""")
         val result = client().evaluate(DecisionRequest(state, questions, "custom-model"))
-        val (headers, body) = received.await()
+        val (headers, body) = withTimeout(5000) { received.await() }
         assertEquals(listOf("Bearer test-secret"), headers.entries.first { it.key.equals("Authorization", true) }.value)
         assertEquals(listOf("application/json"), headers.entries.first { it.key.equals("Content-Type", true) }.value)
         val json = JsonParser.parseString(body).asJsonObject

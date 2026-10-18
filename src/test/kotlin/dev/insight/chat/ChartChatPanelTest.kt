@@ -60,7 +60,7 @@ class ChartChatPanelTest : BasePlatformTestCase() {
         val panel = ChatPanel(project, session, chartMode = true)
         try {
             session.send("How does loading work?")
-            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5 /* seconds */)
             assertEquals(3, session.messages.last().revision)
             assertEquals(10, session.messages.last().storyId)
             assertEquals(listOf("Where is it stored?", "Who calls it?"), session.followups)
@@ -96,7 +96,7 @@ class ChartChatPanelTest : BasePlatformTestCase() {
             assertEquals(2, buttons.size)
             buttons.first { it.text == "Who calls it?" }.doClick()
             assertTrue(session.followups.isEmpty())
-            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5 /* seconds */)
             assertEquals("Who calls it?", session.messages.last { it.role == ChatMessage.USER }.text)
             assertTrue(session.followups.isEmpty())
             assertTrue(controls(panel).filterIsInstance<JButton>().none { it.text == "Where is it stored?" })
@@ -121,7 +121,7 @@ class ChartChatPanelTest : BasePlatformTestCase() {
         val panel = ChatPanel(project, session)
         try {
             session.send("Hi")
-            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5 /* seconds */)
             assertNull(session.messages.last().revision)
             assertTrue(controls(panel).none { it is JEditorPane })
             assertTrue(controls(panel).filterIsInstance<com.intellij.ui.components.JBTextArea>().any { it.text == "See [[node:1]] <b>" })

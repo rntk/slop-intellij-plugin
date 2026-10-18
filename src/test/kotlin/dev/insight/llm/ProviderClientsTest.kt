@@ -8,7 +8,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.net.InetSocketAddress
 import java.net.URI
 import java.util.concurrent.CopyOnWriteArrayList
@@ -16,6 +18,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class ProviderClientsTest {
+    @get:Rule val timeout = Timeout.seconds(30)
+
     private lateinit var server: HttpServer
     private val executor = Executors.newCachedThreadPool()
     private lateinit var baseUrl: String

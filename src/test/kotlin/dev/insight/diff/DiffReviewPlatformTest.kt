@@ -65,12 +65,12 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             val combo = descendants(panel).filterIsInstance<JComboBox<*>>().single { it.name == "diffRepository" }
             PlatformTestUtil.waitWithEventsDispatching("Initial discovery should finish", {
                 loads.get() > 0 && descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
-            }, 10000)
+            }, 10 /* seconds */)
             assertEquals(0, combo.itemCount)
             val current = ReviewRepository(project.basePath!!, listOf("HEAD", "main"))
             available.set(listOf(ReviewRepository("/another-root", listOf("HEAD")), current))
             project.messageBus.syncPublisher(com.intellij.openapi.vcs.ProjectLevelVcsManager.VCS_CONFIGURATION_CHANGED).directoryMappingChanged()
-            PlatformTestUtil.waitWithEventsDispatching("New roots should appear without a manual refresh", { combo.itemCount == 2 }, 10000)
+            PlatformTestUtil.waitWithEventsDispatching("New roots should appear without a manual refresh", { combo.itemCount == 2 }, 10 /* seconds */)
             assertEquals(current.path, (combo.selectedItem as ReviewRepository).path)
         } finally { Disposer.dispose(panel) }
     }
@@ -299,7 +299,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
-            }, 10000)
+            }, 10 /* seconds */)
             val state = DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState
             state.update(ReviewSnapshot(listOf(file("src/a.kt")), listOf(UntrackedFile("new.kt", "/project/new.kt"))))
             DiffReviewPanel::class.java.getDeclaredMethod("renderFiles").apply { isAccessible = true }.invoke(panel)
@@ -345,7 +345,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
-            }, 10000)
+            }, 10 /* seconds */)
             val buttons = descendants(panel).filterIsInstance<JButton>()
             assertFalse(buttons.single { it.text == "Description" }.isEnabled)
             assertTrue(buttons.any { it.text == "Send" })
@@ -361,7 +361,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
-            }, 10000)
+            }, 10 /* seconds */)
             val split = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as JSplitPane
             assertEquals(JSplitPane.HORIZONTAL_SPLIT, split.orientation)
             assertTrue(descendants(split.leftComponent as Container).any { it is JTree })
@@ -535,7 +535,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         var failure: Throwable? = null
         val job = scope.launch { try { action() } catch (e: Throwable) { failure = e } }
         try {
-            PlatformTestUtil.waitWithEventsDispatching("Review tools should finish", { job.isCompleted }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Review tools should finish", { job.isCompleted }, 5 /* seconds */)
             failure?.let { throw it }
         } finally { scope.cancel() }
     }

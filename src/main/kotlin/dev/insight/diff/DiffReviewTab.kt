@@ -3,6 +3,7 @@ package dev.insight.diff
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
@@ -47,28 +48,47 @@ internal class DiffReviewTab(
         },
         removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         project = project,
+        removeFlows = { state.removeFlows(); renderCanvas() },
     )
     private val describe = JButton("Description")
+    private val flowsButton = JButton("Flows").apply {
+        toolTipText = "Map the change: functions and calls from source, grouped and labelled by the assistant (/flows)"
+    }
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, welcome =
-        "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /description for brief notes on each file.") {
+        "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
+            "or /flows to map the change from an overview down to the code.") {
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, total) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files.size }
-                val client = ChatSettings.getInstance().createClient()
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val description = isDescriptionRequest(question)
-                // Only this turn carries the description instructions; the transcript keeps the command as typed.
-                val request = if (description) messages.dropLast(1) + messages.last().copy(text = descriptionRequest(question)) else messages
-                // Code, not the model, checks that a description covers every file in scope.
-                val coverage: (suspend () -> String?)? = if (!description) null else suspend {
-                    context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, total) }
+                val flows = isFlowsRequest(question)
+                // The graph is built and drawn before the model runs, so the structure never depends on a reply.
+                val graph = if (flows) context.buildFlows() else null
+                val client = ChatSettings.getInstance().createClient()
+                // Only this turn carries the command's instructions; the transcript keeps the command as typed.
+                val request = when {
+                    description -> messages.dropLast(1) + messages.last().copy(text = descriptionRequest(question))
+                    graph != null -> messages.dropLast(1) + messages.last().copy(text = flowsRequest(question, graph))
+                    else -> messages
+                }
+                // Code, not the model, checks that a description covers every file in scope and that flows interpret every change.
+                val coverage: (suspend () -> String?)? = when {
+                    description -> suspend { context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, total) } }
+                    flows -> suspend { context.flowsUncovered()?.takeIf { !it.complete }?.let(::flowsCoverageNote) }
+                    else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(client::complete, diffReviewTools(context), diffReviewPrompt(project.name),
+                val reply = LlmChatBackend(client::complete, diffReviewTools(context) + changeFlowTools(context), diffReviewPrompt(project.name),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
+                if (flows) {
+                    val missing = context.flowsUncovered() ?: return reply
+                    return if (missing.complete) reply else "$reply\n\n[Not interpreted: ${missing.nodes.size} functions, " +
+                        "${missing.clusters.size} clusters without a theme. They are shown with structural titles.]"
+                }
                 val missing = if (description) context.uncovered() else emptyList()
                 return if (missing.isEmpty()) reply
                     else "$reply\n\n[No note for ${missing.size} of $total files: ${missing.take(10).joinToString()}${if (missing.size > 10) ", …" else ""}]"
@@ -79,12 +99,13 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/description or ask about this tab's changes…"
+        chat.input.emptyText.text = "/description, /flows or ask about this tab's changes…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
                 add(describe.apply { addActionListener { session.send("/description") } })
+                add(flowsButton.apply { addActionListener { session.send("/flows") } })
                 add(JButton("Clear canvas").apply { addActionListener { state.clearNotes(); renderCanvas() } })
                 add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
                 add(JButton("100%").apply {
@@ -129,6 +150,7 @@ internal class DiffReviewTab(
 
     private fun updateControls() {
         describe.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
+        flowsButton.isEnabled = describe.isEnabled
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
@@ -137,7 +159,7 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
-    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs); canvas.highlight(selectedPaths().toSet()) }
+    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs, state.flows); canvas.highlight(selectedPaths().toSet()) }
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
@@ -206,6 +228,48 @@ internal class DiffReviewTab(
 
             override suspend fun uncovered(): List<String> = withContext(Dispatchers.EDT) {
                 if (disposed || live.refreshing || live.revision != capturedRevision) emptyList() else live.uncovered()
+            }
+
+            override suspend fun buildFlows(): String {
+                withContext(Dispatchers.EDT) { current() }
+                // References and resolution need indexes; the stamp proves the graph read one consistent state of the source.
+                val (graph, stamp) = withContext(Dispatchers.Default) { smartReadAction(project) {
+                    ChangeFlowBuilder(project, snapshot).build() to PsiModificationTracker.getInstance(project).modificationCount
+                } }
+                return withContext(Dispatchers.EDT) {
+                    current()
+                    if (stamp != PsiModificationTracker.getInstance(project).modificationCount)
+                        throw ToolInputException("Source changed during flow analysis. Run /flows again.")
+                    val flows = live.setFlows(capturedRevision, graph)
+                    renderCanvas()
+                    changeFlowsJson(flows, 0)
+                }
+            }
+
+            private fun currentFlows(): ChangeFlows {
+                current()
+                return live.flows ?: throw ToolInputException("There is no change-flow graph. Ask the user to run /flows.")
+            }
+
+            override suspend fun flows(offset: Int): String = withContext(Dispatchers.EDT) { changeFlowsJson(currentFlows(), offset) }
+
+            override suspend fun readFlowNodes(ids: List<Int>): String = withContext(Dispatchers.EDT) { changeNodesJson(currentFlows(), ids) }
+
+            override suspend fun annotateFlows(update: FlowAnnotationUpdate): String = withContext(Dispatchers.EDT) {
+                current()
+                val flows = live.annotateFlows(capturedRevision, update)
+                renderCanvas()
+                val missing = flows.uncovered()
+                "Annotated ${update.nodes.size} nodes" + (if (update.clusters.isEmpty()) "" else ", ${update.clusters.size} clusters") +
+                    (update.themes?.let { ", ${it.size} themes" } ?: "") + ". " +
+                    if (missing.complete) "Every change is interpreted." else listOfNotNull(
+                        missing.nodes.takeIf { it.isNotEmpty() }?.let { "Still missing nodes: ${it.take(30).joinToString()}${if (it.size > 30) ", …" else ""}" },
+                        missing.clusters.takeIf { it.isNotEmpty() }?.let { "Clusters without a theme: ${it.joinToString()}" },
+                    ).joinToString(". ") + "."
+            }
+
+            override suspend fun flowsUncovered(): FlowCoverage? = withContext(Dispatchers.EDT) {
+                if (disposed || live.refreshing || live.revision != capturedRevision) null else live.flows?.uncovered()
             }
         }
     }

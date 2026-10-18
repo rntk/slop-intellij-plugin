@@ -28,7 +28,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
     private fun awaitResults(list: JBList<*>, expected: String) {
         PlatformTestUtil.waitWithEventsDispatching("File search should find $expected", {
             (0 until list.model.size).any { list.model.getElementAt(it) == expected }
-        }, 5000)
+        }, 5 /* seconds */)
     }
 
     fun `test button and at sign insert paths in regular and chart chats`() {
@@ -59,7 +59,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
                 panel.input.text = "Compare  with this"
                 panel.input.caretPosition = 8
                 panel.input.replaceSelection("@")
-                PlatformTestUtil.waitWithEventsDispatching("@ should open search", { picker.isVisible }, 5000)
+                PlatformTestUtil.waitWithEventsDispatching("@ should open search", { picker.isVisible }, 5 /* seconds */)
                 query.text = "PanelTest"
                 awaitResults(list, "test/ChatPanelTest.kt")
                 key(query, "ENTER")
@@ -97,7 +97,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
 
             picker.open()
             query.text = "nothing-matches-this"
-            PlatformTestUtil.waitWithEventsDispatching("Search should report no results", { list.emptyText.text == "No matching project files" }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Search should report no results", { list.emptyText.text == "No matching project files" }, 5 /* seconds */)
             key(query, "ENTER")
             assertTrue(picker.isVisible)
             controls(picker).filterIsInstance<JButton>().single().doClick()
@@ -113,7 +113,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
             panel.input.text = "Ask "
             panel.input.caretPosition = 4
             panel.input.replaceSelection("@")
-            PlatformTestUtil.waitWithEventsDispatching("@ should open search", { picker.isVisible }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("@ should open search", { picker.isVisible }, 5 /* seconds */)
             key(panel.input, "ESCAPE")
             assertFalse(picker.isVisible)
             assertEquals("Ask @", panel.input.text)
@@ -146,7 +146,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
             runWriteAction { file.delete(this) }
             picker.open()
             query.text = "Renamed"
-            PlatformTestUtil.waitWithEventsDispatching("Deleted file should disappear", { list.emptyText.text == "No matching project files" }, 5000)
+            PlatformTestUtil.waitWithEventsDispatching("Deleted file should disappear", { list.emptyText.text == "No matching project files" }, 5 /* seconds */)
             assertEquals(0, list.model.size)
         } finally {
             panel.dispose()

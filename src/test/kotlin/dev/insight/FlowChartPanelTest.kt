@@ -13,6 +13,8 @@ import javax.swing.JMenuItem
 import javax.swing.JTabbedPane
 import dev.insight.chat.ChatPanel
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.openapi.application.EDT
+import kotlinx.coroutines.*
 import java.awt.Point
 
 class FlowChartPanelTest : BasePlatformTestCase() {
@@ -41,7 +43,7 @@ class FlowChartPanelTest : BasePlatformTestCase() {
                 val bounds = panel.flowCanvas.geometry!!.cards.getValue(node).bounds
                 panel.flowCanvas.contextMenuAt(Point(bounds.centerX.toInt(), bounds.centerY.toInt()))!!
                     .components.filterIsInstance<JMenuItem>().single { it.text == "To chat" }.doClick()
-                PlatformTestUtil.waitWithEventsDispatching("Scoped chat should open", { tabs.tabCount == count }, 5000)
+                PlatformTestUtil.waitWithEventsDispatching("Scoped chat should open", { tabs.tabCount == count }, 5 /* seconds */)
             }
             open(1, 2)
             val first = tabs.selectedComponent as ChatPanel
@@ -208,9 +210,16 @@ class FlowChartPanelTest : BasePlatformTestCase() {
         try {
             panel.showResult(built)
             val ctx = panel.chatContext
-            kotlinx.coroutines.runBlocking {
-                ctx.functionOutline(ctx.revision, listOf(1))
+            // The tool dispatches to the EDT, so keep pumping events while it runs.
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+            var failure: Throwable? = null
+            val job = scope.launch {
+                try { ctx.functionOutline(ctx.revision, listOf(1)) } catch (e: Throwable) { failure = e }
             }
+            try {
+                PlatformTestUtil.waitWithEventsDispatching("Function outline should finish", { job.isCompleted }, 5 /* seconds */)
+                failure?.let { throw it }
+            } finally { scope.cancel() }
             panel.addToChart(FlowStart(1))
             assertEquals("Loads order payload from storage.", panel.flowCanvas.chart!!.step(1)!!.card.description)
         } finally { panel.dispose() }

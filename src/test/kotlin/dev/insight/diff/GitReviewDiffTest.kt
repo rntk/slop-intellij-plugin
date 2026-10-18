@@ -14,16 +14,24 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.git.GitReviewDiffProvider
 import kotlinx.coroutines.*
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 
 /** Exercises real Git refs, divergent branches and snapshot contents without changing checkout during review. */
 class GitReviewDiffTest : BasePlatformTestCase() {
     fun `test branch commit merge base and working tree sources use the selected repository and exact sides`() {
         val directory = Files.createTempDirectory("insight-review-git")
         fun git(vararg args: String): String {
-            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText()
-            assertEquals(output, 0, process.waitFor())
-            return output.trim()
+            val outputFile = Files.createTempFile("insight-review-git-output", ".log")
+            try {
+                val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args)
+                    .redirectErrorStream(true).redirectOutput(outputFile.toFile()).start()
+                try {
+                    assertTrue("git ${args.joinToString(" ")} timed out", process.waitFor(10, TimeUnit.SECONDS))
+                    val output = Files.readString(outputFile)
+                    assertEquals(output, 0, process.exitValue())
+                    return output.trim()
+                } finally { if (process.isAlive) process.destroyForcibly() }
+            } finally { Files.deleteIfExists(outputFile) }
         }
         fun write(path: String, text: String) { Files.writeString(directory.resolve(path), text) }
         val cleanPaths = listOf("clean.txt", "with space.txt", " leading.txt", "[draft].txt", ":notes.txt", "café.txt", "nested/nested-clean.txt")
@@ -133,7 +141,7 @@ class GitReviewDiffTest : BasePlatformTestCase() {
                     assertEquals("main", git("symbolic-ref", "--short", "HEAD"))
                 } catch (e: Throwable) { failure = e }
             }
-            PlatformTestUtil.waitWithEventsDispatching("Git snapshots should load", { job.isCompleted }, 30000)
+            PlatformTestUtil.waitWithEventsDispatching("Git snapshots should load", { job.isCompleted }, 30 /* seconds */)
             failure?.let { throw it }
         } finally {
             scope.cancel()

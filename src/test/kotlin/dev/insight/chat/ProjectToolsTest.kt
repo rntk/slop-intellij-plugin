@@ -1,12 +1,25 @@
 package dev.insight.chat
 
 import com.google.gson.JsonParser
+import com.intellij.openapi.application.EDT
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 
 class ProjectToolsTest : BasePlatformTestCase() {
-    private fun call(name: String, arguments: String): String = runBlocking {
-        projectTools(project).single { it.definition.name == name }.call(JsonParser.parseString(arguments).asJsonObject)
+    private fun call(name: String, arguments: String): String {
+        // Tools can switch to the EDT; blocking it with runBlocking deadlocks those calls.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        var result: Result<String>? = null
+        val job = scope.launch {
+            result = runCatching {
+                projectTools(project).single { it.definition.name == name }.call(JsonParser.parseString(arguments).asJsonObject)
+            }
+        }
+        try {
+            PlatformTestUtil.waitWithEventsDispatching("$name should finish", { job.isCompleted }, 5 /* seconds */)
+            return result!!.getOrThrow()
+        } finally { scope.cancel() }
     }
 
     private fun invalid(name: String, arguments: String): String =
