@@ -52,6 +52,8 @@ internal class DiffReviewTab(
         project = project,
         removeFlows = { state.removeFlows(); renderCanvas() },
         summarize = { summarize() },
+        generateTopics = { if (canSummarize) session.send("/topics") },
+        removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
     )
     private val describe = JButton("Description")
@@ -61,15 +63,32 @@ internal class DiffReviewTab(
     private val summariesButton = JButton("Summaries").apply {
         toolTipText = "Read the change as summaries, from the whole change down to each file (/summaries)"
     }
+    private val topicsButton = JButton("Topics").apply {
+        toolTipText = "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"
+    }
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, welcome =
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
-            "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file.") {
+            "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic.") {
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, total) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files.size }
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val client = ChatSettings.getInstance().createClient()
+                if (isTopicsRequest(question)) {
+                    val run = withBackgroundProgress(project, "Generating change topics") {
+                        reportRawProgress { reporter ->
+                            reporter.text("Classifying changed files…")
+                            ChangeTopicGenerator(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
+                                    onProgress = { done, total ->
+                                        reporter.details("$done of $total files classified")
+                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                    })
+                        }
+                    }
+                    return topicsReply(run)
+                }
                 if (isSummariesRequest(question)) {
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = withBackgroundProgress(project, "Generating change summaries") {
@@ -121,13 +140,14 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/description, /flows, /summaries or ask about this tab's changes…"
+        chat.input.emptyText.text = "/description, /flows, /summaries, /topics or ask about this tab's changes…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
                 add(describe.apply { addActionListener { session.send("/description") } })
                 add(flowsButton.apply { addActionListener { session.send("/flows") } })
+                add(topicsButton.apply { addActionListener { openTopics() } })
                 add(summariesButton.apply { addActionListener { openSummaries() } })
                 add(JButton("Clear canvas").apply { addActionListener { state.clearNotes(); renderCanvas() } })
                 add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
@@ -184,13 +204,24 @@ internal class DiffReviewTab(
         if (!state.summaries.complete) summarize()
     }
 
+    fun openTopics() {
+        state.showTopics()
+        renderCanvas()
+        canvas.focusTopics()
+        if (!state.topics.complete && canSummarize) session.send("/topics")
+    }
+
     private fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
 
-    private fun summariesChanged() { canvas.updateSummaries(summariesCard()) }
+    private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize) else null
+
+    /** The topics document shows the file summaries too, so it follows every summary and chat update. */
+    private fun summariesChanged() { canvas.updateSummaries(summariesCard()); canvas.updateTopics(topicsCard()) }
 
     private fun updateControls() {
         describe.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
         flowsButton.isEnabled = describe.isEnabled
+        topicsButton.isEnabled = describe.isEnabled
         summariesButton.isEnabled = !state.refreshing && state.snapshot.files.isNotEmpty()
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
@@ -200,7 +231,7 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
-    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard()); canvas.highlight(selectedPaths().toSet()) }
+    private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard()); canvas.highlight(selectedPaths().toSet()) }
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
@@ -311,6 +342,16 @@ internal class DiffReviewTab(
 
             override suspend fun flowsUncovered(): FlowCoverage? = withContext(Dispatchers.EDT) {
                 if (disposed || live.refreshing || live.revision != capturedRevision) null else live.flows?.uncovered()
+            }
+
+            override suspend fun startTopics(): ChangeTopics = withContext(Dispatchers.EDT) {
+                current()
+                live.startTopics().also { canvas.updateTopics(topicsCard()) }
+            }
+
+            override suspend fun assignTopic(path: String, label: String): ChangeTopics = withContext(Dispatchers.EDT) {
+                current()
+                live.assignTopic(capturedRevision, path, label).also { canvas.updateTopics(topicsCard()) }
             }
 
             override suspend fun startSummaries(): ChangeSummaries = withContext(Dispatchers.EDT) {

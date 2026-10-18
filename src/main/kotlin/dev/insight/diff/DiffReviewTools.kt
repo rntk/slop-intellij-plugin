@@ -29,6 +29,9 @@ interface DiffReviewContext {
     /** Null when there is no current graph, as after the snapshot changed. */
     suspend fun flowsUncovered(): FlowCoverage? = null
 
+    suspend fun startTopics(): ChangeTopics = throw ToolInputException("Change topics are unavailable")
+    suspend fun assignTopic(path: String, label: String): ChangeTopics = throw ToolInputException("Change topics are unavailable")
+
     /** Starts a /summaries turn, restarting a complete tree, and shows it on the canvas. Not a model tool. */
     suspend fun startSummaries(): ChangeSummaries = throw ToolInputException("Change summaries are unavailable")
     suspend fun summaries(offset: Int): String = throw ToolInputException("Change summaries are unavailable")

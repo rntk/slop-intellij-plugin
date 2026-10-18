@@ -70,6 +70,23 @@ class DiffReviewState(paths: Set<String>? = null) {
     var summariesVisible = false
         private set
 
+    var topics = ChangeTopics(emptyList())
+        private set
+    var topicsVisible = false
+        private set
+
+    fun startTopics(): ChangeTopics {
+        if (topics.complete) topics = ChangeTopics(snapshot.files)
+        topicsVisible = true
+        return topics
+    }
+    fun showTopics() { topicsVisible = true }
+    fun hideTopics() { topicsVisible = false }
+    fun assignTopic(expected: Int, path: String, label: String): ChangeTopics {
+        check(expected)
+        return topics.assign(path, label).also { topics = it }
+    }
+
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
         val comparisonChanged = next.comparison != snapshot.comparison
@@ -92,6 +109,7 @@ class DiffReviewState(paths: Set<String>? = null) {
             flows = null
             val tree = buildSummaryTree(next.files)
             summaries = if (requestChanged) ChangeSummaries(tree) else summaries.retainedIn(tree)
+            topics = if (requestChanged) ChangeTopics(next.files) else topics.retainedIn(next.files)
             revision++
         }
         snapshot = next
@@ -146,7 +164,7 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false }
+    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false; topicsVisible = false }
 
     fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
         check(expected)

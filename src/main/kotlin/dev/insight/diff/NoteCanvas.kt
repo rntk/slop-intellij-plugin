@@ -44,6 +44,8 @@ internal class NoteCanvas(
     private val project: Project? = null,
     private val removeFlows: () -> Unit = {},
     private val summarize: () -> Unit = {},
+    private val generateTopics: () -> Unit = {},
+    private val removeTopics: () -> Unit = {},
     private val removeSummaries: () -> Unit = {},
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
@@ -57,6 +59,9 @@ internal class NoteCanvas(
     private var flows: ChangeFlows? = null
     internal val flowsView = ChangeFlowsViewState()
     private var flowsScroll = 0
+    private var topics: TopicsCard? = null
+    internal val topicsView = ChangeTopicsViewState()
+    private var topicsScroll = 0
     private var summaries: SummariesCard? = null
     internal val summariesView = ChangeSummariesViewState()
     private var summariesScroll = 0
@@ -82,7 +87,10 @@ internal class NoteCanvas(
         diffs: List<ReviewFile> = emptyList(),
         flows: ChangeFlows? = null,
         summaries: SummariesCard? = null,
+        topics: TopicsCard? = null,
     ) {
+        if (topics == null) topicsScroll = 0
+        this.topics = topics
         this.notes = notes
         this.sources = sources
         this.diffs = diffs
@@ -100,14 +108,14 @@ internal class NoteCanvas(
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
         }
         removeAll(); cards.clear()
-        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null && summaries == null) add(emptyState().also { installNavigation(it) })
+        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null && summaries == null && topics == null) add(emptyState().also { installNavigation(it) })
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }) +
-            listOfNotNull(flows?.let { FLOWS_KEY }, summaries?.let { SUMMARIES_KEY }))
+            listOfNotNull(flows?.let { FLOWS_KEY }, summaries?.let { SUMMARIES_KEY }, topics?.let { TOPICS_KEY }))
         sizes.keys.retainAll(positions.keys)
         resizeHandles.keys.retainAll(positions.keys)
         // The overviews come first so a fresh canvas starts with them.
-        val built = listOfNotNull(flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -139,6 +147,8 @@ internal class NoteCanvas(
         focusCard(diffNoteKey(path))
     }
 
+    internal fun focusTopics() { focusCard(TOPICS_KEY) }
+
     internal fun focusSummaries() {
         focusCard(SUMMARIES_KEY)
     }
@@ -147,7 +157,7 @@ internal class NoteCanvas(
         val card = cards[key] ?: return
         origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
         focused = key
-        showNotes(notes, sources, diffs, flows, summaries)
+        showNotes(notes, sources, diffs, flows, summaries, topics)
         cards[key]?.let { setComponentZOrder(it, 0) }
         Timer(1500) { if (focused == key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
     }
@@ -265,6 +275,77 @@ internal class NoteCanvas(
         }
     }
 
+    /** The change as one document with its topic rail; summary updates rebuild only this card, in place. */
+    private fun topicsCard(content: TopicsCard): JPanel {
+        val topics = content.topics
+        val width = cardWidth(TOPICS_KEY, ChangeTopicsPanel.defaultWidth(topicOutline(topics).depth))
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            toolTipText = "Drag to move"
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel("Change topics · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Every changed diff in one document, ordered by topic. File boundaries, order and alignment come from code; " +
+                    "topics and summaries are the assistant's interpretation."
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                add(JButton(when {
+                    topics.labels.isEmpty() -> "Classify"
+                    topics.complete -> "Regenerate"
+                    else -> "Continue"
+                }).apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun && topics.files.isNotEmpty()
+                    toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
+                    addActionListener { generateTopics() }
+                })
+                val summaries = content.summaries
+                if (summaries.total > 0 && !summaries.complete) add(JButton(if (summaries.count == 0) "Summarize" else "Continue summaries").apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun
+                    toolTipText = "Write the file summaries shown beside each diff (/summaries)"
+                    addActionListener { summarize() }
+                })
+                add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeTopics() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
+        }
+        dragBy(header, TOPICS_KEY)
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(ChangeTopicsPanel(content, topicsView, width - scaled(2 * PADDING + 4) - scaled(16), zoom,
+                ChangeTopicActions(openFile = open, showDiffCard = showDiffCard)), BorderLayout.CENTER)
+        }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        card.add(header, BorderLayout.NORTH)
+        card.add(JBScrollPane(body).apply {
+            border = null; isOpaque = false; viewport.isOpaque = false
+            preferredSize = Dimension(width, minOf(body.preferredSize.height, scaled(MAX_TOPICS_HEIGHT)))
+            verticalScrollBar.unitIncrement = scaled(16)
+            // The viewport has no size yet; restore the reading position after layout.
+            val restore = topicsScroll
+            verticalScrollBar.addAdjustmentListener { topicsScroll = it.value }
+            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+        }, BorderLayout.CENTER)
+        return prepareCard(TOPICS_KEY, card, width)
+    }
+
+    /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
+    fun updateTopics(content: TopicsCard?) {
+        if ((content == null) != (topics == null) || (content != null && cards[TOPICS_KEY] == null)) {
+            showNotes(notes, sources, diffs, flows, summaries, content)
+            return
+        }
+        if (content == topics) return
+        topics = content
+        refreshCard(TOPICS_KEY)
+    }
+
     /** The summary tree as a wide reading card; expanding, selecting and new summaries rebuild only this card, in place. */
     private fun summariesCard(content: SummariesCard): JPanel {
         val width = cardWidth(SUMMARIES_KEY, SUMMARIES_WIDTH)
@@ -327,7 +408,7 @@ internal class NoteCanvas(
     /** Follows every summary and chat update without rebuilding the other cards while the card stays on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
         if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
-            showNotes(notes, sources, diffs, flows, content)
+            showNotes(notes, sources, diffs, flows, content, topics)
             return
         }
         if (content == summaries) return
@@ -420,6 +501,7 @@ internal class NoteCanvas(
         val index = components.indexOf(old)
         val card = when (key) {
             FLOWS_KEY -> flows?.let(::flowsCard)
+            TOPICS_KEY -> topics?.let(::topicsCard)
             SUMMARIES_KEY -> summaries?.let(::summariesCard)
             FLOW_KEY -> flowCard(changeFlow(notes))
             else -> notes.firstOrNull { it.key == key }?.let(::card)
@@ -621,6 +703,7 @@ internal class NoteCanvas(
             "Click Description or type /description below to add notes.",
             "Click Flows or type /flows to map the change from overview to code.",
             "Click Summaries or type /summaries to read the change from the whole down to each file.",
+            "Click Topics or type /topics to read every diff as one document, grouped by topic, with each file's summary.",
             "Drag a block's header to move it or its bottom-right grip to resize it.",
             "Drag the background to pan.",
             "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
@@ -646,14 +729,14 @@ internal class NoteCanvas(
         val fixed = world(anchor)
         zoom = next
         origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes, sources, diffs, flows, summaries)
+        showNotes(notes, sources, diffs, flows, summaries, topics)
         onZoomChanged(zoom)
     }
 
     fun resetView() {
         zoom = 1.0
         origin.setLocation(0.0, 0.0)
-        showNotes(notes, sources, diffs, flows, summaries)
+        showNotes(notes, sources, diffs, flows, summaries, topics)
         onZoomChanged(zoom)
     }
 
@@ -665,7 +748,7 @@ internal class NoteCanvas(
         zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
             (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
         origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes, sources, diffs, flows, summaries)
+        showNotes(notes, sources, diffs, flows, summaries, topics)
         onZoomChanged(zoom)
     }
 
@@ -725,9 +808,11 @@ internal class NoteCanvas(
         const val MAX_BODY_HEIGHT = 520
         val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
         val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
+        val TOPICS_KEY = DiffNoteKey(emptyList(), "change-topics")
         val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
         const val SUMMARIES_WIDTH = 840
         const val MAX_SUMMARIES_HEIGHT = 820
+        const val MAX_TOPICS_HEIGHT = 900
         const val FLOWS_WIDTH = 920
         const val MAX_FLOWS_HEIGHT = 760
     }

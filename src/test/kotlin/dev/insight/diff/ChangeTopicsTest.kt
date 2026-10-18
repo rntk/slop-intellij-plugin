@@ -1,0 +1,212 @@
+package dev.insight.diff
+
+import com.google.gson.JsonParser
+import dev.insight.chat.ToolInputException
+import dev.insight.llm.Completion
+import dev.insight.llm.FinishReason
+import dev.insight.llm.LlmApiException
+import dev.insight.llm.LlmProtocolException
+import dev.insight.llm.LlmRole
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.*
+import org.junit.Test
+
+class ChangeTopicsTest {
+    private fun file(path: String, version: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new", version)
+
+    @Test fun `reasoning truncation raises the budget without nested retries or resetting it`() = runBlocking {
+        for (protocolError in listOf(false, true)) {
+            var topics = ChangeTopics(listOf(file("a"), file("b")))
+            val budgets = mutableListOf<Int?>()
+            val run = ChangeTopicGenerator({ request ->
+                budgets += request.maxTokens
+                if (budgets.size == 1) {
+                    if (protocolError) throw LlmProtocolException("LLM response was truncated at the output-token limit")
+                    Completion("", reasoning = "Still classifying", finishReason = FinishReason.TRUNCATED)
+                } else Completion("""{"topic":"UI>DiffReview>Topics"}""")
+            }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
+            assertEquals(listOf(1024, 2048, 1024), budgets)
+            assertEquals(3, run.requests)
+            assertTrue(run.topics.complete)
+        }
+    }
+
+    @Test fun `topic vocabulary has a serialized size bound even with escaped long labels`() {
+        var topics = ChangeTopics((1..100).map { file("$it") })
+        for (file in topics.files) topics = topics.assign(file.path, "${file.path}${"\"".repeat(50)}>" + "x".repeat(60))
+        val vocabulary = ChangeTopicGenerator.topicVocabulary(topics)
+        assertTrue(vocabulary.isNotEmpty())
+        assertTrue(vocabulary.size < 100)
+        assertTrue(reviewJson.toJson(vocabulary).length <= 8000)
+        assertEquals(topics.groups.keys.take(vocabulary.size), vocabulary)
+    }
+
+    @Test fun `context overflow is not retried as output truncation`() = runBlocking {
+        var requests = 0
+        try {
+            ChangeTopicGenerator({ requests++; throw LlmApiException(400, "context_length_exceeded", null) }, null)
+                .run(ChangeTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
+            fail("Context overflow swallowed")
+        } catch (_: LlmApiException) { }
+        assertEquals(1, requests)
+    }
+
+    @Test fun `large patch reads evict older tool rounds while preserving current evidence`() = runBlocking {
+        var topics = ChangeTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
+        var calls = 0
+        val reader = object : dev.insight.chat.ChatTool {
+            override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch",
+                JsonParser.parseString("""{"type":"object"}""").asJsonObject)
+            override suspend fun call(arguments: com.google.gson.JsonObject) = "y".repeat(12_000)
+        }
+        val run = ChangeTopicGenerator({ request ->
+            calls++
+            assertTrue(dev.insight.llm.LlmJson.encode(request, "", true).length <= 48_000)
+            if (calls <= 4) Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read$calls", "read_diff_files",
+                JsonParser.parseString("""{"paths":["large.kt"],"offset":${calls * 12_000}}""").asJsonObject)))
+            else {
+                assertTrue(request.messages.any { "Context omitted to fit the window" in it.content })
+                assertFalse(request.messages.any { it.toolCallId == "read1" })
+                assertTrue(request.messages.any { it.toolCallId == "read4" })
+                Completion("""{"topic":"UI>DiffReview>Topics"}""")
+            }
+        }, reader).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
+        assertEquals(5, run.requests)
+        assertTrue(run.topics.complete)
+    }
+
+    @Test fun `paths are normalized validated and grouped with canonical casing`() {
+        assertEquals("Storage > User > Wallet", normalizeTopic(" Storage > User  > Wallet "))
+        listOf("", "Storage", "Storage>>Wallet", "a>b>c>d>e>f", "Storage>Wallet:Update", "a>${"b".repeat(61)}")
+            .forEach { assertNull(it, normalizeTopic(it)) }
+        val topics = ChangeTopics(listOf(file("b"), file("a")))
+            .assign("a", "Storage>User>Wallet").assign("b", "storage>user>wallet")
+        assertEquals(mapOf("Storage > User > Wallet" to listOf("a", "b")), topics.groups)
+        assertTrue(topics.complete)
+    }
+
+    @Test fun `code visits every missing file in sorted order retries invalid labels and supplies vocabulary`() = runBlocking {
+        var topics = ChangeTopics(listOf(file("c"), file("b"), file("a")))
+        val visited = mutableListOf<String>()
+        val progress = mutableListOf<Int>()
+        val generator = ChangeTopicGenerator({ request ->
+            val input = JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content).asJsonObject
+            visited += input["path"].asString
+            if (visited.size == 1) Completion("""{"topic":"Invalid"}""") else {
+                if (input["path"].asString != "a") assertEquals("Storage > User > Wallet", input["existing_topics"].asJsonArray[0].asString)
+                Completion("""{"topic":"Storage>User>Wallet"}""")
+            }
+        }, null)
+        val run = generator.run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } },
+            onProgress = { done, _ -> progress += done })
+        assertEquals(listOf("a", "a", "b", "c"), visited)
+        assertEquals(listOf(0, 1, 2, 3), progress)
+        assertEquals(4, run.requests)
+        assertTrue(run.topics.complete)
+        assertNull(run.error)
+        val resumed = generator.run(topics, "", { _, _ -> fail("No files are missing"); topics })
+        assertEquals(0, resumed.requests)
+    }
+
+    @Test fun `exhausted file does not prevent later files from receiving topics`() = runBlocking {
+        var topics = ChangeTopics(listOf(file("a"), file("b")))
+        var count = 0
+        val run = ChangeTopicGenerator({
+            count++
+            Completion(if (count <= 2) """{"topic":3}""" else """{"topic":"Security>User>Auth"}""")
+        }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
+        assertEquals(setOf("b"), run.topics.labels.keys)
+        assertFalse(run.topics.complete)
+        assertNotNull(run.error)
+    }
+
+    @Test fun `snapshot refresh retains unchanged files and rejects stale writes`() {
+        val state = DiffReviewState()
+        state.update(ReviewSnapshot(listOf(file("a"), file("b")), emptyList()))
+        val revision = state.revision
+        state.startTopics()
+        state.assignTopic(revision, "a", "Storage>User>Wallet")
+        state.assignTopic(revision, "b", "Security>User>Auth")
+        state.clearNotes()
+        assertFalse(state.topicsVisible)
+        assertTrue(state.topics.complete)
+        state.update(ReviewSnapshot(listOf(file("a", "2"), file("b")), emptyList()))
+        assertEquals(setOf("b"), state.topics.labels.keys)
+        try { state.assignTopic(revision, "a", "UI>User>Profile"); fail("Stale write accepted") }
+        catch (_: ToolInputException) { }
+        assertEquals(setOf("b"), state.startTopics().labels.keys)
+        state.assignTopic(state.revision, "a", "UI>User>Profile")
+        assertTrue(state.startTopics().labels.isEmpty())
+    }
+
+    @Test fun `stale save and cancellation abort without retries or subsequent files`() = runBlocking {
+        var requests = 0
+        val generator = ChangeTopicGenerator({ requests++; Completion("""{"topic":"Storage>User>Wallet"}""") }, null)
+        try {
+            generator.run(ChangeTopics(listOf(file("a"), file("b"))), "", { _, _ -> throw ToolInputException("stale") })
+            fail("Stale save swallowed")
+        } catch (_: ToolInputException) { }
+        assertEquals(1, requests)
+        try {
+            ChangeTopicGenerator({ throw CancellationException("stopped") }, null)
+                .run(ChangeTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
+            fail("Cancellation swallowed")
+        } catch (_: CancellationException) { }
+    }
+
+    @Test fun `outline orders files by topic levels so every node spans a contiguous run`() {
+        val topics = ChangeTopics(listOf("e", "d", "c", "b", "a", "z").map { file(it) })
+            .assign("a", "UI>Checkout>Payment Form")
+            .assign("b", "Storage>User>Wallet")
+            .assign("c", "storage>User")
+            // A level that sorts between "Storage" and its children by raw string order must not split the Storage run.
+            .assign("d", "Storage-Legacy>Import")
+            .assign("e", "Storage>User>Auth")
+        val outline = topicOutline(topics)
+        assertEquals(listOf("c", "e", "b", "d", "a", "z"), outline.files.map { it.path })
+        assertEquals(5, outline.labeled)
+        assertEquals(5..5, outline.pending)
+        assertEquals(3, outline.depth)
+        fun nodes(level: Int) = outline.nodes.filter { it.level == level }.map { "${it.fullPath} ${it.first}-${it.last}" }
+        // The first file sets a node's casing; matching is case-insensitive, like topic reuse.
+        assertEquals(listOf("storage 0-2", "Storage-Legacy 3-3", "UI 4-4"), nodes(0))
+        assertEquals(listOf("storage > User 0-2", "Storage-Legacy > Import 3-3", "UI > Checkout 4-4"), nodes(1))
+        // "storage>User" has no third level, so the leaf column has a gap beside its file.
+        assertEquals(listOf("Storage > User > Auth 1-1", "Storage > User > Wallet 2-2", "UI > Checkout > Payment Form 4-4"), nodes(2))
+        val empty = topicOutline(ChangeTopics(listOf(file("a"))))
+        assertEquals(0, empty.depth)
+        assertEquals(0..0, empty.pending)
+        assertTrue(empty.nodes.isEmpty())
+    }
+
+    @Test fun `command recognizes topics without capturing ordinary questions`() {
+        listOf("topics", "/topics", " /TOPICS auth ").forEach { assertTrue(isTopicsRequest(it)) }
+        listOf("topics about auth", "/topicsExtra", "What topics changed?").forEach { assertFalse(isTopicsRequest(it)) }
+    }
+    @Test fun longPatchesExposeBoundedInlineEvidenceAndReader() = runBlocking {
+        val source = file("large.kt").copy(patch = "x".repeat(100))
+        var topics = ChangeTopics(listOf(source))
+        var calls = 0
+        var reads = 0
+        val reader = object : dev.insight.chat.ChatTool {
+            override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
+            override suspend fun call(arguments: com.google.gson.JsonObject): String { reads++; return source.patch.drop(10) }
+        }
+        val run = ChangeTopicGenerator({ request ->
+            calls++
+            assertEquals(1024, request.maxTokens)
+            if (calls == 1) {
+                val input = JsonParser.parseString(request.messages.last().content).asJsonObject
+                assertEquals(10, input["patch"].asString.length)
+                assertEquals(10, input["patch_cut_at"].asInt)
+                assertEquals(100, input["patch_length"].asInt)
+                Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read", "read_diff_files",
+                    JsonParser.parseString("""{"paths":["large.kt"],"offset":10}""").asJsonObject)))
+            } else Completion("""{"topic":"Storage>User>Wallet"}""")
+        }, reader, patchChars = 10).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
+        assertEquals(1, reads)
+        assertEquals(2, run.requests)
+        assertTrue(run.topics.complete)
+    }
+}

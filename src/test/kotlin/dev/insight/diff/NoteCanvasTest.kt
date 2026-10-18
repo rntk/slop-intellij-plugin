@@ -106,6 +106,79 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testTopicsDocumentAlignsRailCardsAndSummariesWithFileDiffs() {
+        val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt", "docs/new.md").mapIndexed { index, path ->
+            ReviewFile(path, "/repo/$path", null, "modified",
+                "@@ -1,2 +1,${2 + index * 6} @@\n ctx\n-old\n" + "+new\n".repeat(1 + index * 6), "1")
+        }
+        val topics = ChangeTopics(files)
+            .assign("src/wallet.kt", "Storage>User>Wallet")
+            .assign("src/auth.kt", "Storage>User>Auth")
+            .assign("ui/form.kt", "UI>Checkout")
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
+        val opened = mutableListOf<String>()
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = true))
+            layoutTree(canvas)
+            val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun named(name: String) = panel.components.single { it.name == name }
+            // Topic order, not path order; the file without a topic comes last.
+            assertEquals(listOf("src/auth.kt", "src/wallet.kt", "ui/form.kt", "docs/new.md"), panel.outline.files.map { it.path })
+            val sections = panel.outline.files.map { named("file:${it.path}") }
+            for (node in panel.outline.nodes) {
+                val card = named("topic:${node.level}:${node.identity}")
+                assertEquals(node.fullPath, sections[node.first].y, card.y)
+                assertEquals(node.fullPath, sections[node.last].y + sections[node.last].height, card.y + card.height)
+                assertTrue("Rail sits right of the document", card.x >= sections[0].x + sections[0].width)
+            }
+            // Broad topics are outermost; the leaf level sits next to the diffs.
+            assertTrue(named("topic:0:storage").x > named("topic:1:storage > user").x)
+            assertTrue(named("topic:1:storage > user").x > named("topic:2:storage > user > auth").x)
+            assertEquals(sections[3].y, named("topic:pending").y)
+            // Summaries come from the summary tree and start level with their file's diff, left of it.
+            panel.outline.files.forEachIndexed { index, file ->
+                val note = named("summary:${file.path}")
+                assertEquals(sections[index].y, note.y)
+                assertTrue(note.x + note.width <= sections[index].x)
+                assertTrue(sections[index].height >= note.height)
+            }
+            val texts = descendants(panel).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            assertTrue(texts.contains("Adds token refresh."))
+            assertEquals(3, texts.count { it == "No summary yet" })
+            assertEquals(listOf("hunk - - @@ -1,2 +1,2 @@", "context 1 1  ctx", "removed 2 - -old", "added - 2 +new"),
+                descendants(sections[1] as Container).filterIsInstance<PatchView>().single().describe().take(4))
+
+            // Selecting a topic outlines its files and survives summary updates, zoom and resize.
+            val auth = named("topic:2:storage > user > auth") as javax.swing.JComponent
+            auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            assertTrue(canvas.topicsView.isSelected(panel.outline.nodes.single { it.identity == "storage > user > auth" }))
+            val card = canvas.components.single()
+            resize(canvas, card as Container, 120, 90)
+            val bounds = canvas.components.single().bounds
+            val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
+            canvas.updateTopics(TopicsCard(topics, more, canRun = false))
+            assertEquals(bounds, canvas.components.single().bounds)
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Validates the card number." })
+            canvas.zoomAt(0.5, Point())
+            assertEquals("storage > user > auth", canvas.topicsView.selected?.substringAfter(':'))
+            descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
+            assertEquals(listOf("src/auth.kt"), opened)
+            canvas.updateTopics(null)
+            assertTrue(descendants(canvas).none { it is ChangeTopicsPanel })
+        } finally { canvas.dispose() }
+    }
+
+    fun testPatchViewNumbersLinesAndBoundsLongPatches() {
+        val view = PatchView("Binary file\n@@ -10,2 +10,3 @@\n a\n-b\n+c\n+d\n[After: no newline at end of file]\n", 400, 1.0)
+        assertEquals(listOf("note - - Binary file", "hunk - - @@ -10,2 +10,3 @@", "context 10 10  a", "removed 11 - -b",
+            "added - 11 +c", "added - 12 +d", "note - - [After: no newline at end of file]"), view.describe())
+        val long = PatchView("@@ -1,0 +1,900 @@\n" + "+x\n".repeat(900), 400, 1.0)
+        assertEquals(PatchView.MAX_LINES, long.lineCount)
+        assertEquals(901 - PatchView.MAX_LINES, long.hiddenLines)
+    }
+
     private fun resize(canvas: NoteCanvas, card: Container, dx: Int, dy: Int) {
         layoutTree(canvas)
         val grip = descendants(card).single { it.name == "Resize block" }
