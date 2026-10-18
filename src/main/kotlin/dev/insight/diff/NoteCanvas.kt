@@ -32,7 +32,7 @@ import javax.swing.*
 
 /**
  * A zoomable, pannable board of movable note cards; positions survive chat replies and VCS refreshes.
- * Cards have a fixed logical width; long notes scroll inside their cards.
+ * Cards retain their own logical size; resizing reveals more content without changing zoom.
  */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
@@ -43,9 +43,13 @@ internal class NoteCanvas(
     private val removeDiff: (String) -> Unit = {},
     private val project: Project? = null,
     private val removeFlows: () -> Unit = {},
+    private val summarize: () -> Unit = {},
+    private val removeSummaries: () -> Unit = {},
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
+    private val sizes = mutableMapOf<DiffNoteKey, Point2D.Double>()
+    private val resizeHandles = mutableMapOf<DiffNoteKey, JComponent>()
 
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
@@ -53,6 +57,9 @@ internal class NoteCanvas(
     private var flows: ChangeFlows? = null
     internal val flowsView = ChangeFlowsViewState()
     private var flowsScroll = 0
+    private var summaries: SummariesCard? = null
+    internal val summariesView = ChangeSummariesViewState()
+    private var summariesScroll = 0
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -74,6 +81,7 @@ internal class NoteCanvas(
         sources: List<DiffSourceBlock> = emptyList(),
         diffs: List<ReviewFile> = emptyList(),
         flows: ChangeFlows? = null,
+        summaries: SummariesCard? = null,
     ) {
         this.notes = notes
         this.sources = sources
@@ -81,6 +89,8 @@ internal class NoteCanvas(
         if (flows?.graph !== this.flows?.graph) flowsScroll = 0
         this.flows = flows
         flowsView.reset(flows)
+        this.summaries = summaries
+        summaries?.let { summariesView.update(it.summaries.tree) }
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -90,12 +100,14 @@ internal class NoteCanvas(
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
         }
         removeAll(); cards.clear()
-        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null) add(emptyState().also { installNavigation(it) })
+        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null && summaries == null) add(emptyState().also { installNavigation(it) })
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }) +
-            listOfNotNull(flows?.let { FLOWS_KEY }))
-        // The flows come first so a fresh canvas starts with the overview.
-        val built = listOfNotNull(flows?.let { FLOWS_KEY to flowsCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+            listOfNotNull(flows?.let { FLOWS_KEY }, summaries?.let { SUMMARIES_KEY }))
+        sizes.keys.retainAll(positions.keys)
+        resizeHandles.keys.retainAll(positions.keys)
+        // The overviews come first so a fresh canvas starts with them.
+        val built = listOfNotNull(flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -127,17 +139,21 @@ internal class NoteCanvas(
         focusCard(diffNoteKey(path))
     }
 
+    internal fun focusSummaries() {
+        focusCard(SUMMARIES_KEY)
+    }
+
     private fun focusCard(key: DiffNoteKey) {
         val card = cards[key] ?: return
         origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
         focused = key
-        showNotes(notes, sources, diffs, flows)
+        showNotes(notes, sources, diffs, flows, summaries)
         cards[key]?.let { setComponentZOrder(it, 0) }
         Timer(1500) { if (focused == key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
     }
 
     private fun flowCard(flow: ChangeFlow): JPanel {
-        val width = scaled(CARD_WIDTH)
+        val width = cardWidth(FLOW_KEY, CARD_WIDTH)
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -157,14 +173,13 @@ internal class NoteCanvas(
             add(ChangeFlowDiagram(flow, width - scaled(2 * PADDING + 4), zoom, ::focusNote))
         }
         card.add(header, BorderLayout.NORTH)
-        card.add(body, BorderLayout.CENTER)
-        card.size = Dimension(width, card.preferredSize.height)
-        return card
+        card.add(scrollBody(body, width, scaled(MAX_BODY_HEIGHT)), BorderLayout.CENTER)
+        return prepareCard(FLOW_KEY, card, width)
     }
 
     /** The change-flow graph; expanding or collapsing rebuilds only this card, in place. */
     private fun flowsCard(flows: ChangeFlows): JPanel {
-        val width = scaled(FLOWS_WIDTH)
+        val width = cardWidth(FLOWS_KEY, FLOWS_WIDTH)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -215,19 +230,17 @@ internal class NoteCanvas(
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
         val maxBody = scaled(MAX_FLOWS_HEIGHT)
-        if (body.preferredSize.height <= maxBody) card.add(body, BorderLayout.CENTER)
-        else card.add(JBScrollPane(body).apply {
+        card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-            preferredSize = Dimension(width, maxBody)
+            preferredSize = Dimension(width, minOf(body.preferredSize.height, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = flowsScroll
             verticalScrollBar.addAdjustmentListener { flowsScroll = it.value }
             SwingUtilities.invokeLater { verticalScrollBar.value = restore }
         }, BorderLayout.CENTER)
-        card.size = Dimension(width, card.preferredSize.height)
-        return card
+        return prepareCard(FLOWS_KEY, card, width)
     }
 
     private fun refreshFlows() {
@@ -252,11 +265,184 @@ internal class NoteCanvas(
         }
     }
 
+    /** The summary tree as a wide reading card; expanding, selecting and new summaries rebuild only this card, in place. */
+    private fun summariesCard(content: SummariesCard): JPanel {
+        val width = cardWidth(SUMMARIES_KEY, SUMMARIES_WIDTH)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            toolTipText = "Drag to move"
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel("Change summaries · From the whole change down to each file").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "The tree comes from the changed paths. Each summary is the assistant's interpretation, written from the files up to the root."
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                val summaries = content.summaries
+                add(JButton(when {
+                    summaries.total == 0 || summaries.count == 0 -> "Summarize"
+                    summaries.complete -> "Regenerate"
+                    else -> "Continue"
+                }).apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun && summaries.total > 0
+                    toolTipText = if (summaries.complete) "Write every summary again (/summaries)"
+                        else "Summarize the files, then the folders above them, up to the whole change (/summaries)"
+                    addActionListener { summarize() }
+                })
+                add(InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSummaries() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
+        }
+        dragBy(header, SUMMARIES_KEY)
+        val actions = ChangeSummaryActions(
+            toggle = { identity -> summariesView.toggle(identity); refreshSummaries() },
+            select = { identity -> summariesView.select(identity); refreshSummaries() },
+            openFile = open,
+            showDiffCard = showDiffCard,
+        )
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(ChangeSummariesPanel(content, summariesView, width - scaled(2 * PADDING + 4) - scaled(16), zoom, actions), BorderLayout.CENTER)
+        }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        card.add(header, BorderLayout.NORTH)
+        val maxBody = scaled(MAX_SUMMARIES_HEIGHT)
+        card.add(JBScrollPane(body).apply {
+            border = null; isOpaque = false; viewport.isOpaque = false
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            preferredSize = Dimension(width, minOf(body.preferredSize.height, maxBody))
+            verticalScrollBar.unitIncrement = scaled(16)
+            // The viewport has no size yet; restore the reading position after layout.
+            val restore = summariesScroll
+            verticalScrollBar.addAdjustmentListener { summariesScroll = it.value }
+            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+        }, BorderLayout.CENTER)
+        return prepareCard(SUMMARIES_KEY, card, width)
+    }
+
+    /** Follows every summary and chat update without rebuilding the other cards while the card stays on the canvas. */
+    fun updateSummaries(content: SummariesCard?) {
+        if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
+            showNotes(notes, sources, diffs, flows, content)
+            return
+        }
+        if (content == summaries) return
+        summaries = content
+        content?.let { summariesView.update(it.summaries.tree) }
+        refreshSummaries()
+    }
+
+    private fun refreshSummaries() {
+        val content = summaries ?: return
+        val old = cards[SUMMARIES_KEY] ?: return
+        val index = components.indexOf(old)
+        val card = summariesCard(content)
+        card.location = old.location
+        remove(old)
+        add(card, index.coerceAtLeast(0))
+        cards[SUMMARIES_KEY] = card
+        installNavigation(card)
+        card.border = cardBorder(SUMMARIES_KEY == focused)
+        revalidate(); repaint()
+    }
+
     private fun descendantsOf(component: Container): List<Component> =
         component.components.flatMap { listOf(it) + ((it as? Container)?.let(::descendantsOf) ?: emptyList()) }
 
+    private fun cardWidth(key: DiffNoteKey, default: Int) =
+        sizes[key]?.let { (it.x * zoom).roundToInt() } ?: scaled(default)
+
+    private fun scrollBody(body: JComponent, width: Int, maxHeight: Int) = JBScrollPane(body).apply {
+        border = null; isOpaque = false; viewport.isOpaque = false
+        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        preferredSize = Dimension(width, minOf(body.preferredSize.height, maxHeight))
+        verticalScrollBar.unitIncrement = scaled(16)
+    }
+
+    /** The same grip survives rebuilding width-dependent content during a drag. */
+    private fun prepareCard(key: DiffNoteKey, card: JPanel, width: Int): JPanel {
+        val grip = resizeHandles.getOrPut(key) {
+            object : JComponent() {
+                override fun paintComponent(g: java.awt.Graphics) {
+                    g.color = UIUtil.getContextHelpForeground()
+                    for (inset in listOf(4, 8, 12))
+                        g.drawLine(this.width - JBUI.scale(inset), height - JBUI.scale(3),
+                            this.width - JBUI.scale(3), height - JBUI.scale(inset))
+                }
+            }.apply {
+                name = "Resize block"
+                toolTipText = "Drag to resize block"
+                cursor = Cursor.getPredefinedCursor(Cursor.SE_RESIZE_CURSOR)
+                val resize = object : MouseAdapter() {
+                    private var anchor: Point? = null
+                    private var initial: Dimension? = null
+
+                    override fun mousePressed(e: MouseEvent) {
+                        if (!SwingUtilities.isLeftMouseButton(e)) return
+                        anchor = SwingUtilities.convertPoint(this@apply, e.point, this@NoteCanvas)
+                        initial = cards[key]?.size
+                        cards[key]?.let { this@NoteCanvas.setComponentZOrder(it, 0) }
+                    }
+
+                    override fun mouseDragged(e: MouseEvent) {
+                        val start = anchor ?: return
+                        val size = initial ?: return
+                        val now = SwingUtilities.convertPoint(this@apply, e.point, this@NoteCanvas)
+                        sizes[key] = Point2D.Double(
+                            maxOf(scaled(280), size.width + now.x - start.x) / zoom,
+                            maxOf(scaled(140), size.height + now.y - start.y) / zoom,
+                        )
+                        refreshCard(key)
+                    }
+
+                    override fun mouseReleased(e: MouseEvent) { anchor = null; initial = null }
+                }
+                addMouseListener(resize)
+                addMouseMotionListener(resize)
+            }
+        }
+        grip.preferredSize = Dimension(scaled(18), scaled(18))
+        card.add(JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(grip, BorderLayout.EAST)
+        }, BorderLayout.SOUTH)
+        card.size = sizes[key]?.let { Dimension((it.x * zoom).roundToInt(), (it.y * zoom).roundToInt()) }
+            ?: Dimension(width, card.preferredSize.height)
+        return card
+    }
+
+    private fun refreshCard(key: DiffNoteKey) {
+        val old = cards[key] ?: return
+        val index = components.indexOf(old)
+        val card = when (key) {
+            FLOWS_KEY -> flows?.let(::flowsCard)
+            SUMMARIES_KEY -> summaries?.let(::summariesCard)
+            FLOW_KEY -> flowCard(changeFlow(notes))
+            else -> notes.firstOrNull { it.key == key }?.let(::card)
+                ?: sources.firstOrNull { it.key == key }?.let(::sourceCard)
+                ?: diffs.firstOrNull { it.diffKey == key }?.let(::diffCard)
+        } ?: return
+        card.location = old.location
+        remove(old)
+        add(card, index.coerceAtLeast(0))
+        cards[key] = card
+        installNavigation(card)
+        highlight(highlighted)
+        // Lay out the retained grip before the next drag event is converted to canvas coordinates.
+        fun layout(component: Container) {
+            component.doLayout()
+            component.components.filterIsInstance<Container>().forEach(::layout)
+        }
+        layout(card)
+        revalidate(); repaint()
+    }
+
     private fun diffCard(file: ReviewFile): JPanel {
-        val width = scaled(720)
+        val width = cardWidth(file.diffKey, 720)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -272,7 +458,7 @@ internal class NoteCanvas(
         dragBy(header, file.diffKey)
         val editor = diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }
         editor.resizeFor(width - scaled(4), zoom)
-        return JPanel(BorderLayout()).apply {
+        val card = JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground(); border = cardBorder(false)
             add(JPanel(BorderLayout()).apply {
                 isOpaque = false
@@ -280,13 +466,13 @@ internal class NoteCanvas(
                 add(fileRow(file.path, showDiffButton = false).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
             add(editor, BorderLayout.CENTER)
-            size = Dimension(width, preferredSize.height)
         }
+        return prepareCard(file.diffKey, card, width)
     }
 
     private fun sourceCard(block: DiffSourceBlock): JPanel {
         val range = block.range
-        val width = scaled(640)
+        val width = cardWidth(block.key, 640)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -301,7 +487,7 @@ internal class NoteCanvas(
         dragBy(header, block.key)
         val editor = editors.getOrPut(block.key) { DiffSourceEditor(block, project) }
         editor.resizeFor(width - scaled(4), zoom)
-        return JPanel(BorderLayout()).apply {
+        val card = JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground(); border = cardBorder(false)
             add(JPanel(BorderLayout()).apply {
                 isOpaque = false
@@ -309,12 +495,12 @@ internal class NoteCanvas(
                 add(fileRow(range.path).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
             add(editor, BorderLayout.CENTER)
-            size = Dimension(width, preferredSize.height)
         }
+        return prepareCard(block.key, card, width)
     }
 
     private fun card(note: DiffNote): JPanel {
-        val width = scaled(CARD_WIDTH)
+        val width = cardWidth(note.key, CARD_WIDTH)
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
@@ -352,13 +538,8 @@ internal class NoteCanvas(
         }
         card.add(header, BorderLayout.NORTH)
         val maxBody = scaled(MAX_BODY_HEIGHT)
-        card.add(if (body.preferredSize.height <= maxBody) body else JBScrollPane(body).apply {
-            border = null; isOpaque = false; viewport.isOpaque = false
-            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-            preferredSize = Dimension(width, maxBody)
-        }, BorderLayout.CENTER)
-        card.size = Dimension(width, card.preferredSize.height)
-        return card
+        card.add(scrollBody(body, width, maxBody), BorderLayout.CENTER)
+        return prepareCard(note.key, card, width)
     }
 
     /** File name as a link, its folder dimmed next to it; the full path stays in the tooltip. */
@@ -439,7 +620,9 @@ internal class NoteCanvas(
             "Select files on the left to inspect changes.",
             "Click Description or type /description below to add notes.",
             "Click Flows or type /flows to map the change from overview to code.",
-            "Drag a note's header to arrange it; drag the background to pan.",
+            "Click Summaries or type /summaries to read the change from the whole down to each file.",
+            "Drag a block's header to move it or its bottom-right grip to resize it.",
+            "Drag the background to pan.",
             "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
         ).forEach { add(JLabel(it).apply { foreground = UIUtil.getContextHelpForeground() }) }
         val gap = scaled(GAP)
@@ -463,14 +646,14 @@ internal class NoteCanvas(
         val fixed = world(anchor)
         zoom = next
         origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes, sources, diffs, flows)
+        showNotes(notes, sources, diffs, flows, summaries)
         onZoomChanged(zoom)
     }
 
     fun resetView() {
         zoom = 1.0
         origin.setLocation(0.0, 0.0)
-        showNotes(notes, sources, diffs, flows)
+        showNotes(notes, sources, diffs, flows, summaries)
         onZoomChanged(zoom)
     }
 
@@ -482,13 +665,17 @@ internal class NoteCanvas(
         zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
             (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
         origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes, sources, diffs, flows)
+        showNotes(notes, sources, diffs, flows, summaries)
         onZoomChanged(zoom)
     }
 
     private fun installNavigation(component: Component) {
         // Native editor owns selection, wheel scrolling and mouse gestures within its body.
         if (component is DiffSourceEditor || component is DiffFileEditor) return
+        if (component is JComponent) {
+            if (component.getClientProperty("noteCanvas.navigation") == true) return
+            component.putClientProperty("noteCanvas.navigation", true)
+        }
         val navigation = object : MouseAdapter() {
             private var anchor: Point? = null
             override fun mousePressed(e: MouseEvent) {
@@ -538,6 +725,9 @@ internal class NoteCanvas(
         const val MAX_BODY_HEIGHT = 520
         val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
         val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
+        val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
+        const val SUMMARIES_WIDTH = 840
+        const val MAX_SUMMARIES_HEIGHT = 820
         const val FLOWS_WIDTH = 920
         const val MAX_FLOWS_HEIGHT = 760
     }

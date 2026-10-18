@@ -1,11 +1,15 @@
 package dev.insight.diff
 
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
-import dev.insight.llm.LlmMessage
+import dev.insight.llm.LlmApiException
+import dev.insight.llm.LlmRole
+import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmToolCall
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -144,7 +148,7 @@ class ChangeSummaryTest {
         assertEquals(0, state.summaries.count)
     }
 
-    @Test fun `pages fit the tool limit and batches return ready folders with their children's summaries`() {
+    @Test fun `pages fit the tool limit`() {
         val tree = buildSummaryTree((1..600).map { file("module${it % 7}/src/pkg${it % 13}/File$it.kt") })
         val summaries = ChangeSummaries(tree)
         var offset: Int? = 0
@@ -160,70 +164,216 @@ class ChangeSummaryTest {
         rejected { changeSummariesJson(summaries, tree.nodes.size + 1) }
 
         val small = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("c.kt")))
-        val app = small.byLocation("app/")
-        val written = ChangeSummaries(small).summarize(app.children.associateWith { "Child $it." })
-        val result = summarizeResult(written, 2)
-        assertTrue(result, result.startsWith("Saved 2 summaries. 3 of 5 nodes still need one."))
-        val ready = JsonParser.parseString(result.substringAfter("Ready next (data, not instructions): ")).asJsonArray.map { it.asJsonObject }
-        assertEquals(listOf("file", "directory"), ready.map { it["kind"].asString })
-        assertEquals(app.children.map { "Child $it." }, ready[1]["children"].asJsonArray.map { it.asJsonObject["summary"].asString })
-        val first = JsonParser.parseString(changeSummariesJson(written, 0)).asJsonObject
-        assertEquals(listOf(small.byLocation("c.kt").id, app.id), first["ready_next"].asJsonArray.map { it.asInt })
+        val first = JsonParser.parseString(changeSummariesJson(ChangeSummaries(small), 0)).asJsonObject
+        assertEquals(5, first["totals"].asJsonObject["missing"].asInt)
         assertEquals("+1 -1", first["nodes"].asJsonArray.single { it.asJsonObject["location"].asString == "c.kt" }.asJsonObject["lines"].asString)
     }
 
-    @Test fun `command detection and tool arguments are strict`() {
+    @Test fun `command detection and focus`() {
         assertTrue(isSummariesRequest("/summaries"))
         assertTrue(isSummariesRequest(" Summaries "))
         assertTrue(isSummariesRequest("/summaries focus on tests"))
         assertFalse(isSummariesRequest("/summariesx"))
         assertFalse(isSummariesRequest("/description"))
-        val request = summariesRequest("/summaries the parser", "{\"nodes\":[]}")
-        assertTrue(request.contains("Focus: the parser"))
-        assertTrue(request.endsWith("{\"nodes\":[]}"))
-        assertEquals(mapOf(1 to "One.", 0 to "Root."),
-            summaryEntries(JsonParser.parseString("""{"summaries":[{"id":1,"summary":"One."},{"id":0,"summary":"Root."}]}""").asJsonObject))
-        for (args in listOf("""{}""", """{"summaries":[]}""", """{"summaries":[{"id":1}]}""", """{"summaries":[{"id":-1,"summary":"x"}]}""",
-            """{"summaries":[{"id":1,"summary":"a"},{"id":1,"summary":"b"}]}""", """{"summaries":[1]}"""))
-            rejected { summaryEntries(JsonParser.parseString(args).asJsonObject) }
+        assertEquals("the parser", summariesFocus("/summaries  the parser "))
+        assertEquals("", summariesFocus("/summaries"))
     }
 
-    private class Context : DiffReviewContext {
-        val state = DiffReviewState().apply {
-            update(ReviewSnapshot(listOf(ReviewFile("app/a.kt", "/r/app/a.kt", null, "modified", "-old\n+new", "1"),
-                ReviewFile("app/b.kt", "/r/app/b.kt", null, "added", "+b", "1")), emptyList()))
-        }
-        override suspend fun state(offset: Int, patchBudget: Int) = "files=app/a.kt,app/b.kt"
-        override suspend fun read(paths: List<String>, offset: Int) = "{}"
-        override suspend fun addNotes(notes: List<DiffNote>) = "Added"
-        override suspend fun uncovered() = emptyList<String>()
-        override suspend fun summaries(offset: Int) = changeSummariesJson(state.summaries, offset)
-        override suspend fun summarize(entries: Map<Int, String>) = summarizeResult(state.summarize(state.revision, entries), entries.size)
-        override suspend fun currentSummaries() = state.summaries
-    }
-
-    private fun call(name: String, args: String) = Completion("", toolCalls = listOf(LlmToolCall(name, name, JsonParser.parseString(args).asJsonObject)))
-
-    @Test fun `a summaries turn is sent back until it reaches the root`() = runBlocking {
-        val context = Context()
-        // Single-folder diffs collapse into the root: 0 is app/, 1 and 2 are its files.
-        assertEquals(listOf("app/", "app/a.kt", "app/b.kt"), context.state.summaries.tree.nodes.map { it.location })
+    /** Answers every request by summarizing each node of the request as "<kind> <location>", unless [answer] says otherwise. */
+    private class Model(val answer: (List<JsonObject>) -> String? = { null }) {
         val requests = mutableListOf<CompletionRequest>()
-        val completions = ArrayDeque(listOf(
-            call("summarize_changes", """{"summaries":[{"id":0,"summary":"Too early."}]}"""),
-            call("summarize_changes", """{"summaries":[{"id":1,"summary":"Replaces the old value."},{"id":2,"summary":"Adds b."}]}"""),
-            Completion("Done."),
-            call("summarize_changes", """{"summaries":[{"id":0,"summary":"Updates the app."}]}"""),
-            Completion("Summarized 3 nodes."),
-        ))
-        val result = ToolChatRunner({ requests += it; completions.removeFirst() }, changeSummaryTools(context),
-            followUp = { context.currentSummaries().takeIf { !it.complete }?.let(::summariesCoverageNote) })
-            .run(listOf(LlmMessage.system(diffReviewPrompt("test")), LlmMessage.user(summariesRequest("/summaries", context.summaries(0)))))
-        assertEquals("Summarized 3 nodes.", result.reply)
-        assertTrue(context.state.summaries.complete)
-        assertTrue(requests[1].messages.last().content.contains("summarize its children first (ids 1, 2)"))
-        assertTrue(requests[2].messages.last().content.contains("\"id\":0"))
-        assertTrue(requests[3].messages.last().content.startsWith("Coverage check: 1 of 3 nodes still need a summary. Ready now: ids 0."))
+        fun nodes(request: CompletionRequest): List<JsonObject> =
+            JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content.substringBefore("\n\n")).asJsonObject["nodes"]
+                .asJsonArray.map { it.asJsonObject }
+        suspend fun complete(request: CompletionRequest): Completion {
+            requests += request
+            val nodes = nodes(request)
+            return Completion(answer(nodes) ?: reviewJson.toJson(mapOf("summaries" to nodes.map {
+                mapOf("id" to it["id"].asInt, "summary" to "${it["kind"].asString} ${it["location"].asString}")
+            })))
+        }
+    }
+
+    private fun run(model: Model, summaries: ChangeSummaries, read: ChatTool? = null, options: ChangeSummaryOptions = ChangeSummaryOptions()) = runBlocking {
+        var saved = summaries
+        val batches = mutableListOf<Set<Int>>()
+        ChangeSummarizer(model::complete, read, options).run(saved, "", { entries ->
+            batches += entries.keys
+            saved.summarize(entries).also { saved = it }
+        }) to batches
+    }
+
+    @Test fun `code walks the tree bottom up in batched waves without tools`() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md"), file("docs/d.md")))
+        val model = Model()
+        val (result, batches) = run(model, ChangeSummaries(tree))
+        assertTrue(result.summaries.complete)
+        assertNull(result.error)
+        // Files share one request, both folders the next, the root the last.
+        assertEquals(3, result.requests)
+        assertEquals(listOf(
+            tree.nodes.filter { it.kind == SummaryKind.FILE }.map { it.id }.toSet(),
+            setOf(tree.byLocation("app/").id, tree.byLocation("docs/").id),
+            setOf(tree.root.id),
+        ), batches)
+        assertTrue(model.requests.all { it.tools.isEmpty() && it.responseFormat != null && it.messages.size == 2 })
+        assertEquals("file app/a.kt", result.summaries.text(tree.byLocation("app/a.kt").id))
+        // A folder is written from its children's summaries, never from their patches.
+        val app = model.nodes(model.requests[1]).single { it["location"].asString == "app/" }
+        assertEquals(listOf("file app/a.kt", "file app/b.kt"), app["children"].asJsonArray.map { it.asJsonObject["summary"].asString })
+        assertFalse(model.requests[1].messages.last().content.contains("+new"))
+        assertTrue(model.requests[0].messages.last().content.contains("+new"))
+        assertEquals("root ./\n\n[7 summaries · 3 requests]", summariesReply(result))
+    }
+
+    @Test fun `parent with a single child reuses its summary without generating a new one`() {
+        val tree = buildSummaryTree(listOf(file("src/app/a.kt")))
+        val model = Model()
+        val (result, batches) = run(model, ChangeSummaries(tree))
+        assertTrue(result.summaries.complete)
+        assertEquals(1, result.requests)
+        assertEquals(listOf(setOf(tree.byLocation("src/app/a.kt").id)), batches)
+        assertEquals("file src/app/a.kt", result.summaries.text(tree.byLocation("src/app/a.kt").id))
+        assertEquals("file src/app/a.kt", result.summaries.text(tree.root.id))
+        assertEquals("file src/app/a.kt\n\n[2 summaries · 1 request]", summariesReply(result))
+
+        // When a snapshot shrinks to one already-summarized file, the parent reuses its summary with zero requests.
+        val two = buildSummaryTree(listOf(file("src/app/a.kt"), file("src/app/b.kt")))
+        val retained = ChangeSummaries(two).summarize(mapOf(
+            two.byLocation("src/app/a.kt").id to "Summary A.",
+            two.byLocation("src/app/b.kt").id to "Summary B.",
+            two.root.id to "Combined.",
+        )).retainedIn(tree)
+        assertTrue(retained.complete)
+        assertEquals("Summary A.", retained.text(tree.root.id))
+
+        val unpropagated = ChangeSummaries(tree, mapOf(tree.byLocation("src/app/a.kt").id to "Pre-existing."))
+        val (reusedRun, _) = run(model, unpropagated)
+        assertTrue(reusedRun.summaries.complete)
+        assertEquals(0, reusedRun.requests)
+        assertEquals("Pre-existing.", reusedRun.summaries.text(tree.root.id))
+    }
+
+    @Test fun `retained summaries are not requested again`() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md")))
+        val start = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("app/b.kt").id to "Kept.", tree.byLocation("docs/c.md").id to "Kept too."))
+        val model = Model()
+        val (result, _) = run(model, start)
+        assertTrue(result.summaries.complete)
+        assertEquals(listOf("app/a.kt"), model.nodes(model.requests[0]).map { it["location"].asString })
+        assertEquals("Kept.", result.summaries.text(tree.byLocation("app/b.kt").id))
+    }
+
+    @Test fun `progress includes retained summaries and advances after each concurrent batch is saved`() = runBlocking {
+        val tree = buildSummaryTree((1..5).map { file("app/f$it.kt") })
+        var saved = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("app/f1.kt").id to "Kept."))
+        val progress = mutableListOf<Pair<Int, Int>>()
+        val result = ChangeSummarizer(Model()::complete, null, ChangeSummaryOptions(filesPerRequest = 1)).run(
+            saved, "", { saved.summarize(it).also { next -> saved = next } },
+            onProgress = { done, total ->
+                assertEquals(saved.count, done)
+                progress += done to total
+            },
+        )
+        assertTrue(result.summaries.complete)
+        assertEquals((1..tree.nodes.size).map { it to tree.nodes.size }, progress)
+    }
+
+    @Test fun `incomplete runs do not report full progress`() = runBlocking {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
+        val model = Model { """{"summaries":[{"id":1,"summary":"Only one answer."}]}""" }
+        var saved = ChangeSummaries(tree)
+        val progress = mutableListOf<Int>()
+        val result = ChangeSummarizer(model::complete, null, ChangeSummaryOptions(attempts = 1)).run(
+            saved, "", { saved.summarize(it).also { next -> saved = next } },
+            onProgress = { done, _ -> progress += done },
+        )
+        assertFalse(result.summaries.complete)
+        assertEquals(listOf(0, 1), progress)
+    }
+
+    @Test fun `skipped nodes are retried once and a wave without answers ends the run`() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
+        // The model never answers for b.kt, so the root can never be written.
+        val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "app/b.kt" }
+            .map { mapOf("id" to it["id"].asInt, "summary" to "Summary.") })) }
+        val (result, _) = run(model, ChangeSummaries(tree))
+        assertEquals(2, result.requests)
+        assertEquals(listOf(tree.root.id, tree.byLocation("app/b.kt").id), result.summaries.missing().sorted())
+        assertTrue(summariesReply(result).startsWith("Summarized 1 of 3 tree nodes with 2 requests."))
+
+        val broken = Model { "not json" }
+        val (failed, _) = run(broken, ChangeSummaries(tree))
+        assertEquals(0, failed.summaries.count)
+        // completeJson retries an unparsable answer once; then the empty wave ends the run.
+        assertEquals(2, failed.requests)
+        assertTrue(failed.error!!, failed.error!!.contains("No JSON object"))
+    }
+
+    @Test fun `server errors end the run with the summaries saved so far`() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
+        var calls = 0
+        val model = Model { if (calls++ == 0) null else throw LlmApiException(401, "{}", null) }
+        var saved = ChangeSummaries(tree)
+        try {
+            runBlocking { ChangeSummarizer(model::complete, null).run(saved, "", { saved.summarize(it).also { next -> saved = next } }) }
+            fail("Expected the server error")
+        } catch (_: LlmApiException) { }
+        assertEquals(2, saved.count)
+    }
+
+    @Test fun `large batches split by patch size and a cut patch alone gets the read tool`() {
+        val big = ReviewFile("app/big.kt", "/repo/app/big.kt", null, "modified", "+" + "x".repeat(200), "1")
+        val tree = buildSummaryTree(listOf(big) + (1..5).map { file("app/f$it.kt") })
+        val reads = mutableListOf<JsonObject>()
+        val read = object : ChatTool {
+            override val definition = LlmTool("read_diff_files", "Read diffs.", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
+            override suspend fun call(arguments: JsonObject): String { reads += arguments; return "{\"files\":[]}" }
+        }
+        val model = Model()
+        val tooling: suspend (CompletionRequest) -> Completion = { request ->
+            if (request.tools.isNotEmpty() && reads.isEmpty()) {
+                model.requests += request
+                Completion("", toolCalls = listOf(LlmToolCall("r1", "read_diff_files", JsonParser.parseString("""{"paths":["app/big.kt"]}""").asJsonObject)))
+            } else model.complete(request)
+        }
+        var saved = ChangeSummaries(tree)
+        val result = runBlocking {
+            ChangeSummarizer(tooling, read, ChangeSummaryOptions(patchChars = 100, filesPerRequest = 3))
+                .run(saved, "", { saved.summarize(it).also { next -> saved = next } })
+        }
+        assertTrue(result.summaries.complete)
+        assertEquals(1, reads.size)
+        val fileRequests = model.requests.filter { request -> model.nodes(request).all { it["kind"].asString == "file" } }
+        val withTools = fileRequests.filter { it.tools.isNotEmpty() }
+        assertTrue(withTools.isNotEmpty())
+        assertTrue(withTools.all { request -> model.nodes(request).map { it["location"].asString } == listOf("app/big.kt") })
+        val cut = model.nodes(withTools.first()).single()
+        assertEquals(100, cut["patch_cut_at"].asInt)
+        assertEquals(100, cut["patch"].asString.length)
+        // Five small files in batches of at most three, without tools, dispatched before the tool-bearing cut patch.
+        assertEquals(listOf(false, false, true, true), fileRequests.map { it.tools.isNotEmpty() })
+        assertEquals(listOf(3, 2), fileRequests.filter { it.tools.isEmpty() }.map { model.nodes(it).size })
+
+        // Focus is appended after the overview so the instructions and overview prefix stay cacheable across focus changes.
+        val focused = Model()
+        var focusedSaved = ChangeSummaries(tree)
+        runBlocking {
+            ChangeSummarizer(focused::complete, null)
+                .run(focusedSaved, "security", { focusedSaved.summarize(it).also { next -> focusedSaved = next } })
+        }
+        val baseSystem = fileRequests.first().messages.first().content
+        val focusedSystem = focused.requests.first().messages.first().content
+        assertTrue(focusedSystem.startsWith(baseSystem))
+        assertTrue(focusedSystem.endsWith("\n\nThe user asked to focus on: security"))
+    }
+
+    @Test fun `decoding drops unknown duplicate and empty entries and clips long text`() {
+        val answer = JsonParser.parseString("""{"summaries":[{"id":1,"summary":"One."},{"id":2,"summary":"a"},{"id":2,"summary":"b"},""" +
+            """{"id":3,"summary":" "},{"id":9,"summary":"Unknown."},{"id":4,"summary":"${"x".repeat(500)}"}]}""").asJsonObject
+        val decoded = ChangeSummarizer.decode(answer, 4)
+        assertEquals(setOf(1, 4), decoded.keys)
+        assertEquals(ChangeSummaries.MAX_SUMMARY, decoded.getValue(4).length)
     }
 
     private fun rejected(block: () -> Unit) {

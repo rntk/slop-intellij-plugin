@@ -11,6 +11,115 @@ import javax.swing.JLabel
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
+    fun testResizeReflowsNotesWithoutZoomingAndRetainsSizeAcrossRefreshes() {
+        val longNote = note.copy(text = "An explanation with enough content to wrap across many lines. ".repeat(300))
+        val canvas = canvas()
+        try {
+            canvas.showNotes(listOf(longNote))
+            canvas.zoomAt(0.5, Point())
+            layoutTree(canvas)
+            val before = canvas.components.single().bounds
+            val textBefore = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
+            val font = textBefore.font
+            val textHeight = textBefore.preferredSize.height
+            val viewportHeight = descendants(canvas).filterIsInstance<javax.swing.JScrollPane>().single().viewport.height
+            resize(canvas, canvas.components.single() as Container, 100, 80)
+            val after = canvas.components.single().bounds
+            assertEquals(before.location, after.location)
+            assertEquals(before.width + 100, after.width)
+            assertEquals(before.height + 80, after.height)
+            assertEquals(0.5, canvas.zoom)
+            val textAfter = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
+            assertEquals(font, textAfter.font)
+            assertTrue(textAfter.preferredSize.height < textHeight)
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JScrollPane>().single().viewport.height > viewportHeight)
+            canvas.showNotes(listOf(longNote.copy(text = longNote.text + "Updated.")))
+            assertEquals(after, canvas.components.single().bounds)
+            canvas.resetView()
+            assertEquals(after.width * 2, canvas.components.single().width)
+            assertEquals(after.height * 2, canvas.components.single().height)
+            canvas.zoomAt(0.5, Point())
+            assertEquals(after.size, canvas.components.single().size)
+
+            // Removing the card discards its custom dimensions.
+            canvas.showNotes(emptyList())
+            canvas.showNotes(listOf(longNote))
+            assertEquals(before.size, canvas.components.single().size)
+        } finally { canvas.dispose() }
+    }
+
+    fun testResizeCanShrinkAndKeepsOtherBlocksInPlace() {
+        val other = DiffNote(listOf("src/b.kt"), "Other explanation.")
+        val canvas = canvas()
+        try {
+            canvas.showNotes(listOf(note, other))
+            layoutTree(canvas)
+            val otherBounds = canvas.components[1].bounds
+            resize(canvas, canvas.components[0] as Container, -10000, -10000)
+            val resized = canvas.components.first { it.bounds != otherBounds }
+            assertEquals(com.intellij.util.ui.JBUI.scale(280), resized.width)
+            assertEquals(com.intellij.util.ui.JBUI.scale(140), resized.height)
+            assertEquals(otherBounds, canvas.components[1].bounds)
+            canvas.fitView()
+            assertTrue(canvas.components.all { canvas.bounds.contains(it.bounds) })
+        } finally { canvas.dispose() }
+    }
+
+    fun testResizeNativeSourceAndDiffBlocksKeepsEditorsAndFontSizes() {
+        val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 1, 80), "val a = 1\n".repeat(80))
+        val file = ReviewFile("src/b.kt", "/project/src/b.kt", null, "modified", "-old\n+new\n", "1", "old\n", "new\n")
+        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1400, 900) }
+        try {
+            canvas.showNotes(emptyList(), listOf(source), listOf(file))
+            canvas.zoomAt(1.5, Point())
+            layoutTree(canvas)
+            val sourceEditor = descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor
+            val diffEditor = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
+            val sourceFont = sourceEditor.colorsScheme.editorFontSize2D
+            val diffFonts = diffEditor.editors.map { it.colorsScheme.editorFontSize2D }
+            val originalBounds = canvas.components.map { it.bounds }
+            canvas.components.toList().forEach { resize(canvas, it as Container, 120, 90) }
+            assertSame(sourceEditor, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
+            assertSame(diffEditor, descendants(canvas).filterIsInstance<DiffFileEditor>().single())
+            assertEquals(sourceFont, sourceEditor.colorsScheme.editorFontSize2D)
+            assertEquals(diffFonts, diffEditor.editors.map { it.colorsScheme.editorFontSize2D })
+            assertEquals(originalBounds.map { java.awt.Dimension(it.width + 120, it.height + 90) }.toSet(),
+                canvas.components.map { it.size }.toSet())
+            assertEquals(1.5, canvas.zoom)
+        } finally { canvas.dispose() }
+    }
+
+    fun testOverviewSizesSurviveModeChangesAndSummaryUpdates() {
+        val flows = ChangeFlows(ChangeGraph(emptyList(), emptyList(), emptyList(), emptyList()))
+        val summaries = SummariesCard(ChangeSummaries(buildSummaryTree(emptyList())), running = false, canRun = true)
+        val canvas = canvas()
+        try {
+            canvas.showNotes(emptyList(), flows = flows, summaries = summaries)
+            canvas.components.toList().forEach { resize(canvas, it as Container, 150, 100) }
+            val bounds = canvas.components.map { it.bounds }.toSet()
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Outline" }.doClick()
+            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
+            canvas.updateSummaries(summaries.copy(running = true))
+            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
+            canvas.showNotes(emptyList(), flows = flows, summaries = summaries)
+            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
+        } finally { canvas.dispose() }
+    }
+
+    private fun resize(canvas: NoteCanvas, card: Container, dx: Int, dy: Int) {
+        layoutTree(canvas)
+        val grip = descendants(card).single { it.name == "Resize block" }
+        val start = javax.swing.SwingUtilities.convertPoint(grip, Point(5, 5), canvas)
+        grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_PRESSED, 0, InputEvent.BUTTON1_DOWN_MASK, 5, 5, 1, false, MouseEvent.BUTTON1))
+        // Send several events to exercise the grip as it moves between rebuilt cards.
+        for (step in 1..3) {
+            val point = javax.swing.SwingUtilities.convertPoint(canvas, Point(start.x + dx * step / 3, start.y + dy * step / 3), grip)
+            grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_DRAGGED, step.toLong(), InputEvent.BUTTON1_DOWN_MASK,
+                point.x, point.y, 0, false, MouseEvent.NOBUTTON))
+        }
+        grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_RELEASED, 4, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+    }
+
     fun testLongPathsKeepDiffButtonsVisibleAndClickableAtEveryZoom() {
         val paths = listOf(
             "src/main/kotlin/dev/insight/deeply/nested/module/implementation/LongFeatureService.kt",

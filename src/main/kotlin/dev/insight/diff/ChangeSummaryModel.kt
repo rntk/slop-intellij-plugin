@@ -88,8 +88,7 @@ internal fun buildSummaryTree(files: List<ReviewFile>, maxChildren: Int = Change
             var start = 0
             level = List(count) { index ->
                 val members = level.subList(start, start + base + if (index < extra) 1 else 0).also { start += it.size }
-                val label = "${members.first().label} … ${members.last().label}"
-                Proto(SummaryKind.GROUP, path, label, members)
+                members.singleOrNull() ?: Proto(SummaryKind.GROUP, path, "${members.first().label} … ${members.last().label}", members)
             }
         }
         return level
@@ -130,12 +129,15 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
     /** Keeps the summaries whose node, with everything beneath it, is unchanged in [next]. */
     fun retainedIn(next: ChangeSummaryTree): ChangeSummaries {
         val byKey = texts.mapKeys { (id, _) -> tree[id].key }
-        return ChangeSummaries(next, next.nodes.mapNotNull { node -> byKey[node.key]?.let { node.id to it } }.toMap())
+        val kept = next.nodes.mapNotNull { node -> byKey[node.key]?.let { node.id to it } }.toMap(LinkedHashMap())
+        for (node in next.nodes.asReversed()) if (node.id !in kept && node.children.size == 1)
+            kept[node.children.single()]?.let { kept[node.id] = it }
+        return ChangeSummaries(next, kept)
     }
 
     /**
      * Validates the whole batch before anything changes. A folder, group or the root needs every child summarized, before or in
-     * the same batch, so summaries are written from the bottom up. Rewriting a summary keeps those above it.
+     * the same batch, so summaries are written from the bottom up. A parent with a single child reuses that child's summary.
      */
     fun summarize(entries: Map<Int, String>): ChangeSummaries {
         if (tree.summarizable.isEmpty()) throw ToolInputException("There are no changed files to summarize.")
@@ -153,6 +155,8 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
             if (waiting.isNotEmpty()) throw ToolInputException("Node $id: summarize its children first (ids ${waiting.joinToString()}), " +
                 "then write its summary from theirs. Nothing was saved.")
         }
+        for (node in tree.nodes.asReversed()) if (node.id !in entries && node.children.size == 1)
+            next[node.children.single()]?.let { next[node.id] = it }
         return ChangeSummaries(tree, next)
     }
 

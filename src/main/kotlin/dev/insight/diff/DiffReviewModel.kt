@@ -66,6 +66,9 @@ class DiffReviewState(paths: Set<String>? = null) {
     /** The summary tree of this revision. Summaries of unchanged subtrees survive snapshot changes; a new request discards all. */
     var summaries = ChangeSummaries(buildSummaryTree(emptyList()))
         private set
+    /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
+    var summariesVisible = false
+        private set
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -143,7 +146,7 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null }
+    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false }
 
     fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
         check(expected)
@@ -165,6 +168,8 @@ class DiffReviewState(paths: Set<String>? = null) {
     }
 
     fun clearSummaries() { summaries = ChangeSummaries(summaries.tree) }
+    fun showSummaries() { summariesVisible = true }
+    fun hideSummaries() { summariesVisible = false }
 }
 
 internal fun reviewFingerprint(vararg values: String): String {

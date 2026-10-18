@@ -31,7 +31,6 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.tabs.JBTabsFactory
 import com.intellij.ui.tabs.TabInfo
@@ -75,7 +74,10 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     private var repositoriesJob: Job? = null
     private var request = ReviewDiffRequest()
     private val tree = Tree(DefaultMutableTreeNode("Changes"))
-    private val untracked = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    private val untracked = UntrackedFilesTree { file, selected ->
+        if (selected) included += file.absolutePath else included -= file.absolutePath
+        invalidateDiff(setOf(file.path, file.absolutePath)); refresh()
+    }
     private val untrackedBlock = JPanel(BorderLayout())
     private val status = JLabel("Loading diff…")
     private val sourceControls = DiffReviewSourceControls(onRefresh = { refreshDiff() }) { draft ->
@@ -98,16 +100,6 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { addTab(it) } }
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
-    private val summaryView = ChangeSummariesView(::showDiff) {
-        selectedTab()?.highlight(selectedPaths().toSet())
-        updateControls()
-    }
-    private val fileViews = JBTabbedPane().apply {
-        addTab("Files", JBScrollPane(tree))
-        addTab("Summaries", summaryView)
-        setToolTipTextAt(1, "The selected review tab's changes as summaries, from the whole change down to each file")
-    }
-    private val summariesShown get() = fileViews.selectedComponent === summaryView
 
     init {
         border = JBUI.Borders.empty(6)
@@ -116,7 +108,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
                 add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
                 add(newSelectedTab, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
-            add(fileViews, BorderLayout.CENTER)
+            add(JBScrollPane(tree), BorderLayout.CENTER)
         }
         untrackedBlock.apply {
             add(JLabel("Untracked · include in review").apply {
@@ -149,7 +141,6 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
                 (newSelection?.component as? DiffReviewTab)?.highlight(selectedPaths().toSet())
-                showSummaries(start = summariesShown)
             }
         }, this)
         tabs.addTabMouseListener(object : MouseAdapter() {
@@ -162,11 +153,6 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
                 info.setTooltipText("$renamed · Double-click to rename")
             }
         })
-        fileViews.addChangeListener {
-            selectedTab()?.highlight(selectedPaths().toSet())
-            updateControls()
-            showSummaries(start = summariesShown)
-        }
         addTab()
         tree.isRootVisible = false
         tree.showsRootHandles = true
@@ -301,8 +287,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     private fun addTab(paths: Set<String>? = null) {
         val number = nextTab++
         val name = if (number == 1) "All changes" else if (paths == null) "Review $number" else "Selection $number"
-        lateinit var tab: DiffReviewTab
-        tab = DiffReviewTab(project, paths, ::selectedPaths, ::showDiff) { if (selectedTab() === tab) showSummaries(start = false) }
+        val tab = DiffReviewTab(project, paths, ::selectedPaths, ::showDiff)
         Disposer.register(this, tab)
         reviewTabs += tab
         tab.update(state.snapshot)
@@ -328,16 +313,9 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
 
     private fun selectedTab(): DiffReviewTab? = tabs.selectedInfo?.component as? DiffReviewTab
 
-    /** Shows the selected tab's summaries; [start] begins a missing tree, as when the user opens the Summaries tab. */
-    private fun showSummaries(start: Boolean) {
-        val tab = selectedTab()
-        summaryView.show(tab)
-        if (start) tab?.summarizeOnOpen()
-    }
-
     private fun selectedFile(): ReviewFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? ReviewFile
 
-    private fun selectedPaths(): List<String> = if (summariesShown) summaryView.selectedPaths() else tree.selectionPaths.orEmpty().flatMap { path ->
+    private fun selectedPaths(): List<String> = tree.selectionPaths.orEmpty().flatMap { path ->
         val node = path.lastPathComponent as DefaultMutableTreeNode
         node.depthFirstEnumeration().toList().mapNotNull { (it as DefaultMutableTreeNode).userObject as? ReviewFile }.map { it.path }
     }.distinct()
@@ -363,17 +341,8 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         var row = 0
         while (row < tree.rowCount) tree.expandRow(row++)
         tree.selectionPaths = selectedNodes.toTypedArray()
-        untracked.removeAll()
         untrackedBlock.isVisible = request.mode.usesWorkingTree
-        if (state.snapshot.untracked.isEmpty()) untracked.add(JLabel("No untracked files"))
-        for (file in state.snapshot.untracked) untracked.add(JCheckBox(file.path, file.absolutePath in included).apply {
-            toolTipText = file.path
-            addActionListener {
-                if (isSelected) included += file.absolutePath else included -= file.absolutePath
-                invalidateDiff(setOf(file.path, file.absolutePath)); refresh()
-            }
-        })
-        untracked.revalidate(); untracked.repaint()
+        untracked.showFiles(state.snapshot.untracked, included)
     }
 
     private fun showDiff(path: String) {

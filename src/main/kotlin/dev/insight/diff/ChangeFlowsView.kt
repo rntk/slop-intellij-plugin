@@ -506,20 +506,6 @@ internal class ChangeFlowsPanel(
         color?.let { foreground = it }
     }
 
-    /**
-     * Measures its height at a fixed wrap width. A plain wrapping text area measures at its current width, which nested
-     * layouts can briefly make tiny, wrapping every character onto its own line.
-     */
-    private class WrappedText(value: String, private val wrapWidth: Int) : JTextArea(value) {
-        override fun getPreferredSize(): Dimension {
-            val insets = insets
-            val root = getUI()?.getRootView(this) ?: return super.getPreferredSize()
-            root.setSize((wrapWidth - insets.left - insets.right).coerceAtLeast(1).toFloat(), Int.MAX_VALUE.toFloat())
-            return Dimension(wrapWidth, root.getPreferredSpan(View.Y_AXIS).toInt() + insets.top + insets.bottom)
-        }
-        override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
-    }
-
     private fun plural(count: Int, word: String) = "$count $word${if (count == 1) "" else "s"}"
 
     companion object {
@@ -533,4 +519,18 @@ internal class ChangeFlowsPanel(
         val ADDED_LINE: Color = JBColor(Color(0xE6F4EA), Color(0x2B3B2E))
         val REMOVED_LINE: Color = JBColor(Color(0xFCE8E6), Color(0x47302F))
     }
+}
+
+/**
+ * Measures its height at a fixed wrap width. A plain wrapping text area measures at its current width, which nested
+ * layouts can briefly make tiny, wrapping every character onto its own line.
+ */
+internal class WrappedText(value: String, private val wrapWidth: Int) : JTextArea(value) {
+    override fun getPreferredSize(): Dimension {
+        val insets = insets
+        val root = getUI()?.getRootView(this) ?: return super.getPreferredSize()
+        root.setSize((wrapWidth - insets.left - insets.right).coerceAtLeast(1).toFloat(), Int.MAX_VALUE.toFloat())
+        return Dimension(wrapWidth, root.getPreferredSpan(View.Y_AXIS).toInt() + insets.top + insets.bottom)
+    }
+    override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
 }
