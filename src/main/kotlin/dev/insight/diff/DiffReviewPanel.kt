@@ -14,6 +14,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -21,6 +22,8 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vcs.changes.ChangeListListener
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.ProjectLevelVcsManager
+import com.intellij.openapi.vcs.VcsMappingListener
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
@@ -36,8 +39,6 @@ import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
-import java.awt.Dimension
-import java.awt.FlowLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
@@ -70,9 +71,21 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     private val included = linkedSetOf<String>()
     private var disposed = false
     private var refreshJob: Job? = null
+    private var repositoriesJob: Job? = null
+    private var request = ReviewDiffRequest()
     private val tree = Tree(DefaultMutableTreeNode("Changes"))
     private val untracked = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
-    private val status = JLabel("Loading local changes…")
+    private val untrackedBlock = JPanel(BorderLayout())
+    private val status = JLabel("Loading diff…")
+    private val sourceControls = DiffReviewSourceControls(onRefresh = { refreshDiff() }) { draft ->
+        try {
+            request = draft.validated()
+            invalidateDiff()
+            refresh()
+        } catch (e: IllegalArgumentException) {
+            status.text = e.message
+        }
+    }
     private val tabs = JBTabsFactory.createTabs(project, this).apply {
         presentation.isHideTabs = false
         presentation.setSingleRow(true).setSupportsCompression(false).setTabLabelActionsAutoHide(false)
@@ -88,10 +101,13 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     init {
         border = JBUI.Borders.empty(6)
         val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            add(JLabel("Current changes · double-click to view diff"), BorderLayout.NORTH)
+            add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+                add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
+                add(newSelectedTab, BorderLayout.CENTER)
+            }, BorderLayout.NORTH)
             add(JBScrollPane(tree), BorderLayout.CENTER)
         }
-        val untrackedBlock = JPanel(BorderLayout()).apply {
+        untrackedBlock.apply {
             add(JLabel("Untracked · include in review").apply {
                 toolTipText = "Selection only includes a file in this review; it does not stage it in version control."
             }, BorderLayout.NORTH)
@@ -101,29 +117,23 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
             resizeWeight = 0.7; setDividerLocation(0.7)
         }
         val left = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            minimumSize = Dimension(180, 120)
-            add(JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                add(JButton("Refresh").apply { addActionListener {
-                    invalidateDiff()
-                    ChangeListManager.getInstance(project).invokeAfterUpdate(true) { if (!disposed) refresh() }
-                } })
-                add(newSelectedTab)
-            }, BorderLayout.NORTH)
+            minimumSize = JBUI.size(280, 120)
+            add(sourceControls, BorderLayout.NORTH)
             add(fileLists, BorderLayout.CENTER)
             add(status, BorderLayout.SOUTH)
         }
         val right = JPanel(BorderLayout()).apply {
-            add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            add(JPanel(BorderLayout()).apply {
+                border = JBUI.Borders.emptyBottom(6)
                 add(JButton("New tab").apply {
-                    toolTipText = "Start a fresh chat and canvas for all current changes"
+                    toolTipText = "Start a fresh chat and canvas for all files in the selected diff"
                     addActionListener { addTab() }
-                })
+                }, BorderLayout.WEST)
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
         add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right).apply {
-            resizeWeight = 0.25; setDividerLocation(300)
+            resizeWeight = 0.25; setDividerLocation(JBUI.scale(360))
         }, BorderLayout.CENTER)
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
@@ -170,24 +180,56 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
             }
         })
         project.messageBus.connect(this).apply {
+            subscribe(ProjectLevelVcsManager.VCS_CONFIGURATION_CHANGED, object : VcsMappingListener {
+                override fun directoryMappingChanged() {
+                    scope.launch { if (!disposed) loadRepositories() }
+                }
+            })
             subscribe(ChangeListListener.TOPIC, object : ChangeListListener {
-                override fun changeListUpdateDone() { scheduleRefresh() }
+                override fun changeListUpdateDone() { if (request.mode.usesWorkingTree) scheduleRefresh() }
             })
             subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
                 override fun after(events: List<VFileEvent>) {
                     val paths = state.snapshot.files.mapTo(hashSetOf()) { it.absolutePath } + included
                     val affected = events.mapTo(hashSetOf()) { it.path }.intersect(paths)
-                    if (affected.isNotEmpty()) scheduleRefresh(affected)
+                    if (request.mode.usesWorkingTree && affected.isNotEmpty()) scheduleRefresh(affected)
                 }
             })
         }
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 val path = FileDocumentManager.getInstance().getFile(event.document)?.path ?: return
-                if (path in included || state.snapshot.files.any { it.absolutePath == path }) scheduleRefresh(setOf(path))
+                if (request.mode.usesWorkingTree && (path in included || state.snapshot.files.any { it.absolutePath == path }))
+                    scheduleRefresh(setOf(path))
             }
         }, this)
+        loadRepositories()
         refresh()
+    }
+
+    private fun refreshDiff() {
+        loadRepositories()
+        invalidateDiff()
+        if (request.mode.usesWorkingTree)
+            ChangeListManager.getInstance(project).invokeAfterUpdate(true) { if (!disposed) refresh() }
+        else refresh()
+    }
+
+    private fun loadRepositories() {
+        repositoriesJob?.cancel()
+        repositoriesJob = scope.launch {
+            try {
+                val repositories = withContext(Dispatchers.IO) {
+                    ReviewDiffProvider.EP_NAME.extensionList.flatMap { it.repositories(project) }.distinctBy { it.path }
+                }
+                sourceControls.setRepositories(repositories, preferredReviewRepository(repositories,
+                    FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.path, project.basePath))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                sourceControls.setRepositoryError(e.message ?: e.javaClass.simpleName)
+            }
+        }
     }
 
     private fun scheduleRefresh(affectedPaths: Set<String>? = null) {
@@ -200,7 +242,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         state.refreshing = true
         reviewTabs.forEach { it.invalidate(stop = true, affectedPaths) }
         refreshJob?.cancel()
-        status.text = "Refreshing local changes…"
+        status.text = "Loading ${request.mode.title.lowercase()}…"
         updateControls()
     }
 
@@ -210,24 +252,28 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         refreshJob?.cancel()
         state.refreshing = true
         // Known edits already blocked affected tabs. Other refreshes compare scoped revisions on update.
-        status.text = "Refreshing local changes…"
+        status.text = "Loading ${request.mode.title.lowercase()}…"
         updateControls()
         val selected = included.toSet()
+        val selectedRequest = request
         refreshJob = scope.launch {
             try {
-                val snapshot = withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected) }
+                val snapshot = withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
                 state.update(snapshot)
                 val removed = reviewTabs.sumOf { it.update(snapshot) }
-                included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
+                if (selectedRequest.mode.usesWorkingTree)
+                    included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
                 renderFiles()
-                status.text = "${snapshot.files.size} files · ${snapshot.untracked.count { it.absolutePath !in included }} untracked outside review"
+                status.text = "${snapshot.files.size} files" + if (selectedRequest.mode.usesWorkingTree)
+                    " · ${snapshot.untracked.count { it.absolutePath !in included }} untracked outside review" else " · ${snapshot.comparison.summary}"
                 if (removed > 0) status.text += " · $removed outdated notes removed"
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                status.text = "Could not load changes: ${e.message ?: e.javaClass.simpleName}"
+                status.text = "Could not load diff: ${e.message ?: e.javaClass.simpleName}"
+                status.toolTipText = status.text
                 // Affected tabs stay blocked until a successful refresh.
-            } finally { updateControls() }
+            } finally { status.toolTipText = status.text; updateControls() }
         }
     }
 
@@ -291,6 +337,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         while (row < tree.rowCount) tree.expandRow(row++)
         tree.selectionPaths = selectedNodes.toTypedArray()
         untracked.removeAll()
+        untrackedBlock.isVisible = request.mode.usesWorkingTree
         if (state.snapshot.untracked.isEmpty()) untracked.add(JLabel("No untracked files"))
         for (file in state.snapshot.untracked) untracked.add(JCheckBox(file.path, file.absolutePath in included).apply {
             toolTipText = file.path

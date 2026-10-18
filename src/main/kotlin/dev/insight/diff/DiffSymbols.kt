@@ -63,7 +63,11 @@ internal class DiffSymbols(private val project: Project, private val snapshot: R
             ?: throw ToolInputException("$path is no longer available")
         val psi = PsiManager.getInstance(project).findFile(virtual)
             ?: throw ToolInputException("$path has no parsed source")
-        if (psi.text != review.after) throw ToolInputException("$path changed since the diff snapshot. Refresh before attaching a symbol.")
+        if (psi.text != review.after) throw ToolInputException(
+            if (snapshot.comparison.request.mode.usesWorkingTree)
+                "$path changed since the diff snapshot. Refresh before attaching a symbol."
+            else "Current source for $path does not match the reviewed target revision. Use a file note without symbol."
+        )
         val declarations = ProjectGraphAnalyzer.declarations(psi).mapNotNull { element -> describe(element, path)?.let { element to it } }
         Source(psi, declarations)
     }

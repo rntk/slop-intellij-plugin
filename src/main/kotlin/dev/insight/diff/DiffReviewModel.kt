@@ -14,6 +14,8 @@ data class ReviewFile(
     val fingerprint: String,
     val before: String? = null,
     val after: String? = null,
+    val beforeLabel: String = "Before",
+    val afterLabel: String = "Working tree",
 ) {
     internal val diffKey get() = diffNoteKey(path)
     // Swing tree renderers call toString before applying their custom label.
@@ -21,7 +23,11 @@ data class ReviewFile(
 }
 
 data class UntrackedFile(val path: String, val absolutePath: String)
-data class ReviewSnapshot(val files: List<ReviewFile>, val untracked: List<UntrackedFile>)
+data class ReviewSnapshot(
+    val files: List<ReviewFile>,
+    val untracked: List<UntrackedFile>,
+    val comparison: ReviewComparison = ReviewComparison(),
+)
 data class DiffNote(
     val paths: List<String>,
     val text: String,
@@ -57,17 +63,20 @@ class DiffReviewState(paths: Set<String>? = null) {
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
-        if (next.files != snapshot.files || revision == 0) {
+        val comparisonChanged = next.comparison != snapshot.comparison
+        val requestChanged = next.comparison.request != snapshot.comparison.request
+        // Moving refs invalidate captured tool metadata; only a new request discards unchanged file evidence.
+        if (next.files != snapshot.files || comparisonChanged || revision == 0) {
             val old = snapshot.files.associateBy { it.path }
             val fresh = next.files.associateBy { it.path }
             cards.entries.removeIf { (_, note) -> note.paths.any { path ->
-                fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
+                requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
             } }
             sourceCards.entries.removeIf { (range, _) ->
-                fresh[range.path] == null || fresh[range.path]?.fingerprint != old[range.path]?.fingerprint
+                requestChanged || fresh[range.path] == null || fresh[range.path]?.fingerprint != old[range.path]?.fingerprint
             }
             diffCards.entries.removeIf { (path, _) ->
-                fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
+                requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
             }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
             revision++

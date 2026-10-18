@@ -26,6 +26,7 @@ internal fun diffStateResult(
     }
     fun result(): String = reviewJson.toJson(buildMap<String, Any> {
         put("scope", if (scopePaths == null) "all changes" else "fixed file selection")
+        put("comparison", snapshot.comparison)
         put("total_files", snapshot.files.size)
         if (sources.isNotEmpty()) put("source_blocks_count", sources.size)
         if (selected.isNotEmpty()) put("selected_count", selected.size)

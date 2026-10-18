@@ -123,6 +123,28 @@ class DiffSymbolsTest : BasePlatformTestCase() {
         }
     }
 
+    fun testHistoricalSourceMismatchExplainsSymbolsRequireMatchingCurrentSource() {
+        val snapshot = snapshot()
+        ApplicationManager.getApplication().runReadAction {
+            for (mode in listOf(ReviewDiffMode.REVISIONS, ReviewDiffMode.MERGE_BASE)) {
+                val historical = snapshot.copy(
+                    files = snapshot.files.map { it.copy(after = "// historical source\n" + it.after) },
+                    comparison = ReviewComparison(ReviewDiffRequest(mode, "/repo", "main", "topic"), "base", "target")
+                )
+                val symbols = DiffSymbols(project, historical)
+                val found = JsonParser.parseString(symbols.find(listOf("Sample.java"), "", 0)).asJsonObject
+                assertTrue(found["symbols"].asJsonArray.isEmpty)
+                val expected = "Current source for Sample.java does not match the reviewed target revision. Use a file note without symbol."
+                assertEquals(expected, found["unavailable"].asJsonObject["Sample.java"].asString)
+                try {
+                    symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "Old", "helper")))
+                    fail("Historical source mismatches must reject symbol notes")
+                } catch (e: ToolInputException) { assertEquals(expected, e.message) }
+                assertNull(symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "File note"))).single().evidence)
+            }
+        }
+    }
+
     fun testTabAppliesValidatedBatchesAtomicallyAndNormalizesSymbolAliases() {
         val snapshot = snapshot()
         val tab = DiffReviewTab(project, setOf("Sample.java"), { emptyList() }, {})

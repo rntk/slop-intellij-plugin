@@ -29,8 +29,126 @@ import javax.swing.JRootPane
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
+import javax.swing.JComboBox
+import com.intellij.testFramework.ExtensionTestUtil
+import com.intellij.openapi.vcs.changes.Change
+import com.intellij.openapi.vcs.changes.ContentRevision
+import com.intellij.openapi.vcs.history.VcsRevisionNumber
+import com.intellij.vcsUtil.VcsUtil
 
 class DiffReviewPlatformTest : BasePlatformTestCase() {
+    fun `test repository controls default to current root and preserve explicit selection on reload`() {
+        val controls = DiffReviewSourceControls { }
+        val repositories = listOf(ReviewRepository("/other", listOf("HEAD")), ReviewRepository("/current", listOf("HEAD", "main")))
+        controls.setRepositories(repositories, "/current")
+        val combo = descendants(controls).filterIsInstance<JComboBox<*>>().single { it.name == "diffRepository" }
+        assertEquals("/current", (combo.selectedItem as ReviewRepository).path)
+        combo.selectedItem = repositories.first()
+        controls.setRepositories(repositories, "/current")
+        assertEquals("/other", (combo.selectedItem as ReviewRepository).path)
+        controls.setRepositories(repositories.drop(1), "/current")
+        assertEquals("/current", (combo.selectedItem as ReviewRepository).path)
+    }
+
+    fun `test repository list reloads when VCS mappings change after opening the panel`() {
+        val available = java.util.concurrent.atomic.AtomicReference(emptyList<ReviewRepository>())
+        val loads = java.util.concurrent.atomic.AtomicInteger()
+        ExtensionTestUtil.maskExtensions(ReviewDiffProvider.EP_NAME, listOf(object : ReviewDiffProvider {
+            override suspend fun repositories(project: com.intellij.openapi.project.Project): List<ReviewRepository> {
+                loads.incrementAndGet()
+                return available.get()
+            }
+            override fun changes(project: com.intellij.openapi.project.Project, request: ReviewDiffRequest): ReviewChanges? = null
+        }), testRootDisposable)
+        val panel = DiffReviewPanel(project)
+        try {
+            val combo = descendants(panel).filterIsInstance<JComboBox<*>>().single { it.name == "diffRepository" }
+            PlatformTestUtil.waitWithEventsDispatching("Initial discovery should finish", {
+                loads.get() > 0 && descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+            }, 10000)
+            assertEquals(0, combo.itemCount)
+            val current = ReviewRepository(project.basePath!!, listOf("HEAD", "main"))
+            available.set(listOf(ReviewRepository("/another-root", listOf("HEAD")), current))
+            project.messageBus.syncPublisher(com.intellij.openapi.vcs.ProjectLevelVcsManager.VCS_CONFIGURATION_CHANGED).directoryMappingChanged()
+            PlatformTestUtil.waitWithEventsDispatching("New roots should appear without a manual refresh", { combo.itemCount == 2 }, 10000)
+            assertEquals(current.path, (combo.selectedItem as ReviewRepository).path)
+        } finally { Disposer.dispose(panel) }
+    }
+
+    fun `test historical loader uses revision content while working tree loader includes editor text`() {
+        val psi = myFixture.configureByText("sample.txt", "unsaved working copy\n")
+        // The fixture uses an in-memory file, which a local FilePath cannot rediscover by path.
+        val path = object : com.intellij.openapi.vcs.FilePath by VcsUtil.getFilePath(psi.virtualFile) {
+            override fun getVirtualFile() = psi.virtualFile
+        }
+        fun revision(text: String) = object : ContentRevision {
+            override fun getFile() = path
+            override fun getRevisionNumber() = VcsRevisionNumber.NULL
+            override fun getContent() = text
+        }
+        val change = Change(revision("base content\n"), revision("committed target\n"))
+        ExtensionTestUtil.maskExtensions(ReviewDiffProvider.EP_NAME, listOf(object : ReviewDiffProvider {
+            override suspend fun repositories(project: com.intellij.openapi.project.Project) = emptyList<ReviewRepository>()
+            override fun changes(project: com.intellij.openapi.project.Project, request: ReviewDiffRequest) =
+                ReviewChanges(listOf(change), ReviewComparison(request, "base-sha", if (request.mode.usesWorkingTree) null else "target-sha"))
+        }), testRootDisposable)
+        runWithEvents {
+            for (mode in listOf(ReviewDiffMode.REVISIONS, ReviewDiffMode.MERGE_BASE, ReviewDiffMode.WORKING_TREE)) {
+                val request = ReviewDiffRequest(mode, "/repo", "main", "topic")
+                val snapshot = withContext(Dispatchers.IO) { DiffReviewLoader(project).load(emptySet(), request) }
+                val file = snapshot.files.single()
+                assertEquals("base content\n", file.before)
+                assertEquals(if (mode.usesWorkingTree) "unsaved working copy\n" else "committed target\n", file.after)
+                assertTrue(file.patch.contains("-base content"))
+                assertEquals(mode, snapshot.comparison.request.mode)
+                assertTrue(snapshot.untracked.isEmpty())
+                val diff = createDiffRequest(project, file)
+                assertTrue(diff.contentTitles[0]!!.contains("base-sha"))
+                assertTrue(diff.contentTitles[1]!!.contains(if (mode.usesWorkingTree) "Working tree" else "target-sha"))
+                val tab = DiffReviewTab(project, setOf(file.path), { emptyList() }, {})
+                try {
+                    tab.update(snapshot)
+                    val context = tab.captureContext()
+                    val data = JsonParser.parseString(context.state(0)).asJsonObject
+                    assertEquals(mode.name, data["comparison"].asJsonObject["request"].asJsonObject["mode"].asString)
+                    context.showSource(DiffSourceRange(file.path, 1, 1))
+                    assertEquals(file.after!!.trimEnd(), tab.state.sources.single().text)
+                    context.addNotes(listOf(DiffNote(listOf(file.path), "Snapshot note")))
+                    assertEquals(1, tab.state.notes.size)
+                    tab.update(snapshot.copy(comparison = snapshot.comparison.copy(baseRevision = "another-base")))
+                    assertEquals(1, tab.state.notes.size)
+                    assertEquals(1, tab.state.sources.size)
+                    rejected { context.read(listOf(file.path), 0) }
+                    tab.update(snapshot.copy(comparison = snapshot.comparison.copy(request = request.copy(base = "another-ref"))))
+                    assertTrue(tab.state.notes.isEmpty())
+                    assertTrue(tab.state.sources.isEmpty())
+                } finally { Disposer.dispose(tab) }
+            }
+        }
+    }
+
+    fun `test diff source controls apply drafts and preserve typed commit expressions`() {
+        var applied: ReviewDiffRequest? = null
+        val controls = DiffReviewSourceControls { applied = it.validated() }
+        controls.setRepositories(listOf(ReviewRepository("/repo", listOf("HEAD", "main", "origin/topic"))))
+        val combos = descendants(controls).filterIsInstance<JComboBox<*>>().associateBy { it.name }
+        val mode = combos.getValue("diffMode")
+        val base = combos.getValue("diffBase")
+        val target = combos.getValue("diffTarget")
+        mode.selectedItem = ReviewDiffMode.REVISIONS
+        base.editor.item = "HEAD~3"
+        target.editor.item = "origin/topic"
+        assertNull(applied)
+        descendants(controls).filterIsInstance<JButton>().single { it.text == "Apply diff" }.doClick()
+        assertEquals(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "HEAD~3", "origin/topic"), applied)
+        // Refreshing the suggestions must retain a manually entered commit expression.
+        controls.setRepositories(listOf(ReviewRepository("/repo", listOf("HEAD", "main"))))
+        assertEquals("HEAD~3", base.editor.item)
+        mode.selectedItem = ReviewDiffMode.LOCAL
+        descendants(controls).filterIsInstance<JButton>().single { it.text == "Apply diff" }.doClick()
+        assertEquals(ReviewDiffRequest(), applied)
+    }
+
     fun `test source tool renders snapshot lines and rejects stale out of scope and closed requests`() {
         val tab = DiffReviewTab(project, setOf("src/a.kt"), { emptyList() }, {})
         try {

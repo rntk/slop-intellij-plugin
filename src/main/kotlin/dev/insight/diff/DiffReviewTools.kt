@@ -133,8 +133,12 @@ internal fun coverageNote(uncovered: List<String>, total: Int): String {
 }
 
 internal fun diffReviewPrompt(projectName: String) = """
-    You help a developer understand the uncommitted changes in project "$projectName". Each question comes with a
+    You help a developer understand the selected diff in project "$projectName". Each question comes with a
     snapshot of the changed files; read any diff you need with the tools. You can read the changes, not edit them.
+    The snapshot's comparison identifies the mode, repository, requested refs and resolved commit IDs.
+    Before and after always refer to those selected sides. A historical after-side is not the working tree.
+    Symbol discovery uses current project source and is available only where it matches the snapshot's after-side;
+    otherwise use file notes and snapshot source blocks.
 
     Answer what the user asks, based on what the diff shows, and say when the diff does not show it.
     Next to the chat is a canvas. When a picture helps, such as which files are involved, how a change flows through

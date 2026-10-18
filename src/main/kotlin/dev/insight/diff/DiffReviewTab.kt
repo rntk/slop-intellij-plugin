@@ -132,7 +132,9 @@ internal class DiffReviewTab(
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
-        scopeLabel.toolTipText = paths?.sorted()?.joinToString("\n") ?: "Follows all current changes, including files included in the global review."
+        scopeLabel.text += " · ${state.snapshot.comparison.summary}"
+        scopeLabel.toolTipText = state.snapshot.comparison.summary + "\n" + state.snapshot.comparison.request.repository.orEmpty() + "\n" +
+            (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
     private fun renderCanvas() { canvas.showNotes(state.notes, state.sources, state.diffs); canvas.highlight(selectedPaths().toSet()) }

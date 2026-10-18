@@ -26,8 +26,8 @@ internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffR
         file.path,
         factory.create(project, file.before, fileType),
         factory.create(project, file.after, fileType),
-        file.previousPath ?: "${file.path} · before",
-        "${file.path} · working tree",
+        "${file.previousPath ?: file.path} · ${file.beforeLabel}",
+        "${file.path} · ${file.afterLabel}",
     ) else SimpleDiffRequest(
         file.path,
         factory.create(project, ""),

@@ -27,6 +27,8 @@
                         interface="dev.insight.callgraph.CallGraphLanguageSupport" dynamic="true"/>
         <extensionPoint qualifiedName="dev.insight.diffBaseProvider"
                         interface="dev.insight.callgraph.DiffBaseProvider" dynamic="true"/>
+        <extensionPoint qualifiedName="dev.insight.reviewDiffProvider"
+                        interface="dev.insight.diff.ReviewDiffProvider" dynamic="true"/>
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
@@ -50,7 +52,7 @@
     </extensions>
     <actions>
         <action id="Insight.OpenDiffReview" class="dev.insight.diff.OpenDiffReviewAction"
-                text="Open Diff Review" description="Review uncommitted changes with file and group notes"
+                text="Open Diff Review" description="Review local changes, branches or commits with file and group notes"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>

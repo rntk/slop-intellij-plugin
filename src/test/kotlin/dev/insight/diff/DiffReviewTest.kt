@@ -14,6 +14,106 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DiffReviewTest {
+    @Test fun `default repository follows active file then project and respects nested root boundaries`() {
+        val repositories = listOf("/other", "/work/project", "/work/project/nested").map { ReviewRepository(it, listOf("HEAD")) }
+        assertEquals("/work/project/nested", preferredReviewRepository(repositories, "/work/project/nested/src/a.kt", "/work/project"))
+        assertEquals("/work/project", preferredReviewRepository(repositories, "/unrelated/a.kt", "/work/project/subdir"))
+        assertEquals("/other", preferredReviewRepository(repositories, "/work/project-other/a.kt", null))
+        assertEquals("/work/project", preferredReviewRepository(repositories, null, "/work/project"))
+        assertEquals("/other", preferredReviewRepository(repositories, null, null))
+        assertNull(preferredReviewRepository(emptyList(), "/work/project/a.kt", "/work/project"))
+    }
+
+    @Test fun `request changes invalidate captured revisions and all canvas evidence even for identical files`() {
+        val state = state()
+        val path = "src/a.kt"
+        state.update(state.snapshot.copy(files = state.snapshot.files.map { it.copy(before = "old\n", after = "new\n") }))
+        state.addNote(state.revision, listOf(path), "Local evidence")
+        state.showSource(state.revision, DiffSourceRange(path, 1, 1))
+        state.showDiff(path)
+        val previous = state.revision
+        val comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "main", "topic"), "a".repeat(40), "b".repeat(40))
+        state.update(state.snapshot.copy(comparison = comparison))
+        assertEquals(previous + 1, state.revision)
+        assertTrue(state.notes.isEmpty())
+        assertTrue(state.sources.isEmpty())
+        assertTrue(state.diffs.isEmpty())
+        rejected { state.check(previous) }
+        state.addNote(state.revision, listOf(path), "Historical evidence")
+        state.showSource(state.revision, DiffSourceRange(path, 1, 1))
+        state.showDiff(path)
+        val current = state.revision
+        state.update(state.snapshot)
+        assertEquals(current, state.revision)
+        assertEquals(1, state.notes.size)
+        // Explicitly choosing a different base clears evidence even when resolved IDs and files match.
+        state.update(state.snapshot.copy(comparison = comparison.copy(request = comparison.request.copy(base = "release"))))
+        assertTrue(state.notes.isEmpty())
+        assertTrue(state.sources.isEmpty())
+        assertTrue(state.diffs.isEmpty())
+        rejected { state.check(current) }
+    }
+
+    @Test fun `moving refs preserve unchanged cards across all and scoped tabs while expiring changed and removed evidence`() {
+        for (mode in listOf(ReviewDiffMode.WORKING_TREE, ReviewDiffMode.REVISIONS, ReviewDiffMode.MERGE_BASE)) {
+            val comparison = ReviewComparison(ReviewDiffRequest(mode, "/repo", "HEAD", "topic"), "old-base", "old-target")
+            val files = listOf("a.kt", "b.kt", "removed.kt").map { path ->
+                file(path).copy(before = "old\n", after = "new\n", beforeLabel = comparison.beforeLabel, afterLabel = comparison.afterLabel)
+            }
+            val initial = ReviewSnapshot(files, emptyList(), comparison)
+            val moved = comparison.copy(baseRevision = "new-base", targetRevision = "new-target")
+            val unchanged = files[0].copy(beforeLabel = moved.beforeLabel, afterLabel = moved.afterLabel)
+            val changed = files[1].copy(before = "committed\n", fingerprint = "changed")
+            val next = initial.copy(files = listOf(unchanged, changed), comparison = moved)
+            val states = listOf(DiffReviewState(), DiffReviewState(setOf("a.kt")))
+            for (state in states) {
+                state.update(initial)
+                state.snapshot.files.forEach { file ->
+                    state.addNote(state.revision, listOf(file.path), "Note for ${file.path}")
+                    state.showSource(state.revision, DiffSourceRange(file.path, 1, 1))
+                    state.showDiff(file.path)
+                }
+                if (state.scopePaths == null) state.addNote(state.revision, listOf("a.kt", "b.kt"), "Group note")
+                val retainedNote = state.notes.first()
+                val retainedSource = state.sources.first()
+                val previous = state.revision
+                state.update(next)
+                assertEquals(listOf(retainedNote), state.notes)
+                assertSame(retainedNote, state.notes.single())
+                assertEquals(listOf(retainedSource), state.sources)
+                assertEquals(listOf(unchanged), state.diffs)
+                assertEquals(moved, state.snapshot.comparison)
+                assertEquals(previous + 1, state.revision)
+                rejected { state.check(previous) }
+            }
+        }
+    }
+
+    @Test fun `diff context identifies the selected repository refs and immutable commit ids`() {
+        val comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.MERGE_BASE, "/repo", "main", "feature"), "base-id", "target-id")
+        val snapshot = ReviewSnapshot(emptyList(), emptyList(), comparison)
+        val json = JsonParser.parseString(diffStateResult(snapshot, setOf("a"), emptyList(), emptyList(), 0, 0)).asJsonObject
+        val source = json["comparison"].asJsonObject
+        assertEquals("base-id", source["baseRevision"].asString)
+        assertEquals("target-id", source["targetRevision"].asString)
+        val request = source["request"].asJsonObject
+        assertEquals("MERGE_BASE", request["mode"].asString)
+        assertEquals("/repo", request["repository"].asString)
+        assertEquals("main", request["base"].asString)
+        assertEquals("feature", request["target"].asString)
+    }
+
+    @Test fun `diff request validation preserves revision expressions and rejects incomplete inputs`() {
+        assertEquals(ReviewDiffRequest(), ReviewDiffRequest(repository = "/ignored", base = "").validated())
+        val request = ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", " HEAD~3 ", " v1.0 ").validated()
+        assertEquals("HEAD~3", request.base)
+        assertEquals("v1.0", request.target)
+        for (invalid in listOf(request.copy(repository = null), request.copy(base = " "), request.copy(target = ""), request.copy(base = "a\nb"))) {
+            try { invalid.validated(); fail("Expected invalid request") } catch (_: IllegalArgumentException) { }
+        }
+        assertEquals("HEAD", request.copy(mode = ReviewDiffMode.WORKING_TREE, target = "").validated().target)
+    }
+
     @Test fun `file list pages preserve long escaped rename paths and selection within the wire budget`() {
         val files = (1..55).map { index -> file("src/$index-" + "\"\\\t".repeat(180)).copy(
             previousPath = "old/$index-" + "\"\\\t".repeat(180), status = "renamed",
