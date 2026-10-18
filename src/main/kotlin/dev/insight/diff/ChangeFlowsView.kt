@@ -25,6 +25,8 @@ import kotlin.math.roundToInt
 /** Expansion survives re-rendering; keys are only meaningful for the graph they were made for. */
 internal class ChangeFlowsViewState {
     val expanded = linkedSetOf<String>()
+    var mode = ChangeFlowsMode.MAP
+    val selected = mutableMapOf<Int, Int>()
     var graph: ChangeGraph? = null
         private set
     /** A node to scroll to once, after the next render. */
@@ -35,6 +37,7 @@ internal class ChangeFlowsViewState {
         if (flows?.graph === graph) return
         graph = flows?.graph
         expanded.clear()
+        selected.clear()
         reveal = null
         if (flows != null && flows.graph.clusters.isNotEmpty()) expanded += theme(0)
     }
@@ -44,6 +47,8 @@ internal class ChangeFlowsViewState {
     /** Opens [node] with its theme and cluster, for following a call. */
     fun focus(flows: ChangeFlows, node: Int) {
         val cluster = flows.graph.cluster(node) ?: return
+        selected[cluster.id] = node
+        if (changeMapOrder(flows.graph, cluster).indexOf(node) >= CHANGE_MAP_PREVIEW_STEPS) expanded += mapAll(cluster.id)
         flows.displayThemes().indexOfFirst { theme -> theme.clusters.any { it.id == cluster.id } }.takeIf { it >= 0 }?.let { expanded += theme(it) }
         expanded += cluster(cluster.id)
         if (flows.nodeNotes[node]?.importance == ChangeImportance.MINOR || flows.graph.nodes[node].trivial != null) expanded += minor(cluster.id)
@@ -58,9 +63,12 @@ internal class ChangeFlowsViewState {
         fun diff(id: Int) = "d:$id"
         fun minor(cluster: Int) = "m:$cluster"
         fun steps(id: Int) = "s:$id"
+        fun mapAll(cluster: Int) = "map:$cluster"
         const val OTHER = "o"
     }
 }
+
+internal enum class ChangeFlowsMode { MAP, OUTLINE }
 
 internal class ChangeFlowActions(
     val toggle: (String) -> Unit,
@@ -71,9 +79,8 @@ internal class ChangeFlowActions(
 )
 
 /**
- * Progressive disclosure of a [ChangeFlows]: themes, then the call tree of each cluster, then a function's outline
- * (calls, exits, conditions, callers), then its literal diff lines. Regular text comes from source analysis; italic
- * text is the model's interpretation, so a reader can always tell which is which.
+ * Two views of a [ChangeFlows]: a connected step map and a call tree. Both lead to a function's source outline
+ * and literal diff lines. Regular text comes from source analysis; italic text is the model's interpretation.
  */
 internal class ChangeFlowsPanel(
     private val flows: ChangeFlows,
@@ -137,7 +144,9 @@ internal class ChangeFlowsPanel(
             }, BorderLayout.CENTER)
             add(label(stats(members, theme), font(JBFont.small()), help), BorderLayout.EAST)
         })
-        theme.summary?.let { add(text(it, cardWidth - scaled(20), italic(JBFont.label()), null, indent = scaled(20))) }
+        if (state.mode == ChangeFlowsMode.OUTLINE || !open) theme.summary?.let {
+            add(text(it, cardWidth - scaled(20), italic(JBFont.label()), null, indent = scaled(20)))
+        }
         chips(members)?.let { add(it.apply { border = pad(left = scaled(20)) }) }
         if (!open) return@apply
         val body = JPanel(VerticalLayout(scaled(6))).apply { isOpaque = false; border = pad(scaled(4), scaled(12), 0, 0) }
@@ -149,6 +158,14 @@ internal class ChangeFlowsPanel(
             theme.files.forEach { path -> add(fileLink(path, graph.files.firstOrNull { it.path == path })) }
         })
         add(body)
+        if (state.mode == ChangeFlowsMode.MAP) theme.summary?.let { summary ->
+            add(JPanel(BorderLayout(scaled(16), 0)).apply {
+                isOpaque = false
+                border = JBUI.Borders.compound(JBUI.Borders.customLineTop(JBColor.border()), pad(scaled(10), scaled(20), scaled(10), 0))
+                add(label("FLOW ${(index + 1).toString().padStart(2, '0')}", monospace(), help), BorderLayout.WEST)
+                add(text(summary, cardWidth - scaled(116), italic(JBFont.label().biggerOn(1f)), help), BorderLayout.CENTER)
+            })
+        }
     }
 
     private fun stats(members: List<ChangeNode>, theme: DisplayTheme): String {
@@ -193,8 +210,33 @@ internal class ChangeFlowsPanel(
         add(JPanel(VerticalLayout(scaled(2))).apply {
             isOpaque = false
             if (nested) border = pad(left = scaled(16))
-            tree(cluster).forEach(::add)
+            if (state.mode == ChangeFlowsMode.MAP) add(map(cluster, cardWidth - scaled(if (nested) 48 else 24)))
+            else tree(cluster).forEach(::add)
         })
+    }
+
+    private fun map(cluster: ChangeCluster, width: Int): JComponent = JPanel(VerticalLayout(scaled(8))).apply {
+        isOpaque = false
+        val all = ChangeFlowsViewState.mapAll(cluster.id) in state.expanded
+        add(ChangeFlowMap(flows, cluster, width, zoom, state.selected[cluster.id], actions.focus,
+            if (all) Int.MAX_VALUE else CHANGE_MAP_PREVIEW_STEPS))
+        if (cluster.members.size > CHANGE_MAP_PREVIEW_STEPS) add(ActionLink(
+            if (all) "Show fewer steps" else "Show all ${cluster.members.size} steps (+${cluster.members.size - CHANGE_MAP_PREVIEW_STEPS})"
+        ) {
+            if (all && state.selected[cluster.id] !in changeMapOrder(graph, cluster).take(CHANGE_MAP_PREVIEW_STEPS)) state.selected.remove(cluster.id)
+            actions.toggle(ChangeFlowsViewState.mapAll(cluster.id))
+        }.apply { font = font(JBFont.small()) })
+        state.selected[cluster.id]?.let { id ->
+            val node = graph.nodes[id]
+            add(JPanel(VerticalLayout(scaled(3))).apply {
+                isOpaque = false
+                name = "node:$id"
+                border = JBUI.Borders.compound(JBUI.Borders.customLineTop(JBColor.border()), pad(top = scaled(10)))
+                add(label(node.qualifiedName, font(JBFont.label().asBold())))
+                flows.nodeNotes[id]?.let { add(text(it.summary, width, italic(JBFont.label()), null)) }
+                add(details(node, width - scaled(24)))
+            })
+        }
     }
 
     private data class Row(val node: Int, val depth: Int, val repeat: Boolean)

@@ -19,6 +19,7 @@ import java.awt.Cursor
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.event.MouseAdapter
@@ -169,13 +170,26 @@ internal class NoteCanvas(
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
             toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Change flows · Structure from source · LLM labels in italic").apply {
+            add(JLabel("Change flows").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = "Functions, calls, clusters, counts and outlines come from comparing and resolving the snapshot's source. " +
                     "Arrows are statically resolved calls, not runtime order. Themes, summaries and intents are the assistant's interpretation."
             }, BorderLayout.CENTER)
-            add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFlows() }
-                .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                val group = ButtonGroup()
+                ChangeFlowsMode.entries.forEach { mode ->
+                    add(JToggleButton(if (mode == ChangeFlowsMode.MAP) "Map" else "Outline", flowsView.mode == mode).apply {
+                        font = scaledFont(JBFont.small())
+                        cursor = Cursor.getDefaultCursor()
+                        toolTipText = if (mode == ChangeFlowsMode.MAP) "Connected steps with function details on selection" else "Expandable call tree with inline details"
+                        group.add(this)
+                        addActionListener { flowsView.mode = mode; flowsScroll = 0; refreshFlows() }
+                    })
+                }
+                add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFlows() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
         }
         dragBy(header, FLOWS_KEY)
         val actions = ChangeFlowActions(
@@ -524,7 +538,7 @@ internal class NoteCanvas(
         const val MAX_BODY_HEIGHT = 520
         val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
         val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
-        const val FLOWS_WIDTH = 640
+        const val FLOWS_WIDTH = 920
         const val MAX_FLOWS_HEIGHT = 760
     }
 }

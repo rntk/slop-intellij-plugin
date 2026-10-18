@@ -177,6 +177,7 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
             themes = listOf(ChangeTheme("VIP discount at checkout", "Checkout applies a discount for VIPs.", listOf(graph.cluster(checkout.id)!!.id)))))
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 900) }
         try {
+            canvas.flowsView.mode = ChangeFlowsMode.OUTLINE
             canvas.showNotes(emptyList(), flows = flows)
             fun texts() = descendants(canvas).mapNotNull {
                 (it as? JLabel)?.text ?: (it as? javax.swing.AbstractButton)?.text ?: (it as? javax.swing.text.JTextComponent)?.text
@@ -184,12 +185,12 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
             assertTrue(texts().contains("VIP discount at checkout"))
             assertTrue("The first theme opens", texts().contains("Shop.checkout"))
             assertTrue(texts().contains("Adds a VIP discount."))
-            assertFalse("Outline is folded", texts().any { it.contains("Outline") })
+            assertFalse("Outline is folded", texts().any { it.startsWith("Outline ·") })
             // Formatting-only total is minor and folds away under its caller.
             assertFalse(texts().contains("Shop.total"))
             canvas.flowsView.toggle(ChangeFlowsViewState.node(checkout.id))
             canvas.showNotes(emptyList(), flows = flows)
-            assertTrue(texts().any { it.startsWith("Outline") })
+            assertTrue(texts().any { it.startsWith("Outline ·") })
             assertTrue(texts().any { it.contains("if vip() › discount()") })
             assertTrue(texts().contains("⚑ Check the discount guard"))
             assertFalse(texts().any { it.startsWith("+") && it.contains("discount();") })
@@ -203,7 +204,7 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
             assertTrue(texts().contains("Whitespace only"))
             // A new graph starts folded again.
             canvas.showNotes(emptyList(), flows = ChangeFlows(graph.copy()))
-            assertFalse(texts().any { it.startsWith("Outline") })
+            assertFalse(texts().any { it.startsWith("Outline ·") })
         } finally { Disposer.dispose(canvas) }
     }
 
