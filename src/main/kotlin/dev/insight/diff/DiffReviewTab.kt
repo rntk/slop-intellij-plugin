@@ -63,6 +63,7 @@ internal class DiffReviewTab(
         project = project,
         removeFlows = { state.removeFlows(); renderCanvas() },
         summarize = { summarize() },
+        fillTopicSummaries = { if (canSummarize) session.send("/topic-summaries") },
         generateTopics = { if (canSummarize) session.send("/topics") },
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
@@ -139,20 +140,23 @@ internal class DiffReviewTab(
                     }
                     return topicsReply(run)
                 }
-                if (isSummariesRequest(question)) {
+                if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
+                    val topicSummaries = question.trim() == "/topic-summaries"
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = withBackgroundProgress(project, "Generating change summaries") {
                         reportRawProgress { reporter ->
                             reporter.text("Summarizing the change…")
                             ChangeSummarizer(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
-                                .run(context.startSummaries(), summariesFocus(question), context::summarize, onToolCall,
+                                .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
+                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
                                     onProgress = { done, total ->
                                         reporter.details("$done of $total summaries")
                                         reporter.fraction(if (total > 0) done.toDouble() / total else null)
                                     })
                         }
                     }
-                    return summariesReply(run)
+                    return if (topicSummaries) summariesReply(run).replace("They show their names in the Summaries card.",
+                        "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else summariesReply(run)
                 }
                 val description = isDescriptionRequest(question)
                 val flows = isFlowsRequest(question)
@@ -297,7 +301,7 @@ internal class DiffReviewTab(
 
     private fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
 
-    private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize) else null
+    private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
     /** The topics document shows the file summaries too, so it follows every summary and chat update. */
     private fun summariesChanged() { canvas.updateSummaries(summariesCard()); canvas.updateTopics(topicsCard()) }
@@ -426,6 +430,16 @@ internal class DiffReviewTab(
 
             override suspend fun flowsUncovered(): FlowCoverage? = withContext(Dispatchers.EDT) {
                 if (disposed || live.refreshing || live.revision != capturedRevision) null else live.flows?.uncovered()
+            }
+
+            override suspend fun startTopicSummaries(): ChangeSummaries = withContext(Dispatchers.EDT) {
+                current()
+                live.startTopicSummaries(capturedRevision).also { summariesChanged() }
+            }
+
+            override suspend fun summarizeTopics(entries: Map<Int, String>): ChangeSummaries = withContext(Dispatchers.EDT) {
+                current()
+                live.summarizeTopics(capturedRevision, entries).also { summariesChanged() }
             }
 
             override suspend fun startTopics(): ChangeTopics = withContext(Dispatchers.EDT) {

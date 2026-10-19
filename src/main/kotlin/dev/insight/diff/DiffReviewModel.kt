@@ -72,11 +72,16 @@ class DiffReviewState(paths: Set<String>? = null) {
 
     var topics = ChangeTopics(emptyList())
         private set
+    var topicSummaries = ChangeSummaries(buildTopicSummaryTree(topics))
+        private set
     var topicsVisible = false
         private set
 
     fun startTopics(): ChangeTopics {
-        if (topics.complete) topics = ChangeTopics(snapshot.files)
+        if (topics.complete) {
+            topics = ChangeTopics(snapshot.files)
+            topicSummaries = ChangeSummaries(buildTopicSummaryTree(topics))
+        }
         topicsVisible = true
         return topics
     }
@@ -84,7 +89,10 @@ class DiffReviewState(paths: Set<String>? = null) {
     fun hideTopics() { topicsVisible = false }
     fun assignTopic(expected: Int, path: String, label: String): ChangeTopics {
         check(expected)
-        return topics.assign(path, label).also { topics = it }
+        return topics.assign(path, label).also {
+            topics = it
+            topicSummaries = topicSummaries.retainedIn(buildTopicSummaryTree(it))
+        }
     }
 
     fun update(globalSnapshot: ReviewSnapshot) {
@@ -110,6 +118,8 @@ class DiffReviewState(paths: Set<String>? = null) {
             val tree = buildSummaryTree(next.files)
             summaries = if (requestChanged) ChangeSummaries(tree) else summaries.retainedIn(tree)
             topics = if (requestChanged) ChangeTopics(next.files) else topics.retainedIn(next.files)
+            val topicTree = buildTopicSummaryTree(topics)
+            topicSummaries = if (requestChanged) ChangeSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
             revision++
         }
         snapshot = next
@@ -183,6 +193,26 @@ class DiffReviewState(paths: Set<String>? = null) {
     fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
         check(expected)
         return summaries.summarize(entries).also { summaries = it }
+    }
+
+    fun startTopicSummaries(expected: Int): ChangeSummaries {
+        check(expected)
+        topicSummaries = seedTopicSummaries(topicSummaries, summaries)
+        return topicSummaries
+    }
+
+    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+        check(expected)
+        topicSummaries = topicSummaries.summarize(entries)
+        // File summaries are shared with the ordinary Summaries view.
+        val files = topicSummaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
+            .mapNotNull { node -> topicSummaries.text(node.id)?.let { node.path to it } }.toMap()
+        val shared = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE && summaries.text(it.id) == null }
+            .mapNotNull { node -> files[node.path]?.let { node.id to it } }.toMap()
+        shared.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
+            summaries = summaries.summarize(batch.associate { it.key to it.value })
+        }
+        return topicSummaries
     }
 
     fun clearSummaries() { summaries = ChangeSummaries(summaries.tree) }

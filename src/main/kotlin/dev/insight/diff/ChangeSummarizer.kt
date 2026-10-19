@@ -202,7 +202,7 @@ class ChangeSummarizer(
     }
 
     private fun folderSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
-        Every node in "nodes" is a folder, a group of a folder's entries, or the root, listed with its children's
+        Every node in "nodes" is a folder, a code topic/subtopic, a group of entries, or the root, listed with its children's
         summaries. Briefly describe what each part contributes to the change, using its children's summaries.
         If a node has kind "root", summarize the overall change.
     """.trimIndent() + focusLine(focus)
@@ -212,7 +212,8 @@ class ChangeSummarizer(
     companion object {
         private val SYSTEM_PREFIX = """
             $CODE_AS_DATA
-            You write concise summaries for a code change shown as a tree of files and folders.
+            You write concise summaries for a code change shown as a tree of files and folders or code topics.
+            Topic locations use > between levels; describe what their files contribute to that topic.
             This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
             Keep summaries brief and use plain text.
         """.trimIndent()

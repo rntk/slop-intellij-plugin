@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -30,25 +31,55 @@ import kotlin.math.roundToInt
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
 internal data class SummariesCard(val summaries: ChangeSummaries, val running: Boolean, val canRun: Boolean)
 
-/** Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity. */
+/** The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right, as topics do. */
+internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY }
+
+/**
+ * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
+ * modes, so folding a folder in the hierarchy collapses it in the outline too.
+ */
 internal class ChangeSummariesViewState {
+    var mode = ChangeSummariesMode.OUTLINE
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
+    /** Shows each node's file or folder name above its summary. */
+    var showNames = false
+    /** The level picked in the hierarchy's switcher; nodes that appear later open to that level too. */
+    private var level: Int? = null
     private var tree: ChangeSummaryTree? = null
 
-    /** New nodes open by default in a small tree, only the root in a large one; nodes the reader has seen keep their state. */
+    /**
+     * New nodes open by default in a small tree, only the root in a large one, or down to the picked level; nodes the reader
+     * has seen keep their state.
+     */
     fun update(tree: ChangeSummaryTree) {
         if (tree === this.tree) return
         this.tree = tree
         val small = tree.nodes.size <= SMALL_TREE
-        for (node in tree.nodes) if (seen.add(node.identity) && node.children.isNotEmpty() && (small || node.kind == SummaryKind.ROOT))
+        val level = level
+        for (node in tree.nodes) if (seen.add(node.identity) && node.children.isNotEmpty() &&
+            (if (level != null) tree.depth(node.id) < level else small || node.kind == SummaryKind.ROOT))
             expanded += node.identity
         if (tree.nodes.none { it.identity == selected }) selected = null
     }
 
     fun toggle(identity: String) { if (!expanded.remove(identity)) expanded += identity }
     fun select(identity: String) { selected = if (selected == identity) null else identity }
+
+    /** Level n opens the folders above depth n and folds the rest; [branchLevels] opens every folder down to the files. */
+    fun selectLevel(level: Int, tree: ChangeSummaryTree) {
+        this.level = level
+        for (node in tree.nodes) if (node.children.isNotEmpty()) {
+            if (tree.depth(node.id) < level) expanded += node.identity else expanded -= node.identity
+        }
+    }
+
+    /** The level the current folding matches, if any; folding by hand can leave it between levels. */
+    fun shownLevel(tree: ChangeSummaryTree): Int? {
+        val branches = tree.nodes.filter { it.children.isNotEmpty() }
+        return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.depth(it.id) < level) } }
+    }
 
     /** Complete word contexts are retained without LRU eviction so hovering never needs a request. */
     val scored = mutableMapOf<Pair<String, Int>, SummaryContext>()
@@ -96,7 +127,28 @@ internal class ChangeSummariesViewState {
         }
     }
 
-    companion object { const val SMALL_TREE = 30 }
+    companion object {
+        const val SMALL_TREE = 30
+
+        /** Columns of folders, groups and the root; an empty diff has none. */
+        fun branchLevels(tree: ChangeSummaryTree): Int =
+            tree.nodes.filter { it.children.isNotEmpty() }.maxOfOrNull { tree.depth(it.id) + 1 } ?: 0
+    }
+}
+
+/** How far summarizing has come, shown at the top of both modes. */
+internal fun summariesStatus(card: SummariesCard): String {
+    val summaries = card.summaries
+    val count = summaries.count
+    val total = summaries.total
+    val files = summaries.tree.root.files.size
+    val fileCount = "$files file${if (files == 1) "" else "s"}"
+    return when {
+        total == 0 -> "No changed files"
+        card.running && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
+        summaries.complete -> "$total summaries · $fileCount"
+        else -> "$count of $total summarized · $fileCount"
+    }
 }
 
 /** Scoring publishes [context] first. A click requests the separate search and selects its best match. */
@@ -123,6 +175,7 @@ internal class ChangeSummaryActions(
     val select: (String) -> Unit,
     val openFile: (String) -> Unit,
     val showDiffCard: (String) -> Unit,
+    val showNames: (Boolean) -> Unit = {},
     /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
 )
@@ -150,7 +203,15 @@ internal class ChangeSummariesPanel(
 
     init {
         isOpaque = false
-        add(text(status(), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
+        add(JBCheckBox("Show names", state.showNames).apply {
+            name = "summaries-show-names"
+            font = font(JBFont.small())
+            isOpaque = false
+            toolTipText = "Show each file and folder name above its summary"
+            border = pad(bottom = scaled(6))
+            addActionListener { actions.showNames(isSelected) }
+        })
+        add(text(summariesStatus(card), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
         add(text(when {
             state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
             state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
@@ -161,18 +222,6 @@ internal class ChangeSummariesPanel(
         add(text("The tree comes from the changed paths; single-entry folders are merged and large folders split into groups. " +
             "Summaries are LLM interpretation. Select one to see its file or folder.", cardWidth, font(JBFont.small()), help)
             .apply { border = pad(top = scaled(10)) })
-    }
-
-    private fun status(): String {
-        val count = summaries.count
-        val total = summaries.total
-        val fileCount = plural(tree.root.files.size, "file")
-        return when {
-            total == 0 -> "No changed files"
-            card.running && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
-            summaries.complete -> "$total summaries · $fileCount"
-            else -> "$count of $total summarized · $fileCount"
-        }
     }
 
     private fun addNode(node: SummaryNode, depth: Int) {
@@ -187,11 +236,15 @@ internal class ChangeSummariesPanel(
         val summary = summaries.text(node.id)
         val tracing = state.tracing?.takeIf { it.identity == node.identity && it.summary == summary }
         val match = matches[node.identity]
+        val nameText = if (state.showNames) text(displayName(node), textWidth, font(JBFont.small().asBold()), help) else null
+        val missing = if (card.running) "summarizing…" else "no summary yet"
+        val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
+                .also { area -> if (node.children.isNotEmpty()) interactive(area as JTextArea, node, summary, tracing) }
+            else text(if (nameText != null) missing else "${node.label} · $missing", textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
-            add(if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
-                .also { area -> if (node.children.isNotEmpty()) interactive(area as JTextArea, node, summary, tracing) }
-                else text("${node.label} · ${if (card.running) "summarizing…" else "no summary yet"}", textWidth, italic(JBFont.label()), help))
+            nameText?.let { add(it) }
+            add(summaryText)
             tracing?.let { add(text(traceStatus(it), textWidth, font(JBFont.small()), help).apply { name = "trace:${node.identity}" }) }
             match?.let { add(text(matchLabel(it), textWidth, font(JBFont.small()), MATCH_TEXT).apply { name = "match:${node.identity}" }) }
             if (selected) add(details(node, textWidth))
@@ -223,7 +276,7 @@ internal class ChangeSummariesPanel(
             // The summary text covers most of the row, so it selects too; details keep their own links and text selection.
             // In interactive reading, a click on a highlighted word searches and jumps; the rest of the row still selects.
             val select = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) actions.select(node.identity) } }
-            listOfNotNull(this, gutterPanel, content, content.getComponent(0).takeIf { node.children.isEmpty() || summary == null })
+            listOfNotNull(this, gutterPanel, content, nameText, summaryText.takeIf { node.children.isEmpty() || summary == null })
                 .forEach { it.addMouseListener(select) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
@@ -294,6 +347,13 @@ internal class ChangeSummariesPanel(
         val percent = (match.probability * 100).roundToInt()
         val query = trace?.query.orEmpty()
         return if (match.identity == best) "● Best match for “$query” · $percent%" else "● Related to “$query” · $percent%"
+    }
+
+    /** The name shown above a summary with Show names: a file name, a merged folder chain, a group's range, or the root's folder. */
+    private fun displayName(node: SummaryNode): String = when (node.kind) {
+        SummaryKind.FILE, SummaryKind.GROUP -> node.label
+        SummaryKind.DIRECTORY -> "${node.label}/"
+        SummaryKind.ROOT -> node.location
     }
 
     /** The real name and location of a node, which its summary replaces in the outline. */

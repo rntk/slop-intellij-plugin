@@ -46,6 +46,7 @@ internal class NoteCanvas(
     private val removeFlows: () -> Unit = {},
     private val summarize: () -> Unit = {},
     private val generateTopics: () -> Unit = {},
+    private val fillTopicSummaries: () -> Unit = {},
     private val removeTopics: () -> Unit = {},
     private val removeSummaries: () -> Unit = {},
     /** Summary prescoring and search use the Decisions API through this launcher. */
@@ -291,7 +292,7 @@ internal class NoteCanvas(
         val outline = topicOutline(topics)
         val hierarchy = topicsView.mode == ChangeTopicsMode.HIERARCHY
         val width = cardWidth(TOPICS_KEY,
-            if (hierarchy) ChangeTopicHierarchyPanel.defaultWidth(outline.depth) else ChangeTopicsPanel.defaultWidth(outline.depth))
+            if (hierarchy) HierarchyColumnsPanel.defaultWidth(outline.depth) else ChangeTopicsPanel.defaultWidth(outline.depth))
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -326,6 +327,13 @@ internal class NoteCanvas(
                     isEnabled = content.canRun && topics.files.isNotEmpty()
                     toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
                     addActionListener { generateTopics() }
+                })
+                if (hierarchy) add(JButton("Fill summaries").apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
+                    toolTipText = "Fill missing summaries for every topic and subtopic, including folded topics"
+                    addActionListener { fillTopicSummaries() }
                 })
                 val summaries = content.summaries
                 if (summaries.total > 0 && !summaries.complete) add(JButton(if (summaries.count == 0) "Summarize" else "Continue summaries").apply {
@@ -394,9 +402,15 @@ internal class NoteCanvas(
         refreshCard(TOPICS_KEY)
     }
 
-    /** The summary tree as a wide reading card; expanding, selecting and new summaries rebuild only this card, in place. */
+    /**
+     * The summary tree as a wide reading card, as an outline or as the folder hierarchy; mode changes, expanding, selecting
+     * and new summaries rebuild only this card, in place.
+     */
     private fun summariesCard(content: SummariesCard): JPanel {
-        val width = cardWidth(SUMMARIES_KEY, SUMMARIES_WIDTH)
+        val tree = content.summaries.tree
+        val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
+        val width = cardWidth(SUMMARIES_KEY,
+            if (hierarchy) HierarchyColumnsPanel.defaultWidth(ChangeSummariesViewState.branchLevels(tree)) else SUMMARIES_WIDTH)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -409,7 +423,22 @@ internal class NoteCanvas(
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 val summaries = content.summaries
-                if (traceSummaries != null) add(JButton("Score").apply {
+                val levels = ChangeSummariesViewState.branchLevels(tree)
+                if (hierarchy && levels > 0) add(summaryLevels(tree, levels))
+                val group = ButtonGroup()
+                ChangeSummariesMode.entries.forEach { mode ->
+                    add(JToggleButton(if (mode == ChangeSummariesMode.OUTLINE) "Outline" else "Hierarchy", summariesView.mode == mode).apply {
+                        name = "summaries-mode:${mode.name.lowercase()}"
+                        font = scaledFont(JBFont.small())
+                        cursor = Cursor.getDefaultCursor()
+                        toolTipText = if (mode == ChangeSummariesMode.OUTLINE) "Indented summaries from the whole change down to each file"
+                            else "Folders broad to specific, left to right, with each file's summary"
+                        group.add(this)
+                        addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
+                    })
+                }
+                // Word tracing reads the summaries of open folders, which only the outline shows.
+                if (traceSummaries != null && !hierarchy) add(JButton("Score").apply {
                     name = "summaries-score"
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
@@ -439,21 +468,30 @@ internal class NoteCanvas(
             select = { identity -> summariesView.select(identity); refreshSummaries() },
             openFile = open,
             showDiffCard = showDiffCard,
+            showNames = { show -> summariesView.showNames = show; refreshSummaries() },
             trace = ::traceSummary,
         )
+        val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(ChangeSummariesPanel(content, summariesView, width - scaled(2 * PADDING + 4) - scaled(16), zoom, actions), BorderLayout.CENTER)
+            add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
+                isOpaque = false
+                add(JLabel(summariesStatus(content)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions))
+            } else ChangeSummariesPanel(content, summariesView, inner, zoom, actions), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
         val maxBody = scaled(MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
-            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-            preferredSize = Dimension(width, minOf(body.preferredSize.height, maxBody))
+            // A deep hierarchy may scroll sideways; leave room for that scroll bar.
+            val sideways = if (hierarchy && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
+            if (!hierarchy) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
+            horizontalScrollBar.unitIncrement = scaled(16)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = summariesScroll
             verticalScrollBar.addAdjustmentListener { summariesScroll = it.value }
@@ -470,6 +508,24 @@ internal class NoteCanvas(
             }
         }, BorderLayout.CENTER)
         return prepareCard(SUMMARIES_KEY, card, width)
+    }
+
+    /** Level n shows folder levels 1..n+1 and folds the rest, as in the topic hierarchy; the last level shows every file. */
+    private fun summaryLevels(tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        isOpaque = false
+        add(JLabel("Levels").apply {
+            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
+        })
+        val group = ButtonGroup()
+        val current = summariesView.shownLevel(tree)
+        for (level in 0..levels) add(JToggleButton(if (level == levels) "Files" else "${level + 1}", level == current).apply {
+            name = "summary-level:$level"
+            font = scaledFont(JBFont.small())
+            cursor = Cursor.getDefaultCursor()
+            toolTipText = if (level == levels) "Show every folder level and file" else "Show folder levels 1–${level + 1}"
+            group.add(this)
+            addActionListener { summariesView.selectLevel(level, tree); refreshSummaries() }
+        })
     }
 
     /** Follows every summary and chat update without rebuilding the other cards while the card stays on the canvas. */

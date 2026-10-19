@@ -38,7 +38,12 @@ import javax.swing.border.MatteBorder
 import kotlin.math.roundToInt
 
 /** What the canvas shows for a tab's topics: the labels so far, the summaries beside each file, and whether a turn can run. */
-internal data class TopicsCard(val topics: ChangeTopics, val summaries: ChangeSummaries, val canRun: Boolean)
+internal data class TopicsCard(
+    val topics: ChangeTopics,
+    val summaries: ChangeSummaries,
+    val canRun: Boolean,
+    val topicSummaries: ChangeSummaries = ChangeSummaries(buildTopicSummaryTree(topics)),
+)
 
 /** The document reads every diff in topic order; the hierarchy reads the topics left to right with each file's summary. */
 internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }

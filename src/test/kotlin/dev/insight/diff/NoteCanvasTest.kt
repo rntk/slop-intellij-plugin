@@ -98,7 +98,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.showNotes(emptyList(), flows = flows, summaries = summaries)
             canvas.components.toList().forEach { resize(canvas, it as Container, 150, 100) }
             val bounds = canvas.components.map { it.bounds }.toSet()
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Outline" }.doClick()
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Outline" && it.name == null }.doClick()
+            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
             canvas.updateSummaries(summaries.copy(running = true))
             assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
@@ -279,6 +281,101 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(canvas.topicsView.isSelected(document.outline.nodes.single { it.identity == "storage > user > auth" }))
             canvas.updateTopics(null)
             assertTrue(descendants(canvas).none { it is ChangeTopicsPanel || it is ChangeTopicHierarchyPanel })
+        } finally { canvas.dispose() }
+    }
+
+    fun testSummariesHierarchySpansFolderRowsWithSummariesBesideFilesAndFolds() {
+        val files = listOf("src/wallet/Wallet.kt", "src/wallet/Ledger.kt", "src/auth/Auth.kt", "docs/README.md").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        fun id(identity: String) = tree.nodes.single { it.identity == identity }.id
+        val written = listOf("file:src/wallet/Ledger.kt", "file:src/wallet/Wallet.kt", "file:src/auth/Auth.kt", "file:docs/README.md", "directory:src/wallet")
+        val summaries = ChangeSummaries(tree).summarize(written.associate { id(it) to "Summary of $it." })
+        val opened = mutableListOf<String>()
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
+        fun names() = panel().components.mapNotNull { it.name }
+        fun named(name: String) = panel().components.single { it.name == name }
+        fun note(identity: String) = (named("summary:$identity") as javax.swing.JTextArea).text
+        fun bottom(component: Component) = component.y + component.height
+        fun click(component: Component) {
+            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+        }
+        fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
+        fun level(index: Int) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summary-level:$index" }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            // The outline stays the default; the hierarchy is a second mode of the same card.
+            assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
+            toggleButton("Hierarchy").doClick(); layoutTree(canvas)
+            assertTrue(descendants(canvas).none { it is ChangeSummariesPanel })
+            assertEquals(ChangeSummariesMode.HIERARCHY, canvas.summariesView.mode)
+
+            // The root folder in the first column, then its folders; each file is a leaf one column right of its folder.
+            val root = named("node:root")
+            val src = named("node:directory:src")
+            val wallet = named("node:directory:src/wallet")
+            val ledger = named("file:src/wallet/Ledger.kt")
+            val walletFile = named("file:src/wallet/Wallet.kt")
+            val auth = named("file:src/auth/Auth.kt")
+            val readme = named("file:docs/README.md")
+            assertTrue(root.x < src.x && src.x < wallet.x && wallet.x < ledger.x)
+            assertEquals(wallet.x, auth.x)
+            assertEquals(src.x, readme.x)
+            // Every folder spans exactly the rows beneath it.
+            assertEquals(ledger.y, root.y)
+            assertEquals(bottom(readme), bottom(root))
+            assertEquals(ledger.y, src.y)
+            assertEquals(bottom(auth), bottom(src))
+            assertEquals(ledger.y, wallet.y)
+            assertEquals(bottom(walletFile), bottom(wallet))
+            // Summaries start right of their file, level with it.
+            for (file in files) {
+                val leaf = named("file:${file.path}")
+                val beside = named("summary:file:${file.path}")
+                assertEquals(leaf.y, beside.y)
+                assertTrue(beside.x >= leaf.x + leaf.width)
+                assertEquals("Summary of file:${file.path}.", note("file:${file.path}"))
+            }
+
+            // A folded folder takes one row and shows its own summary, else what it hides; the outline folds with it.
+            click(descendants(panel()).single { it.name == "toggle:directory:src/wallet" })
+            assertFalse("file:src/wallet/Ledger.kt" in names())
+            assertEquals("Summary of directory:src/wallet.", note("directory:src/wallet"))
+            assertFalse("directory:src/wallet" in canvas.summariesView.expanded)
+            click(descendants(panel()).single { it.name == "toggle:directory:src" })
+            assertEquals("No summary yet · wallet/, auth/Auth.kt", note("directory:src"))
+            assertEquals(named("node:directory:src").y, named("summary:directory:src").y)
+
+            // The switcher follows folding by hand; level 1 folds the root, and Files shows every folder again.
+            assertEquals(listOf("1", "2", "3", "Files"), (0..3).map { level(it).text })
+            assertEquals(listOf(1), (0..3).filter { level(it).isSelected })
+            level(0).doClick(); layoutTree(canvas)
+            assertEquals(listOf("node:root", "summary:root"), names().sorted())
+            assertEquals("No summary yet · src/, docs/README.md", note("root"))
+            assertTrue(level(0).isSelected)
+            level(3).doClick(); layoutTree(canvas)
+            assertTrue(names().containsAll(files.map { "file:${it.path}" }))
+            assertTrue(level(3).isSelected)
+
+            // Selecting a folder outlines it and survives summary updates and resize.
+            click(named("node:directory:src"))
+            assertEquals("directory:src", canvas.summariesView.selected)
+            resize(canvas, canvas.components.single() as Container, 120, 90)
+            val bounds = canvas.components.single().bounds
+            val more = summaries.summarize(mapOf(id("directory:src") to "Adds wallets and auth."))
+            canvas.updateSummaries(SummariesCard(more, running = false, canRun = true))
+            assertEquals(bounds, canvas.components.single().bounds)
+            assertEquals("directory:src", canvas.summariesView.selected)
+            descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth/Auth.kt" }.doClick()
+            assertEquals(listOf("src/auth/Auth.kt"), opened)
+            // Back in the outline, the selection carries over with its details.
+            toggleButton("Outline").doClick(); layoutTree(canvas)
+            assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
+            assertTrue(descendants(canvas).any { it.name == "details:directory:src" })
         } finally { canvas.dispose() }
     }
 
@@ -684,6 +781,32 @@ class NoteCanvasTest : BasePlatformTestCase() {
             saveContext!!(oldContext)
             finishScoring!!(Result.success(Unit))
             assertTrue("Cancelled scoring must ignore late results", canvas.summariesView.scored.values.none { it.identity == "root" })
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testSummariesShowNamesAboveSummaries() {
+        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900) }
+        fun texts(identity: String) = descendants(descendants(canvas).single { it.name == "summary:$identity" } as Container)
+            .filterIsInstance<javax.swing.JTextArea>().map { it.text }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            assertEquals(listOf("Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
+            (descendants(canvas).single { it.name == "summaries-show-names" } as javax.swing.JCheckBox).doClick()
+            layoutTree(canvas)
+            assertTrue(canvas.summariesView.showNames)
+            assertEquals(listOf("ui/", "Summary of root."), texts("root"))
+            assertEquals(listOf("canvas/Canvas.kt", "Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
+            canvas.updateSummaries(SummariesCard(summaries, running = true, canRun = false))
+            layoutTree(canvas)
+            assertTrue("Show names survives re-rendering", (descendants(canvas).single { it.name == "summaries-show-names" } as javax.swing.JCheckBox).isSelected)
         } finally {
             canvas.dispose()
         }
