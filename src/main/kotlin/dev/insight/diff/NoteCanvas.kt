@@ -26,6 +26,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.Point2D
+import kotlinx.coroutines.Job
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import javax.swing.*
@@ -47,6 +48,8 @@ internal class NoteCanvas(
     private val generateTopics: () -> Unit = {},
     private val removeTopics: () -> Unit = {},
     private val removeSummaries: () -> Unit = {},
+    /** Interactive summaries need the Decisions API; without a launcher the card offers no Interactive mode. */
+    private val traceSummaries: SummaryTraceLauncher? = null,
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
@@ -65,6 +68,7 @@ internal class NoteCanvas(
     private var summaries: SummariesCard? = null
     internal val summariesView = ChangeSummariesViewState()
     private var summariesScroll = 0
+    private var traceJob: Job? = null
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -98,7 +102,7 @@ internal class NoteCanvas(
         this.flows = flows
         flowsView.reset(flows)
         this.summaries = summaries
-        summaries?.let { summariesView.update(it.summaries.tree) }
+        summaries?.let { summariesView.update(it.summaries.tree); retainTrace(it.summaries) } ?: stopTracing()
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -402,6 +406,19 @@ internal class NoteCanvas(
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 val summaries = content.summaries
+                if (traceSummaries != null) add(JCheckBox("Interactive", summariesView.interactive).apply {
+                    name = "summaries-interactive"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Rest the pointer on a word to highlight its context; click a highlighted word to search summaries up to " +
+                        "${SummaryTracer.LEVELS} levels below and jump to the best match. Uses the Decisions API."
+                    addActionListener {
+                        summariesView.interactive = isSelected
+                        if (!isSelected) stopTracing()
+                        refreshSummaries()
+                    }
+                })
                 add(JButton(when {
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
@@ -424,6 +441,7 @@ internal class NoteCanvas(
             select = { identity -> summariesView.select(identity); refreshSummaries() },
             openFile = open,
             showDiffCard = showDiffCard,
+            trace = ::traceSummary,
         )
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -441,7 +459,17 @@ internal class NoteCanvas(
             // The viewport has no size yet; restore the reading position after layout.
             val restore = summariesScroll
             verticalScrollBar.addAdjustmentListener { summariesScroll = it.value }
-            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+            SwingUtilities.invokeLater {
+                verticalScrollBar.value = restore
+                // A jump to a traced summary scrolls its row into view once the rebuilt card is laid out.
+                // A newer rebuild owns the reveal.
+                if (cards[SUMMARIES_KEY] !== card) return@invokeLater
+                val target = summariesView.reveal ?: return@invokeLater
+                summariesView.reveal = null
+                card.validate()
+                descendantsOf(body).filterIsInstance<JComponent>().firstOrNull { it.name == "summary:$target" }
+                    ?.let { row -> row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height)) }
+            }
         }, BorderLayout.CENTER)
         return prepareCard(SUMMARIES_KEY, card, width)
     }
@@ -454,8 +482,83 @@ internal class NoteCanvas(
         }
         if (content == summaries) return
         summaries = content
-        content?.let { summariesView.update(it.summaries.tree) }
+        content?.let { summariesView.update(it.summaries.tree); retainTrace(it.summaries) }
         refreshSummaries()
+    }
+
+    /**
+     * Scores word [word] without searching. Only a click on a highlighted word requests the separate search.
+     * A newer word cancels either stage; answers from a replaced request or changed summary are dropped.
+     */
+    private fun traceSummary(identity: String, word: Int, search: Boolean) {
+        if (!summariesView.interactive) return
+        val launcher = traceSummaries ?: return
+        val content = summaries?.summaries ?: return
+        val node = content.tree.nodes.firstOrNull { it.identity == identity } ?: return
+        val text = content.text(node.id) ?: return
+        val words = SummaryWord.split(text)
+        if (word !in words.indices) return
+        val current = summariesView.tracing?.takeIf { it.identity == identity && it.summary == text }
+        val highlighted = current != null && (current.word.index == word || current.context?.context?.any { it.index == word } == true)
+        if (current != null && highlighted && (current.error == null || current.context != null)) {
+            if (!search) return
+            if (current.trace != null) jumpTo(current.trace)
+            else if (!current.searchRequested || current.error != null) {
+                summariesView.tracing = current.copy(searchRequested = true, error = null)
+                if (current.context != null) searchSummary()
+            }
+            refreshSummaries()
+            return
+        }
+        traceJob?.cancel()
+        val tracing = SummaryTracing(identity, text, words[word])
+        summariesView.tracing = tracing
+        refreshSummaries()
+        traceJob = launcher.score(content, node.id, word) { result ->
+            val now = summariesView.tracing
+            if (now == null || now.token !== tracing.token) return@score
+            result.onSuccess { context ->
+                summariesView.tracing = now.copy(context = context)
+                if (now.searchRequested) searchSummary()
+            }.onFailure { error -> summariesView.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
+            refreshSummaries()
+        }
+    }
+
+    private fun searchSummary() {
+        val launcher = traceSummaries ?: return
+        val content = summaries?.summaries ?: return
+        val current = summariesView.tracing ?: return
+        val context = current.context ?: return
+        val node = content.tree.nodes.firstOrNull { it.identity == current.identity } ?: return
+        traceJob = launcher.search(content, node.id, context) { result ->
+            val now = summariesView.tracing
+            if (now == null || now.token !== current.token) return@search
+            result.onSuccess { trace ->
+                summariesView.tracing = now.copy(trace = trace)
+                summaries?.let { summariesView.show(it.summaries.tree, trace) }
+                jumpTo(trace)
+            }.onFailure { error -> summariesView.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
+            refreshSummaries()
+        }
+    }
+
+    private fun jumpTo(trace: SummaryTrace) {
+        val best = trace.best ?: return
+        summariesView.selected = best.identity
+        summariesView.reveal = best.identity
+    }
+
+    private fun retainTrace(content: ChangeSummaries) {
+        val before = summariesView.tracing
+        summariesView.retain(content)
+        if (before != null && summariesView.tracing == null) traceJob?.cancel()
+    }
+
+    private fun stopTracing() {
+        traceJob?.cancel()
+        traceJob = null
+        summariesView.tracing = null
     }
 
     private fun refreshSummaries() {
@@ -836,6 +939,7 @@ internal class NoteCanvas(
     }
 
     override fun dispose() {
+        traceJob?.cancel()
         editors.values.forEach { it.dispose() }
         editors.clear()
         diffEditors.values.forEach { Disposer.dispose(it) }

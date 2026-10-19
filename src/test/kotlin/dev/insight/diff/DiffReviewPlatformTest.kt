@@ -564,7 +564,10 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(listOf("./", "src/app/", "src/app/a.kt", "src/app/b.kt", "docs/guide.md"), nodes.map { it.location })
             tab.state.summarize(tab.state.revision, nodes.associate { it.id to "Summary of ${it.location} & more" })
             val open = descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }
+            val manager = FileEditorManager.getInstance(project)
+            manager.closeFile(tab.canvasFile)
             open.doClick()
+            assertTrue("Summaries must show the canvas editor", manager.isFileOpen(tab.canvasFile))
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
             assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)

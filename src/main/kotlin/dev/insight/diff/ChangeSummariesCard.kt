@@ -14,13 +14,18 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.Point
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTextArea
+import javax.swing.Timer
 import javax.swing.border.EmptyBorder
+import javax.swing.text.DefaultHighlighter
+import kotlinx.coroutines.Job
 import kotlin.math.roundToInt
 
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
@@ -46,7 +51,54 @@ internal class ChangeSummariesViewState {
     fun toggle(identity: String) { if (!expanded.remove(identity)) expanded += identity }
     fun select(identity: String) { selected = if (selected == identity) null else identity }
 
+    /** Interactive reading: hovering scores word context; clicking a highlight searches the summaries below. */
+    var interactive = false
+    var tracing: SummaryTracing? = null
+    /** A row to scroll into view once the card is laid out again. */
+    var reveal: String? = null
+
+    /** A trace stays only while the traced summary is unchanged; matches whose node is gone are dropped. */
+    fun retain(summaries: ChangeSummaries) {
+        val current = tracing ?: return
+        val nodes = summaries.tree.nodes.associateBy { it.identity }
+        val node = nodes[current.identity]
+        tracing = if (node == null || summaries.text(node.id) != current.summary) null
+            else current.copy(trace = current.trace?.let { trace -> trace.copy(matches = trace.matches.filter { it.identity in nodes }) })
+    }
+
+    /** Opens the levels between the traced summary and its related ones, so every match is visible. */
+    fun show(tree: ChangeSummaryTree, trace: SummaryTrace) {
+        val byIdentity = tree.nodes.associateBy { it.identity }
+        val traced = byIdentity[trace.identity] ?: return
+        for (match in trace.related) {
+            var parent = byIdentity[match.identity]?.parent
+            while (parent != null) {
+                expanded += tree[parent].identity
+                if (parent == traced.id) break
+                parent = tree[parent].parent
+            }
+        }
+    }
+
     companion object { const val SMALL_TREE = 30 }
+}
+
+/** Scoring publishes [context] first. A click requests the separate search and selects its best match. */
+internal data class SummaryTracing(
+    val identity: String,
+    val summary: String,
+    val word: SummaryWord,
+    val context: SummaryContext? = null,
+    val trace: SummaryTrace? = null,
+    val error: String? = null,
+    val searchRequested: Boolean = false,
+    val token: Any = Any(),
+)
+
+/** Runs each stage off the EDT and reports back on it; newer words cancel the returned job. */
+internal interface SummaryTraceLauncher {
+    fun score(summaries: ChangeSummaries, id: Int, word: Int, done: (Result<SummaryContext>) -> Unit): Job
+    fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job
 }
 
 internal class ChangeSummaryActions(
@@ -54,6 +106,8 @@ internal class ChangeSummaryActions(
     val select: (String) -> Unit,
     val openFile: (String) -> Unit,
     val showDiffCard: (String) -> Unit,
+    /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
+    val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
 )
 
 /**
@@ -73,10 +127,16 @@ internal class ChangeSummariesPanel(
     private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
     private val help get() = UIUtil.getContextHelpForeground()
+    private val trace = state.tracing?.takeIf { state.interactive }?.trace
+    private val matches = trace?.related.orEmpty().associateBy { it.identity }
+    private val best = trace?.best?.identity
 
     init {
         isOpaque = false
         add(text(status(), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
+        if (state.interactive && state.tracing == null) add(text("Interactive · Rest the pointer on a word to highlight its context. " +
+            "Click a highlighted word to search the summaries up to ${SummaryTracer.LEVELS} levels below and jump to the best match.",
+            cardWidth, font(JBFont.small()), help).apply { name = "interactive-hint"; border = pad(bottom = scaled(8)) })
         if (summaries.total > 0) addNode(tree.root, 0)
         add(text("The tree comes from the changed paths; single-entry folders are merged and large folders split into groups. " +
             "Summaries are LLM interpretation. Select one to see its file or folder.", cardWidth, font(JBFont.small()), help)
@@ -105,10 +165,15 @@ internal class ChangeSummariesPanel(
         val gutter = scaled(TOGGLE) + scaled(ICON) + scaled(8)
         val textWidth = (cardWidth - depth * scaled(INDENT) - gutter - scaled(8)).coerceAtLeast(scaled(160))
         val summary = summaries.text(node.id)
+        val tracing = state.tracing?.takeIf { state.interactive && it.identity == node.identity && it.summary == summary }
+        val match = matches[node.identity]
         val content = JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             add(if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
+                .also { area -> if (state.interactive) interactive(area as JTextArea, node, summary, tracing) }
                 else text("${node.label} · ${if (card.running) "summarizing…" else "no summary yet"}", textWidth, italic(JBFont.label()), help))
+            tracing?.let { add(text(traceStatus(it), textWidth, font(JBFont.small()), help).apply { name = "trace:${node.identity}" }) }
+            match?.let { add(text(matchLabel(it), textWidth, font(JBFont.small()), MATCH_TEXT).apply { name = "match:${node.identity}" }) }
             if (selected) add(details(node, textWidth))
         }
         val gutterPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
@@ -125,17 +190,92 @@ internal class ChangeSummariesPanel(
         }
         return JPanel(BorderLayout()).apply {
             name = "summary:${node.identity}"
-            isOpaque = selected
-            if (selected) background = UIUtil.getListSelectionBackground(false)
+            isOpaque = selected || match != null
+            background = when {
+                selected -> UIUtil.getListSelectionBackground(false)
+                match != null && match.identity == best -> BEST_MATCH
+                else -> RELATED
+            }
             border = pad(scaled(4), depth * scaled(INDENT), scaled(4), scaled(4))
             toolTipText = node.location
             add(gutterPanel, BorderLayout.WEST)
             add(content, BorderLayout.CENTER)
             // The summary text covers most of the row, so it selects too; details keep their own links and text selection.
+            // In interactive reading, a click on a highlighted word searches and jumps; the rest of the row still selects.
             val select = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) actions.select(node.identity) } }
-            listOf(this, gutterPanel, content, content.getComponent(0)).forEach { it.addMouseListener(select) }
+            listOfNotNull(this, gutterPanel, content, content.getComponent(0).takeIf { !state.interactive || summary == null })
+                .forEach { it.addMouseListener(select) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
+    }
+
+    /**
+     * Resting the pointer on a meaningful word for [DWELL_MS] scores its context; clicking a highlight searches for matches.
+     * The traced word is marked strongly and its context, the words the query keeps, lightly.
+     */
+    private fun interactive(area: JTextArea, node: SummaryNode, summary: String, tracing: SummaryTracing?) {
+        val words = SummaryWord.split(summary)
+        tracing?.let { current ->
+            val context = current.context?.context.orEmpty().filter { it.index != current.word.index }
+            context.forEach { area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(CONTEXT_WORD)) }
+            area.highlighter.addHighlight(current.word.start, current.word.end, DefaultHighlighter.DefaultHighlightPainter(TRACED_WORD))
+        }
+        fun wordAt(point: Point): SummaryWord? {
+            val offset = area.viewToModel2D(point)
+            val word = words.firstOrNull { offset in it.start..it.end }?.takeIf { it.meaningful } ?: return null
+            // The nearest offset is not enough: the pointer must be on the word, not beside it or past the end of its line.
+            val start = area.modelToView2D(word.start) ?: return null
+            val end = area.modelToView2D(word.end) ?: return null
+            val onLine = point.y >= start.y && point.y <= end.maxY
+            val inWord = if (start.y == end.y) point.x >= start.x && point.x <= end.x else point.y <= start.maxY && point.x >= start.x || point.y >= end.y && point.x <= end.x
+            return word.takeIf { onLine && inWord }
+        }
+        fun highlighted(word: SummaryWord) = tracing?.let { current ->
+            word.index == current.word.index || current.context?.context?.any { it.index == word.index } == true
+        } == true
+        var pending: SummaryWord? = null
+        val dwell = Timer(DWELL_MS) { pending?.let { if (area.isShowing) actions.trace(node.identity, it.index, false) } }.apply { isRepeats = false }
+        val pointer = object : MouseAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                val word = wordAt(e.point)
+                area.cursor = Cursor.getPredefinedCursor(if (word != null) Cursor.HAND_CURSOR else Cursor.TEXT_CURSOR)
+                if (word?.index == pending?.index) return
+                pending = word
+                if (word == null || highlighted(word)) dwell.stop() else dwell.restart()
+            }
+
+            override fun mouseExited(e: MouseEvent) { pending = null; dwell.stop() }
+
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount != 1) return
+                dwell.stop()
+                val word = wordAt(e.point)
+                if (word == null) actions.select(node.identity) else actions.trace(node.identity, word.index, highlighted(word))
+            }
+        }
+        area.addMouseListener(pointer)
+        area.addMouseMotionListener(pointer)
+    }
+
+    private fun traceStatus(tracing: SummaryTracing): String {
+        val trace = tracing.trace
+        val levels = "the ${SummaryTracer.LEVELS} levels below"
+        return when {
+            tracing.error != null -> "Tracing “${tracing.word.text}” failed: ${tracing.error}"
+            tracing.context == null -> "Scoring the words around “${tracing.word.text}”…"
+            trace == null && !tracing.searchRequested -> "“${tracing.context.query}” · Click a highlighted word to search related summaries."
+            trace == null -> "“${tracing.context.query}” · Searching the summaries in $levels…"
+            trace.candidates == 0 -> "“${trace.query}” · There are no summaries below this one to search."
+            trace.related.isEmpty() -> "“${trace.query}” · None of the ${trace.candidates} summaries in $levels is related."
+            else -> "“${trace.query}” · ${trace.related.size} of ${trace.candidates} summaries in $levels are related, highlighted below. " +
+                "Click a highlighted word to jump to the best."
+        }
+    }
+
+    private fun matchLabel(match: SummaryMatch): String {
+        val percent = (match.probability * 100).roundToInt()
+        val query = trace?.query.orEmpty()
+        return if (match.identity == best) "● Best match for “$query” · $percent%" else "● Related to “$query” · $percent%"
     }
 
     /** The real name and location of a node, which its summary replaces in the outline. */
@@ -193,5 +333,12 @@ internal class ChangeSummariesPanel(
     companion object {
         const val INDENT = 20
         const val TOGGLE = 14
-        const val ICON = 16    }
+        const val ICON = 16
+        const val DWELL_MS = 450
+        private val TRACED_WORD = JBColor(Color(0xFFD866), Color(0x7A6420))
+        private val CONTEXT_WORD = JBColor(Color(0xD6E8FF), Color(0x2F4A6B))
+        private val BEST_MATCH = JBColor(Color(0xFFF1C2), Color(0x4A4126))
+        private val RELATED = JBColor(Color(0xEEF5FF), Color(0x2B3545))
+        private val MATCH_TEXT = JBColor(Color(0x8A6100), Color(0xD9B44A))
+    }
 }

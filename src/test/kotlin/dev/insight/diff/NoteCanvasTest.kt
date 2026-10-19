@@ -7,6 +7,7 @@ import java.awt.Point
 import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import javax.swing.JLabel
+import kotlinx.coroutines.Job
 
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
@@ -556,6 +557,125 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertEquals(4, canvas.componentCount)
         canvas.showNotes(listOf(notes[3]))
         assertEquals(1, canvas.componentCount) // The flow disappears once no calls connect notes.
+    }
+
+    fun testInteractiveSummariesScoreFirstAndSearchOnlyWhenAHighlightedWordIsClicked() {
+        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt", "ui/summaries/Summaries.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val root = "Deleted views: canvas, hierarchy, summaries."
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label.substringBefore('/')} view."
+        })
+        val hierarchy = tree.nodes.single { it.path == "ui/hierarchy/Hierarchy.kt" }
+        val canvasFile = tree.nodes.single { it.path == "ui/canvas/Canvas.kt" }
+        val traced = mutableListOf<Pair<Int, Int>>()
+        val searched = mutableListOf<SummaryContext>()
+        var finishSearch: ((Result<SummaryTrace>) -> Unit)? = null
+        var finishScore: (() -> Unit)? = null
+        var delayScoring = false
+        val searchJobs = mutableListOf<Job>()
+        val scoreJobs = mutableListOf<Job>()
+        val launcher = object : SummaryTraceLauncher {
+            override fun score(content: ChangeSummaries, id: Int, word: Int, done: (Result<SummaryContext>) -> Unit): Job {
+                traced += id to word
+                val words = SummaryWord.split(content.text(id)!!)
+                val context = listOf(words[0], words[1], words[word])
+                finishScore = { done(Result.success(SummaryContext("root", root, words[word], context, SummaryTracer.query(root, context)))) }
+                if (!delayScoring) finishScore!!()
+                return Job().also { scoreJobs += it; if (!delayScoring) it.complete() }
+            }
+
+            override fun search(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+                searched += context
+                finishSearch = done
+                return Job().also { searchJobs += it }
+            }
+        }
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        fun named(name: String) = descendants(canvas).filter { it.name == name }
+        fun rootText() = descendants(named("summary:root").single() as Container).filterIsInstance<javax.swing.JTextArea>().first()
+        fun clickWord(text: String) {
+            val area = rootText()
+            val start = area.text.indexOf(text)
+            val box = area.modelToView2D(start + 1)
+            area.dispatchEvent(MouseEvent(area, MouseEvent.MOUSE_CLICKED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+        }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            assertTrue(named("interactive-hint").isEmpty())
+            (named("summaries-interactive").single() as javax.swing.JCheckBox).doClick()
+            layoutTree(canvas)
+            assertEquals(1, named("interactive-hint").size)
+
+            clickWord("hierarchy")
+            assertEquals(listOf(0 to 3), traced)
+            assertTrue("Scoring alone must not search candidates", searched.isEmpty())
+            assertNull(canvas.summariesView.selected)
+            assertEquals(3, rootText().highlighter.highlights.size)
+            assertTrue((named("trace:root").single() as javax.swing.JTextArea).text.contains("Click a highlighted word"))
+
+            // Clicking a context word searches the original query, without rescoring that word.
+            clickWord("Deleted")
+            assertEquals(1, traced.size)
+            assertEquals("hierarchy", searched.single().word.text)
+            assertTrue((named("trace:root").single() as javax.swing.JTextArea).text.contains("Searching"))
+            clickWord("views")
+            assertEquals("Repeated clicks must not start overlapping searches", 1, searched.size)
+            val context = searched.single()
+            val result = SummaryTrace("root", root, context.word, context.context, context.query,
+                listOf(SummaryMatch(hierarchy.id, hierarchy.identity, 0.9, 1), SummaryMatch(canvasFile.id, canvasFile.identity, 0.1, 1)), 3)
+            finishSearch!!(Result.success(result))
+            layoutTree(canvas)
+            // The best related summary is selected, labelled and its level opened; unrelated ones are not marked.
+            assertEquals(hierarchy.identity, canvas.summariesView.selected)
+            assertTrue((named("match:${hierarchy.identity}").single() as javax.swing.JTextArea).text.startsWith("● Best match for “Deleted views: hierarchy”"))
+            assertTrue(named("match:${canvasFile.identity}").isEmpty())
+            assertTrue((named("trace:root").single() as javax.swing.JTextArea).text.contains("1 of 3 summaries"))
+            // The traced word and its two context words are highlighted, not the siblings.
+            assertEquals(3, rootText().highlighter.highlights.size)
+
+            clickWord("hierarchy")
+            assertEquals("The same word is not traced twice", 1, traced.size)
+            assertEquals("Completed searches are reused", 1, searched.size)
+
+            (named("summaries-interactive").single() as javax.swing.JCheckBox).doClick()
+            layoutTree(canvas)
+            assertNull(canvas.summariesView.tracing)
+            assertTrue(named("match:${hierarchy.identity}").isEmpty())
+            assertEquals(0, rootText().highlighter.highlights.size)
+            assertTrue(searchJobs.single().isCancelled)
+            finishSearch!!(Result.success(result))
+            assertNull("Late search answers must not restore a cleared trace", canvas.summariesView.tracing)
+
+            // Confirmation during scoring waits for context, then starts exactly one search.
+            delayScoring = true
+            (named("summaries-interactive").single() as javax.swing.JCheckBox).doClick()
+            layoutTree(canvas)
+            clickWord("hierarchy")
+            clickWord("hierarchy")
+            assertEquals(1, searched.size)
+            finishScore!!()
+            layoutTree(canvas)
+            assertEquals(2, searched.size)
+
+            // Choosing another word cancels search; stale search and scoring answers are ignored.
+            clickWord("canvas")
+            assertTrue(searchJobs.last().isCancelled)
+            finishSearch!!(Result.success(result))
+            assertEquals("canvas", canvas.summariesView.tracing!!.word.text)
+            assertNull(canvas.summariesView.tracing!!.trace)
+            val changed = summaries.summarize(mapOf(0 to "Updated summary."))
+            canvas.updateSummaries(SummariesCard(changed, running = false, canRun = true))
+            assertTrue(scoreJobs.last().isCancelled)
+            finishScore!!()
+            assertNull("A changed summary invalidates pending scoring", canvas.summariesView.tracing)
+        } finally {
+            canvas.dispose()
+        }
     }
 
     private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }

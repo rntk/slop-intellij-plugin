@@ -13,14 +13,18 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
+import dev.insight.apilog.ApiLogs
 import dev.insight.chat.*
+import dev.insight.core.decisionsClient
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
+import java.time.Duration
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
 
 /** Owns one conversation and canvas. File selection never changes this tab's scope. */
 internal class DiffReviewTab(
@@ -34,6 +38,10 @@ internal class DiffReviewTab(
     private var disposed = false
     val isDisposed: Boolean get() = disposed
     var onCanvasSelected: () -> Unit = {}
+    /** One tracer per tab, so its cached judgments serve every word traced in this review. */
+    private val summaryTracer by lazy {
+        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofSeconds(60), traffic = ApiLogs.decisions)::evaluate)
+    }
     val canvas: NoteCanvas = NoteCanvas(
         showDiff,
         { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
@@ -57,7 +65,31 @@ internal class DiffReviewTab(
         generateTopics = { if (canSummarize) session.send("/topics") },
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
+        traceSummaries = object : SummaryTraceLauncher {
+            override fun score(summaries: ChangeSummaries, id: Int, word: Int, done: (Result<SummaryContext>) -> Unit) =
+                launchSummaryTask("Scoring summary word context", done) { summaryTracer.score(summaries, id, word) }
+
+            override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit) =
+                launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
+        },
     )
+
+    private fun <T> launchSummaryTask(title: String, done: (Result<T>) -> Unit, task: suspend () -> T): Job = scope.launch {
+        val result = try {
+            Result.success(withBackgroundProgress(project, title) {
+                withContext(Dispatchers.IO) { task() }
+            })
+        } catch (e: CancellationException) {
+            // A replaced word or closed tab must not publish a stale result. Cancelling only the
+            // IDE progress task still completes the callback so the card stops showing a pending request.
+            currentCoroutineContext().ensureActive()
+            Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        done(result)
+    }
+
     val canvasFile = DiffReviewCanvasFile(this)
     private val describe = JButton("Description")
     private val flowsButton = JButton("Flows").apply {
@@ -213,19 +245,25 @@ internal class DiffReviewTab(
 
     private fun summarize() { if (canSummarize) session.send("/summaries") }
 
-    /** Puts the summaries card on the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
+    /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
     fun openSummaries() {
         state.showSummaries()
         renderCanvas()
-        canvas.focusSummaries()
+        showCanvas { canvas.focusSummaries() }
         if (!state.summaries.complete) summarize()
     }
 
     fun openTopics() {
         state.showTopics()
         renderCanvas()
-        canvas.focusTopics()
+        showCanvas { canvas.focusTopics() }
         if (!state.topics.complete && canSummarize) session.send("/topics")
+    }
+
+    /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
+    private fun showCanvas(focus: () -> Unit) {
+        openCanvas(true)
+        SwingUtilities.invokeLater { if (!disposed) focus() }
     }
 
     private fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
