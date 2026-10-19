@@ -6,6 +6,7 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -40,7 +41,7 @@ internal class DiffReviewTab(
     var onCanvasSelected: () -> Unit = {}
     /** One tracer per tab, so its cached judgments serve every word traced in this review. */
     private val summaryTracer by lazy {
-        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofSeconds(60), traffic = ApiLogs.decisions)::evaluate)
+        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofMinutes(5), traffic = ApiLogs.decisions)::evaluate)
     }
     val canvas: NoteCanvas = NoteCanvas(
         showDiff,
@@ -66,8 +67,22 @@ internal class DiffReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = object : SummaryTraceLauncher {
-            override fun score(summaries: ChangeSummaries, id: Int, word: Int, done: (Result<SummaryContext>) -> Unit) =
-                launchSummaryTask("Scoring summary word context", done) { summaryTracer.score(summaries, id, word) }
+            override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+                                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit) =
+                launchSummaryTask("Scoring summary words", done) {
+                    // Four workers bound the number of words in flight; each word's question batches run in parallel.
+                    coroutineScope {
+                        words.chunked(((words.size + 3) / 4).coerceAtLeast(1)).map { chunk ->
+                            async {
+                                for ((id, word) in chunk) {
+                                    val context = summaryTracer.score(summaries, id, word)
+                                    withContext(Dispatchers.EDT) { scored(context) }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    Unit
+                }
 
             override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit) =
                 launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
@@ -215,7 +230,21 @@ internal class DiffReviewTab(
     }
 
     fun openCanvas(focus: Boolean = false) {
-        if (!disposed) FileEditorManager.getInstance(project).openFile(canvasFile, focus)
+        if (disposed) return
+        val manager = FileEditorManagerEx.getInstanceEx(project)
+        for (window in manager.windows) {
+            val center = (window.owner.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
+            if (center == null) {
+                window.owner.add(window.tabbedPane.component, BorderLayout.CENTER)
+                window.owner.validate()
+            } else if (!SwingUtilities.isDescendingFrom(window.tabbedPane.component, center)) {
+                if (window.isFileOpen(canvasFile)) window.closeFile(canvasFile)
+                manager.windows.firstOrNull {
+                    it.owner === window.owner && SwingUtilities.isDescendingFrom(it.tabbedPane.component, center)
+                }?.setAsCurrentWindow(false)
+            }
+        }
+        manager.openFile(canvasFile, focus).filterIsInstance<DiffReviewEditor>().firstOrNull()?.attachCanvas()
     }
 
     fun invalidate(stop: Boolean, affectedPaths: Set<String>? = null) {

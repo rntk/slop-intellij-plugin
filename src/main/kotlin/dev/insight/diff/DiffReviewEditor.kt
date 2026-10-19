@@ -37,12 +37,12 @@ class DiffReviewEditorProvider : FileEditorProvider, DumbAware {
     override fun getPolicy() = FileEditorPolicy.HIDE_DEFAULT_EDITOR
 }
 
-private class DiffReviewEditor(private val file: DiffReviewCanvasFile) : UserDataHolderBase(), FileEditor {
+internal class DiffReviewEditor(private val file: DiffReviewCanvasFile) : UserDataHolderBase(), FileEditor {
     private val panel = JPanel(BorderLayout())
 
     init { attachCanvas() }
 
-    private fun attachCanvas() {
+    internal fun attachCanvas() {
         val canvas = file.review.canvas
         canvas.isFocusable = true
         if (canvas.parent !== panel) {

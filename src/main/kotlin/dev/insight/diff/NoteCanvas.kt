@@ -48,7 +48,7 @@ internal class NoteCanvas(
     private val generateTopics: () -> Unit = {},
     private val removeTopics: () -> Unit = {},
     private val removeSummaries: () -> Unit = {},
-    /** Interactive summaries need the Decisions API; without a launcher the card offers no Interactive mode. */
+    /** Summary prescoring and search use the Decisions API through this launcher. */
     private val traceSummaries: SummaryTraceLauncher? = null,
 ) : JPanel(null), Disposable {
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
@@ -69,6 +69,9 @@ internal class NoteCanvas(
     internal val summariesView = ChangeSummariesViewState()
     private var summariesScroll = 0
     private var traceJob: Job? = null
+    private var scoreJob: Job? = null
+    private var scoreToken: Any? = null
+    private var scoringSummaries: ChangeSummaries? = null
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -406,18 +409,13 @@ internal class NoteCanvas(
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 val summaries = content.summaries
-                if (traceSummaries != null) add(JCheckBox("Interactive", summariesView.interactive).apply {
-                    name = "summaries-interactive"
-                    isOpaque = false
+                if (traceSummaries != null) add(JButton("Score").apply {
+                    name = "summaries-score"
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Rest the pointer on a word to highlight its context; click a highlighted word to search summaries up to " +
-                        "${SummaryTracer.LEVELS} levels below and jump to the best match. Uses the Decisions API."
-                    addActionListener {
-                        summariesView.interactive = isSelected
-                        if (!isSelected) stopTracing()
-                        refreshSummaries()
-                    }
+                    isEnabled = !summariesView.scoring && summariesView.pending(summaries).isNotEmpty()
+                    toolTipText = "Precalculate word contexts for all summaries with children. Uses the Decisions API."
+                    addActionListener { prescoreSummaries() }
                 })
                 add(JButton(when {
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
@@ -486,13 +484,35 @@ internal class NoteCanvas(
         refreshSummaries()
     }
 
-    /**
-     * Scores word [word] without searching. Only a click on a highlighted word requests the separate search.
-     * A newer word cancels either stage; answers from a replaced request or changed summary are dropped.
-     */
-    private fun traceSummary(identity: String, word: Int, search: Boolean) {
-        if (!summariesView.interactive) return
+    private fun prescoreSummaries() {
         val launcher = traceSummaries ?: return
+        val content = summaries?.summaries ?: return
+        val pending = summariesView.pending(content)
+        if (summariesView.scoring || pending.isEmpty()) return
+        val token = Any()
+        scoreToken = token
+        scoringSummaries = content
+        summariesView.scoring = true
+        summariesView.scoringError = null
+        refreshSummaries()
+        scoreJob = launcher.prescore(content, pending, { context ->
+            if (scoreToken === token) {
+                summariesView.scored[context.identity to context.word.index] = context
+                refreshSummaries()
+            }
+        }) { result ->
+            if (scoreToken === token) {
+                summariesView.scoring = false
+                summariesView.scoringError = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
+                scoringSummaries = null
+                scoreToken = null
+                refreshSummaries()
+            }
+        }
+    }
+
+    /** Hover reads saved contexts synchronously; clicking a highlight searches the levels below. */
+    private fun traceSummary(identity: String, word: Int, search: Boolean) {
         val content = summaries?.summaries ?: return
         val node = content.tree.nodes.firstOrNull { it.identity == identity } ?: return
         val text = content.text(node.id) ?: return
@@ -511,18 +531,9 @@ internal class NoteCanvas(
             return
         }
         traceJob?.cancel()
-        val tracing = SummaryTracing(identity, text, words[word])
-        summariesView.tracing = tracing
+        val context = summariesView.cached(identity, text, word) ?: return
+        summariesView.tracing = SummaryTracing(identity, text, words[word], context = context)
         refreshSummaries()
-        traceJob = launcher.score(content, node.id, word) { result ->
-            val now = summariesView.tracing
-            if (now == null || now.token !== tracing.token) return@score
-            result.onSuccess { context ->
-                summariesView.tracing = now.copy(context = context)
-                if (now.searchRequested) searchSummary()
-            }.onFailure { error -> summariesView.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
-            refreshSummaries()
-        }
     }
 
     private fun searchSummary() {
@@ -550,12 +561,23 @@ internal class NoteCanvas(
     }
 
     private fun retainTrace(content: ChangeSummaries) {
+        if (scoringSummaries != null && scoringSummaries != content) stopScoring()
         val before = summariesView.tracing
         summariesView.retain(content)
         if (before != null && summariesView.tracing == null) traceJob?.cancel()
     }
 
+    private fun stopScoring() {
+        scoreToken = null
+        scoringSummaries = null
+        scoreJob?.cancel()
+        scoreJob = null
+        summariesView.scoring = false
+        summariesView.scoringError = null
+    }
+
     private fun stopTracing() {
+        stopScoring()
         traceJob?.cancel()
         traceJob = null
         summariesView.tracing = null
@@ -939,7 +961,7 @@ internal class NoteCanvas(
     }
 
     override fun dispose() {
-        traceJob?.cancel()
+        stopTracing()
         editors.values.forEach { it.dispose() }
         editors.clear()
         diffEditors.values.forEach { Disposer.dispose(it) }

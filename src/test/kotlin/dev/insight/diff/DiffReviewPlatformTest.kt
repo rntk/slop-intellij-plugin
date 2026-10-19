@@ -111,6 +111,69 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
     }
 
+    fun `test startup waits for editor restoration and open canvas heals detached windows and reopens closed tabs`() {
+        val startup = com.intellij.openapi.startup.StartupManager.getInstance(project)
+        val freezeField = startup.javaClass.getDeclaredField("freezePostStartupActivities").apply { isAccessible = true }
+        val activitiesField = startup.javaClass.getDeclaredField("postStartupActivities").apply { isAccessible = true }
+        val manager = com.intellij.openapi.fileEditor.ex.FileEditorManagerEx.getInstanceEx(project)
+        freezeField.setBoolean(startup, false)
+        val panel = DiffReviewPanel(project, startupReady = false)
+        JRootPane().contentPane.add(panel)
+        try {
+            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val firstInfo = tabs.selectedInfo!!
+            val first = firstInfo.component as DiffReviewTab
+            assertFalse("Tool window restored during IDE startup must wait for editor restoration before opening canvas",
+                manager.isFileOpen(first.canvasFile))
+            val pending = activitiesField.get(startup) as java.util.ArrayDeque<*>
+            while (pending.isNotEmpty()) (pending.removeFirst() as Runnable).run()
+            assertTrue("Canvas must open once post-startup activities run", manager.isFileOpen(first.canvasFile))
+
+            // Closing the canvas tab and clicking "Open canvas", the tab header, or showing the tool window must reopen it.
+            val openCanvasButton = descendants(first).filterIsInstance<JButton>().single { it.text == "Open canvas" }
+            manager.closeFile(first.canvasFile)
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            openCanvasButton.doClick()
+            assertTrue("Open canvas button must reopen a closed canvas tab", manager.isFileOpen(first.canvasFile))
+
+            manager.closeFile(first.canvasFile)
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            val label = tabs.getTabLabel(firstInfo)!!
+            val click = java.awt.event.MouseEvent(label, java.awt.event.MouseEvent.MOUSE_CLICKED,
+                System.currentTimeMillis(), 0, 5, 5, 1, false, java.awt.event.MouseEvent.BUTTON1)
+            tabs.component.mouseListeners.forEach { it.mouseClicked(click) }
+            label.mouseListeners.forEach { it.mouseClicked(click) }
+            assertTrue("Clicking the selected review tab must reopen its closed canvas", manager.isFileOpen(first.canvasFile))
+
+            manager.closeFile(first.canvasFile)
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            val toolWindow = object : com.intellij.toolWindow.ToolWindowHeadlessManagerImpl.MockToolWindow(project) {
+                override fun getId() = "Diff Review"
+            }
+            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC).toolWindowShown(toolWindow)
+            assertTrue("Showing the Diff Review tool window must reopen a closed canvas", manager.isFileOpen(first.canvasFile))
+            Disposer.dispose(toolWindow.disposable)
+
+            // Simulate EditorsSplitters.restoreEditors replacing BorderLayout.CENTER with a new EditorWindow while
+            // leaving the earlier EditorWindow (with canvasFile open) detached in splitters.windows and currentWindow.
+            val orphaned = manager.currentWindow!!
+            val splitters = orphaned.owner
+            val scope = orphaned.javaClass.getDeclaredField("coroutineScope").apply { isAccessible = true }.get(orphaned)
+            val visible = orphaned.javaClass.declaredConstructors.single().apply { isAccessible = true }
+                .newInstance(splitters, scope) as com.intellij.openapi.fileEditor.impl.EditorWindow
+            splitters.add(visible.tabbedPane.component, BorderLayout.CENTER)
+            splitters.javaClass.getDeclaredField("windows").apply { isAccessible = true }
+                .let { (it.get(splitters) as MutableCollection<Any>).add(visible) }
+            assertTrue(orphaned.isFileOpen(first.canvasFile))
+            assertFalse(visible.isFileOpen(first.canvasFile))
+            openCanvasButton.doClick()
+            assertFalse("Detached window must no longer hold the canvas tab", orphaned.isFileOpen(first.canvasFile))
+            assertTrue("Visible editor window must own the reopened canvas tab", visible.isFileOpen(first.canvasFile))
+            assertSame(visible, manager.currentWindow)
+            assertTrue(javax.swing.SwingUtilities.isDescendingFrom(first.canvas, visible.tabbedPane.component))
+        } finally { Disposer.dispose(panel) }
+    }
+
     fun `test untracked tree groups paths toggles folders and retains collapsed folders on refresh`() {
         val included = linkedSetOf("/project/src/a.kt")
         var changes = 0

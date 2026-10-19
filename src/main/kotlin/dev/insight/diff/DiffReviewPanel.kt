@@ -9,6 +9,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
@@ -18,6 +19,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vcs.changes.ChangeListListener
@@ -30,11 +32,14 @@ import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.ui.InplaceButton
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.tabs.JBTabsFactory
 import com.intellij.ui.tabs.TabInfo
 import com.intellij.ui.tabs.TabsListener
+import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.*
@@ -63,7 +68,7 @@ class OpenDiffReviewAction : DumbAwareAction() {
         e.project?.let { project ->
             ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.let { window ->
                 window.activate {
-                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openCanvas()
+                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openCanvas(true)
                 }
             }
         }
@@ -71,11 +76,16 @@ class OpenDiffReviewAction : DumbAwareAction() {
 }
 
 /** Independent from graph analysis: the review is available even before a project graph is built. */
-internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
+internal class DiffReviewPanel(
+    private val project: Project,
+    startupReady: Boolean = ApplicationManager.getApplication().isUnitTestMode ||
+        StartupManager.getInstance(project).postStartupActivityPassed(),
+) : JPanel(BorderLayout()), Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private val state = DiffReviewState()
     private val included = linkedSetOf<String>()
     private var disposed = false
+    private var readyToOpenCanvas = startupReady
     private var selectingFromCanvas = false
     private var refreshJob: Job? = null
     private var repositoriesJob: Job? = null
@@ -149,14 +159,23 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
                 (newSelection?.component as? DiffReviewTab)?.let {
                     it.highlight(selectedPaths().toSet())
-                    if (!selectingFromCanvas) it.openCanvas()
+                    if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
                 }
             }
         }, this)
         tabs.addTabMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (e.button != MouseEvent.BUTTON1 || e.clickCount != 2) return
-                val info = tabs.findInfo(e) ?: return
+                if (e.button != MouseEvent.BUTTON1) return
+                val info = (e.component as? TabLabel
+                    ?: SwingUtilities.getAncestorOfClass(TabLabel::class.java, e.component) as? TabLabel)?.info
+                    ?: tabs.findInfo(e) ?: return
+                if (e.clickCount == 1) {
+                    if (e.component !is InplaceButton && SwingUtilities.getAncestorOfClass(InplaceButton::class.java, e.component) == null) {
+                        (info.component as? DiffReviewTab)?.openCanvas(true)
+                    }
+                    return
+                }
+                if (e.clickCount != 2) return
                 val renamed = Messages.showInputDialog(project, "Tab name:", "Rename Review Tab",
                     null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
                 info.setText(renamed)
@@ -197,6 +216,11 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
             }
         })
         project.messageBus.connect(this).apply {
+            subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
+                override fun toolWindowShown(toolWindow: ToolWindow) {
+                    if (toolWindow.id == "Diff Review" && readyToOpenCanvas && !disposed) openCanvas()
+                }
+            })
             subscribe(ProjectLevelVcsManager.VCS_CONFIGURATION_CHANGED, object : VcsMappingListener {
                 override fun directoryMappingChanged() {
                     scope.launch { if (!disposed) loadRepositories() }
@@ -220,6 +244,17 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
                     scheduleRefresh(setOf(path))
             }
         }, this)
+        if (!readyToOpenCanvas) {
+            StartupManager.getInstance(project).runAfterOpened {
+                val open = Runnable {
+                    if (!disposed) {
+                        readyToOpenCanvas = true
+                        openCanvas()
+                    }
+                }
+                if (SwingUtilities.isEventDispatchThread()) open.run() else SwingUtilities.invokeLater(open)
+            }
+        }
         loadRepositories()
         refresh()
     }
@@ -334,7 +369,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
 
     private fun selectedTab(): DiffReviewTab? = tabs.selectedInfo?.component as? DiffReviewTab
 
-    fun openCanvas() { selectedTab()?.openCanvas() }
+    fun openCanvas(focus: Boolean = false) { selectedTab()?.openCanvas(focus) }
 
     private fun selectedFile(): ReviewFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? ReviewFile
 
