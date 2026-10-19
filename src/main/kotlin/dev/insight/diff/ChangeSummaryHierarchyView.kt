@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.fileTypes.FileTypeManager
 import javax.swing.Icon
 
 /**
@@ -14,23 +15,29 @@ internal class ChangeSummaryHierarchyPanel(
     availableWidth: Int,
     zoom: Double,
     private val actions: ChangeSummaryActions,
-) : HierarchyColumnsPanel(availableWidth, zoom) {
+    vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+) : HierarchyColumnsPanel(availableWidth, zoom, vocabulary) {
     private val summaries = card.summaries
     private val tree = summaries.tree
-    /** The selected node is outlined with every file beneath it. */
-    private val active = tree.nodes.firstOrNull { it.identity == state.selected }?.files?.toSet().orEmpty()
+    /** The selected node is outlined with every file or part beneath it. */
+    private val active: Set<String> = tree.nodes.firstOrNull { it.identity == state.selected }?.let { selected ->
+        val ids = hashSetOf<String>()
+        val pending = ArrayDeque(listOf(selected))
+        while (pending.isNotEmpty()) pending.removeFirst().let { ids += it.identity; it.children.mapTo(pending, tree::get) }
+        ids
+    }.orEmpty()
     private val trace = state.tracing?.trace
     private val marks = traceMarks(tree, trace)
 
     init {
         state.update(tree)
         cardWidth = measureCardWidth(tree.nodes.map(::title))
-        if (summaries.total == 0) showEmpty("No changed files") else finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
+        if (summaries.total == 0) showEmpty(vocabulary.noFiles) else finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
     }
 
     /** Lays out [node] with its top-left at column [column] and row [y], and returns its height. */
     private fun place(node: SummaryNode, column: Int, y: Int, family: String?): Int =
-        if (node.kind == SummaryKind.FILE) fileRow(node, column, y, family) else branch(node, column, y, family)
+        if (node.children.isEmpty()) fileRow(node, column, y, family) else branch(node, column, y, family)
 
     private fun branch(node: SummaryNode, column: Int, y: Int, family: String?): Int {
         val collapsed = node.identity !in state.expanded
@@ -39,8 +46,10 @@ internal class ChangeSummaryHierarchyPanel(
         }
         val mark = marks[node.identity]
         val component = branchCard("node:${node.identity}", title(node), family, column, node.files.size,
-            node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node)) { actions.select(node.identity) }
+            node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node),
+            caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null) { actions.select(node.identity) }
         val height = if (collapsed) {
+            rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace) }
@@ -49,7 +58,13 @@ internal class ChangeSummaryHierarchyPanel(
             val gap = scaled(ROW_GAP)
             var childY = y
             // Each top-level folder keeps one hue down its columns; the root stays neutral.
-            node.children.map(tree::get).forEach { child -> childY += place(child, column + 1, childY, family ?: child.identity) + gap }
+            for ((index, child) in node.children.map(tree::get).withIndex()) {
+                if (rowsLeft <= 0) {
+                    childY += moreNote(node.children.size - index, column + 1, childY) + gap
+                    break
+                }
+                childY += place(child, column + 1, childY, family ?: child.identity) + gap
+            }
             maxOf(childY - gap - y, component.preferredSize.height)
         }
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
@@ -59,11 +74,15 @@ internal class ChangeSummaryHierarchyPanel(
 
     private fun fileRow(node: SummaryNode, column: Int, y: Int, family: String?): Int {
         val file = node.file ?: return 0
+        rowsPlaced++
         val summary = summaries.text(node.id)
         val mark = marks[node.identity]
-        val leaf = fileCard(file, node.label, family, column, file.path in active, actions.openFile, actions.showDiffCard, mark, badge(node)) {
-            actions.select(node.identity)
-        }
+        val part = node.kind == SummaryKind.CHUNK
+        val leaf = fileCard(file, node.label, family, column, node.identity in active,
+            { actions.openNode(node) }, actions.showNode?.let { show -> { show(node) } }, mark, badge(node),
+            select = { actions.select(node.identity) },
+            name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
+            icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null)
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
@@ -82,14 +101,16 @@ internal class ChangeSummaryHierarchyPanel(
             if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else ""
     }
 
-    /** A file name or merged chain, a folder chain with a trailing slash, a group's range, or the root's folder. */
+    /** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
     private fun title(node: SummaryNode): String = when (node.kind) {
-        SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT -> node.label
+        SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
         SummaryKind.DIRECTORY -> "${node.label}/"
     }
 
     private fun icon(node: SummaryNode): Icon = when (node.kind) {
-        SummaryKind.FILE, SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder
+        SummaryKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(node.path.substringAfterLast('/')).icon ?: AllIcons.FileTypes.Any_type
+        SummaryKind.CHUNK -> AllIcons.FileTypes.Text
+        SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder
         SummaryKind.GROUP -> AllIcons.Actions.GroupBy
         SummaryKind.ROOT -> AllIcons.Vcs.Changelist
     }

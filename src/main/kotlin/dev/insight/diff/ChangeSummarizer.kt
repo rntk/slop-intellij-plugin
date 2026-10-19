@@ -39,16 +39,90 @@ data class ChangeSummaryOptions(
 
 data class ChangeSummaryRun(val summaries: ChangeSummaries, val requests: Int, val error: String?)
 
+/** What a summary request shows of a leaf (a file, or a part of a large file) and the instructions around it. */
+internal interface SummaryEvidence {
+    /**
+     * Inline characters of a leaf's evidence, for batching. Above [ChangeSummaryOptions.patchChars] the evidence is cut,
+     * so the leaf gets a request of its own, with the read tool when there is one.
+     */
+    fun size(node: SummaryNode): Int
+    /** Adds a leaf's evidence to its request [item], which already holds id, kind and location; inlines at most [limit] characters. */
+    fun describe(node: SummaryNode, item: JsonObject, limit: Int)
+    /** Instructions shared by every leaf request of a run, with the per-run focus last so the prefix stays cached. */
+    fun leafSystem(tree: ChangeSummaryTree, focus: String): String
+    /** Instructions for nodes written from their children's summaries: folders, groups, files with parts, topics, the root. */
+    fun branchSystem(focus: String): String
+}
+
+/** A changed file's patch, with the changed paths as context. */
+internal class DiffSummaryEvidence(private val options: ChangeSummaryOptions) : SummaryEvidence {
+    override fun size(node: SummaryNode): Int = (node.file as? ReviewFile)?.patch?.length ?: 0
+
+    override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
+        val file = node.file as? ReviewFile ?: return
+        item.addProperty("status", file.status)
+        file.previousPath?.let { item.addProperty("previous_path", it) }
+        item.addProperty("lines", changedLines(file))
+        item.addProperty("patch", file.patch.take(limit))
+        if (file.patch.length > limit) {
+            item.addProperty("patch_cut_at", limit)
+            item.addProperty("patch_length", file.patch.length)
+        }
+    }
+
+    /** File requests share this prefix, with the per-run focus last so the overview stays cached across focus changes. */
+    override fun leafSystem(tree: ChangeSummaryTree, focus: String): String {
+        val overview = StringBuilder()
+        for (node in tree.nodes) {
+            val file = node.file as? ReviewFile ?: continue
+            val line = "${file.path} (${file.status}, ${changedLines(file)})\n"
+            if (overview.length + line.length > options.overviewChars) { overview.append("…\n"); break }
+            overview.append(line)
+        }
+        return "$SYSTEM_PREFIX\n" + """
+            Every node in "nodes" is a changed file with its patch inline. Briefly describe what changed
+            and its role in the change. Name behavior rather than file names.
+            The inline patch is usually enough, so answer from it directly. When read_diff_files is offered, call it only if
+            you cannot tell what a file's change does without more:
+            - its patch was cut (patch_cut_at is set): read the rest with that one path and offset: patch_cut_at;
+            - its patch is too small to understand alone: read the diff of a related file from the list below.
+
+            All files in the change, for context only; summarize just the files in "nodes":
+        """.trimIndent() + "\n" + overview.toString().trimEnd() + summaryFocusLine(focus)
+    }
+
+    override fun branchSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
+        Every node in "nodes" is a folder, a code topic/subtopic, a group of entries, or the root, listed with its children's
+        summaries. Briefly describe what each part contributes to the change, using its children's summaries.
+        If a node has kind "root", summarize the overall change.
+    """.trimIndent() + summaryFocusLine(focus)
+
+    private companion object {
+        val SYSTEM_PREFIX = """
+            $CODE_AS_DATA
+            You write concise summaries for a code change shown as a tree of files and folders or code topics.
+            Topic locations use > between levels; describe what their files contribute to that topic.
+            This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
+            Keep summaries brief and use plain text.
+        """.trimIndent()
+    }
+}
+
+/** The focus line that ends a summary system prompt, after its cacheable prefix; empty without a focus. */
+internal fun summaryFocusLine(focus: String): String = if (focus.isEmpty()) "" else "\n\nThe user asked to focus on: ${focus.clipLine(300)}"
+
 /**
- * Writes the summary tree bottom up. Code walks the tree in waves of ready nodes (files, then folders whose children
+ * Writes the summary tree bottom up. Code walks the tree in waves of ready nodes (leaves, then branches whose children
  * are done, up to the root), batches each wave into JSON requests and saves every answer as it arrives, so the model
- * never pages, tracks progress or picks nodes. Files carry their patch inline; only a request whose patch was cut gets
- * [readTool] to read the rest. Folders, groups and the root are written from their children's summaries alone.
+ * never pages, tracks progress or picks nodes. Leaves (files, or parts of large files) carry their [evidence] inline;
+ * only a request whose evidence was cut gets [readTool] to read the rest. Folders, groups, files with parts and the root
+ * are written from their children's summaries alone.
  */
-class ChangeSummarizer(
+class ChangeSummarizer internal constructor(
     private val complete: suspend (CompletionRequest) -> Completion,
     private val readTool: ChatTool?,
     private val options: ChangeSummaryOptions = ChangeSummaryOptions(),
+    internal val evidence: SummaryEvidence = DiffSummaryEvidence(options),
 ) {
     /**
      * [save] stores a batch and returns the current summaries; it throws when the snapshot changed, which ends the run.
@@ -66,8 +140,8 @@ class ChangeSummarizer(
         val requests = AtomicInteger()
         var error: String? = null
         val mutex = Mutex()
-        val fileSystem = fileSystem(start.tree, focus)
-        val folderSystem = folderSystem(focus)
+        val leafSystem = evidence.leafSystem(start.tree, focus)
+        val branchSystem = evidence.branchSystem(focus)
         onProgress(current.count, current.total)
         while (true) {
             val ready = current.ready().filter { (tries[it] ?: 0) < options.attempts }.sorted()
@@ -83,8 +157,8 @@ class ChangeSummarizer(
             }
             asked.forEach { tries.merge(it.id, 1, Int::plus) }
             val before = current.count
-            val (files, folders) = asked.partition { it.kind == SummaryKind.FILE }
-            val batches = fileBatches(files).map { it to fileSystem } + folders.chunked(options.foldersPerRequest).map { it to folderSystem }
+            val (leaves, branches) = asked.partition { it.children.isEmpty() }
+            val batches = leafBatches(leaves).map { it to leafSystem } + branches.chunked(options.foldersPerRequest).map { it to branchSystem }
             forEachConcurrently(batches, options.concurrency) { (batch, system) ->
                 val texts = try {
                     request(system, batch, current, requests, onToolCall)
@@ -108,17 +182,19 @@ class ChangeSummarizer(
         return ChangeSummaryRun(current, requests.get(), error.takeIf { !current.complete })
     }
 
+    private fun cut(node: SummaryNode): Boolean = evidence.size(node) > options.patchChars
+
     /**
-     * Files in tree order, so siblings share a request. Cut patches get requests of their own at the end, the only
+     * Leaves in tree order, so siblings share a request. Cut evidence gets requests of its own at the end, the only
      * ones with tools, so the tool-free requests run together without tool definitions breaking their cached prefix.
      */
-    private fun fileBatches(files: List<SummaryNode>): List<List<SummaryNode>> {
+    private fun leafBatches(leaves: List<SummaryNode>): List<List<SummaryNode>> {
         val batches = mutableListOf<List<SummaryNode>>()
         val cut = mutableListOf<List<SummaryNode>>()
         var batch = mutableListOf<SummaryNode>()
         var chars = 0
-        for (node in files) {
-            val size = node.file?.patch?.length ?: 0
+        for (node in leaves) {
+            val size = evidence.size(node)
             if (size > options.patchChars) { cut += listOf(node); continue }
             if (batch.isNotEmpty() && (batch.size >= options.filesPerRequest || chars + size > options.batchChars)) {
                 batches += batch; batch = mutableListOf(); chars = 0
@@ -141,8 +217,7 @@ class ChangeSummarizer(
             add("nodes", JsonArray().apply { batch.forEachIndexed { index, node -> add(item(index + 1, node, summaries)) } })
         }.toString()
         val counted: suspend (CompletionRequest) -> Completion = { requests.incrementAndGet(); complete(it) }
-        val cut = batch.any { (it.file?.patch?.length ?: 0) > options.patchChars }
-        val answer = if (cut && readTool != null) {
+        val answer = if (batch.any(::cut) && readTool != null) {
             val reply = ToolChatRunner(counted, listOf(readTool), maxToolRounds = options.maxToolRounds)
                 .run(listOf(LlmMessage.system(system), LlmMessage.user("$user\n\n$JSON_ONLY")), onToolCall).reply
             parseJsonObjectLeniently(reply) ?: throw IllegalStateException("The summary answer is not a JSON object: ${reply.take(200)}")
@@ -150,22 +225,13 @@ class ChangeSummarizer(
         return decode(answer, batch.size).mapKeys { (position, _) -> batch[position - 1].id }
     }
 
-    /** What the model sees of one node: a file's patch, or a folder's children with their summaries. */
+    /** What the model sees of one node: a leaf's evidence, or a branch's children with their summaries. */
     private fun item(position: Int, node: SummaryNode, summaries: ChangeSummaries) = JsonObject().apply {
         addProperty("id", position)
         addProperty("kind", node.kind.id)
         addProperty("location", node.location)
-        val file = node.file
-        if (file != null) {
-            addProperty("status", file.status)
-            file.previousPath?.let { addProperty("previous_path", it) }
-            addProperty("lines", changedLines(file))
-            addProperty("patch", file.patch.take(options.patchChars))
-            if (file.patch.length > options.patchChars) {
-                addProperty("patch_cut_at", options.patchChars)
-                addProperty("patch_length", file.patch.length)
-            }
-        } else {
+        if (node.children.isEmpty()) evidence.describe(node, this, options.patchChars)
+        else {
             addProperty("files", node.files.size)
             add("children", JsonArray().apply {
                 node.children.forEach { id ->
@@ -180,43 +246,7 @@ class ChangeSummarizer(
         }
     }
 
-    /** File requests share this prefix, with the per-run focus last so the overview stays cached across focus changes. */
-    private fun fileSystem(tree: ChangeSummaryTree, focus: String): String {
-        val overview = StringBuilder()
-        for (node in tree.nodes) {
-            val file = node.file ?: continue
-            val line = "${file.path} (${file.status}, ${changedLines(file)})\n"
-            if (overview.length + line.length > options.overviewChars) { overview.append("…\n"); break }
-            overview.append(line)
-        }
-        return "$SYSTEM_PREFIX\n" + """
-            Every node in "nodes" is a changed file with its patch inline. Briefly describe what changed
-            and its role in the change. Name behavior rather than file names.
-            The inline patch is usually enough, so answer from it directly. When read_diff_files is offered, call it only if
-            you cannot tell what a file's change does without more:
-            - its patch was cut (patch_cut_at is set): read the rest with that one path and offset: patch_cut_at;
-            - its patch is too small to understand alone: read the diff of a related file from the list below.
-
-            All files in the change, for context only; summarize just the files in "nodes":
-        """.trimIndent() + "\n" + overview.toString().trimEnd() + focusLine(focus)
-    }
-
-    private fun folderSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
-        Every node in "nodes" is a folder, a code topic/subtopic, a group of entries, or the root, listed with its children's
-        summaries. Briefly describe what each part contributes to the change, using its children's summaries.
-        If a node has kind "root", summarize the overall change.
-    """.trimIndent() + focusLine(focus)
-
-    private fun focusLine(focus: String) = if (focus.isEmpty()) "" else "\n\nThe user asked to focus on: ${focus.clipLine(300)}"
-
     companion object {
-        private val SYSTEM_PREFIX = """
-            $CODE_AS_DATA
-            You write concise summaries for a code change shown as a tree of files and folders or code topics.
-            Topic locations use > between levels; describe what their files contribute to that topic.
-            This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
-            Keep summaries brief and use plain text.
-        """.trimIndent()
         private const val JSON_ONLY = "Answer with only the JSON object, no other text."
 
         internal val SCHEMA = JsonSchemas.obj("summaries" to JsonSchemas.array(JsonSchemas.obj(
@@ -248,11 +278,11 @@ internal fun changedLines(file: ReviewFile): String =
 
 internal fun summariesFocus(text: String): String = text.trim().substringAfter(" ", "").trim()
 
-/** The chat reply to /summaries, written by code: the root summary, or what is still missing and why. */
-internal fun summariesReply(run: ChangeSummaryRun): String {
+/** The chat reply to /summaries, written by code: the root summary, or what is still missing and why. [empty] answers a tree without files. */
+internal fun summariesReply(run: ChangeSummaryRun, empty: String = "There are no changed files to summarize."): String {
     val summaries = run.summaries
     val requests = "${run.requests} request${if (run.requests == 1) "" else "s"}"
-    if (summaries.total == 0) return "There are no changed files to summarize."
+    if (summaries.total == 0) return empty
     if (summaries.complete) return "${summaries.text(summaries.tree.root.id)}\n\n[${summaries.total} summaries · $requests]"
     val missing = summaries.missing().size
     return "Summarized ${summaries.count} of ${summaries.total} tree nodes with $requests.\n\n[No summary for $missing nodes. " +

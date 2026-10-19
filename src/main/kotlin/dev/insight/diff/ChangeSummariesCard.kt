@@ -31,6 +31,13 @@ import kotlin.math.roundToInt
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
 internal data class SummariesCard(val summaries: ChangeSummaries, val running: Boolean, val canRun: Boolean)
 
+/**
+ * A folder, group or the root: the branches that levels and "Files" open. A file with parts is a branch too, but is opened by
+ * hand, so reading by level never unfolds every part of every large file.
+ */
+internal fun isFolderBranch(node: SummaryNode): Boolean =
+    node.children.isNotEmpty() && node.kind != SummaryKind.FILE && node.kind != SummaryKind.CHUNK
+
 /** The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right, as topics do. */
 internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY }
 
@@ -49,16 +56,39 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
     fun cached(identity: String, summary: String, word: Int): SummaryContext? =
         scored[identity to word]?.takeIf { it.summary == summary }
 
-    fun pending(summaries: ChangeSummaries): List<Pair<Int, Int>> = summaries.tree.nodes
-        .filter { it.children.isNotEmpty() && (traceRoot || it.kind != SummaryKind.ROOT) }
-        .flatMap { node ->
-            val summary = summaries.text(node.id) ?: return@flatMap emptyList()
-            SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
-                .map { node.id to it.index }
+    /** Score only the nodes on screen: a huge tree has far too many words to score at once. */
+    var visibleOnly = false
+    private var pendingFor: ChangeSummaries? = null
+    private var pendingScored = -1
+    private var pendingAll = emptyList<Pair<Int, Int>>()
+
+    /** The nodes whose summaries are on screen, or null where every node counts. */
+    protected open fun visibility(tree: ChangeSummaryTree): ((SummaryNode) -> Boolean)? = null
+
+    /**
+     * The words still to score, as node id and word index. Only nodes [visible] count when given, else those on screen when
+     * [visibleOnly]. Finding the words of every summary is the costly part, so it is kept for the same summaries and cache size.
+     */
+    fun pending(summaries: ChangeSummaries, visible: ((SummaryNode) -> Boolean)? = null): List<Pair<Int, Int>> {
+        if (pendingFor !== summaries || pendingScored != scored.size) {
+            pendingAll = summaries.tree.nodes
+                .filter { it.children.isNotEmpty() && (traceRoot || it.kind != SummaryKind.ROOT) }
+                .flatMap { node ->
+                    val summary = summaries.text(node.id) ?: return@flatMap emptyList()
+                    SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
+                        .map { node.id to it.index }
+                }
+            pendingFor = summaries
+            pendingScored = scored.size
         }
+        val filter = visible ?: (if (visibleOnly) visibility(summaries.tree) else null) ?: return pendingAll
+        val shown = HashMap<Int, Boolean>()
+        return pendingAll.filter { (id, _) -> shown.getOrPut(id) { filter(summaries.tree[id]) } }
+    }
 
     /** A trace stays only while the traced summary is unchanged; matches whose node is gone are dropped. */
     fun retain(summaries: ChangeSummaries) {
+        pendingFor = null
         val nodes = summaries.tree.nodes.associateBy { it.identity }
         scored.entries.removeIf { (_, context) ->
             val node = nodes[context.identity]
@@ -131,7 +161,8 @@ internal object TraceStyle {
 internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries): String = when {
     state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
-    state.scored.isEmpty() -> "Click Score to precalculate word contexts for summaries with children."
+    state.scored.isEmpty() -> "Click Score to precalculate word contexts for " +
+        (if (state.visibleOnly) "the summaries with children shown now." else "summaries with children.")
     else -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries."
 }
 
@@ -230,7 +261,7 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
         this.tree = tree
         val small = tree.nodes.size <= SMALL_TREE
         val level = level
-        for (node in tree.nodes) if (seen.add(node.identity) && node.children.isNotEmpty() &&
+        for (node in tree.nodes) if (seen.add(node.identity) && isFolderBranch(node) &&
             (if (level != null) tree.depth(node.id) < level else small || node.kind == SummaryKind.ROOT))
             expanded += node.identity
         if (tree.nodes.none { it.identity == selected }) selected = null
@@ -242,16 +273,20 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
     /** Level n opens the folders above depth n and folds the rest; [branchLevels] opens every folder down to the files. */
     fun selectLevel(level: Int, tree: ChangeSummaryTree) {
         this.level = level
-        for (node in tree.nodes) if (node.children.isNotEmpty()) {
+        for (node in tree.nodes) if (isFolderBranch(node)) {
             if (tree.depth(node.id) < level) expanded += node.identity else expanded -= node.identity
         }
     }
 
     /** The level the current folding matches, if any; folding by hand can leave it between levels. */
     fun shownLevel(tree: ChangeSummaryTree): Int? {
-        val branches = tree.nodes.filter { it.children.isNotEmpty() }
+        val branches = tree.nodes.filter(::isFolderBranch)
         return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.depth(it.id) < level) } }
     }
+
+    /** A node is on screen when every folder above it is open. */
+    override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean =
+        { node -> generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded } }
 
     /**
      * The outline only opens the levels down to the matches. The hierarchy shows a branch's summary only while it is folded,
@@ -270,19 +305,19 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
 
         /** Columns of folders, groups and the root; an empty diff has none. */
         fun branchLevels(tree: ChangeSummaryTree): Int =
-            tree.nodes.filter { it.children.isNotEmpty() }.maxOfOrNull { tree.depth(it.id) + 1 } ?: 0
+            tree.nodes.filter(::isFolderBranch).maxOfOrNull { tree.depth(it.id) + 1 } ?: 0
     }
 }
 
 /** How far summarizing has come, shown at the top of both modes. */
-internal fun summariesStatus(card: SummariesCard): String {
+internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabulary.DIFF.noFiles): String {
     val summaries = card.summaries
     val count = summaries.count
     val total = summaries.total
     val files = summaries.tree.root.files.size
     val fileCount = "$files file${if (files == 1) "" else "s"}"
     return when {
-        total == 0 -> "No changed files"
+        total == 0 -> noFiles
         card.running && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
         summaries.complete -> "$total summaries · $fileCount"
         else -> "$count of $total summarized · $fileCount"
@@ -438,6 +473,10 @@ internal class ChangeSummaryActions(
     val showNames: (Boolean) -> Unit = {},
     /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
+    /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
+    val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
+    /** Put a node's source on the canvas; null hides the buttons. */
+    val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
 )
 
 /**
@@ -450,6 +489,7 @@ internal class ChangeSummariesPanel(
     private val cardWidth: Int,
     private val zoom: Double,
     private val actions: ChangeSummaryActions,
+    private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : JPanel(VerticalLayout(0)) {
     private val summaries = card.summaries
     private val tree = summaries.tree
@@ -460,6 +500,9 @@ internal class ChangeSummariesPanel(
     private val trace = state.tracing?.trace
     private val matches = trace?.related.orEmpty().associateBy { it.identity }
     private val best = trace?.best?.identity
+    /** Rows added so far; a huge tree stops at [HierarchyColumnsPanel.MAX_ROWS] and says how many entries it left out. */
+    private var rows = 0
+    private var skipped = 0
 
     init {
         isOpaque = false
@@ -471,18 +514,27 @@ internal class ChangeSummariesPanel(
             border = pad(bottom = scaled(6))
             addActionListener { actions.showNames(isSelected) }
         })
-        add(text(summariesStatus(card), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
+        add(text(summariesStatus(card, vocabulary.noFiles), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
         add(text(scoringStatus(state, summaries), cardWidth, font(JBFont.small()), help)
             .apply { name = "scoring-status"; border = pad(bottom = scaled(8)) })
         if (summaries.total > 0) addNode(tree.root, 0)
-        add(text("The tree comes from the changed paths; single-entry folders are merged and large folders split into groups. " +
-            "Summaries are LLM interpretation. Select one to see its file or folder.", cardWidth, font(JBFont.small()), help)
+        if (skipped > 0) add(text("+$skipped more — fold or pick a level", cardWidth, italic(JBFont.small()), help)
+            .apply { name = "more"; border = pad(scaled(4), scaled(TOGGLE), scaled(4), 0) })
+        add(text(vocabulary.summariesFooter, cardWidth, font(JBFont.small()), help)
             .apply { border = pad(top = scaled(10)) })
     }
 
     private fun addNode(node: SummaryNode, depth: Int) {
+        rows++
         add(row(node, depth))
-        if (node.identity in state.expanded) node.children.forEach { addNode(tree[it], depth + 1) }
+        if (node.identity !in state.expanded) return
+        for ((index, child) in node.children.withIndex()) {
+            if (rows >= HierarchyColumnsPanel.MAX_ROWS) {
+                skipped += node.children.size - index
+                return
+            }
+            addNode(tree[child], depth + 1)
+        }
     }
 
     private fun row(node: SummaryNode, depth: Int): JComponent {
@@ -543,7 +595,7 @@ internal class ChangeSummariesPanel(
 
     /** The name shown above a summary with Show names: a file name, a merged folder chain, a group's range, or the root's folder. */
     private fun displayName(node: SummaryNode): String = when (node.kind) {
-        SummaryKind.FILE, SummaryKind.GROUP -> node.label
+        SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.CHUNK -> node.label
         SummaryKind.DIRECTORY -> "${node.label}/"
         SummaryKind.ROOT -> node.location
     }
@@ -555,11 +607,11 @@ internal class ChangeSummariesPanel(
         border = JBUI.Borders.compound(JBUI.Borders.customLineTop(JBColor.border()), pad(top = scaled(4)))
         val count = plural(node.files.size, "file")
         val title = when (node.kind) {
-            SummaryKind.FILE -> "${node.path.substringAfterLast('/')} · ${node.file?.status ?: "changed"} file" +
-                (node.file?.previousPath?.let { " · renamed from $it" } ?: "")
+            SummaryKind.FILE -> "${node.path.substringAfterLast('/')} · ${vocabulary.describeFile(node.file)}"
+            SummaryKind.CHUNK -> "${node.label} of ${node.path.substringAfterLast('/')}" + (partOf(node)?.let { " · $it" } ?: "")
             SummaryKind.DIRECTORY -> "${node.path.substringAfterLast('/')}/ · folder · $count"
             SummaryKind.GROUP -> "${node.label} · ${node.children.size} entries of ${node.path.ifEmpty { "." }}/ · $count"
-            SummaryKind.ROOT -> "All changes · $count"
+            SummaryKind.ROOT -> "${vocabulary.rootName} · $count"
         }
         add(text(title, width, font(JBFont.label().asBold()), null))
         // Folders have no review file of their own; their location follows from any file beneath them.
@@ -568,15 +620,35 @@ internal class ChangeSummariesPanel(
             if (node.path.isEmpty()) "$base/" else "$base/${node.path}/"
         }
         listOfNotNull(node.location, absolute?.takeIf { it != node.location }).forEach { add(text(it, width, font(JBFont.small()), help)) }
-        if (node.kind == SummaryKind.FILE) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(12), 0)).apply {
+        if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(12), 0)).apply {
             isOpaque = false
-            add(ActionLink("View diff") { actions.openFile(node.path) }.apply { font = font(JBFont.small()) })
-            add(ActionLink("Show diff on canvas") { actions.showDiffCard(node.path) }.apply { font = font(JBFont.small()) })
+            add(ActionLink(if (node.kind == SummaryKind.CHUNK) "Open lines" else vocabulary.openLabel) { actions.openNode(node) }
+                .apply { font = font(JBFont.small()) })
+            val show = actions.showNode
+            val showText = vocabulary.showOnCanvas
+            if (show != null && showText != null) add(ActionLink(showText) { show(node) }.apply { font = font(JBFont.small()) })
         })
+    }
+
+    /** "part i of n" among the parts of a file, or "n parts" for a group of them; null when the tree cannot say. */
+    private fun partOf(node: SummaryNode): String? {
+        val leaves = partLeaves(node)
+        if (leaves.isEmpty()) return null
+        if (node.children.isNotEmpty()) return "${leaves.size} parts"
+        val file = generateSequence(node.parent) { tree[it].parent }.map(tree::get).firstOrNull { it.kind == SummaryKind.FILE } ?: return null
+        val index = partLeaves(file).indexOfFirst { it.id == node.id }
+        return if (index < 0) null else "part ${index + 1} of ${partLeaves(file).size}"
+    }
+
+    /** The leaf parts at or beneath [node], in line order. */
+    private fun partLeaves(node: SummaryNode): List<SummaryNode> {
+        if (node.children.isEmpty()) return if (node.kind == SummaryKind.CHUNK) listOf(node) else emptyList()
+        return node.children.flatMap { partLeaves(tree[it]) }
     }
 
     private fun icon(node: SummaryNode): Icon = when (node.kind) {
         SummaryKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(node.path.substringAfterLast('/')).icon ?: AllIcons.FileTypes.Any_type
+        SummaryKind.CHUNK -> AllIcons.FileTypes.Text
         SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder
         SummaryKind.GROUP -> AllIcons.Actions.GroupBy
         SummaryKind.ROOT -> AllIcons.Vcs.Changelist

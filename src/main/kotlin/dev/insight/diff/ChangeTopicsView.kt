@@ -56,8 +56,12 @@ internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
  * shared by both modes. Folded topics and the chosen level belong to the hierarchy; topics that appear after a level was
  * chosen fold to that level too. Word tracing reads the hierarchy's summaries, whose root is not shown.
  */
-internal class ChangeTopicsViewState : SummaryTraceState(traceRoot = false) {
-    var mode = ChangeTopicsMode.DOCUMENT
+internal class ChangeTopicsViewState(
+    /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
+    private val foldLargeOutline: Boolean = false,
+    mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
+) : SummaryTraceState(traceRoot = false) {
+    var mode = mode
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
@@ -65,12 +69,18 @@ internal class ChangeTopicsViewState : SummaryTraceState(traceRoot = false) {
         private set
     private val collapsed = hashSetOf<String>()
     private val seen = hashSetOf<String>()
+    private var folded = false
 
     fun update(outline: TopicOutline) {
         val keys = outline.nodes.mapTo(hashSetOf(), ::key)
         if (selected !in keys) selected = null
         collapsed.retainAll(keys)
         seen.retainAll(keys)
+        // Nothing was chosen yet and the outline is huge: start at level 1, the topics beneath fold.
+        if (this.level == null && foldLargeOutline && !folded && outline.files.size > LARGE_OUTLINE && outline.nodes.isNotEmpty()) {
+            folded = true
+            this.level = 1
+        }
         val level = level
         for (node in outline.nodes) if (seen.add(key(node)) && level != null && node.level >= level) collapsed += key(node)
     }
@@ -88,6 +98,12 @@ internal class ChangeTopicsViewState : SummaryTraceState(traceRoot = false) {
     }
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
+
+    /** A node is on screen when no topic above it is folded; [tree] is the reading tree, see [showTrace]. */
+    override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean = { node ->
+        generateSequence(node.parent) { tree[it].parent }.map(tree::get)
+            .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in collapsed }
+    }
 
     /**
      * Opens the topics down to the matches and folds related topics with no related entry beneath, so their summary shows.
@@ -110,6 +126,8 @@ internal class ChangeTopicsViewState : SummaryTraceState(traceRoot = false) {
     companion object {
         /** The reading tree's identity prefix of a topic, see [buildTopicSummaryTree]. */
         const val TOPIC = "topic:"
+        /** Files in an outline beyond which [foldLargeOutline] starts at level 1. */
+        const val LARGE_OUTLINE = 200
         fun identity(node: TopicNode) = TOPIC + node.identity
     }
 }
@@ -123,6 +141,9 @@ internal class ChangeTopicActions(
     val showDiffCard: (String) -> Unit,
     val refresh: () -> Unit = {},
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
+    /** Open or show a file node of the summary tree; by default by its path. A null [showNode] hides the canvas button. */
+    val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
+    val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
 )
 
 /**
@@ -136,6 +157,7 @@ internal class ChangeTopicsPanel(
     width: Int,
     private val zoom: Double,
     private val actions: ChangeTopicActions,
+    private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : JPanel(null) {
     val outline = topicOutline(card.topics)
     private val sections = mutableListOf<JComponent>()
@@ -150,7 +172,7 @@ internal class ChangeTopicsPanel(
         isOpaque = false
         state.update(outline)
         if (outline.files.isEmpty()) {
-            val empty = text("No changed files", scaled(320), font(JBFont.label()), help)
+            val empty = text(vocabulary.noFiles, scaled(320), font(JBFont.label()), help)
             add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
             preferredSize = Dimension(scaled(320), empty.height)
         } else layoutDocument(card, width)
@@ -171,7 +193,8 @@ internal class ChangeTopicsPanel(
         val bottoms = IntArray(outline.files.size)
         var y = 0
         outline.files.forEachIndexed { index, file ->
-            val section = section(file, docWidth)
+            // Document mode shows patches, so it only exists for diffs.
+            val section = section(file as ReviewFile, docWidth)
             val note = note(file, summaries[file.path], summaryWidth)
             val height = maxOf(section.preferredSize.height, note.preferredSize.height)
             section.setBounds(docX, y, docWidth, height)
@@ -251,7 +274,7 @@ internal class ChangeTopicsPanel(
             .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff on canvas" }, BorderLayout.EAST)
     }
 
-    private fun note(file: ReviewFile, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {
+    private fun note(file: ReviewSource, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {
         name = "summary:${file.path}"
         isOpaque = false
         border = noteBorder(false)

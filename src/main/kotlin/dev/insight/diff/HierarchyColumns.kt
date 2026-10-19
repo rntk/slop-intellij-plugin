@@ -36,7 +36,11 @@ import kotlin.math.roundToInt
  * A hierarchy read left to right, like the article hierarchy: broad nodes in the first column, each card as tall as the rows
  * beneath it, and leaves with their summary beside them. Subclasses place the cards; this class draws them.
  */
-internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int, protected val zoom: Double) : JPanel(null) {
+internal abstract class HierarchyColumnsPanel(
+    protected val availableWidth: Int,
+    protected val zoom: Double,
+    protected val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+) : JPanel(null) {
     /** One shared width keeps the columns aligned; subclasses set it with [measureCardWidth] before placing cards. */
     protected var cardWidth = 0
     private var right = 0
@@ -62,6 +66,14 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
         add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
         preferredSize = Dimension(scaled(320), empty.height)
     }
+
+    /** Rows placed so far; a huge tree stops at [MAX_ROWS] and says how many entries it left out. */
+    protected var rowsPlaced = 0
+    protected val rowsLeft get() = MAX_ROWS - rowsPlaced
+
+    /** A note in place of the [remaining] entries beyond the row cap; returns its height. */
+    protected fun moreNote(remaining: Int, column: Int, y: Int): Int =
+        note("more:$column:$y", "+$remaining more — fold or pick a level", false, column, y).preferredSize.height
 
     /** Sizes the panel to the placed rows, [bottom] being the end of the last one plus its gap. */
     protected fun finish(bottom: Int) {
@@ -96,7 +108,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
     protected fun branchCard(
         name: String, title: String, family: String?, column: Int, files: Int, active: Boolean, tooltip: String,
         toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
-        select: (() -> Unit)? = null,
+        caption: String? = null, select: (() -> Unit)? = null,
     ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
         this.name = name
         isOpaque = true
@@ -114,7 +126,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
                 add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
                 add(heading, BorderLayout.CENTER)
             })
-            add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+            add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
             badge?.let { add(badge(it, inner)) }
         }, BorderLayout.CENTER)
         if (select == null) return@apply
@@ -153,44 +165,46 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
     }
 
     /**
-     * A leaf: [title] opens the file's diff; the folder and status are dimmed beneath it, and the full path is in the tooltip.
-     * Clicking elsewhere on the card calls [select] when given.
+     * A leaf: [title] calls [open]; the folder and the file's facts (or [details]) are dimmed beneath it, and the full path is in
+     * the tooltip. The canvas button calls [showOnCanvas]; without it there is no button. Clicking elsewhere on the card calls
+     * [select] when given. A part of a file gives its own [name], [tooltip], [icon] and [details].
      */
     protected fun fileCard(
-        file: ReviewFile, title: String, family: String?, column: Int, active: Boolean,
-        openFile: (String) -> Unit, showDiffCard: (String) -> Unit, mark: TraceMark? = null, badge: String? = null,
+        file: ReviewSource, title: String, family: String?, column: Int, active: Boolean,
+        open: () -> Unit, showOnCanvas: (() -> Unit)?, mark: TraceMark? = null, badge: String? = null,
         select: (() -> Unit)? = null,
+        name: String = "file:${file.path}", tooltip: String = file.path, icon: Icon? = null, details: List<String>? = null,
     ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
-        name = "file:${file.path}"
+        this.name = name
         isOpaque = true
         background = matchBackground(mark) ?: tint(family, column)
         border = cardBorder(family, active, mark)
-        toolTipText = file.path
+        toolTipText = tooltip
         val fileName = file.path.substringAfterLast('/')
-        add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(fileName).icon ?: AllIcons.FileTypes.Any_type).apply {
+        add(JLabel(icon ?: FileTypeManager.getInstance().getFileTypeByFileName(fileName).icon ?: AllIcons.FileTypes.Any_type).apply {
             verticalAlignment = SwingConstants.TOP
             preferredSize = Dimension(scaled(TOGGLE), preferredSize.height)
         }, BorderLayout.WEST)
-        val details = listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }, file.status,
-            file.previousPath?.let { "renamed from $it" })
-        val detailsLabel = JLabel(details.joinToString(" · ")).apply {
-            font = font(JBFont.small()); foreground = help; toolTipText = file.path
+        val shown = details ?: (listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }) + file.facts)
+        val detailsLabel = JLabel(shown.joinToString(" · ")).apply {
+            font = font(JBFont.small()); foreground = help; toolTipText = tooltip
             minimumSize = Dimension(0, preferredSize.height)
         }
         val center = JPanel(VerticalLayout(scaled(2))).apply {
             isOpaque = false
-            add(ActionLink(title) { openFile(file.path) }.apply {
-                font = font(JBFont.label()); toolTipText = "View changes in ${file.path}"
+            add(ActionLink(title) { open() }.apply {
+                font = font(JBFont.label()); toolTipText = vocabulary.openTooltip(file.path)
                 minimumSize = Dimension(0, preferredSize.height)
             })
             add(detailsLabel)
             badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
         }
         add(center, BorderLayout.CENTER)
-        add(JPanel(BorderLayout()).apply {
+        val canvasText = vocabulary.showOnCanvas
+        if (showOnCanvas != null && canvasText != null) add(JPanel(BorderLayout()).apply {
             isOpaque = false
-            add(InplaceButton(IconButton("Show diff on canvas", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { showDiffCard(file.path) }
-                .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff on canvas" }, BorderLayout.NORTH)
+            add(InplaceButton(IconButton(canvasText, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showOnCanvas() }
+                .apply { cursor = Cursor.getDefaultCursor(); toolTipText = canvasText }, BorderLayout.NORTH)
         }, BorderLayout.EAST)
         if (select == null) return@apply
         val listener = object : MouseAdapter() {
@@ -258,6 +272,8 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
         const val DIFF_BUTTON = 22
         const val NOTE_INSET = 4
         const val FOLDED_NAMES = 3
+        /** Most rows a hierarchy places; only a huge tree reaches it. */
+        const val MAX_ROWS = 2000
 
         /** Unscaled width that fits [depth] branch columns, the leaf column and a readable summary. */
         fun defaultWidth(depth: Int): Int {

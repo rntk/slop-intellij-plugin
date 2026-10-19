@@ -31,12 +31,38 @@ data class DiffSymbolLinks(val label: String, val symbols: List<DiffSymbol>, val
 /** [calls] holds the selectors of all resolved outgoing calls, so notes on those targets can join a change flow. */
 data class DiffSymbolEvidence(val symbol: DiffSymbol, val links: List<DiffSymbolLinks>, val calls: Set<String> = emptySet())
 
+/** A file whose declarations can be looked up: [text] is the reviewed current source, or null when there is none (deleted or binary). */
+internal data class SymbolFile(val path: String, val absolutePath: String, val text: String?)
+
 /** Uses the same declarations and resolved relations as the application graph, without building the whole project.
- * All methods run in a background read action. Each source file must still match the reviewed after-side.
+ * All methods run in a background read action. Each source file must still match its reviewed [SymbolFile.text];
+ * [stale] explains a path whose current source differs, [missing] a path outside the review, and [findTool] names the
+ * chat tool that lists exact selectors.
  */
-internal class DiffSymbols(private val project: Project, private val snapshot: ReviewSnapshot) {
+internal class DiffSymbols(
+    private val project: Project,
+    files: List<SymbolFile>,
+    private val stale: (String) -> String,
+    private val missing: (String) -> String = { "$it is not a file included in this diff" },
+    private val findTool: String = "find_diff_symbols",
+) {
+    /** A diff's after-side; deleted files have no current source. */
+    constructor(project: Project, snapshot: ReviewSnapshot) : this(
+        project,
+        snapshot.files.map { SymbolFile(it.path, it.absolutePath, it.after.takeUnless { _ -> it.status == "deleted" }) },
+        { path ->
+            if (snapshot.comparison.request.mode.usesWorkingTree) "$path changed since the diff snapshot. Refresh before attaching a symbol."
+            else "Current source for $path does not match the reviewed target revision. Use a file note without symbol."
+        },
+    )
+
     private data class Source(val file: PsiFile, val declarations: List<Pair<PsiElement, DiffSymbol>>)
     private val sources = mutableMapOf<String, Source>()
+    // The first file wins, like a lookup in list order.
+    private val byPath = LinkedHashMap<String, SymbolFile>().apply { files.forEach { putIfAbsent(it.path, it) } }
+    private val byAbsolutePath = HashMap<String, SymbolFile>().apply { files.forEach { putIfAbsent(it.absolutePath, it) } }
+
+    private fun file(path: String): SymbolFile = byPath[path] ?: throw ToolInputException(missing(path))
 
     private fun describe(element: PsiElement, path: String): DiffSymbol? {
         val target = ProjectGraphAnalyzer.source(element)
@@ -55,19 +81,13 @@ internal class DiffSymbols(private val project: Project, private val snapshot: R
     }
 
     private fun source(path: String): Source = sources.getOrPut(path) {
-        val review = snapshot.files.firstOrNull { it.path == path }
-            ?: throw ToolInputException("$path is not a file included in this diff")
-        if (review.status == "deleted" || review.after == null)
-            throw ToolInputException("$path has no readable current source; use a file note without symbol")
+        val review = file(path)
+        val text = review.text ?: throw ToolInputException("$path has no readable current source; use a file note without symbol")
         val virtual = LocalFileSystem.getInstance().findFileByPath(review.absolutePath)
             ?: throw ToolInputException("$path is no longer available")
         val psi = PsiManager.getInstance(project).findFile(virtual)
             ?: throw ToolInputException("$path has no parsed source")
-        if (psi.text != review.after) throw ToolInputException(
-            if (snapshot.comparison.request.mode.usesWorkingTree)
-                "$path changed since the diff snapshot. Refresh before attaching a symbol."
-            else "Current source for $path does not match the reviewed target revision. Use a file note without symbol."
-        )
+        if (psi.text != text) throw ToolInputException(stale(path))
         val declarations = ProjectGraphAnalyzer.declarations(psi).mapNotNull { element -> describe(element, path)?.let { element to it } }
         Source(psi, declarations)
     }
@@ -101,10 +121,9 @@ internal class DiffSymbols(private val project: Project, private val snapshot: R
         val resolved = notes.map { note ->
             val query = note.symbol?.trim() ?: return@map note to null
             val candidates = note.paths.distinct().flatMap { path ->
-                val review = snapshot.files.firstOrNull { it.path == path }
-                    ?: throw ToolInputException("$path is not a file included in this diff")
+                val review = file(path)
                 // A coherent change can group a live declaration with a deleted or binary file.
-                if (review.status == "deleted" || review.after == null) emptyList() else source(path).declarations
+                if (review.text == null) emptyList() else source(path).declarations
             }
             val matches = candidates.filter { (_, symbol) ->
                 query == symbol.selector || query == symbol.name || query == symbol.qualifiedName
@@ -112,7 +131,7 @@ internal class DiffSymbols(private val project: Project, private val snapshot: R
             if (matches.size != 1) {
                 val reason = if (matches.isEmpty()) "was not found" else "is ambiguous"
                 val choices = (if (matches.isEmpty()) candidates else matches).take(5).joinToString { it.second.selector }
-                throw ToolInputException("Symbol '$query' $reason in the note's paths. Use find_diff_symbols for an exact selector." +
+                throw ToolInputException("Symbol '$query' $reason in the note's paths. Use $findTool for an exact selector." +
                     if (choices.isEmpty()) " No supported declarations found." else " Candidates: $choices")
             }
             note to matches.single()
@@ -134,7 +153,7 @@ internal class DiffSymbols(private val project: Project, private val snapshot: R
                 if (kind == RelationKind.IMPORT) return@forEach
                 val target = if (incoming) from else to
                 val absolute = target.containingFile?.virtualFile?.path
-                val path = snapshot.files.firstOrNull { it.absolutePath == absolute }?.path
+                val path = absolute?.let(byAbsolutePath::get)?.path
                     ?: absolute?.removePrefix(project.basePath.orEmpty() + "/") ?: return@forEach
                 val other = describe(target, path) ?: return@forEach
                 groups.getOrPut(kind to incoming) { linkedMapOf() }[other.selector] = other

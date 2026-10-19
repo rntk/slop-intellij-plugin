@@ -20,12 +20,19 @@ fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(obje
 private fun nodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<String, Any> = buildMap {
     put("id", node.id); put("kind", node.kind.id); put("location", node.location)
     node.parent?.let { put("parent", it) }
-    node.file?.let { file ->
-        put("status", file.status)
-        file.previousPath?.let { put("previous_path", it) }
-        put("lines", changedLines(file))
+    when (val file = node.file) {
+        is ReviewFile -> {
+            put("status", file.status)
+            file.previousPath?.let { put("previous_path", it) }
+            put("lines", changedLines(file))
+        }
+        null -> {}
+        else -> {
+            if (node.kind == SummaryKind.FILE && file.facts.isNotEmpty()) put("facts", file.facts)
+            node.lines?.let { put("lines", mapOf("start" to it.first, "end" to it.last)) }
+        }
     }
-    if (node.kind != SummaryKind.FILE) { put("files", node.files.size); put("children", node.children) }
+    if (node.children.isNotEmpty() || node.file == null) { put("files", node.files.size); put("children", node.children) }
     summaries.text(node.id)?.let { put("summary", it) }
 }
 

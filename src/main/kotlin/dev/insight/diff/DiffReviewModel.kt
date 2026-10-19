@@ -6,17 +6,18 @@ import java.security.MessageDigest
 
 /** Immutable review evidence, independent of PSI, graph construction and the Git plugin. */
 data class ReviewFile(
-    val path: String,
-    val absolutePath: String,
+    override val path: String,
+    override val absolutePath: String,
     val previousPath: String?,
     val status: String,
     val patch: String,
-    val fingerprint: String,
+    override val fingerprint: String,
     val before: String? = null,
     val after: String? = null,
     val beforeLabel: String = "Before",
     val afterLabel: String = "Working tree",
-) {
+) : ReviewSource {
+    override val facts: List<String> get() = listOfNotNull(status, previousPath?.let { "renamed from $it" })
     internal val diffKey get() = diffNoteKey(path)
     // Swing tree renderers call toString before applying their custom label.
     override fun toString(): String = path.substringAfterLast('/')

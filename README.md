@@ -6,6 +6,7 @@ A Kotlin plugin for JetBrains IDEs that combines interactive codebase visualizat
 
 - **Application & Call Graphs**: Multi-language static analysis and interactive views for exploring project structure, symbol relationships, call hierarchies, side-by-side source flows, and control-flow charts.
 - **Diff Review**: Canvas-based workspace for reviewing working-tree or historical VCS changes with scoped tabs, flow mapping, and source-grounded annotations.
+- **Code Review**: Canvas-based workspace for understanding the code in the project or a folder, with chat tools, summaries from the whole scope down to each file and the parts of large files, and topics.
 - **LLM Chat & Tooling**: Configurable local and hosted LLM integration equipped with read-only project tools for codebase Q&A, enrichment, and guided chart navigation.
 - **Dashboard & Utilities**: Native editor dashboard views and standalone API clients for structured evaluation.
 
@@ -35,4 +36,5 @@ For containerized builds and checks without a local toolchain, use the Docker he
 - [`build.gradle.kts`](build.gradle.kts) — Build configuration, target platform settings, and Gradle tasks.
 - [`docker.sh`](docker.sh) — Containerized build, test, and artifact export workflow.
 - [`flows/flowchart.md`](flows/flowchart.md) — Design notes for flow charts and interactive chart chat.
+- [`flows/code-review.md`](flows/code-review.md) — Design notes for Code Review: start directory, loading limits, large-file chunking, chat tools, summaries and topics.
 - `META-INF/plugin.xml` (under `src/main/resources/`) — Plugin descriptor registering tool windows, actions, settings, and language extensions.

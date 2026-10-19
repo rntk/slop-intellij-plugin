@@ -15,8 +15,18 @@ import java.beans.PropertyChangeListener
 import javax.swing.JComponent
 import javax.swing.JPanel
 
+/** What the canvas editor needs of the review tab that owns the canvas: a diff review or a code review. */
+internal interface ReviewCanvasOwner {
+    val canvas: NoteCanvas
+    val isDisposed: Boolean
+    /** The editor's name and the prefix of its tab: "$canvasTitle: name". */
+    val canvasTitle: String
+    /** The canvas editor was selected. */
+    fun canvasSelected()
+}
+
 /** The review owns its canvas; closing this editor only detaches the view. */
-class DiffReviewCanvasFile internal constructor(internal val review: DiffReviewTab) : LightVirtualFile("Diff Review") {
+class DiffReviewCanvasFile internal constructor(internal val review: ReviewCanvasOwner) : LightVirtualFile(review.canvasTitle) {
     init {
         isWritable = false
         putUserData(FileEditorManagerKeys.FORBID_PREVIEW_TAB, true)
@@ -26,7 +36,7 @@ class DiffReviewCanvasFile internal constructor(internal val review: DiffReviewT
 
     internal fun renameReview(name: String) {
         isWritable = true
-        try { rename(this, "Diff Review: $name") } finally { isWritable = false }
+        try { rename(this, "${review.canvasTitle}: $name") } finally { isWritable = false }
     }
 }
 
@@ -58,12 +68,12 @@ internal class DiffReviewEditor(private val file: DiffReviewCanvasFile) : UserDa
 
     override fun selectNotify() {
         attachCanvas()
-        file.review.onCanvasSelected()
+        file.review.canvasSelected()
     }
 
     override fun getComponent(): JComponent = panel
     override fun getPreferredFocusedComponent(): JComponent = file.review.canvas
-    override fun getName() = "Diff Review"
+    override fun getName() = file.review.canvasTitle
     override fun getFile(): VirtualFile = file
     override fun setState(state: FileEditorState) = Unit
     override fun isModified() = false

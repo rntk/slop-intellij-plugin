@@ -11,10 +11,12 @@ internal class ChangeTopicHierarchyPanel(
     availableWidth: Int,
     zoom: Double,
     private val actions: ChangeTopicActions,
-) : HierarchyColumnsPanel(availableWidth, zoom) {
+    vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+) : HierarchyColumnsPanel(availableWidth, zoom, vocabulary) {
     val outline = topicOutline(card.topics)
     private val summaries = card.summaries
-    private val fileSummaries = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to summaries.text(it.id) }
+    private val fileNodes = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associateBy { it.path }
+    private val fileSummaries = fileNodes.mapValues { summaries.text(it.value.id) }
     /** Topic summaries, else the summary of exactly a topic's files, by reading identity; see [topicReadingSummaries]. */
     private val reading = card.reading
     private val readingIds = reading.tree.nodes.associate { it.identity to it.id }
@@ -25,16 +27,22 @@ internal class ChangeTopicHierarchyPanel(
     init {
         state.update(outline)
         cardWidth = measureCardWidth(outline.nodes.map { it.name } + outline.files.map { it.path.substringAfterLast('/') })
-        if (outline.files.isEmpty()) showEmpty("No changed files") else layoutHierarchy()
+        if (outline.files.isEmpty()) showEmpty(vocabulary.noFiles) else layoutHierarchy()
     }
 
     private fun layoutHierarchy() {
         val gap = scaled(ROW_GAP)
         var y = 0
-        outline.children(null).forEach { y += place(it, 0, y) + gap }
+        y = placeEntries(outline.children(null), 0, y, null)
         outline.pending?.let { pending ->
             var childY = y
-            for (index in pending) childY += fileRow(index, 1, childY, null) + gap
+            for (index in pending) {
+                if (rowsLeft <= 0) {
+                    childY += moreNote(pending.last - index + 1, 1, childY) + gap
+                    break
+                }
+                childY += fileRow(index, 1, childY, null) + gap
+            }
             val placeholder = branchCard("topic:pending", "Awaiting topic", null, 0, pending.count(), active = false,
                 tooltip = "Run /topics to classify these files", toggle = null, placeholder = true)
             val height = maxOf(childY - gap - y, placeholder.preferredSize.height)
@@ -42,6 +50,20 @@ internal class ChangeTopicHierarchyPanel(
             y += height + gap
         }
         finish(y)
+    }
+
+    /** Lays out [entries] one under another from row [y], stopping at the row cap, and returns the row after the last one. */
+    private fun placeEntries(entries: List<TopicEntry>, column: Int, y: Int, topLevel: String?): Int {
+        val gap = scaled(ROW_GAP)
+        var next = y
+        for ((index, entry) in entries.withIndex()) {
+            if (rowsLeft <= 0) {
+                next += moreNote(entries.size - index, column, next) + gap
+                break
+            }
+            next += place(entry, column, next, topLevel) + gap
+        }
+        return next
     }
 
     /** Lays out [entry] with its top-left at column [column] and row [y], and returns its height. */
@@ -60,6 +82,7 @@ internal class ChangeTopicHierarchyPanel(
         val component = branchCard("topic:${node.level}:${node.identity}", node.name, node.path.first(), column, node.size,
             state.isSelected(node), node.fullPath, toggle, mark = mark, badge = badge(identity)) { state.select(node); actions.refresh() }
         val height = if (collapsed) {
+            rowsPlaced++
             val summary = readingIds[identity]?.let(reading::text)
             val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark)
             summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
@@ -67,7 +90,7 @@ internal class ChangeTopicHierarchyPanel(
         } else {
             val gap = scaled(ROW_GAP)
             var childY = y
-            outline.children(node).forEach { childY += place(it, column + 1, childY, node.path.first()) + gap }
+            childY = placeEntries(outline.children(node), column + 1, childY, node.path.first())
             maxOf(childY - gap - y, component.preferredSize.height)
         }
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
@@ -77,11 +100,13 @@ internal class ChangeTopicHierarchyPanel(
 
     private fun fileRow(index: Int, column: Int, y: Int, topLevel: String?): Int {
         val file = outline.files[index]
+        rowsPlaced++
         val identity = "file:${file.path}"
         val summary = fileSummaries[file.path] ?: readingIds[identity]?.let(reading::text)
         val mark = marks[identity]
         val leaf = fileCard(file, file.path.substringAfterLast('/'), topLevel, column, active?.contains(index) == true,
-            actions.openFile, actions.showDiffCard, mark, badge(identity))
+            { fileNodes[file.path]?.let(actions.openNode) ?: actions.openFile(file.path) },
+            actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity))
         val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })

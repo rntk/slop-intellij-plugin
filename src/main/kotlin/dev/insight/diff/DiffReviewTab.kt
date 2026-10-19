@@ -6,7 +6,6 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -14,14 +13,11 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
-import dev.insight.apilog.ApiLogs
 import dev.insight.chat.*
-import dev.insight.core.decisionsClient
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
-import java.time.Duration
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -33,17 +29,15 @@ internal class DiffReviewTab(
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     showDiff: (String) -> Unit,
-) : JPanel(BorderLayout()), Disposable {
+) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths)
     private var disposed = false
-    val isDisposed: Boolean get() = disposed
+    override val isDisposed: Boolean get() = disposed
+    override val canvasTitle: String get() = ReviewVocabulary.DIFF.canvasTitle
     var onCanvasSelected: () -> Unit = {}
-    /** One tracer per tab, so its cached judgments serve every word traced in this review. */
-    private val summaryTracer by lazy {
-        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofMinutes(5), traffic = ApiLogs.decisions)::evaluate)
-    }
-    val canvas: NoteCanvas = NoteCanvas(
+    override fun canvasSelected() = onCanvasSelected()
+    override val canvas: NoteCanvas = NoteCanvas(
         showDiff,
         { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
         { symbol ->
@@ -67,44 +61,8 @@ internal class DiffReviewTab(
         generateTopics = { if (canSummarize) session.send("/topics") },
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
-        traceSummaries = object : SummaryTraceLauncher {
-            override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
-                                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit) =
-                launchSummaryTask("Scoring summary words", done) {
-                    // Four workers bound the number of words in flight; each word's question batches run in parallel.
-                    coroutineScope {
-                        words.chunked(((words.size + 3) / 4).coerceAtLeast(1)).map { chunk ->
-                            async {
-                                for ((id, word) in chunk) {
-                                    val context = summaryTracer.score(summaries, id, word)
-                                    withContext(Dispatchers.EDT) { scored(context) }
-                                }
-                            }
-                        }.awaitAll()
-                    }
-                    Unit
-                }
-
-            override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit) =
-                launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
-        },
+        traceSummaries = ReviewTraceLauncher(project, scope),
     )
-
-    private fun <T> launchSummaryTask(title: String, done: (Result<T>) -> Unit, task: suspend () -> T): Job = scope.launch {
-        val result = try {
-            Result.success(withBackgroundProgress(project, title) {
-                withContext(Dispatchers.IO) { task() }
-            })
-        } catch (e: CancellationException) {
-            // A replaced word or closed tab must not publish a stale result. Cancelling only the
-            // IDE progress task still completes the callback so the card stops showing a pending request.
-            currentCoroutineContext().ensureActive()
-            Result.failure(e)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-        done(result)
-    }
 
     val canvasFile = DiffReviewCanvasFile(this)
     private val describe = JButton("Description")
@@ -235,20 +193,7 @@ internal class DiffReviewTab(
 
     fun openCanvas(focus: Boolean = false) {
         if (disposed) return
-        val manager = FileEditorManagerEx.getInstanceEx(project)
-        for (window in manager.windows) {
-            val center = (window.owner.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
-            if (center == null) {
-                window.owner.add(window.tabbedPane.component, BorderLayout.CENTER)
-                window.owner.validate()
-            } else if (!SwingUtilities.isDescendingFrom(window.tabbedPane.component, center)) {
-                if (window.isFileOpen(canvasFile)) window.closeFile(canvasFile)
-                manager.windows.firstOrNull {
-                    it.owner === window.owner && SwingUtilities.isDescendingFrom(it.tabbedPane.component, center)
-                }?.setAsCurrentWindow(false)
-            }
-        }
-        manager.openFile(canvasFile, focus).filterIsInstance<DiffReviewEditor>().firstOrNull()?.attachCanvas()
+        openReviewCanvas(project, canvasFile, focus)
     }
 
     fun invalidate(stop: Boolean, affectedPaths: Set<String>? = null) {

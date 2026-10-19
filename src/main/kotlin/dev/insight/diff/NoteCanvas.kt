@@ -51,7 +51,15 @@ internal class NoteCanvas(
     private val removeSummaries: () -> Unit = {},
     /** Summary prescoring and search use the Decisions API through this launcher. */
     private val traceSummaries: SummaryTraceLauncher? = null,
+    /** The words of the canvas; a diff review by default. */
+    private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+    /** Open the file of a summary node (a part opens at its first line). Null opens the node's file by path like [open]. */
+    openNode: ((SummaryNode) -> Unit)? = null,
+    /** Put a summary node's source on the canvas. Null shows the node's file by path like [showDiffCard]. */
+    showNode: ((SummaryNode) -> Unit)? = null,
 ) : JPanel(null), Disposable {
+    private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
+    private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
     private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
     private val sizes = mutableMapOf<DiffNoteKey, Point2D.Double>()
@@ -64,10 +72,11 @@ internal class NoteCanvas(
     internal val flowsView = ChangeFlowsViewState()
     private var flowsScroll = 0
     private var topics: TopicsCard? = null
-    internal val topicsView = ChangeTopicsViewState()
+    internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics,
+        if (vocabulary.documentMode) ChangeTopicsMode.DOCUMENT else ChangeTopicsMode.HIERARCHY).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
     private var summaries: SummariesCard? = null
-    internal val summariesView = ChangeSummariesViewState()
+    internal val summariesView = ChangeSummariesViewState().also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var summariesScroll = 0
     private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, ::refreshSummaries)
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }) { refreshCard(TOPICS_KEY) }
@@ -155,6 +164,9 @@ internal class NoteCanvas(
     }
 
     internal fun focusTopics() { focusCard(TOPICS_KEY) }
+
+    /** Brings a source block to the centre and outlines it briefly. */
+    internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
 
     internal fun focusSummaries() {
         focusCard(SUMMARIES_KEY)
@@ -297,16 +309,16 @@ internal class NoteCanvas(
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
             toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Change topics · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}").apply {
+            add(JLabel("${vocabulary.topicsTitle} · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "Every changed diff in one document, ordered by topic. File boundaries, order and alignment come from code; " +
-                    "topics and summaries are the assistant's interpretation."
+                toolTipText = vocabulary.topicsTooltip
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (hierarchy && outline.depth > 0) add(topicLevels(outline))
                 val group = ButtonGroup()
-                ChangeTopicsMode.entries.forEach { mode ->
+                // Document mode shows patches, so it only exists for diffs.
+                if (vocabulary.documentMode) ChangeTopicsMode.entries.forEach { mode ->
                     add(JToggleButton(if (mode == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy", topicsView.mode == mode).apply {
                         font = scaledFont(JBFont.small())
                         cursor = Cursor.getDefaultCursor()
@@ -340,7 +352,7 @@ internal class NoteCanvas(
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun
-                    toolTipText = "Write the file summaries shown beside each diff (/summaries)"
+                    toolTipText = vocabulary.topicsSummarizeTooltip
                     addActionListener { summarize() }
                 })
                 add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeTopics() }
@@ -352,13 +364,13 @@ internal class NoteCanvas(
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
-                trace = topicsTrace::trace)
+                trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode)
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
-                add(ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions))
-            } else ChangeTopicsPanel(content, topicsView, inner, zoom, actions), BorderLayout.CENTER)
+                add(ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions, vocabulary))
+            } else ChangeTopicsPanel(content, topicsView, inner, zoom, actions, vocabulary), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
@@ -429,9 +441,9 @@ internal class NoteCanvas(
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
             toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Change summaries · From the whole change down to each file").apply {
+            add(JLabel(vocabulary.summariesTitle).apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "The tree comes from the changed paths. Each summary is the assistant's interpretation, written from the files up to the root."
+                toolTipText = vocabulary.summariesTooltip
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -444,7 +456,7 @@ internal class NoteCanvas(
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
                         cursor = Cursor.getDefaultCursor()
-                        toolTipText = if (mode == ChangeSummariesMode.OUTLINE) "Indented summaries from the whole change down to each file"
+                        toolTipText = if (mode == ChangeSummariesMode.OUTLINE) vocabulary.summariesOutlineTooltip
                             else "Folders broad to specific, left to right, with each file's summary"
                         group.add(this)
                         addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
@@ -460,7 +472,7 @@ internal class NoteCanvas(
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && summaries.total > 0
                     toolTipText = if (summaries.complete) "Write every summary again (/summaries)"
-                        else "Summarize the files, then the folders above them, up to the whole change (/summaries)"
+                        else vocabulary.summarizeTooltip
                     addActionListener { summarize() }
                 })
                 add(InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSummaries() }
@@ -473,6 +485,8 @@ internal class NoteCanvas(
             select = { identity -> summariesView.select(identity); refreshSummaries() },
             openFile = open,
             showDiffCard = showDiffCard,
+            openNode = openSummaryNode,
+            showNode = showSummaryNode,
             showNames = { show -> summariesView.showNames = show; refreshSummaries() },
             trace = summariesTrace::trace,
         )
@@ -482,10 +496,10 @@ internal class NoteCanvas(
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
-                add(JLabel(summariesStatus(content)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
                 traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
-                add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions))
-            } else ChangeSummariesPanel(content, summariesView, inner, zoom, actions), BorderLayout.CENTER)
+                add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions, vocabulary))
+            } else ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
@@ -529,7 +543,7 @@ internal class NoteCanvas(
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
             isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            toolTipText = "Precalculate word contexts for all summaries with children. Uses the Decisions API."
+            toolTipText = "Precalculate word contexts for " + (if (state.visibleOnly) "the summaries with children shown now" else "all summaries with children") + ". Uses the Decisions API."
             addActionListener { session.prescore() }
         }
 
@@ -794,7 +808,7 @@ internal class NoteCanvas(
     /** File name as a link, its folder dimmed next to it; the full path stays in the tooltip. */
     private fun fileRow(path: String, showDiffButton: Boolean = true): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
         isOpaque = false
-        toolTipText = "View changes in $path"
+        toolTipText = vocabulary.openTooltip(path)
         val name = path.substringAfterLast('/')
         add(JPanel().apply {
             layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -802,7 +816,7 @@ internal class NoteCanvas(
             add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
             add(Box.createHorizontalStrut(scaled(6)))
             add(ActionLink(name) { open(path) }.apply {
-                font = scaledFont(JBFont.label()); toolTipText = "View changes in $path"
+                font = scaledFont(JBFont.label()); toolTipText = vocabulary.openTooltip(path)
                 minimumSize = Dimension(0, preferredSize.height)
             })
             path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { folder ->
@@ -813,10 +827,11 @@ internal class NoteCanvas(
                 })
             }
         }, BorderLayout.CENTER)
-        if (showDiffButton) {
-            add(InplaceButton(IconButton("Show diff on canvas", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) {
+        val canvasText = vocabulary.showOnCanvas
+        if (showDiffButton && canvasText != null) {
+            add(InplaceButton(IconButton(canvasText, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) {
                 showDiffCard(path)
-            }.apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff on canvas" }, BorderLayout.EAST)
+            }.apply { cursor = Cursor.getDefaultCursor(); toolTipText = canvasText }, BorderLayout.EAST)
         }
     }
 
@@ -864,17 +879,8 @@ internal class NoteCanvas(
 
     private fun emptyState(): JComponent = JPanel(VerticalLayout(scaled(6))).apply {
         isOpaque = false
-        add(JLabel("Diff review canvas").apply { font = scaledFont(JBFont.label().asBold().biggerOn(2f)) })
-        listOf(
-            "Select files on the left to inspect changes.",
-            "Click Description or type /description below to add notes.",
-            "Click Flows or type /flows to map the change from overview to code.",
-            "Click Summaries or type /summaries to read the change from the whole down to each file.",
-            "Click Topics or type /topics to read every diff as one document, grouped by topic, with each file's summary.",
-            "Drag a block's header to move it or its bottom-right grip to resize it.",
-            "Drag the background to pan.",
-            "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
-        ).forEach { add(JLabel(it).apply { foreground = UIUtil.getContextHelpForeground() }) }
+        add(JLabel(vocabulary.canvasHeading).apply { font = scaledFont(JBFont.label().asBold().biggerOn(2f)) })
+        vocabulary.canvasHints.forEach { add(JLabel(it).apply { foreground = UIUtil.getContextHelpForeground() }) }
         val gap = scaled(GAP)
         setBounds(gap, gap, scaled(600), preferredSize.height)
     }
