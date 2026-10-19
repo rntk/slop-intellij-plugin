@@ -60,7 +60,13 @@ class OpenDiffReviewAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
     override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = e.project != null }
     override fun actionPerformed(e: AnActionEvent) {
-        e.project?.let { ToolWindowManager.getInstance(it).getToolWindow("Diff Review")?.activate(null) }
+        e.project?.let { project ->
+            ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.let { window ->
+                window.activate {
+                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openCanvas()
+                }
+            }
+        }
     }
 }
 
@@ -70,6 +76,7 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     private val state = DiffReviewState()
     private val included = linkedSetOf<String>()
     private var disposed = false
+    private var selectingFromCanvas = false
     private var refreshJob: Job? = null
     private var repositoriesJob: Job? = null
     private var request = ReviewDiffRequest()
@@ -119,13 +126,13 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         val fileLists = JSplitPane(JSplitPane.VERTICAL_SPLIT, files, untrackedBlock).apply {
             resizeWeight = 0.7; setDividerLocation(0.7)
         }
-        val left = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
             minimumSize = JBUI.size(280, 120)
             add(sourceControls, BorderLayout.NORTH)
             add(fileLists, BorderLayout.CENTER)
             add(status, BorderLayout.SOUTH)
         }
-        val right = JPanel(BorderLayout()).apply {
+        val reviewPanel = JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply {
                 border = JBUI.Borders.emptyBottom(6)
                 add(JButton("New tab").apply {
@@ -135,12 +142,15 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right).apply {
-            resizeWeight = 0.25; setDividerLocation(JBUI.scale(360))
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, filesPanel, reviewPanel).apply {
+            resizeWeight = 0.4; setDividerLocation(JBUI.scale(300))
         }, BorderLayout.CENTER)
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
-                (newSelection?.component as? DiffReviewTab)?.highlight(selectedPaths().toSet())
+                (newSelection?.component as? DiffReviewTab)?.let {
+                    it.highlight(selectedPaths().toSet())
+                    if (!selectingFromCanvas) it.openCanvas()
+                }
             }
         }, this)
         tabs.addTabMouseListener(object : MouseAdapter() {
@@ -151,6 +161,10 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
                     null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
                 info.setText(renamed)
                 info.setTooltipText("$renamed · Double-click to rename")
+                (info.component as DiffReviewTab).canvasFile.let { file ->
+                    file.renameReview(renamed)
+                    FileEditorManager.getInstance(project).updateFilePresentation(file)
+                }
             }
         })
         addTab()
@@ -293,6 +307,13 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
         tab.update(state.snapshot)
         if (state.refreshing) tab.invalidate(stop = false)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
+        tab.canvasFile.renameReview(name)
+        tab.onCanvasSelected = {
+            if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {
+                selectingFromCanvas = true
+                try { tabs.select(info, false) } finally { selectingFromCanvas = false }
+            }
+        }
         info.setTabLabelActions(DefaultActionGroup(object : DumbAwareAction(
             "Close tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
         ) {
@@ -312,6 +333,8 @@ internal class DiffReviewPanel(private val project: Project) : JPanel(BorderLayo
     }
 
     private fun selectedTab(): DiffReviewTab? = tabs.selectedInfo?.component as? DiffReviewTab
+
+    fun openCanvas() { selectedTab()?.openCanvas() }
 
     private fun selectedFile(): ReviewFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? ReviewFile
 

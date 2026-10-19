@@ -247,7 +247,7 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(canvas) }
     }
 
-    private fun labels(tab: DiffReviewTab) = descendants(tab).mapNotNull { (it as? JLabel)?.text }
+    private fun labels(tab: DiffReviewTab) = descendants(tab.canvas).mapNotNull { (it as? JLabel)?.text }
 
     private fun descendants(component: Container): List<Component> = component.components.flatMap {
         listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())

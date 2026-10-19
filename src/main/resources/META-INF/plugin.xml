@@ -43,6 +43,7 @@
         <applicationConfigurable parentId="tools" id="dev.insight.chat" displayName="Insight Chat"
                                  instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.diff.DiffReviewEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
     </extensions>

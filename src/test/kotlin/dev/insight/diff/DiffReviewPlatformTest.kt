@@ -3,8 +3,9 @@ package dev.insight.diff
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.PlatformTestUtil
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.testFramework.FileEditorManagerTestCase
 import dev.insight.callgraph.DiffService
 import dev.insight.chat.ChatMessage
 import dev.insight.chat.ChatPanel
@@ -37,7 +38,79 @@ import com.intellij.openapi.vcs.changes.ContentRevision
 import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.intellij.vcsUtil.VcsUtil
 
-class DiffReviewPlatformTest : BasePlatformTestCase() {
+class DiffReviewPlatformTest : FileEditorManagerTestCase() {
+    fun `test canvas fills native editor and survives closing and reopening independently of chat`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val file = file("src/a.kt").copy(after = "val a = 1\n")
+            tab.update(ReviewSnapshot(listOf(file), emptyList()))
+            runWithEvents {
+                tab.captureContext().addNotes(listOf(DiffNote(listOf(file.path), "Keep this card")))
+                tab.captureContext().showSource(DiffSourceRange(file.path, 1, 1))
+            }
+            val sourceEditor = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
+            val chat = descendants(tab).filterIsInstance<ChatPanel>().single()
+            chat.input.text = "Keep this draft"
+            tab.canvas.zoomAt(1.5)
+            val bounds = tab.canvas.components.map { it.bounds }
+            tab.openCanvas()
+            tab.openCanvas()
+            assertEquals(1, manager.getEditors(tab.canvasFile).size)
+            val editor = manager.getEditors(tab.canvasFile).single()
+            assertEquals(listOf(tab.canvas), editor.component.components.toList())
+            assertSame(tab.canvas, editor.preferredFocusedComponent)
+            assertFalse(descendants(tab).any { it is NoteCanvas })
+            assertFalse(descendants(editor.component).any { it is ChatPanel })
+
+            // Closing the view must not stop a queued reply or dispose the review's source viewers.
+            tab.session.send("Keep this queued reply")
+            manager.closeFile(tab.canvasFile)
+            assertFalse(manager.isFileOpen(tab.canvasFile))
+            assertFalse(sourceEditor.isDisposed)
+            assertTrue(tab.session.busy)
+            assertEquals("Keep this draft", chat.input.text)
+            assertEquals("Keep this card", tab.state.notes.single().text)
+            tab.openCanvas()
+            assertEquals(1.5, tab.canvas.zoom)
+            assertEquals(bounds, tab.canvas.components.map { it.bounds })
+            assertSame(sourceEditor, descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor)
+            tab.session.stop()
+            Disposer.dispose(tab)
+            assertFalse(manager.isFileOpen(tab.canvasFile))
+            assertTrue(sourceEditor.isDisposed)
+            assertFalse(editor.isValid)
+            assertFalse(DiffReviewEditorProvider().accept(project, tab.canvasFile))
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun `test native canvas selection follows review controls and review deletion closes its canvas`() {
+        val panel = DiffReviewPanel(project)
+        JRootPane().contentPane.add(panel)
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val firstInfo = tabs.selectedInfo!!
+            val first = firstInfo.component as DiffReviewTab
+            assertTrue(manager.isFileOpen(first.canvasFile))
+            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
+            val second = tabs.selectedInfo!!.component as DiffReviewTab
+            assertTrue(manager.isFileOpen(second.canvasFile))
+            assertNotSame(first.canvas.parent, second.canvas.parent)
+            manager.openFile(first.canvasFile, true)
+            PlatformTestUtil.waitWithEventsDispatching("Canvas selection should select the matching review controls", {
+                tabs.selectedInfo === firstInfo
+            }, 10 /* seconds */)
+            assertSame(firstInfo, tabs.selectedInfo)
+            assertTrue(descendants(panel).any { it === first })
+            closeButton(tabs, firstInfo).doClick()
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            assertTrue(first.isDisposed)
+            assertTrue(manager.isFileOpen(second.canvasFile))
+        } finally { Disposer.dispose(panel) }
+        assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
+    }
+
     fun `test untracked tree groups paths toggles folders and retains collapsed folders on refresh`() {
         val included = linkedSetOf("/project/src/a.kt")
         var changes = 0
@@ -194,7 +267,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             val range = DiffSourceRange("src/a.kt", 2, 2)
             runWithEvents {
                 context.showSource(range)
-                val viewer = descendants(tab).filterIsInstance<DiffSourceEditor>().single().editor
+                val viewer = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
                 assertEquals("println(a)", viewer.document.text)
                 assertEquals(listOf("src/a.kt"), context.uncovered())
                 val data = JsonParser.parseString(context.state(0)).asJsonObject
@@ -221,11 +294,11 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             val context = tab.captureContext()
             runWithEvents {
                 context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Explains A.")))
-                val showButton = descendants(tab).filterIsInstance<InplaceButton>()
+                val showButton = descendants(tab.canvas).filterIsInstance<InplaceButton>()
                     .single { it.toolTipText == "Show diff on canvas" }
                 showButton.doClick()
                 assertEquals(listOf(fileA), tab.state.diffs)
-                val diffViewer = descendants(tab).filterIsInstance<DiffFileEditor>().single()
+                val diffViewer = descendants(tab.canvas).filterIsInstance<DiffFileEditor>().single()
                 assertEquals(setOf("val a = 1\n", "val a = 2\n"), diffViewer.editors.map { it.document.text }.toSet())
 
                 // Unchanged evidence for src/a.kt keeps the diff card alive when another file changes.
@@ -392,7 +465,7 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(panel) }
     }
 
-    fun `test full height global files sit beside tabs with independent drafts notes and chat resets`() {
+    fun `test global files sit above review controls with independent drafts notes and chat resets`() {
         val panel = DiffReviewPanel(project)
         JRootPane().contentPane.add(panel)
         try {
@@ -400,10 +473,10 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val split = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as JSplitPane
-            assertEquals(JSplitPane.HORIZONTAL_SPLIT, split.orientation)
-            assertTrue(descendants(split.leftComponent as Container).any { it is JTree })
-            assertFalse(descendants(split.leftComponent as Container).any { it is ChatPanel })
-            val tabs = descendants(split.rightComponent as Container).filterIsInstance<JBTabs>().single()
+            assertEquals(JSplitPane.VERTICAL_SPLIT, split.orientation)
+            assertTrue(descendants(split.topComponent as Container).any { it is JTree })
+            assertFalse(descendants(split.topComponent as Container).any { it is ChatPanel })
+            val tabs = descendants(split.bottomComponent as Container).filterIsInstance<JBTabs>().single()
             assertFalse(tabs.presentation.isHideTabs)
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
@@ -494,19 +567,19 @@ class DiffReviewPlatformTest : BasePlatformTestCase() {
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
-            assertEquals(1, descendants(tab).filterIsInstance<ChangeSummariesPanel>().size)
-            assertTrue(descendants(tab).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
+            assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)
+            assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear canvas" }.doClick()
             assertFalse(tab.state.summariesVisible)
-            assertTrue(descendants(tab).filterIsInstance<ChangeSummariesPanel>().isEmpty())
+            assertTrue(descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().isEmpty())
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertTrue(tab.state.summaries.complete)
-            assertEquals(1, descendants(tab).filterIsInstance<ChangeSummariesPanel>().size)
+            assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)
             assertEquals("Reopening completed summaries must not send a turn", 0, tab.session.messages.count { it.text == "/summaries" })
 
             // Stay on the EDT so the queued turn cannot contact a backend during this test.
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "Regenerate" }.doClick()
+            descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.doClick()
             assertTrue(tab.session.busy)
             assertEquals("/summaries", tab.session.messages.last { it.role == ChatMessage.USER }.text)
             open.doClick()

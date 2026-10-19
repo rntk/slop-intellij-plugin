@@ -55,6 +55,6 @@ class PluginDescriptorTest {
         val providers = childElements(loadDescriptor("diff-git.xml"))
             .filter { it.tagName == "extensions" && it.getAttribute("defaultExtensionNs") == "dev.insight" }
             .flatMap { childElements(it) }.toList()
-        assertEquals(listOf("diffBaseProvider"), providers.map { it.tagName })
+        assertEquals(listOf("diffBaseProvider", "reviewDiffProvider"), providers.map { it.tagName })
     }
 }

@@ -5,6 +5,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -16,11 +17,10 @@ import dev.insight.chat.*
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.FlowLayout
+import java.awt.GridLayout
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JSplitPane
 
 /** Owns one conversation and canvas. File selection never changes this tab's scope. */
 internal class DiffReviewTab(
@@ -32,7 +32,9 @@ internal class DiffReviewTab(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths)
     private var disposed = false
-    private val canvas: NoteCanvas = NoteCanvas(
+    val isDisposed: Boolean get() = disposed
+    var onCanvasSelected: () -> Unit = {}
+    val canvas: NoteCanvas = NoteCanvas(
         showDiff,
         { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
         { symbol ->
@@ -56,6 +58,7 @@ internal class DiffReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
     )
+    val canvasFile = DiffReviewCanvasFile(this)
     private val describe = JButton("Description")
     private val flowsButton = JButton("Flows").apply {
         toolTipText = "Map the change: functions and calls from source, grouped and labelled by the assistant (/flows)"
@@ -144,29 +147,43 @@ internal class DiffReviewTab(
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
-            add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(describe.apply { addActionListener { session.send("/description") } })
-                add(flowsButton.apply { addActionListener { session.send("/flows") } })
-                add(topicsButton.apply { addActionListener { openTopics() } })
-                add(summariesButton.apply { addActionListener { openSummaries() } })
-                add(JButton("Clear canvas").apply { addActionListener { state.clearNotes(); renderCanvas() } })
-                add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
-                add(JButton("100%").apply {
-                    toolTipText = "Reset canvas view"
-                    addActionListener { canvas.resetView() }
-                    canvas.onZoomChanged = { text = "${(it * 100).toInt()}%" }
-                })
-                add(JButton("+").apply { toolTipText = "Zoom in"; addActionListener { canvas.zoomAt(canvas.zoom * 1.2) } })
-                add(JButton("Fit").apply { toolTipText = "Fit all cards"; addActionListener { canvas.fitView() } })
+            add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
+                add(JButton("Open canvas").apply {
+                    toolTipText = "Open this review's canvas in the IDE editor area"
+                    addActionListener { openCanvas(true) }
+                }, BorderLayout.NORTH)
+                add(JPanel(GridLayout(2, 2, JBUI.scale(4), JBUI.scale(4))).apply {
+                    add(describe.apply { addActionListener { session.send("/description") } })
+                    add(flowsButton.apply { addActionListener { session.send("/flows") } })
+                    add(topicsButton.apply { addActionListener { openTopics() } })
+                    add(summariesButton.apply { addActionListener { openSummaries() } })
+                }, BorderLayout.CENTER)
+                add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+                    add(JButton("Clear canvas").apply {
+                        addActionListener { state.clearNotes(); renderCanvas() }
+                    }, BorderLayout.WEST)
+                    add(JPanel(GridLayout(1, 4, JBUI.scale(4), 0)).apply {
+                        add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
+                        add(JButton("100%").apply {
+                            toolTipText = "Reset canvas view"
+                            addActionListener { canvas.resetView() }
+                            canvas.onZoomChanged = { text = "${(it * 100).toInt()}%" }
+                        })
+                        add(JButton("+").apply { toolTipText = "Zoom in"; addActionListener { canvas.zoomAt(canvas.zoom * 1.2) } })
+                        add(JButton("Fit").apply { toolTipText = "Fit all cards"; addActionListener { canvas.fitView() } })
+                    }, BorderLayout.CENTER)
+                }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, canvas, chat).apply {
-            resizeWeight = 0.65; setDividerLocation(430)
-        }, BorderLayout.CENTER)
+        add(chat, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, session.subscribe { updateControls(); summariesChanged() })
         updateControls()
+    }
+
+    fun openCanvas(focus: Boolean = false) {
+        if (!disposed) FileEditorManager.getInstance(project).openFile(canvasFile, focus)
     }
 
     fun invalidate(stop: Boolean, affectedPaths: Set<String>? = null) {
@@ -377,6 +394,9 @@ internal class DiffReviewTab(
 
     override fun dispose() {
         disposed = true
+        onCanvasSelected = {}
+        FileEditorManager.getInstance(project).closeFile(canvasFile)
+        canvasFile.setValid(false)
         session.discard()
         scope.cancel()
         state.update(ReviewSnapshot(emptyList(), emptyList()))
