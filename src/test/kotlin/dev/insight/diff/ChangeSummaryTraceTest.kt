@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import com.google.gson.JsonObject
 import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionJson
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
@@ -86,6 +87,27 @@ class ChangeSummaryTraceTest {
         assertEquals(listOf("hierarchy"), none.context(example, words, words[3]).map { it.text })
     }
 
+    @Test fun `context reaches other phrases about the pointed thing and the query keeps them`() = runBlocking {
+        val summary = "Introduces custom instruction handling across UI, core pipeline, background orchestrator, and runtime contracts, " +
+            "adding UI controls, normalization, caching, and payload updates, with comprehensive tests."
+        val wanted = setOf("Introduces", "custom", "instruction", "handling", "across", "adding", "UI", "controls")
+        val fake = FakeDecisions { state, instructions -> if (word(state, instructions) in wanted) 0.9 else 0.1 }
+        val words = SummaryWord.split(summary)
+        val pointed = words.first { it.text == "UI" }
+        val context = SummaryTracer(fake.evaluate).context(summary, words, pointed)
+        assertEquals("Introduces custom instruction handling across UI, adding UI controls", SummaryTracer.query(summary, context))
+        // The later "UI" is pointed out to the model as another mention of the same word.
+        val mentions = fake.requests.single().state.asJsonObject["pointed_word"].asJsonObject["other_mentions"].asJsonArray
+        assertEquals(listOf(words.last { it.text == "UI" }.index + 1), mentions.map { it.asInt })
+    }
+
+    @Test fun `query keeps filler words between kept words`() {
+        val summary = "deleted the views of canvas and the hierarchy"
+        val words = SummaryWord.split(summary)
+        assertEquals("deleted the views of canvas", SummaryTracer.query(summary, words.filter { it.text in setOf("deleted", "views", "canvas") }))
+        assertEquals("deleted the views hierarchy", SummaryTracer.query(summary, words.filter { it.text in setOf("deleted", "views", "hierarchy") }))
+    }
+
     @Test fun `context never asks about stop words`() = runBlocking {
         val summary = "deleted the views of canvas and the hierarchy"
         val fake = FakeDecisions { _, _ -> 0.9 }
@@ -109,6 +131,37 @@ class ChangeSummaryTraceTest {
         val context = withTimeout(5_000) { tracer.context(example, words, words[3]) }
         assertEquals(listOf(3, 1), requests.map { it.questions.size })
         assertEquals(listOf("views", "hierarchy"), context.map { it.text })
+    }
+
+    @Test fun `a long summary's context requests stay within the byte budget and carry the rules once`() = runBlocking {
+        // The summary whose 32-question request exceeded the server's batch when every question repeated the rules.
+        val summary = "Implemented a new ChangeSummaryTrace feature that imports JSON arrays, expands context to include all " +
+            "mentions of the target word, adds a focus parameter for ranking, updates state JSON, and includes comprehensive " +
+            "tests. Updated the diff‑review guide to explain the interactive word‑tracing workflow and reference the new components."
+        val fake = FakeDecisions { _, _ -> 0.1 }
+        val words = SummaryWord.split(summary)
+        SummaryTracer(fake.evaluate).context(summary, words, words.single { it.text == "updates" })
+        assertEquals(words.count { it.meaningful } - 1, fake.askedWords().size)
+        fake.requests.forEach { request ->
+            assertTrue(DecisionJson.encode(request).toByteArray().size <= SummaryTracer.MAX_REQUEST_BYTES)
+            assertTrue(request.state.asJsonObject.has("query_rules"))
+            request.questions.values.forEach { assertFalse((it as DecisionQuestion.Noul).instructions.asJsonObject.has("examples")) }
+        }
+    }
+
+    @Test fun `batches split by bytes as well as by count and keep the question order`() {
+        val state = JsonObject().apply { addProperty("summary", "x".repeat(200)) }
+        fun question(n: Int) = DecisionQuestion.Noul(JsonObject().apply { addProperty("question", "q$n " + "y".repeat(100)) })
+        val questions = (0 until 10).map(::question)
+        val tracer = SummaryTracer({ error("unused") }, maxRequestBytes = 900)
+        val batches = tracer.batches(state, questions)
+        assertTrue(batches.size > 1)
+        batches.forEach { assertTrue(DecisionJson.encode(it).toByteArray().size <= 900) }
+        assertEquals(questions, batches.flatMap { it.questions.values })
+        // A question larger than the budget on its own is still asked, alone.
+        val huge = DecisionQuestion.Noul(JsonObject().apply { addProperty("question", "z".repeat(2000)) })
+        assertEquals(listOf(1, 1), tracer.batches(state, listOf(questions[0], huge)).map { it.questions.size })
+        assertEquals(listOf(4, 4, 2), SummaryTracer({ error("unused") }, maxQuestions = 4).batches(state, questions).map { it.questions.size })
     }
 
     @Test fun `context of a summary with at most one other meaningful word needs no request`() = runBlocking {
@@ -201,6 +254,7 @@ class ChangeSummaryTraceTest {
         assertEquals("views/hierarchy.kt", summaries.tree[trace.best!!.id].location)
         val match = fake.matchRequests().single().state.asJsonObject
         assertEquals("deleted views: hierarchy", match["query"].asString)
+        assertEquals("hierarchy", match["query_focus"].asString)
         assertEquals(example, match["pointed_summary"].asJsonObject["summary"].asString)
     }
 

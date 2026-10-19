@@ -1,9 +1,11 @@
 package dev.insight.diff
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionJson
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
@@ -68,13 +70,16 @@ data class SummaryTrace(
 /**
  * Traces a word of a summary to the summaries it came from, with typed judgments and no generative model.
  *
- * 1. Every other meaningful word of the summary gets a Noul: is it part of the pointed word's narrow context? In
- *    "deleted views: canvas, hierarchy, summaries", the context of "hierarchy" is "deleted views", not its siblings.
- * 2. The summary narrowed to those words ("deleted views: hierarchy") is the query.
+ * 1. Every other meaningful word of the summary gets a Noul: is it part of what the summary says about the pointed
+ *    thing? That covers the pointed word's own phrase and every other phrase about the same thing, but not its siblings.
+ *    In "moves caching into the parser and client, adding retries to the client", the context of the first "client" is
+ *    "moves caching" and "adding retries to the client", not "parser".
+ * 2. The summary narrowed to those words ("moves caching client, adding retries to the client") is the query.
  * 3. Only on an explicit search, every summary up to [levels] levels below gets a Noul: does it describe what the query
- *    names? Deeper levels are not searched; trace a match to go further.
+ *    says about the pointed word? Deeper levels are not searched; trace a match to go further.
  *
- * Questions over the same state go in one request; requests of up to [maxQuestions] questions run in parallel.
+ * Questions over the same state go in one request, with the rules they share in that state; requests of up to [maxQuestions]
+ * questions and [maxRequestBytes] of JSON run in parallel.
  * Judgments are cached by their inputs, so tracing a word again, or after unrelated summaries change, is free.
  */
 class SummaryTracer(
@@ -82,8 +87,9 @@ class SummaryTracer(
     private val levels: Int = LEVELS,
     private val maxWords: Int = MAX_WORDS,
     private val maxQuestions: Int = MAX_QUESTIONS,
+    private val maxRequestBytes: Int = MAX_REQUEST_BYTES,
 ) {
-    init { require(levels >= 1); require(maxWords >= 1); require(maxQuestions >= 1) }
+    init { require(levels >= 1); require(maxWords >= 1); require(maxQuestions >= 1); require(maxRequestBytes >= 1) }
 
     private val contexts = Lru<List<Any>, Set<Int>>(256)
     private val probabilities = Lru<List<String>, Double>(2048)
@@ -104,13 +110,13 @@ class SummaryTracer(
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
         val candidates = candidates(summaries, id)
-        val ranked = rank(context.query, node, context.summary, candidates.map { (candidate, _) -> candidate to summaries.text(candidate.id).orEmpty() })
+        val ranked = rank(context.query, context.word.text, node, context.summary, candidates.map { (candidate, _) -> candidate to summaries.text(candidate.id).orEmpty() })
         val matches = candidates.zip(ranked) { (candidate, depth), probability -> SummaryMatch(candidate.id, candidate.identity, probability, depth) }
             .sortedWith(compareByDescending<SummaryMatch> { it.probability }.thenByDescending { it.levelsBelow }.thenBy { it.id })
         return SummaryTrace(node.identity, context.summary, context.word, context.context, context.query, matches, candidates.size)
     }
 
-    /** The pointed word and the words of the summary that pin down what it is about, in reading order. */
+    /** The pointed word and the words of the summary that say what it is and what is done to it, in reading order. */
     internal suspend fun context(summary: String, words: List<SummaryWord>, word: SummaryWord): List<SummaryWord> {
         // The nearest words are the likeliest context; a very long summary is cut around the pointed word.
         val others = words.filter { it.index != word.index && it.meaningful }
@@ -121,7 +127,16 @@ class SummaryTracer(
             val state = JsonObject().apply {
                 addProperty("summary", summary)
                 addProperty("numbered_summary", numbered(summary, words))
-                add("pointed_word", JsonObject().apply { addProperty("number", word.index + 1); addProperty("word", word.text) })
+                add("pointed_word", JsonObject().apply {
+                    addProperty("number", word.index + 1)
+                    addProperty("word", word.text)
+                    // A repeated word is the cheapest sign of another phrase about the same thing; the model judges the rest.
+                    add("other_mentions", JsonArray().apply {
+                        words.filter { it.index != word.index && it.text.equals(word.text, ignoreCase = true) }.forEach { add(it.index + 1) }
+                    })
+                })
+                // Shared by every question, so it is sent once per request rather than once per word.
+                add("query_rules", queryRules())
             }
             val nouls = ask(state, others) { candidate -> contextQuestion(candidate) }
             others.filterIndexed { index, _ -> nouls[index] >= SummaryTrace.CONTEXT_THRESHOLD }.mapTo(hashSetOf()) { it.index }
@@ -131,17 +146,26 @@ class SummaryTracer(
     }
 
     /**
-     * Probability that each candidate describes what [query] names. The traced summary is context: it was condensed from
-     * the candidates, so it tells which reading of the query is meant.
+     * Probability that each candidate describes what [query] says about [focus]. The query can name other items around the
+     * focus, so the focus tells which of them is searched; the traced summary was condensed from the candidates, so it tells
+     * which reading of the query is meant.
      */
-    internal suspend fun rank(query: String, node: SummaryNode, summary: String, candidates: List<Pair<SummaryNode, String>>): List<Double> {
+    internal suspend fun rank(
+        query: String,
+        focus: String,
+        node: SummaryNode,
+        summary: String,
+        candidates: List<Pair<SummaryNode, String>>,
+    ): List<Double> {
         if (candidates.isEmpty()) return emptyList()
-        val keys = candidates.map { (candidate, text) -> listOf(query, summary, candidate.location, text) }
+        val keys = candidates.map { (candidate, text) -> listOf(query, focus, summary, candidate.location, text) }
         val missing = candidates.indices.filter { probabilities[keys[it]] == null }
         if (missing.isNotEmpty()) {
             val state = JsonObject().apply {
                 addProperty("query", query)
+                addProperty("query_focus", focus)
                 add("pointed_summary", JsonObject().apply { addProperty("location", node.location); addProperty("summary", summary) })
+                add("match_rules", matchRules())
             }
             val nouls = ask(state, missing.map { candidates[it] }) { (candidate, text) -> matchQuestion(candidate, text) }
             missing.forEachIndexed { index, candidate -> probabilities[keys[candidate]] = nouls[index] }
@@ -149,31 +173,43 @@ class SummaryTracer(
         return keys.map { probabilities[it] ?: 0.0 }
     }
 
-    /** One Noul per item; items are split into requests of at most [maxQuestions] that run in parallel. */
+    /** One Noul per item; items are packed into requests that run in parallel, see [batches]. */
     private suspend fun <T> ask(state: JsonElement, items: List<T>, question: (T) -> DecisionQuestion.Noul): List<Double> = coroutineScope {
-        items.chunked(maxQuestions).map { chunk ->
+        batches(state, items.map(question)).map { request ->
             async {
-                val questions = chunk.withIndex().associate { (index, item) -> "q$index" to question(item) }
-                val response = evaluate(DecisionRequest(state, questions))
+                val response = evaluate(request)
                 // The client already checks that every question has an answer of the requested type.
-                chunk.indices.map { (response.answers.getValue("q$it") as DecisionAnswer.Noul).noul }
+                request.questions.keys.map { (response.answers.getValue(it) as DecisionAnswer.Noul).noul }
             }
         }.awaitAll().flatten()
+    }
+
+    /**
+     * Consecutive questions packed into requests of at most [maxQuestions] questions and [maxRequestBytes] of encoded JSON,
+     * since the server rejects an input larger than its batch. A question too large on its own still gets its own request.
+     */
+    internal fun batches(state: JsonElement, questions: List<DecisionQuestion.Noul>): List<DecisionRequest> {
+        fun request(chunk: List<DecisionQuestion.Noul>) = DecisionRequest(state, chunk.withIndex().associate { (index, question) -> "q$index" to question })
+        val requests = mutableListOf<DecisionRequest>()
+        var chunk = listOf<DecisionQuestion.Noul>()
+        for (question in questions) {
+            val grown = chunk + question
+            chunk = if (chunk.isEmpty() || grown.size <= maxQuestions && bytes(request(grown)) <= maxRequestBytes) grown
+                else listOf(question).also { requests += request(chunk) }
+        }
+        if (chunk.isNotEmpty()) requests += request(chunk)
+        return requests
     }
 
     private fun contextQuestion(candidate: SummaryWord) = DecisionQuestion.Noul(
         JsonObject().apply {
             add("candidate_word", JsonObject().apply { addProperty("number", candidate.index + 1); addProperty("word", candidate.text) })
-            addProperty("question", "A reader points at `pointed_word` in `numbered_summary` and wants only the words that pin down what " +
-                "that word is about. Is `candidate_word` part of that narrow context: the action, subject, object, owner or qualifier " +
-                "of the phrase the pointed word belongs to, or another part of the same name?")
+            addProperty("question", "Following `query_rules`, does `candidate_word` help preserve the complete phrase containing " +
+                "`pointed_word` or identify its specific meaning and change in `numbered_summary`?")
         },
         mapOf(
-            true to JsonPrimitive("The candidate says what the pointed word is, what is done to or with it, or where it belongs, or it is " +
-                "part of the same multi-word name. For \"hierarchy\" in \"deleted views: canvas, hierarchy, summaries\", " +
-                "\"deleted\" and \"views\" are context."),
-            false to JsonPrimitive("The candidate is a sibling listed next to the pointed word (\"canvas\" or \"summaries\" in that " +
-                "example), belongs to another clause or sentence about something else, or adds no meaning of its own."),
+            true to JsonPrimitive("`candidate_word` fits a case of `query_rules.include`."),
+            false to JsonPrimitive("`candidate_word` fits a case of `query_rules.exclude`."),
         ),
     )
 
@@ -184,14 +220,12 @@ class SummaryTracer(
                 addProperty("location", candidate.location)
                 addProperty("summary", text)
             })
-            addProperty("question", "`pointed_summary` was condensed from the summaries of its parts, one of which is `candidate`. " +
-                "Does `candidate` describe the specific thing that `query` names, so `query` was condensed from it?")
+            addProperty("question", "Following `match_rules`, does `candidate` describe what `query` says about `query_focus`, so " +
+                "part of `query` was condensed from it?")
         },
         mapOf(
-            true to JsonPrimitive("The candidate covers what the query names: the same change to the same item, or a part of it, " +
-                "including when its location or file name identifies the item."),
-            false to JsonPrimitive("The candidate is about another item or another change, even on a related topic or in the same " +
-                "folder, or it mentions the item only in passing."),
+            true to JsonPrimitive("`candidate` fits a case of `match_rules.include`."),
+            false to JsonPrimitive("`candidate` fits a case of `match_rules.exclude`."),
         ),
     )
 
@@ -217,6 +251,75 @@ class SummaryTracer(
         const val LEVELS = 2
         const val MAX_WORDS = 96
         const val MAX_QUESTIONS = 32
+        /**
+         * About 3.5 bytes of this JSON make a token, so this stays near 4,600 tokens: well under a local server's batch of
+         * 10,240, with room for the model's own prompt. A starting point; tune it against the server's context.
+         */
+        const val MAX_REQUEST_BYTES = 16_000
+
+        private fun bytes(request: DecisionRequest) = DecisionJson.encode(request).toByteArray(Charsets.UTF_8).size
+
+        private fun strings(vararg values: String) = JsonArray().apply { values.forEach(::add) }
+
+        /** What belongs to the query for the pointed word; every context question refers to it. */
+        private fun queryRules() = JsonObject().apply {
+            addProperty("goal", "A reader points at `pointed_word` in `numbered_summary` to find the parts of the change it refers " +
+                "to. The word alone is too vague to search for, so the chosen words, with the pointed word, become the search " +
+                "query. First identify the complete phrase containing this occurrence of the pointed word; then keep the context " +
+                "that identifies what that phrase refers to and what changes. Judge each candidate as part of that meaning, " +
+                "not by its similarity to the isolated pointed word.")
+            add("include", strings(
+                "The word completes the phrase containing the pointed word: its head, modifiers, compound terms or complements. " +
+                    "Keep words specifying its kind, purpose or object, even when they are not synonyms or a formal name. " +
+                    "A generic word must retain the words that make its meaning specific here.",
+                "The word supplies the action, owner, feature or scope needed to interpret that phrase. Shared context can " +
+                    "apply to the pointed phrase even when it also applies to other items in a list.",
+                "The word belongs to another phrase of the summary about the same thing: a later mention of it (listed in " +
+                    "`pointed_word.other_mentions` when the word repeats), another name or reference for it, or what that phrase " +
+                    "says is done to it. Repeated spelling is only a clue: include it only when it refers to the same thing.",
+            ))
+            add("exclude", strings(
+                "The word is a sibling listed next to the pointed word, or next to another mention of it, that the shared action " +
+                    "applies to as well.",
+                "The word belongs to a different item or is only broadly related to the overall topic. Exclude general commentary " +
+                    "that does not help identify or describe the pointed phrase. Do not infer relationships absent from the summary.",
+            ))
+            add("examples", JsonArray().apply {
+                add(example("Adds[1] account[2] recovery[3], including[4] token[5] validation[6] and[7] email[8] templates[9]", "validation[6]",
+                    include = strings("Adds[1]", "account[2]", "recovery[3]", "including[4]", "token[5]"),
+                    exclude = strings("email[8]", "templates[9]")))
+                add(example("deleted[1] views[2]: canvas[3], hierarchy[4], summaries[5]", "hierarchy[4]",
+                    include = strings("deleted[1]", "views[2]"), exclude = strings("canvas[3]", "summaries[5]")))
+                add(example("Moves[1] caching[2] into[3] the[4] parser[5] and[6] client[7], adding[8] retries[9] to[10] the[11] " +
+                    "client[12], with[13] tests[14]", "client[7]",
+                    include = strings("Moves[1]", "caching[2]", "adding[8]", "retries[9]", "client[12]"), exclude = strings("parser[5]", "tests[14]")))
+            })
+        }
+
+        private fun example(summary: String, pointed: String, include: JsonArray, exclude: JsonArray) = JsonObject().apply {
+            addProperty("numbered_summary", summary)
+            addProperty("pointed_word", pointed)
+            add("include", include)
+            add("exclude", exclude)
+        }
+
+        /** When a summary below was condensed into the query; every match question refers to it. */
+        private fun matchRules() = JsonObject().apply {
+            addProperty("goal", "`pointed_summary` was condensed from the summaries of its parts, one of which is each `candidate`. " +
+                "`query_focus` marks the hovered word, not a standalone search term. Interpret it as the complete phrase it " +
+                "belongs to in `query`, using `pointed_summary` to resolve its meaning. The reader wants the parts that change " +
+                "that specific thing.")
+            add("include", strings(
+                "The candidate covers any change the query states about the focus item, or a part of that item, including when its " +
+                    "location or file name identifies the item. It need not cover every change in the query.",
+            ))
+            add("exclude", strings(
+                "The candidate is about another item, including another item the query also names, or about a change the query " +
+                    "does not state for the focus, even on a related topic or in the same folder.",
+                "The candidate mentions the focus only in passing, or shares only the isolated word while describing a different " +
+                    "kind, purpose or object. Matching a generic head word does not match the qualified phrase.",
+            ))
+        }
 
         /** `deleted[1] views[2]: canvas[3]` — question IDs are not sent to the model, so the words carry their numbers. */
         internal fun numbered(summary: String, words: List<SummaryWord>): String = buildString {
@@ -229,15 +332,16 @@ class SummaryTracer(
         }
 
         /**
-         * The summary narrowed to [context]: adjacent words keep the text between them, and a skipped run is replaced by the
-         * separator that followed the last kept word, so "deleted views: canvas, hierarchy" narrows to "deleted views: hierarchy".
+         * The summary narrowed to [context]: words separated only by filler words keep the text between them, and a skipped
+         * meaningful run is replaced by the separator that followed the last kept word, so "deleted views: canvas, hierarchy"
+         * narrows to "deleted views: hierarchy" and "deleted the views of hierarchy" stays whole.
          */
         internal fun query(summary: String, context: List<SummaryWord>): String = buildString {
             context.forEachIndexed { position, word ->
                 if (position > 0) {
                     val previous = context[position - 1]
                     val between = summary.substring(previous.end, word.start)
-                    append(if (word.index == previous.index + 1) between else separatorAfter(summary, previous))
+                    append(if (SummaryWord.split(between).none { it.meaningful }) between else separatorAfter(summary, previous))
                 }
                 append(word.text)
             }
