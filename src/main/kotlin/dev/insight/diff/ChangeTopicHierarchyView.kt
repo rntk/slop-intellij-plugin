@@ -2,7 +2,8 @@ package dev.insight.diff
 
 /**
  * The topic hierarchy read left to right, like the article hierarchy: broad topics in the first column, each card as tall as
- * the rows beneath it, and the changed files as leaves with their summary beside them. A folded topic takes a single row.
+ * the rows beneath it, and the changed files as leaves with their summary beside them. A folded topic takes a single row and
+ * shows its summary, whose scored words can be traced as in the summaries outline.
  */
 internal class ChangeTopicHierarchyPanel(
     card: TopicsCard,
@@ -14,12 +15,12 @@ internal class ChangeTopicHierarchyPanel(
     val outline = topicOutline(card.topics)
     private val summaries = card.summaries
     private val fileSummaries = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to summaries.text(it.id) }
-    /** Summaries by the exact files beneath their node, so a folded topic covering the same files can show one. */
-    private val summariesByFiles = summaries.tree.nodes.mapNotNull { node -> summaries.text(node.id)?.let { node.files.toSet() to it } }.toMap()
-    private val cardTopicSummaries = card.topicSummaries.tree.nodes.mapNotNull { node ->
-        card.topicSummaries.text(node.id)?.let { node.identity.removePrefix("topic:") to it }
-    }.toMap()
+    /** Topic summaries, else the summary of exactly a topic's files, by reading identity; see [topicReadingSummaries]. */
+    private val reading = card.reading
+    private val readingIds = reading.tree.nodes.associate { it.identity to it.id }
     private val active = outline.nodes.firstOrNull(state::isSelected)?.let { it.first..it.last }
+    private val trace = state.tracing?.trace
+    private val marks = traceMarks(reading.tree, trace)
 
     init {
         state.update(outline)
@@ -51,14 +52,17 @@ internal class ChangeTopicHierarchyPanel(
 
     private fun topicNode(node: TopicNode, column: Int, y: Int): Int {
         val collapsed = state.isCollapsed(node)
+        val identity = ChangeTopicsViewState.identity(node)
         val toggle = toggle("toggle:${node.level}:${node.identity}", collapsed, "Show sub-topics and files", "Fold sub-topics and files") {
             state.toggle(node); actions.refresh()
         }
+        val mark = marks[identity]
         val component = branchCard("topic:${node.level}:${node.identity}", node.name, node.path.first(), column, node.size,
-            state.isSelected(node), node.fullPath, toggle) { state.select(node); actions.refresh() }
+            state.isSelected(node), node.fullPath, toggle, mark = mark, badge = badge(identity)) { state.select(node); actions.refresh() }
         val height = if (collapsed) {
-            val (summary, written) = foldedSummary(node)
-            val note = note("summary:${node.level}:${node.identity}", summary, written, column + 1, y)
+            val summary = readingIds[identity]?.let(reading::text)
+            val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark)
+            summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
@@ -67,26 +71,29 @@ internal class ChangeTopicHierarchyPanel(
             maxOf(childY - gap - y, component.preferredSize.height)
         }
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
+        anchors[identity] = component
         return height
     }
 
     private fun fileRow(index: Int, column: Int, y: Int, topLevel: String?): Int {
         val file = outline.files[index]
-        val summary = fileSummaries[file.path]
+        val identity = "file:${file.path}"
+        val summary = fileSummaries[file.path] ?: readingIds[identity]?.let(reading::text)
+        val mark = marks[identity]
         val leaf = fileCard(file, file.path.substringAfterLast('/'), topLevel, column, active?.contains(index) == true,
-            actions.openFile, actions.showDiffCard)
-        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y)
+            actions.openFile, actions.showDiffCard, mark, badge(identity))
+        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
+        anchors[identity] = leaf
         return height
     }
 
-    /** The summary of a folded topic's exact file set when one exists, else the names of the files it hides. */
-    private fun foldedSummary(node: TopicNode): Pair<String, Boolean> {
-        val paths = (node.first..node.last).map { outline.files[it].path }
-        cardTopicSummaries[node.identity]?.let { return it to true }
-        summariesByFiles[paths.toSet()]?.let { return it to true }
-        val names = paths.map { it.substringAfterLast('/') }
-        return (names.take(FOLDED_NAMES).joinToString(", ") + if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else "") to false
+    private fun badge(identity: String): String? = trace?.related?.firstOrNull { it.identity == identity }?.let { matchBadge(it, trace) }
+
+    /** A folded topic without a summary lists the files it hides. */
+    private fun fileNames(node: TopicNode): String {
+        val names = (node.first..node.last).map { outline.files[it].path.substringAfterLast('/') }
+        return names.take(FOLDED_NAMES).joinToString(", ") + if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else ""
     }
 }

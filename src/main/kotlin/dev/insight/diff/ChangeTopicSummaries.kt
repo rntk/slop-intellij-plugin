@@ -53,6 +53,32 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics): ChangeSummaryTree {
     })
 }
 
+/**
+ * The topic tree as the hierarchy shows it, for reading and word tracing. Groups are dropped, so a topic's children are the
+ * entries beside it and "two levels below" means two hierarchy columns. Files read their shared summary; topics read their
+ * own, else the summary of exactly their files.
+ */
+internal fun topicReadingSummaries(topics: ChangeSummaries, shared: ChangeSummaries): ChangeSummaries {
+    val tree = topics.tree
+    val fileTexts = shared.tree.nodes.filter { it.kind == SummaryKind.FILE }.mapNotNull { node -> shared.text(node.id)?.let { node.path to it } }.toMap()
+    val byFiles = shared.tree.nodes.mapNotNull { node -> shared.text(node.id)?.let { node.files.toSet() to it } }.toMap()
+    val nodes = mutableListOf<SummaryNode>()
+    val texts = mutableMapOf<Int, String>()
+    fun shown(id: Int): List<Int> = tree[id].children.flatMap { if (tree[it].kind == SummaryKind.GROUP) shown(it) else listOf(it) }
+    fun visit(old: Int, parent: Int?): Int {
+        val node = tree[old]
+        val id = nodes.size
+        nodes += node.copy(id = id, parent = parent, children = emptyList())
+        val text = if (node.kind == SummaryKind.FILE) fileTexts[node.path] ?: topics.text(old) else topics.text(old) ?: byFiles[node.files.toSet()]
+        text?.let { texts[id] = it }
+        val children = shown(old).map { visit(it, id) }
+        nodes[id] = nodes[id].copy(children = children)
+        return id
+    }
+    visit(0, null)
+    return ChangeSummaries(ChangeSummaryTree(nodes), texts)
+}
+
 /** Existing exact-file-set summaries are valid evidence too; never overwrite a saved topic summary. */
 internal fun seedTopicSummaries(topics: ChangeSummaries, shared: ChangeSummaries): ChangeSummaries {
     val byFiles = shared.tree.nodes.mapNotNull { node -> shared.text(node.id)?.let { node.files.toSet() to it } }.toMap()

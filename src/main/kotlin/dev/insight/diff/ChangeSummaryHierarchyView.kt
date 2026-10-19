@@ -6,7 +6,7 @@ import javax.swing.Icon
 /**
  * The summary tree read left to right, like the topic hierarchy: the root folder in the first column, its folders and groups
  * in the next, each card as tall as the rows beneath it, and the changed files as leaves with their summary beside them.
- * A folded folder takes a single row and shows its own summary.
+ * A folded folder takes a single row and shows its own summary, whose scored words can be traced as in the outline.
  */
 internal class ChangeSummaryHierarchyPanel(
     private val card: SummariesCard,
@@ -19,6 +19,8 @@ internal class ChangeSummaryHierarchyPanel(
     private val tree = summaries.tree
     /** The selected node is outlined with every file beneath it. */
     private val active = tree.nodes.firstOrNull { it.identity == state.selected }?.files?.toSet().orEmpty()
+    private val trace = state.tracing?.trace
+    private val marks = traceMarks(tree, trace)
 
     init {
         state.update(tree)
@@ -35,11 +37,13 @@ internal class ChangeSummaryHierarchyPanel(
         val toggle = toggle("toggle:${node.identity}", collapsed, "Show subfolders and files", "Fold subfolders and files") {
             actions.toggle(node.identity)
         }
+        val mark = marks[node.identity]
         val component = branchCard("node:${node.identity}", title(node), family, column, node.files.size,
-            node.identity == state.selected, node.location, toggle, icon(node)) { actions.select(node.identity) }
+            node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node)) { actions.select(node.identity) }
         val height = if (collapsed) {
             val summary = summaries.text(node.id)
-            val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y)
+            val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
+            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace) }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
@@ -49,20 +53,25 @@ internal class ChangeSummaryHierarchyPanel(
             maxOf(childY - gap - y, component.preferredSize.height)
         }
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
+        anchors[node.identity] = component
         return height
     }
 
     private fun fileRow(node: SummaryNode, column: Int, y: Int, family: String?): Int {
         val file = node.file ?: return 0
         val summary = summaries.text(node.id)
-        val leaf = fileCard(file, node.label, family, column, file.path in active, actions.openFile, actions.showDiffCard) {
+        val mark = marks[node.identity]
+        val leaf = fileCard(file, node.label, family, column, file.path in active, actions.openFile, actions.showDiffCard, mark, badge(node)) {
             actions.select(node.identity)
         }
-        val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y)
+        val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
+        anchors[node.identity] = leaf
         return height
     }
+
+    private fun badge(node: SummaryNode): String? = trace?.related?.firstOrNull { it.identity == node.identity }?.let { matchBadge(it, trace) }
 
     private fun missing() = if (card.running) "Summarizing…" else "No summary yet"
 

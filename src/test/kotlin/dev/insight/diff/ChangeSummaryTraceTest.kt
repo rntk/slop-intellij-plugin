@@ -284,4 +284,31 @@ class ChangeSummaryTraceTest {
         assertTrue(fake.contextRequests().isEmpty())
         assertEquals(listOf("views/canvas.kt"), fake.askedLocations())
     }
+
+    @Test fun `trace path opens down to every match and folds related branches with nothing related beneath`() {
+        val tree = buildSummaryTree(listOf("a/x/One.kt", "a/x/Two.kt", "a/y/Three.kt", "a/y/Four.kt", "b/Five.kt", "b/Six.kt").map(::file))
+        fun node(identity: String) = tree.nodes.single { it.identity == identity }
+        val root = tree.root
+        val a = node("directory:a")
+        val x = node("directory:a/x")
+        val y = node("directory:a/y")
+        val three = node("file:a/y/Three.kt")
+        val word = SummaryWord(0, 0, 1, "w")
+        val trace = SummaryTrace(root.identity, "w", word, listOf(word), "w", listOf(
+            SummaryMatch(x.id, x.identity, 0.9, 2), SummaryMatch(three.id, three.identity, 0.7, 3),
+            SummaryMatch(a.id, a.identity, 0.6, 1), SummaryMatch(node("directory:b").id, "directory:b", 0.2, 1),
+        ), 6)
+        val path = tracePath(tree, trace)!!
+        assertEquals(setOf(root.identity, a.identity, x.identity, y.identity, three.identity), path.path)
+        // A related folder that leads to another match stays open; one with nothing related beneath folds to show its summary.
+        assertEquals(setOf(root.identity, a.identity, y.identity), path.open)
+        assertEquals(setOf(x.identity), path.fold)
+        val marks = traceMarks(tree, trace)
+        assertEquals(TraceMark.TRACED, marks[root.identity])
+        assertEquals(TraceMark.BEST, marks[x.identity])
+        assertEquals(TraceMark.RELATED, marks[a.identity])
+        assertEquals(TraceMark.RELATED, marks[three.identity])
+        assertEquals(TraceMark.PATH, marks[y.identity])
+        assertFalse("Unrelated nodes are not marked", "directory:b" in marks)
+    }
 }

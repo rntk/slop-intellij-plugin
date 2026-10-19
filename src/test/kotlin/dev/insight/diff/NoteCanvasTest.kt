@@ -786,6 +786,196 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
+    /** Scores every word with the summary's first two words as context; searches wait for the test to finish them. */
+    private class FakeTraceLauncher : SummaryTraceLauncher {
+        val scoredWords = mutableListOf<Pair<Int, Int>>()
+        val searched = mutableListOf<SummaryContext>()
+        var finishSearch: ((Result<SummaryTrace>) -> Unit)? = null
+
+        override fun prescore(content: ChangeSummaries, words: List<Pair<Int, Int>>,
+                              scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
+            scoredWords += words
+            for ((id, word) in words) {
+                val text = content.text(id)!!
+                val split = SummaryWord.split(text)
+                val context = listOf(split[0], split[1], split[word]).distinctBy { it.index }.sortedBy { it.index }
+                scored(SummaryContext(content.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
+            }
+            done(Result.success(Unit))
+            return Job()
+        }
+
+        override fun search(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+            searched += context
+            finishSearch = done
+            return Job()
+        }
+
+        fun finish(context: SummaryContext, candidates: Int, vararg matches: SummaryMatch) = finishSearch!!(Result.success(
+            SummaryTrace(context.identity, context.summary, context.word, context.context, context.query, matches.sortedByDescending { it.probability }, candidates)))
+    }
+
+    private fun pointAtWord(canvas: Container, area: javax.swing.JTextArea, word: String, event: Int) {
+        val box = area.modelToView2D(area.text.indexOf(word) + 1)
+        area.dispatchEvent(MouseEvent(area, event, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false,
+            if (event == MouseEvent.MOUSE_CLICKED) MouseEvent.BUTTON1 else MouseEvent.NOBUTTON))
+        layoutTree(canvas)
+    }
+
+    fun testSummariesHierarchyTracesFoldedSummariesAndOpensThePathToTwoLevelsBelow() {
+        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val root = "Deleted views: canvas, hierarchy."
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes ${node.label}."
+        })
+        fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
+        val canvasDir = node("ui/canvas")
+        val hierarchyDir = node("ui/hierarchy")
+        val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
+        val launcher = FakeTraceLauncher()
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
+        fun named(name: String) = descendants(canvas).filter { it.name == name }
+        fun note(identity: String) = panel().components.single { it.name == "summary:$identity" } as javax.swing.JTextArea
+        fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
+            .filterIsInstance<javax.swing.JTextArea>().filter { it.name == "match" }.map { it.text }
+        fun click(component: Component) {
+            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+        }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
+            layoutTree(canvas)
+            // The canvas folder is open; the root folds to one row that shows its summary.
+            assertTrue(canvasDir.identity in canvas.summariesView.expanded)
+            click(descendants(panel()).single { it.name == "toggle:root" })
+            assertEquals(root, note("root").text)
+
+            // Scoring is available in the hierarchy too.
+            (named("summaries-score").single() as javax.swing.JButton).doClick()
+            layoutTree(canvas)
+            assertTrue(launcher.scoredWords.isNotEmpty())
+            pointAtWord(canvas, note("root"), "hierarchy", MouseEvent.MOUSE_MOVED)
+            assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
+            assertEquals(3, note("root").highlighter.highlights.size)
+            assertTrue((named("trace-status").single() as javax.swing.JTextArea).text.contains("Click a highlighted word"))
+            pointAtWord(canvas, note("root"), "hierarchy", MouseEvent.MOUSE_CLICKED)
+            val context = launcher.searched.single()
+            launcher.finish(context, 6,
+                SummaryMatch(hierarchyFile.id, hierarchyFile.identity, 0.9, 2),
+                SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.6, 1),
+                SummaryMatch(canvasDir.id, canvasDir.identity, 0.7, 1),
+                SummaryMatch(node("ui/canvas/Paint.kt").id, "file:ui/canvas/Paint.kt", 0.2, 2))
+            layoutTree(canvas)
+
+            // The traced folder and the folders leading to deeper matches open; the related canvas folder, with nothing
+            // related beneath, folds so its summary shows.
+            assertTrue("root" in canvas.summariesView.expanded)
+            assertTrue(hierarchyDir.identity in canvas.summariesView.expanded)
+            assertFalse(canvasDir.identity in canvas.summariesView.expanded)
+            assertEquals("Deletes ${canvasDir.label}.", note(canvasDir.identity).text)
+            // Matches are tinted and labelled; the best is selected.
+            assertEquals(listOf("● Best match · 90%"), badges(hierarchyFile.identity))
+            assertEquals(listOf("● Related · 60%"), badges(hierarchyDir.identity))
+            assertEquals(listOf("● Related · 70%"), badges(canvasDir.identity))
+            assertTrue(badges("root").isEmpty())
+            assertEquals(TraceStyle.BEST_MATCH, note(hierarchyFile.identity).background)
+            assertTrue(note(hierarchyFile.identity).isOpaque)
+            assertFalse(note("file:ui/hierarchy/Columns.kt").isOpaque)
+            assertEquals(hierarchyFile.identity, canvas.summariesView.selected)
+            assertTrue((named("trace-status").single() as javax.swing.JTextArea).text.contains("3 of 6 summaries"))
+
+            // Clearing drops the marks but keeps the folding and the saved contexts.
+            (named("trace-clear").single() as com.intellij.ui.components.ActionLink).doClick()
+            layoutTree(canvas)
+            assertNull(canvas.summariesView.tracing)
+            assertTrue(badges(hierarchyFile.identity).isEmpty())
+            assertTrue(hierarchyDir.identity in canvas.summariesView.expanded)
+            assertTrue(canvas.summariesView.scored.isNotEmpty())
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testTopicsHierarchyScoresAndTracesFoldedTopicSummaries() {
+        val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val topics = ChangeTopics(files)
+            .assign("src/wallet.kt", "Storage>User>Wallet")
+            .assign("src/auth.kt", "Storage>User>Auth")
+            .assign("ui/form.kt", "UI>Checkout")
+        val topicTree = buildTopicSummaryTree(topics)
+        val topicSummaries = ChangeSummaries(topicTree).summarize(topicTree.nodes.associate { node ->
+            node.id to if (node.identity == "topic:storage") "Adds user wallets and token auth." else "Changes ${node.label}."
+        })
+        val shared = ChangeSummaries(buildSummaryTree(files))
+        val launcher = FakeTraceLauncher()
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
+        fun named(name: String) = descendants(canvas).filter { it.name == name }
+        fun note(name: String) = panel().components.single { it.name == "summary:$name" } as javax.swing.JTextArea
+        fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
+            .filterIsInstance<javax.swing.JTextArea>().filter { it.name == "match" }.map { it.text }
+        fun click(component: Component) {
+            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+        }
+        try {
+            val card = TopicsCard(topics, shared, canRun = true, topicSummaries)
+            canvas.showNotes(emptyList(), topics = card)
+            layoutTree(canvas)
+            assertTrue("Scoring belongs to the hierarchy", named("topics-score").isEmpty())
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            layoutTree(canvas)
+            click(descendants(panel()).single { it.name == "toggle:0:storage" })
+            assertEquals("Adds user wallets and token auth.", note("0:storage").text)
+
+            (named("topics-score").single() as javax.swing.JButton).doClick()
+            layoutTree(canvas)
+            // The hidden root is not scored; topics and their subtopics are, through the hierarchy's own tree.
+            val reading = card.reading
+            assertTrue(launcher.scoredWords.none { (id, _) -> reading.tree[id].kind == SummaryKind.ROOT })
+            assertTrue(launcher.scoredWords.any { (id, _) -> reading.tree[id].identity == "topic:storage" })
+            pointAtWord(canvas, note("0:storage"), "auth", MouseEvent.MOUSE_MOVED)
+            assertEquals("auth", canvas.topicsView.tracing!!.word.text)
+            assertEquals(3, note("0:storage").highlighter.highlights.size)
+            pointAtWord(canvas, note("0:storage"), "auth", MouseEvent.MOUSE_CLICKED)
+            val context = launcher.searched.single()
+            fun match(identity: String, probability: Double, levels: Int) =
+                SummaryMatch(reading.tree.nodes.single { it.identity == identity }.id, identity, probability, levels)
+            launcher.finish(context, 3, match("topic:storage > user > auth", 0.8, 2), match("topic:storage > user > wallet", 0.1, 2))
+            layoutTree(canvas)
+
+            // Storage and its user topic open down to the match two levels below; the match folds to show its summary.
+            val outline = panel().outline
+            fun topic(identity: String) = outline.nodes.single { it.identity == identity }
+            assertFalse(canvas.topicsView.isCollapsed(topic("storage")))
+            assertFalse(canvas.topicsView.isCollapsed(topic("storage > user")))
+            assertTrue(canvas.topicsView.isCollapsed(topic("storage > user > auth")))
+            assertEquals("Changes Auth.", note("2:storage > user > auth").text)
+            assertEquals(TraceStyle.BEST_MATCH, note("2:storage > user > auth").background)
+            assertEquals(listOf("● Best match · 80%"), badges("topic:storage > user > auth"))
+            assertTrue(badges("topic:storage > user > wallet").isEmpty())
+            assertTrue(canvas.topicsView.isSelected(topic("storage > user > auth")))
+            assertTrue((named("trace-status").single() as javax.swing.JTextArea).text.contains("1 of 3 summaries"))
+
+            // A new snapshot that changes the traced summary drops the trace.
+            val rewritten = topicSummaries.summarize(mapOf(topicTree.nodes.single { it.identity == "topic:storage" }.id to "Rewritten."))
+            canvas.updateTopics(TopicsCard(topics, shared, canRun = true, rewritten))
+            layoutTree(canvas)
+            assertNull(canvas.topicsView.tracing)
+            assertTrue(badges("topic:storage > user > auth").isEmpty())
+        } finally {
+            canvas.dispose()
+        }
+    }
+
     fun testSummariesShowNamesAboveSummaries() {
         val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")

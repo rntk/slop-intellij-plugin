@@ -62,4 +62,24 @@ class ChangeTopicSummariesTest {
         assertNotEquals("topic:storage", edited.text(edited.tree.nodes.single { it.identity == "topic:storage" }.id))
         assertEquals("topic:ui", edited.text(edited.tree.nodes.single { it.identity == "topic:ui" }.id))
     }
+
+    @Test fun `reading tree drops groups and reads shared file summaries and exact file set summaries`() {
+        val files = (1..10).map { file("F$it.kt") }
+        val topics = ChangeTopics(files, files.associate { it.path to "Storage > Wallet" })
+        val grouped = ChangeSummaries(buildTopicSummaryTree(topics))
+        assertTrue(grouped.tree.nodes.any { it.kind == SummaryKind.GROUP })
+        val sharedTree = buildSummaryTree(files)
+        val shared = ChangeSummaries(sharedTree).summarize(sharedTree.nodes.associate {
+            it.id to if (it.kind == SummaryKind.FILE) "Shared ${it.path}." else "Every wallet file in ${it.label}."
+        })
+        val reading = topicReadingSummaries(grouped, shared)
+        val tree = reading.tree
+        assertTrue(tree.nodes.none { it.kind == SummaryKind.GROUP })
+        val wallet = tree.nodes.single { it.identity == "topic:storage > wallet" }
+        // The topic's children are the files beside it in the hierarchy, in pre-order.
+        assertEquals(files.map { "file:${it.path}" }.sorted(), wallet.children.map { tree[it].identity })
+        tree.nodes.forEach { node -> node.parent?.let { assertTrue(it < node.id); assertTrue(node.id in tree[it].children) } }
+        assertEquals("Shared F3.kt.", reading.text(tree.nodes.single { it.identity == "file:F3.kt" }.id))
+        assertEquals("Every wallet file in ${sharedTree.root.label}.", reading.text(wallet.id))
+    }
 }

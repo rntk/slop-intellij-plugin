@@ -69,10 +69,8 @@ internal class NoteCanvas(
     private var summaries: SummariesCard? = null
     internal val summariesView = ChangeSummariesViewState()
     private var summariesScroll = 0
-    private var traceJob: Job? = null
-    private var scoreJob: Job? = null
-    private var scoreToken: Any? = null
-    private var scoringSummaries: ChangeSummaries? = null
+    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, ::refreshSummaries)
+    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -99,6 +97,7 @@ internal class NoteCanvas(
     ) {
         if (topics == null) topicsScroll = 0
         this.topics = topics
+        topics?.let { topicsTrace.retain(it.reading) } ?: topicsTrace.stop()
         this.notes = notes
         this.sources = sources
         this.diffs = diffs
@@ -106,7 +105,7 @@ internal class NoteCanvas(
         this.flows = flows
         flowsView.reset(flows)
         this.summaries = summaries
-        summaries?.let { summariesView.update(it.summaries.tree); retainTrace(it.summaries) } ?: stopTracing()
+        summaries?.let { summariesView.update(it.summaries.tree); summariesTrace.retain(it.summaries) } ?: summariesTrace.stop()
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -328,6 +327,7 @@ internal class NoteCanvas(
                     toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
                     addActionListener { generateTopics() }
                 })
+                if (hierarchy && topicsTrace.available) add(scoreButton("topics-score", topicsView, content.reading, topicsTrace))
                 if (hierarchy) add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
@@ -351,10 +351,14 @@ internal class NoteCanvas(
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) })
+            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
+                trace = topicsTrace::trace)
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-            add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions)
-                else ChangeTopicsPanel(content, topicsView, inner, zoom, actions), BorderLayout.CENTER)
+            add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
+                isOpaque = false
+                traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
+                add(ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions))
+            } else ChangeTopicsPanel(content, topicsView, inner, zoom, actions), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
@@ -368,7 +372,15 @@ internal class NoteCanvas(
             // The viewport has no size yet; restore the reading position after layout.
             val restore = topicsScroll
             verticalScrollBar.addAdjustmentListener { topicsScroll = it.value }
-            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+            SwingUtilities.invokeLater {
+                verticalScrollBar.value = restore
+                // A traced match scrolls into view once the rebuilt card is laid out; a newer rebuild owns the reveal.
+                if (cards[TOPICS_KEY] !== card) return@invokeLater
+                val target = topicsView.reveal ?: return@invokeLater
+                topicsView.reveal = null
+                card.validate()
+                revealIn(body, target)
+            }
         }, BorderLayout.CENTER)
         return prepareCard(TOPICS_KEY, card, width)
     }
@@ -399,6 +411,7 @@ internal class NoteCanvas(
         }
         if (content == topics) return
         topics = content
+        content?.let { topicsTrace.retain(it.reading) }
         refreshCard(TOPICS_KEY)
     }
 
@@ -437,15 +450,7 @@ internal class NoteCanvas(
                         addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
                     })
                 }
-                // Word tracing reads the summaries of open folders, which only the outline shows.
-                if (traceSummaries != null && !hierarchy) add(JButton("Score").apply {
-                    name = "summaries-score"
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    isEnabled = !summariesView.scoring && summariesView.pending(summaries).isNotEmpty()
-                    toolTipText = "Precalculate word contexts for all summaries with children. Uses the Decisions API."
-                    addActionListener { prescoreSummaries() }
-                })
+                if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
                 add(JButton(when {
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
@@ -469,7 +474,7 @@ internal class NoteCanvas(
             openFile = open,
             showDiffCard = showDiffCard,
             showNames = { show -> summariesView.showNames = show; refreshSummaries() },
-            trace = ::traceSummary,
+            trace = summariesTrace::trace,
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
@@ -478,6 +483,7 @@ internal class NoteCanvas(
             add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 add(JLabel(summariesStatus(content)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
                 add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions))
             } else ChangeSummariesPanel(content, summariesView, inner, zoom, actions), BorderLayout.CENTER)
         }
@@ -503,11 +509,49 @@ internal class NoteCanvas(
                 val target = summariesView.reveal ?: return@invokeLater
                 summariesView.reveal = null
                 card.validate()
-                descendantsOf(body).filterIsInstance<JComponent>().firstOrNull { it.name == "summary:$target" }
-                    ?.let { row -> row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height)) }
+                revealIn(body, target)
             }
         }, BorderLayout.CENTER)
         return prepareCard(SUMMARIES_KEY, card, width)
+    }
+
+    /** Scrolls a traced match into view: its card in a hierarchy, else its outline row. */
+    private fun revealIn(body: Container, target: String) {
+        val hierarchy = descendantsOf(body).filterIsInstance<HierarchyColumnsPanel>().firstOrNull()
+        val row = hierarchy?.anchors?.get(target)
+            ?: descendantsOf(body).filterIsInstance<JComponent>().firstOrNull { it.name == "summary:$target" } ?: return
+        row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height))
+    }
+
+    private fun scoreButton(name: String, state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession) =
+        JButton("Score").apply {
+            this.name = name
+            font = scaledFont(JBFont.small())
+            cursor = Cursor.getDefaultCursor()
+            isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
+            toolTipText = "Precalculate word contexts for all summaries with children. Uses the Decisions API."
+            addActionListener { session.prescore() }
+        }
+
+    /**
+     * Above a hierarchy: how scoring stands and, while a word is traced, its query and matches. An opened trace hides the
+     * traced summary, so its status stays here with a link to clear the marks.
+     */
+    private fun traceStatusLines(state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int): List<JComponent> {
+        if (!session.available) return emptyList()
+        fun line(text: String, name: String, wrap: Int = width) = WrappedText(text, wrap).apply {
+            this.name = name
+            isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true; border = null
+            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+        }
+        val tracing = state.tracing ?: return listOf(line(scoringStatus(state, summaries), "scoring-status"))
+        return listOf(line(scoringStatus(state, summaries), "scoring-status"), JPanel(BorderLayout(scaled(8), 0)).apply {
+            isOpaque = false
+            add(line(traceStatus(tracing, "outlined from the traced card."), "trace-status", width - scaled(56)).apply {
+                foreground = if (tracing.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
+            }, BorderLayout.CENTER)
+            add(ActionLink("Clear") { session.clear() }.apply { name = "trace-clear"; font = scaledFont(JBFont.small()) }, BorderLayout.EAST)
+        })
     }
 
     /** Level n shows folder levels 1..n+1 and folds the rest, as in the topic hierarchy; the last level shows every file. */
@@ -536,107 +580,8 @@ internal class NoteCanvas(
         }
         if (content == summaries) return
         summaries = content
-        content?.let { summariesView.update(it.summaries.tree); retainTrace(it.summaries) }
+        content?.let { summariesView.update(it.summaries.tree); summariesTrace.retain(it.summaries) }
         refreshSummaries()
-    }
-
-    private fun prescoreSummaries() {
-        val launcher = traceSummaries ?: return
-        val content = summaries?.summaries ?: return
-        val pending = summariesView.pending(content)
-        if (summariesView.scoring || pending.isEmpty()) return
-        val token = Any()
-        scoreToken = token
-        scoringSummaries = content
-        summariesView.scoring = true
-        summariesView.scoringError = null
-        refreshSummaries()
-        scoreJob = launcher.prescore(content, pending, { context ->
-            if (scoreToken === token) {
-                summariesView.scored[context.identity to context.word.index] = context
-                refreshSummaries()
-            }
-        }) { result ->
-            if (scoreToken === token) {
-                summariesView.scoring = false
-                summariesView.scoringError = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
-                scoringSummaries = null
-                scoreToken = null
-                refreshSummaries()
-            }
-        }
-    }
-
-    /** Hover reads saved contexts synchronously; clicking a highlight searches the levels below. */
-    private fun traceSummary(identity: String, word: Int, search: Boolean) {
-        val content = summaries?.summaries ?: return
-        val node = content.tree.nodes.firstOrNull { it.identity == identity } ?: return
-        val text = content.text(node.id) ?: return
-        val words = SummaryWord.split(text)
-        if (word !in words.indices) return
-        val current = summariesView.tracing?.takeIf { it.identity == identity && it.summary == text }
-        val highlighted = current != null && (current.word.index == word || current.context?.context?.any { it.index == word } == true)
-        if (current != null && highlighted && (current.error == null || current.context != null)) {
-            if (!search) return
-            if (current.trace != null) jumpTo(current.trace)
-            else if (!current.searchRequested || current.error != null) {
-                summariesView.tracing = current.copy(searchRequested = true, error = null)
-                if (current.context != null) searchSummary()
-            }
-            refreshSummaries()
-            return
-        }
-        traceJob?.cancel()
-        val context = summariesView.cached(identity, text, word) ?: return
-        summariesView.tracing = SummaryTracing(identity, text, words[word], context = context)
-        refreshSummaries()
-    }
-
-    private fun searchSummary() {
-        val launcher = traceSummaries ?: return
-        val content = summaries?.summaries ?: return
-        val current = summariesView.tracing ?: return
-        val context = current.context ?: return
-        val node = content.tree.nodes.firstOrNull { it.identity == current.identity } ?: return
-        traceJob = launcher.search(content, node.id, context) { result ->
-            val now = summariesView.tracing
-            if (now == null || now.token !== current.token) return@search
-            result.onSuccess { trace ->
-                summariesView.tracing = now.copy(trace = trace)
-                summaries?.let { summariesView.show(it.summaries.tree, trace) }
-                jumpTo(trace)
-            }.onFailure { error -> summariesView.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
-            refreshSummaries()
-        }
-    }
-
-    private fun jumpTo(trace: SummaryTrace) {
-        val best = trace.best ?: return
-        summariesView.selected = best.identity
-        summariesView.reveal = best.identity
-    }
-
-    private fun retainTrace(content: ChangeSummaries) {
-        if (scoringSummaries != null && scoringSummaries != content) stopScoring()
-        val before = summariesView.tracing
-        summariesView.retain(content)
-        if (before != null && summariesView.tracing == null) traceJob?.cancel()
-    }
-
-    private fun stopScoring() {
-        scoreToken = null
-        scoringSummaries = null
-        scoreJob?.cancel()
-        scoreJob = null
-        summariesView.scoring = false
-        summariesView.scoringError = null
-    }
-
-    private fun stopTracing() {
-        stopScoring()
-        traceJob?.cancel()
-        traceJob = null
-        summariesView.tracing = null
     }
 
     private fun refreshSummaries() {
@@ -1017,7 +962,8 @@ internal class NoteCanvas(
     }
 
     override fun dispose() {
-        stopTracing()
+        summariesTrace.stop()
+        topicsTrace.stop()
         editors.values.forEach { it.dispose() }
         editors.clear()
         diffEditors.values.forEach { Disposer.dispose(it) }

@@ -24,6 +24,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
@@ -39,6 +40,8 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
     /** One shared width keeps the columns aligned; subclasses set it with [measureCardWidth] before placing cards. */
     protected var cardWidth = 0
     private var right = 0
+    /** The card of each node by its summary identity, so a traced match can be scrolled into view. */
+    val anchors = mutableMapOf<String, JComponent>()
     protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
     protected val help: Color get() = UIUtil.getContextHelpForeground()
@@ -65,8 +68,11 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
         preferredSize = Dimension(maxOf(availableWidth, right), (bottom - scaled(ROW_GAP)).coerceAtLeast(0))
     }
 
-    /** Text beside a leaf or folded card; it starts one column to the right and takes the rest of the width. */
-    protected fun note(name: String, value: String, written: Boolean, column: Int, y: Int): JComponent {
+    /**
+     * Text beside a leaf or folded card; it starts one column to the right and takes the rest of the width. A traced match is
+     * tinted like its row in the outline.
+     */
+    protected fun note(name: String, value: String, written: Boolean, column: Int, y: Int, mark: TraceMark? = null): JTextArea {
         val x = column * step
         val width = (availableWidth - x).coerceAtLeast(scaled(MIN_SUMMARY_WIDTH))
         // The top inset matches the cards' so the first line sits level with the card title.
@@ -75,6 +81,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
             this.name = name
             border = EmptyBorder(inset, scaled(NOTE_INSET), inset, 0)
             toolTipText = if (written) "Summary · LLM interpretation" else null
+            matchBackground(mark)?.let { isOpaque = true; background = it }
         }
         val height = note.preferredSize.height
         add(note.apply { setBounds(x, y, width, height) })
@@ -84,16 +91,17 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
 
     /**
      * A branch card: the [toggle] (or an empty gutter), an optional icon, the [title] and its file count. Without [select] the
-     * card is a placeholder.
+     * card is a placeholder. A [mark] outlines the card on a trace's path, and a [badge] labels a match.
      */
     protected fun branchCard(
         name: String, title: String, family: String?, column: Int, files: Int, active: Boolean, tooltip: String,
-        toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, select: (() -> Unit)? = null,
+        toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
+        select: (() -> Unit)? = null,
     ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
         this.name = name
         isOpaque = true
-        background = tint(family, column)
-        border = cardBorder(family, active)
+        background = matchBackground(mark) ?: tint(family, column)
+        border = cardBorder(family, active, mark)
         toolTipText = tooltip
         val inner = cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + INNER_GAP) - 4
         add(toggle ?: gutter(null), BorderLayout.WEST)
@@ -107,6 +115,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
                 add(heading, BorderLayout.CENTER)
             })
             add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+            badge?.let { add(badge(it, inner)) }
         }, BorderLayout.CENTER)
         if (select == null) return@apply
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -149,12 +158,13 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
      */
     protected fun fileCard(
         file: ReviewFile, title: String, family: String?, column: Int, active: Boolean,
-        openFile: (String) -> Unit, showDiffCard: (String) -> Unit, select: (() -> Unit)? = null,
+        openFile: (String) -> Unit, showDiffCard: (String) -> Unit, mark: TraceMark? = null, badge: String? = null,
+        select: (() -> Unit)? = null,
     ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
         name = "file:${file.path}"
         isOpaque = true
-        background = tint(family, column)
-        border = cardBorder(family, active)
+        background = matchBackground(mark) ?: tint(family, column)
+        border = cardBorder(family, active, mark)
         toolTipText = file.path
         val fileName = file.path.substringAfterLast('/')
         add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(fileName).icon ?: AllIcons.FileTypes.Any_type).apply {
@@ -174,6 +184,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
                 minimumSize = Dimension(0, preferredSize.height)
             })
             add(detailsLabel)
+            badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
         }
         add(center, BorderLayout.CENTER)
         add(JPanel(BorderLayout()).apply {
@@ -194,11 +205,31 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
         return family?.let { ColorUtil.mix(base, ChangeTopicsPanel.accent(it), (0.16 - 0.03 * column).coerceAtLeast(0.05)) } ?: base
     }
 
-    /** Both states keep the same insets, so selecting never shifts the text. */
-    private fun cardBorder(family: String?, active: Boolean): Border? {
-        val line = if (active) 2 else 1
+    /** The short label of a match on its card; the query is in the status above the hierarchy. */
+    protected fun matchBadge(match: SummaryMatch, trace: SummaryTrace): String {
+        val percent = (match.probability * 100).roundToInt()
+        return if (match.identity == trace.best?.identity) "● Best match · $percent%" else "● Related · $percent%"
+    }
+
+    /** A match's probability under its title, in the outline's match color. */
+    private fun badge(value: String, width: Int): JComponent = text(value, width.coerceAtLeast(scaled(40)), font(JBFont.small()), TraceStyle.MATCH_TEXT)
+        .apply { name = "match" }
+
+    private fun matchBackground(mark: TraceMark?): Color? = when (mark) {
+        TraceMark.BEST -> TraceStyle.BEST_MATCH
+        TraceMark.RELATED -> TraceStyle.RELATED
+        else -> null
+    }
+
+    /** Every state keeps the same insets, so selecting or tracing never shifts the text. Selection outranks the trace. */
+    private fun cardBorder(family: String?, active: Boolean, mark: TraceMark? = null): Border? {
+        val line = if (active || mark != null) 2 else 1
         return JBUI.Borders.compound(
-            MatteBorder(line, line, line, line, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
+            MatteBorder(line, line, line, line, when {
+                active -> JBUI.CurrentTheme.Focus.focusColor()
+                mark != null -> TraceStyle.PATH
+                else -> JBColor.border()
+            }),
             MatteBorder(0, scaled(RAIL_ACCENT), 0, 0, family?.let(ChangeTopicsPanel::accent) ?: JBColor.border()),
             EmptyBorder(scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line),
         )
@@ -206,7 +237,7 @@ internal abstract class HierarchyColumnsPanel(protected val availableWidth: Int,
 
     protected fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
 
-    protected fun text(value: String, width: Int, font: Font, color: Color?): JComponent = WrappedText(value, width).apply {
+    protected fun text(value: String, width: Int, font: Font, color: Color?): JTextArea = WrappedText(value, width).apply {
         isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true; border = null
         this.font = font
         color?.let { foreground = it }

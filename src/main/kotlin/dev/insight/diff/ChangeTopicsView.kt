@@ -43,7 +43,10 @@ internal data class TopicsCard(
     val summaries: ChangeSummaries,
     val canRun: Boolean,
     val topicSummaries: ChangeSummaries = ChangeSummaries(buildTopicSummaryTree(topics)),
-)
+) {
+    /** What the hierarchy shows and traces; built once per card. */
+    val reading: ChangeSummaries by lazy { topicReadingSummaries(topicSummaries, summaries) }
+}
 
 /** The document reads every diff in topic order; the hierarchy reads the topics left to right with each file's summary. */
 internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
@@ -51,9 +54,9 @@ internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
 /**
  * The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists, and is
  * shared by both modes. Folded topics and the chosen level belong to the hierarchy; topics that appear after a level was
- * chosen fold to that level too.
+ * chosen fold to that level too. Word tracing reads the hierarchy's summaries, whose root is not shown.
  */
-internal class ChangeTopicsViewState {
+internal class ChangeTopicsViewState : SummaryTraceState(traceRoot = false) {
     var mode = ChangeTopicsMode.DOCUMENT
     var selected: String? = null
         private set
@@ -86,11 +89,41 @@ internal class ChangeTopicsViewState {
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
 
+    /**
+     * Opens the topics down to the matches and folds related topics with no related entry beneath, so their summary shows.
+     * [tree] is the reading tree: its topics are `topic:` identities one level below the hidden root.
+     */
+    override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
+        fun keys(identities: Set<String>) = tree.nodes.filter { it.identity in identities && it.identity.startsWith(TOPIC) }
+            .map { "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" }
+        tracePath(tree, trace)?.let { path ->
+            collapsed -= keys(path.open).toSet()
+            collapsed += keys(path.fold)
+        }
+        val best = trace.best ?: return
+        selected = keys(setOf(best.identity)).firstOrNull()
+        reveal = best.identity
+    }
+
     private fun key(node: TopicNode) = "${node.level}:${node.identity}"
+
+    companion object {
+        /** The reading tree's identity prefix of a topic, see [buildTopicSummaryTree]. */
+        const val TOPIC = "topic:"
+        fun identity(node: TopicNode) = TOPIC + node.identity
+    }
 }
 
-/** [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. */
-internal class ChangeTopicActions(val openFile: (String) -> Unit, val showDiffCard: (String) -> Unit, val refresh: () -> Unit = {})
+/**
+ * [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. [trace] scores word
+ * [Int] of a summary; with `true`, a click on a highlight searches and opens the path to the matches.
+ */
+internal class ChangeTopicActions(
+    val openFile: (String) -> Unit,
+    val showDiffCard: (String) -> Unit,
+    val refresh: () -> Unit = {},
+    val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
+)
 
 /**
  * The change read as one document, like an article with its topic rail: every file's diff in topic order down the middle,
