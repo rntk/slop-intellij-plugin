@@ -190,7 +190,7 @@ class ChangeSummarizer(
             overview.append(line)
         }
         return "$SYSTEM_PREFIX\n" + """
-            Every node in "nodes" is a changed file with its patch inline. Write one or two sentences per file: what changed
+            Every node in "nodes" is a changed file with its patch inline. Briefly describe what changed
             and its role in the change. Name behavior rather than file names.
             The inline patch is usually enough, so answer from it directly. When read_diff_files is offered, call it only if
             you cannot tell what a file's change does without more:
@@ -203,9 +203,8 @@ class ChangeSummarizer(
 
     private fun folderSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
         Every node in "nodes" is a folder, a group of a folder's entries, or the root, listed with its children's
-        summaries. Write one or two sentences per node from those summaries: what this part contributes, one level more
-        abstract than its children, not a list of them. Lead into the children's summaries like the next chapter down;
-        do not repeat a parent's context. For the root, tell the whole change in plain words: the task and how it was solved.
+        summaries. Briefly describe what each part contributes to the change, using its children's summaries.
+        If a node has kind "root", summarize the overall change.
     """.trimIndent() + focusLine(focus)
 
     private fun focusLine(focus: String) = if (focus.isEmpty()) "" else "\n\nThe user asked to focus on: ${focus.clipLine(300)}"
@@ -213,11 +212,9 @@ class ChangeSummarizer(
     companion object {
         private val SYSTEM_PREFIX = """
             $CODE_AS_DATA
-            You write short summaries for a code change shown as a tree that mirrors its folders: each changed file gets
-            a summary, each folder a summary of its children, and the root a summary of the whole change. A reader starts
-            at the root and expands toward the files, so each summary adds detail to its parent's.
+            You write concise summaries for a code change shown as a tree of files and folders.
             This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
-            Each summary is plain text of at most ${ChangeSummaries.MAX_SUMMARY} characters.
+            Keep summaries brief and use plain text.
         """.trimIndent()
         private const val JSON_ONLY = "Answer with only the JSON object, no other text."
 
@@ -235,7 +232,7 @@ class ChangeSummarizer(
                 val entry = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
                 val id = entry.get("id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
                     ?.takeIf { it % 1.0 == 0.0 && it >= 1 && it <= size }?.toInt() ?: continue
-                val text = entry.jsonText("summary")?.clipLine(ChangeSummaries.MAX_SUMMARY) ?: continue
+                val text = entry.jsonText("summary") ?: continue
                 if (result.put(id, text) != null) duplicates += id
             }
             // Two answers for one node cannot both describe it; neither is trusted.

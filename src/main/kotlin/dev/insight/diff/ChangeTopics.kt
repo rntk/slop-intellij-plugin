@@ -50,11 +50,35 @@ data class TopicNode(val level: Int, val path: List<String>, val first: Int, val
 
 /**
  * The change as one document: files grouped by topic, broad to specific, then by path, so every topic level covers a
- * contiguous run of files and its card can span exactly their diffs. Files still awaiting a topic come last.
+ * contiguous run of files and its card can span exactly their diffs, or their rows in the hierarchy. Files still awaiting a topic come last.
  */
 class TopicOutline(val files: List<ReviewFile>, val nodes: List<TopicNode>, val labeled: Int) {
     val depth: Int get() = (nodes.maxOfOrNull { it.level } ?: -1) + 1
     val pending: IntRange? get() = (labeled until files.size).takeUnless { it.isEmpty() }
+    private val starts by lazy { nodes.associateBy { it.level to it.first } }
+
+    /**
+     * The direct entries of [parent], or the top-level topics for null, in outline order: child topics and the files whose
+     * topic ends at [parent]. Files awaiting a topic belong to no node.
+     */
+    fun children(parent: TopicNode?): List<TopicEntry> {
+        val level = parent?.let { it.level + 1 } ?: 0
+        val range = parent?.let { it.first..it.last } ?: 0 until labeled
+        val entries = mutableListOf<TopicEntry>()
+        var index = range.first
+        while (index <= range.last) {
+            val child = starts[level to index]
+            if (child != null) { entries += TopicEntry.Topic(child); index = child.last + 1 }
+            else entries += TopicEntry.File(index++)
+        }
+        return entries
+    }
+}
+
+sealed interface TopicEntry {
+    data class Topic(val node: TopicNode) : TopicEntry
+    /** An index into [TopicOutline.files]. */
+    data class File(val index: Int) : TopicEntry
 }
 
 internal fun topicOutline(topics: ChangeTopics): TopicOutline {

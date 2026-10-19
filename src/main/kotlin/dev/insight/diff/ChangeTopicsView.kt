@@ -40,19 +40,52 @@ import kotlin.math.roundToInt
 /** What the canvas shows for a tab's topics: the labels so far, the summaries beside each file, and whether a turn can run. */
 internal data class TopicsCard(val topics: ChangeTopics, val summaries: ChangeSummaries, val canRun: Boolean)
 
-/** The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists. */
+/** The document reads every diff in topic order; the hierarchy reads the topics left to right with each file's summary. */
+internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
+
+/**
+ * The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists, and is
+ * shared by both modes. Folded topics and the chosen level belong to the hierarchy; topics that appear after a level was
+ * chosen fold to that level too.
+ */
 internal class ChangeTopicsViewState {
+    var mode = ChangeTopicsMode.DOCUMENT
     var selected: String? = null
         private set
+    /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
+    var level: Int? = null
+        private set
+    private val collapsed = hashSetOf<String>()
+    private val seen = hashSetOf<String>()
 
-    fun update(outline: TopicOutline) { if (outline.nodes.none { key(it) == selected }) selected = null }
+    fun update(outline: TopicOutline) {
+        val keys = outline.nodes.mapTo(hashSetOf(), ::key)
+        if (selected !in keys) selected = null
+        collapsed.retainAll(keys)
+        seen.retainAll(keys)
+        val level = level
+        for (node in outline.nodes) if (seen.add(key(node)) && level != null && node.level >= level) collapsed += key(node)
+    }
+
     fun select(node: TopicNode) { selected = key(node).takeUnless { it == selected } }
     fun isSelected(node: TopicNode) = key(node) == selected
+    fun toggle(node: TopicNode) { if (!collapsed.remove(key(node))) collapsed += key(node) }
+    fun isCollapsed(node: TopicNode) = key(node) in collapsed
+
+    /** Level n keeps levels 0..n visible and folds the topics at n and below; the outline's depth shows every file. */
+    fun selectLevel(level: Int, outline: TopicOutline) {
+        this.level = level
+        collapsed.clear()
+        outline.nodes.filter { it.level >= level }.mapTo(collapsed, ::key)
+    }
+
+    fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
 
     private fun key(node: TopicNode) = "${node.level}:${node.identity}"
 }
 
-internal class ChangeTopicActions(val openFile: (String) -> Unit, val showDiffCard: (String) -> Unit)
+/** [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. */
+internal class ChangeTopicActions(val openFile: (String) -> Unit, val showDiffCard: (String) -> Unit, val refresh: () -> Unit = {})
 
 /**
  * The change read as one document, like an article with its topic rail: every file's diff in topic order down the middle,

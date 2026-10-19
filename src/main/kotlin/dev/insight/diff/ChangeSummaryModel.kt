@@ -147,7 +147,7 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
         for ((id, text) in entries) {
             if (id !in tree.nodes.indices) throw ToolInputException("Node $id is not in the summary tree.")
             val trimmed = text.trim()
-            if (trimmed.isEmpty() || trimmed.length > MAX_SUMMARY) throw ToolInputException("Node $id: use a summary of 1–$MAX_SUMMARY characters.")
+            if (trimmed.isEmpty()) throw ToolInputException("Node $id: provide a nonempty summary.")
             next[id] = trimmed
         }
         for (id in entries.keys) {
@@ -161,7 +161,6 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
     }
 
     companion object {
-        const val MAX_SUMMARY = 400
         const val MAX_PER_CALL = 80
     }
 }

@@ -83,7 +83,6 @@ class ChangeSummaryTest {
         rejected { summaries.summarize(mapOf(app to "Adds the app.")) }
         rejected { summaries.summarize(mapOf(a to "Adds a.", 99 to "Unknown.")) }
         rejected { summaries.summarize(mapOf(a to " ")) }
-        rejected { summaries.summarize(mapOf(a to "x".repeat(ChangeSummaries.MAX_SUMMARY + 1))) }
         rejected { summaries.summarize(emptyMap()) }
         assertEquals(0, summaries.count)
 
@@ -368,12 +367,16 @@ class ChangeSummaryTest {
         assertTrue(focusedSystem.endsWith("\n\nThe user asked to focus on: security"))
     }
 
-    @Test fun `decoding drops unknown duplicate and empty entries and clips long text`() {
+    @Test fun `decoding drops unknown duplicate and empty entries and preserves long summaries`() {
         val answer = JsonParser.parseString("""{"summaries":[{"id":1,"summary":"One."},{"id":2,"summary":"a"},{"id":2,"summary":"b"},""" +
             """{"id":3,"summary":" "},{"id":9,"summary":"Unknown."},{"id":4,"summary":"${"x".repeat(500)}"}]}""").asJsonObject
         val decoded = ChangeSummarizer.decode(answer, 4)
         assertEquals(setOf(1, 4), decoded.keys)
-        assertEquals(ChangeSummaries.MAX_SUMMARY, decoded.getValue(4).length)
+        assertEquals("x".repeat(500), decoded.getValue(4))
+        val tree = buildSummaryTree(listOf(file("app/a.kt")))
+        val fileId = tree.byLocation("app/a.kt").id
+        val saved = ChangeSummaries(tree).summarize(mapOf(fileId to decoded.getValue(4)))
+        assertEquals(decoded.getValue(4), saved.text(fileId))
     }
 
     private fun rejected(block: () -> Unit) {

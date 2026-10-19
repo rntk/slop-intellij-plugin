@@ -275,10 +275,16 @@ internal class NoteCanvas(
         }
     }
 
-    /** The change as one document with its topic rail; summary updates rebuild only this card, in place. */
+    /**
+     * The change as one document with its topic rail, or as the topic hierarchy with each file's summary; mode changes,
+     * folding and summary updates rebuild only this card, in place.
+     */
     private fun topicsCard(content: TopicsCard): JPanel {
         val topics = content.topics
-        val width = cardWidth(TOPICS_KEY, ChangeTopicsPanel.defaultWidth(topicOutline(topics).depth))
+        val outline = topicOutline(topics)
+        val hierarchy = topicsView.mode == ChangeTopicsMode.HIERARCHY
+        val width = cardWidth(TOPICS_KEY,
+            if (hierarchy) ChangeTopicHierarchyPanel.defaultWidth(outline.depth) else ChangeTopicsPanel.defaultWidth(outline.depth))
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
@@ -291,6 +297,18 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
+                if (hierarchy && outline.depth > 0) add(topicLevels(outline))
+                val group = ButtonGroup()
+                ChangeTopicsMode.entries.forEach { mode ->
+                    add(JToggleButton(if (mode == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy", topicsView.mode == mode).apply {
+                        font = scaledFont(JBFont.small())
+                        cursor = Cursor.getDefaultCursor()
+                        toolTipText = if (mode == ChangeTopicsMode.DOCUMENT) "Every diff in topic order, with its summary and the topic rail"
+                            else "Topics broad to specific, left to right, with each file's summary"
+                        group.add(this)
+                        addActionListener { topicsView.mode = mode; topicsScroll = 0; refreshCard(TOPICS_KEY) }
+                    })
+                }
                 add(JButton(when {
                     topics.labels.isEmpty() -> "Classify"
                     topics.complete -> "Regenerate"
@@ -318,21 +336,44 @@ internal class NoteCanvas(
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(ChangeTopicsPanel(content, topicsView, width - scaled(2 * PADDING + 4) - scaled(16), zoom,
-                ChangeTopicActions(openFile = open, showDiffCard = showDiffCard)), BorderLayout.CENTER)
+            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) })
+            val inner = width - scaled(2 * PADDING + 4) - scaled(16)
+            add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions)
+                else ChangeTopicsPanel(content, topicsView, inner, zoom, actions), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
-            preferredSize = Dimension(width, minOf(body.preferredSize.height, scaled(MAX_TOPICS_HEIGHT)))
+            // A deep hierarchy may scroll sideways; leave room for that scroll bar.
+            val sideways = if (body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
+            preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
+            horizontalScrollBar.unitIncrement = scaled(16)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = topicsScroll
             verticalScrollBar.addAdjustmentListener { topicsScroll = it.value }
             SwingUtilities.invokeLater { verticalScrollBar.value = restore }
         }, BorderLayout.CENTER)
         return prepareCard(TOPICS_KEY, card, width)
+    }
+
+    /** Level n shows topic levels 1..n+1 and folds the rest, as in the article hierarchy; the last level shows every file. */
+    private fun topicLevels(outline: TopicOutline): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        isOpaque = false
+        add(JLabel("Levels").apply {
+            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
+        })
+        val group = ButtonGroup()
+        val current = topicsView.effectiveLevel(outline)
+        for (level in 0..outline.depth) add(JToggleButton(if (level == outline.depth) "Files" else "${level + 1}", level == current).apply {
+            name = "level:$level"
+            font = scaledFont(JBFont.small())
+            cursor = Cursor.getDefaultCursor()
+            toolTipText = if (level == outline.depth) "Show every topic level and file" else "Show topic levels 1–${level + 1}"
+            group.add(this)
+            addActionListener { topicsView.selectLevel(level, outline); refreshCard(TOPICS_KEY) }
+        })
     }
 
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */

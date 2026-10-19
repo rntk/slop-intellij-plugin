@@ -180,6 +180,43 @@ class ChangeTopicsTest {
         assertTrue(empty.nodes.isEmpty())
     }
 
+    @Test fun `outline children nest topics and files that end at each level`() {
+        val topics = ChangeTopics(listOf("a", "b", "c", "z").map { file(it) })
+            .assign("a", "Storage>User>Wallet")
+            .assign("b", "Storage>User")
+            .assign("c", "UI>Checkout")
+        val outline = topicOutline(topics)
+        fun describe(entries: List<TopicEntry>) = entries.map {
+            when (it) { is TopicEntry.Topic -> it.node.fullPath; is TopicEntry.File -> outline.files[it.index].path }
+        }
+        fun node(path: String) = outline.nodes.single { it.fullPath == path }
+        assertEquals(listOf("Storage", "UI"), describe(outline.children(null)))
+        assertEquals(listOf("Storage > User"), describe(outline.children(node("Storage"))))
+        // A file whose topic ends here precedes the deeper topics, as in the outline order.
+        assertEquals(listOf("b", "Storage > User > Wallet"), describe(outline.children(node("Storage > User"))))
+        assertEquals(listOf("a"), describe(outline.children(node("Storage > User > Wallet"))))
+        assertEquals(listOf("c"), describe(outline.children(node("UI > Checkout"))))
+        assertEquals(3..3, outline.pending)
+    }
+
+    @Test fun `chosen level folds topics that appear later and toggles survive updates`() {
+        var topics = ChangeTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User>Wallet")
+        val state = ChangeTopicsViewState()
+        var outline = topicOutline(topics)
+        state.update(outline)
+        assertEquals(3, state.effectiveLevel(outline))
+        state.selectLevel(1, outline)
+        assertEquals(listOf(false, true, true), outline.nodes.map(state::isCollapsed))
+        state.toggle(outline.nodes.single { it.level == 1 })
+        topics = topics.assign("b", "UI>Checkout")
+        outline = topicOutline(topics)
+        state.update(outline)
+        assertEquals(mapOf("Storage" to false, "Storage > User" to false, "Storage > User > Wallet" to true, "UI" to false, "UI > Checkout" to true),
+            outline.nodes.associate { it.fullPath to state.isCollapsed(it) })
+        state.selectLevel(outline.depth, outline)
+        assertTrue(outline.nodes.none(state::isCollapsed))
+    }
+
     @Test fun `command recognizes topics without capturing ordinary questions`() {
         listOf("topics", "/topics", " /TOPICS auth ").forEach { assertTrue(isTopicsRequest(it)) }
         listOf("topics about auth", "/topicsExtra", "What topics changed?").forEach { assertFalse(isTopicsRequest(it)) }
