@@ -52,7 +52,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val sourceEditor = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
             val chat = descendants(tab).filterIsInstance<ChatPanel>().single()
             chat.input.text = "Keep this draft"
-            tab.canvas.zoomAt(1.5)
+            tab.canvas.tabs.selectedIndex = 0
             val bounds = tab.canvas.components.map { it.bounds }
             tab.openCanvas()
             tab.openCanvas()
@@ -72,7 +72,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Keep this draft", chat.input.text)
             assertEquals("Keep this card", tab.state.notes.single().text)
             tab.openCanvas()
-            assertEquals(1.5, tab.canvas.zoom)
+            assertEquals(0, tab.canvas.tabs.selectedIndex)
             assertEquals(bounds, tab.canvas.components.map { it.bounds })
             assertSame(sourceEditor, descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor)
             tab.session.stop()
@@ -129,12 +129,12 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             while (pending.isNotEmpty()) (pending.removeFirst() as Runnable).run()
             assertTrue("Canvas must open once post-startup activities run", manager.isFileOpen(first.canvasFile))
 
-            // Closing the canvas tab and clicking "Open canvas", the tab header, or showing the tool window must reopen it.
-            val openCanvasButton = descendants(first).filterIsInstance<JButton>().single { it.text == "Open canvas" }
+            // Closing the canvas tab and clicking "Open review", the tab header, or showing the tool window must reopen it.
+            val openCanvasButton = descendants(first).filterIsInstance<JButton>().single { it.text == "Open review" }
             manager.closeFile(first.canvasFile)
             assertFalse(manager.isFileOpen(first.canvasFile))
             openCanvasButton.doClick()
-            assertTrue("Open canvas button must reopen a closed canvas tab", manager.isFileOpen(first.canvasFile))
+            assertTrue("Open review button must reopen a closed canvas tab", manager.isFileOpen(first.canvasFile))
 
             manager.closeFile(first.canvasFile)
             assertFalse(manager.isFileOpen(first.canvasFile))
@@ -358,7 +358,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             runWithEvents {
                 context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Explains A.")))
                 val showButton = descendants(tab.canvas).filterIsInstance<InplaceButton>()
-                    .single { it.toolTipText == "Show diff on canvas" }
+                    .single { it.toolTipText == "Show diff in tab" }
                 showButton.doClick()
                 assertEquals(listOf(fileA), tab.state.diffs)
                 val diffViewer = descendants(tab.canvas).filterIsInstance<DiffFileEditor>().single()
@@ -566,7 +566,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("First topic draft", firstChat.input.text)
             assertEquals("First note", first.state.notes.single().text)
             descendants(first).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
-            descendants(first).filterIsInstance<JButton>().single { it.text == "Clear canvas" }.doClick()
+            descendants(first).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertTrue(first.session.messages.isEmpty())
             assertTrue(first.state.notes.isEmpty())
             assertFalse(second.session.messages.isEmpty())
@@ -635,7 +635,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertFalse(tab.session.busy)
             assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)
             assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear canvas" }.doClick()
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.summariesVisible)
             assertTrue(descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().isEmpty())
             open.doClick()

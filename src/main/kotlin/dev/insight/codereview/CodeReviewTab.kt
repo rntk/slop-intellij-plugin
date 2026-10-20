@@ -209,8 +209,8 @@ internal class CodeReviewTab(
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(JButton("Open canvas").apply {
-                    toolTipText = "Open this review's canvas in the IDE editor area"
+                add(JButton("Open review").apply {
+                    toolTipText = "Open this review's tabs in the IDE editor area"
                     addActionListener { openCanvas(true) }
                 }, BorderLayout.NORTH)
                 add(JPanel(GridLayout(1, 2, JBUI.scale(4), JBUI.scale(4))).apply {
@@ -218,19 +218,9 @@ internal class CodeReviewTab(
                     add(topicsButton.apply { addActionListener { openTopics() } })
                 }, BorderLayout.CENTER)
                 add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
-                    add(JButton("Clear canvas").apply {
+                    add(JButton("Clear tabs").apply {
                         addActionListener { state.clearNotes(); renderCanvas() }
                     }, BorderLayout.WEST)
-                    add(JPanel(GridLayout(1, 4, JBUI.scale(4), 0)).apply {
-                        add(JButton("−").apply { toolTipText = "Zoom out"; addActionListener { canvas.zoomAt(canvas.zoom / 1.2) } })
-                        add(JButton("100%").apply {
-                            toolTipText = "Reset canvas view"
-                            addActionListener { canvas.resetView() }
-                            canvas.onZoomChanged = { text = "${(it * 100).toInt()}%" }
-                        })
-                        add(JButton("+").apply { toolTipText = "Zoom in"; addActionListener { canvas.zoomAt(canvas.zoom * 1.2) } })
-                        add(JButton("Fit").apply { toolTipText = "Fit all cards"; addActionListener { canvas.fitView() } })
-                    }, BorderLayout.CENTER)
                 }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)

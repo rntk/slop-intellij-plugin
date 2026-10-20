@@ -4,7 +4,6 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.Component
 import java.awt.Container
 import java.awt.Point
-import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import javax.swing.JLabel
 import kotlinx.coroutines.Job
@@ -12,100 +11,58 @@ import kotlinx.coroutines.Job
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
-    fun testResizeReflowsNotesWithoutZoomingAndRetainsSizeAcrossRefreshes() {
-        val longNote = note.copy(text = "An explanation with enough content to wrap across many lines. ".repeat(300))
-        val canvas = canvas()
-        try {
-            canvas.showNotes(listOf(longNote))
-            canvas.zoomAt(0.5, Point())
-            layoutTree(canvas)
-            val before = canvas.components.single().bounds
-            val textBefore = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
-            val font = textBefore.font
-            val textHeight = textBefore.preferredSize.height
-            val viewportHeight = descendants(canvas).filterIsInstance<javax.swing.JScrollPane>().single().viewport.height
-            resize(canvas, canvas.components.single() as Container, 100, 80)
-            val after = canvas.components.single().bounds
-            assertEquals(before.location, after.location)
-            assertEquals(before.width + 100, after.width)
-            assertEquals(before.height + 80, after.height)
-            assertEquals(0.5, canvas.zoom)
-            val textAfter = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
-            assertEquals(font, textAfter.font)
-            assertTrue(textAfter.preferredSize.height < textHeight)
-            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JScrollPane>().single().viewport.height > viewportHeight)
-            canvas.showNotes(listOf(longNote.copy(text = longNote.text + "Updated.")))
-            assertEquals(after, canvas.components.single().bounds)
-            canvas.resetView()
-            assertEquals(after.width * 2, canvas.components.single().width)
-            assertEquals(after.height * 2, canvas.components.single().height)
-            canvas.zoomAt(0.5, Point())
-            assertEquals(after.size, canvas.components.single().size)
-
-            // Removing the card discards its custom dimensions.
-            canvas.showNotes(emptyList())
-            canvas.showNotes(listOf(longNote))
-            assertEquals(before.size, canvas.components.single().size)
-        } finally { canvas.dispose() }
-    }
-
-    fun testResizeCanShrinkAndKeepsOtherBlocksInPlace() {
-        val other = DiffNote(listOf("src/b.kt"), "Other explanation.")
+    fun testTabsKeepSelectionAcrossUpdatesAndFocusSelectsTheRequestedBlock() {
+        val other = DiffNote(listOf("src/b.kt"), "Other note")
         val canvas = canvas()
         try {
             canvas.showNotes(listOf(note, other))
-            layoutTree(canvas)
-            val otherBounds = canvas.components[1].bounds
-            resize(canvas, canvas.components[0] as Container, -10000, -10000)
-            val resized = canvas.components.first { it.bounds != otherBounds }
-            assertEquals(com.intellij.util.ui.JBUI.scale(280), resized.width)
-            assertEquals(com.intellij.util.ui.JBUI.scale(140), resized.height)
-            assertEquals(otherBounds, canvas.components[1].bounds)
-            canvas.fitView()
-            assertTrue(canvas.components.all { canvas.bounds.contains(it.bounds) })
+            assertEquals(2, canvas.tabs.tabCount)
+            canvas.focusNote(other)
+            assertEquals(1, canvas.tabs.selectedIndex)
+            canvas.showNotes(listOf(note.copy(text = "Updated"), other))
+            assertEquals(1, canvas.tabs.selectedIndex)
+            canvas.focusNote(note)
+            assertEquals(0, canvas.tabs.selectedIndex)
+            canvas.showNotes(listOf(other))
+            assertEquals(1, canvas.tabs.tabCount)
+            assertEquals("Note · b.kt", canvas.tabs.getTitleAt(0))
+            assertTrue(descendants(canvas).none { it.name == "Resize block" })
         } finally { canvas.dispose() }
     }
 
-    fun testResizeNativeSourceAndDiffBlocksKeepsEditorsAndFontSizes() {
-        val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 1, 80), "val a = 1\n".repeat(80))
-        val file = ReviewFile("src/b.kt", "/project/src/b.kt", null, "modified", "-old\n+new\n", "1", "old\n", "new\n")
-        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1400, 900) }
+    fun testWideTabsScrollHorizontallyAndRefreshPreservesReadingPosition() {
+        val canvas = canvas().apply { setSize(300, 300) }
+        val longNote = note.copy(text = "Long explanation. ".repeat(2000))
         try {
-            canvas.showNotes(emptyList(), listOf(source), listOf(file))
-            canvas.zoomAt(1.5, Point())
+            canvas.showNotes(listOf(longNote))
             layoutTree(canvas)
-            val sourceEditor = descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor
-            val diffEditor = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
-            val sourceFont = sourceEditor.colorsScheme.editorFontSize2D
-            val diffFonts = diffEditor.editors.map { it.colorsScheme.editorFontSize2D }
-            val originalBounds = canvas.components.map { it.bounds }
-            canvas.components.toList().forEach { resize(canvas, it as Container, 120, 90) }
-            assertSame(sourceEditor, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
-            assertSame(diffEditor, descendants(canvas).filterIsInstance<DiffFileEditor>().single())
-            assertEquals(sourceFont, sourceEditor.colorsScheme.editorFontSize2D)
-            assertEquals(diffFonts, diffEditor.editors.map { it.colorsScheme.editorFontSize2D })
-            assertEquals(originalBounds.map { java.awt.Dimension(it.width + 120, it.height + 90) }.toSet(),
-                canvas.components.map { it.size }.toSet())
-            assertEquals(1.5, canvas.zoom)
+            val page = canvas.tabs.selectedComponent as javax.swing.JScrollPane
+            assertTrue(page.horizontalScrollBar.maximum > page.horizontalScrollBar.visibleAmount)
+            page.horizontalScrollBar.value = 60
+            val position = Point(page.viewport.viewPosition)
+            canvas.showNotes(listOf(longNote.copy(text = longNote.text + "Updated.")))
+            layoutTree(canvas)
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            val refreshed = canvas.tabs.selectedComponent as javax.swing.JScrollPane
+            assertEquals(position, refreshed.viewport.viewPosition)
         } finally { canvas.dispose() }
     }
 
-    fun testOverviewSizesSurviveModeChangesAndSummaryUpdates() {
-        val flows = ChangeFlows(ChangeGraph(emptyList(), emptyList(), emptyList(), emptyList()))
-        val summaries = SummariesCard(ChangeSummaries(buildSummaryTree(emptyList())), running = false, canRun = true)
+    fun testWheelScrollsLongNotesWithoutChangingFontSize() {
         val canvas = canvas()
         try {
-            canvas.showNotes(emptyList(), flows = flows, summaries = summaries)
-            canvas.components.toList().forEach { resize(canvas, it as Container, 150, 100) }
-            val bounds = canvas.components.map { it.bounds }.toSet()
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Outline" && it.name == null }.doClick()
-            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
-            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
-            canvas.updateSummaries(summaries.copy(running = true))
-            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
-            canvas.showNotes(emptyList(), flows = flows, summaries = summaries)
-            assertEquals(bounds, canvas.components.map { it.bounds }.toSet())
+            canvas.showNotes(listOf(note.copy(text = "Long explanation. ".repeat(2000))))
+            layoutTree(canvas)
+            val text = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
+            val font = text.font
+            val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, text) as javax.swing.JScrollPane
+            assertTrue(scroll.verticalScrollBar.maximum > scroll.verticalScrollBar.visibleAmount)
+            val before = scroll.verticalScrollBar.value
+            scroll.dispatchEvent(java.awt.event.MouseWheelEvent(scroll, MouseEvent.MOUSE_WHEEL, 1, 0,
+                20, 20, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 3))
+            assertTrue(scroll.verticalScrollBar.value > before)
+            assertEquals(font, text.font)
+            assertEquals(javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED, scroll.horizontalScrollBarPolicy)
         } finally { canvas.dispose() }
     }
 
@@ -153,18 +110,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(listOf("hunk - - @@ -1,2 +1,2 @@", "context 1 1  ctx", "removed 2 - -old", "added - 2 +new"),
                 descendants(sections[1] as Container).filterIsInstance<PatchView>().single().describe().take(4))
 
-            // Selecting a topic outlines its files and survives summary updates, zoom and resize.
+            // Selecting a topic outlines its files and survives summary updates.
             val auth = named("topic:2:storage > user > auth") as javax.swing.JComponent
             auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertTrue(canvas.topicsView.isSelected(panel.outline.nodes.single { it.identity == "storage > user > auth" }))
-            val card = canvas.components.single()
-            resize(canvas, card as Container, 120, 90)
             val bounds = canvas.components.single().bounds
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
             assertEquals(bounds, canvas.components.single().bounds)
             assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Validates the card number." })
-            canvas.zoomAt(0.5, Point())
             assertEquals("storage > user > auth", canvas.topicsView.selected?.substringAfter(':'))
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
@@ -260,17 +214,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
             level(3).doClick(); layoutTree(canvas)
             assertTrue(names().containsAll(files.map { "file:${it.path}" }))
 
-            // Selecting a topic outlines it and its files, and survives summary updates, zoom and resize.
+            // Selecting a topic outlines it and its files, and survives summary updates.
             click(named("topic:2:storage > user > auth"))
             assertTrue(canvas.topicsView.isSelected(panel().outline.nodes.single { it.identity == "storage > user > auth" }))
-            val card = canvas.components.single()
-            resize(canvas, card as Container, 120, 90)
             val bounds = canvas.components.single().bounds
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
             assertEquals(bounds, canvas.components.single().bounds)
             assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Validates the card number." })
-            canvas.zoomAt(0.5, Point())
             assertEquals("storage > user > auth", canvas.topicsView.selected?.substringAfter(':'))
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
@@ -361,10 +312,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(names().containsAll(files.map { "file:${it.path}" }))
             assertTrue(level(3).isSelected)
 
-            // Selecting a folder outlines it and survives summary updates and resize.
+            // Selecting a folder outlines it and survives summary updates.
             click(named("node:directory:src"))
             assertEquals("directory:src", canvas.summariesView.selected)
-            resize(canvas, canvas.components.single() as Container, 120, 90)
             val bounds = canvas.components.single().bounds
             val more = summaries.summarize(mapOf(id("directory:src") to "Adds wallets and auth."))
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = true))
@@ -379,21 +329,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    private fun resize(canvas: NoteCanvas, card: Container, dx: Int, dy: Int) {
-        layoutTree(canvas)
-        val grip = descendants(card).single { it.name == "Resize block" }
-        val start = javax.swing.SwingUtilities.convertPoint(grip, Point(5, 5), canvas)
-        grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_PRESSED, 0, InputEvent.BUTTON1_DOWN_MASK, 5, 5, 1, false, MouseEvent.BUTTON1))
-        // Send several events to exercise the grip as it moves between rebuilt cards.
-        for (step in 1..3) {
-            val point = javax.swing.SwingUtilities.convertPoint(canvas, Point(start.x + dx * step / 3, start.y + dy * step / 3), grip)
-            grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_DRAGGED, step.toLong(), InputEvent.BUTTON1_DOWN_MASK,
-                point.x, point.y, 0, false, MouseEvent.NOBUTTON))
-        }
-        grip.dispatchEvent(MouseEvent(grip, MouseEvent.MOUSE_RELEASED, 4, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-    }
-
-    fun testLongPathsKeepDiffButtonsVisibleAndClickableAtEveryZoom() {
+    fun testLongPathsKeepDiffButtonsVisibleAndClickable() {
         val paths = listOf(
             "src/main/kotlin/dev/insight/deeply/nested/module/implementation/LongFeatureService.kt",
             "VeryLongFeatureServiceName".repeat(12) + ".kt",
@@ -405,22 +341,16 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             val sources = paths.map { DiffSourceBlock(DiffSourceRange(it, 1, 1), "val a = 1") }
             canvas.showNotes(paths.map { DiffNote(listOf(it), "Explanation.") }, sources)
-            for (zoom in listOf(0.25, 0.5, 1.0, 2.5)) {
-                canvas.zoomAt(zoom, Point())
+            run {
                 layoutTree(canvas)
                 val buttons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
-                    .filter { it.toolTipText == "Show diff on canvas" }
+                    .filter { it.toolTipText == "Show diff in tab" }
                 assertEquals(4, buttons.size)
                 requested.clear()
                 buttons.forEach { button ->
-                    assertTrue("Diff button must retain its width at $zoom", button.width >= button.preferredSize.width)
-                    var child: Component = button
-                    while (child.parent !== canvas) {
-                        val parent = child.parent
-                        assertTrue("Diff button must fit inside every ancestor at $zoom", parent.contains(
-                            javax.swing.SwingUtilities.convertPoint(button, Point(button.width - 1, button.height - 1), parent)))
-                        child = parent
-                    }
+                    assertTrue("Diff button must retain its width", button.width >= button.preferredSize.width)
+                    assertTrue("Diff button must fit inside its file row", button.parent.contains(
+                        javax.swing.SwingUtilities.convertPoint(button, Point(button.width - 1, button.height - 1), button.parent)))
                     button.doClick()
                 }
                 assertEquals(paths + paths, requested)
@@ -431,7 +361,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testDiffViewerModeChangesKeepCurrentCanvasZoom() {
+    fun testDiffViewerModeChangesKeepFontSize() {
         val file = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
         val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
         val originalToolOrder = settings.diffToolsOrder.toList()
@@ -443,8 +373,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
             switchTool.invoke(viewer.panel, com.intellij.diff.tools.simple.SimpleDiffTool.INSTANCE)
             com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            for (zoom in listOf(0.5, 1.5, 0.25)) {
-                canvas.zoomAt(zoom, Point())
+            run {
                 val expectedFontSize = viewer.editors.first().colorsScheme.editorFontSize2D
                 val cardBounds = canvas.components.single().bounds
                 for (tool in listOf(com.intellij.diff.tools.fragmented.UnifiedDiffTool.INSTANCE, com.intellij.diff.tools.simple.SimpleDiffTool.INSTANCE)) {
@@ -469,7 +398,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1000, 700) }
         try {
             canvas.showNotes(listOf(note), listOf(source))
-            assertEquals(2, canvas.componentCount)
+            assertEquals(2, canvas.tabs.tabCount)
             val viewer = descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor
             assertTrue(viewer.isViewer)
             assertEquals(source.text, viewer.document.text)
@@ -477,7 +406,6 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(9, viewer.gutterComponentEx.primaryLineNumberConverter.convert(viewer, 2))
             assertTrue(viewer.settings.isLineNumbersShown)
             viewer.selectionModel.setSelection(0, 3)
-            canvas.zoomAt(1.5, Point())
             assertSame(viewer, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
             assertEquals("val", viewer.selectionModel.selectedText)
             canvas.showNotes(listOf(note), listOf(source, source.copy(range = source.range.copy(side = "before"))))
@@ -501,13 +429,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val source = DiffSourceBlock(DiffSourceRange("src/b.kt", 1, 1), "val b = 3")
             canvas.showNotes(listOf(note), listOf(source))
             val diffButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
-                .filter { it.toolTipText == "Show diff on canvas" }
+                .filter { it.toolTipText == "Show diff in tab" }
             assertEquals(2, diffButtons.size)
             diffButtons.forEach { it.doClick() }
             assertEquals(listOf("src/a.kt", "src/b.kt"), requested)
 
             canvas.showNotes(listOf(note), listOf(source), listOf(fileA, fileB))
-            assertEquals(4, canvas.componentCount)
+            assertEquals(4, canvas.tabs.tabCount)
             val diffViewers = descendants(canvas).filterIsInstance<DiffFileEditor>()
             assertEquals(2, diffViewers.size)
             val viewerA = diffViewers.single { it.file == fileA }
@@ -515,7 +443,6 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(viewerA.editors.isNotEmpty() && viewerA.editors.all { it.isViewer })
             assertEquals(setOf("val a = 1\n", "val a = 2\n"), viewerA.editors.map { it.document.text }.toSet())
 
-            canvas.zoomAt(1.25, Point())
             assertSame(viewerA, descendants(canvas).filterIsInstance<DiffFileEditor>().single { it.file == fileA })
 
             val removeButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
@@ -532,52 +459,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testZoomKeepsCursorAnchorAndRefreshKeepsView() {
-        val canvas = canvas()
-        val before = canvas.components.single().bounds
-        val anchor = Point(200, 150)
-        canvas.zoomAt(2.0, anchor)
-        val after = canvas.components.single().bounds
-        assertEquals(2 * before.x - anchor.x, after.x)
-        assertEquals(2 * before.y - anchor.y, after.y)
-        assertEquals(2 * before.width, after.width)
-        canvas.showNotes(listOf(note.copy(text = "Updated explanation.")))
-        assertEquals(after.location, canvas.components.single().location)
-        canvas.zoomAt(100.0)
-        assertEquals(2.5, canvas.zoom)
-        canvas.zoomAt(0.01)
-        assertEquals(0.25, canvas.zoom)
-    }
-
-    fun testPanAndHeaderDragAtZoomPreserveWorldPositions() {
-        val canvas = canvas()
-        val initial = canvas.components.single().location
-        canvas.zoomAt(2.0, Point())
-        drag(canvas, MouseEvent.BUTTON1, Point(700, 500), Point(620, 440))
-        val panned = canvas.components.single().location
-        assertEquals(Point(initial.x * 2 - 80, initial.y * 2 - 60), panned)
-        // The header label must also act as a drag handle.
-        val header = descendants(canvas).filterIsInstance<JLabel>().first { it.text == "1 file · LLM interpretation" }
-        drag(header, MouseEvent.BUTTON1, Point(10, 10), Point(70, 50))
-        canvas.showNotes(listOf(note))
-        assertEquals(Point(panned.x + 60, panned.y + 40), canvas.components.single().location)
-        canvas.resetView()
-        assertEquals(Point(initial.x + 30, initial.y + 20), canvas.components.single().location)
-    }
-
-    fun testMiddleDragPansWithoutMovingCardAndFitRecoversView() {
-        val canvas = canvas()
-        val initial = canvas.components.single().location
-        val header = descendants(canvas).filterIsInstance<JLabel>().first { it.text == "1 file · LLM interpretation" }
-        drag(header, MouseEvent.BUTTON2, Point(10, 10), Point(-1500, -1000))
-        assertTrue(canvas.components.single().x < 0)
-        canvas.fitView()
-        assertTrue(canvas.bounds.contains(canvas.components.single().bounds))
-        canvas.resetView()
-        assertEquals(initial, canvas.components.single().location)
-    }
-
-    fun testSymbolCardsKeepIndependentPositionsAndDiagramBounds() {
+    fun testSymbolNotesHaveSeparateTabsAndDiagramBounds() {
         val symbol = DiffSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
         val evidence = DiffSymbolEvidence(symbol, listOf(DiffSymbolLinks("Calls", (1..3).map {
             symbol.copy(name = "callee$it", qualifiedName = "Store.callee$it", offset = 10 + it)
@@ -585,18 +467,16 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val semantic = note.copy(symbol = symbol.selector, evidence = evidence)
         val canvas = canvas()
         canvas.showNotes(listOf(note, semantic))
-        assertEquals(2, canvas.componentCount)
-        val locations = canvas.components.map { it.location }
-        assertFalse(canvas.components[0].bounds.intersects(canvas.components[1].bounds))
+        assertEquals(2, canvas.tabs.tabCount)
+        canvas.focusNote(semantic)
+        val title = canvas.tabs.getTitleAt(canvas.tabs.selectedIndex)
         val diagram = descendants(canvas).filterIsInstance<DiffSymbolDiagram>().single()
         assertEquals(5, diagram.componentCount) // Root, three callees, one omitted count.
         assertTrue(descendants(diagram).filterIsInstance<JLabel>().any { it.text == "+17 calls not shown" })
-        canvas.zoomAt(1.5, Point())
         canvas.showNotes(listOf(note, semantic.copy(text = "Updated")))
-        canvas.resetView()
-        assertEquals(locations, canvas.components.map { it.location })
+        assertEquals(title, canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
         canvas.showNotes(listOf(semantic))
-        assertEquals(locations[1], canvas.components.single().location)
+        assertEquals(title, canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
     }
 
     fun testDiagramBoundsMixedRelationshipsAndDistinguishesOwners() {
@@ -638,7 +518,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
         val canvas = canvas()
         canvas.showNotes(notes)
-        assertEquals(5, canvas.componentCount) // Flow card plus four notes.
+        assertEquals(5, canvas.tabs.tabCount) // Flow card plus four notes.
         val diagram = descendants(canvas).filterIsInstance<ChangeFlowDiagram>().single()
         val links = descendants(diagram).filterIsInstance<com.intellij.ui.components.ActionLink>()
         assertEquals(listOf("A.a", "A.b", "A.c", "↺ A.a", "↺ A.c"), links.map { it.text })
@@ -648,12 +528,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertTrue(diagram.components.all { diagram.bounds.contains(it.bounds) })
 
         links[2].doClick()
-        val target = canvas.components.first { card -> descendants(card as Container).filterIsInstance<javax.swing.JTextArea>().any { it.text.startsWith("c ") } }
-        assertEquals(canvas.width / 2.0, target.bounds.centerX, 1.0)
+        assertTrue(descendants(canvas.tabs.selectedComponent as Container).filterIsInstance<javax.swing.JTextArea>().any { it.text.startsWith("c ") })
         canvas.showNotes(notes.take(3))
-        assertEquals(4, canvas.componentCount)
+        assertEquals(4, canvas.tabs.tabCount)
         canvas.showNotes(listOf(notes[3]))
-        assertEquals(1, canvas.componentCount) // The flow disappears once no calls connect notes.
+        assertEquals(1, canvas.tabs.tabCount) // The flow disappears once no calls connect notes.
     }
 
     fun testSummariesPrescoreAllNonLeafWordsAndSearchOnlyOnClick() {
@@ -1010,10 +889,5 @@ class NoteCanvasTest : BasePlatformTestCase() {
         component.doLayout()
         component.components.filterIsInstance<Container>().forEach(::layoutTree)
     }
-    private fun drag(target: Component, button: Int, from: Point, to: Point) {
-        val mask = if (button == MouseEvent.BUTTON1) InputEvent.BUTTON1_DOWN_MASK else InputEvent.BUTTON2_DOWN_MASK
-        target.dispatchEvent(MouseEvent(target, MouseEvent.MOUSE_PRESSED, 0, mask, from.x, from.y, 1, false, button))
-        target.dispatchEvent(MouseEvent(target, MouseEvent.MOUSE_DRAGGED, 1, mask, to.x, to.y, 0, false, MouseEvent.NOBUTTON))
-        target.dispatchEvent(MouseEvent(target, MouseEvent.MOUSE_RELEASED, 2, 0, to.x, to.y, 1, false, button))
-    }
+
 }

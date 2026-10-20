@@ -270,8 +270,8 @@ internal class ChangeTopicsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
         }, BorderLayout.CENTER)
-        add(InplaceButton(IconButton("Show diff on canvas", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { actions.showDiffCard(file.path) }
-            .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff on canvas" }, BorderLayout.EAST)
+        add(InplaceButton(IconButton("Show diff in tab", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { actions.showDiffCard(file.path) }
+            .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff in tab" }, BorderLayout.EAST)
     }
 
     private fun note(file: ReviewSource, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {

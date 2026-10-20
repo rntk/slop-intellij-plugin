@@ -100,7 +100,6 @@ class ChangeFlowMapTest : BasePlatformTestCase() {
             canvas.showNotes(emptyList(), flows = interpreted)
             assertEquals(3, canvas.flowsView.selected[0])
             assertTrue(texts(canvas).contains("Updated interpretation."))
-            canvas.zoomAt(1.5)
             assertEquals(3, canvas.flowsView.selected[0])
             paint(canvas)
             canvas.showNotes(emptyList(), flows = ChangeFlows(flows.graph.copy()))

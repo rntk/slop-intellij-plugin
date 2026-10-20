@@ -1,10 +1,12 @@
 # Code review flow
 
-The Code Review feature lives in `src/main/kotlin/dev/insight/codereview`. It is a standalone, read-only workspace for understanding the code under a start directory with AI assistance, independent of the application graph. It is the counterpart of [Diff Review](diff-review.md) for a code base instead of a diff: the same review tabs, chat, canvas, summaries and topics, scoped to a folder. **Tools → Open Code Review** opens the **Code Review** tool window and the selected review's canvas in a regular IDE editor tab. In the **Project** view, **Review Code in Directory** on a single folder activates the tool window and loads that folder.
+The Code Review feature lives in `src/main/kotlin/dev/insight/codereview`. It is a standalone, read-only workspace for understanding the code under a start directory with AI assistance, independent of the application graph. It is the counterpart of [Diff Review](diff-review.md) for a code base instead of a diff: the same review tabs, chat, workspace, summaries and topics, scoped to a folder. **Tools → Open Code Review** opens the **Code Review** tool window and the selected review's workspace in a regular IDE editor tab. In the **Project** view, **Review Code in Directory** on a single folder activates the tool window and loads that folder.
 
-The tool window is the control panel: the start directory, the file tree and the review tabs, commands, zoom controls and chat. Each review has its own full-editor canvas named **Code Review: name**, managed like a Diff Review canvas: selecting a review opens or focuses its canvas, closing the editor preserves the review's chat, cards, positions, sizes and zoom, **Open canvas** returns to it, and closing a review in the control panel discards it. On IDE startup, if **Code Review** is restored open, the selected review's canvas opens once editor restoration completes.
+The tool window is the control panel: the start directory, the file tree and the review tabs, commands and chat. Each review has its own editor workspace with a tab per block, named **Code Review: name**, managed like a Diff Review workspace: selecting a review opens or focuses its workspace, closing the editor preserves the review's chat, blocks, selected tab and reading state, **Open review** returns to it, and closing a review in the control panel discards it. On IDE startup, if **Code Review** is restored open, the selected review's workspace opens once editor restoration completes.
 
-At a high level: the workspace loads the text files under a start directory into memory and presents them beside one or more review tabs, each optionally scoped to a subset of files. Within a tab, the user chats with the assistant, which inspects the files with read-only tools and places notes, symbol diagrams and source excerpts on an adjacent canvas. `/summaries` reads the whole scope from the root down to each file, and the parts of large files, and `/topics` groups the files by responsibility. Code decides what is read, in what order and in which batches; the assistant only writes text.
+At a high level: the workspace loads the text files under a start directory into memory and presents them beside one or more review tabs, each optionally scoped to a subset of files. Within a tab, the user chats with the assistant, which inspects the files with read-only tools and places notes, symbol diagrams and source excerpts in separate tabs in the review editor. `/summaries` reads the whole scope from the root down to each file, and the parts of large files, and `/topics` groups the files by responsibility. Code decides what is read, in what order and in which batches; the assistant only writes text.
+
+The internal canvas API and class names remain for compatibility; the visible workspace is a set of scrollable tabs.
 
 Entry points for further exploration:
 
@@ -13,7 +15,7 @@ Entry points for further exploration:
 - [CodeReviewLoader.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewLoader.kt) — scope validation, file enumeration, skip rules, limits and reuse of unchanged files
 - [CodeModel.kt](../src/main/kotlin/dev/insight/codereview/CodeModel.kt) — code file, snapshot, skip reasons and limits
 - [SourceChunker.kt](../src/main/kotlin/dev/insight/codereview/SourceChunker.kt) — splitting large files into parts, boundary scoring and minified detection
-- [CodeReviewTab.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewTab.kt) — per-tab session, chat routing, canvas coordination, held updates and the cost estimate
+- [CodeReviewTab.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewTab.kt) — per-tab session, chat routing, workspace coordination, held updates and the cost estimate
 - [CodeReviewState.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewState.kt) — per-tab notes, source blocks, summaries and topics, and their retention across snapshots
 - [CodeReviewTools.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewTools.kt) — assistant tools and the chat prompt
 - [CodeResults.kt](../src/main/kotlin/dev/insight/codereview/CodeResults.kt) — size-bounded tool results and the per-question overview
@@ -43,12 +45,12 @@ A folder is accepted when it exists, lies inside the project, is not excluded, a
 
 The top of the panel holds the start directory controls, the **Files in scope** tree and the status line. Below it are the review tabs.
 
-- **File tree.** Folders come before files, in path order, and paths are relative to the start directory. Only the first level opens at first, and a reload keeps the folders as the user left them. A file shows its name and facts, such as `Parser.kt [420 lines]` or `Model.kt [1,310 lines · 4 parts]`. Double-clicking, or Enter, opens a file in the editor. Selecting nodes highlights the cards of their files on the canvas.
+- **File tree.** Folders come before files, in path order, and paths are relative to the start directory. Only the first level opens at first, and a reload keeps the folders as the user left them. A file shows its name and facts, such as `Parser.kt [420 lines]` or `Model.kt [1,310 lines · 4 parts]`. Double-clicking, or Enter, opens a file in the editor. Selecting nodes highlights the cards of their files on the workspace.
 - **Status.** `N files · M skipped · K large files split into P parts`, plus the truncation hint when a limit was reached, and the number of notes removed by a reload.
 - **Skipped.** A collapsible **Skipped · N** list shows each skipped file with its reason, the first 500 entries, then `… N more`.
-- **Review tabs.** The first tab, **Whole scope**, follows every file in the scope. **New tab** starts a fresh chat and canvas for the whole scope. **New tab from selection** starts one scoped to the selected files and folders, **Selection N**; a folder keeps covering the files under it as the snapshot changes. Double-click a tab to rename it, or close it with its action; closing discards its chat, draft and canvas. A tab shows its scope, **Open canvas**, **Summaries**, **Topics**, **Clear canvas**, zoom controls and the **Code Chat**.
+- **Review tabs.** The first tab, **Whole scope**, follows every file in the scope. **New tab** starts a fresh chat and workspace for the whole scope. **New tab from selection** starts one scoped to the selected files and folders, **Selection N**; a folder keeps covering the files under it as the snapshot changes. Double-click a tab to rename it, or close it with its action; closing discards its chat, draft and workspace. A tab shows its scope, **Open review**, **Summaries**, **Topics**, **Clear tabs** and the **Code Chat**.
 
-Blocks on the canvas move and resize like those in Diff Review.
+Each block has its own tab within the review editor, just as in Diff Review. Tabs scroll vertically and horizontally with ordinary scrollbars and mouse-wheel scrolling. Blocks are no longer positioned, dragged, resized or zoomed on a board.
 
 ## Chat and tools
 
@@ -62,15 +64,15 @@ The assistant helps understand the code under the start directory. Every questio
 - `read_code` — numbered lines of 1–10 ranges, up to 400 lines per range, with `next_start_line` for a range that was cut and `not_read` for ranges that did not fit. Lines over 2,000 characters are clipped.
 - `search_code` — grep-like search, case-insensitive text or a Java regular expression, 50 matching lines per page with lines clipped to 200 characters. Expensive regular expressions fail rather than hang, and the search is cancellable.
 - `find_code_symbols` — declarations of 1–10 files with exact selectors, kinds and lines, from the IDE's language support.
-- `add_code_notes` — 1–20 notes per call; each has 1–30 file paths, text of up to 2,000 characters and an optional symbol of up to 500 characters. A symbol is validated and gets a small diagram of verified static relationships, as in Diff Review. A note for the same paths and symbol replaces the old one. The canvas holds up to 200 notes. The batch is validated before any note is added.
-- `show_code_source` — a separate read-only source block from the snapshot, up to 200 lines and 20,000 characters, with syntax highlighting and original line numbers. The canvas holds up to 30 blocks.
+- `add_code_notes` — 1–20 notes per call; each has 1–30 file paths, text of up to 2,000 characters and an optional symbol of up to 500 characters. A symbol is validated and gets a small diagram of verified static relationships, as in Diff Review. A note for the same paths and symbol replaces the old one. The workspace holds up to 200 notes. The batch is validated before any note is added.
+- `show_code_source` — a separate read-only source block from the snapshot, up to 200 lines and 20,000 characters, with syntax highlighting and original line numbers. The workspace holds up to 30 blocks.
 - `get_code_summaries` — pages the summary tree in pre-order with ids, kinds, locations, line ranges and summaries, or the subtree under a `path`. In a large scope it is the way to find where to read first.
 
 All tools check the snapshot revision captured for the reply. After an edit they fail with a request to start again, and symbol tools reject files edited since the snapshot. Notes and source blocks belong to file contents: a reload drops those of changed or removed files. Typed commands are `/summaries`, `/topics` and `/topic-summaries`; the assistant cannot write summaries and suggests `/summaries` instead.
 
 ## Summaries (`/summaries`)
 
-`/summaries [focus]` (or the **Summaries** button) shows the **Code summaries** card and writes the whole tree. The card is the Diff Review summaries card: **Outline** and **Hierarchy** modes, **Levels**, **Show names**, **Score** and tracing, see [Change summaries](diff-review.md#change-summaries-summaries). The root says what the whole scope is for, each folder what its part is responsible for, each file what it provides, and the parts of a large file what each line range does. Nodes show **Open file** and **Show source on canvas** (the first 200 lines or 20,000 characters of the file, or of the part from its first line). A part shows **Open lines**, which opens the file at the part's first line.
+`/summaries [focus]` (or the **Summaries** button) shows the **Code summaries** card and writes the whole tree. The card is the Diff Review summaries card: **Outline** and **Hierarchy** modes, **Levels**, **Show names**, **Score** and tracing, see [Change summaries](diff-review.md#change-summaries-summaries). The root says what the whole scope is for, each folder what its part is responsible for, each file what it provides, and the parts of a large file what each line range does. Nodes show **Open file** and **Show source in tab** (the first 200 lines or 20,000 characters of the file, or of the part from its first line). A part shows **Open lines**, which opens the file at the part's first line.
 
 **Tree from folders.** The tree is built from the loaded paths exactly as in Diff Review: a folder with a single entry merges with it, the root absorbs a single top folder, subfolders come before files, and no node has more than 8 children, with groups of up to 8 grouped again. The root is named `Whole scope` until it absorbs a folder. Large files add a level of parts.
 
@@ -92,11 +94,11 @@ The reply to `/summaries` is the root summary, or what is still missing and why.
 
 **Cost.** Before a run, the tab estimates the number of model requests: leaves batched as above, large leaves alone, and branches by wave. When it exceeds 500, a **Large Code Review Run** dialog asks to continue; **Cancel** ends the command with a reply suggesting a smaller folder. The same check applies to `/topics` (one request per file) and `/topic-summaries`.
 
-**Retention.** Summaries and topics belong to the review tab and are kept by content keys made from paths and content hashes, so a summary stays while its node and everything beneath it are unchanged. Editing a file invalidates that file, its changed parts and the part ranges, folders and root above them, but not its other parts. Summaries also survive a reload, **Refresh** and a change of start directory for every file, part and folder that is still the same. Only **Regenerate** discards them. Closing the card or **Clear canvas** hides it and keeps them.
+**Retention.** Summaries and topics belong to the review tab and are kept by content keys made from paths and content hashes, so a summary stays while its node and everything beneath it are unchanged. Editing a file invalidates that file, its changed parts and the part ranges, folders and root above them, but not its other parts. Summaries also survive a reload, **Refresh** and a change of start directory for every file, part and folder that is still the same. Only **Regenerate** discards them. Closing the card or **Clear tabs** hides it and keeps them.
 
 ### Edits during a run
 
-A `/summaries`, `/topic-summaries` or `/topics` run can take long, so snapshot updates that arrive meanwhile are held: the tab says `update waits for the run`, the run keeps working on the snapshot it started with, and the latest held update is applied when the run ends and the chat is idle. Summaries and topics of changed files are then invalidated, and **Continue** writes just those and the nodes above them. Choosing a new folder or **Refresh** stops the runs instead. An ordinary chat turn stops when the files change, like a Diff Review reply on a new revision. Canvas updates during a run are batched every 250 ms.
+A `/summaries`, `/topic-summaries` or `/topics` run can take long, so snapshot updates that arrive meanwhile are held: the tab says `update waits for the run`, the run keeps working on the snapshot it started with, and the latest held update is applied when the run ends and the chat is idle. Summaries and topics of changed files are then invalidated, and **Continue** writes just those and the nodes above them. Choosing a new folder or **Refresh** stops the runs instead. An ordinary chat turn stops when the files change, like a Diff Review reply on a new revision. Workspace updates during a run are batched every 250 ms.
 
 ## Topics (`/topics`)
 
@@ -127,16 +129,16 @@ Interactive word reading works as in Diff Review, using the Decisions API and no
 
 ## Shared components
 
-Code Review reuses the Diff Review canvas, summaries, topics and tracing through small abstractions in `src/main/kotlin/dev/insight/diff`:
+Code Review reuses the Diff Review workspace, summaries, topics and tracing through small abstractions in `src/main/kotlin/dev/insight/diff`:
 
 - [ReviewSource.kt](../src/main/kotlin/dev/insight/diff/ReviewSource.kt) — the file abstraction summaries and topics work on: path, fingerprint and facts. A changed file and a code file both implement it.
-- [ReviewVocabulary.kt](../src/main/kotlin/dev/insight/diff/ReviewVocabulary.kt) — canvas wording, buttons, Document mode and visible-only scoring for a diff or a code base
-- [ReviewTabSupport.kt](../src/main/kotlin/dev/insight/diff/ReviewTabSupport.kt) — opening a review's canvas editor and the word-tracing launcher, shared by both tabs
+- [ReviewVocabulary.kt](../src/main/kotlin/dev/insight/diff/ReviewVocabulary.kt) — workspace wording, buttons, Document mode and visible-only scoring for a diff or a code base
+- [ReviewTabSupport.kt](../src/main/kotlin/dev/insight/diff/ReviewTabSupport.kt) — opening a review's workspace editor and the word-tracing launcher, shared by both tabs
 - [ChangeSummaryModel.kt](../src/main/kotlin/dev/insight/diff/ChangeSummaryModel.kt) — the part nodes (`chunk`) under a file, recursive grouping and content keys
 - [ChangeSummarizer.kt](../src/main/kotlin/dev/insight/diff/ChangeSummarizer.kt) — the batched bottom-up pipeline and its `SummaryEvidence` strategy
 - [ChangeTopics.kt](../src/main/kotlin/dev/insight/diff/ChangeTopics.kt) — topic evidence and concurrency settings of the per-file pipeline
 - [ChangeTopicSummaries.kt](../src/main/kotlin/dev/insight/diff/ChangeTopicSummaries.kt) — the topic summary tree with parts and sharing with the file summaries
-- [NoteCanvas.kt](../src/main/kotlin/dev/insight/diff/NoteCanvas.kt) — the canvas, which takes a vocabulary and the open and show actions for files and parts
+- [NoteCanvas.kt](../src/main/kotlin/dev/insight/diff/NoteCanvas.kt) — the workspace, which takes a vocabulary and the open and show actions for files and parts
 
 The code-specific pieces:
 

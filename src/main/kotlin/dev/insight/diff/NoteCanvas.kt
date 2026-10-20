@@ -22,19 +22,11 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Point
 import java.awt.Rectangle
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import java.awt.event.MouseWheelEvent
-import java.awt.geom.Point2D
 import kotlinx.coroutines.Job
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import javax.swing.*
 
-/**
- * A zoomable, pannable board of movable note cards; positions survive chat replies and VCS refreshes.
- * Cards retain their own logical size; resizing reveals more content without changing zoom.
- */
+/** Review artifacts, each in its own normally scrollable tab. */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
     private val remove: (DiffNote) -> Unit,
@@ -57,13 +49,12 @@ internal class NoteCanvas(
     openNode: ((SummaryNode) -> Unit)? = null,
     /** Put a summary node's source on the canvas. Null shows the node's file by path like [showDiffCard]. */
     showNode: ((SummaryNode) -> Unit)? = null,
-) : JPanel(null), Disposable {
+) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
-    private val positions = mutableMapOf<DiffNoteKey, Point2D.Double>()
+    internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
+    private val pages = mutableMapOf<DiffNoteKey, JScrollPane>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
-    private val sizes = mutableMapOf<DiffNoteKey, Point2D.Double>()
-    private val resizeHandles = mutableMapOf<DiffNoteKey, JComponent>()
 
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
@@ -84,16 +75,12 @@ internal class NoteCanvas(
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
     private var focused: DiffNoteKey? = null
-    internal var zoom = 1.0
-        private set
-    private val origin = Point2D.Double()
-    var onZoomChanged: (Double) -> Unit = {}
+    private val zoom = 1.0
 
     init {
         minimumSize = Dimension(100, 100)
-        installNavigation(this)
-        toolTipText = "Wheel to zoom · Drag background or middle-drag to pan"
         background = UIUtil.getPanelBackground()
+        add(tabs, BorderLayout.CENTER)
     }
 
     fun showNotes(
@@ -123,27 +110,30 @@ internal class NoteCanvas(
         diffEditors.entries.removeIf { (key, editor) ->
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
         }
-        removeAll(); cards.clear()
-        if (notes.isEmpty() && sources.isEmpty() && diffs.isEmpty() && flows == null && summaries == null && topics == null) add(emptyState().also { installNavigation(it) })
+        val selected = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
+        val bodyScrolls = cards.mapValues { bodyScroll(it.value)?.viewport?.viewPosition?.let(::Point) }
+        val scrolls = pages.mapValues { Point(it.value.viewport.viewPosition) }
+        tabs.removeAll(); cards.clear(); pages.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
-        positions.keys.retainAll(notes.map { it.key }.toSet() + sourcesByKey.keys + diffsByKey.keys + listOfNotNull(flow?.let { FLOW_KEY }) +
-            listOfNotNull(flows?.let { FLOWS_KEY }, summaries?.let { SUMMARIES_KEY }, topics?.let { TOPICS_KEY }))
-        sizes.keys.retainAll(positions.keys)
-        resizeHandles.keys.retainAll(positions.keys)
-        // The overviews come first so a fresh canvas starts with them.
         val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
-        // Remembered cards keep their place; new ones fill the first free slot in reading order.
-        built.filterKeys { it in positions }.forEach { (paths, card) -> card.location = screen(positions.getValue(paths)) }
-        val placed = built.filterKeys { it in positions }.values.mapTo(mutableListOf()) { it.bounds }
-        built.filterKeys { it !in positions }.forEach { (paths, card) ->
-            card.location = freeSlot(card.size, placed)
-            positions[paths] = world(card.location)
-            placed += card.bounds
+        built.forEach { (key, card) ->
+            cards[key] = card
+            val page = page(card)
+            pages[key] = page
+            tabs.addTab(tabTitle(key), page)
+            tabs.setToolTipTextAt(tabs.tabCount - 1, key.paths.joinToString(", ").ifEmpty { tabTitle(key) })
+            bodyScrolls[key]?.let { position -> SwingUtilities.invokeLater {
+                if (cards[key] === card) bodyScroll(card)?.viewport?.viewPosition = position
+            } }
+            scrolls[key]?.let { position -> SwingUtilities.invokeLater {
+                if (pages[key] === page) page.viewport.viewPosition = position
+            } }
         }
-        built.forEach { (paths, card) -> cards[paths] = card; add(card); installNavigation(card) }
+        pages[selected]?.let { tabs.selectedComponent = it }
+        if (built.isEmpty()) tabs.addTab("Review", JBScrollPane(emptyState()))
         highlight(highlighted)
         revalidate(); repaint()
     }
@@ -154,7 +144,7 @@ internal class NoteCanvas(
         repaint()
     }
 
-    /** Brings a note card to the centre and outlines it briefly. */
+    /** Selects the note tab. */
     internal fun focusNote(note: DiffNote) {
         focusCard(note.key)
     }
@@ -165,7 +155,7 @@ internal class NoteCanvas(
 
     internal fun focusTopics() { focusCard(TOPICS_KEY) }
 
-    /** Brings a source block to the centre and outlines it briefly. */
+    /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
 
     internal fun focusSummaries() {
@@ -173,21 +163,63 @@ internal class NoteCanvas(
     }
 
     private fun focusCard(key: DiffNoteKey) {
-        val card = cards[key] ?: return
-        origin.setLocation(origin.x + width / 2.0 - card.bounds.centerX, origin.y + height / 2.0 - card.bounds.centerY)
+        val page = pages[key] ?: return
+        tabs.selectedComponent = page
         focused = key
-        showNotes(notes, sources, diffs, flows, summaries, topics)
-        cards[key]?.let { setComponentZOrder(it, 0) }
-        Timer(1500) { if (focused == key) { focused = null; highlight(highlighted) } }.apply { isRepeats = false }.start()
+        highlight(highlighted)
+    }
+
+    private fun tabTitle(key: DiffNoteKey): String = when (key) {
+        TOPICS_KEY -> "Topics"
+        SUMMARIES_KEY -> "Summaries"
+        FLOWS_KEY -> "Change flows"
+        FLOW_KEY -> "Symbol flow"
+        else -> {
+            val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
+            val source = sources.firstOrNull { it.key == key }
+            when {
+                source != null -> "Source · $path · ${source.range.side} · ${source.range.startLine}–${source.range.endLine}"
+                diffs.any { it.diffKey == key } -> "Diff · $path"
+                else -> "Note · $path" + (notes.firstOrNull { it.key == key }?.symbol?.let { " · $it" } ?: "")
+            }
+        }
+    }
+
+    private fun page(card: JPanel): JScrollPane {
+        val content = object : JPanel(BorderLayout()), Scrollable {
+            init { add(card, BorderLayout.CENTER) }
+            override fun getPreferredScrollableViewportSize() = preferredSize
+            override fun getScrollableUnitIncrement(r: Rectangle, orientation: Int, direction: Int) = scaled(16)
+            override fun getScrollableBlockIncrement(r: Rectangle, orientation: Int, direction: Int) =
+                if (orientation == SwingConstants.VERTICAL) r.height else r.width
+            override fun getScrollableTracksViewportWidth() = parent.width >= preferredSize.width
+            override fun getScrollableTracksViewportHeight() = parent.height >= preferredSize.height
+        }
+        return JBScrollPane(content).apply { border = null }
+    }
+
+    private fun bodyScroll(card: JPanel) =
+        (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as? JScrollPane
+
+    private fun replaceCard(key: DiffNoteKey, card: JPanel) {
+        val old = cards[key] ?: return
+        val container = old.parent ?: return
+        val horizontal = bodyScroll(old)?.horizontalScrollBar?.value
+        container.remove(old)
+        container.add(card, BorderLayout.CENTER)
+        cards[key] = card
+        highlight(highlighted)
+        container.revalidate(); container.repaint()
+        horizontal?.let { value -> SwingUtilities.invokeLater {
+            if (cards[key] === card) bodyScroll(card)?.horizontalScrollBar?.value = value
+        } }
     }
 
     private fun flowCard(flow: ChangeFlow): JPanel {
-        val width = cardWidth(FLOW_KEY, CARD_WIDTH)
+        val width = cardWidth(CARD_WIDTH)
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("Change flow · Verified calls between symbol notes").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -195,7 +227,6 @@ internal class NoteCanvas(
                     "Order follows the caller's source, not runtime; conditions and intermediate calls are not shown."
             }, BorderLayout.CENTER)
         }
-        dragBy(header, FLOW_KEY)
         val body = JPanel(VerticalLayout(scaled(6))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -203,16 +234,14 @@ internal class NoteCanvas(
         }
         card.add(header, BorderLayout.NORTH)
         card.add(scrollBody(body, width, scaled(MAX_BODY_HEIGHT)), BorderLayout.CENTER)
-        return prepareCard(FLOW_KEY, card, width)
+        return card
     }
 
     /** The change-flow graph; expanding or collapsing rebuilds only this card, in place. */
     private fun flowsCard(flows: ChangeFlows): JPanel {
-        val width = cardWidth(FLOWS_KEY, FLOWS_WIDTH)
+        val width = cardWidth(FLOWS_WIDTH)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("Change flows").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -235,7 +264,6 @@ internal class NoteCanvas(
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
-        dragBy(header, FLOWS_KEY)
         val actions = ChangeFlowActions(
             toggle = { key -> flowsView.toggle(key); refreshFlows() },
             focus = { node -> flowsView.focus(flows, node); refreshFlows() },
@@ -261,7 +289,7 @@ internal class NoteCanvas(
         val maxBody = scaled(MAX_FLOWS_HEIGHT)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
-            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(width, minOf(body.preferredSize.height, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             // The viewport has no size yet; restore the reading position after layout.
@@ -269,21 +297,13 @@ internal class NoteCanvas(
             verticalScrollBar.addAdjustmentListener { flowsScroll = it.value }
             SwingUtilities.invokeLater { verticalScrollBar.value = restore }
         }, BorderLayout.CENTER)
-        return prepareCard(FLOWS_KEY, card, width)
+        return card
     }
 
     private fun refreshFlows() {
         val flows = flows ?: return
-        val old = cards[FLOWS_KEY] ?: return
-        val index = components.indexOf(old)
         val card = flowsCard(flows)
-        card.location = old.location
-        remove(old)
-        add(card, index.coerceAtLeast(0))
-        cards[FLOWS_KEY] = card
-        installNavigation(card)
-        card.border = cardBorder(FLOWS_KEY == focused)
-        revalidate(); repaint()
+        replaceCard(FLOWS_KEY, card)
         flowsView.reveal?.let { node ->
             flowsView.reveal = null
             SwingUtilities.invokeLater {
@@ -302,12 +322,10 @@ internal class NoteCanvas(
         val topics = content.topics
         val outline = topicOutline(topics)
         val hierarchy = topicsView.mode == ChangeTopicsMode.HIERARCHY
-        val width = cardWidth(TOPICS_KEY,
+        val width = cardWidth(
             if (hierarchy) HierarchyColumnsPanel.defaultWidth(outline.depth) else ChangeTopicsPanel.defaultWidth(outline.depth))
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("${vocabulary.topicsTitle} · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -359,7 +377,6 @@ internal class NoteCanvas(
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
-        dragBy(header, TOPICS_KEY)
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -394,7 +411,7 @@ internal class NoteCanvas(
                 revealIn(body, target)
             }
         }, BorderLayout.CENTER)
-        return prepareCard(TOPICS_KEY, card, width)
+        return card
     }
 
     /** Level n shows topic levels 1..n+1 and folds the rest, as in the article hierarchy; the last level shows every file. */
@@ -434,12 +451,10 @@ internal class NoteCanvas(
     private fun summariesCard(content: SummariesCard): JPanel {
         val tree = content.summaries.tree
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
-        val width = cardWidth(SUMMARIES_KEY,
+        val width = cardWidth(
             if (hierarchy) HierarchyColumnsPanel.defaultWidth(ChangeSummariesViewState.branchLevels(tree)) else SUMMARIES_WIDTH)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel(vocabulary.summariesTitle).apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -479,7 +494,6 @@ internal class NoteCanvas(
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
-        dragBy(header, SUMMARIES_KEY)
         val actions = ChangeSummaryActions(
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries() },
             select = { identity -> summariesView.select(identity); refreshSummaries() },
@@ -508,7 +522,7 @@ internal class NoteCanvas(
             border = null; isOpaque = false; viewport.isOpaque = false
             // A deep hierarchy may scroll sideways; leave room for that scroll bar.
             val sideways = if (hierarchy && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
-            if (!hierarchy) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            if (!hierarchy) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
@@ -526,7 +540,7 @@ internal class NoteCanvas(
                 revealIn(body, target)
             }
         }, BorderLayout.CENTER)
-        return prepareCard(SUMMARIES_KEY, card, width)
+        return card
     }
 
     /** Scrolls a traced match into view: its card in a hierarchy, else its outline row. */
@@ -600,86 +614,24 @@ internal class NoteCanvas(
 
     private fun refreshSummaries() {
         val content = summaries ?: return
-        val old = cards[SUMMARIES_KEY] ?: return
-        val index = components.indexOf(old)
         val card = summariesCard(content)
-        card.location = old.location
-        remove(old)
-        add(card, index.coerceAtLeast(0))
-        cards[SUMMARIES_KEY] = card
-        installNavigation(card)
-        card.border = cardBorder(SUMMARIES_KEY == focused)
-        revalidate(); repaint()
+        replaceCard(SUMMARIES_KEY, card)
     }
 
     private fun descendantsOf(component: Container): List<Component> =
         component.components.flatMap { listOf(it) + ((it as? Container)?.let(::descendantsOf) ?: emptyList()) }
 
-    private fun cardWidth(key: DiffNoteKey, default: Int) =
-        sizes[key]?.let { (it.x * zoom).roundToInt() } ?: scaled(default)
+    private fun cardWidth(default: Int) = scaled(default)
 
     private fun scrollBody(body: JComponent, width: Int, maxHeight: Int) = JBScrollPane(body).apply {
         border = null; isOpaque = false; viewport.isOpaque = false
-        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         preferredSize = Dimension(width, minOf(body.preferredSize.height, maxHeight))
         verticalScrollBar.unitIncrement = scaled(16)
-    }
-
-    /** The same grip survives rebuilding width-dependent content during a drag. */
-    private fun prepareCard(key: DiffNoteKey, card: JPanel, width: Int): JPanel {
-        val grip = resizeHandles.getOrPut(key) {
-            object : JComponent() {
-                override fun paintComponent(g: java.awt.Graphics) {
-                    g.color = UIUtil.getContextHelpForeground()
-                    for (inset in listOf(4, 8, 12))
-                        g.drawLine(this.width - JBUI.scale(inset), height - JBUI.scale(3),
-                            this.width - JBUI.scale(3), height - JBUI.scale(inset))
-                }
-            }.apply {
-                name = "Resize block"
-                toolTipText = "Drag to resize block"
-                cursor = Cursor.getPredefinedCursor(Cursor.SE_RESIZE_CURSOR)
-                val resize = object : MouseAdapter() {
-                    private var anchor: Point? = null
-                    private var initial: Dimension? = null
-
-                    override fun mousePressed(e: MouseEvent) {
-                        if (!SwingUtilities.isLeftMouseButton(e)) return
-                        anchor = SwingUtilities.convertPoint(this@apply, e.point, this@NoteCanvas)
-                        initial = cards[key]?.size
-                        cards[key]?.let { this@NoteCanvas.setComponentZOrder(it, 0) }
-                    }
-
-                    override fun mouseDragged(e: MouseEvent) {
-                        val start = anchor ?: return
-                        val size = initial ?: return
-                        val now = SwingUtilities.convertPoint(this@apply, e.point, this@NoteCanvas)
-                        sizes[key] = Point2D.Double(
-                            maxOf(scaled(280), size.width + now.x - start.x) / zoom,
-                            maxOf(scaled(140), size.height + now.y - start.y) / zoom,
-                        )
-                        refreshCard(key)
-                    }
-
-                    override fun mouseReleased(e: MouseEvent) { anchor = null; initial = null }
-                }
-                addMouseListener(resize)
-                addMouseMotionListener(resize)
-            }
-        }
-        grip.preferredSize = Dimension(scaled(18), scaled(18))
-        card.add(JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(grip, BorderLayout.EAST)
-        }, BorderLayout.SOUTH)
-        card.size = sizes[key]?.let { Dimension((it.x * zoom).roundToInt(), (it.y * zoom).roundToInt()) }
-            ?: Dimension(width, card.preferredSize.height)
-        return card
+        horizontalScrollBar.unitIncrement = scaled(16)
     }
 
     private fun refreshCard(key: DiffNoteKey) {
-        val old = cards[key] ?: return
-        val index = components.indexOf(old)
+        if (key !in cards) return
         val card = when (key) {
             FLOWS_KEY -> flows?.let(::flowsCard)
             TOPICS_KEY -> topics?.let(::topicsCard)
@@ -689,27 +641,13 @@ internal class NoteCanvas(
                 ?: sources.firstOrNull { it.key == key }?.let(::sourceCard)
                 ?: diffs.firstOrNull { it.diffKey == key }?.let(::diffCard)
         } ?: return
-        card.location = old.location
-        remove(old)
-        add(card, index.coerceAtLeast(0))
-        cards[key] = card
-        installNavigation(card)
-        highlight(highlighted)
-        // Lay out the retained grip before the next drag event is converted to canvas coordinates.
-        fun layout(component: Container) {
-            component.doLayout()
-            component.components.filterIsInstance<Container>().forEach(::layout)
-        }
-        layout(card)
-        revalidate(); repaint()
+        replaceCard(key, card)
     }
 
     private fun diffCard(file: ReviewFile): JPanel {
-        val width = cardWidth(file.diffKey, 720)
+        val width = cardWidth(720)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.empty(8, 12, 8, 8)
             add(JLabel("Diff snapshot · ${file.status}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -718,7 +656,6 @@ internal class NoteCanvas(
                 removeDiff(file.path)
             }.apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
         }
-        dragBy(header, file.diffKey)
         val editor = diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }
         editor.resizeFor(width - scaled(4), zoom)
         val card = JPanel(BorderLayout()).apply {
@@ -730,15 +667,14 @@ internal class NoteCanvas(
             }, BorderLayout.NORTH)
             add(editor, BorderLayout.CENTER)
         }
-        return prepareCard(file.diffKey, card, width)
+        return card
     }
 
     private fun sourceCard(block: DiffSourceBlock): JPanel {
         val range = block.range
-        val width = cardWidth(block.key, 640)
+        val width = cardWidth(640)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
             border = JBUI.Borders.empty(8, 12, 8, 8)
             add(JLabel("Source snapshot · ${range.side} · Lines ${range.startLine}–${range.endLine}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -747,7 +683,6 @@ internal class NoteCanvas(
                 removeSource(range)
             }, BorderLayout.EAST)
         }
-        dragBy(header, block.key)
         val editor = editors.getOrPut(block.key) { DiffSourceEditor(block, project) }
         editor.resizeFor(width - scaled(4), zoom)
         val card = JPanel(BorderLayout()).apply {
@@ -759,16 +694,14 @@ internal class NoteCanvas(
             }, BorderLayout.NORTH)
             add(editor, BorderLayout.CENTER)
         }
-        return prepareCard(block.key, card, width)
+        return card
     }
 
     private fun card(note: DiffNote): JPanel {
-        val width = cardWidth(note.key, CARD_WIDTH)
+        val width = cardWidth(CARD_WIDTH)
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
-            cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            toolTipText = "Drag to move"
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("${files(note.paths.size)} · LLM interpretation").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -776,7 +709,6 @@ internal class NoteCanvas(
             add(InplaceButton(IconButton("Remove note", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove(note) }
                 .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
         }
-        dragBy(header, note.key)
         val textWidth = width - scaled(2 * PADDING + 4)
         val body = JPanel(VerticalLayout(scaled(10))).apply {
             isOpaque = false
@@ -802,7 +734,7 @@ internal class NoteCanvas(
         card.add(header, BorderLayout.NORTH)
         val maxBody = scaled(MAX_BODY_HEIGHT)
         card.add(scrollBody(body, width, maxBody), BorderLayout.CENTER)
-        return prepareCard(note.key, card, width)
+        return card
     }
 
     /** File name as a link, its folder dimmed next to it; the full path stays in the tooltip. */
@@ -835,48 +767,6 @@ internal class NoteCanvas(
         }
     }
 
-    private fun dragBy(handle: JComponent, paths: DiffNoteKey) {
-        val drag = object : MouseAdapter() {
-            var anchor: Point? = null
-            override fun mousePressed(e: MouseEvent) {
-                if (!SwingUtilities.isLeftMouseButton(e)) return
-                anchor = SwingUtilities.convertPoint(e.component, e.point, this@NoteCanvas)
-                cards[paths]?.let { setComponentZOrder(it, 0); repaint() }
-            }
-            override fun mouseReleased(e: MouseEvent) { anchor = null }
-            override fun mouseDragged(e: MouseEvent) {
-                val before = anchor ?: return
-                val now = SwingUtilities.convertPoint(e.component, e.point, this@NoteCanvas)
-                val target = cards[paths] ?: return
-                target.setLocation(target.x + now.x - before.x, target.y + now.y - before.y)
-                positions[paths] = world(target.location)
-                anchor = now
-                repaint()
-            }
-        }
-        fun attach(component: Component) {
-            if (component is InplaceButton) return
-            component.addMouseListener(drag); component.addMouseMotionListener(drag)
-            if (component is Container) component.components.forEach(::attach)
-        }
-        attach(handle)
-    }
-
-    private fun freeSlot(size: Dimension, placed: List<Rectangle>): Point {
-        val gap = scaled(GAP)
-        val visible = width.takeIf { it > 0 } ?: scaled(1000)
-        val columns = maxOf(1, (visible - gap) / (size.width + gap))
-        var y = gap
-        while (true) {
-            for (column in 0 until columns) {
-                val candidate = Rectangle(origin.x.roundToInt() + gap + column * (size.width + gap), origin.y.roundToInt() + y, size.width, size.height)
-                val padded = Rectangle(candidate).apply { grow(gap / 2, gap / 2) }
-                if (placed.none { it.intersects(padded) }) return candidate.location
-            }
-            y += scaled(8)
-        }
-    }
-
     private fun emptyState(): JComponent = JPanel(VerticalLayout(scaled(6))).apply {
         isOpaque = false
         add(JLabel(vocabulary.canvasHeading).apply { font = scaledFont(JBFont.label().asBold().biggerOn(2f)) })
@@ -893,80 +783,6 @@ internal class NoteCanvas(
 
     private fun scaled(value: Int) = (JBUI.scale(value) * zoom).roundToInt().coerceAtLeast(1)
     private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
-    private fun screen(point: Point2D.Double) = Point((point.x * zoom + origin.x).roundToInt(), (point.y * zoom + origin.y).roundToInt())
-    private fun world(point: Point) = Point2D.Double((point.x - origin.x) / zoom, (point.y - origin.y) / zoom)
-
-    internal fun zoomAt(value: Double, anchor: Point = Point(width / 2, height / 2)) {
-        val next = value.coerceIn(0.25, 2.5)
-        if (next == zoom) return
-        val fixed = world(anchor)
-        zoom = next
-        origin.setLocation(anchor.x - fixed.x * zoom, anchor.y - fixed.y * zoom)
-        showNotes(notes, sources, diffs, flows, summaries, topics)
-        onZoomChanged(zoom)
-    }
-
-    fun resetView() {
-        zoom = 1.0
-        origin.setLocation(0.0, 0.0)
-        showNotes(notes, sources, diffs, flows, summaries, topics)
-        onZoomChanged(zoom)
-    }
-
-    fun fitView() {
-        if (cards.isEmpty() || width <= 0 || height <= 0) { resetView(); return }
-        val bounds = cards.values.map { it.bounds }.reduce { a, b -> a.union(b) }
-        val center = world(Point(bounds.centerX.roundToInt(), bounds.centerY.roundToInt()))
-        val margin = JBUI.scale(GAP) * 2
-        zoom = (zoom * minOf((width - margin).toDouble() / bounds.width,
-            (height - margin).toDouble() / bounds.height)).coerceIn(0.25, 2.5)
-        origin.setLocation(width / 2.0 - center.x * zoom, height / 2.0 - center.y * zoom)
-        showNotes(notes, sources, diffs, flows, summaries, topics)
-        onZoomChanged(zoom)
-    }
-
-    private fun installNavigation(component: Component) {
-        // Native editor owns selection, wheel scrolling and mouse gestures within its body.
-        if (component is DiffSourceEditor || component is DiffFileEditor) return
-        if (component is JComponent) {
-            if (component.getClientProperty("noteCanvas.navigation") == true) return
-            component.putClientProperty("noteCanvas.navigation", true)
-        }
-        val navigation = object : MouseAdapter() {
-            private var anchor: Point? = null
-            override fun mousePressed(e: MouseEvent) {
-                if (SwingUtilities.isMiddleMouseButton(e) ||
-                    (cards.values.none { SwingUtilities.isDescendingFrom(e.component, it) } && SwingUtilities.isLeftMouseButton(e))) {
-                    anchor = SwingUtilities.convertPoint(e.component, e.point, this@NoteCanvas)
-                    this@NoteCanvas.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                }
-            }
-            override fun mouseReleased(e: MouseEvent) {
-                anchor = null
-                this@NoteCanvas.cursor = Cursor.getDefaultCursor()
-            }
-            override fun mouseDragged(e: MouseEvent) {
-                val before = anchor ?: return
-                val now = SwingUtilities.convertPoint(e.component, e.point, this@NoteCanvas)
-                origin.setLocation(origin.x + now.x - before.x, origin.y + now.y - before.y)
-                components.forEach { it.setLocation(it.x + now.x - before.x, it.y + now.y - before.y) }
-                anchor = now
-                repaint()
-            }
-            override fun mouseWheelMoved(e: MouseWheelEvent) {
-                zoomAt(zoom * 1.12.pow(-e.preciseWheelRotation),
-                    SwingUtilities.convertPoint(e.component, e.point, this@NoteCanvas))
-                e.consume()
-            }
-        }
-        component.addMouseListener(navigation)
-        component.addMouseMotionListener(navigation)
-        // Leave wheel scrolling inside long notes to their scroll pane.
-        if (component !is JScrollPane && SwingUtilities.getAncestorOfClass(JScrollPane::class.java, component) == null)
-            component.addMouseWheelListener(navigation)
-        if (component is Container) component.components.forEach(::installNavigation)
-    }
-
     override fun dispose() {
         summariesTrace.stop()
         topicsTrace.stop()

@@ -139,7 +139,7 @@ class ChangeSummaryTest {
         val comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "main", "topic"), "a".repeat(40), "b".repeat(40))
         state.update(state.snapshot.copy(comparison = comparison))
         assertEquals(0, state.summaries.count)
-        // Clear canvas leaves summaries alone; they are not canvas cards.
+        // Clear tabs leaves summaries alone; they are not canvas cards.
         state.summarize(state.revision, mapOf(state.summaries.tree.byLocation("docs/c.md").id to "C."))
         state.clearNotes()
         assertEquals(1, state.summaries.count)

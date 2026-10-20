@@ -4,7 +4,7 @@ import com.intellij.icons.AllIcons
 import javax.swing.Icon
 
 /**
- * The words of the review canvas, so the same cards serve a diff and a whole code base. [DIFF] holds the exact strings of
+ * The words of the review tabs, so the same cards serve a diff and a whole code base. [DIFF] holds the exact strings of
  * Diff Review; [CODE] speaks of source files and lines instead of changes.
  */
 internal data class ReviewVocabulary(
@@ -44,16 +44,13 @@ internal data class ReviewVocabulary(
     companion object {
         val DIFF = ReviewVocabulary(
             canvasTitle = "Diff Review",
-            canvasHeading = "Diff review canvas",
+            canvasHeading = "Diff review tabs",
             canvasHints = listOf(
                 "Select files on the left to inspect changes.",
                 "Click Description or type /description below to add notes.",
                 "Click Flows or type /flows to map the change from overview to code.",
                 "Click Summaries or type /summaries to read the change from the whole down to each file.",
                 "Click Topics or type /topics to read every diff as one document, grouped by topic, with each file's summary.",
-                "Drag a block's header to move it or its bottom-right grip to resize it.",
-                "Drag the background to pan.",
-                "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
             ),
             summariesTitle = "Change summaries · From the whole change down to each file",
             summariesTooltip = "The tree comes from the changed paths. Each summary is the assistant's interpretation, written from the files up to the root.",
@@ -69,7 +66,7 @@ internal data class ReviewVocabulary(
             noFiles = "No changed files",
             openLabel = "View diff",
             openTooltip = { path -> "View changes in $path" },
-            showOnCanvas = "Show diff on canvas",
+            showOnCanvas = "Show diff in tab",
             showOnCanvasIcon = AllIcons.Actions.Diff,
             describeFile = { file ->
                 val review = file as? ReviewFile
@@ -82,14 +79,11 @@ internal data class ReviewVocabulary(
 
         val CODE = ReviewVocabulary(
             canvasTitle = "Code Review",
-            canvasHeading = "Code review canvas",
+            canvasHeading = "Code review tabs",
             canvasHints = listOf(
                 "Ask about the code in scope; answers cite files and lines.",
                 "Click Summaries or type /summaries to read the code from the whole scope down to each file.",
                 "Click Topics or type /topics to group the files by responsibility, with each file's summary.",
-                "Drag a block's header to move it or its bottom-right grip to resize it.",
-                "Drag the background to pan.",
-                "Use the mouse wheel to zoom, or middle-drag anywhere to pan.",
             ),
             summariesTitle = "Code summaries · From the whole scope down to each file",
             summariesTooltip = "The tree comes from the folders in scope. Each summary is the assistant's interpretation, written from the code up to the root.",
@@ -104,7 +98,7 @@ internal data class ReviewVocabulary(
             noFiles = "No files in scope",
             openLabel = "Open file",
             openTooltip = { path -> "Open $path in the editor" },
-            showOnCanvas = "Show source on canvas",
+            showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
             documentMode = false,

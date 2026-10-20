@@ -50,9 +50,9 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
             assertTrue(descendants(canvas).none { it is ChangeTopicsPanel })
-            val buttons = descendants(canvas).filterIsInstance<InplaceButton>().filter { it.toolTipText == "Show source on canvas" }
+            val buttons = descendants(canvas).filterIsInstance<InplaceButton>().filter { it.toolTipText == "Show source in tab" }
             assertEquals(2, buttons.size)
-            assertTrue(descendants(canvas).filterIsInstance<InplaceButton>().none { it.toolTipText == "Show diff on canvas" })
+            assertTrue(descendants(canvas).filterIsInstance<InplaceButton>().none { it.toolTipText == "Show diff in tab" })
             val link = descendants(canvas).filterIsInstance<ActionLink>().first { it.text == "auth.kt" }
             assertEquals("Open src/auth.kt in the editor", link.toolTipText)
             link.doClick()
@@ -75,7 +75,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
             val card = panel.components.single { it.name == "file:lib/c.kt" } as Container
             assertTrue(descendants(card).filterIsInstance<javax.swing.JLabel>().any { it.text == "lib · 420 lines" })
-            assertTrue(descendants(card).filterIsInstance<InplaceButton>().any { it.toolTipText == "Show source on canvas" })
+            assertTrue(descendants(card).filterIsInstance<InplaceButton>().any { it.toolTipText == "Show source in tab" })
             descendants(card).filterIsInstance<ActionLink>().single().doClick()
             assertEquals(listOf("file:lib/c.kt"), opened.map { it.identity })
         } finally { canvas.dispose() }

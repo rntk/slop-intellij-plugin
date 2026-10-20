@@ -69,7 +69,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         try {
             tab.update(codeSnapshot(codeFile("src/a.kt", "val a = 1\n")))
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
-            assertTrue(buttons.containsAll(listOf("Summaries", "Topics", "Open canvas", "Clear canvas")))
+            assertTrue(buttons.containsAll(listOf("Summaries", "Topics", "Open review", "Clear tabs")))
             assertFalse(buttons.any { it == "Description" || it == "Flows" })
             assertTrue(descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }.isEnabled)
         } finally { Disposer.dispose(tab) }
