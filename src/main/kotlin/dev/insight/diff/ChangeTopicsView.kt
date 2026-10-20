@@ -101,6 +101,9 @@ internal class ChangeTopicsViewState(
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
 
+    /** Document mode keeps every diff visible and limits the rail to the picked levels. */
+    fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)
+
     /** A node is on screen when no topic above it is folded; [tree] is the reading tree, see [showTrace]. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean = { node ->
         generateSequence(node.parent) { tree[it].parent }.map(tree::get)
@@ -187,7 +190,10 @@ internal abstract class DocumentColumnsPanel(
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
     private var hovered: RailItem? = null
     protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+    protected fun cardScaled(n: Int) = cardScaledBy(zoom, n)
     protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    /** Match the example canvas's inverse scale: card text stays legible and grows gently on zoom out. */
+    protected fun cardFont(base: Font) = base.deriveFont((base.size2D * cardScale(zoom)).toFloat())
     protected val help: Color get() = UIUtil.getContextHelpForeground()
 
     init { isOpaque = false }
@@ -213,20 +219,39 @@ internal abstract class DocumentColumnsPanel(
             applyActive()
             return
         }
-        val railWidth = railWidth(depth, zoom)
-        val summaryWidth = scaled(SUMMARY_WIDTH)
+        val railTitleMetrics = getFontMetrics(cardFont(JBFont.label().asBold()))
+        val summaryMetrics = getFontMetrics(cardFont(JBFont.label()))
+        val wordBoundary = Regex("\\s+")
+        fun longestWord(value: String, metrics: java.awt.FontMetrics): Int =
+            value.split(wordBoundary).maxOfOrNull(metrics::stringWidth) ?: 0
+        fun titleWidth(item: RailItem) = longestWord(item.title, railTitleMetrics) +
+            (item.icon?.let { it.iconWidth + cardScaled(4) } ?: 0)
+        val railInsets = 2 + cardScaled(RAIL_ACCENT) + cardScaled(8) + cardScaled(6)
+        val cardWidth = maxOf(cardScaled(RAIL_CARD_WIDTH),
+            (items.maxOfOrNull(::titleWidth) ?: 0) + railInsets + JBUI.scale(2))
+        val summaryWordWidth = (summaries.values.filterNotNull() + items.mapNotNull { it.summary })
+            .maxOfOrNull { longestWord(it, summaryMetrics) } ?: 0
+        val summaryTitleWidth = items.maxOfOrNull(::titleWidth) ?: 0
+        val summaryWidth = maxOf(cardScaled(SUMMARY_WIDTH),
+            maxOf(summaryWordWidth, summaryTitleWidth) + cardScaled(NOTE_INSET) + cardScaled(2) + JBUI.scale(2))
+        val railWidth = if (depth <= 0) 0 else depth * cardWidth + (depth - 1) * scaled(RAIL_GAP)
         this.summaryWidth = summaryWidth
         val gap = scaled(COLUMN_GAP)
         val docWidth = (width - summaryWidth - railWidth - 2 * gap).coerceAtLeast(scaled(MIN_DOC_WIDTH))
         val docX = summaryWidth + gap
         val railX = docX + docWidth + gap
+        val preparedRail = items.map { it to railCard(it, cardWidth) }
+        val rowMinimums = IntArray(files.size)
+        preparedRail.forEach { (item, component) ->
+            rowMinimums[item.first] = maxOf(rowMinimums[item.first], component.preferredSize.height)
+        }
         tops = IntArray(files.size)
         bottoms = IntArray(files.size)
         var y = 0
         files.forEachIndexed { index, file ->
             val section = section(file, docWidth)
             val note = note(file, summaries[file.path], missingSummary, summaryWidth)
-            val height = maxOf(section.preferredSize.height, note.preferredSize.height)
+            val height = maxOf(section.preferredSize.height, note.preferredSize.height, rowMinimums[index])
             section.setBounds(docX, y, docWidth, height)
             val column = noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) }
             add(section); add(column)
@@ -234,11 +259,9 @@ internal abstract class DocumentColumnsPanel(
             tops[index] = y; bottoms[index] = y + height
             y += height + scaled(SECTION_GAP)
         }
-        val cardWidth = scaled(RAIL_CARD_WIDTH)
         val step = cardWidth + scaled(RAIL_GAP)
         // The leaf level sits next to the diffs; the broadest level is outermost, as in the article canvas.
-        for (item in items) {
-            val component = railCard(item, cardWidth)
+        for ((item, component) in preparedRail) {
             component.setBounds(railX + (depth - 1 - item.level) * step, tops[item.first], cardWidth, bottoms[item.last] - tops[item.first])
             add(component)
             rail += item to component
@@ -286,22 +309,22 @@ internal abstract class DocumentColumnsPanel(
         cardSummary = item to column
     }
 
-    private fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(scaled(4))).apply {
+    private fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(cardScaled(4))).apply {
         background = UIUtil.getListBackground()
         border = noteBorder(true)
-        val inner = width - scaled(NOTE_INSET) - scaled(2)
+        val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
         val icon = item.icon
-        val title = text(item.title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0, font(JBFont.label().asBold()), null)
-        add(if (icon == null) title else JPanel(BorderLayout(scaled(4), 0)).apply {
+        val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0, cardFont(JBFont.label().asBold()), null)
+        add(if (icon == null) title else JPanel(BorderLayout(cardScaled(4), 0)).apply {
             isOpaque = false
             add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
             add(title, BorderLayout.CENTER)
         })
         val files = item.last - item.first + 1
-        add(JLabel("${item.summaryLabel} · ${if (files == 1) "1 file" else "$files files"}").apply { font = font(JBFont.small()); foreground = help })
+        add(JLabel("${item.summaryLabel} · ${if (files == 1) "1 file" else "$files files"}").apply { font = cardFont(JBFont.small()); foreground = help })
         val summary = item.summary
-        add(if (summary != null) text(summary, inner, font(JBFont.label()), null)
-            else text(item.missingSummary, inner, italic(JBFont.small()), help))
+        add(if (summary != null) text(summary, inner, cardFont(JBFont.label()), null)
+            else text(item.missingSummary, inner, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help))
         toolTipText = "Summary of ${item.tooltip} · LLM interpretation"
         preferredSize = Dimension(width, preferredSize.height)
     }
@@ -336,7 +359,7 @@ internal abstract class DocumentColumnsPanel(
             add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
             add(Box.createHorizontalStrut(scaled(6)))
             add(ActionLink(name) { openFile(file) }.apply {
-                font = font(JBFont.label().asBold()); toolTipText = "View changes in ${file.path}"
+                font = cardFont(JBFont.label().asBold()); toolTipText = "View changes in ${file.path}"
                 minimumSize = Dimension(0, preferredSize.height)
             })
             val details = listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }, file.status,
@@ -362,9 +385,9 @@ internal abstract class DocumentColumnsPanel(
     private fun note(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent = JPanel(BorderLayout()).apply {
         isOpaque = false
         border = noteBorder(false)
-        val inner = width - scaled(NOTE_INSET) - scaled(2)
-        add(if (summary != null) text(summary, inner, font(JBFont.label()), null)
-            else text(missingSummary, inner, italic(JBFont.small()), help), BorderLayout.CENTER)
+        val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
+        add(if (summary != null) text(summary, inner, cardFont(JBFont.label()), null)
+            else text(missingSummary, inner, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help), BorderLayout.CENTER)
         toolTipText = "Summary of ${file.path} · LLM interpretation"
         preferredSize = Dimension(width, preferredSize.height)
     }
@@ -374,19 +397,19 @@ internal abstract class DocumentColumnsPanel(
         isOpaque = true
         background = UIUtil.getListBackground()
         border = railBorder(item, false)
-        val inner = width - scaled(RAIL_ACCENT) - scaled(14) - 2
+        val inner = width - cardScaled(RAIL_ACCENT) - cardScaled(8) - cardScaled(6) - 2
         val files = item.last - item.first + 1
         val icon = item.icon
-        val title = text(item.title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0,
-            if (item.placeholder) italic(JBFont.label()) else font(JBFont.label().asBold()), if (item.placeholder) help else null)
-        val heading = JPanel(VerticalLayout(scaled(2))).apply {
+        val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0,
+            if (item.placeholder) cardFont(JBFont.label()).deriveFont(Font.ITALIC) else cardFont(JBFont.label().asBold()), if (item.placeholder) help else null)
+        val heading = JPanel(VerticalLayout(cardScaled(2))).apply {
             isOpaque = false
-            add(if (icon == null) title else JPanel(BorderLayout(scaled(4), 0)).apply {
+            add(if (icon == null) title else JPanel(BorderLayout(cardScaled(4), 0)).apply {
                 isOpaque = false
                 add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
                 add(title, BorderLayout.CENTER)
             })
-            add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+            add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = cardFont(JBFont.small()); foreground = help })
         }
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
@@ -416,14 +439,14 @@ internal abstract class DocumentColumnsPanel(
 
     /** A left rule beside the summary; both states keep the same insets so the text never shifts. */
     private fun noteBorder(active: Boolean): Border? = JBUI.Borders.compound(
-        MatteBorder(0, scaled(2), 0, 0, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
-        EmptyBorder(scaled(2), scaled(NOTE_INSET), scaled(2), 0),
+        MatteBorder(0, cardScaled(2), 0, 0, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
+        EmptyBorder(cardScaled(2), cardScaled(NOTE_INSET), cardScaled(2), 0),
     )
 
     private fun railBorder(item: RailItem, active: Boolean): Border? = JBUI.Borders.compound(
         MatteBorder(1, 1, 1, 1, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
-        MatteBorder(0, scaled(RAIL_ACCENT), 0, 0, item.family?.let(::accent) ?: JBColor.border()),
-        EmptyBorder(scaled(6), scaled(8), scaled(6), scaled(6)),
+        MatteBorder(0, cardScaled(RAIL_ACCENT), 0, 0, item.family?.let(::accent) ?: JBColor.border()),
+        EmptyBorder(cardScaled(6), cardScaled(8), cardScaled(6), cardScaled(6)),
     )
 
     private fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
@@ -435,22 +458,30 @@ internal abstract class DocumentColumnsPanel(
     }
 
     companion object {
-        const val SUMMARY_WIDTH = 240
+        const val SUMMARY_WIDTH = 418
         const val MIN_DOC_WIDTH = 360
         const val DOC_WIDTH = 620
         const val COLUMN_GAP = 16
         const val SECTION_GAP = 12
-        const val RAIL_CARD_WIDTH = 150
+        const val RAIL_CARD_WIDTH = 240
         const val RAIL_GAP = 6
         const val RAIL_ACCENT = 4
         const val NOTE_INSET = 10
 
         private fun scaledBy(zoom: Double, n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+        /** Card geometry and typography must grow together, including during zoom out. */
+        private fun cardScale(zoom: Double) = maxOf(zoom, 1.25 - 0.25 * zoom)
+        private fun cardScaledBy(zoom: Double, n: Int) = scaledBy(cardScale(zoom), n)
         fun railWidth(depth: Int, zoom: Double) =
-            if (depth <= 0) 0 else depth * scaledBy(zoom, RAIL_CARD_WIDTH) + (depth - 1) * scaledBy(zoom, RAIL_GAP)
+            if (depth <= 0) 0 else depth * cardScaledBy(zoom, RAIL_CARD_WIDTH) + (depth - 1) * scaledBy(zoom, RAIL_GAP)
         /** Unscaled width that fits the summaries, a readable diff column and every rail level. */
         fun defaultWidth(depth: Int) = SUMMARY_WIDTH + DOC_WIDTH + 2 * COLUMN_GAP +
             maxOf(depth, 1) * RAIL_CARD_WIDTH + (maxOf(depth, 1) - 1) * RAIL_GAP
+        fun defaultWidth(depth: Int, zoom: Double): Int {
+            val levels = maxOf(depth, 1)
+            return cardScaledBy(zoom, SUMMARY_WIDTH) + scaledBy(zoom, DOC_WIDTH + 2 * COLUMN_GAP) +
+                levels * cardScaledBy(zoom, RAIL_CARD_WIDTH) + (levels - 1) * scaledBy(zoom, RAIL_GAP)
+        }
 
         /** One hue per top-level branch, so a subsystem reads as one family down the rail. */
         private val ACCENTS = listOf(
@@ -480,11 +511,11 @@ internal class ChangeTopicsPanel(
     init {
         state.update(outline)
         // Files awaiting a topic still get a placeholder in the leaf column.
-        val depth = maxOf(outline.depth, if (outline.pending != null) 1 else 0)
+        val depth = maxOf(state.railDepth(outline), if (outline.pending != null) 1 else 0)
         // A topic reads its own summary, else the summary of exactly its files, as in the hierarchy.
         val reading = card.reading
         val topicTexts = reading.tree.nodes.mapNotNull { node -> reading.text(node.id)?.let { node.identity to it } }.toMap()
-        val items = outline.nodes.map { node ->
+        val items = outline.nodes.filter { it.level < depth }.map { node ->
             RailItem(
                 key = "${node.level}:${node.identity}",
                 name = "topic:${node.level}:${node.identity}",
@@ -523,6 +554,7 @@ internal class ChangeTopicsPanel(
     companion object {
         fun railWidth(depth: Int, zoom: Double) = DocumentColumnsPanel.railWidth(depth, zoom)
         fun defaultWidth(depth: Int) = DocumentColumnsPanel.defaultWidth(depth)
+        fun defaultWidth(depth: Int, zoom: Double) = DocumentColumnsPanel.defaultWidth(depth, zoom)
         internal fun accent(topLevel: String): Color = DocumentColumnsPanel.accent(topLevel)
     }
 }

@@ -66,6 +66,181 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testDocumentZoomChangesGeometryAndKeepsCardTextReadable() {
+        val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
+            "@@ -1 +1 @@\n-old\n+new\n", "1")
+        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
+        val canvas = canvas().apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false))
+            layoutTree(canvas)
+            fun document() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun title() = descendants(document()).filterIsInstance<javax.swing.JTextArea>().first { it.text == "Feature" }
+            val originalWidth = document().preferredSize.width
+            val originalFont = title().font.size2D
+            val originalRailWidth = document().components.single { it.name == "topic:1:product > feature" }.width
+            val originalSummaryWidth = document().components.single { it.name == "summary:src/feature.kt" }.width
+            val originalDiffWidth = document().components.single { it.name == "file:src/feature.kt" }.width
+            (descendants(canvas).first { it.name == "document-zoom-out" } as javax.swing.JButton).doClick()
+            layoutTree(canvas)
+            assertTrue(document().preferredSize.width < originalWidth)
+            assertTrue(title().font.size2D >= originalFont)
+            assertTrue(document().components.single { it.name == "topic:1:product > feature" }.width > originalRailWidth)
+            assertTrue(document().components.single { it.name == "summary:src/feature.kt" }.width > originalSummaryWidth)
+            assertTrue(document().components.single { it.name == "file:src/feature.kt" }.width < originalDiffWidth)
+            assertEquals("83%", (descendants(canvas).first { it.name == "document-zoom-level" } as JLabel).text)
+            (descendants(canvas).first { it.name == "document-zoom-reset" } as javax.swing.JButton).doClick()
+            layoutTree(canvas)
+            assertEquals(originalWidth, document().preferredSize.width)
+            val title = title()
+            title.dispatchEvent(java.awt.event.MouseWheelEvent(title, MouseEvent.MOUSE_WHEEL, 1,
+                java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
+                java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, -1))
+            assertEquals("115%", (descendants(canvas).first { it.name == "document-zoom-level" } as JLabel).text)
+        } finally { canvas.dispose() }
+    }
+
+    fun testDocumentZoomReachesTenPercentWithButtonsAndWheel() {
+        val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
+            "@@ -1 +1 @@\n-old\n+new\n", "1")
+        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
+        val canvas = canvas().apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false))
+            fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
+            fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text
+            repeat(14) { button("document-zoom-out").doClick() }
+            layoutTree(canvas)
+            assertEquals("10%", percentage())
+            assertFalse(button("document-zoom-out").isEnabled)
+            assertTrue(descendants(canvas).any { it is PatchView })
+            button("document-zoom-reset").doClick()
+            layoutTree(canvas)
+            val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            panel.dispatchEvent(java.awt.event.MouseWheelEvent(panel, MouseEvent.MOUSE_WHEEL, 1,
+                java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
+                java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 100))
+            assertEquals("10%", percentage())
+            button("document-zoom-in").doClick()
+            assertEquals("12%", percentage())
+        } finally { canvas.dispose() }
+    }
+
+    fun testDocumentLevelSwitchersLimitRailsAndKeepDiffsVisible() {
+        val files = listOf("src/feature/one.kt", "src/feature/two.kt", "docs/readme.md").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val topics = ChangeTopics(files).assign(files[0].path, "Product>Feature>One")
+            .assign(files[1].path, "Product>Feature>Two")
+        val summaries = ChangeSummaries(buildSummaryTree(files))
+        val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false),
+                summaries = SummariesCard(summaries, running = false, canRun = false))
+            fun level(name: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == name }
+            fun topicPanel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun folderPanel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
+            layoutTree(canvas)
+            val topicWidth = topicPanel().preferredSize.width
+            val folderWidth = folderPanel().preferredSize.width
+            level("level:0").doClick()
+            level("summary-level:0").doClick()
+            layoutTree(canvas)
+            assertTrue(level("level:0").isSelected)
+            assertTrue(level("summary-level:0").isSelected)
+            assertEquals(setOf("topic:0:product", "topic:pending"), topicPanel().components.mapNotNull { it.name }.filter { it.startsWith("topic:") }.toSet())
+            assertEquals(listOf("node:root"), folderPanel().components.mapNotNull { it.name }.filter { it.startsWith("node:") })
+            assertTrue(topicPanel().preferredSize.width < topicWidth)
+            assertTrue(folderPanel().preferredSize.width < folderWidth)
+            for (panel in listOf(topicPanel(), folderPanel())) {
+                assertEquals(files.size, descendants(panel).filterIsInstance<PatchView>().size)
+            }
+            level("level:3").doClick()
+            level("summary-level:${ChangeSummariesViewState.branchLevels(summaries.tree)}").doClick()
+            layoutTree(canvas)
+            assertEquals(topicWidth, topicPanel().preferredSize.width)
+            assertEquals(folderWidth, folderPanel().preferredSize.width)
+        } finally { canvas.dispose() }
+    }
+
+    fun testDocumentCardsExpandForLongLabelsAndSummaryWords() {
+        val label = "AuthenticationSynchronizationPipelineCoordinatorRegistry"
+        // Exceeds the old 720px cap, which forced word wrapping despite the measured word width.
+        val longWord = label.repeat(3)
+        val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
+            "@@ -1 +1 @@\n-old\n+new\n", "1")
+        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>$label")
+        val tree = buildSummaryTree(listOf(file))
+        val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == file.path }.id to longWord))
+        val canvas = canvas().apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false))
+            repeat(4) { (descendants(canvas).first { it.name == "document-zoom-out" } as javax.swing.JButton).doClick() }
+            layoutTree(canvas)
+            val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            val rail = panel.components.single { it.name == "topic:1:product > ${label.lowercase()}" }
+            val summary = panel.components.single { it.name == "summary:src/feature.kt" }
+            val title = descendants(rail as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == label }
+            val summaryText = descendants(summary as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == longWord }
+            assertTrue(rail.width > com.intellij.util.ui.JBUI.scale(DocumentColumnsPanel.RAIL_CARD_WIDTH))
+            assertTrue(summary.width > com.intellij.util.ui.JBUI.scale(DocumentColumnsPanel.SUMMARY_WIDTH))
+            assertTrue(title.getFontMetrics(title.font).stringWidth(label) <= title.width)
+            assertTrue(summaryText.getFontMetrics(summaryText.font).stringWidth(longWord) <= summaryText.width)
+            assertWordFitsOnOneLine(title, label)
+            assertWordFitsOnOneLine(summaryText, longWord)
+            assertTrue(rail.height >= (rail as javax.swing.JComponent).preferredSize.height)
+            rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+            val selectedSummary = panel.components.single { it.name?.startsWith("card-summary:") == true } as Container
+            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.JTextArea>()
+                .single { it.text == longWord }, longWord)
+        } finally { canvas.dispose() }
+    }
+
+    fun testFolderDocumentCardWidthsFollowFontGrowthAndRenderWholeWords() {
+        val folder = "AuthenticationSynchronizationPipelineCoordinatorRegistryConfiguration"
+        val word = folder.repeat(3)
+        val sentence = "Updates $word consistently."
+        val files = listOf("$folder/feature.kt", "$folder/extra.kt", "other.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val folderNode = tree.nodes.single { it.kind == SummaryKind.DIRECTORY }
+        val summaries = ChangeSummaries(tree).summarize(
+            tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.id to sentence } + (folderNode.id to sentence))
+        val canvas = canvas().apply { setSize(1200, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
+            fun document() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
+            fun rail() = document().components.single { it.name == "node:${folderNode.identity}" } as Container
+            fun summary() = document().components.single { it.name == "summary:${files.first().path}" } as Container
+            layoutTree(canvas)
+            val initialRailWidth = rail().width
+            val initialSummaryWidth = summary().width
+            var railWidth = initialRailWidth
+            var summaryWidth = initialSummaryWidth
+            repeat(4) {
+                (descendants(canvas).single { it.name == "document-zoom-out" } as javax.swing.JButton).doClick()
+                layoutTree(canvas)
+                // Glyph measurements can remain equal between fractional font sizes.
+                assertTrue("Folder card must not shrink as its font grows", rail().width >= railWidth)
+                assertTrue("Summary card must not shrink as its font grows", summary().width >= summaryWidth)
+                railWidth = rail().width
+                summaryWidth = summary().width
+                assertWordFitsOnOneLine(descendants(rail()).filterIsInstance<javax.swing.JTextArea>().single(), "$folder/")
+                assertWordFitsOnOneLine(descendants(summary()).filterIsInstance<javax.swing.JTextArea>().single(), word)
+            }
+            assertTrue(railWidth > initialRailWidth)
+            assertTrue(summaryWidth > initialSummaryWidth)
+            val rail = rail()
+            rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            layoutTree(canvas)
+            val selectedSummary = document().components.single { it.name == "card-summary:${folderNode.identity}" } as Container
+            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.JTextArea>()
+                .single { it.text == sentence }, word)
+        } finally { canvas.dispose() }
+    }
+
     fun testTopicsDocumentAlignsRailCardsAndSummariesWithFileDiffs() {
         val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt", "docs/new.md").mapIndexed { index, path ->
             ReviewFile(path, "/repo/$path", null, "modified",
@@ -1064,6 +1239,19 @@ class NoteCanvasTest : BasePlatformTestCase() {
     private fun layoutTree(component: Container) {
         component.doLayout()
         component.components.filterIsInstance<Container>().forEach(::layoutTree)
+    }
+
+    /** Check the laid out Swing text, including the wrapping performed when it is painted. */
+    private fun assertWordFitsOnOneLine(text: javax.swing.JTextArea, word: String) {
+        val image = java.awt.image.BufferedImage(text.width, text.height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try { text.paint(graphics) } finally { graphics.dispose() }
+        val start = text.text.indexOf(word)
+        assertTrue(start >= 0)
+        val first = text.modelToView2D(start)
+        val last = text.modelToView2D(start + word.length - 1)
+        assertEquals("Word was split across lines in ${text.text}", first.y, last.y, 0.01)
+        assertTrue("Text is clipped vertically", last.maxY <= text.height)
     }
 
 }

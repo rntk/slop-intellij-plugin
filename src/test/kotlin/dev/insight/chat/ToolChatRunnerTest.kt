@@ -141,6 +141,21 @@ class ToolChatRunnerTest {
         assertTrue(retry.messages.last().content.contains("Answer now"))
     }
 
+    @Test fun `retries with a user note when the reply without tools is empty`() = runBlocking {
+        val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
+        val replies = ArrayDeque(listOf(looping, null, Completion("Done.")))
+        val requests = mutableListOf<CompletionRequest>()
+        // The decoder throws on an empty reply, as llama.cpp returns for a call dropped under tool choice none.
+        val complete: suspend (CompletionRequest) -> Completion = {
+            requests += it
+            replies.removeFirst() ?: throw LlmProtocolException("Empty LLM response")
+        }
+        val result = ToolChatRunner(complete, listOf(EchoTool()), maxToolRounds = 1).run(listOf(LlmMessage.user("Hi")))
+        assertEquals("Done.", result.reply)
+        assertEquals(3, requests.size)
+        assertTrue(requests.last().messages.last().content.contains("Answer now"))
+    }
+
     @Test fun `backend forwards an explicit larger tool round budget`() = runBlocking {
         val tool = EchoTool()
         val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))

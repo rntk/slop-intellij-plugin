@@ -287,6 +287,10 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
         return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.depth(it.id) < level) } }
     }
 
+    /** Document mode keeps every diff visible and limits the rail to the picked levels. */
+    fun railDepth(tree: ChangeSummaryTree): Int =
+        minOf(branchLevels(tree), (shownLevel(tree) ?: branchLevels(tree)) + 1)
+
     /** A node is on screen when every folder above it is open. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean =
         { node -> generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded } }

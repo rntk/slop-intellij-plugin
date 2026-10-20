@@ -38,7 +38,7 @@ data class ToolChatResult(
  * Runs the assistant/tool loop for one turn: request a completion, execute any tool calls, send the
  * results back, and repeat until the model answers in text. Tool failures are reported to the model
  * rather than failing the turn. After [maxToolRounds] rounds of calls, one final request disables new
- * calls through the API's tool choice. If the server ignores it, retry once with an answer-now note.
+ * calls through the API's tool choice. If the server ignores it or the reply is empty, retry once with an answer-now note.
  * A [followUp] can reject an answer, e.g. when required work is missing, and continue the turn.
  */
 class ToolChatRunner(
@@ -96,12 +96,18 @@ class ToolChatRunner(
                     }
                 }
             }
-            var completion = completeWithWindow()
-            if (exhausted && completion.toolCalls.isNotEmpty()) {
+            val first = try {
+                completeWithWindow()
+            } catch (e: LlmProtocolException) {
+                // Some servers (llama.cpp with gpt-oss) drop a call made despite tool choice none and return nothing.
+                if (!exhausted) throw e
+                null
+            }
+            val completion = if (exhausted && (first == null || first.toolCalls.isNotEmpty() || first.content.isBlank())) {
                 // Discard the rejected completion: its calls must never execute or enter the transcript.
                 answerNow = true
-                completion = completeWithWindow()
-            }
+                completeWithWindow()
+            } else first!!
             if (completion.toolCalls.isEmpty()) {
                 val reply = completion.content.trim()
                 val note = if (round < maxToolRounds && followUps < maxFollowUps) followUp?.invoke() else null

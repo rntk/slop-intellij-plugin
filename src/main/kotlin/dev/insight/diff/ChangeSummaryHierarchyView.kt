@@ -130,9 +130,10 @@ internal class ChangeSummaryDocumentPanel(
         state.update(tree)
         val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
         val missing = if (card.running) "Summarizing…" else "No summary yet"
+        val depth = state.railDepth(tree)
         val items = mutableListOf<RailItem>()
         fun collect(node: SummaryNode, level: Int, family: String?) {
-            if (!isFolderBranch(node)) return
+            if (!isFolderBranch(node) || level >= depth) return
             val first = indexByPath[node.files.firstOrNull()]
             val last = indexByPath[node.files.lastOrNull()]
             if (first != null && last != null) {
@@ -160,7 +161,7 @@ internal class ChangeSummaryDocumentPanel(
         }
         if (files.isNotEmpty()) collect(tree.root, 0, null)
         val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
-        layoutDocument(files, fileSummaries, items, ChangeSummariesViewState.branchLevels(tree), width, missing)
+        layoutDocument(files, fileSummaries, items, depth, width, missing)
     }
 
     override fun openFile(file: ReviewFile) {

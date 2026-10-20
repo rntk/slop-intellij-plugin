@@ -22,7 +22,9 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Point
 import java.awt.Rectangle
+import java.awt.event.MouseWheelEvent
 import kotlinx.coroutines.Job
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import javax.swing.*
 
@@ -77,6 +79,7 @@ internal class NoteCanvas(
     private var highlighted = emptySet<String>()
     private var focused: DiffNoteKey? = null
     private val zoom = 1.0
+    private var documentZoom = 1.0
 
     init {
         minimumSize = Dimension(100, 100)
@@ -202,6 +205,68 @@ internal class NoteCanvas(
 
     private fun bodyScroll(card: JPanel) =
         (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as? JScrollPane
+
+    /** Zoom the document around a point in its viewport, keeping that content under the pointer. */
+    private fun zoomDocument(key: DiffNoteKey, requested: Double, anchor: Point? = null) {
+        val old = cards[key]?.let(::bodyScroll) ?: return
+        val next = requested.coerceIn(MIN_DOCUMENT_ZOOM, MAX_DOCUMENT_ZOOM)
+        if (next == documentZoom) return
+        val point = anchor ?: Point(old.viewport.width / 2, old.viewport.height / 2)
+        val previous = Point(old.viewport.viewPosition)
+        val ratio = next / documentZoom
+        documentZoom = next
+        refreshCard(key)
+        val updated = cards[key]?.let(::bodyScroll) ?: return
+        val target = Point(
+            ((previous.x + point.x) * ratio - point.x).roundToInt().coerceAtLeast(0),
+            ((previous.y + point.y) * ratio - point.y).roundToInt().coerceAtLeast(0),
+        )
+        if (key == TOPICS_KEY) topicsScroll = target.y else summariesScroll = target.y
+        SwingUtilities.invokeLater {
+            if (cards[key]?.let(::bodyScroll) === updated) updated.viewport.viewPosition = target
+        }
+    }
+
+    private fun documentZoomControls(key: DiffNoteKey): JComponent = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(2), 0)).apply {
+        isOpaque = false
+        add(JButton("−").apply {
+            name = "document-zoom-out"
+            toolTipText = "Zoom out (Ctrl/⌘ + wheel)"
+            isEnabled = documentZoom > MIN_DOCUMENT_ZOOM
+            addActionListener { zoomDocument(key, documentZoom / 1.2) }
+        })
+        add(JLabel("${(documentZoom * 100).roundToInt()}%").apply { name = "document-zoom-level" })
+        add(JButton("+").apply {
+            name = "document-zoom-in"
+            toolTipText = "Zoom in (Ctrl/⌘ + wheel)"
+            isEnabled = documentZoom < MAX_DOCUMENT_ZOOM
+            addActionListener { zoomDocument(key, documentZoom * 1.2) }
+        })
+        add(JButton("100%").apply {
+            name = "document-zoom-reset"
+            toolTipText = "Reset document zoom"
+            isEnabled = documentZoom != 1.0
+            addActionListener { zoomDocument(key, 1.0) }
+        })
+    }
+
+    private fun installDocumentWheelZoom(key: DiffNoteKey, scroll: JScrollPane) {
+        val listener = java.awt.event.MouseWheelListener { event: MouseWheelEvent ->
+            if (!event.isControlDown && !event.isMetaDown) {
+                if (event.component !== scroll) {
+                    scroll.dispatchEvent(SwingUtilities.convertMouseEvent(event.component, event, scroll))
+                    event.consume()
+                }
+                return@MouseWheelListener
+            }
+            val point = SwingUtilities.convertPoint(event.component, event.point, scroll.viewport)
+            zoomDocument(key, documentZoom * 1.15.pow(-event.preciseWheelRotation), point)
+            event.consume()
+        }
+        scroll.addMouseWheelListener(listener)
+        scroll.viewport.addMouseWheelListener(listener)
+        descendantsOf(scroll.viewport).forEach { it.addMouseWheelListener(listener) }
+    }
 
     /** Both the card and its editor page can scroll; use whichever top edge currently hides more of the card. */
     private fun installStickyScrolling(key: DiffNoteKey, page: JScrollPane, card: JPanel) {
@@ -349,9 +414,12 @@ internal class NoteCanvas(
     private fun topicsCard(content: TopicsCard): JPanel {
         val topics = content.topics
         val outline = topicOutline(topics)
+        topicsView.update(outline)
         val hierarchy = topicsView.mode == ChangeTopicsMode.HIERARCHY
-        val width = cardWidth(
-            if (hierarchy) HierarchyColumnsPanel.defaultWidth(outline.depth) else ChangeTopicsPanel.defaultWidth(outline.depth))
+        val document = !hierarchy
+        val viewZoom = if (document) documentZoom else zoom
+        val width = if (hierarchy) cardWidth(HierarchyColumnsPanel.defaultWidth(outline.depth))
+            else ChangeTopicsPanel.defaultWidth(topicsView.railDepth(outline), viewZoom)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -361,7 +429,8 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (hierarchy && outline.depth > 0) add(topicLevels(outline))
+                if (document) add(documentZoomControls(TOPICS_KEY))
+                if (outline.depth > 0) add(topicLevels(outline))
                 val group = ButtonGroup()
                 // Document mode shows patches, so it only exists for diffs.
                 if (vocabulary.documentMode) ChangeTopicsMode.entries.forEach { mode ->
@@ -414,8 +483,8 @@ internal class NoteCanvas(
             add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
-                add(ChangeTopicHierarchyPanel(content, topicsView, inner, zoom, actions, vocabulary))
-            } else ChangeTopicsPanel(content, topicsView, inner, zoom, actions, vocabulary), BorderLayout.CENTER)
+                add(ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary))
+            } else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary), BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
@@ -426,6 +495,7 @@ internal class NoteCanvas(
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
+            if (document) installDocumentWheelZoom(TOPICS_KEY, this)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = topicsScroll
             verticalScrollBar.addAdjustmentListener { topicsScroll = it.value }
@@ -454,7 +524,9 @@ internal class NoteCanvas(
             name = "level:$level"
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
-            toolTipText = if (level == outline.depth) "Show every topic level and file" else "Show topic levels 1–${level + 1}"
+            toolTipText = if (topicsView.mode == ChangeTopicsMode.DOCUMENT)
+                if (level == outline.depth) "Show every topic rail level" else "Show topic rail levels 1–${level + 1}"
+            else if (level == outline.depth) "Show every topic level and file" else "Show topic levels 1–${level + 1}"
             group.add(this)
             addActionListener { topicsView.selectLevel(level, outline); refreshCard(TOPICS_KEY) }
         })
@@ -478,14 +550,16 @@ internal class NoteCanvas(
      */
     private fun summariesCard(content: SummariesCard): JPanel {
         val tree = content.summaries.tree
+        summariesView.update(tree)
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
         val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
+        val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
-        val width = cardWidth(when {
-            hierarchy -> HierarchyColumnsPanel.defaultWidth(branchLevels)
-            document -> DocumentColumnsPanel.defaultWidth(branchLevels)
-            else -> SUMMARIES_WIDTH
-        })
+        val width = when {
+            hierarchy -> cardWidth(HierarchyColumnsPanel.defaultWidth(branchLevels))
+            document -> DocumentColumnsPanel.defaultWidth(summariesView.railDepth(tree), viewZoom)
+            else -> cardWidth(SUMMARIES_WIDTH)
+        }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -495,8 +569,9 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
+                if (document) add(documentZoomControls(SUMMARIES_KEY))
                 val summaries = content.summaries
-                if (hierarchy && branchLevels > 0) add(summaryLevels(tree, branchLevels))
+                if ((hierarchy || document) && branchLevels > 0) add(summaryLevels(tree, branchLevels))
                 val group = ButtonGroup()
                 // Document mode shows patches, so it only exists for diffs.
                 ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DOCUMENT || vocabulary.documentMode }.forEach { mode ->
@@ -553,12 +628,12 @@ internal class NoteCanvas(
                     isOpaque = false
                     add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
                     traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
-                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions, vocabulary))
+                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
                 }
                 document -> JPanel(VerticalLayout(scaled(8))).apply {
                     isOpaque = false
                     add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, zoom, actions, vocabulary))
+                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
                 }
                 else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary)
             }, BorderLayout.CENTER)
@@ -574,6 +649,7 @@ internal class NoteCanvas(
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
+            if (document) installDocumentWheelZoom(SUMMARIES_KEY, this)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = summariesScroll
             verticalScrollBar.addAdjustmentListener { summariesScroll = it.value }
@@ -642,7 +718,9 @@ internal class NoteCanvas(
             name = "summary-level:$level"
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
-            toolTipText = if (level == levels) "Show every folder level and file" else "Show folder levels 1–${level + 1}"
+            toolTipText = if (summariesView.mode == ChangeSummariesMode.DOCUMENT)
+                if (level == levels) "Show every folder rail level" else "Show folder rail levels 1–${level + 1}"
+            else if (level == levels) "Show every folder level and file" else "Show folder levels 1–${level + 1}"
             group.add(this)
             addActionListener { summariesView.selectLevel(level, tree); refreshSummaries() }
         })
@@ -841,6 +919,8 @@ internal class NoteCanvas(
     }
 
     private companion object {
+        const val MIN_DOCUMENT_ZOOM = 0.1
+        const val MAX_DOCUMENT_ZOOM = 3.0
         const val CARD_WIDTH = 460
         const val GAP = 20
         const val PADDING = 12
