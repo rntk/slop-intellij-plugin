@@ -123,6 +123,25 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val auth = named("topic:2:storage > user > auth") as javax.swing.JComponent
             auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertTrue(canvas.topicsView.isSelected(panel.outline.nodes.single { it.identity == "storage > user > auth" }))
+            // The selected topic's summary replaces its files' notes in the margin, level with its card.
+            val authSummary = named("card-summary:2:storage > user > auth") as Container
+            assertEquals(auth.y, authSummary.y)
+            assertTrue(authSummary.x + authSummary.width <= sections[1].x)
+            assertFalse(named("summary:src/auth.kt").isVisible)
+            assertTrue(named("summary:src/wallet.kt").isVisible)
+            assertTrue(descendants(authSummary).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Adds token refresh." })
+            // Hovering another card shows its summary instead; leaving it brings the selection's back.
+            val storage = named("topic:0:storage") as javax.swing.JComponent
+            storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
+            val storageSummary = named("card-summary:0:storage") as Container
+            assertEquals(storage.y, storageSummary.y)
+            assertTrue(panel.components.none { it.name == "card-summary:2:storage > user > auth" })
+            assertTrue(listOf("src/auth.kt", "src/wallet.kt").none { named("summary:$it").isVisible })
+            assertTrue(descendants(storageSummary).filterIsInstance<javax.swing.JTextArea>().any { it.text == "No summary yet" })
+            storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_EXITED, 0, 0, -5, -5, 0, false))
+            assertTrue(panel.components.none { it.name == "card-summary:0:storage" })
+            assertTrue(named("summary:src/wallet.kt").isVisible)
+            named("card-summary:2:storage > user > auth")
             val bounds = canvas.components.single().bounds
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
@@ -467,6 +486,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             // Selecting a folder on the rail outlines it, survives updates, and carries over to Hierarchy and Outline.
             src.dispatchEvent(MouseEvent(src, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertEquals("directory:src", canvas.summariesView.selected)
+            // The folder's own summary replaces the notes of its files; the rest keep theirs.
+            val srcSummary = named("card-summary:directory:src") as Container
+            assertEquals(src.y, srcSummary.y)
+            assertTrue(srcSummary.height >= src.height)
+            assertTrue(descendants(srcSummary).filterIsInstance<JLabel>().any { it.text == "Folder summary · 3 files" })
+            assertTrue(panel.files.take(3).none { named("summary:${it.path}").isVisible })
+            assertTrue(named("summary:docs/README.md").isVisible)
             val more = summaries.summarize(mapOf(id("file:docs/README.md") to "Documents the setup."))
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = false))
             assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Documents the setup." })

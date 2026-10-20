@@ -168,10 +168,20 @@ internal abstract class DocumentColumnsPanel(
         val tooltip: String,
         val icon: Icon? = null,
         val placeholder: Boolean = false,
+        /** The card's own summary, shown in the margin beside its files while the card is hovered or selected. */
+        val summary: String? = null,
+        val missingSummary: String = "No summary yet",
+        val summaryLabel: String = "Summary",
     )
 
     private val sections = mutableListOf<JComponent>()
     private val notes = mutableListOf<JComponent>()
+    private val noteColumns = mutableListOf<JComponent>()
+    private var tops = IntArray(0)
+    private var bottoms = IntArray(0)
+    private var summaryWidth = 0
+    /** The active rail card with its summary laid over the margin of its files. */
+    private var cardSummary: Pair<RailItem, JComponent>? = null
     private val rail = mutableListOf<Pair<RailItem, JComponent>>()
     private val stickyHeaders = StickyCardHeaders()
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
@@ -205,20 +215,22 @@ internal abstract class DocumentColumnsPanel(
         }
         val railWidth = railWidth(depth, zoom)
         val summaryWidth = scaled(SUMMARY_WIDTH)
+        this.summaryWidth = summaryWidth
         val gap = scaled(COLUMN_GAP)
         val docWidth = (width - summaryWidth - railWidth - 2 * gap).coerceAtLeast(scaled(MIN_DOC_WIDTH))
         val docX = summaryWidth + gap
         val railX = docX + docWidth + gap
-        val tops = IntArray(files.size)
-        val bottoms = IntArray(files.size)
+        tops = IntArray(files.size)
+        bottoms = IntArray(files.size)
         var y = 0
         files.forEachIndexed { index, file ->
             val section = section(file, docWidth)
             val note = note(file, summaries[file.path], missingSummary, summaryWidth)
             val height = maxOf(section.preferredSize.height, note.preferredSize.height)
             section.setBounds(docX, y, docWidth, height)
-            add(section); add(noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) })
-            sections += section; notes += note
+            val column = noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) }
+            add(section); add(column)
+            sections += section; notes += note; noteColumns += column
             tops[index] = y; bottoms[index] = y + height
             y += height + scaled(SECTION_GAP)
         }
@@ -235,17 +247,63 @@ internal abstract class DocumentColumnsPanel(
         applyActive()
     }
 
-    /** The hovered rail card, else the selected one, outlines its card and the diffs and summaries of its files. */
+    /**
+     * The hovered rail card, else the selected one, outlines its card and the diffs and summaries of its files, and shows its
+     * own summary in the margin in place of theirs.
+     */
     protected fun applyActive() {
         val active = hovered ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
         val range = active?.let { it.first..it.last } ?: selectedFiles()
         sections.forEachIndexed { index, section -> section.border = frame(range != null && index in range) }
         notes.forEachIndexed { index, note -> note.border = noteBorder(range != null && index in range) }
+        showCardSummary(active?.takeUnless { it.placeholder })
         rail.forEach { (item, component) ->
             component.border = railBorder(item, item == active)
             component.background = if (!item.placeholder && isSelected(item)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
         }
         repaint()
+    }
+
+    /** Swaps the margin of [item]'s files for its summary, sticky like the file notes, and restores them when it goes. */
+    private fun showCardSummary(item: RailItem?) {
+        if (cardSummary?.first == item) return
+        cardSummary?.second?.let { remove(it); stickyHeaders.remove(it) }
+        cardSummary = null
+        noteColumns.forEach { it.isVisible = true }
+        if (item == null || noteColumns.isEmpty()) return
+        for (index in item.first..item.last) noteColumns[index].isVisible = false
+        val note = cardNote(item, summaryWidth)
+        // Opaque and on top, so a summary longer than its files' margin covers the notes below rather than mixing with them.
+        val column = JPanel(stickyHeaders.layout()).apply {
+            name = "card-summary:${item.key}"
+            background = UIUtil.getListBackground()
+            add(note, BorderLayout.NORTH)
+            setBounds(0, tops[item.first], summaryWidth, maxOf(bottoms[item.last] - tops[item.first], note.preferredSize.height))
+        }
+        stickyHeaders.add(column, note)
+        add(column, 0)
+        column.validate()
+        cardSummary = item to column
+    }
+
+    private fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(scaled(4))).apply {
+        background = UIUtil.getListBackground()
+        border = noteBorder(true)
+        val inner = width - scaled(NOTE_INSET) - scaled(2)
+        val icon = item.icon
+        val title = text(item.title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0, font(JBFont.label().asBold()), null)
+        add(if (icon == null) title else JPanel(BorderLayout(scaled(4), 0)).apply {
+            isOpaque = false
+            add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
+            add(title, BorderLayout.CENTER)
+        })
+        val files = item.last - item.first + 1
+        add(JLabel("${item.summaryLabel} · ${if (files == 1) "1 file" else "$files files"}").apply { font = font(JBFont.small()); foreground = help })
+        val summary = item.summary
+        add(if (summary != null) text(summary, inner, font(JBFont.label()), null)
+            else text(item.missingSummary, inner, italic(JBFont.small()), help))
+        toolTipText = "Summary of ${item.tooltip} · LLM interpretation"
+        preferredSize = Dimension(width, preferredSize.height)
     }
 
     private fun section(file: ReviewFile, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
@@ -423,6 +481,9 @@ internal class ChangeTopicsPanel(
         state.update(outline)
         // Files awaiting a topic still get a placeholder in the leaf column.
         val depth = maxOf(outline.depth, if (outline.pending != null) 1 else 0)
+        // A topic reads its own summary, else the summary of exactly its files, as in the hierarchy.
+        val reading = card.reading
+        val topicTexts = reading.tree.nodes.mapNotNull { node -> reading.text(node.id)?.let { node.identity to it } }.toMap()
         val items = outline.nodes.map { node ->
             RailItem(
                 key = "${node.level}:${node.identity}",
@@ -433,6 +494,8 @@ internal class ChangeTopicsPanel(
                 first = node.first,
                 last = node.last,
                 tooltip = node.fullPath,
+                summary = topicTexts[ChangeTopicsViewState.identity(node)],
+                summaryLabel = "Topic summary",
             )
         } + listOfNotNull(outline.pending?.let { pending ->
             RailItem(

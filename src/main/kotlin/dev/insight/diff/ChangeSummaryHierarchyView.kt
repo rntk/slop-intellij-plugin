@@ -129,6 +129,7 @@ internal class ChangeSummaryDocumentPanel(
     init {
         state.update(tree)
         val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
+        val missing = if (card.running) "Summarizing…" else "No summary yet"
         val items = mutableListOf<RailItem>()
         fun collect(node: SummaryNode, level: Int, family: String?) {
             if (!isFolderBranch(node)) return
@@ -145,6 +146,13 @@ internal class ChangeSummaryDocumentPanel(
                     last = last,
                     tooltip = node.location,
                     icon = summaryNodeIcon(node),
+                    summary = summaries.text(node.id),
+                    missingSummary = missing,
+                    summaryLabel = when (node.kind) {
+                        SummaryKind.ROOT -> "Change summary"
+                        SummaryKind.GROUP -> "Group summary"
+                        else -> "Folder summary"
+                    },
                 )
             }
             // Each top-level folder keeps one hue down its columns; the root stays neutral.
@@ -152,7 +160,6 @@ internal class ChangeSummaryDocumentPanel(
         }
         if (files.isNotEmpty()) collect(tree.root, 0, null)
         val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
-        val missing = if (card.running) "Summarizing…" else "No summary yet"
         layoutDocument(files, fileSummaries, items, ChangeSummariesViewState.branchLevels(tree), width, missing)
     }
 

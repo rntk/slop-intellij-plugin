@@ -23,6 +23,8 @@ internal class StickyCardHeaders {
     /** The [card] must use [layout]. */
     fun add(card: JComponent, heading: Component) { headings[card] = heading }
 
+    fun remove(card: JComponent) { headings -= card }
+
     /** [top] is the viewport's top edge in the coordinate system of the cards' parent. */
     fun update(top: Int) {
         this.top = top
