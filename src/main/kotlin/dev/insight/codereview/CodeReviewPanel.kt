@@ -39,6 +39,7 @@ import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -357,9 +358,8 @@ internal class CodeReviewPanel(
         if (stopTabs) reviewTabs.forEach { it.invalidate(stop = true) }
         status.text = "Loading ${scope.displayName}…"
         status.toolTipText = scope.absolutePath
-        updateControls()
         val previous = snapshot
-        refreshJob = coroutines.launch {
+        refreshJob = coroutines.launch(start = CoroutineStart.LAZY) {
             try {
                 val loaded = CodeReviewLoader(project).load(scope, previous)
                 snapshot = loaded
@@ -374,8 +374,15 @@ internal class CodeReviewPanel(
             } catch (e: Exception) {
                 status.text = "Could not load ${scope.displayName}: ${e.message ?: e.javaClass.simpleName}"
                 status.toolTipText = status.text
-            } finally { updateControls() }
+            } finally {
+                if (refreshJob === coroutineContext[Job]) {
+                    refreshJob = null
+                    updateControls()
+                }
+            }
         }
+        refreshJob?.start()
+        updateControls()
     }
 
     private fun updateControls() {

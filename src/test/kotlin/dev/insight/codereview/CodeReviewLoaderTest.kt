@@ -3,6 +3,8 @@ package dev.insight.codereview
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.PsiTestUtil
@@ -70,6 +72,29 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
         // Other chunk options read the files again.
         val rechunked = load(scope, third, CodeLimits(chunk = ChunkOptions(singleChars = 5)))
         assertNotSame(third.byPath.getValue("reuse/b.kt"), rechunked.byPath.getValue("reuse/b.kt"))
+    }
+
+    fun `test discarded unsaved edits are replaced with disk text`() {
+        val diskText = "fun a() = 1\n"
+        val file = myFixture.addFileToProject("discard/a.kt", diskText).virtualFile
+        val manager = FileDocumentManager.getInstance()
+        val document = manager.getDocument(file)!!
+        manager.saveDocument(document)
+        val scope = scope("discard")
+        val saved = load(scope)
+        val stamp = file.modificationStamp
+        WriteCommandAction.runWriteCommandAction(project) { document.setText("fun a() = 2\n") }
+        assertTrue(manager.isFileModified(file))
+        val edited = load(scope, saved)
+        assertEquals(document.text, edited.files.single().text)
+        // Repeated refreshes of unsaved text must also remain non-reusable.
+        val repeated = load(scope, edited)
+        manager.reloadFromDisk(document)
+        assertFalse(manager.isFileModified(file))
+        assertEquals(stamp, file.modificationStamp)
+        val discarded = load(scope, repeated)
+        assertEquals(diskText, discarded.files.single().text)
+        assertSame(discarded.files.single(), load(scope, discarded).files.single())
     }
 
     fun `test limits truncate in path order`() {

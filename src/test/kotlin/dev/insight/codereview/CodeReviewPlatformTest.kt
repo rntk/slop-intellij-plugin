@@ -103,7 +103,18 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
                 .single { it.userObject.toString() == "sub" }
             tree.selectionPath = TreePath(sub.path)
             assertEquals(listOf("review/sub/b.kt"), panel.selectedPaths())
-            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }.doClick()
+            val newSelection = descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }
+            val previous = panel.snapshot
+            panel.setScope(myFixture.findFileInTempDir("review"))
+            assertFalse(newSelection.isEnabled)
+            // Replace a pending refresh to exercise cancellation of the older job.
+            panel.setScope(myFixture.findFileInTempDir("review"))
+            assertFalse(newSelection.isEnabled)
+            PlatformTestUtil.waitWithEventsDispatching("Refresh should restore selection controls", {
+                panel.snapshot !== previous && newSelection.isEnabled
+            }, 20)
+            assertEquals(listOf("review/sub/b.kt"), panel.selectedPaths())
+            newSelection.doClick()
             val selection = tabs.selectedInfo!!.component as CodeReviewTab
             assertNotSame(first, selection)
             assertEquals(setOf("review/sub"), selection.state.scopePaths)

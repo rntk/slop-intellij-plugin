@@ -136,7 +136,8 @@ internal class CodeReviewLoader(private val project: Project) {
         } ?: return LoadResult.Skipped(SkipReason.UNREADABLE)
         if (generated) return LoadResult.Skipped(SkipReason.GENERATED)
         val stamp = file.modificationStamp
-        val length = file.length
+        // Unsaved text cannot be reused by disk metadata after edits are discarded.
+        val length = if (unsaved == null) file.length else -1L
         val unchanged = previous?.takeIf { it.absolutePath == file.path }
         if (unsaved == null && unchanged != null && unchanged.stamp == stamp && unchanged.length == length)
             return LoadResult.Loaded(unchanged)
@@ -144,10 +145,9 @@ internal class CodeReviewLoader(private val project: Project) {
         val text = StringUtil.convertLineSeparators(raw)
         if (text.length > limits.maxFileChars) return LoadResult.Skipped(SkipReason.TOO_LARGE)
         if (isMinified(text, limits.chunk)) return LoadResult.Skipped(SkipReason.MINIFIED)
-        // Same text under a new stamp (saved, touched): keep the parts and only record the stamp.
+        // Same text: keep the parts and update whether the snapshot matches disk metadata.
         if (unchanged != null && unchanged.text == text)
-            return LoadResult.Loaded(if (unsaved != null) unchanged
-                else CodeFile(path, file.path, text, unchanged.fingerprint, unchanged.chunks, stamp, length))
+            return LoadResult.Loaded(CodeFile(path, file.path, text, unchanged.fingerprint, unchanged.chunks, stamp, length))
         return LoadResult.Loaded(CodeFile(path, file.path, text, chunks = chunkSource(text, limits.chunk), stamp = stamp, length = length))
     }
 
