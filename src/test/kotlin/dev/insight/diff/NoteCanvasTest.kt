@@ -413,6 +413,72 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testSummariesDocumentAlignsFolderRailAndSummariesWithFileDiffs() {
+        val files = listOf("src/wallet/Wallet.kt", "src/wallet/Ledger.kt", "src/auth/Auth.kt", "docs/README.md").mapIndexed { index, path ->
+            ReviewFile(path, "/repo/$path", null, "modified",
+                "@@ -1,2 +1,${2 + index * 6} @@\n ctx\n-old\n" + "+new\n".repeat(1 + index * 6), "1")
+        }
+        val tree = buildSummaryTree(files)
+        fun id(identity: String) = tree.nodes.single { it.identity == identity }.id
+        val summaries = ChangeSummaries(tree).summarize(mapOf(id("file:src/auth/Auth.kt") to "Adds token refresh."))
+        val opened = mutableListOf<String>()
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            toggleButton("Document").doClick(); layoutTree(canvas)
+            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertTrue(descendants(canvas).none { it is ChangeSummariesPanel || it is ChangeSummaryHierarchyPanel })
+            val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
+            fun named(name: String) = panel.components.single { it.name == name }
+            // Tree order: subfolders before files, then alphabetical.
+            assertEquals(listOf("src/wallet/Ledger.kt", "src/wallet/Wallet.kt", "src/auth/Auth.kt", "docs/README.md"), panel.files.map { it.path })
+            val sections = panel.files.map { named("file:${it.path}") }
+            val root = named("node:root")
+            val src = named("node:directory:src")
+            val wallet = named("node:directory:src/wallet")
+            // Each folder card spans the diffs of its files, with the root outermost and deepest folder next to the diffs.
+            assertEquals(sections[0].y, root.y)
+            assertEquals(sections[3].y + sections[3].height, root.y + root.height)
+            assertEquals(sections[0].y, src.y)
+            assertEquals(sections[2].y + sections[2].height, src.y + src.height)
+            assertEquals(sections[0].y, wallet.y)
+            assertEquals(sections[1].y + sections[1].height, wallet.y + wallet.height)
+            assertTrue("Rail sits right of the document", wallet.x >= sections[0].x + sections[0].width)
+            assertTrue(root.x > src.x && src.x > wallet.x)
+            // Summaries start level with their file's diff, left of it, and follow sticky scrolling.
+            panel.files.forEachIndexed { index, file ->
+                val note = named("summary:${file.path}")
+                assertEquals(sections[index].y, note.y)
+                assertTrue(note.x + note.width <= sections[index].x)
+                assertTrue(sections[index].height >= note.height)
+            }
+            val column = named("summary:src/wallet/Wallet.kt") as Container
+            val text = column.getComponent(0)
+            panel.updateStickyHeaders(column.y + 5)
+            assertEquals(5, text.y)
+            panel.updateStickyHeaders(0)
+            assertEquals(0, text.y)
+            val texts = descendants(panel).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            assertTrue(texts.contains("Adds token refresh."))
+            assertEquals(3, texts.count { it == "No summary yet" })
+
+            // Selecting a folder on the rail outlines it, survives updates, and carries over to Hierarchy and Outline.
+            src.dispatchEvent(MouseEvent(src, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            assertEquals("directory:src", canvas.summariesView.selected)
+            val more = summaries.summarize(mapOf(id("file:docs/README.md") to "Documents the setup."))
+            canvas.updateSummaries(SummariesCard(more, running = false, canRun = false))
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Documents the setup." })
+            assertEquals("directory:src", canvas.summariesView.selected)
+            descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
+            assertEquals(listOf("src/auth/Auth.kt"), opened)
+            toggleButton("Hierarchy").doClick(); layoutTree(canvas)
+            assertEquals("directory:src", canvas.summariesView.selected)
+            assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().size)
+        } finally { canvas.dispose() }
+    }
+
     fun testLongPathsKeepDiffButtonsVisibleAndClickable() {
         val paths = listOf(
             "src/main/kotlin/dev/insight/deeply/nested/module/implementation/LongFeatureService.kt",

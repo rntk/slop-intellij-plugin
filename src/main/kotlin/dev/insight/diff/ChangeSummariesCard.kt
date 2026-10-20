@@ -38,8 +38,11 @@ internal data class SummariesCard(val summaries: ChangeSummaries, val running: B
 internal fun isFolderBranch(node: SummaryNode): Boolean =
     node.children.isNotEmpty() && node.kind != SummaryKind.FILE && node.kind != SummaryKind.CHUNK
 
-/** The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right, as topics do. */
-internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY }
+/**
+ * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
+ * every diff in tree order with its summary and the folder rail, as topics do.
+ */
+internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT }
 
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so

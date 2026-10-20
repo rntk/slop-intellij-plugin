@@ -207,7 +207,7 @@ internal class NoteCanvas(
     private fun installStickyScrolling(key: DiffNoteKey, page: JScrollPane, card: JPanel) {
         val inner = bodyScroll(card) ?: return
         val target = descendantsOf(card).filterIsInstance<JComponent>()
-            .firstOrNull { it is ChangeTopicsPanel || it is HierarchyColumnsPanel } ?: return
+            .firstOrNull { it is DocumentColumnsPanel || it is HierarchyColumnsPanel } ?: return
         stickyTargets[key] = target
         inner.viewport.addChangeListener { updateStickyScrolling(key, page) }
         if (page.getClientProperty("diff.stickyScrolling") != true) {
@@ -223,7 +223,7 @@ internal class NoteCanvas(
         val outerTop = SwingUtilities.convertPoint(page.viewport, 0, 0, panel).y
         val top = maxOf(innerTop, outerTop)
         when (panel) {
-            is ChangeTopicsPanel -> panel.updateStickyHeaders(top)
+            is DocumentColumnsPanel -> panel.updateStickyHeaders(top)
             is HierarchyColumnsPanel -> panel.updateStickyHeaders(top)
         }
     }
@@ -473,14 +473,19 @@ internal class NoteCanvas(
     }
 
     /**
-     * The summary tree as a wide reading card, as an outline or as the folder hierarchy; mode changes, expanding, selecting
-     * and new summaries rebuild only this card, in place.
+     * The summary tree as a wide reading card, as an outline, as the folder hierarchy, or as a document with its folder rail;
+     * mode changes, expanding, selecting and new summaries rebuild only this card, in place.
      */
     private fun summariesCard(content: SummariesCard): JPanel {
         val tree = content.summaries.tree
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
-        val width = cardWidth(
-            if (hierarchy) HierarchyColumnsPanel.defaultWidth(ChangeSummariesViewState.branchLevels(tree)) else SUMMARIES_WIDTH)
+        val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
+        val branchLevels = ChangeSummariesViewState.branchLevels(tree)
+        val width = cardWidth(when {
+            hierarchy -> HierarchyColumnsPanel.defaultWidth(branchLevels)
+            document -> DocumentColumnsPanel.defaultWidth(branchLevels)
+            else -> SUMMARIES_WIDTH
+        })
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -491,21 +496,28 @@ internal class NoteCanvas(
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 val summaries = content.summaries
-                val levels = ChangeSummariesViewState.branchLevels(tree)
-                if (hierarchy && levels > 0) add(summaryLevels(tree, levels))
+                if (hierarchy && branchLevels > 0) add(summaryLevels(tree, branchLevels))
                 val group = ButtonGroup()
-                ChangeSummariesMode.entries.forEach { mode ->
-                    add(JToggleButton(if (mode == ChangeSummariesMode.OUTLINE) "Outline" else "Hierarchy", summariesView.mode == mode).apply {
+                // Document mode shows patches, so it only exists for diffs.
+                ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DOCUMENT || vocabulary.documentMode }.forEach { mode ->
+                    add(JToggleButton(when (mode) {
+                        ChangeSummariesMode.OUTLINE -> "Outline"
+                        ChangeSummariesMode.HIERARCHY -> "Hierarchy"
+                        ChangeSummariesMode.DOCUMENT -> "Document"
+                    }, summariesView.mode == mode).apply {
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
                         cursor = Cursor.getDefaultCursor()
-                        toolTipText = if (mode == ChangeSummariesMode.OUTLINE) vocabulary.summariesOutlineTooltip
-                            else "Folders broad to specific, left to right, with each file's summary"
+                        toolTipText = when (mode) {
+                            ChangeSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
+                            ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
+                            ChangeSummariesMode.DOCUMENT -> "Every diff in folder order, with its summary and the folder rail"
+                        }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
                     })
                 }
-                if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
+                if (!document && summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
                 add(JButton(when {
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
@@ -536,21 +548,29 @@ internal class NoteCanvas(
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
-                isOpaque = false
-                add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
-                add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions, vocabulary))
-            } else ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary), BorderLayout.CENTER)
+            add(when {
+                hierarchy -> JPanel(VerticalLayout(scaled(8))).apply {
+                    isOpaque = false
+                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                    traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
+                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, zoom, actions, vocabulary))
+                }
+                document -> JPanel(VerticalLayout(scaled(8))).apply {
+                    isOpaque = false
+                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, zoom, actions, vocabulary))
+                }
+                else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary)
+            }, BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
-        val maxBody = scaled(MAX_SUMMARIES_HEIGHT)
+        val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
-            // A deep hierarchy may scroll sideways; leave room for that scroll bar.
-            val sideways = if (hierarchy && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
-            if (!hierarchy) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+            // A deep hierarchy or document rail may scroll sideways; leave room for that scroll bar.
+            val sideways = if ((hierarchy || document) && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
+            if (!hierarchy && !document) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)

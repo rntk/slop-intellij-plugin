@@ -28,9 +28,11 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Box
 import javax.swing.BoxLayout
+import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
 import javax.swing.border.EmptyBorder
@@ -147,57 +149,72 @@ internal class ChangeTopicActions(
 )
 
 /**
- * The change read as one document, like an article with its topic rail: every file's diff in topic order down the middle,
- * its summary in the left margin and the topic hierarchy on the right, broad topics outermost. Each rail card spans exactly
- * the diffs of its files, and a section is as tall as the taller of its diff and summary, so the three columns stay aligned.
+ * A change read as one document with its hierarchy rail: every file's diff down the middle, its summary in the left margin
+ * and the hierarchy on the right, broadest level outermost. Each rail card spans the diffs of its files, and a section is as
+ * tall as the taller of its diff and summary, so the three columns stay aligned.
  */
-internal class ChangeTopicsPanel(
-    card: TopicsCard,
-    private val state: ChangeTopicsViewState,
-    width: Int,
-    private val zoom: Double,
-    private val actions: ChangeTopicActions,
-    private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+internal abstract class DocumentColumnsPanel(
+    protected val zoom: Double,
+    protected val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : JPanel(null) {
-    val outline = topicOutline(card.topics)
+    protected class RailItem(
+        val key: String,
+        val name: String,
+        val title: String,
+        val family: String?,
+        val level: Int,
+        val first: Int,
+        val last: Int,
+        val tooltip: String,
+        val icon: Icon? = null,
+        val placeholder: Boolean = false,
+    )
+
     private val sections = mutableListOf<JComponent>()
     private val notes = mutableListOf<JComponent>()
-    private val rail = mutableListOf<Pair<TopicNode?, JComponent>>()
+    private val rail = mutableListOf<Pair<RailItem, JComponent>>()
     private val stickyHeaders = StickyCardHeaders()
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
-    private var hovered: TopicNode? = null
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
-    private val help get() = UIUtil.getContextHelpForeground()
+    private var hovered: RailItem? = null
+    protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+    protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    protected val help: Color get() = UIUtil.getContextHelpForeground()
 
-    init {
-        isOpaque = false
-        state.update(outline)
-        if (outline.files.isEmpty()) {
+    init { isOpaque = false }
+
+    protected abstract fun openFile(file: ReviewFile)
+    protected abstract fun showDiff(file: ReviewFile)
+    protected abstract fun isSelected(item: RailItem): Boolean
+    protected abstract fun select(item: RailItem)
+    protected open fun selectedFiles(): IntRange? = null
+
+    protected fun layoutDocument(
+        files: List<ReviewFile>,
+        summaries: Map<String, String?>,
+        items: List<RailItem>,
+        depth: Int,
+        width: Int,
+        missingSummary: String = "No summary yet",
+    ) {
+        if (files.isEmpty()) {
             val empty = text(vocabulary.noFiles, scaled(320), font(JBFont.label()), help)
             add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
             preferredSize = Dimension(scaled(320), empty.height)
-        } else layoutDocument(card, width)
-        applyActive()
-    }
-
-    private fun layoutDocument(card: TopicsCard, width: Int) {
-        // Files awaiting a topic still get a placeholder in the leaf column.
-        val depth = maxOf(outline.depth, if (outline.pending != null) 1 else 0)
+            applyActive()
+            return
+        }
         val railWidth = railWidth(depth, zoom)
         val summaryWidth = scaled(SUMMARY_WIDTH)
         val gap = scaled(COLUMN_GAP)
         val docWidth = (width - summaryWidth - railWidth - 2 * gap).coerceAtLeast(scaled(MIN_DOC_WIDTH))
         val docX = summaryWidth + gap
         val railX = docX + docWidth + gap
-        val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
-        val tops = IntArray(outline.files.size)
-        val bottoms = IntArray(outline.files.size)
+        val tops = IntArray(files.size)
+        val bottoms = IntArray(files.size)
         var y = 0
-        outline.files.forEachIndexed { index, file ->
-            // Document mode shows patches, so it only exists for diffs.
-            val section = section(file as ReviewFile, docWidth)
-            val note = note(file, summaries[file.path], summaryWidth)
+        files.forEachIndexed { index, file ->
+            val section = section(file, docWidth)
+            val note = note(file, summaries[file.path], missingSummary, summaryWidth)
             val height = maxOf(section.preferredSize.height, note.preferredSize.height)
             section.setBounds(docX, y, docWidth, height)
             add(section); add(noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) })
@@ -208,26 +225,25 @@ internal class ChangeTopicsPanel(
         val cardWidth = scaled(RAIL_CARD_WIDTH)
         val step = cardWidth + scaled(RAIL_GAP)
         // The leaf level sits next to the diffs; the broadest level is outermost, as in the article canvas.
-        fun place(node: TopicNode?, level: Int, first: Int, last: Int) {
-            val component = railCard(node, last - first + 1, cardWidth)
-            component.setBounds(railX + (depth - 1 - level) * step, tops[first], cardWidth, bottoms[last] - tops[first])
+        for (item in items) {
+            val component = railCard(item, cardWidth)
+            component.setBounds(railX + (depth - 1 - item.level) * step, tops[item.first], cardWidth, bottoms[item.last] - tops[item.first])
             add(component)
-            rail += node to component
+            rail += item to component
         }
-        outline.nodes.forEach { place(it, it.level, it.first, it.last) }
-        outline.pending?.let { place(null, depth - 1, it.first, it.last) }
         preferredSize = Dimension(railX + railWidth, (y - scaled(SECTION_GAP)).coerceAtLeast(0))
+        applyActive()
     }
 
-    /** The hovered topic, else the selected one, outlines its card and the diffs and summaries of its files. */
-    private fun applyActive() {
-        val active = hovered ?: outline.nodes.firstOrNull(state::isSelected)
-        val range = active?.let { it.first..it.last }
+    /** The hovered rail card, else the selected one, outlines its card and the diffs and summaries of its files. */
+    protected fun applyActive() {
+        val active = hovered ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
+        val range = active?.let { it.first..it.last } ?: selectedFiles()
         sections.forEachIndexed { index, section -> section.border = frame(range != null && index in range) }
         notes.forEachIndexed { index, note -> note.border = noteBorder(range != null && index in range) }
-        rail.forEach { (node, component) ->
-            component.border = railBorder(node, node != null && node == active)
-            component.background = if (node != null && state.isSelected(node)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
+        rail.forEach { (item, component) ->
+            component.border = railBorder(item, item == active)
+            component.background = if (!item.placeholder && isSelected(item)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
         }
         repaint()
     }
@@ -245,7 +261,7 @@ internal class ChangeTopicsPanel(
         if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
             isOpaque = false
             add(JLabel("… ${patch.hiddenLines} more lines").apply { font = font(JBFont.small()); foreground = help })
-            add(ActionLink("View full diff") { actions.openFile(file.path) }.apply { font = font(JBFont.small()) })
+            add(ActionLink("View full diff") { openFile(file) }.apply { font = font(JBFont.small()) })
         }, BorderLayout.SOUTH)
         preferredSize = Dimension(width, preferredSize.height)
     }
@@ -261,7 +277,7 @@ internal class ChangeTopicsPanel(
             isOpaque = false
             add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
             add(Box.createHorizontalStrut(scaled(6)))
-            add(ActionLink(name) { actions.openFile(file.path) }.apply {
+            add(ActionLink(name) { openFile(file) }.apply {
                 font = font(JBFont.label().asBold()); toolTipText = "View changes in ${file.path}"
                 minimumSize = Dimension(0, preferredSize.height)
             })
@@ -273,7 +289,7 @@ internal class ChangeTopicsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
         }, BorderLayout.CENTER)
-        add(InplaceButton(IconButton("Show diff in tab", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { actions.showDiffCard(file.path) }
+        add(InplaceButton(IconButton("Show diff in tab", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { showDiff(file) }
             .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff in tab" }, BorderLayout.EAST)
     }
 
@@ -285,44 +301,52 @@ internal class ChangeTopicsPanel(
         stickyHeaders.add(this, note)
     }
 
-    private fun note(file: ReviewSource, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {
+    private fun note(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent = JPanel(BorderLayout()).apply {
         isOpaque = false
         border = noteBorder(false)
         val inner = width - scaled(NOTE_INSET) - scaled(2)
         add(if (summary != null) text(summary, inner, font(JBFont.label()), null)
-            else text("No summary yet", inner, italic(JBFont.small()), help), BorderLayout.CENTER)
+            else text(missingSummary, inner, italic(JBFont.small()), help), BorderLayout.CENTER)
         toolTipText = "Summary of ${file.path} · LLM interpretation"
         preferredSize = Dimension(width, preferredSize.height)
     }
 
-    private fun railCard(node: TopicNode?, files: Int, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
-        name = node?.let { "topic:${it.level}:${it.identity}" } ?: "topic:pending"
+    private fun railCard(item: RailItem, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
+        name = item.name
         isOpaque = true
         background = UIUtil.getListBackground()
-        border = railBorder(node, false)
+        border = railBorder(item, false)
         val inner = width - scaled(RAIL_ACCENT) - scaled(14) - 2
+        val files = item.last - item.first + 1
+        val icon = item.icon
+        val title = text(item.title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0,
+            if (item.placeholder) italic(JBFont.label()) else font(JBFont.label().asBold()), if (item.placeholder) help else null)
         val heading = JPanel(VerticalLayout(scaled(2))).apply {
             isOpaque = false
-            add(text(node?.name ?: "Awaiting topic", inner, if (node != null) font(JBFont.label().asBold()) else italic(JBFont.label()), if (node == null) help else null))
+            add(if (icon == null) title else JPanel(BorderLayout(scaled(4), 0)).apply {
+                isOpaque = false
+                add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
+                add(title, BorderLayout.CENTER)
+            })
             add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
         }
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
-        toolTipText = node?.fullPath ?: "Run /topics to classify these files"
-        if (node == null) return@apply
+        toolTipText = item.tooltip
+        if (item.placeholder) return@apply
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         val card = this
         // Children cover most of the card, so each forwards hover and clicks; leaving into a child is not leaving the card.
         val listener = object : MouseAdapter() {
-            override fun mouseEntered(e: MouseEvent) { if (hovered != node) { hovered = node; applyActive() } }
+            override fun mouseEntered(e: MouseEvent) { if (hovered != item) { hovered = item; applyActive() } }
             override fun mouseExited(e: MouseEvent) {
-                if (hovered == node && !card.contains(SwingUtilities.convertPoint(e.component, e.point, card))) { hovered = null; applyActive() }
+                if (hovered == item && !card.contains(SwingUtilities.convertPoint(e.component, e.point, card))) { hovered = null; applyActive() }
             }
-            override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) { state.select(node); applyActive() } }
+            override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) { select(item); applyActive() } }
         }
         fun attach(component: Component) {
             component.addMouseListener(listener)
-            (component as? JComponent)?.toolTipText = node.fullPath
+            (component as? JComponent)?.toolTipText = item.tooltip
             if (component is Container) component.components.forEach(::attach)
         }
         attach(this)
@@ -338,9 +362,9 @@ internal class ChangeTopicsPanel(
         EmptyBorder(scaled(2), scaled(NOTE_INSET), scaled(2), 0),
     )
 
-    private fun railBorder(node: TopicNode?, active: Boolean): Border? = JBUI.Borders.compound(
+    private fun railBorder(item: RailItem, active: Boolean): Border? = JBUI.Borders.compound(
         MatteBorder(1, 1, 1, 1, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
-        MatteBorder(0, scaled(RAIL_ACCENT), 0, 0, node?.let { accent(it.path.first()) } ?: JBColor.border()),
+        MatteBorder(0, scaled(RAIL_ACCENT), 0, 0, item.family?.let(::accent) ?: JBColor.border()),
         EmptyBorder(scaled(6), scaled(8), scaled(6), scaled(6)),
     )
 
@@ -366,16 +390,77 @@ internal class ChangeTopicsPanel(
         private fun scaledBy(zoom: Double, n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
         fun railWidth(depth: Int, zoom: Double) =
             if (depth <= 0) 0 else depth * scaledBy(zoom, RAIL_CARD_WIDTH) + (depth - 1) * scaledBy(zoom, RAIL_GAP)
-        /** Unscaled width that fits the summaries, a readable diff column and every topic level. */
+        /** Unscaled width that fits the summaries, a readable diff column and every rail level. */
         fun defaultWidth(depth: Int) = SUMMARY_WIDTH + DOC_WIDTH + 2 * COLUMN_GAP +
             maxOf(depth, 1) * RAIL_CARD_WIDTH + (maxOf(depth, 1) - 1) * RAIL_GAP
 
-        /** One hue per top-level topic, so a subsystem reads as one family down the rail. */
+        /** One hue per top-level branch, so a subsystem reads as one family down the rail. */
         private val ACCENTS = listOf(
             JBColor(0x4C7DD9, 0x5F8FE6), JBColor(0x2E9E6B, 0x4DB383), JBColor(0xD9822B, 0xE09A50), JBColor(0xB04FC2, 0xC27AD1),
             JBColor(0xD04A5A, 0xDB6B78), JBColor(0x1F9AA8, 0x45B4C0), JBColor(0x8A7A2E, 0xB0A050), JBColor(0x6A62D4, 0x8A84E0),
         )
         internal fun accent(topLevel: String): Color = ACCENTS[Math.floorMod(topLevel.lowercase().hashCode(), ACCENTS.size)]
+    }
+}
+
+/**
+ * The change read as one document, like an article with its topic rail: every file's diff in topic order down the middle,
+ * its summary in the left margin and the topic hierarchy on the right, broad topics outermost. Each rail card spans exactly
+ * the diffs of its files, and a section is as tall as the taller of its diff and summary, so the three columns stay aligned.
+ */
+internal class ChangeTopicsPanel(
+    card: TopicsCard,
+    private val state: ChangeTopicsViewState,
+    width: Int,
+    zoom: Double,
+    private val actions: ChangeTopicActions,
+    vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+) : DocumentColumnsPanel(zoom, vocabulary) {
+    val outline = topicOutline(card.topics)
+    private val nodesByKey = outline.nodes.associateBy { "${it.level}:${it.identity}" }
+
+    init {
+        state.update(outline)
+        // Files awaiting a topic still get a placeholder in the leaf column.
+        val depth = maxOf(outline.depth, if (outline.pending != null) 1 else 0)
+        val items = outline.nodes.map { node ->
+            RailItem(
+                key = "${node.level}:${node.identity}",
+                name = "topic:${node.level}:${node.identity}",
+                title = node.name,
+                family = node.path.first(),
+                level = node.level,
+                first = node.first,
+                last = node.last,
+                tooltip = node.fullPath,
+            )
+        } + listOfNotNull(outline.pending?.let { pending ->
+            RailItem(
+                key = "pending",
+                name = "topic:pending",
+                title = "Awaiting topic",
+                family = null,
+                level = depth - 1,
+                first = pending.first,
+                last = pending.last,
+                tooltip = "Run /topics to classify these files",
+                placeholder = true,
+            )
+        })
+        val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
+        // Document mode shows patches, so it only exists for diffs.
+        layoutDocument(outline.files.map { it as ReviewFile }, summaries, items, depth, width)
+    }
+
+    override fun openFile(file: ReviewFile) = actions.openFile(file.path)
+    override fun showDiff(file: ReviewFile) = actions.showDiffCard(file.path)
+    override fun isSelected(item: RailItem): Boolean = nodesByKey[item.key]?.let(state::isSelected) == true
+    override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }
+
+    companion object {
+        fun railWidth(depth: Int, zoom: Double) = DocumentColumnsPanel.railWidth(depth, zoom)
+        fun defaultWidth(depth: Int) = DocumentColumnsPanel.defaultWidth(depth)
+        internal fun accent(topLevel: String): Color = DocumentColumnsPanel.accent(topLevel)
     }
 }
 

@@ -70,6 +70,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }).apply { setSize(1600, 900) }
         try {
             canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
+            assertTrue(descendants(canvas).filterIsInstance<JToggleButton>().none { it.name == "summaries-mode:document" })
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -94,6 +95,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun names() = panel().components.mapNotNull { it.name }
         try {
             canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
+            assertTrue(descendants(canvas).filterIsInstance<JToggleButton>().none { it.name == "summaries-mode:document" })
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.

@@ -102,16 +102,88 @@ internal class ChangeSummaryHierarchyPanel(
     }
 
     /** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
-    private fun title(node: SummaryNode): String = when (node.kind) {
-        SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
-        SummaryKind.DIRECTORY -> "${node.label}/"
+    private fun title(node: SummaryNode): String = summaryNodeTitle(node)
+
+    private fun icon(node: SummaryNode): Icon = summaryNodeIcon(node)
+}
+
+/**
+ * The change read as one document with its folder rail, like the topics document: every file's diff in tree order down the
+ * middle, its summary in the left margin and the folders and groups on the right, the root outermost. Each rail card spans
+ * the diffs of its files, and each top-level folder keeps one hue down its columns.
+ */
+internal class ChangeSummaryDocumentPanel(
+    card: SummariesCard,
+    private val state: ChangeSummariesViewState,
+    width: Int,
+    zoom: Double,
+    private val actions: ChangeSummaryActions,
+    vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+) : DocumentColumnsPanel(zoom, vocabulary) {
+    private val summaries = card.summaries
+    private val tree = summaries.tree
+    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file is ReviewFile }
+    val files: List<ReviewFile> = fileNodes.map { it.file as ReviewFile }
+    private val nodesByPath = fileNodes.associateBy { it.path }
+
+    init {
+        state.update(tree)
+        val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
+        val items = mutableListOf<RailItem>()
+        fun collect(node: SummaryNode, level: Int, family: String?) {
+            if (!isFolderBranch(node)) return
+            val first = indexByPath[node.files.firstOrNull()]
+            val last = indexByPath[node.files.lastOrNull()]
+            if (first != null && last != null) {
+                items += RailItem(
+                    key = node.identity,
+                    name = "node:${node.identity}",
+                    title = summaryNodeTitle(node),
+                    family = family,
+                    level = level,
+                    first = first,
+                    last = last,
+                    tooltip = node.location,
+                    icon = summaryNodeIcon(node),
+                )
+            }
+            // Each top-level folder keeps one hue down its columns; the root stays neutral.
+            for (child in node.children.map(tree::get)) collect(child, level + 1, family ?: child.identity)
+        }
+        if (files.isNotEmpty()) collect(tree.root, 0, null)
+        val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
+        val missing = if (card.running) "Summarizing…" else "No summary yet"
+        layoutDocument(files, fileSummaries, items, ChangeSummariesViewState.branchLevels(tree), width, missing)
     }
 
-    private fun icon(node: SummaryNode): Icon = when (node.kind) {
-        SummaryKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(node.path.substringAfterLast('/')).icon ?: AllIcons.FileTypes.Any_type
-        SummaryKind.CHUNK -> AllIcons.FileTypes.Text
-        SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder
-        SummaryKind.GROUP -> AllIcons.Actions.GroupBy
-        SummaryKind.ROOT -> AllIcons.Vcs.Changelist
+    override fun openFile(file: ReviewFile) {
+        nodesByPath[file.path]?.let(actions.openNode) ?: actions.openFile(file.path)
     }
+
+    override fun showDiff(file: ReviewFile) {
+        val show = actions.showNode
+        val node = nodesByPath[file.path]
+        if (show != null && node != null) show(node) else actions.showDiffCard(file.path)
+    }
+
+    override fun isSelected(item: RailItem): Boolean = state.selected == item.key
+
+    override fun select(item: RailItem) { state.select(item.key) }
+
+    override fun selectedFiles(): IntRange? =
+        files.indexOfFirst { "file:${it.path}" == state.selected }.takeIf { it >= 0 }?.let { it..it }
+}
+
+/** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
+private fun summaryNodeTitle(node: SummaryNode): String = when (node.kind) {
+    SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
+    SummaryKind.DIRECTORY -> "${node.label}/"
+}
+
+private fun summaryNodeIcon(node: SummaryNode): Icon = when (node.kind) {
+    SummaryKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(node.path.substringAfterLast('/')).icon ?: AllIcons.FileTypes.Any_type
+    SummaryKind.CHUNK -> AllIcons.FileTypes.Text
+    SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder
+    SummaryKind.GROUP -> AllIcons.Actions.GroupBy
+    SummaryKind.ROOT -> AllIcons.Vcs.Changelist
 }
