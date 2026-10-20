@@ -125,6 +125,87 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
         }
     }
 
+    fun `test an entry file loads the project files it depends on, transitively`() {
+        myFixture.addFileToProject("app/Main.java",
+            "package app;\nimport app.util.Helper;\npublic class Main { void run() { Helper.help(); } }\n")
+        myFixture.addFileToProject("app/util/Helper.java",
+            "package app.util;\npublic class Helper { public static void help() { new Model(); } }\n")
+        myFixture.addFileToProject("app/util/Model.java", "package app.util;\nclass Model extends Base {}\n")
+        myFixture.addFileToProject("app/base/Base.java", "package app.base;\npublic class Base {}\n")
+        myFixture.addFileToProject("app/util/Base.java", "package app.util;\nclass Base {}\n")
+        myFixture.addFileToProject("app/other/Unrelated.java", "package app.other;\npublic class Unrelated { void u() { app.Main m = null; } }\n")
+
+        val scope = scope("app/Main.java")
+        assertTrue(scope.entry)
+        assertEquals("app/Main.java and its dependencies", scope.displayName)
+        val snapshot = load(scope)
+        // Imports, static calls, constructor calls in the same package and inheritance; nothing that only uses the entry.
+        assertEquals(listOf("app/Main.java", "app/util/Base.java", "app/util/Helper.java", "app/util/Model.java"),
+            snapshot.files.map { it.path })
+        assertEquals("app", snapshot.baseFolder)
+        assertFalse(snapshot.truncated)
+
+        val limited = load(scope, limits = CodeLimits(maxFiles = 2))
+        // The nearest files are kept: the entry and what it uses directly.
+        assertEquals(listOf("app/Main.java", "app/util/Helper.java"), limited.files.map { it.path })
+        assertTrue(limited.truncated)
+        // Model is found from Helper but not followed, so Base is never reached.
+        assertEquals(1, limited.overLimit)
+    }
+
+    fun `test an entry file does not follow excluded files`() {
+        myFixture.addFileToProject("walk/Entry.java", "package walk;\npublic class Entry { walk.gen.Out o; }\n")
+        myFixture.addFileToProject("walk/gen/Out.java", "package walk.gen;\npublic class Out { walk.Hidden h; }\n")
+        myFixture.addFileToProject("walk/Hidden.java", "package walk;\npublic class Hidden {}\n")
+        val out = myFixture.findFileInTempDir("walk/gen")
+        PsiTestUtil.addExcludedRoot(module, out)
+        try {
+            assertEquals(listOf("walk/Entry.java"), load(scope("walk/Entry.java")).files.map { it.path })
+            assertThrows(IllegalArgumentException::class.java) { scope("walk/gen/Out.java") }
+        } finally {
+            PsiTestUtil.removeExcludedRoot(module, out)
+        }
+    }
+
+    fun `test exclude patterns leave out files and folders of a folder scope`() {
+        myFixture.addFileToProject("ex/src/a.kt", "fun a() = 1\n")
+        myFixture.addFileToProject("ex/src/b.js", "var b = 1;\n")
+        myFixture.addFileToProject("ex/web/c.js", "var c = 1;\n")
+        myFixture.addFileToProject("ex/web/d.ts", "let d = 1;\n")
+        myFixture.addFileToProject("ex/legacy/old.kt", "fun old() = 1\n")
+        myFixture.addFileToProject("ex/legacy/deep/older.kt", "fun older() = 1\n")
+        myFixture.addFileToProject("ex/test/t.kt", "fun t() = 1\n")
+
+        val scope = scope("ex").copy(excludes = listOf("web/*.js", "legacy", "test/"))
+        val snapshot = load(scope)
+        assertEquals(listOf("ex/src/a.kt", "ex/src/b.js", "ex/web/d.ts"), snapshot.files.map { it.path })
+        // web/c.js, and the legacy and test folders without their contents.
+        assertEquals(3, snapshot.excludedCount)
+        assertTrue(codeStatusText(snapshot).endsWith("· 3 excluded"))
+        assertTrue("excluded_patterns" in codeOverview(snapshot, null, emptyList(), emptyList(), emptyList(), null))
+
+        assertEquals(listOf("ex/legacy/deep/older.kt", "ex/legacy/old.kt", "ex/test/t.kt", "ex/web/d.ts"),
+            load(scope("ex").copy(excludes = listOf("*.js", "src"))).files.map { it.path })
+        // The chosen folder itself is never excluded.
+        assertEquals(listOf("ex/test/t.kt"), load(scope("ex/test").copy(excludes = listOf("test/"))).files.map { it.path })
+    }
+
+    fun `test exclude patterns stop the dependency walk of an entry file`() {
+        myFixture.addFileToProject("dep/Main.java", "package dep;\npublic class Main { dep.lib.Lib l; dep.Util u; }\n")
+        myFixture.addFileToProject("dep/Util.java", "package dep;\npublic class Util {}\n")
+        myFixture.addFileToProject("dep/lib/Lib.java", "package dep.lib;\npublic class Lib { dep.Deep d; }\n")
+        myFixture.addFileToProject("dep/Deep.java", "package dep;\npublic class Deep {}\n")
+
+        val scope = scope("dep/Main.java")
+        assertEquals(listOf("dep/Deep.java", "dep/Main.java", "dep/Util.java", "dep/lib/Lib.java"), load(scope).files.map { it.path })
+        val snapshot = load(scope.copy(excludes = listOf("lib/", "Util.java")))
+        // Lib is not followed, so Deep, reached only through it, is left out too.
+        assertEquals(listOf("dep/Main.java"), snapshot.files.map { it.path })
+        assertEquals(2, snapshot.excludedCount)
+        // The entry file is never excluded from its own scope.
+        assertEquals(listOf("dep/Main.java"), load(scope.copy(excludes = listOf("*.java"))).files.map { it.path })
+    }
+
     fun `test scope validation`() {
         myFixture.addFileToProject("valid/a.kt", "fun a() = 1\n")
         val directory = myFixture.findFileInTempDir("valid")
@@ -133,7 +214,8 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
         assertEquals("", scope("").path)
         assertEquals("", scope(".").path)
         assertThrows(IllegalArgumentException::class.java) { scope("missing") }
-        assertThrows(IllegalArgumentException::class.java) { scope("valid/a.kt") }
+        assertEquals(CodeScope("valid/a.kt", myFixture.findFileInTempDir("valid/a.kt").path, entry = true), scope("valid/a.kt"))
+        assertEquals(scope("valid/a.kt"), scope(myFixture.findFileInTempDir("valid/a.kt").path))
         assertThrows(IllegalArgumentException::class.java) { scope("valid/../valid") }
     }
 

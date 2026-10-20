@@ -22,12 +22,16 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.InplaceButton
+import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
@@ -93,28 +97,32 @@ class OpenCodeReviewAction : DumbAwareAction() {
     }
 }
 
-/** Project View: review the code in one project folder. */
+/** Project View and editor tabs: review the code in one project folder, or one entry file and what it depends on. */
 class ReviewDirectoryAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        val directory = directory(e)
-        e.presentation.isVisible = directory != null
-        e.presentation.isEnabled = directory != null && e.project?.let { project ->
-            ReadAction.compute<Boolean, RuntimeException> { runCatching { codeScope(project, directory) }.isSuccess }
+        val target = target(e)
+        e.presentation.isVisible = target != null
+        if (target != null && !target.isDirectory) {
+            e.presentation.text = "Review Code from This File"
+            e.presentation.description = "Open Code Review for this file and the project files it depends on"
+        }
+        e.presentation.isEnabled = target != null && e.project?.let { project ->
+            ReadAction.compute<Boolean, RuntimeException> { runCatching { codeScope(project, target) }.isSuccess }
         } == true
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val directory = directory(e) ?: return
-        withCodeReviewPanel(project) { it.setScope(directory) }
+        val target = target(e) ?: return
+        withCodeReviewPanel(project) { it.setScope(target) }
     }
 
-    private fun directory(e: AnActionEvent): VirtualFile? {
+    private fun target(e: AnActionEvent): VirtualFile? {
         if (e.project == null) return null
-        val files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY) ?: return null
-        return files.singleOrNull()?.takeIf { it.isDirectory }
+        val files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY) ?: e.getData(CommonDataKeys.VIRTUAL_FILE)?.let { arrayOf(it) }
+        return files?.singleOrNull()
     }
 }
 
@@ -144,8 +152,10 @@ internal class CodeReviewPanel(
     /** The files of [scope]; null until the first load. */
     internal var snapshot: CodeSnapshot? = null
         private set
-    /** The absolute path of the scope folder, read by the file listener on any thread. */
+    /** The absolute path of the scope folder or entry file, read by the file listener on any thread. */
     @Volatile private var scopeRoot: String? = null
+    /** For an entry file, the absolute paths of the files in its snapshot; null for a folder. */
+    @Volatile private var watchedFiles: Set<String>? = null
     private val tree = Tree(DefaultMutableTreeNode("Files"))
     private val skippedModel = DefaultListModel<String>()
     private val skippedList = JBList(skippedModel).apply { emptyText.text = "No skipped files" }
@@ -165,7 +175,7 @@ internal class CodeReviewPanel(
         add(skippedScroll, BorderLayout.CENTER)
         isVisible = false
     }
-    internal val status = JLabel("Choose a folder to review")
+    internal val status = JLabel("Choose a folder or an entry file to review")
     private val scopeControls = CodeScopeControls(project, onError = { message -> status.text = message; status.toolTipText = message }) { scope ->
         setScope(scope)
     }
@@ -270,6 +280,26 @@ internal class CodeReviewPanel(
         tree.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) selectedFile()?.let { openFile(it.path, null) } }
         })
+        PopupHandler.installPopupMenu(tree, DefaultActionGroup(
+            object : DumbAwareAction("Exclude from Scope", "Leave the selected files and folders out of the review", AllIcons.Actions.Cancel) {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) { e.presentation.isEnabled = refreshJob?.isActive != true && excludeSelectionPatterns().isNotEmpty() }
+                override fun actionPerformed(e: AnActionEvent) { exclude(excludeSelectionPatterns()) }
+            },
+            object : DumbAwareAction() {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) {
+                    val type = selectedFileType()
+                    e.presentation.isVisible = type != null
+                    e.presentation.isEnabled = type != null && refreshJob?.isActive != true
+                    if (type != null) e.presentation.text = "Exclude All *.${type.second} Files in ${type.first.ifEmpty { "the Project" }}"
+                }
+                override fun actionPerformed(e: AnActionEvent) {
+                    val (folder, extension) = selectedFileType() ?: return
+                    exclude(listOf(CodeExclusions.ofType(folder, extension)))
+                }
+            },
+        ), "Insight.CodeReviewFiles")
         tree.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "openFile")
         tree.actionMap.put("openFile", object : AbstractAction() {
             override fun actionPerformed(e: java.awt.event.ActionEvent?) {
@@ -308,14 +338,14 @@ internal class CodeReviewPanel(
         try {
             setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, "") })
         } catch (e: IllegalArgumentException) {
-            status.text = "Choose a folder to review: ${e.message}"
+            status.text = "Choose a folder or an entry file to review: ${e.message}"
         }
     }
 
-    /** Reviews [directory]; an invalid folder is reported in the status line. */
-    fun setScope(directory: VirtualFile) {
+    /** Reviews the folder or entry file [file] with the current exclusions; an invalid one is reported in the status line. */
+    fun setScope(file: VirtualFile) {
         try {
-            setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, directory) })
+            setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, file) }.copy(excludes = scope?.excludes.orEmpty()))
         } catch (e: IllegalArgumentException) {
             status.text = e.message ?: "Choose a project folder."
             status.toolTipText = status.text
@@ -327,18 +357,37 @@ internal class CodeReviewPanel(
         if (disposed) return
         this.scope = scope
         scopeRoot = scope.absolutePath.trimEnd('/')
+        watchedFiles = if (scope.entry) setOf(scope.absolutePath) else null
         scopeControls.show(scope)
         refresh(stopTabs = true)
     }
 
     private fun affects(root: String, event: VFileEvent): Boolean {
         val path = event.path
+        watchedFiles?.let { watched -> return affectsDependencies(watched, event) }
         if (path != root && !path.startsWith("$root/")) return false
         if ("/.idea/" in "${path.removePrefix(root)}/") return false
+        scope?.let { scope ->
+            // Changes in excluded files and folders need no reload.
+            val relative = listOf(scope.path, path.removePrefix(root).trim('/')).filter { it.isNotEmpty() }.joinToString("/")
+            if (path != root && scope.exclusions.excludes(relative, from = scope.path)) return false
+        }
         val file = event.file ?: return true
         if (!file.isValid) return true
         // Excluded folders (build output) are not content; their changes need no reload.
         return ProjectFileIndex.getInstance(project).isInContent(file)
+    }
+
+    /**
+     * An entry file's dependencies change when one of its files changes, or when a project file appears, which may resolve
+     * a reference that resolved to nothing before.
+     */
+    private fun affectsDependencies(watched: Set<String>, event: VFileEvent): Boolean {
+        if (event.path in watched) return true
+        if (event !is VFileCreateEvent && event !is VFileMoveEvent && event !is VFileCopyEvent) return false
+        if ("/.idea/" in event.path) return false
+        val file = event.file ?: return true
+        return file.isValid && ProjectFileIndex.getInstance(project).isInContent(file)
     }
 
     private fun scheduleRefresh() {
@@ -363,12 +412,14 @@ internal class CodeReviewPanel(
             try {
                 val loaded = CodeReviewLoader(project).load(scope, previous)
                 snapshot = loaded
+                if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
                 val removed = reviewTabs.sumOf { it.update(loaded) }
                 renderFiles(loaded)
                 updateSkipped(loaded)
                 status.text = codeStatusText(loaded) + if (removed > 0) " · $removed outdated notes removed" else ""
                 status.toolTipText = "${loaded.scope.absolutePath}\n${status.text}" +
-                    if (loaded.ignoredCount > 0) "\n${loaded.ignoredCount} ignored files and folders were not read." else ""
+                    (if (loaded.ignoredCount > 0) "\n${loaded.ignoredCount} ignored files and folders were not read." else "") +
+                    if (loaded.scope.excludes.isNotEmpty()) "\nExcluded: ${CodeExclusions.format(loaded.scope.excludes)}" else ""
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -444,6 +495,30 @@ internal class CodeReviewPanel(
         }
     }.distinct()
 
+    /** Patterns for exactly the selected files and folders; an entry file is never excluded from its own scope. */
+    internal fun excludeSelectionPatterns(): List<String> = tree.selectionPaths.orEmpty().mapNotNull { path ->
+        when (val entry = (path.lastPathComponent as DefaultMutableTreeNode).userObject) {
+            is CodeFile -> entry.path.takeUnless { scope?.entry == true && it == scope?.path }?.let { CodeExclusions.exact(it, directory = false) }
+            is FolderEntry -> CodeExclusions.exact(entry.path, directory = true)
+            else -> null
+        }
+    }.distinct()
+
+    /** The folder and extension of the single selected file, for excluding every file of that type in its folder. */
+    private fun selectedFileType(): Pair<String, String>? {
+        val file = selectedFile()?.takeIf { tree.selectionCount == 1 } ?: return null
+        val name = file.path.substringAfterLast('/')
+        val extension = name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && name.indexOf('.') > 0 } ?: return null
+        return file.path.substringBeforeLast('/', "") to extension
+    }
+
+    /** Applies the current scope with [patterns] added to its exclusions. */
+    internal fun exclude(patterns: List<String>) {
+        val scope = scope ?: return
+        val excludes = (scope.excludes + patterns).distinct()
+        if (excludes != scope.excludes) setScope(scope.copy(excludes = excludes))
+    }
+
     /** The project-relative paths of the files listed in the tree. */
     internal fun listedFiles(): List<String> = (tree.model.root as DefaultMutableTreeNode).depthFirstEnumeration().toList()
         .mapNotNull { ((it as DefaultMutableTreeNode).userObject as? CodeFile)?.path }.sorted()
@@ -465,7 +540,7 @@ internal class CodeReviewPanel(
         val root = DefaultMutableTreeNode("Files")
         val folders = HashMap<String, DefaultMutableTreeNode>()
         folders[""] = root
-        val base = snapshot.scope.path
+        val base = snapshot.baseFolder
         val fileNodes = mutableListOf<Pair<DefaultMutableTreeNode, DefaultMutableTreeNode>>()
         for (file in snapshot.files) {
             // Paths below the scope folder; the folder itself is the invisible root.
@@ -554,6 +629,8 @@ internal fun codeStatusText(snapshot: CodeSnapshot): String {
     var text = "${count(files)} ${if (files == 1) "file" else "files"} · ${count(skippedCount(snapshot))} skipped"
     if (snapshot.chunkedFiles > 0) text += " · ${count(snapshot.chunkedFiles)} large ${if (snapshot.chunkedFiles == 1) "file" else "files"} " +
         "split into ${count(snapshot.partCount)} parts"
-    if (snapshot.truncated) text += " · Stopped at the scope limit: ${count(snapshot.overLimit)} files not loaded. Choose a subdirectory."
+    if (snapshot.scope.excludes.isNotEmpty()) text += " · ${count(snapshot.excludedCount)} excluded"
+    if (snapshot.truncated) text += " · Stopped at the scope limit: ${count(snapshot.overLimit)} files not loaded. " +
+        if (snapshot.scope.entry) "Choose an entry file with fewer dependencies." else "Choose a subdirectory."
     return text
 }

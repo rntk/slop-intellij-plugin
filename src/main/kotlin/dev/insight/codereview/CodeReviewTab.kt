@@ -351,7 +351,9 @@ internal class CodeReviewTab(
     private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
 
     private fun promptScope(): String {
-        val name = state.snapshot.scope.path.ifEmpty { "the project root" }
+        val scope = state.snapshot.scope
+        val name = if (scope.entry) "the entry file ${scope.path} and the project files it depends on (imports, calls and references, " +
+            "transitively)" else scope.path.ifEmpty { "the project root" }
         return state.scopePaths?.let { "${it.size} selected paths of $name" } ?: name
     }
 

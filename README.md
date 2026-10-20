@@ -36,5 +36,5 @@ For containerized builds and checks without a local toolchain, use the Docker he
 - [`build.gradle.kts`](build.gradle.kts) — Build configuration, target platform settings, and Gradle tasks.
 - [`docker.sh`](docker.sh) — Containerized build, test, and artifact export workflow.
 - [`flows/flowchart.md`](flows/flowchart.md) — Design notes for flow charts and interactive chart chat.
-- [`flows/code-review.md`](flows/code-review.md) — Design notes for Code Review: start directory, loading limits, large-file chunking, chat tools, summaries and topics.
+- [`flows/code-review.md`](flows/code-review.md) — High-level overview of Code Review.
 - `META-INF/plugin.xml` (under `src/main/resources/`) — Plugin descriptor registering tool windows, actions, settings, and language extensions.

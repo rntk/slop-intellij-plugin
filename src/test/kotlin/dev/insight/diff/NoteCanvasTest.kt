@@ -104,6 +104,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertTrue(note.x + note.width <= sections[index].x)
                 assertTrue(sections[index].height >= note.height)
             }
+            // A summary follows the viewport down its section, but never past the section's end.
+            val column = named("summary:src/wallet.kt") as Container
+            val text = column.getComponent(0)
+            panel.updateStickyHeaders(column.y + 5)
+            assertEquals(5, text.y)
+            panel.updateStickyHeaders(column.y + column.height + 100)
+            assertEquals(column.height - text.height, text.y)
+            panel.updateStickyHeaders(0)
+            assertEquals(0, text.y)
             val texts = descendants(panel).filterIsInstance<javax.swing.JTextArea>().map { it.text }
             assertTrue(texts.contains("Adds token refresh."))
             assertEquals(3, texts.count { it == "No summary yet" })
@@ -134,6 +143,81 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val long = PatchView("@@ -1,0 +1,900 @@\n" + "+x\n".repeat(900), 400, 1.0)
         assertEquals(PatchView.MAX_LINES, long.lineCount)
         assertEquals(901 - PatchView.MAX_LINES, long.hiddenLines)
+    }
+
+    fun testTopicHeadingsStayInViewWhileLongCardsScroll() {
+        val files = (1..24).map { index ->
+            val path = "src/file$index.kt"
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n" + "+line\n".repeat(30), "1")
+        }
+        val topics = files.fold(ChangeTopics(files)) { result, file -> result.assign(file.path, "Storage>User") }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(files)), canRun = false))
+            layoutTree(canvas)
+            val document = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            val documentScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, document) as javax.swing.JScrollPane
+            val file = document.components.single { it.name == "file:src/file1.kt" } as Container
+            val fileHeading = file.components.first()
+            val topic = document.components.single { it.name == "topic:0:storage" } as Container
+            val topicHeading = topic.components.first()
+            val outer = canvas.tabs.selectedComponent as javax.swing.JScrollPane
+            outer.verticalScrollBar.value = 120
+            assertTrue(fileHeading.y > file.insets.top)
+            assertTrue(topicHeading.y > topic.insets.top)
+            assertTrue(javax.swing.SwingUtilities.convertPoint(fileHeading, 0, 0, outer.viewport).y >= 0)
+            assertTrue(javax.swing.SwingUtilities.convertPoint(topicHeading, 0, 0, outer.viewport).y >= 0)
+            // A layout pass between scrolls keeps the headings where the scroll put them.
+            val stuck = fileHeading.y to topicHeading.y
+            file.doLayout(); topic.doLayout()
+            assertEquals(stuck, fileHeading.y to topicHeading.y)
+            outer.verticalScrollBar.value = 0
+            documentScroll.verticalScrollBar.value = 120
+            assertTrue(fileHeading.y > file.insets.top)
+            assertTrue(topicHeading.y > topic.insets.top)
+            assertTrue(fileHeading.y + fileHeading.height <= file.height - file.insets.bottom)
+
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            layoutTree(canvas)
+            val hierarchy = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
+            val hierarchyScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
+            val branch = hierarchy.components.single { it.name == "topic:0:storage" } as Container
+            val branchHeading = branch.components.first()
+            outer.verticalScrollBar.value = 120
+            assertTrue(branchHeading.y > branch.insets.top)
+            assertTrue(javax.swing.SwingUtilities.convertPoint(branchHeading, 0, 0, outer.viewport).y >= 0)
+            outer.verticalScrollBar.value = 0
+            hierarchyScroll.verticalScrollBar.value = 120
+            assertTrue(branchHeading.y > branch.insets.top)
+            assertTrue(branchHeading.y + branchHeading.height <= branch.height - branch.insets.bottom)
+        } finally { canvas.dispose() }
+    }
+
+    fun testSummaryHierarchyFolderHeadingStaysInView() {
+        val files = (1..24).map { index ->
+            val path = "src/file$index.kt"
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false))
+            canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
+            layoutTree(canvas)
+            val hierarchy = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
+            val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
+            val root = hierarchy.components.single { it.name == "node:${tree.root.identity}" } as Container
+            val heading = root.components.first()
+            val outer = canvas.tabs.selectedComponent as javax.swing.JScrollPane
+            outer.verticalScrollBar.value = 120
+            assertTrue(heading.y > root.insets.top)
+            assertTrue(javax.swing.SwingUtilities.convertPoint(heading, 0, 0, outer.viewport).y >= 0)
+            outer.verticalScrollBar.value = 0
+            scroll.verticalScrollBar.value = 120
+            assertTrue(heading.y > root.insets.top)
+            assertTrue(heading.y + heading.height <= root.height - root.insets.bottom)
+        } finally { canvas.dispose() }
     }
 
     fun testTopicsHierarchySpansChildRowsWithSummariesBesideFilesAndFolds() {

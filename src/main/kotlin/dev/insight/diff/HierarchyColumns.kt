@@ -46,6 +46,8 @@ internal abstract class HierarchyColumnsPanel(
     private var right = 0
     /** The card of each node by its summary identity, so a traced match can be scrolled into view. */
     val anchors = mutableMapOf<String, JComponent>()
+    private val stickyHeaders = StickyCardHeaders()
+    fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
     protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
     protected val help: Color get() = UIUtil.getContextHelpForeground()
@@ -109,26 +111,31 @@ internal abstract class HierarchyColumnsPanel(
         name: String, title: String, family: String?, column: Int, files: Int, active: Boolean, tooltip: String,
         toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
         caption: String? = null, select: (() -> Unit)? = null,
-    ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
+    ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
         background = matchBackground(mark) ?: tint(family, column)
         border = cardBorder(family, active, mark)
         toolTipText = tooltip
         val inner = cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + INNER_GAP) - 4
-        add(toggle ?: gutter(null), BorderLayout.WEST)
-        add(JPanel(VerticalLayout(scaled(2))).apply {
+        val headingRow = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
             isOpaque = false
-            val heading = text(title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0,
-                if (placeholder) italic(JBFont.label()) else font(JBFont.label().asBold()), if (placeholder) help else null)
-            add(if (icon == null) heading else JPanel(BorderLayout(scaled(4), 0)).apply {
+            add(toggle ?: gutter(null), BorderLayout.WEST)
+            add(JPanel(VerticalLayout(scaled(2))).apply {
                 isOpaque = false
-                add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
-                add(heading, BorderLayout.CENTER)
-            })
-            add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
-            badge?.let { add(badge(it, inner)) }
-        }, BorderLayout.CENTER)
+                val heading = text(title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0,
+                    if (placeholder) italic(JBFont.label()) else font(JBFont.label().asBold()), if (placeholder) help else null)
+                add(if (icon == null) heading else JPanel(BorderLayout(scaled(4), 0)).apply {
+                    isOpaque = false
+                    add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
+                    add(heading, BorderLayout.CENTER)
+                })
+                add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+                badge?.let { add(badge(it, inner)) }
+            }, BorderLayout.CENTER)
+        }
+        add(headingRow, BorderLayout.NORTH)
+        stickyHeaders.add(this, headingRow)
         if (select == null) return@apply
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         // Children cover most of the card, so each forwards clicks; the toggle keeps its own.
@@ -174,14 +181,15 @@ internal abstract class HierarchyColumnsPanel(
         open: () -> Unit, showOnCanvas: (() -> Unit)?, mark: TraceMark? = null, badge: String? = null,
         select: (() -> Unit)? = null,
         name: String = "file:${file.path}", tooltip: String = file.path, icon: Icon? = null, details: List<String>? = null,
-    ): JComponent = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
+    ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
         background = matchBackground(mark) ?: tint(family, column)
         border = cardBorder(family, active, mark)
         toolTipText = tooltip
         val fileName = file.path.substringAfterLast('/')
-        add(JLabel(icon ?: FileTypeManager.getInstance().getFileTypeByFileName(fileName).icon ?: AllIcons.FileTypes.Any_type).apply {
+        val headingRow = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply { isOpaque = false }
+        headingRow.add(JLabel(icon ?: FileTypeManager.getInstance().getFileTypeByFileName(fileName).icon ?: AllIcons.FileTypes.Any_type).apply {
             verticalAlignment = SwingConstants.TOP
             preferredSize = Dimension(scaled(TOGGLE), preferredSize.height)
         }, BorderLayout.WEST)
@@ -199,13 +207,15 @@ internal abstract class HierarchyColumnsPanel(
             add(detailsLabel)
             badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
         }
-        add(center, BorderLayout.CENTER)
+        headingRow.add(center, BorderLayout.CENTER)
         val canvasText = vocabulary.showOnCanvas
-        if (showOnCanvas != null && canvasText != null) add(JPanel(BorderLayout()).apply {
+        if (showOnCanvas != null && canvasText != null) headingRow.add(JPanel(BorderLayout()).apply {
             isOpaque = false
             add(InplaceButton(IconButton(canvasText, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showOnCanvas() }
                 .apply { cursor = Cursor.getDefaultCursor(); toolTipText = canvasText }, BorderLayout.NORTH)
         }, BorderLayout.EAST)
+        add(headingRow, BorderLayout.NORTH)
+        stickyHeaders.add(this, headingRow)
         if (select == null) return@apply
         val listener = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) select() }

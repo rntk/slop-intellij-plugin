@@ -49,6 +49,9 @@ internal fun codeOverview(
 ): String {
     val result = linkedMapOf<String, Any>()
     result["scope"] = snapshot.scope.displayName
+    if (snapshot.scope.entry) result["entry_file"] = snapshot.scope.path
+    // The user's exclusions: files matching them are out of scope, not missing.
+    if (snapshot.scope.excludes.isNotEmpty()) result["excluded_patterns"] = snapshot.scope.excludes.take(30).map { it.take(200) }
     result["tab"] = if (scopePaths == null) "whole scope" else "fixed selection of ${scopePaths.size} paths"
     result["totals"] = buildMap {
         put("files", snapshot.files.size)
@@ -59,9 +62,10 @@ internal fun codeOverview(
     val skipped = snapshot.skipped.groupingBy { it.reason }.eachCount().toMutableMap()
     // Only the first files over the limits are listed; the count covers all of them.
     if (snapshot.overLimit > 0) skipped[SkipReason.LIMIT] = snapshot.overLimit
-    if (skipped.isNotEmpty() || snapshot.ignoredCount > 0 || snapshot.truncated) result["skipped"] = buildMap {
+    if (skipped.isNotEmpty() || snapshot.ignoredCount > 0 || snapshot.excludedCount > 0 || snapshot.truncated) result["skipped"] = buildMap {
         SkipReason.entries.forEach { reason -> skipped[reason]?.let { put(reason.label, it) } }
         if (snapshot.ignoredCount > 0) put("ignored files and folders", snapshot.ignoredCount)
+        if (snapshot.excludedCount > 0) put("excluded files and folders", snapshot.excludedCount)
         if (snapshot.truncated) put("truncated", true)
     }
     fun text() = reviewJson.toJson(result)
@@ -71,7 +75,7 @@ internal fun codeOverview(
     // The folder outline gets what is left after the fixed fields, keeping room for summaries, selection and notes.
     var outlineChars = minOf(4_000, budget - text().length - budget / 3)
     while (outlineChars > 200) {
-        result["folders"] = folderOutline(snapshot.files.map { it.path }, snapshot.scope.path, outlineChars)
+        result["folders"] = folderOutline(snapshot.files.map { it.path }, snapshot.baseFolder, outlineChars)
         if (fits()) break
         outlineChars = outlineChars * 3 / 4
     }

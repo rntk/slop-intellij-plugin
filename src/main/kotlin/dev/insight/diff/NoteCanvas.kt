@@ -55,6 +55,7 @@ internal class NoteCanvas(
     internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
     private val pages = mutableMapOf<DiffNoteKey, JScrollPane>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
+    private val stickyTargets = mutableMapOf<DiffNoteKey, JComponent>()
 
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
@@ -113,7 +114,7 @@ internal class NoteCanvas(
         val selected = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
         val bodyScrolls = cards.mapValues { bodyScroll(it.value)?.viewport?.viewPosition?.let(::Point) }
         val scrolls = pages.mapValues { Point(it.value.viewport.viewPosition) }
-        tabs.removeAll(); cards.clear(); pages.clear()
+        tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
@@ -123,6 +124,7 @@ internal class NoteCanvas(
             cards[key] = card
             val page = page(card)
             pages[key] = page
+            installStickyScrolling(key, page, card)
             tabs.addTab(tabTitle(key), page)
             tabs.setToolTipTextAt(tabs.tabCount - 1, key.paths.joinToString(", ").ifEmpty { tabTitle(key) })
             bodyScrolls[key]?.let { position -> SwingUtilities.invokeLater {
@@ -201,6 +203,31 @@ internal class NoteCanvas(
     private fun bodyScroll(card: JPanel) =
         (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as? JScrollPane
 
+    /** Both the card and its editor page can scroll; use whichever top edge currently hides more of the card. */
+    private fun installStickyScrolling(key: DiffNoteKey, page: JScrollPane, card: JPanel) {
+        val inner = bodyScroll(card) ?: return
+        val target = descendantsOf(card).filterIsInstance<JComponent>()
+            .firstOrNull { it is ChangeTopicsPanel || it is HierarchyColumnsPanel } ?: return
+        stickyTargets[key] = target
+        inner.viewport.addChangeListener { updateStickyScrolling(key, page) }
+        if (page.getClientProperty("diff.stickyScrolling") != true) {
+            page.putClientProperty("diff.stickyScrolling", true)
+            page.viewport.addChangeListener { updateStickyScrolling(key, page) }
+        }
+    }
+
+    private fun updateStickyScrolling(key: DiffNoteKey, page: JScrollPane) {
+        val panel = stickyTargets[key] ?: return
+        val inner = cards[key]?.let(::bodyScroll) ?: return
+        val innerTop = SwingUtilities.convertPoint(inner.viewport, 0, 0, panel).y
+        val outerTop = SwingUtilities.convertPoint(page.viewport, 0, 0, panel).y
+        val top = maxOf(innerTop, outerTop)
+        when (panel) {
+            is ChangeTopicsPanel -> panel.updateStickyHeaders(top)
+            is HierarchyColumnsPanel -> panel.updateStickyHeaders(top)
+        }
+    }
+
     private fun replaceCard(key: DiffNoteKey, card: JPanel) {
         val old = cards[key] ?: return
         val container = old.parent ?: return
@@ -208,6 +235,7 @@ internal class NoteCanvas(
         container.remove(old)
         container.add(card, BorderLayout.CENTER)
         cards[key] = card
+        pages[key]?.let { installStickyScrolling(key, it, card) }
         highlight(highlighted)
         container.revalidate(); container.repaint()
         horizontal?.let { value -> SwingUtilities.invokeLater {

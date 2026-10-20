@@ -21,16 +21,17 @@ import java.io.IOException
 import kotlin.coroutines.coroutineContext
 
 /**
- * Loads the text files under a scope directory: project content only (excluded folders are skipped by the index, VCS- and
- * IDE-ignored folders are pruned and counted), without binary, too large, generated or minified files. Unchanged files of
+ * Loads the text files under a scope directory, or an entry file and the project files it depends on: project content only (excluded folders are skipped by the index, VCS- and
+ * IDE-ignored folders and those matching the scope's exclude patterns are pruned and counted), without binary, too large,
+ * generated or minified files. Unchanged files of
  * the previous snapshot are reused without reading them again. Never modifies files.
  */
 internal class CodeReviewLoader(private val project: Project) {
     suspend fun load(scope: CodeScope, previous: CodeSnapshot?, limits: CodeLimits = CodeLimits()): CodeSnapshot =
         withContext(Dispatchers.IO) {
-            val directory = readAction { findCodeScopeDirectory(project, scope.absolutePath) }
-                ?: throw IllegalArgumentException("The folder ${scope.displayName} no longer exists.")
-            val found = enumerate(directory)
+            val start = readAction { findCodeScopeFile(project, scope.absolutePath, directory = !scope.entry) }
+                ?: throw IllegalArgumentException("The ${if (scope.entry) "file" else "folder"} ${scope.path.ifEmpty { "Project root" }} no longer exists.")
+            val found = if (scope.entry) dependencies(start, limits, scope.exclusions) else enumerate(start, scope.exclusions)
             val reusable = previous?.takeIf { it.limits.chunk == limits.chunk }?.byPath.orEmpty()
             val files = mutableListOf<CodeFile>()
             val skipped = mutableListOf<SkippedFile>()
@@ -53,10 +54,21 @@ internal class CodeReviewLoader(private val project: Project) {
                 totalChars += loaded.text.length
                 files += loaded
             }
-            CodeSnapshot(scope, files, skipped, found.ignored, overLimit > 0, overLimit, limits)
+            overLimit += found.beyond
+            // Dependencies are read nearest first, so the limits cut the farthest; the snapshot is in path order.
+            CodeSnapshot(scope, files.sortedBy { it.path }, skipped.sortedBy { it.path }, found.ignored, overLimit > 0, overLimit, limits,
+                found.excluded)
         }
 
-    private class Found(val files: List<Pair<String, VirtualFile>>, val ignored: Int)
+    /** [files] in the order they are read; [beyond] counts files that were found but not listed, [excluded] those excluded. */
+    private class Found(val files: List<Pair<String, VirtualFile>>, val ignored: Int, val beyond: Int = 0, val excluded: Int = 0)
+
+    /** The entry file and the project files it depends on, nearest first; excluded files are not followed. */
+    private suspend fun dependencies(entry: VirtualFile, limits: CodeLimits, exclusions: CodeExclusions): Found {
+        val roots = readAction { codeScopeRoots(project) }
+        val walked = CodeDependencyWalker(project).walk(entry, limits.maxFiles) { exclusions.excludes(relativePath(roots, it)) }
+        return Found(walked.files.map { relativePath(roots, it) to it }, 0, walked.beyond, walked.excluded)
+    }
 
     private sealed interface LoadResult {
         class Loaded(val file: CodeFile) : LoadResult
@@ -65,14 +77,16 @@ internal class CodeReviewLoader(private val project: Project) {
 
     /**
      * Collects content files under [directory] in project-relative path order. Each top-level folder is walked in its own
-     * read action, so a write action restarts only part of a large tree.
+     * read action, so a write action restarts only part of a large tree. Excluded folders are pruned without walking them.
      */
-    private suspend fun enumerate(directory: VirtualFile): Found {
+    private suspend fun enumerate(directory: VirtualFile, exclusions: CodeExclusions): Found {
         val index = ProjectFileIndex.getInstance(project)
         val changes = ChangeListManager.getInstance(project)
         val types = FileTypeRegistry.getInstance()
+        val roots = readAction { codeScopeRoots(project) }
         fun ignored(file: VirtualFile) = types.isFileIgnored(file) || changes.isIgnoredFile(file) ||
             file.isDirectory && file.name == PROJECT_STORE_FOLDER
+        fun excluded(file: VirtualFile) = !exclusions.isEmpty && exclusions.matches(relativePath(roots, file), file.isDirectory)
         // A project root that is not content itself still holds content roots.
         val starts = readAction {
             if (index.isInContent(directory)) listOf(directory)
@@ -80,8 +94,10 @@ internal class CodeReviewLoader(private val project: Project) {
         }
         val files = mutableListOf<VirtualFile>()
         var ignoredCount = 0
+        var excludedCount = 0
         for (start in starts) {
             coroutineContext.ensureActive()
+            if (start != directory && readAction { excluded(start) }) { excludedCount++; continue }
             val (direct, folders, prunedTop) = readAction {
                 val direct = mutableListOf<VirtualFile>()
                 val folders = mutableListOf<VirtualFile>()
@@ -90,6 +106,7 @@ internal class CodeReviewLoader(private val project: Project) {
                     if (!index.isInContent(child)) continue
                     when {
                         ignored(child) -> pruned++
+                        excluded(child) -> excludedCount++
                         child.isDirectory -> folders += child
                         else -> direct += child
                     }
@@ -100,27 +117,31 @@ internal class CodeReviewLoader(private val project: Project) {
             ignoredCount += prunedTop
             for (folder in folders) {
                 coroutineContext.ensureActive()
-                val (part, pruned) = readAction {
+                val (part, pruned, left) = readAction {
                     val part = mutableListOf<VirtualFile>()
                     var pruned = 0
+                    var left = 0
                     if (folder.isValid) index.iterateContentUnderDirectory(folder, { file ->
                         ProgressManager.checkCanceled()
                         if (!file.isDirectory) part += file
                         true
                     }) { file ->
-                        val skip = file != folder && ignored(file)
-                        if (skip) pruned++
-                        !skip
+                        when {
+                            file == folder -> true
+                            ignored(file) -> { pruned++; false }
+                            excluded(file) -> { left++; false }
+                            else -> true
+                        }
                     }
-                    part to pruned
+                    Triple(part, pruned, left)
                 }
                 files += part
                 ignoredCount += pruned
+                excludedCount += left
             }
         }
-        val roots = readAction { codeScopeRoots(project) }
         val sorted = files.distinctBy { it.path }.map { relativePath(roots, it) to it }.sortedBy { it.first }
-        return Found(sorted, ignoredCount)
+        return Found(sorted, ignoredCount, excluded = excludedCount)
     }
 
     /** A [CodeFile], reused from [previous] when the file is unchanged, or the reason it is left out. */
@@ -165,50 +186,63 @@ internal fun codeScopeRoots(project: Project): List<VirtualFile> =
 private fun relativePath(roots: List<VirtualFile>, file: VirtualFile): String =
     roots.firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) } ?: file.path
 
-/** The directory at [absolutePath] on disk or under a project root (tests use an in-memory file system). Call in a read action. */
-internal fun findCodeScopeDirectory(project: Project, absolutePath: String): VirtualFile? {
+/**
+ * The folder ([directory]) or file at [absolutePath] on disk or under a project root (tests use an in-memory file system).
+ * Call in a read action.
+ */
+internal fun findCodeScopeFile(project: Project, absolutePath: String, directory: Boolean): VirtualFile? {
     val path = absolutePath.replace('\\', '/').let { if (it.length > 1) it.trimEnd('/') else it }
-    LocalFileSystem.getInstance().findFileByPath(path)?.takeIf { it.isDirectory }?.let { return it }
+    LocalFileSystem.getInstance().findFileByPath(path)?.takeIf { it.isDirectory == directory }?.let { return it }
     return codeScopeRoots(project).firstNotNullOfOrNull { root ->
         when {
             path == root.path -> root
             path.startsWith(root.path.trimEnd('/') + "/") -> root.findFileByRelativePath(path.removePrefix(root.path.trimEnd('/') + "/"))
             else -> null
         }
-    }?.takeIf { it.isDirectory }
+    }?.takeIf { it.isDirectory == directory }
 }
 
 /**
- * The scope of [directory]. Call in a read action. Throws [IllegalArgumentException] with a message for the user when the
- * directory is not a project folder, or is excluded.
+ * The scope of [file]: a folder, or an entry file whose dependencies are reviewed. Call in a read action. Throws
+ * [IllegalArgumentException] with a message for the user when it is not a project folder or a project source file, or is
+ * excluded or ignored.
  */
-internal fun codeScope(project: Project, directory: VirtualFile): CodeScope {
-    require(directory.isValid && directory.isDirectory) { "${directory.presentableUrl} is not a folder." }
+internal fun codeScope(project: Project, file: VirtualFile): CodeScope {
+    require(file.isValid) { "${file.presentableUrl} no longer exists." }
     val index = ProjectFileIndex.getInstance(project)
-    val path = codeScopeRoots(project).firstNotNullOfOrNull { VfsUtilCore.getRelativePath(directory, it) }
-    require(path != null) { "${directory.presentableUrl} is not in the project." }
+    val path = codeScopeRoots(project).firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) }
+    require(path != null) { "${file.presentableUrl} is not in the project." }
     val name = path.ifEmpty { "The project root" }
-    require(!index.isExcluded(directory)) { "$name is excluded from the project." }
-    require(index.isInContent(directory) ||
-        ProjectRootManager.getInstance(project).contentRoots.any { VfsUtilCore.isAncestor(directory, it, false) }) {
+    require(!index.isExcluded(file)) { "$name is excluded from the project." }
+    if (!file.isDirectory) {
+        require(index.isInContent(file)) { "$name is not part of the project's content." }
+        require(!FileTypeRegistry.getInstance().isFileIgnored(file) && !ChangeListManager.getInstance(project).isIgnoredFile(file)) {
+            "$name is ignored."
+        }
+        require(!file.fileType.isBinary) { "$name is a binary file." }
+        return CodeScope(path, file.path, entry = true)
+    }
+    require(index.isInContent(file) ||
+        ProjectRootManager.getInstance(project).contentRoots.any { VfsUtilCore.isAncestor(file, it, false) }) {
         "$name is not part of the project's content."
     }
-    return CodeScope(path, directory.path)
+    return CodeScope(path, file.path)
 }
 
 /**
- * The scope of a project-relative or absolute [path], "" or "." for the project root. Call in a read action. Throws
- * [IllegalArgumentException] with a message for the user when it is not a project folder.
+ * The scope of a project-relative or absolute [path] of a folder or an entry file, "" or "." for the project root. Call in a
+ * read action. Throws [IllegalArgumentException] with a message for the user when it is not a project folder or file.
  */
 internal fun codeScope(project: Project, path: String): CodeScope {
     val trimmed = path.trim().replace('\\', '/')
-    require("/../" !in "/$trimmed/") { "The folder must not contain '..': $path" }
+    require("/../" !in "/$trimmed/") { "The path must not contain '..': $path" }
     val absolute = trimmed.startsWith("/") || Regex("^[A-Za-z]:/").containsMatchIn(trimmed)
-    val directory = if (absolute) findCodeScopeDirectory(project, trimmed) else {
+    val file = if (absolute) {
+        findCodeScopeFile(project, trimmed, directory = true) ?: findCodeScopeFile(project, trimmed, directory = false)
+    } else {
         val clean = trimmed.trim('/').removePrefix("./").let { if (it == ".") "" else it }
         codeScopeRoots(project).firstNotNullOfOrNull { if (clean.isEmpty()) it else it.findFileByRelativePath(clean) }
-            ?.takeIf { it.isDirectory }
     }
-    require(directory != null) { "There is no project folder at '${trimmed.ifEmpty { "." }}'." }
-    return codeScope(project, directory)
+    require(file != null) { "There is no project folder or file at '${trimmed.ifEmpty { "." }}'." }
+    return codeScope(project, file)
 }

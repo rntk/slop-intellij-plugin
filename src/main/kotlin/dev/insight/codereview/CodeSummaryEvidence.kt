@@ -78,7 +78,7 @@ internal class CodeSummaryEvidence(
         together, rather than listing them.
         If a node has kind "file", summarize the whole file. If a node has kind "chunk", summarize those lines of the file.
         If a node has kind "root", summarize the whole scope: its purpose, its main parts and how they fit together.
-    """.trimIndent() + summaryFocusLine(focus)
+    """.trimIndent() + entryLine() + summaryFocusLine(focus)
 
     /** Shared by leaf and branch requests of one scope, so it stays cached. */
     private fun systemPrefix() = """
@@ -90,7 +90,19 @@ internal class CodeSummaryEvidence(
         Keep summaries brief and use plain text.
     """.trimIndent()
 
-    private fun scopeName() = snapshot.scope.path.let { if (it.isEmpty()) "the project" else "$it/" }
+    private fun scopeName() = snapshot.scope.let { scope ->
+        when {
+            scope.entry -> "${scope.path} and the project files it depends on"
+            scope.path.isEmpty() -> "the project"
+            else -> "${scope.path}/"
+        }
+    }
+
+    /** For an entry file, the root explains what the entry file does through the code it depends on. */
+    private fun entryLine() = snapshot.scope.takeIf { it.entry }?.let {
+        "\nThe scope is the entry file ${it.path} and the files reached from it through imports, calls and references. For the root, " +
+            "describe what ${it.path.substringAfterLast('/')} does and how the other parts serve it."
+    }.orEmpty()
 }
 
 /** The deepest folder that holds every path, "" when they share none. */

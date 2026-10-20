@@ -61,9 +61,13 @@ enum class SkipReason(val label: String) {
 
 data class SkippedFile(val path: String, val reason: SkipReason)
 
-/** A start directory: [path] is project-relative, "" for the project root. */
-data class CodeScope(val path: String, val absolutePath: String) {
-    val displayName: String get() = path.ifEmpty { "Project root" }
+/**
+ * A start directory, or with [entry] an entry file whose dependencies make up the scope. [path] is project-relative, "" for
+ * the project root. [excludes] are [CodeExclusions] patterns of files and folders left out; the start itself is never left out.
+ */
+data class CodeScope(val path: String, val absolutePath: String, val entry: Boolean = false, val excludes: List<String> = emptyList()) {
+    val displayName: String get() = if (entry) "$path and its dependencies" else path.ifEmpty { "Project root" }
+    internal val exclusions: CodeExclusions by lazy { CodeExclusions(excludes, if (entry) "" else path) }
 }
 
 data class CodeLimits(
@@ -76,7 +80,8 @@ data class CodeLimits(
 /**
  * The files of one scope in project-relative path order. [skipped] lists files that were left out; at most
  * [CodeReviewLoader.MAX_LISTED_OVER_LIMIT] of the [overLimit] files beyond the limits are listed. [ignoredCount] counts
- * VCS-ignored files and folders that were pruned (their contents are not counted).
+ * VCS-ignored files and folders that were pruned (their contents are not counted); [excludedCount] likewise counts the files
+ * and folders that matched the scope's exclude patterns.
  */
 data class CodeSnapshot(
     val scope: CodeScope,
@@ -86,8 +91,11 @@ data class CodeSnapshot(
     val truncated: Boolean = false,
     val overLimit: Int = 0,
     val limits: CodeLimits = CodeLimits(),
+    val excludedCount: Int = 0,
 ) {
     val byPath: Map<String, CodeFile> by lazy { files.associateBy { it.path } }
+    /** The folder paths are shown below: the start directory, or for an entry file the deepest folder holding every file. */
+    val baseFolder: String by lazy { if (scope.entry) commonFolder(files.map { it.path } + scope.path) else scope.path }
     val totalChars: Long by lazy { files.sumOf { it.text.length.toLong() } }
     val totalLines: Long by lazy { files.sumOf { it.lineCount.toLong() } }
     /** Files split into parts. */

@@ -5,6 +5,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.ui.components.JBTextField
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
 import dev.insight.chat.ChatMessage
@@ -122,6 +123,36 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(manager.isFileOpen(selection.canvasFile))
         } finally { Disposer.dispose(panel) }
         assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
+    }
+
+    fun `test excluding a selected folder reloads without it and keeps the exclusions for a new folder`() {
+        myFixture.addFileToProject("excl/a.kt", "fun a() = 1\n")
+        myFixture.addFileToProject("excl/sub/b.kt", "fun b() = 2\n")
+        myFixture.addFileToProject("excl/sub/c.js", "var c = 3;\n")
+        val panel = CodeReviewPanel(project)
+        JRootPane().contentPane.add(panel)
+        try {
+            panel.setScope(myFixture.findFileInTempDir("excl"))
+            PlatformTestUtil.waitWithEventsDispatching("The folder should load", { panel.listedFiles().size == 3 }, 20)
+            val tree = descendants(panel).filterIsInstance<Tree>().single()
+            val sub = (tree.model.root as DefaultMutableTreeNode).depthFirstEnumeration().toList().map { it as DefaultMutableTreeNode }
+                .single { it.userObject.toString() == "sub" }
+            tree.selectionPath = TreePath(sub.path)
+            assertEquals(listOf("excl/sub/"), panel.excludeSelectionPatterns())
+            panel.exclude(panel.excludeSelectionPatterns())
+            PlatformTestUtil.waitWithEventsDispatching("The folder should reload", { panel.listedFiles() == listOf("excl/a.kt") }, 20)
+            assertEquals("1 file · 0 skipped · 1 excluded", panel.status.text)
+            val exclude = descendants(panel).filterIsInstance<JBTextField>().single { it.emptyText.text.startsWith("Nothing excluded") }
+            assertEquals("excl/sub/", exclude.text)
+
+            panel.setScope(myFixture.findFileInTempDir("excl/sub"))
+            assertEquals(listOf("excl/sub/"), panel.scope?.excludes)
+            // The chosen folder itself is never excluded.
+            PlatformTestUtil.waitWithEventsDispatching("The subfolder should load", { panel.listedFiles().size == 2 }, 20)
+            exclude.text = "*.js"
+            descendants(panel).filterIsInstance<JButton>().single { it.text == "Load" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The subfolder should reload", { panel.listedFiles() == listOf("excl/sub/b.kt") }, 20)
+        } finally { Disposer.dispose(panel) }
     }
 
     fun `test snapshot updates wait for a summaries run and apply when it ends`() {

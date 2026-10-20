@@ -163,6 +163,8 @@ internal class ChangeTopicsPanel(
     private val sections = mutableListOf<JComponent>()
     private val notes = mutableListOf<JComponent>()
     private val rail = mutableListOf<Pair<TopicNode?, JComponent>>()
+    private val stickyHeaders = StickyCardHeaders()
+    fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
     private var hovered: TopicNode? = null
     private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
@@ -198,8 +200,7 @@ internal class ChangeTopicsPanel(
             val note = note(file, summaries[file.path], summaryWidth)
             val height = maxOf(section.preferredSize.height, note.preferredSize.height)
             section.setBounds(docX, y, docWidth, height)
-            note.setBounds(0, y, summaryWidth, note.preferredSize.height)
-            add(section); add(note)
+            add(section); add(noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) })
             sections += section; notes += note
             tops[index] = y; bottoms[index] = y + height
             y += height + scaled(SECTION_GAP)
@@ -231,12 +232,14 @@ internal class ChangeTopicsPanel(
         repaint()
     }
 
-    private fun section(file: ReviewFile, width: Int): JComponent = JPanel(BorderLayout()).apply {
+    private fun section(file: ReviewFile, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
         name = "file:${file.path}"
         background = UIUtil.getListBackground()
         border = frame(false)
         val inner = width - scaled(4)
-        add(fileHeader(file), BorderLayout.NORTH)
+        val heading = fileHeader(file)
+        add(heading, BorderLayout.NORTH)
+        stickyHeaders.add(this, heading)
         val patch = PatchView(file.patch, inner, zoom)
         add(patch, BorderLayout.CENTER)
         if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
@@ -274,8 +277,15 @@ internal class ChangeTopicsPanel(
             .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff in tab" }, BorderLayout.EAST)
     }
 
-    private fun note(file: ReviewSource, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {
+    /** The summary's margin beside its whole section, so the note stays in view while the diff beside it scrolls. */
+    private fun noteColumn(file: ReviewSource, note: JComponent): JComponent = JPanel(stickyHeaders.layout()).apply {
         name = "summary:${file.path}"
+        isOpaque = false
+        add(note, BorderLayout.NORTH)
+        stickyHeaders.add(this, note)
+    }
+
+    private fun note(file: ReviewSource, summary: String?, width: Int): JComponent = JPanel(BorderLayout()).apply {
         isOpaque = false
         border = noteBorder(false)
         val inner = width - scaled(NOTE_INSET) - scaled(2)
@@ -285,14 +295,19 @@ internal class ChangeTopicsPanel(
         preferredSize = Dimension(width, preferredSize.height)
     }
 
-    private fun railCard(node: TopicNode?, files: Int, width: Int): JComponent = JPanel(VerticalLayout(scaled(2))).apply {
+    private fun railCard(node: TopicNode?, files: Int, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
         name = node?.let { "topic:${it.level}:${it.identity}" } ?: "topic:pending"
         isOpaque = true
         background = UIUtil.getListBackground()
         border = railBorder(node, false)
         val inner = width - scaled(RAIL_ACCENT) - scaled(14) - 2
-        add(text(node?.name ?: "Awaiting topic", inner, if (node != null) font(JBFont.label().asBold()) else italic(JBFont.label()), if (node == null) help else null))
-        add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+        val heading = JPanel(VerticalLayout(scaled(2))).apply {
+            isOpaque = false
+            add(text(node?.name ?: "Awaiting topic", inner, if (node != null) font(JBFont.label().asBold()) else italic(JBFont.label()), if (node == null) help else null))
+            add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+        }
+        add(heading, BorderLayout.NORTH)
+        stickyHeaders.add(this, heading)
         toolTipText = node?.fullPath ?: "Run /topics to classify these files"
         if (node == null) return@apply
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)

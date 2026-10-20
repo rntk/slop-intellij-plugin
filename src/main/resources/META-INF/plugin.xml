@@ -10,7 +10,7 @@
         <br/>Application Graph shows Java, Kotlin, Python, Go, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
         <br/>Entry Points (an Application Graph tab) compares application entry points found with the LLM API and Decisions API.
         <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
-        <br/>Code Review (Tools menu, or Review Code in Directory in the Project view) reviews the code in the project or a folder with a chat, summaries from the whole scope down to each file, and topics.
+        <br/>Code Review (Tools menu, or Review Code in Directory in the Project view) reviews the code in the project, a folder, or an entry file and the files it depends on, with a chat, summaries from the whole scope down to each file, and topics.
     ]]></description>
     <depends>com.intellij.modules.platform</depends>
     <!-- Language support for the call graph is optional, so the plugin loads in any IDE and covers whichever languages it has. -->
@@ -61,7 +61,7 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenCodeReview" class="dev.insight.codereview.OpenCodeReviewAction"
-                text="Open Code Review" description="Review the code in the project or a folder with summaries, topics and notes"
+                text="Open Code Review" description="Review the code in the project, a folder or an entry file with summaries, topics and notes"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
@@ -69,6 +69,7 @@
                 text="Review Code in Directory" description="Open Code Review for the code in this folder"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenDashboard" class="dev.insight.dashboard.OpenDashboardAction"
                 text="Open Insight Dashboard" description="Open the Insight visualization workbench"
