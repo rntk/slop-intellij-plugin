@@ -82,7 +82,7 @@ internal class CodeReviewTab(
     private val complete: (suspend (CompletionRequest) -> Completion)? = null,
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    val state = CodeReviewState(paths)
+    val state = CodeReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
     private var disposed = false
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String get() = ReviewVocabulary.CODE.canvasTitle

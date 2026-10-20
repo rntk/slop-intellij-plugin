@@ -48,7 +48,8 @@ internal fun openReviewCanvas(project: Project, file: DiffReviewCanvasFile, focu
  */
 internal class ReviewTraceLauncher(private val project: Project, private val scope: CoroutineScope) : SummaryTraceLauncher {
     private val summaryTracer by lazy {
-        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofMinutes(5), traffic = ApiLogs.decisions)::evaluate)
+        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofMinutes(5), traffic = ApiLogs.decisions)::evaluate,
+            cache = ReviewDiskCache.forProject(project))
     }
 
     override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,

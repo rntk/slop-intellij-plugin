@@ -1,6 +1,8 @@
 package dev.insight.codereview
 
 import dev.insight.chat.ToolInputException
+import dev.insight.diff.ReviewDiskCache
+import dev.insight.diff.ReviewCacheSession
 import dev.insight.diff.ChangeSummaries
 import dev.insight.diff.ChangeSummaryTree
 import dev.insight.diff.ChangeTopics
@@ -28,7 +30,9 @@ private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orE
  * source blocks belong to file contents: an edit drops those of the edited file. Summaries and topics are kept by
  * content-hash keys, so they survive edits elsewhere, refreshes and scope changes; only Regenerate clears them.
  */
-class CodeReviewState(paths: Set<String>? = null) {
+class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
+    private val disk = ReviewCacheSession(cache, "code", paths)
+    private fun persist() = disk.save(summaries, topics, topicSummaries)
     /** Null follows the whole snapshot; a fixed set of files and folders stays scoped as the snapshot changes. */
     val scopePaths: Set<String>? = paths?.map { it.trim('/') }?.toSet()
     var revision = 0
@@ -72,6 +76,11 @@ class CodeReviewState(paths: Set<String>? = null) {
             summaries = summaries.retainedIn(codeSummaryTree(next.files))
             topics = topics.retainedIn(next.files)
             topicSummaries = topicSummaries.retainedIn(codeTopicSummaryTree(topics))
+            // Saved entries are keyed by content, so the scope alone picks the slot; changed files simply miss their keys.
+            disk.load(listOf(next.scope.path, next.scope.entry, next.scope.excludes))
+            summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
+            topics = disk.restoreTopics(topics)
+            topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(codeTopicSummaryTree(topics)))
             revision++
         }
         snapshot = next
@@ -126,10 +135,10 @@ class CodeReviewState(paths: Set<String>? = null) {
 
     fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
         check(expected)
-        return summaries.summarize(entries).also { summaries = it }
+        return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
-    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree) }
+    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }
 
@@ -138,6 +147,8 @@ class CodeReviewState(paths: Set<String>? = null) {
         if (topics.complete) {
             topics = ChangeTopics(snapshot.files)
             topicSummaries = ChangeSummaries(codeTopicSummaryTree(topics))
+            disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
+            persist()
         }
         topicsVisible = true
         return topics
@@ -151,6 +162,7 @@ class CodeReviewState(paths: Set<String>? = null) {
         return topics.assign(path, label).also {
             topics = it
             topicSummaries = topicSummaries.retainedIn(codeTopicSummaryTree(it))
+            persist()
         }
     }
 
@@ -158,6 +170,7 @@ class CodeReviewState(paths: Set<String>? = null) {
     fun startTopicSummaries(expected: Int): ChangeSummaries {
         check(expected)
         topicSummaries = seedTopicSummaries(topicSummaries, summaries)
+        persist()
         return topicSummaries
     }
 
@@ -183,6 +196,7 @@ class CodeReviewState(paths: Set<String>? = null) {
                 else -> null
             }
         }
+        persist()
         return topicSummaries
     }
 

@@ -47,7 +47,9 @@ internal data class DiffNoteKey(
 internal fun diffNoteKey(path: String) = DiffNoteKey(listOf(path), null, diff = path)
 
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
-class DiffReviewState(paths: Set<String>? = null) {
+class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
+    private val disk = ReviewCacheSession(cache, "diff", paths)
+    private fun persist() = disk.save(summaries, topics, topicSummaries)
     /** Null follows all changes; a fixed set stays scoped even when its files leave the diff. */
     val scopePaths: Set<String>? = paths?.toSet()
     var revision = 0
@@ -82,6 +84,8 @@ class DiffReviewState(paths: Set<String>? = null) {
         if (topics.complete) {
             topics = ChangeTopics(snapshot.files)
             topicSummaries = ChangeSummaries(buildTopicSummaryTree(topics))
+            disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
+            persist()
         }
         topicsVisible = true
         return topics
@@ -93,6 +97,7 @@ class DiffReviewState(paths: Set<String>? = null) {
         return topics.assign(path, label).also {
             topics = it
             topicSummaries = topicSummaries.retainedIn(buildTopicSummaryTree(it))
+            persist()
         }
     }
 
@@ -121,6 +126,11 @@ class DiffReviewState(paths: Set<String>? = null) {
             topics = if (requestChanged) ChangeTopics(next.files) else topics.retainedIn(next.files)
             val topicTree = buildTopicSummaryTree(topics)
             topicSummaries = if (requestChanged) ChangeSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
+            // Saved entries are keyed by content, so the request alone picks the slot; changed files simply miss their keys.
+            disk.load(next.comparison.request)
+            summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
+            topics = disk.restoreTopics(topics)
+            topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(buildTopicSummaryTree(topics)))
             revision++
         }
         snapshot = next
@@ -193,12 +203,13 @@ class DiffReviewState(paths: Set<String>? = null) {
 
     fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
         check(expected)
-        return summaries.summarize(entries).also { summaries = it }
+        return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
     fun startTopicSummaries(expected: Int): ChangeSummaries {
         check(expected)
         topicSummaries = seedTopicSummaries(topicSummaries, summaries)
+        persist()
         return topicSummaries
     }
 
@@ -213,10 +224,11 @@ class DiffReviewState(paths: Set<String>? = null) {
         shared.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
             summaries = summaries.summarize(batch.associate { it.key to it.value })
         }
+        persist()
         return topicSummaries
     }
 
-    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree) }
+    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }
 }

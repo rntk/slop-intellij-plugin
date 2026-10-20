@@ -31,7 +31,7 @@ internal class DiffReviewTab(
     showDiff: (String) -> Unit,
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    val state = DiffReviewState(paths)
+    val state = DiffReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
     private var disposed = false
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String get() = ReviewVocabulary.DIFF.canvasTitle

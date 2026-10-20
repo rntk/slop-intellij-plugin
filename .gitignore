@@ -46,3 +46,6 @@ bin/
 .intellijPlatform/
 gradle/
 
+
+# Generated review results
+.insight/

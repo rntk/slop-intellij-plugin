@@ -16,6 +16,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class CodeReviewLoaderTest : BasePlatformTestCase() {
+    fun `test generated review cache is pruned from scopes before it is read`() {
+        myFixture.addFileToProject("scope/a.kt", "fun a() = 1")
+        myFixture.addFileToProject("scope/.insight/review-cache/result.json", "{\"summary\":\"generated\"}")
+        val snapshot = load(scope("scope"))
+        assertEquals(listOf("scope/a.kt"), snapshot.files.map { it.path })
+        assertEquals(1, snapshot.ignoredCount)
+    }
+
     fun `test loads text files under a subdirectory and skips binary large and minified files`() {
         myFixture.addFileToProject("scope/a.kt", "fun a() = 1\n")
         myFixture.addFileToProject("scope/inner/b.txt", "hello\nworld\n")

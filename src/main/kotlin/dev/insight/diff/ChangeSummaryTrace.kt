@@ -12,6 +12,8 @@ import dev.insight.decisions.DecisionResponse
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** A word of a summary: its position among the summary's words and its character range. */
 data class SummaryWord(val index: Int, val start: Int, val end: Int, val text: String) {
@@ -88,11 +90,13 @@ class SummaryTracer(
     private val maxWords: Int = MAX_WORDS,
     private val maxQuestions: Int = MAX_QUESTIONS,
     private val maxRequestBytes: Int = MAX_REQUEST_BYTES,
+    private val cache: ReviewDiskCache? = null,
 ) {
     init { require(levels >= 1); require(maxWords >= 1); require(maxQuestions >= 1); require(maxRequestBytes >= 1) }
 
     private val contexts = Lru<List<Any>, Set<Int>>(256)
     private val probabilities = Lru<List<String>, Double>(2048)
+    private val scoreWrites = Mutex()
 
     /** Scores only this summary's words; candidate enumeration and ranking are deferred to [search]. */
     suspend fun score(summaries: ChangeSummaries, id: Int, wordIndex: Int): SummaryContext {
@@ -158,7 +162,7 @@ class SummaryTracer(
         candidates: List<Pair<SummaryNode, String>>,
     ): List<Double> {
         if (candidates.isEmpty()) return emptyList()
-        val keys = candidates.map { (candidate, text) -> listOf(query, focus, summary, candidate.location, text) }
+        val keys = candidates.map { (candidate, text) -> listOf(query, focus, node.location, summary, candidate.kind.id, candidate.location, text) }
         val missing = candidates.indices.filter { probabilities[keys[it]] == null }
         if (missing.isNotEmpty()) {
             val state = JsonObject().apply {
@@ -173,15 +177,43 @@ class SummaryTracer(
         return keys.map { probabilities[it] ?: 0.0 }
     }
 
-    /** One Noul per item; items are packed into requests that run in parallel, see [batches]. */
+    /**
+     * One Noul per item; items are packed into requests that run in parallel, see [batches]. Every judgment is saved under its
+     * own question, so a changed candidate or a different packing asks again only for the questions that changed.
+     */
     private suspend fun <T> ask(state: JsonElement, items: List<T>, question: (T) -> DecisionQuestion.Noul): List<Double> = coroutineScope {
-        batches(state, items.map(question)).map { request ->
+        val questions = items.map(question)
+        // A key covers the model, the state with its rules and evidence, and the question; the slot only groups a state's questions.
+        val keys = questions.map { reviewFingerprint(DecisionJson.encode(DecisionRequest(state, mapOf("q0" to it)))) }
+        val slot = state.toString()
+        val scores = savedScores(slot)
+        val missing = questions.indices.filter { scores[keys[it]] == null }
+        val requests = batches(state, missing.map(questions::get))
+        val offsets = requests.runningFold(0) { offset, request -> offset + request.questions.size }
+        requests.mapIndexed { index, request ->
             async {
                 val response = evaluate(request)
                 // The client already checks that every question has an answer of the requested type.
-                request.questions.keys.map { (response.answers.getValue(it) as DecisionAnswer.Noul).noul }
+                request.questions.keys.map { (response.answers.getValue(it) as DecisionAnswer.Noul).noul }.also { nouls ->
+                    saveScores(slot, missing.subList(offsets[index], offsets[index + 1]).map(keys::get).zip(nouls))
+                }
             }
-        }.awaitAll().flatten()
+        }.awaitAll().flatten().forEachIndexed { index, noul -> scores[keys[missing[index]]] = noul }
+        keys.map(scores::getValue)
+    }
+
+    private fun savedScores(slot: String): MutableMap<String, Double> = runCatching {
+        cache?.read("scores", slot, slot)?.asJsonObject?.entrySet()
+            ?.mapNotNull { (key, value) -> value.asDouble.takeIf { it.isFinite() && it in 0.0..1.0 }?.let { key to it } }?.toMap(HashMap())
+    }.getOrNull() ?: HashMap()
+
+    /** Only successful, typed judgments are saved; batches of one state merge, so parallel requests keep each other's scores. */
+    private suspend fun saveScores(slot: String, scores: List<Pair<String, Double>>) {
+        val cache = cache ?: return
+        scoreWrites.withLock {
+            val saved = savedScores(slot).apply { putAll(scores) }
+            cache.write("scores", slot, slot, JsonObject().apply { saved.forEach { (key, score) -> addProperty(key, score) } })
+        }
     }
 
     /**

@@ -29,7 +29,7 @@ internal class DiffReviewLoader(private val project: Project) {
         val changes = loaded?.changes?.toList() ?: manager.allChanges.toList()
         val tracked = changes.mapNotNull { (it.afterRevision ?: it.beforeRevision)?.file?.path }.toSet()
         val untracked = if (!selected.mode.usesWorkingTree) emptyList() else manager.unversionedFilesPaths.mapNotNull { path ->
-            path.virtualFile?.takeIf { !it.isDirectory && it.path !in tracked &&
+            path.virtualFile?.takeIf { !it.isDirectory && it.path !in tracked && "/${ReviewDiskCache.DIRECTORY}/" !in it.path &&
                 (selected.repository == null || ProjectLevelVcsManager.getInstance(project).getVcsRootFor(it)?.path == selected.repository) }
         }.distinctBy { it.path }
         val files = changes.mapNotNull { change ->
@@ -46,12 +46,12 @@ internal class DiffReviewLoader(private val project: Project) {
             val virtual = after?.file?.virtualFile
             file(path, previous, status, old, fresh,
                 "${before?.revisionNumber?.asString()}:${after?.revisionNumber?.asString()}" +
-                    if (selected.mode.usesWorkingTree) ":${virtual?.modificationStamp}:${virtual?.length}" else "", comparison)
+                    if (selected.mode.usesWorkingTree) ":${diskVersion(virtual)}" else "", comparison)
         }.toMutableList()
         for (virtual in untracked.filter { it.path in includedUntracked }) {
             coroutineContext.ensureActive()
             files += file(virtual.path, null, "untracked", "", workingText(virtual) { StringUtil.convertLineSeparators(String(virtual.contentsToByteArray(), virtual.charset)) },
-                "${virtual.modificationStamp}:${virtual.length}", comparison)
+                diskVersion(virtual), comparison)
         }
         return ReviewSnapshot(files.sortedBy { it.path }, untracked.map { UntrackedFile(relative(it.path), it.path) }.sortedBy { it.path }, comparison)
     }
@@ -67,6 +67,16 @@ internal class DiffReviewLoader(private val project: Project) {
         catch (_: VcsException) { null }
     }
 
+    /**
+     * Stands in for unreadable content. The disk time and length survive a restart, unlike the session-local modification
+     * stamp; an unsaved edit is not on disk yet, so only then the document's stamp is added.
+     */
+    private suspend fun diskVersion(file: VirtualFile?): String = if (file == null) "" else readAction {
+        val document = FileDocumentManager.getInstance().getCachedDocument(file)
+        "${file.timeStamp}:${file.length}" +
+            if (document != null && FileDocumentManager.getInstance().isDocumentUnsaved(document)) ":unsaved:${document.modificationStamp}" else ""
+    }
+
     private suspend fun workingText(file: VirtualFile?, fallback: () -> String?): String? {
         if (file != null) {
             if (file.fileType.isBinary || file.length > MAX_TEXT) return null
@@ -80,8 +90,11 @@ internal class DiffReviewLoader(private val project: Project) {
         val readable = before != null && after != null && before.length <= MAX_TEXT && after.length <= MAX_TEXT
         val patch = if (readable) reviewPatch(before!!, after!!, DiffService.lineChanges(before, after))
             else "[Diff content unavailable: binary, unreadable, or over the text size limit ($MAX_TEXT bytes/characters per side).]"
-        return ReviewFile(relative(path), path, previous?.let(::relative), status, patch,
-            reviewFingerprint(path, previous.orEmpty(), status, before ?: "[unavailable]", after ?: "[unavailable]", if (readable) "" else unavailableVersion),
+        val relativePath = relative(path)
+        val previousPath = previous?.let(::relative)
+        // Project-relative paths and stable versions only, so the key, and every result saved under it, survives a restart.
+        return ReviewFile(relativePath, path, previousPath, status, patch,
+            reviewFingerprint(relativePath, previousPath.orEmpty(), status, before ?: "[unavailable]", after ?: "[unavailable]", if (readable) "" else unavailableVersion),
             before.takeIf { readable }, after.takeIf { readable }, comparison.beforeLabel, comparison.afterLabel)
     }
 

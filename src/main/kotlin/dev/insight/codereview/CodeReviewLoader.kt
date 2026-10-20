@@ -85,7 +85,7 @@ internal class CodeReviewLoader(private val project: Project) {
         val types = FileTypeRegistry.getInstance()
         val roots = readAction { codeScopeRoots(project) }
         fun ignored(file: VirtualFile) = types.isFileIgnored(file) || changes.isIgnoredFile(file) ||
-            file.isDirectory && file.name == PROJECT_STORE_FOLDER
+            file.isDirectory && file.name in setOf(PROJECT_STORE_FOLDER, dev.insight.diff.ReviewDiskCache.DIRECTORY)
         fun excluded(file: VirtualFile) = !exclusions.isEmpty && exclusions.matches(relativePath(roots, file), file.isDirectory)
         // A project root that is not content itself still holds content roots.
         val starts = readAction {
@@ -213,6 +213,7 @@ internal fun codeScope(project: Project, file: VirtualFile): CodeScope {
     val path = codeScopeRoots(project).firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) }
     require(path != null) { "${file.presentableUrl} is not in the project." }
     val name = path.ifEmpty { "The project root" }
+    require(dev.insight.diff.ReviewDiskCache.DIRECTORY !in path.split('/')) { "$name contains generated review cache data." }
     require(!index.isExcluded(file)) { "$name is excluded from the project." }
     if (!file.isDirectory) {
         require(index.isInContent(file)) { "$name is not part of the project's content." }
