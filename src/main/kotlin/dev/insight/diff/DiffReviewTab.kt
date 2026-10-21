@@ -60,6 +60,8 @@ internal class DiffReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = ReviewTraceLauncher(project, scope),
+        // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
+        openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)

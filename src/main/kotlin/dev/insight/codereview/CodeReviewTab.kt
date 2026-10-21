@@ -45,6 +45,7 @@ import dev.insight.diff.SymbolFile
 import dev.insight.diff.TopicsCard
 import dev.insight.diff.isSummariesRequest
 import dev.insight.diff.isTopicsRequest
+import dev.insight.diff.openHighlightedLines
 import dev.insight.diff.openReviewCanvas
 import dev.insight.diff.reviewJson
 import dev.insight.diff.seedTopicSummaries
@@ -129,6 +130,9 @@ internal class CodeReviewTab(
         vocabulary = ReviewVocabulary.CODE,
         openNode = { node -> openFile(node.path, node.lines?.first) },
         showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
+        openLines = { node, lines ->
+            findSourceFile(project, node.path, node.file?.absolutePath)?.let { openHighlightedLines(project, it, lines.after) }
+        },
         openFileAt = { path, line -> openFile(path, line) },
         showFileLines = { path, lines -> showSourceBlock(path, lines) },
         removeFileView = { closeFileView() },

@@ -1,22 +1,28 @@
 package dev.insight.diff
 
 import com.intellij.diff.DiffContentFactory
+import com.intellij.diff.DiffManager
+import com.intellij.diff.contents.DocumentContent
 import com.intellij.diff.impl.DiffRequestProcessor
 import com.intellij.diff.impl.DiffRequestProcessorListener
 import com.intellij.diff.requests.SimpleDiffRequest
 import com.intellij.diff.util.DiffUserDataKeys
 import com.intellij.diff.util.DiffUserDataKeysEx.ScrollToPolicy
+import com.intellij.diff.util.Side
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.impl.EditorComponentImpl
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Pair
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JPanel
+import javax.swing.Timer
 import kotlin.math.roundToInt
 
 internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffRequest {
@@ -37,6 +43,31 @@ internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffR
     )
     request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY, true)
     return request
+}
+
+/**
+ * Opens [file]'s diff scrolled to the first of [lines] and highlights them on their side. The viewer builds its editors after
+ * the request is shown, so the highlights wait for them briefly; a unified viewer has no editor per side and only scrolls.
+ */
+internal fun showDiffLines(project: Project, file: ReviewFile, lines: LineTrace) {
+    val request = createDiffRequest(project, file)
+    val (side, first) = lines.after.minOrNull()?.let { Side.RIGHT to it } ?: lines.before.minOrNull()?.let { Side.LEFT to it } ?: return
+    request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE, Pair.create(side, first - 1))
+    DiffManager.getInstance().showDiff(project, request)
+    val documents = request.contents.map { (it as? DocumentContent)?.document }
+    val sides = listOf(lines.before, lines.after)
+    var attempts = 0
+    Timer(100, null).apply {
+        addActionListener {
+            val editors = documents.map { document -> document?.let { EditorFactory.getInstance().getEditors(it, project).toList() }.orEmpty() }
+            if (editors.any { it.isNotEmpty() } || ++attempts >= 20) {
+                stop()
+                editors.forEachIndexed { index, sideEditors -> sideEditors.forEach { highlightLines(project, it, sides[index]) } }
+            }
+        }
+        initialDelay = 0
+        start()
+    }
 }
 
 /** Embeds the IDE's native read-only diff viewer for a snapshot file inside a canvas card. */

@@ -311,4 +311,73 @@ class ChangeSummaryTraceTest {
         assertEquals(TraceMark.PATH, marks[y.identity])
         assertFalse("Unrelated nodes are not marked", "directory:b" in marks)
     }
+
+    private data class Source(override val path: String, override val text: String) : ReviewSource {
+        override val absolutePath get() = "/repo/$path"
+        override val fingerprint get() = text.hashCode().toString()
+        override val facts get() = emptyList<String>()
+    }
+
+    @Test fun `patch lines open removed lines before and the rest after, or in the patch without both texts`() {
+        val patch = "--- a/x.kt\n+++ b/x.kt\n@@ -3,3 +3,3 @@ fun a()\n keep\n-old\n+new\n\\ No newline at end of file\n@@ -10 +10,2 @@\n+added\n same\n"
+        val lines = patchLines(patch)
+        assertEquals(listOf(" 3", "-4", "+4", "+10", " 11"), lines.map { "${it.marker}${it.number}" })
+        assertEquals(listOf(LineSide.AFTER, LineSide.BEFORE, LineSide.AFTER, LineSide.AFTER, LineSide.AFTER), lines.map { it.side })
+        assertEquals(listOf(0, 0, 0, 1, 1), lines.map { it.hunk })
+        assertEquals(listOf(false, true, true, true, false), lines.map { it.candidate })
+        assertEquals(listOf(4, 5, 6, 9, 10), patchLines(patch, inPatch = true).map { it.number })
+    }
+
+    @Test fun `blocks break at gaps once big enough, at hunks and at the size limit`() {
+        fun source(vararg text: String) = text.mapIndexed { index, line -> EvidenceLine(LineSide.AFTER, index + 1, line) }
+        // "a" is too small to stand alone, so the blank line after it stays inside its block; the next blank line ends it.
+        val blocks = lineBlocks(source("a", "", "b", "c", "", "d", "e"), minLines = 2, maxLines = 6)
+        assertEquals(listOf(listOf(1, 2, 3, 4), listOf(6, 7)), blocks.map { block -> block.map { it.number } })
+        val long = lineBlocks(source("a", "b", "c", "d", "e", "f"), maxLines = 4)
+        assertEquals(listOf(listOf(1, 2, 3, 4), listOf(5, 6)), long.map { block -> block.map { it.number } })
+        val diff = patchLines("@@ -1,2 +1,2 @@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d\n")
+        assertEquals(listOf(listOf("-1", "+1"), listOf("-9", "+9")), lineBlocks(diff).map { block -> block.map { "${it.marker}${it.number}" } })
+    }
+
+    @Test fun `a file summary searches the file's blocks and then the lines of the best block`() = runBlocking {
+        val text = (listOf("package ui", "import x", "import y", "") + listOf("fun paint() {", "    drawBorder()", "    log()", "}") + listOf("", "fun other() {", "    other()", "}"))
+            .joinToString("\n")
+        val tree = buildSummaryTree(listOf(Source("ui/Paint.kt", text)))
+        val node = tree.nodes.single { it.kind == SummaryKind.FILE }
+        val summary = "Paints the canvas border."
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
+        val fake = FakeDecisions { state, instructions ->
+            when {
+                instructions.has("candidate_lines") -> if ("drawBorder" in instructions["candidate_lines"].asString) 0.9 else 0.1
+                instructions.has("candidate_line") -> if ("drawBorder" in instructions["candidate_line"].asString) 0.8 else 0.2
+                else -> 0.9
+            }
+        }
+        val tracer = SummaryTracer(fake.evaluate)
+        val words = SummaryWord.split(summary)
+        val context = tracer.score(summaries, node.id, words.indexOfFirst { it.text == "border" })
+        fake.requests.clear()
+        val trace = tracer.searchLines(summaries, node.id, context)
+        assertEquals(listOf(listOf(1, 2, 3), listOf(5, 6, 7, 8), listOf(10, 11, 12)), trace.blocks.sortedBy { it.lines.first().number }.map { block -> block.lines.map { it.number } })
+        assertEquals(listOf(5, 6, 7, 8), trace.best!!.lines.map { it.number })
+        assertEquals(listOf(6), trace.after)
+        assertTrue(trace.before.isEmpty())
+        assertEquals("Paint.kt:6", trace.label)
+        val (blocks, lines) = fake.requests.partition { request -> request.questions.values.any { it.instructions.asJsonObject.has("candidate_lines") } }
+        assertEquals(3, blocks.flatMap { it.questions.values }.size)
+        assertEquals("Only the best block's lines are asked about", 4, lines.flatMap { it.questions.values }.size)
+        assertEquals("5| fun paint() {\n6|     drawBorder()\n7|     log()\n8| }", lines.first().state.asJsonObject["block"].asString)
+        assertEquals(context.query, blocks.first().state.asJsonObject["query"].asString)
+    }
+
+    @Test fun `a file search without a related block opens nothing`() = runBlocking {
+        val tree = buildSummaryTree(listOf(Source("a.kt", "val a = 1\n")))
+        val node = tree.nodes.single { it.kind == SummaryKind.FILE }
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Sets the value." })
+        val tracer = SummaryTracer(FakeDecisions { _, _ -> 0.1 }.evaluate)
+        val trace = tracer.searchLines(summaries, node.id, tracer.score(summaries, node.id, 2))
+        assertEquals(1, trace.blocks.size)
+        assertNull(trace.best)
+        assertTrue(trace.lines.isEmpty())
+    }
 }

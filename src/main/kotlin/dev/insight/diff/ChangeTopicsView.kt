@@ -32,6 +32,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
@@ -62,7 +63,7 @@ internal class ChangeTopicsViewState(
     /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
     private val foldLargeOutline: Boolean = false,
     mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
-) : SummaryTraceState(traceRoot = false) {
+) : SummaryTraceState(traceRoot = false, traceLeaves = true) {
     var mode = mode
     var selected: String? = null
         private set
@@ -104,9 +105,10 @@ internal class ChangeTopicsViewState(
     /** Document mode keeps every file visible and limits the rail to the picked levels. */
     fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)
 
-    /** A node is on screen when no topic above it is folded; [tree] is the reading tree, see [showTrace]. */
+    /** Documents keep every file visible; hierarchies hide nodes under folded topics. [tree] is the reading tree. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean = { node ->
-        generateSequence(node.parent) { tree[it].parent }.map(tree::get)
+        if (mode == ChangeTopicsMode.DOCUMENT) node.kind == SummaryKind.FILE || tree.depth(node.id) - 1 <= (level ?: Int.MAX_VALUE)
+        else generateSequence(node.parent) { tree[it].parent }.map(tree::get)
             .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in collapsed }
     }
 
@@ -223,6 +225,10 @@ internal abstract class DocumentColumnsPanel(
     protected open fun sectionBody(file: ReviewSource, width: Int): JComponent? = null
     /** The margin beside a section, inside its rule; the file's summary by default. */
     protected open fun noteBody(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent =
+        summaryBody("file:${file.path}", summary, missingSummary, width)
+
+    /** A file or rail card's summary; reading views attach cached word tracing here. */
+    protected open fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         if (summary != null) text(summary, width, cardFont(JBFont.label()), null)
         else text(missingSummary, width, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help)
 
@@ -357,8 +363,7 @@ internal abstract class DocumentColumnsPanel(
         })
         add(JLabel("${item.summaryLabel} · ${countLabel(item.last - item.first + 1)}").apply { font = cardFont(JBFont.small()); foreground = help })
         val summary = item.summary
-        add(if (summary != null) text(summary, inner, cardFont(JBFont.label()), null)
-            else text(item.missingSummary, inner, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help))
+        add(summaryBody(item.key, summary, item.missingSummary, inner))
         toolTipText = "Summary of ${item.tooltip} · LLM interpretation"
         preferredSize = Dimension(width, preferredSize.height)
     }
@@ -583,6 +588,11 @@ internal class ChangeTopicsPanel(
 
     override fun openFile(file: ReviewSource) = actions.openFile(file.path)
     override fun showFile(file: ReviewSource) = actions.showDiffCard(file.path)
+    override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
+        super.summaryBody(identity, summary, missingSummary, width).also { area ->
+            val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
+            if (summary != null) installWordTracing(area as JTextArea, readingIdentity, summary, state, actions.trace)
+        }
     override fun isSelected(item: RailItem): Boolean = nodesByKey[item.key]?.let(state::isSelected) == true
     override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }
 

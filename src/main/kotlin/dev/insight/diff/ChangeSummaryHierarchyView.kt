@@ -3,6 +3,8 @@ package dev.insight.diff
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
 import javax.swing.Icon
+import javax.swing.JComponent
+import javax.swing.JTextArea
 
 /**
  * The summary tree read left to right, like the topic hierarchy: the root folder in the first column, its folders and groups
@@ -84,6 +86,7 @@ internal class ChangeSummaryHierarchyPanel(
             name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null)
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
+        if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[node.identity] = leaf
@@ -192,6 +195,11 @@ internal class ChangeSummaryDocumentPanel(
         val node = nodesByPath[file.path]
         if (show != null && node != null) show(node) else actions.showDiffCard(file.path)
     }
+
+    override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
+        super.summaryBody(identity, summary, missingSummary, width).also { area ->
+            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace)
+        }
 
     override fun isSelected(item: RailItem): Boolean = state.selected == item.key
 

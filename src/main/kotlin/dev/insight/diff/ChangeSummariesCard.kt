@@ -45,9 +45,10 @@ internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT }
 
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so
- * hovering never needs a request. [traceRoot] is false where the root summary is not shown, so its words are not scored.
+ * hovering never needs a request. [traceRoot] is false where the root summary is not shown, so its words are not scored;
+ * [traceLeaves] scores the summaries of files and parts too, whose highlights search the file's lines.
  */
-internal abstract class SummaryTraceState(private val traceRoot: Boolean = true) {
+internal abstract class SummaryTraceState(private val traceRoot: Boolean = true, val traceLeaves: Boolean = false) {
     val scored = mutableMapOf<Pair<String, Int>, SummaryContext>()
     var scoring = false
     var scoringError: String? = null
@@ -57,6 +58,10 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
 
     fun cached(identity: String, summary: String, word: Int): SummaryContext? =
         scored[identity to word]?.takeIf { it.summary == summary }
+
+    /** Whether [node]'s words are scored: branches, and with [traceLeaves] the files and parts whose lines can be searched. */
+    fun traced(node: SummaryNode): Boolean = (traceRoot || node.kind != SummaryKind.ROOT) &&
+        (node.children.isNotEmpty() || traceLeaves && node.file != null)
 
     /** Score only the nodes on screen: a huge tree has far too many words to score at once. */
     var visibleOnly = false
@@ -74,7 +79,7 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
     fun pending(summaries: ChangeSummaries, visible: ((SummaryNode) -> Boolean)? = null): List<Pair<Int, Int>> {
         if (pendingFor !== summaries || pendingScored != scored.size) {
             pendingAll = summaries.tree.nodes
-                .filter { it.children.isNotEmpty() && (traceRoot || it.kind != SummaryKind.ROOT) }
+                .filter { traced(it) }
                 .flatMap { node ->
                     val summary = summaries.text(node.id) ?: return@flatMap emptyList()
                     SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
@@ -94,7 +99,7 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
         val nodes = summaries.tree.nodes.associateBy { it.identity }
         scored.entries.removeIf { (_, context) ->
             val node = nodes[context.identity]
-            node == null || node.children.isEmpty() || summaries.text(node.id) != context.summary
+            node == null || !traced(node) || summaries.text(node.id) != context.summary
         }
         val current = tracing ?: return
         val node = nodes[current.identity]
@@ -163,18 +168,33 @@ internal object TraceStyle {
 internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries): String = when {
     state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
-    state.scored.isEmpty() -> "Click Score to precalculate word contexts for " +
-        (if (state.visibleOnly) "the summaries with children shown now." else "summaries with children.")
+    state.scored.isEmpty() -> "Click Score to precalculate word contexts for " + scoredSummaries(state) + "."
+    state.traceLeaves -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries, " +
+        "or a file's lines."
     else -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries."
+}
+
+/** Which summaries Score covers: "the summaries shown now", "summaries with children". */
+internal fun scoredSummaries(state: SummaryTraceState): String = when {
+    state.traceLeaves -> if (state.visibleOnly) "the summaries shown now" else "every summary"
+    else -> if (state.visibleOnly) "the summaries with children shown now" else "summaries with children"
 }
 
 /** The query and progress of a trace; [where] says where its matches are shown. */
 internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted below. Click a highlighted word to jump to the best."): String {
     val trace = tracing.trace
     val levels = "the ${SummaryTracer.LEVELS} levels below"
+    val lines = tracing.lines
+    val file = tracing.file?.substringAfterLast('/')
     return when {
         tracing.error != null -> "Tracing “${tracing.word.text}” failed: ${tracing.error}"
         tracing.context == null -> "Scoring the words around “${tracing.word.text}”…"
+        file != null && lines == null && !tracing.searchRequested -> "“${tracing.context.query}” · Click a highlighted word to find its lines in $file."
+        file != null && lines == null -> "“${tracing.context.query}” · Searching the lines of $file…"
+        lines != null && lines.blocks.isEmpty() -> "“${lines.query}” · $file has no lines to search."
+        lines != null && lines.best == null -> "“${lines.query}” · None of the ${lines.blocks.size} blocks of $file is related."
+        lines != null -> "“${lines.query}” · Best match at ${lines.label} · ${(lines.best!!.probability * 100).roundToInt()}%, " +
+            "opened and highlighted. Click a highlighted word to open it again."
         trace == null && !tracing.searchRequested -> "“${tracing.context.query}” · Click a highlighted word to search related summaries."
         trace == null -> "“${tracing.context.query}” · Searching the summaries in $levels…"
         trace.candidates == 0 -> "“${trace.query}” · There are no summaries below this one to search."
@@ -243,7 +263,7 @@ internal fun installWordTracing(
  * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
  * modes, so folding a folder in the hierarchy collapses it in the outline too.
  */
-internal class ChangeSummariesViewState : SummaryTraceState() {
+internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) {
     var mode = ChangeSummariesMode.OUTLINE
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
@@ -288,9 +308,13 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
     fun railDepth(tree: ChangeSummaryTree): Int =
         minOf(branchLevels(tree), (shownLevel(tree) ?: branchLevels(tree)) + 1)
 
-    /** A node is on screen when every folder above it is open. */
+    /** Documents keep every file visible; outlines and hierarchies hide nodes under folded folders. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean =
-        { node -> generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded } }
+        { node ->
+            if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
+                isFolderBranch(node) && tree.depth(node.id) < railDepth(tree)
+            else generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded }
+        }
 
     /**
      * The outline only opens the levels down to the matches. The hierarchy shows a branch's summary only while it is folded,
@@ -328,13 +352,18 @@ internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabu
     }
 }
 
-/** Scoring publishes [context] first. A click requests the separate search and selects its best match. */
+/**
+ * Scoring publishes [context] first. A click requests the separate search and selects its best match; for the summary of a
+ * [file] or part, it searches the file's [lines] and opens the best ones.
+ */
 internal data class SummaryTracing(
     val identity: String,
     val summary: String,
     val word: SummaryWord,
     val context: SummaryContext? = null,
     val trace: SummaryTrace? = null,
+    val file: String? = null,
+    val lines: LineTrace? = null,
     val error: String? = null,
     val searchRequested: Boolean = false,
     val token: Any = Any(),
@@ -345,16 +374,20 @@ internal interface SummaryTraceLauncher {
     fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job
     fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job
+    /** Searches the lines of a file or part, whose summary has no summaries below it. */
+    fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job
 }
 
 /**
  * Prescoring and searching for one card's [content], kept in [state]; [refresh] rebuilds the card. Hover reads saved
- * contexts synchronously; clicking a highlight searches the levels below. Late results of a replaced run are ignored.
+ * contexts synchronously; clicking a highlight searches the levels below, or the lines of a file, which [openLines] opens.
+ * Late results of a replaced run are ignored.
  */
 internal class SummaryTraceSession(
     private val launcher: SummaryTraceLauncher?,
     private val state: SummaryTraceState,
     private val content: () -> ChangeSummaries?,
+    private val openLines: (SummaryNode, LineTrace) -> Unit = { _, _ -> },
     private val refresh: () -> Unit,
 ) {
     private var traceJob: Job? = null
@@ -402,6 +435,7 @@ internal class SummaryTraceSession(
         if (current != null && highlighted && (current.error == null || current.context != null)) {
             if (!search) return
             if (current.trace != null) state.showTrace(content.tree, current.trace)
+            else if (current.lines != null) { if (current.lines.best != null) openLines(node, current.lines) }
             else if (!current.searchRequested || current.error != null) {
                 state.tracing = current.copy(searchRequested = true, error = null)
                 if (current.context != null) search()
@@ -411,7 +445,8 @@ internal class SummaryTraceSession(
         }
         traceJob?.cancel()
         val context = state.cached(identity, text, word) ?: return
-        state.tracing = SummaryTracing(identity, text, words[word], context = context)
+        val file = node.path.takeIf { node.children.isEmpty() && node.file != null }
+        state.tracing = SummaryTracing(identity, text, words[word], context = context, file = file)
         refresh()
     }
 
@@ -421,6 +456,18 @@ internal class SummaryTraceSession(
         val current = state.tracing ?: return
         val context = current.context ?: return
         val node = content.tree.nodes.firstOrNull { it.identity == current.identity } ?: return
+        if (current.file != null) {
+            traceJob = launcher.searchLines(content, node.id, context) { result ->
+                val now = state.tracing
+                if (now == null || now.token !== current.token) return@searchLines
+                result.onSuccess { lines ->
+                    state.tracing = now.copy(lines = lines)
+                    if (lines.best != null) openLines(node, lines)
+                }.onFailure { error -> state.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
+                refresh()
+            }
+            return
+        }
         traceJob = launcher.search(content, node.id, context) { result ->
             val now = state.tracing
             if (now == null || now.token !== current.token) return@search
@@ -542,8 +589,7 @@ internal class ChangeSummariesPanel(
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
                 .also { area ->
-                    if (node.children.isNotEmpty())
-                        installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, activate)
+                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
@@ -578,7 +624,7 @@ internal class ChangeSummariesPanel(
             // Scored words keep their trace action; the rest of the row behaves like its disclosure arrow.
             val click = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) activate() } }
             (listOf(this, gutterPanel, content, header) + header.components.filterIsInstance<JLabel>() +
-                listOfNotNull(summaryText.takeIf { node.children.isEmpty() || summary == null }))
+                listOfNotNull(summaryText.takeIf { summary == null || !state.traced(node) }))
                 .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }

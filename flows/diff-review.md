@@ -6,7 +6,7 @@ At a high level: the workspace loads an immutable snapshot of a selected compari
 
 Generated views help navigate a large change — for example summaries of what changed, topics grouping files by responsibility, and flows showing how changed code connects. Code builds the underlying structure from the snapshot; the assistant only writes or labels the interpretation. Everything in a review is tied to its snapshot, so it is refreshed or discarded when the comparison changes.
 
-The Summaries outline always shows file and folder names, with metadata and file actions on the same header line. Clicking a summary expands or collapses its children, like its arrow; scored words retain their context and search actions. Outline and Hierarchy show scoring and hover status in a fixed footer so hints do not move the summaries.
+The Summaries outline always shows file and folder names, with metadata and file actions on the same header line. Clicking a summary expands or collapses its children, like its arrow; scored words retain their context and search actions. File and part summaries are scored too: clicking a highlighted word in one scores the blocks of the file's changed lines against the word's query, then the lines of the best block, and opens the diff scrolled to those lines with them highlighted. Outline and Hierarchy show scoring and hover status in a fixed footer so hints do not move the summaries.
 
 Entry points for further exploration:
 

@@ -91,8 +91,9 @@ class SummaryTracer(
     private val maxQuestions: Int = MAX_QUESTIONS,
     private val maxRequestBytes: Int = MAX_REQUEST_BYTES,
     private val cache: ReviewDiskCache? = null,
+    private val maxBlocks: Int = MAX_BLOCKS,
 ) {
-    init { require(levels >= 1); require(maxWords >= 1); require(maxQuestions >= 1); require(maxRequestBytes >= 1) }
+    init { require(levels >= 1); require(maxWords >= 1); require(maxQuestions >= 1); require(maxRequestBytes >= 1); require(maxBlocks >= 1) }
 
     private val contexts = Lru<List<Any>, Set<Int>>(256)
     private val probabilities = Lru<List<String>, Double>(2048)
@@ -119,6 +120,69 @@ class SummaryTracer(
             .sortedWith(compareByDescending<SummaryMatch> { it.probability }.thenByDescending { it.levelsBelow }.thenBy { it.id })
         return SummaryTrace(node.identity, context.summary, context.word, context.context, context.query, matches, candidates.size)
     }
+
+    /**
+     * A file's summary has no summaries below it, so a click searches the file instead: every block of its source, or of its
+     * diff's changed lines, gets a Noul for the query; then each candidate line of the best block gets one, so the reader is
+     * shown the lines that do it rather than the whole block. Only the first [maxBlocks] blocks are searched.
+     */
+    suspend fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext): LineTrace {
+        val node = summaries.tree[id]
+        require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
+        val all = lineBlocks(evidenceLines(node))
+        val blocks = all.take(maxBlocks)
+        val trace = LineTrace(node.identity, node.path, context.query, emptyList(), emptyList(), all.size - blocks.size)
+        if (blocks.isEmpty()) return trace
+        val diff = node.file is ReviewFile
+        val state = JsonObject().apply {
+            addProperty("query", context.query)
+            addProperty("query_focus", context.word.text)
+            add("pointed_summary", JsonObject().apply { addProperty("location", node.location); addProperty("summary", context.summary) })
+            addProperty("file", node.path)
+            add("line_format", lineFormat(diff))
+            add("match_rules", blockRules())
+        }
+        val nouls = ask(state, blocks) { block -> blockQuestion(block) }
+        val ranked = blocks.zip(nouls) { block, probability -> LineMatch(block, probability) }
+            .sortedWith(compareByDescending<LineMatch> { it.probability }.thenBy { it.lines.first().hunk }.thenBy { it.lines.first().number })
+        val best = ranked.first().takeIf { it.probability >= SummaryTrace.MATCH_THRESHOLD }
+            ?: return trace.copy(blocks = ranked)
+        val candidates = best.lines.filter { it.candidate }
+        val chosen = if (candidates.size <= 1) candidates else {
+            val lineState = state.deepCopy().apply {
+                remove("match_rules")
+                addProperty("block", numberedLines(best.lines))
+                add("line_rules", lineRules())
+            }
+            candidates.zip(ask(lineState, candidates) { line -> lineQuestion(line) })
+                .filter { (_, probability) -> probability >= SummaryTrace.MATCH_THRESHOLD }.map { it.first }.ifEmpty { candidates }
+        }
+        return trace.copy(blocks = ranked, lines = chosen)
+    }
+
+    private fun blockQuestion(block: List<EvidenceLine>) = DecisionQuestion.Noul(
+        JsonObject().apply {
+            addProperty("candidate_lines", numberedLines(block))
+            addProperty("question", "Following `match_rules`, do `candidate_lines` contain the code that does what `query` says " +
+                "about `query_focus`?")
+        },
+        mapOf(
+            true to JsonPrimitive("`candidate_lines` fit a case of `match_rules.include`."),
+            false to JsonPrimitive("`candidate_lines` fit a case of `match_rules.exclude`."),
+        ),
+    )
+
+    private fun lineQuestion(line: EvidenceLine) = DecisionQuestion.Noul(
+        JsonObject().apply {
+            addProperty("candidate_line", numberedLines(listOf(line)))
+            addProperty("question", "Following `line_rules`, is `candidate_line` one of the lines of `block` that does what `query` " +
+                "says about `query_focus`?")
+        },
+        mapOf(
+            true to JsonPrimitive("`candidate_line` fits a case of `line_rules.include`."),
+            false to JsonPrimitive("`candidate_line` fits a case of `line_rules.exclude`."),
+        ),
+    )
 
     /** The pointed word and the words of the summary that say what it is and what is done to it, in reading order. */
     internal suspend fun context(summary: String, words: List<SummaryWord>, word: SummaryWord): List<SummaryWord> {
@@ -288,6 +352,8 @@ class SummaryTracer(
          * 10,240, with room for the model's own prompt. A starting point; tune it against the server's context.
          */
         const val MAX_REQUEST_BYTES = 16_000
+        /** Blocks of a file searched for one word; a part of a large file stays well under it. */
+        const val MAX_BLOCKS = 128
 
         private fun bytes(request: DecisionRequest) = DecisionJson.encode(request).toByteArray(Charsets.UTF_8).size
 
@@ -350,6 +416,42 @@ class SummaryTracer(
                     "does not state for the focus, even on a related topic or in the same folder.",
                 "The candidate mentions the focus only in passing, or shares only the isolated word while describing a different " +
                     "kind, purpose or object. Matching a generic head word does not match the qualified phrase.",
+            ))
+        }
+
+        private fun lineFormat(diff: Boolean): JsonPrimitive = JsonPrimitive(
+            if (diff) "Each line is `<marker><number>| <text>`: marker `+` is an added line numbered in the new file, `-` a removed " +
+                "line numbered in the old file, and a space an unchanged line."
+            else "Each line is `<number>| <text>`, numbered in `file`.")
+
+        /** When a block of the file is what the query says; every block question refers to it. */
+        private fun blockRules() = JsonObject().apply {
+            addProperty("goal", "`pointed_summary` was written from `file`. A reader points at `query_focus` in it to find the code " +
+                "it describes; `query` is the summary narrowed to the words about it. Interpret the focus as the complete phrase it " +
+                "belongs to in `query`. Each candidate is a block of consecutive lines of the file; for a diff, the changed lines.")
+            add("include", strings(
+                "The lines declare, implement, call, configure or change the item the focus names, in the way `query` states. " +
+                    "They need not do everything the query says.",
+            ))
+            add("exclude", strings(
+                "The lines are about another item, including another item `query` or the summary also names, or do something " +
+                    "the query does not state for the focus.",
+                "The lines only share a word with the focus, import it, or mention it in passing, while the code that does it " +
+                    "is elsewhere.",
+            ))
+        }
+
+        /** Which lines of the best block to point at; every line question refers to it. */
+        private fun lineRules() = JsonObject().apply {
+            addProperty("goal", "`block` contains the code that does what `query` says about `query_focus`. Choose the lines a " +
+                "reader should look at first.")
+            add("include", strings(
+                "The line itself declares, does or changes what `query` says about the focus: its declaration, the call or " +
+                    "statement that does it, or the condition or value the query describes.",
+            ))
+            add("exclude", strings(
+                "The line only supports those lines: a closing bracket, a blank or generic setup, logging, a comment, or a " +
+                    "statement about another item.",
             ))
         }
 

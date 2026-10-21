@@ -108,6 +108,7 @@ internal class ChangeTopicHierarchyPanel(
             { fileNodes[file.path]?.let(actions.openNode) ?: actions.openFile(file.path) },
             actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity))
         val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark)
+        if (summary != null) installWordTracing(note, identity, summary, state, actions.trace)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[identity] = leaf

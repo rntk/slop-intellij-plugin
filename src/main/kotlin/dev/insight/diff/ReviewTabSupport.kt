@@ -1,8 +1,15 @@
 package dev.insight.diff
 
+import com.intellij.codeInsight.highlighting.HighlightManager
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.ScrollType
+import com.intellij.openapi.editor.colors.EditorColors
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import dev.insight.apilog.ApiLogs
 import dev.insight.core.decisionsClient
@@ -42,6 +49,28 @@ internal fun openReviewCanvas(project: Project, file: DiffReviewCanvasFile, focu
     manager.openFile(file, focus).filterIsInstance<DiffReviewEditor>().firstOrNull()?.attachCanvas()
 }
 
+/** Opens [file] with [lines] centered and highlighted like search results, until Escape or an edit. */
+internal fun openHighlightedLines(project: Project, file: VirtualFile, lines: List<Int>) {
+    val first = lines.minOrNull() ?: return
+    val editor = FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file, first - 1, 0), true) ?: return
+    highlightLines(project, editor, lines)
+    editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+}
+
+/** Highlights each run of consecutive 1-based [lines] of [editor]; lines past its end are skipped. */
+internal fun highlightLines(project: Project, editor: Editor, lines: List<Int>) {
+    val document = editor.document
+    val manager = HighlightManager.getInstance(project)
+    val sorted = lines.filter { it in 1..document.lineCount }.distinct().sorted()
+    var start = 0
+    for (index in sorted.indices) {
+        if (index + 1 < sorted.size && sorted[index + 1] == sorted[index] + 1) continue
+        manager.addRangeHighlight(editor, document.getLineStartOffset(sorted[start] - 1), document.getLineEndOffset(sorted[index] - 1),
+            EditorColors.SEARCH_RESULT_ATTRIBUTES, true, null)
+        start = index + 1
+    }
+}
+
 /**
  * Prescoring and searching summaries for one review, with a background progress each. One tracer per review, so its cached
  * judgments serve every word traced in it. Results arrive on the EDT; [scope] should run on it and ends the tasks with the tab.
@@ -71,6 +100,9 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
 
     override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job =
         launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
+
+    override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
+        launchSummaryTask("Searching related lines", done) { summaryTracer.searchLines(summaries, id, context) }
 
     private fun <T> launchSummaryTask(title: String, done: (Result<T>) -> Unit, task: suspend () -> T): Job = scope.launch {
         val result = try {

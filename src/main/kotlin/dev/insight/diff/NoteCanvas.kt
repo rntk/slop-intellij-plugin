@@ -51,6 +51,8 @@ internal class NoteCanvas(
     openNode: ((SummaryNode) -> Unit)? = null,
     /** Put a summary node's source on the canvas. Null shows the node's file by path like [showDiffCard]. */
     showNode: ((SummaryNode) -> Unit)? = null,
+    /** Open a file or part at the lines a traced word of its summary refers to, highlighted. Null opens the node like [openNode]. */
+    openLines: ((SummaryNode, LineTrace) -> Unit)? = null,
     /** File view: open a file at a line, put lines of the viewed file on the canvas, and close the view. */
     private val openFileAt: (String, Int?) -> Unit = { path, _ -> open(path) },
     private val showFileLines: (String, IntRange) -> Unit = { path, _ -> showDiffCard(path) },
@@ -58,6 +60,7 @@ internal class NoteCanvas(
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
+    private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = openLines ?: { node, _ -> openSummaryNode(node) }
     internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
     private val pages = mutableMapOf<DiffNoteKey, JScrollPane>()
     private val cards = mutableMapOf<DiffNoteKey, JPanel>()
@@ -80,8 +83,8 @@ internal class NoteCanvas(
     private var summariesScroll = 0
     private var fileView: FileViewCard? = null
     private var fileViewScroll = 0
-    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, ::refreshSummaries)
-    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }) { refreshCard(TOPICS_KEY) }
+    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, openSummaryLines, ::refreshSummaries)
+    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -471,7 +474,7 @@ internal class NoteCanvas(
                     toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
                     addActionListener { generateTopics() }
                 })
-                if (hierarchy && topicsTrace.available) add(scoreButton("topics-score", topicsView, content.reading, topicsTrace))
+                if (topicsTrace.available) add(scoreButton("topics-score", topicsView, content.reading, topicsTrace))
                 if (hierarchy) add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
@@ -497,11 +500,12 @@ internal class NoteCanvas(
             val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
                 trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode)
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-            add(if (hierarchy) JPanel(VerticalLayout(scaled(8))).apply {
+            add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
-                add(ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary))
-            } else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary), BorderLayout.CENTER)
+                add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary)
+                    else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary))
+            }, BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
@@ -608,7 +612,7 @@ internal class NoteCanvas(
                         addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
                     })
                 }
-                if (!document && summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
+                if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
                 add(JButton(when {
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
@@ -654,7 +658,7 @@ internal class NoteCanvas(
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
-        if (!document && summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
+        if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
             traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
@@ -700,7 +704,7 @@ internal class NoteCanvas(
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
             isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            toolTipText = "Precalculate word contexts for " + (if (state.visibleOnly) "the summaries with children shown now" else "all summaries with children") + ". Uses the Decisions API."
+            toolTipText = "Precalculate word contexts for " + scoredSummaries(state) + ". Uses the Decisions API."
             addActionListener { session.prescore() }
         }
 
