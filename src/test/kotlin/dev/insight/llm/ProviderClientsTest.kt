@@ -271,7 +271,7 @@ class ProviderClientsTest {
             runCatching { server.removeContext("/v1/messages") }
             respond("/v1/messages", 200 to body)
             val error = assertThrows(body, LlmProtocolException::class.java) {
-                runBlocking { AnthropicClient("sk", "claude-sonnet-4-5", baseUrl).complete(CompletionRequest(listOf(LlmMessage.user("Hi")))) }
+                runBlocking { AnthropicClient("sk", "claude-sonnet-4-5", baseUrl, maxRetries = 0).complete(CompletionRequest(listOf(LlmMessage.user("Hi")))) }
             }
             assertTrue("${error.message} should mention $message", message in error.message.orEmpty())
         }

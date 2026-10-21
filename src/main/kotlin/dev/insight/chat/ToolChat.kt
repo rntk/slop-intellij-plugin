@@ -166,7 +166,7 @@ class ToolChatRunner(
 
     companion object {
         const val DEFAULT_MAX_TOOL_RESULT_CHARS = 16_000
-        const val DEFAULT_MAX_TOOL_ROUNDS = 12
+        const val DEFAULT_MAX_TOOL_ROUNDS = 100
         private const val TOOL_ROUNDS_EXHAUSTED =
             "The tool-call limit for this turn is reached. Do not call tools. Answer now using the information you have."
         private val LOG = logger<ToolChatRunner>()

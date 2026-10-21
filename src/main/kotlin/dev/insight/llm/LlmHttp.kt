@@ -3,6 +3,7 @@ package dev.insight.llm
 import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.IOException
 import java.net.URI
 import java.net.URISyntaxException
 import java.net.http.HttpClient
@@ -20,7 +21,8 @@ interface LlmClient {
     val endpoint: URI
 
     /**
-     * One non-streaming completion. Retries timeouts (408), rate limits (429), and server errors (5xx).
+     * One non-streaming completion. Retries transport failures, timeouts (408), rate limits (429),
+     * server errors (5xx), and malformed or empty responses within the configured retry budget.
      * Other HTTP failures throw [LlmApiException]; unusable responses throw [LlmProtocolException];
      * network errors propagate as IO exceptions. A [FinishReason.TRUNCATED] completion is returned as-is
      * so callers can keep the partial text.
@@ -70,7 +72,7 @@ internal class LlmHttp(
             "Refusing to send an API key to a non-HTTPS server URL"
         }
         require(!requestTimeout.isNegative && !requestTimeout.isZero) { "Request timeout must be positive" }
-        require(maxRetries in 0..10) { "Max retries must be between 0 and 10" }
+        require(maxRetries in 0..100) { "Max retries must be between 0 and 100" }
         require(httpClient.followRedirects() == HttpClient.Redirect.NEVER) { "Transport must disable redirects" }
     }
 
@@ -89,7 +91,9 @@ internal class LlmHttp(
                 send(httpRequest)
             } catch (e: Throwable) {
                 call?.fail(e)
-                throw e
+                if (e !is IOException || attempt >= maxRetries) throw e
+                delay(retryDelay(null, attempt++))
+                continue
             }
             val status = response.statusCode()
             if (status in 200..299) {
@@ -97,7 +101,10 @@ internal class LlmHttp(
                     decode(response.body()).also { call?.respond(response) }
                 } catch (e: Throwable) {
                     call?.respond(response, e)
-                    throw e
+                    // The caller must increase the output budget after truncation; resending it unchanged cannot help.
+                    if (e !is LlmProtocolException || "truncated" in e.message.orEmpty() || attempt >= maxRetries) throw e
+                    delay(retryDelay(null, attempt++))
+                    continue
                 }
             }
             call?.respond(response)
@@ -126,7 +133,7 @@ internal class LlmHttp(
                         .toMillis().coerceAtLeast(0)
                 }.getOrNull()
             }
-        return maxOf(fromHeader ?: 0, 1000L shl attempt).coerceAtMost(60_000)
+        return maxOf(fromHeader ?: 0, (1000L shl attempt.coerceAtMost(6)).coerceAtMost(60_000))
     }
 
     companion object {

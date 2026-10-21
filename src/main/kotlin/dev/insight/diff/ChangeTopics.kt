@@ -154,7 +154,7 @@ class ChangeTopicGenerator internal constructor(
     private val complete: suspend (CompletionRequest) -> Completion,
     private val readTool: ChatTool?,
     private val patchChars: Int = 12_000,
-    private val attempts: Int = 2,
+    private val attempts: Int = 5,
     private val system: String = SYSTEM,
     private val evidence: (ReviewSource, ChangeTopics) -> TopicEvidence = { source, _ -> diffTopicEvidence(source as ReviewFile, patchChars) },
     private val concurrency: Int = 1,
@@ -201,7 +201,7 @@ class ChangeTopicGenerator internal constructor(
     ): String? {
         // The output allowance includes reasoning, even though the final label is tiny.
         // Keep the raised budget across retries instead of restarting at the original limit.
-        var outputBudget = 1024
+        var outputBudget = 4096
         for (attempt in 1..attempts) {
             coroutineContext.ensureActive()
             val topic = try {
@@ -214,10 +214,12 @@ class ChangeTopicGenerator internal constructor(
                     counted(request.copy(maxTokens = outputBudget))
                 }
                 val answer = if (shown.cut && readTool != null) {
-                    val reply = ToolChatRunner(budgeted, listOf(readTool), maxToolRounds = 4,
+                    val reply = ToolChatRunner(budgeted, listOf(readTool), maxToolRounds = 100,
                         maxContextChars = 48_000, evictionTarget = 0.75)
-                        .run(listOf(LlmMessage.system(system), LlmMessage.user(user)), onToolCall).reply
-                    parseJsonObjectLeniently(reply) ?: throw IllegalStateException("Topic answer is not JSON")
+                        .run(listOf(LlmMessage.system(system), LlmMessage.user(user)), onToolCall)
+                    parseJsonObjectLeniently(reply.reply) ?: throw IOException(
+                        if (reply.finishReason == dev.insight.llm.FinishReason.TRUNCATED) "Topic answer was truncated"
+                        else "Topic answer is not JSON")
                 } else completeJson(budgeted, system, user, SCHEMA, maxTokens = outputBudget, attempts = 1)
                 decode(answer) ?: throw IllegalStateException("Topic answer needs a valid 2–5 level path")
             } catch (e: CancellationException) {
@@ -226,7 +228,7 @@ class ChangeTopicGenerator internal constructor(
                 throw e
             } catch (e: IOException) {
                 error.set(e.message ?: e.javaClass.simpleName)
-                if ("truncated" in e.message.orEmpty()) outputBudget = (outputBudget * 2).coerceAtMost(8192)
+                if ("truncated" in e.message.orEmpty()) outputBudget = (outputBudget * 2).coerceAtMost(32768)
                 null
             } catch (e: Exception) {
                 error.set(e.message ?: e.javaClass.simpleName)

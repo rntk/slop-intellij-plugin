@@ -22,8 +22,8 @@ class OpenAiClient(
     baseUrl: String = DEFAULT_BASE_URL,
     private val serviceTier: String? = null,
     private val promptCacheKey: String? = null,
-    requestTimeout: Duration = Duration.ofSeconds(120),
-    maxRetries: Int = 2,
+    requestTimeout: Duration = Duration.ofSeconds(600),
+    maxRetries: Int = 6,
     httpClient: HttpClient = LlmHttp.sharedHttpClient,
     traffic: ApiTrafficLog? = null,
 ) : LlmClient {

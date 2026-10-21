@@ -49,6 +49,30 @@ class LlamaCppClientTest {
     private fun client(model: String = "", apiKey: String? = null, retries: Int = 0) =
         LlamaCppClient(baseUrl, model, apiKey, requestTimeout = Duration.ofSeconds(5), maxRetries = retries)
 
+    @Test fun `empty and malformed successful responses recover automatically`() = runBlocking {
+        respond(200 to "{}", 200 to reply("{\"content\":\"\"}"), 200 to reply("{\"content\":\"Recovered\"}"))
+        assertEquals("Recovered", client(retries = 2).complete(CompletionRequest(listOf(LlmMessage.user("Hi")))).content)
+        assertEquals(3, requests.size)
+    }
+
+    @Test fun `transport timeout recovers on the next attempt`() = runBlocking {
+        val calls = AtomicInteger()
+        server.createContext("/v1/chat/completions") { exchange ->
+            exchange.requestBody.readAllBytes()
+            if (calls.incrementAndGet() == 1) {
+                Thread.sleep(1000)
+                exchange.close()
+            } else {
+                val bytes = reply("{\"content\":\"Recovered\"}").toByteArray()
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+        }
+        val client = LlamaCppClient(baseUrl, requestTimeout = Duration.ofMillis(300), maxRetries = 1)
+        assertEquals("Recovered", client.complete(CompletionRequest(listOf(LlmMessage.user("Hi")))).content)
+        assertEquals(2, calls.get())
+    }
+
     private fun respond(vararg replies: Pair<Int, String>) {
         val calls = AtomicInteger()
         server.createContext("/v1/chat/completions") { exchange ->

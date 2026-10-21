@@ -291,22 +291,31 @@ class ChangeSummaryTest {
         assertEquals(listOf(0, 1), progress)
     }
 
-    @Test fun `skipped nodes are retried once and a wave without answers ends the run`() {
+    @Test fun `missing nodes exhaust their attempts even when a wave has no answers`() {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
         // The model never answers for b.kt, so the root can never be written.
         val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "app/b.kt" }
             .map { mapOf("id" to it["id"].asInt, "summary" to "Summary.") })) }
         val (result, _) = run(model, ChangeSummaries(tree))
-        assertEquals(2, result.requests)
+        assertEquals(5, result.requests)
         assertEquals(listOf(tree.root.id, tree.byLocation("app/b.kt").id), result.summaries.missing().sorted())
-        assertTrue(summariesReply(result).startsWith("Summarized 1 of 3 tree nodes with 2 requests."))
+        assertTrue(summariesReply(result).startsWith("Summarized 1 of 3 tree nodes with 5 requests."))
 
         val broken = Model { "not json" }
         val (failed, _) = run(broken, ChangeSummaries(tree))
         assertEquals(0, failed.summaries.count)
-        // completeJson retries an unparsable answer once; then the empty wave ends the run.
-        assertEquals(2, failed.requests)
+        // Each of five waves gets four attempts to produce parseable JSON.
+        assertEquals(20, failed.requests)
         assertTrue(failed.error!!, failed.error!!.contains("No JSON object"))
+    }
+
+    @Test fun `an entirely empty wave recovers without a manual restart`() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
+        var calls = 0
+        val model = Model { if (calls++ < 3) "{}" else null }
+        val (result, _) = run(model, ChangeSummaries(tree))
+        assertTrue(result.summaries.complete)
+        assertNull(result.error)
     }
 
     @Test fun `server errors end the run with the summaries saved so far`() {

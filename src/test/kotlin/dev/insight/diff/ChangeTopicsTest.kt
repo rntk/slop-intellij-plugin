@@ -26,7 +26,7 @@ class ChangeTopicsTest {
                     Completion("", reasoning = "Still classifying", finishReason = FinishReason.TRUNCATED)
                 } else Completion("""{"topic":"UI>DiffReview>Topics"}""")
             }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
-            assertEquals(listOf(1024, 2048, 1024), budgets)
+            assertEquals(listOf(4096, 8192, 4096), budgets)
             assertEquals(3, run.requests)
             assertTrue(run.topics.complete)
         }
@@ -63,16 +63,16 @@ class ChangeTopicsTest {
         val run = ChangeTopicGenerator({ request ->
             calls++
             assertTrue(dev.insight.llm.LlmJson.encode(request, "", true).length <= 48_000)
-            if (calls <= 4) Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read$calls", "read_diff_files",
+            if (calls <= 8) Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read$calls", "read_diff_files",
                 JsonParser.parseString("""{"paths":["large.kt"],"offset":${calls * 12_000}}""").asJsonObject)))
             else {
                 assertTrue(request.messages.any { "Context omitted to fit the window" in it.content })
                 assertFalse(request.messages.any { it.toolCallId == "read1" })
-                assertTrue(request.messages.any { it.toolCallId == "read4" })
+                assertTrue(request.messages.any { it.toolCallId == "read8" })
                 Completion("""{"topic":"UI>DiffReview>Topics"}""")
             }
         }, reader).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
-        assertEquals(5, run.requests)
+        assertEquals(9, run.requests)
         assertTrue(run.topics.complete)
     }
 
@@ -114,7 +114,7 @@ class ChangeTopicsTest {
         var count = 0
         val run = ChangeTopicGenerator({
             count++
-            Completion(if (count <= 2) """{"topic":3}""" else """{"topic":"Security>User>Auth"}""")
+            Completion(if (count <= 5) """{"topic":3}""" else """{"topic":"Security>User>Auth"}""")
         }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
         assertEquals(setOf("b"), run.topics.labels.keys)
         assertFalse(run.topics.complete)
@@ -232,7 +232,7 @@ class ChangeTopicsTest {
         }
         val run = ChangeTopicGenerator({ request ->
             calls++
-            assertEquals(1024, request.maxTokens)
+            assertEquals(4096, request.maxTokens)
             if (calls == 1) {
                 val input = JsonParser.parseString(request.messages.last().content).asJsonObject
                 assertEquals(10, input["patch"].asString.length)

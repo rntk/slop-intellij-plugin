@@ -27,8 +27,8 @@ class AnthropicClient(
     baseUrl: String = DEFAULT_BASE_URL,
     private val defaultMaxTokens: Int = 8192,
     private val serviceTier: String? = null,
-    requestTimeout: Duration = Duration.ofSeconds(120),
-    maxRetries: Int = 2,
+    requestTimeout: Duration = Duration.ofSeconds(600),
+    maxRetries: Int = 6,
     httpClient: HttpClient = LlmHttp.sharedHttpClient,
     traffic: ApiTrafficLog? = null,
 ) : LlmClient {

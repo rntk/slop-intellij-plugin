@@ -26,7 +26,7 @@ internal const val CODE_AS_DATA =
 /**
  * Runs a completion that must answer with one JSON object and parses it leniently (code fences and text around the
  * object are ignored). With a [schema], llama.cpp constrains the answer by `response_format: json_schema`; otherwise
- * by `json_object`. Unparsable or truncated output is retried once, the retry with twice the token budget, since
+ * by `json_object`. Unparsable output is retried; truncation doubles the token budget for the next attempt, since
  * reasoning models spend part of [maxTokens] on reasoning. Throws [IOException] when no attempt yields an object.
  */
 suspend fun completeJson(
@@ -35,7 +35,7 @@ suspend fun completeJson(
     user: String,
     schema: JsonObject?,
     maxTokens: Int,
-    attempts: Int = 2,
+    attempts: Int = 4,
     temperature: Double = 0.2,
 ): JsonObject {
     val format = JsonObject().apply {

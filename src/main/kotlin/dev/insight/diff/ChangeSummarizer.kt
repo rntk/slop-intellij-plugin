@@ -30,9 +30,9 @@ data class ChangeSummaryOptions(
     val foldersPerRequest: Int = 8,
     val concurrency: Int = 2,
     /** Requests per node before it is given up; the folders above it then keep their names. */
-    val attempts: Int = 2,
+    val attempts: Int = 5,
     /** Tool rounds for a request whose patch was cut. */
-    val maxToolRounds: Int = 4,
+    val maxToolRounds: Int = 100,
     /** Characters of the changed-path overview that gives file requests the whole change as context. */
     val overviewChars: Int = 4_000,
 )
@@ -156,7 +156,6 @@ class ChangeSummarizer internal constructor(
                 continue
             }
             asked.forEach { tries.merge(it.id, 1, Int::plus) }
-            val before = current.count
             val (leaves, branches) = asked.partition { it.children.isEmpty() }
             val batches = leafBatches(leaves).map { it to leafSystem } + branches.chunked(options.foldersPerRequest).map { it to branchSystem }
             forEachConcurrently(batches, options.concurrency) { (batch, system) ->
@@ -176,8 +175,7 @@ class ChangeSummarizer internal constructor(
                     onProgress(current.count, current.total)
                 }
             }
-            // A wave without any answer would fail again; stop rather than resend it.
-            if (current.count == before) break
+            // Missing nodes remain eligible until their attempt budget is spent, even after an empty wave.
         }
         return ChangeSummaryRun(current, requests.get(), error.takeIf { !current.complete })
     }
@@ -221,7 +219,7 @@ class ChangeSummarizer internal constructor(
             val reply = ToolChatRunner(counted, listOf(readTool), maxToolRounds = options.maxToolRounds)
                 .run(listOf(LlmMessage.system(system), LlmMessage.user("$user\n\n$JSON_ONLY")), onToolCall).reply
             parseJsonObjectLeniently(reply) ?: throw IllegalStateException("The summary answer is not a JSON object: ${reply.take(200)}")
-        } else completeJson(counted, system, user, SCHEMA, maxTokens = 200 + 160 * batch.size)
+        } else completeJson(counted, system, user, SCHEMA, maxTokens = 4096 + 512 * batch.size)
         return decode(answer, batch.size).mapKeys { (position, _) -> batch[position - 1].id }
     }
 

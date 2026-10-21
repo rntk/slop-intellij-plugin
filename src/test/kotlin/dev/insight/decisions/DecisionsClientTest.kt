@@ -190,6 +190,25 @@ class DecisionsClientTest {
         Unit
     }
 
+    @Test fun `timeout then malformed answer then server error recover in one evaluation`() = runBlocking {
+        val calls = AtomicInteger()
+        server.createContext("/v1/systemone") { exchange ->
+            exchange.requestBody.readAllBytes()
+            val attempt = calls.incrementAndGet()
+            if (attempt == 1) {
+                Thread.sleep(1000)
+                exchange.close()
+            } else {
+                val bytes = (if (attempt == 4) success else "{}").toByteArray()
+                exchange.responseHeaders.add("Retry-After", "0")
+                exchange.sendResponseHeaders(if (attempt == 3) 503 else 200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+        }
+        assertEquals("jev-test", client(retries = 3, timeout = Duration.ofMillis(300)).evaluate(request).model)
+        assertEquals(4, calls.get())
+    }
+
     @Test fun `in flight request and retry wait can be cancelled promptly`() = runBlocking {
         for (retrying in listOf(false, true)) {
             server.removeContextIfPresent()
@@ -240,7 +259,7 @@ class DecisionsClientTest {
         val traffic = ApiTrafficLog("Decisions")
         respond(200, "not json")
         assertThrows(DecisionProtocolException::class.java) {
-            runBlocking { DecisionsClient("k", endpoint, traffic = traffic).evaluate(request) }
+            runBlocking { DecisionsClient("k", endpoint, maxRetries = 0, traffic = traffic).evaluate(request) }
         }
         server.removeContextIfPresent()
         server.createContext("/v1/systemone") { exchange ->
@@ -249,7 +268,7 @@ class DecisionsClientTest {
             exchange.close()
         }
         assertThrows(HttpTimeoutException::class.java) {
-            runBlocking { DecisionsClient("k", endpoint, Duration.ofMillis(100), traffic = traffic).evaluate(request) }
+            runBlocking { DecisionsClient("k", endpoint, Duration.ofMillis(100), maxRetries = 0, traffic = traffic).evaluate(request) }
         }
         val (rejected, timedOut) = traffic.entries()
         assertEquals("not json", rejected.responseBody)

@@ -107,15 +107,15 @@ class ToolChatRunnerTest {
         assertEquals(listOf(LlmMessage.user("Hi")) + result.transcript, last.messages)
     }
 
-    @Test fun `default limits tool execution to twelve rounds`() = runBlocking {
+    @Test fun `default permits one hundred tool rounds before requesting a final answer`() = runBlocking {
         val tool = EchoTool()
         val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
-        val model = FakeModel(*(List(12) { looping } + Completion("Done.")).toTypedArray())
+        val model = FakeModel(*(List(100) { looping } + Completion("Done.")).toTypedArray())
         val result = ToolChatRunner(model::complete, listOf(tool)).run(listOf(LlmMessage.user("Hi")))
 
         assertEquals("Done.", result.reply)
-        assertEquals(12, tool.received.size)
-        assertEquals(13, result.requestCount)
+        assertEquals(100, tool.received.size)
+        assertEquals(101, result.requestCount)
         assertTrue(model.requests.dropLast(1).all { it.toolChoice == null })
         assertEquals(ToolChoice.None, model.requests.last().toolChoice)
         assertTrue(model.requests.all { request ->

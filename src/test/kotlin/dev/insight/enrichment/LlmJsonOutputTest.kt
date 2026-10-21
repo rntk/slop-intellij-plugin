@@ -51,8 +51,8 @@ class LlmJsonOutputTest {
         val error = try {
             completeJson(replies({ Completion("[1, 2]") }), "s", "u", null, 100); null
         } catch (e: IOException) { e }
-        assertTrue(error!!.message!!.contains("No JSON object after 2 attempts"))
-        assertEquals(2, requests.size)
+        assertTrue(error!!.message!!.contains("No JSON object after 4 attempts"))
+        assertEquals(4, requests.size)
         requests.clear()
         assertThrows(LlmApiException::class.java) {
             runBlocking { completeJson(replies({ throw LlmApiException(400, "context", null) }), "s", "u", null, 100) }

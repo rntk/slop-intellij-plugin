@@ -19,8 +19,8 @@ class DeepSeekClient(
     apiKey: String,
     private val model: String,
     baseUrl: String = DEFAULT_BASE_URL,
-    requestTimeout: Duration = Duration.ofSeconds(120),
-    maxRetries: Int = 2,
+    requestTimeout: Duration = Duration.ofSeconds(600),
+    maxRetries: Int = 6,
     httpClient: HttpClient = LlmHttp.sharedHttpClient,
     traffic: ApiTrafficLog? = null,
 ) : LlmClient {

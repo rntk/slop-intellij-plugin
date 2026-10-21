@@ -19,8 +19,8 @@ data class LlmConfiguration(
     val provider: LlmProvider,
     val serverUrl: String = "",
     val model: String = "",
-    val requestTimeoutSeconds: Int = 120,
-    val maxRetries: Int = 2,
+    val requestTimeoutSeconds: Int = 600,
+    val maxRetries: Int = 6,
     val maxOutputTokens: Int = 0,
     val cachePrompt: Boolean = true,
     val serviceTier: String = "",
@@ -32,8 +32,8 @@ data class LlmConfiguration(
 
     /** Validates configuration without making a request. Also used by the settings dialog on Apply. */
     fun createClient(apiKey: String?, traffic: ApiTrafficLog? = null): LlmClient {
-        require(requestTimeoutSeconds in 10..3600) { "Request timeout must be between 10 and 3600 seconds" }
-        require(maxRetries in 0..10) { "Max retries must be between 0 and 10" }
+        require(requestTimeoutSeconds in 10..86400) { "Request timeout must be between 10 and 86400 seconds" }
+        require(maxRetries in 0..100) { "Max retries must be between 0 and 100" }
         require(maxOutputTokens >= 0) { "Max output tokens must not be negative" }
         val key = apiKey?.trim()?.takeIf { it.isNotEmpty() }
         require(provider == LlmProvider.LLAMA_CPP || key != null) { "API key is required for ${provider.displayName}" }

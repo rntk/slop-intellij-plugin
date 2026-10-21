@@ -84,10 +84,10 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                             .comment("Default for requests without an explicit token budget, including chat. 0 uses the provider default (8192 for Anthropic). Analysis requests keep their own budgets.")
                     }
                     row("Request timeout (seconds):") {
-                        intTextField(10..3600).bindIntText({ options.requestTimeoutSeconds }, { options.requestTimeoutSeconds = it })
+                        intTextField(10..86400).bindIntText({ options.requestTimeoutSeconds }, { options.requestTimeoutSeconds = it })
                     }
                     row("Max retries:") {
-                        intTextField(0..10).bindIntText({ options.maxRetries }, { options.maxRetries = it })
+                        intTextField(0..100).bindIntText({ options.maxRetries }, { options.maxRetries = it })
                     }
                     if (provider == LlmProvider.LLAMA_CPP) {
                         row {

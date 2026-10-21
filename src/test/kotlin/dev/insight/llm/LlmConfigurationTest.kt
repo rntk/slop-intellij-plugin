@@ -94,7 +94,7 @@ class LlmConfigurationTest {
             LlmConfiguration(LlmProvider.LLAMA_CPP, "http://remote.example"),
             LlmConfiguration(LlmProvider.OPENAI, maxOutputTokens = -1),
             LlmConfiguration(LlmProvider.OPENAI, requestTimeoutSeconds = 0),
-            LlmConfiguration(LlmProvider.OPENAI, maxRetries = 11),
+            LlmConfiguration(LlmProvider.OPENAI, maxRetries = 101),
         )) assertThrows(IllegalArgumentException::class.java) { configuration.createClient("key") }
         assertTrue(requests.isEmpty())
     }
