@@ -222,15 +222,16 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             descendants(leaf).filterIsInstance<InplaceButton>().single().doClick()
             assertEquals(listOf(chunk), shown)
 
-            // Selecting a part reads "part 2 of 3" and offers its lines.
+            // Each part always reads "part 2 of 3" in its header and offers its lines.
             click(canvas, leaf)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:outline" }.doClick()
             layoutTree(canvas)
-            val details = canvas.named("details:${chunk.identity}") as Container
-            val texts = descendants(details).filterIsInstance<JTextArea>().map { it.text }
-            assertTrue(texts.toString(), "Lines 11–20 of Big.kt · part 2 of 3" in texts)
-            assertTrue(descendants(details).filterIsInstance<ActionLink>().any { it.text == "Open lines" })
-            descendants(details).filterIsInstance<ActionLink>().first { it.text == "Open lines" }.doClick()
+            val header = canvas.named("summary-header:${chunk.identity}") as Container
+            val text = (canvas.named("summary-name:${chunk.identity}") as javax.swing.JLabel).text
+            assertTrue(text, text.startsWith("Lines 11–20 of Big.kt · part 2 of 3"))
+            assertTrue(descendants(canvas).none { it.name?.startsWith("details:") == true })
+            assertTrue(descendants(header).filterIsInstance<ActionLink>().any { it.text == "Open lines" })
+            descendants(header).filterIsInstance<ActionLink>().first { it.text == "Open lines" }.doClick()
             assertEquals(listOf(chunk, chunk), opened)
         } finally { canvas.dispose() }
     }

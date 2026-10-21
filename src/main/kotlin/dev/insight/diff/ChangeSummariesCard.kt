@@ -4,7 +4,6 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -160,7 +159,7 @@ internal object TraceStyle {
     val PATH = JBColor(Color(0xE0A800), Color(0xC9A227))
 }
 
-/** What scoring has done, or what to do next, above the summaries. */
+/** What scoring has done, or what to do next, in the status area. */
 internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries): String = when {
     state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
@@ -249,8 +248,6 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
-    /** Shows each node's file or folder name above its summary. */
-    var showNames = false
     /** The level picked in the hierarchy's switcher; nodes that appear later open to that level too. */
     private var level: Int? = null
     private var tree: ChangeSummaryTree? = null
@@ -477,7 +474,6 @@ internal class ChangeSummaryActions(
     val select: (String) -> Unit,
     val openFile: (String) -> Unit,
     val showDiffCard: (String) -> Unit,
-    val showNames: (Boolean) -> Unit = {},
     /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
     /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
@@ -488,7 +484,8 @@ internal class ChangeSummaryActions(
 
 /**
  * The summary tree as an outline: every file, folder and group reads as its summary, so the top levels tell the change
- * and deeper levels how it was done. Selecting a summary shows the real name and path beneath it.
+ * and deeper levels how it was done. Names, metadata and file actions stay in the header; clicking a summary folds or
+ * unfolds its children.
  */
 internal class ChangeSummariesPanel(
     private val card: SummariesCard,
@@ -513,17 +510,7 @@ internal class ChangeSummariesPanel(
 
     init {
         isOpaque = false
-        add(JBCheckBox("Show names", state.showNames).apply {
-            name = "summaries-show-names"
-            font = font(JBFont.small())
-            isOpaque = false
-            toolTipText = "Show each file and folder name above its summary"
-            border = pad(bottom = scaled(6))
-            addActionListener { actions.showNames(isSelected) }
-        })
         add(text(summariesStatus(card, vocabulary.noFiles), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
-        add(text(scoringStatus(state, summaries), cardWidth, font(JBFont.small()), help)
-            .apply { name = "scoring-status"; border = pad(bottom = scaled(8)) })
         if (summaries.total > 0) addNode(tree.root, 0)
         if (skipped > 0) add(text("+$skipped more — fold or pick a level", cardWidth, italic(JBFont.small()), help)
             .apply { name = "more"; border = pad(scaled(4), scaled(TOGGLE), scaled(4), 0) })
@@ -549,23 +536,20 @@ internal class ChangeSummariesPanel(
         val gutter = scaled(TOGGLE) + scaled(ICON) + scaled(8)
         val textWidth = (cardWidth - depth * scaled(INDENT) - gutter - scaled(8)).coerceAtLeast(scaled(160))
         val summary = summaries.text(node.id)
-        val tracing = state.tracing?.takeIf { it.identity == node.identity && it.summary == summary }
         val match = matches[node.identity]
-        val nameText = if (state.showNames) text(displayName(node), textWidth, font(JBFont.small().asBold()), help) else null
+        val activate = { if (node.children.isNotEmpty()) actions.toggle(node.identity) else actions.select(node.identity) }
+        val header = header(node, textWidth)
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
                 .also { area ->
                     if (node.children.isNotEmpty())
-                        installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace) { actions.select(node.identity) }
+                        installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, activate)
                 }
-            else text(if (nameText != null) missing else "${node.label} · $missing", textWidth, italic(JBFont.label()), help)
+            else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
-            nameText?.let { add(it) }
+            add(header)
             add(summaryText)
-            tracing?.let { add(text(traceStatus(it), textWidth, font(JBFont.small()), help).apply { name = "trace:${node.identity}" }) }
-            match?.let { add(text(matchLabel(it, trace!!), textWidth, font(JBFont.small()), TraceStyle.MATCH_TEXT).apply { name = "match:${node.identity}" }) }
-            if (selected) add(details(node, textWidth))
         }
         val gutterPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
@@ -591,50 +575,67 @@ internal class ChangeSummariesPanel(
             toolTipText = node.location
             add(gutterPanel, BorderLayout.WEST)
             add(content, BorderLayout.CENTER)
-            // The summary text covers most of the row, so it selects too; details keep their own links and text selection.
-            // In interactive reading, a click on a highlighted word searches and jumps; the rest of the row still selects.
-            val select = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) actions.select(node.identity) } }
-            listOfNotNull(this, gutterPanel, content, nameText, summaryText.takeIf { node.children.isEmpty() || summary == null })
-                .forEach { it.addMouseListener(select) }
+            // Scored words keep their trace action; the rest of the row behaves like its disclosure arrow.
+            val click = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) activate() } }
+            (listOf(this, gutterPanel, content, header) + header.components.filterIsInstance<JLabel>() +
+                listOfNotNull(summaryText.takeIf { node.children.isEmpty() || summary == null }))
+                .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
     }
 
-    /** The name shown above a summary with Show names: a file name, a merged folder chain, a group's range, or the root's folder. */
+    /** A file name, a merged folder chain, a group's range, or the root's folder. */
     private fun displayName(node: SummaryNode): String = when (node.kind) {
         SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.CHUNK -> node.label
         SummaryKind.DIRECTORY -> "${node.label}/"
         SummaryKind.ROOT -> node.location
     }
 
-    /** The real name and location of a node, which its summary replaces in the outline. */
-    private fun details(node: SummaryNode, width: Int): JComponent = JPanel(VerticalLayout(scaled(2))).apply {
-        isOpaque = false
-        name = "details:${node.identity}"
-        border = JBUI.Borders.compound(JBUI.Borders.customLineTop(JBColor.border()), pad(top = scaled(4)))
+    /** One stable header line, with the full metadata available in its tooltip when the row is narrow. */
+    private fun header(node: SummaryNode, width: Int): JPanel {
         val count = plural(node.files.size, "file")
         val title = when (node.kind) {
-            SummaryKind.FILE -> "${node.path.substringAfterLast('/')} · ${vocabulary.describeFile(node.file)}"
-            SummaryKind.CHUNK -> "${node.label} of ${node.path.substringAfterLast('/')}" + (partOf(node)?.let { " · $it" } ?: "")
-            SummaryKind.DIRECTORY -> "${node.path.substringAfterLast('/')}/ · folder · $count"
-            SummaryKind.GROUP -> "${node.label} · ${node.children.size} entries of ${node.path.ifEmpty { "." }}/ · $count"
-            SummaryKind.ROOT -> "${vocabulary.rootName} · $count"
+            SummaryKind.FILE -> "${displayName(node)} · ${vocabulary.describeFile(node.file)}"
+            SummaryKind.CHUNK -> "${displayName(node)} of ${node.path.substringAfterLast('/')}" + (partOf(node)?.let { " · $it" } ?: "")
+            SummaryKind.DIRECTORY -> "${displayName(node)} · folder · $count"
+            SummaryKind.GROUP -> "${displayName(node)} · ${node.children.size} entries of ${node.path.ifEmpty { "." }}/ · $count"
+            SummaryKind.ROOT -> "${displayName(node)} · ${vocabulary.rootName} · $count"
         }
-        add(text(title, width, font(JBFont.label().asBold()), null))
         // Folders have no review file of their own; their location follows from any file beneath them.
         val absolute = node.file?.absolutePath ?: files[node.files.firstOrNull()]?.let { file ->
             val base = file.absolutePath.removeSuffix(file.path).removeSuffix("/")
             if (node.path.isEmpty()) "$base/" else "$base/${node.path}/"
         }
-        listOfNotNull(node.location, absolute?.takeIf { it != node.location }).forEach { add(text(it, width, font(JBFont.small()), help)) }
-        if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(12), 0)).apply {
+        val metadata = (listOf(title) + listOfNotNull(node.location, absolute).distinct()
+            .filter { it != displayName(node) }).joinToString(" · ")
+        val nameText = label(metadata, font(JBFont.small().asBold()), help).apply {
+            name = "summary-name:${node.identity}"
+            toolTipText = metadata
+        }
+        val links = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
             isOpaque = false
-            add(ActionLink(if (node.kind == SummaryKind.CHUNK) "Open lines" else vocabulary.openLabel) { actions.openNode(node) }
-                .apply { font = font(JBFont.small()) })
-            val show = actions.showNode
-            val showText = vocabulary.showOnCanvas
-            if (show != null && showText != null) add(ActionLink(showText) { show(node) }.apply { font = font(JBFont.small()) })
-        })
+            matches[node.identity]?.let { match ->
+                val badge = if (node.identity == best) "● Best match" else "● Related"
+                add(label("$badge · ${(match.probability * 100).roundToInt()}%", font(JBFont.small()), TraceStyle.MATCH_TEXT).apply {
+                    name = "match:${node.identity}"
+                    toolTipText = matchLabel(match, trace!!)
+                })
+            }
+            if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) {
+                add(ActionLink(if (node.kind == SummaryKind.CHUNK) "Open lines" else vocabulary.openLabel) { actions.openNode(node) }
+                    .apply { font = font(JBFont.small()) })
+                val show = actions.showNode
+                val showText = vocabulary.showOnCanvas
+                if (show != null && showText != null) add(ActionLink(showText) { show(node) }.apply { font = font(JBFont.small()) })
+            }
+        }
+        return JPanel(BorderLayout(scaled(8), 0)).apply {
+            name = "summary-header:${node.identity}"
+            isOpaque = false
+            add(nameText, BorderLayout.CENTER)
+            add(links, BorderLayout.EAST)
+            preferredSize = Dimension(width, maxOf(nameText.preferredSize.height, links.preferredSize.height))
+        }
     }
 
     /** "part i of n" among the parts of a file, or "n parts" for a group of them; null when the tree cannot say. */

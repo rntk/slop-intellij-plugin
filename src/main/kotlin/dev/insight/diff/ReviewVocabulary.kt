@@ -22,7 +22,7 @@ internal data class ReviewVocabulary(
     val topicsTooltip: String,
     /** The tooltip of the topics card's button that writes the file summaries. */
     val topicsSummarizeTooltip: String,
-    /** The root's name in the outline's details: "All changes" | "Whole scope". */
+    /** The root's name in the outline's header: "All changes" | "Whole scope". */
     val rootName: String,
     /** Shown instead of a tree without files. */
     val noFiles: String,
@@ -57,7 +57,7 @@ internal data class ReviewVocabulary(
             summariesOutlineTooltip = "Indented summaries from the whole change down to each file",
             summarizeTooltip = "Summarize the files, then the folders above them, up to the whole change (/summaries)",
             summariesFooter = "The tree comes from the changed paths; single-entry folders are merged and large folders split into groups. " +
-                "Summaries are LLM interpretation. Select one to see its file or folder.",
+                "Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Change topics",
             topicsTooltip = "Every changed diff in one document, ordered by topic. File boundaries, order and alignment come from code; " +
                 "topics and summaries are the assistant's interpretation.",
@@ -90,7 +90,7 @@ internal data class ReviewVocabulary(
             summariesOutlineTooltip = "Indented summaries from the whole scope down to each file",
             summarizeTooltip = "Summarize the files, then the folders above them, up to the whole scope (/summaries)",
             summariesFooter = "The tree comes from the folders in scope; single-entry folders are merged, large folders split into groups " +
-                "and large files into parts. Summaries are LLM interpretation. Select one to see its file or folder.",
+                "and large files into parts. Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Code topics",
             topicsTooltip = "Every source file in one document, ordered by topic, with file summaries and topic cards. " +
                 "Topics and summaries are the assistant's interpretation of the code.",

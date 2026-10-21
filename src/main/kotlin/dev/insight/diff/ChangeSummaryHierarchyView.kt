@@ -52,7 +52,7 @@ internal class ChangeSummaryHierarchyPanel(
             rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
-            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace) }
+            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace) { actions.toggle(node.identity) } }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)

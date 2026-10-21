@@ -632,7 +632,6 @@ internal class NoteCanvas(
             showDiffCard = showDiffCard,
             openNode = openSummaryNode,
             showNode = showSummaryNode,
-            showNames = { show -> summariesView.showNames = show; refreshSummaries() },
             trace = summariesTrace::trace,
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
@@ -643,7 +642,6 @@ internal class NoteCanvas(
                 hierarchy -> JPanel(VerticalLayout(scaled(8))).apply {
                     isOpaque = false
                     add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
                     add(ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
                 }
                 document -> JPanel(VerticalLayout(scaled(8))).apply {
@@ -656,6 +654,11 @@ internal class NoteCanvas(
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(header, BorderLayout.NORTH)
+        if (!document && summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
+            traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
+        }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
@@ -701,24 +704,25 @@ internal class NoteCanvas(
             addActionListener { session.prescore() }
         }
 
-    /**
-     * Above a hierarchy: how scoring stands and, while a word is traced, its query and matches. An opened trace hides the
-     * traced summary, so its status stays here with a link to clear the marks.
-     */
+    /** Two fixed-height status lines: changing hover queries never changes the reading area's geometry. */
     private fun traceStatusLines(state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int): List<JComponent> {
         if (!session.available) return emptyList()
-        fun line(text: String, name: String, wrap: Int = width) = WrappedText(text, wrap).apply {
+        fun line(text: String, name: String, lineWidth: Int = width) = JLabel(text).apply {
             this.name = name
-            isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true; border = null
+            isOpaque = false
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+            toolTipText = text.takeIf { it.isNotBlank() }
+            preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
         }
-        val tracing = state.tracing ?: return listOf(line(scoringStatus(state, summaries), "scoring-status"))
+        val tracing = state.tracing
         return listOf(line(scoringStatus(state, summaries), "scoring-status"), JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
-            add(line(traceStatus(tracing, "outlined from the traced card."), "trace-status", width - scaled(56)).apply {
-                foreground = if (tracing.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
+            add(line(tracing?.let { traceStatus(it, "highlighted in the view.") } ?: " ", "trace-status", width - scaled(56)).apply {
+                foreground = if (tracing?.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
             }, BorderLayout.CENTER)
-            add(ActionLink("Clear") { session.clear() }.apply { name = "trace-clear"; font = scaledFont(JBFont.small()) }, BorderLayout.EAST)
+            add(ActionLink("Clear") { session.clear() }.apply {
+                name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = tracing != null
+            }, BorderLayout.EAST)
         })
     }
 
