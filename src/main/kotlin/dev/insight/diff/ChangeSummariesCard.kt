@@ -218,12 +218,23 @@ internal fun installWordTracing(
     trace: (String, Int, Boolean) -> Unit, select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
-    val tracing = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
-    tracing?.let { current ->
-        val context = current.context?.context.orEmpty().filter { it.index != current.word.index }
-        context.forEach { area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.CONTEXT_WORD)) }
-        area.highlighter.addHighlight(current.word.start, current.word.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.TRACED_WORD))
+    fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
+    val highlights = mutableListOf<Any>()
+    var painted: SummaryTracing? = null
+    fun updateHighlights() {
+        val current = tracing()
+        if (current === painted) return
+        painted = current
+        highlights.forEach(area.highlighter::removeHighlight)
+        highlights.clear()
+        current?.let {
+            val context = current.context?.context.orEmpty().filter { it.index != current.word.index }
+            context.forEach { highlights += area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.CONTEXT_WORD)) }
+            highlights += area.highlighter.addHighlight(current.word.start, current.word.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.TRACED_WORD))
+        }
     }
+    area.putClientProperty(WORD_TRACING_UPDATE, ::updateHighlights)
+    updateHighlights()
     fun wordAt(point: Point): SummaryWord? {
         val offset = area.viewToModel2D(point)
         val word = words.firstOrNull { offset in it.start..it.end }?.takeIf { it.meaningful && state.cached(identity, summary, it.index) != null } ?: return null
@@ -234,20 +245,15 @@ internal fun installWordTracing(
         val inWord = if (start.y == end.y) point.x >= start.x && point.x <= end.x else point.y <= start.maxY && point.x >= start.x || point.y >= end.y && point.x <= end.x
         return word.takeIf { onLine && inWord }
     }
-    fun highlighted(word: SummaryWord) = tracing?.let { current ->
+    fun highlighted(word: SummaryWord) = tracing()?.let { current ->
         word.index == current.word.index || current.context?.context?.any { it.index == word.index } == true
     } == true
-    var pending: SummaryWord? = null
     val pointer = object : MouseAdapter() {
         override fun mouseMoved(e: MouseEvent) {
             val word = wordAt(e.point)
             area.cursor = Cursor.getPredefinedCursor(if (word != null) Cursor.HAND_CURSOR else Cursor.TEXT_CURSOR)
-            if (word?.index == pending?.index) return
-            pending = word
             if (word != null && !highlighted(word)) trace(identity, word.index, false)
         }
-
-        override fun mouseExited(e: MouseEvent) { pending = null }
 
         override fun mouseClicked(e: MouseEvent) {
             if (e.clickCount != 1) return
@@ -257,6 +263,28 @@ internal fun installWordTracing(
     }
     area.addMouseListener(pointer)
     area.addMouseMotionListener(pointer)
+}
+
+private val WORD_TRACING_UPDATE = Any()
+
+/** Repaint cached word contexts without replacing text components or their scroll panes. */
+internal fun updateWordTracing(area: JTextArea) {
+    @Suppress("UNCHECKED_CAST")
+    (area.getClientProperty(WORD_TRACING_UPDATE) as? (() -> Unit))?.invoke()
+}
+
+private val TRACE_DECORATION_RESET = Any()
+
+/** Search decorations can be cleared by a new hover without changing the row's geometry. */
+internal fun installTraceDecorationReset(component: JComponent, reset: () -> Unit) {
+    component.putClientProperty(TRACE_DECORATION_RESET, reset)
+}
+
+internal fun resetTraceDecoration(component: JComponent) {
+    @Suppress("UNCHECKED_CAST")
+    val reset = component.getClientProperty(TRACE_DECORATION_RESET) as? (() -> Unit) ?: return
+    component.putClientProperty(TRACE_DECORATION_RESET, null)
+    reset()
 }
 
 /**
@@ -379,8 +407,9 @@ internal interface SummaryTraceLauncher {
 }
 
 /**
- * Prescoring and searching for one card's [content], kept in [state]; [refresh] rebuilds the card. Hover reads saved
- * contexts synchronously; clicking a highlight searches the levels below, or the lines of a file, which [openLines] opens.
+ * Prescoring and searching for one card's [content], kept in [state]; [update] repaints contexts and progress in place,
+ * [refresh] rebuilds changed search results. Hover reads saved contexts synchronously; clicking a highlight searches the
+ * levels below, or the lines of a file, which [openLines] opens.
  * Late results of a replaced run are ignored.
  */
 internal class SummaryTraceSession(
@@ -388,6 +417,7 @@ internal class SummaryTraceSession(
     private val state: SummaryTraceState,
     private val content: () -> ChangeSummaries?,
     private val openLines: (SummaryNode, LineTrace) -> Unit = { _, _ -> },
+    private val update: (() -> Unit)? = null,
     private val refresh: () -> Unit,
 ) {
     private var traceJob: Job? = null
@@ -407,11 +437,11 @@ internal class SummaryTraceSession(
         scoringSummaries = content
         state.scoring = true
         state.scoringError = null
-        refresh()
+        updatePresentation()
         scoreJob = launcher.prescore(content, pending, { context ->
             if (scoreToken === token) {
                 state.scored[context.identity to context.word.index] = context
-                refresh()
+                updatePresentation()
             }
         }) { result ->
             if (scoreToken === token) {
@@ -419,7 +449,7 @@ internal class SummaryTraceSession(
                 state.scoringError = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
                 scoringSummaries = null
                 scoreToken = null
-                refresh()
+                updatePresentation()
             }
         }
     }
@@ -440,14 +470,14 @@ internal class SummaryTraceSession(
                 state.tracing = current.copy(searchRequested = true, error = null)
                 if (current.context != null) search()
             }
-            refresh()
+            if (current.trace != null) refresh() else updatePresentation()
             return
         }
         traceJob?.cancel()
         val context = state.cached(identity, text, word) ?: return
         val file = node.path.takeIf { node.children.isEmpty() && node.file != null }
         state.tracing = SummaryTracing(identity, text, words[word], context = context, file = file)
-        refresh()
+        updatePresentation()
     }
 
     private fun search() {
@@ -464,7 +494,7 @@ internal class SummaryTraceSession(
                     state.tracing = now.copy(lines = lines)
                     if (lines.best != null) openLines(node, lines)
                 }.onFailure { error -> state.tracing = now.copy(error = error.message ?: error.javaClass.simpleName) }
-                refresh()
+                updatePresentation()
             }
             return
         }
@@ -492,8 +522,10 @@ internal class SummaryTraceSession(
         traceJob?.cancel()
         traceJob = null
         state.tracing = null
-        refresh()
+        updatePresentation()
     }
+
+    private fun updatePresentation() { (update ?: refresh)() }
 
     fun stop() {
         stopScoring()
@@ -617,6 +649,11 @@ internal class ChangeSummariesPanel(
                 match != null && match.identity == best -> TraceStyle.BEST_MATCH
                 else -> TraceStyle.RELATED
             }
+            if (match != null) installTraceDecorationReset(this) {
+                isOpaque = selected
+                background = UIUtil.getListSelectionBackground(false)
+                repaint()
+            }
             border = pad(scaled(4), depth * scaled(INDENT), scaled(4), scaled(4))
             toolTipText = node.location
             add(gutterPanel, BorderLayout.WEST)
@@ -665,6 +702,12 @@ internal class ChangeSummariesPanel(
                 add(label("$badge · ${(match.probability * 100).roundToInt()}%", font(JBFont.small()), TraceStyle.MATCH_TEXT).apply {
                     name = "match:${node.identity}"
                     toolTipText = matchLabel(match, trace!!)
+                    installTraceDecorationReset(this) {
+                        preferredSize = preferredSize
+                        text = ""
+                        name = null
+                        toolTipText = null
+                    }
                 })
             }
             if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) {

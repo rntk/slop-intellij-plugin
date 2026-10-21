@@ -83,8 +83,10 @@ internal class NoteCanvas(
     private var summariesScroll = 0
     private var fileView: FileViewCard? = null
     private var fileViewScroll = 0
-    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, openSummaryLines, ::refreshSummaries)
-    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines) { refreshCard(TOPICS_KEY) }
+    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, openSummaryLines,
+        update = { updateTracePresentation(SUMMARIES_KEY) }, refresh = ::refreshSummaries)
+    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
+        update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -704,9 +706,24 @@ internal class NoteCanvas(
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
             isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
+            putClientProperty(TRACE_PRESENTATION_UPDATE, {
+                isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
+            })
             toolTipText = "Precalculate word contexts for " + scoredSummaries(state) + ". Uses the Decisions API."
             addActionListener { session.prescore() }
         }
+
+    /** Hover and scoring updates keep the live components and both viewports intact. */
+    private fun updateTracePresentation(key: DiffNoteKey) {
+        val card = cards[key] ?: return
+        val state = if (key == SUMMARIES_KEY) summariesView else topicsView
+        descendantsOf(card).forEach { component ->
+            if (component is JTextArea) updateWordTracing(component)
+            if (component is JComponent && state.tracing?.trace == null) resetTraceDecoration(component)
+            @Suppress("UNCHECKED_CAST")
+            ((component as? JComponent)?.getClientProperty(TRACE_PRESENTATION_UPDATE) as? (() -> Unit))?.invoke()
+        }
+    }
 
     /** Two fixed-height status lines: changing hover queries never changes the reading area's geometry. */
     private fun traceStatusLines(state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int): List<JComponent> {
@@ -718,14 +735,26 @@ internal class NoteCanvas(
             toolTipText = text.takeIf { it.isNotBlank() }
             preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
         }
-        val tracing = state.tracing
-        return listOf(line(scoringStatus(state, summaries), "scoring-status"), JPanel(BorderLayout(scaled(8), 0)).apply {
+        return listOf(line(scoringStatus(state, summaries), "scoring-status").apply {
+            putClientProperty(TRACE_PRESENTATION_UPDATE, {
+                text = scoringStatus(state, summaries)
+                toolTipText = text
+            })
+        }, JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
-            add(line(tracing?.let { traceStatus(it, "highlighted in the view.") } ?: " ", "trace-status", width - scaled(56)).apply {
-                foreground = if (tracing?.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
+            add(line(" ", "trace-status", width - scaled(56)).apply {
+                val update = {
+                    val tracing = state.tracing
+                    text = tracing?.let { traceStatus(it, "highlighted in the view.") } ?: " "
+                    toolTipText = text.takeIf { it.isNotBlank() }
+                    foreground = if (tracing?.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
+                }
+                putClientProperty(TRACE_PRESENTATION_UPDATE, update)
+                update()
             }, BorderLayout.CENTER)
             add(ActionLink("Clear") { session.clear() }.apply {
-                name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = tracing != null
+                name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = state.tracing != null
+                putClientProperty(TRACE_PRESENTATION_UPDATE, { isEnabled = state.tracing != null })
             }, BorderLayout.EAST)
         })
     }
@@ -1027,6 +1056,7 @@ internal class NoteCanvas(
     }
 
     private companion object {
+        val TRACE_PRESENTATION_UPDATE = Any()
         const val MIN_DOCUMENT_ZOOM = 0.1
         const val MAX_DOCUMENT_ZOOM = 3.0
         const val CARD_WIDTH = 460

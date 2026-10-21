@@ -96,6 +96,7 @@ internal abstract class HierarchyColumnsPanel(
             border = EmptyBorder(inset, scaled(NOTE_INSET), inset, 0)
             toolTipText = if (written) "Summary · LLM interpretation" else null
             matchBackground(mark)?.let { isOpaque = true; background = it }
+            if (mark != null) installTraceDecorationReset(this) { isOpaque = false; repaint() }
         }
         val height = note.preferredSize.height
         add(note.apply { setBounds(x, y, width, height) })
@@ -116,6 +117,11 @@ internal abstract class HierarchyColumnsPanel(
         isOpaque = true
         background = matchBackground(mark) ?: tint(family, column)
         border = cardBorder(family, active, mark)
+        if (mark != null) installTraceDecorationReset(this) {
+            background = tint(family, column)
+            border = cardBorder(family, active)
+            repaint()
+        }
         toolTipText = tooltip
         val inner = cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + INNER_GAP) - 4
         val headingRow = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply {
@@ -186,6 +192,11 @@ internal abstract class HierarchyColumnsPanel(
         isOpaque = true
         background = matchBackground(mark) ?: tint(family, column)
         border = cardBorder(family, active, mark)
+        if (mark != null) installTraceDecorationReset(this) {
+            background = tint(family, column)
+            border = cardBorder(family, active)
+            repaint()
+        }
         toolTipText = tooltip
         val fileName = file.path.substringAfterLast('/')
         val headingRow = JPanel(BorderLayout(scaled(INNER_GAP), 0)).apply { isOpaque = false }
@@ -236,8 +247,19 @@ internal abstract class HierarchyColumnsPanel(
     }
 
     /** A match's probability under its title, in the outline's match color. */
-    private fun badge(value: String, width: Int): JComponent = text(value, width.coerceAtLeast(scaled(40)), font(JBFont.small()), TraceStyle.MATCH_TEXT)
-        .apply { name = "match" }
+    private fun badge(value: String, width: Int): JComponent {
+        val label = text(value, width.coerceAtLeast(scaled(40)), font(JBFont.small()), TraceStyle.MATCH_TEXT).apply { name = "match" }
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(label, BorderLayout.CENTER)
+            preferredSize = label.preferredSize
+            installTraceDecorationReset(this) {
+                label.text = ""
+                label.name = null
+                label.toolTipText = null
+            }
+        }
+    }
 
     private fun matchBackground(mark: TraceMark?): Color? = when (mark) {
         TraceMark.BEST -> TraceStyle.BEST_MATCH

@@ -1154,6 +1154,19 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(hierarchyFile.identity, canvas.summariesView.selected)
             assertTrue((named("trace-status").single() as JLabel).text.contains("3 of 6 summaries"))
 
+            // Moving away from completed search results also clears their decorations in place.
+            val searchedPanel = panel()
+            val searchedNote = note(canvasDir.identity)
+            val searchedBounds = searchedNote.bounds
+            val searchedSize = panel().preferredSize
+            pointAtWord(canvas, searchedNote, "Deletes", MouseEvent.MOUSE_MOVED)
+            assertSame(searchedPanel, panel())
+            assertSame(searchedNote, note(canvasDir.identity))
+            assertEquals(searchedBounds, searchedNote.bounds)
+            assertEquals(searchedSize, panel().preferredSize)
+            assertTrue(badges(hierarchyFile.identity).isEmpty())
+            assertFalse(note(hierarchyFile.identity).isOpaque)
+
             // Clearing drops the marks but keeps the folding and the saved contexts.
             (named("trace-clear").single() as com.intellij.ui.components.ActionLink).doClick()
             layoutTree(canvas)
@@ -1343,19 +1356,24 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val target = tree.nodes.single { it.path == "pkg/folder13" }
         val words = SummaryWord.split(summary)
         val word = words.single { it.text == "important" }
+        val nextWord = words.first { it.text == "Additional" }
         val query = "A long hover query that must never wrap into extra status rows. ".repeat(30)
-        for (mode in listOf(ChangeSummariesMode.OUTLINE, ChangeSummariesMode.HIERARCHY)) {
+        for (mode in ChangeSummariesMode.entries) {
             val canvas = NoteCanvas({}, {}, traceSummaries = FakeTraceLauncher()).apply { setSize(1000, 700) }
             canvas.summariesView.apply {
                 this.mode = mode
                 update(tree)
                 selectLevel(99, tree)
                 if (mode == ChangeSummariesMode.HIERARCHY) toggle(target.identity)
+                if (mode == ChangeSummariesMode.DOCUMENT) selected = target.identity
                 scored[target.identity to word.index] = SummaryContext(target.identity, summary, word, listOf(word), query)
+                scored[target.identity to nextWord.index] = SummaryContext(target.identity, summary, nextWord, listOf(nextWord), "Another query")
             }
             fun area(): javax.swing.JTextArea {
-                val row = descendants(canvas).single { it.name == "summary:${target.identity}" }
-                return if (row is javax.swing.JTextArea) row else descendants(row as Container).filterIsInstance<javax.swing.JTextArea>().single()
+                val row = descendants(canvas).single {
+                    it.name == if (mode == ChangeSummariesMode.DOCUMENT) "card-summary:${target.identity}" else "summary:${target.identity}"
+                }
+                return if (row is javax.swing.JTextArea) row else descendants(row as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == summary }
             }
             fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, area()) as javax.swing.JScrollPane
             fun bounds() = javax.swing.SwingUtilities.convertRectangle(area().parent, area().bounds, canvas)
@@ -1366,9 +1384,20 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 area().scrollRectToVisible(java.awt.Rectangle(0, 0, area().width, area().height))
                 assertTrue("The test must hover a scrolled summary in $mode", scroll().viewport.viewPosition.y > 0)
                 val position = Point(scroll().viewport.viewPosition)
+                val originalArea = area()
+                val originalScroll = scroll()
+                val page = canvas.tabs.selectedComponent as javax.swing.JScrollPane
+                val pagePosition = Point(page.viewport.viewPosition)
                 val before = bounds()
                 val size = canvas.preferredSize
                 pointAtWord(canvas, area(), "important", MouseEvent.MOUSE_MOVED)
+                // Check before queued scroll restoration can conceal a temporary jump.
+                assertSame("Hover must retain the text component in $mode", originalArea, area())
+                assertSame("Hover must retain the scroll pane in $mode", originalScroll, scroll())
+                assertEquals(position, scroll().viewport.viewPosition)
+                assertEquals(pagePosition, page.viewport.viewPosition)
+                assertNotNull("Hover must select a scored word in $mode (${area().text})", canvas.summariesView.tracing)
+                assertEquals("Hover must paint the scored word in $mode", 1, area().highlighter.highlights.size)
                 com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
                 assertEquals("Hover must preserve the viewport in $mode", position, scroll().viewport.viewPosition)
                 assertEquals("Hover must keep the text under the pointer in $mode", before, bounds())
@@ -1376,12 +1405,24 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 val status = descendants(canvas).single { it.name == "trace-status" } as JLabel
                 assertTrue(status.text.contains(query))
                 assertEquals(status.text, status.toolTipText)
+                pointAtWord(canvas, area(), "Additional", MouseEvent.MOUSE_MOVED)
+                assertSame(originalArea, area())
+                assertEquals(position, scroll().viewport.viewPosition)
+                assertEquals(nextWord.start, area().highlighter.highlights.single().startOffset)
+                assertTrue(status.text.contains("Another query"))
                 (descendants(canvas).single { it.name == "trace-clear" } as com.intellij.ui.components.ActionLink).doClick()
                 layoutTree(canvas)
+                assertSame("Clear must retain the text component in $mode", originalArea, area())
+                assertSame(originalScroll, scroll())
+                assertEquals(position, scroll().viewport.viewPosition)
+                assertEquals(0, area().highlighter.highlights.size)
                 com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
                 assertEquals(position, scroll().viewport.viewPosition)
                 assertEquals(before, bounds())
                 assertEquals(size, canvas.preferredSize)
+                pointAtWord(canvas, area(), "important", MouseEvent.MOUSE_MOVED)
+                assertEquals("The same word can be hovered again after Clear", 1, area().highlighter.highlights.size)
+                assertEquals(position, scroll().viewport.viewPosition)
             } finally { canvas.dispose() }
         }
     }
