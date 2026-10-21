@@ -183,12 +183,24 @@ internal abstract class DocumentColumnsPanel(
     private var tops = IntArray(0)
     private var bottoms = IntArray(0)
     private var summaryWidth = 0
+    private var documentHeight = 0
     /** The active rail card with its summary laid over the margin of its files. */
     private var cardSummary: Pair<RailItem, JComponent>? = null
     private val rail = mutableListOf<Pair<RailItem, JComponent>>()
     private val stickyHeaders = StickyCardHeaders()
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
     private var hovered: RailItem? = null
+    private var sourceSummary: RailItem? = null
+    private var sourceCards: Set<String> = emptySet()
+    /** File view reveals a summary only for the hovered call line or rail card. */
+    protected open val hoverSummariesOnly: Boolean = false
+    protected open fun activeChanged(item: RailItem?) {}
+    protected fun hoverSource(item: RailItem?, cards: Set<String> = emptySet()) {
+        if (sourceSummary == item && sourceCards == cards) return
+        sourceSummary = item
+        sourceCards = cards
+        applyActive()
+    }
     protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     protected fun cardScaled(n: Int) = cardScaledBy(zoom, n)
     protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
@@ -203,6 +215,16 @@ internal abstract class DocumentColumnsPanel(
     protected abstract fun isSelected(item: RailItem): Boolean
     protected abstract fun select(item: RailItem)
     protected open fun selectedFiles(): IntRange? = null
+    /** "1 file", "3 files": what a rail card or its summary spans. */
+    protected open fun countLabel(count: Int): String = if (count == 1) "1 file" else "$count files"
+    /** The sticky heading of a section; a file's path and facts by default. */
+    protected open fun sectionHeader(file: ReviewSource): JComponent = fileHeader(file)
+    /** What a section shows under its heading; null shows the file's diff or complete source. */
+    protected open fun sectionBody(file: ReviewSource, width: Int): JComponent? = null
+    /** The margin beside a section, inside its rule; the file's summary by default. */
+    protected open fun noteBody(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent =
+        if (summary != null) text(summary, width, cardFont(JBFont.label()), null)
+        else text(missingSummary, width, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help)
 
     protected fun layoutDocument(
         files: List<ReviewSource>,
@@ -253,7 +275,10 @@ internal abstract class DocumentColumnsPanel(
             val note = note(file, summaries[file.path], missingSummary, summaryWidth)
             val height = maxOf(section.preferredSize.height, note.preferredSize.height, rowMinimums[index])
             section.setBounds(docX, y, docWidth, height)
-            val column = noteColumn(file, note).apply { setBounds(0, y, summaryWidth, height) }
+            val column = noteColumn(file, note).apply {
+                setBounds(0, y, summaryWidth, height)
+                isVisible = !hoverSummariesOnly
+            }
             add(section); add(column)
             sections += section; notes += note; noteColumns += column
             tops[index] = y; bottoms[index] = y + height
@@ -266,7 +291,8 @@ internal abstract class DocumentColumnsPanel(
             add(component)
             rail += item to component
         }
-        preferredSize = Dimension(railX + railWidth, (y - scaled(SECTION_GAP)).coerceAtLeast(0))
+        documentHeight = (y - scaled(SECTION_GAP)).coerceAtLeast(0)
+        preferredSize = Dimension(railX + railWidth, documentHeight)
         applyActive()
     }
 
@@ -275,15 +301,16 @@ internal abstract class DocumentColumnsPanel(
      * own summary in the margin in place of theirs.
      */
     protected fun applyActive() {
-        val active = hovered ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
+        val active = hovered ?: sourceSummary ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
         val range = active?.let { it.first..it.last } ?: selectedFiles()
         sections.forEachIndexed { index, section -> section.border = frame(range != null && index in range) }
         notes.forEachIndexed { index, note -> note.border = noteBorder(range != null && index in range) }
         showCardSummary(active?.takeUnless { it.placeholder })
         rail.forEach { (item, component) ->
-            component.border = railBorder(item, item == active)
+            component.border = railBorder(item, item == active || (hovered == null && item.key in sourceCards))
             component.background = if (!item.placeholder && isSelected(item)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
         }
+        activeChanged(active)
         repaint()
     }
 
@@ -292,7 +319,11 @@ internal abstract class DocumentColumnsPanel(
         if (cardSummary?.first == item) return
         cardSummary?.second?.let { remove(it); stickyHeaders.remove(it) }
         cardSummary = null
-        noteColumns.forEach { it.isVisible = true }
+        noteColumns.forEach { it.isVisible = !hoverSummariesOnly }
+        if (hoverSummariesOnly) {
+            preferredSize = Dimension(preferredSize.width, documentHeight)
+            revalidate()
+        }
         if (item == null || noteColumns.isEmpty()) return
         for (index in item.first..item.last) noteColumns[index].isVisible = false
         val note = cardNote(item, summaryWidth)
@@ -307,9 +338,13 @@ internal abstract class DocumentColumnsPanel(
         add(column, 0)
         column.validate()
         cardSummary = item to column
+        if (hoverSummariesOnly) {
+            preferredSize = Dimension(preferredSize.width, maxOf(documentHeight, column.y + column.height))
+            revalidate()
+        }
     }
 
-    private fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(cardScaled(4))).apply {
+    protected open fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(cardScaled(4))).apply {
         background = UIUtil.getListBackground()
         border = noteBorder(true)
         val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
@@ -320,8 +355,7 @@ internal abstract class DocumentColumnsPanel(
             add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
             add(title, BorderLayout.CENTER)
         })
-        val files = item.last - item.first + 1
-        add(JLabel("${item.summaryLabel} · ${if (files == 1) "1 file" else "$files files"}").apply { font = cardFont(JBFont.small()); foreground = help })
+        add(JLabel("${item.summaryLabel} · ${countLabel(item.last - item.first + 1)}").apply { font = cardFont(JBFont.small()); foreground = help })
         val summary = item.summary
         add(if (summary != null) text(summary, inner, cardFont(JBFont.label()), null)
             else text(item.missingSummary, inner, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help))
@@ -334,10 +368,12 @@ internal abstract class DocumentColumnsPanel(
         background = UIUtil.getListBackground()
         border = frame(false)
         val inner = width - scaled(4)
-        val heading = fileHeader(file)
+        val heading = sectionHeader(file)
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
-        if (file is ReviewFile) {
+        val body = sectionBody(file, inner)
+        if (body != null) add(body, BorderLayout.CENTER)
+        else if (file is ReviewFile) {
             val patch = PatchView(file.patch, inner, zoom)
             add(patch, BorderLayout.CENTER)
             if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
@@ -388,10 +424,8 @@ internal abstract class DocumentColumnsPanel(
     private fun note(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent = JPanel(BorderLayout()).apply {
         isOpaque = false
         border = noteBorder(false)
-        val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
-        add(if (summary != null) text(summary, inner, cardFont(JBFont.label()), null)
-            else text(missingSummary, inner, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help), BorderLayout.CENTER)
         toolTipText = "Summary of ${file.path} · LLM interpretation"
+        add(noteBody(file, summary, missingSummary, width - cardScaled(NOTE_INSET) - cardScaled(2)), BorderLayout.CENTER)
         preferredSize = Dimension(width, preferredSize.height)
     }
 
@@ -401,7 +435,6 @@ internal abstract class DocumentColumnsPanel(
         background = UIUtil.getListBackground()
         border = railBorder(item, false)
         val inner = width - cardScaled(RAIL_ACCENT) - cardScaled(8) - cardScaled(6) - 2
-        val files = item.last - item.first + 1
         val icon = item.icon
         val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0,
             if (item.placeholder) cardFont(JBFont.label()).deriveFont(Font.ITALIC) else cardFont(JBFont.label().asBold()), if (item.placeholder) help else null)
@@ -412,7 +445,7 @@ internal abstract class DocumentColumnsPanel(
                 add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
                 add(title, BorderLayout.CENTER)
             })
-            add(JLabel(if (files == 1) "1 file" else "$files files").apply { font = cardFont(JBFont.small()); foreground = help })
+            add(JLabel(countLabel(item.last - item.first + 1)).apply { font = cardFont(JBFont.small()); foreground = help })
         }
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
@@ -454,7 +487,7 @@ internal abstract class DocumentColumnsPanel(
 
     private fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
 
-    private fun text(value: String, width: Int, font: Font, color: Color?): JComponent = WrappedText(value, width).apply {
+    protected fun text(value: String, width: Int, font: Font, color: Color?): JComponent = WrappedText(value, width).apply {
         isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true; border = null
         this.font = font
         color?.let { foreground = it }

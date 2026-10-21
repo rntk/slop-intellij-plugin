@@ -125,6 +125,35 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
     }
 
+    fun `test View opens the selected file in File view with the files its calls reach`() {
+        myFixture.addFileToProject("fv/Main.java", "package fv;\npublic class Main {\n    void run() {\n        Worker.work();\n    }\n}\n")
+        myFixture.addFileToProject("fv/Worker.java", "package fv;\npublic class Worker { static void work() { } }\n")
+        val panel = CodeReviewPanel(project)
+        JRootPane().contentPane.add(panel)
+        try {
+            panel.setScope(myFixture.findFileInTempDir("fv"))
+            PlatformTestUtil.waitWithEventsDispatching("The folder should load", { panel.listedFiles().size == 2 && panel.snapshot != null }, 20)
+            val view = descendants(panel).filterIsInstance<JButton>().single { it.text == "View" }
+            PlatformTestUtil.waitWithEventsDispatching("Loading should finish", { panel.status.text.startsWith("2 files") }, 20)
+            assertFalse(view.isEnabled)
+            val tree = descendants(panel).filterIsInstance<Tree>().single()
+            val main = (tree.model.root as DefaultMutableTreeNode).depthFirstEnumeration().toList().map { it as DefaultMutableTreeNode }
+                .single { (it.userObject as? CodeFile)?.path == "fv/Main.java" }
+            tree.selectionPath = TreePath(main.path)
+            assertTrue(view.isEnabled)
+            view.doClick()
+            val tab = descendants(panel).filterIsInstance<JBTabs>().single().selectedInfo!!.component as CodeReviewTab
+            PlatformTestUtil.waitWithEventsDispatching("File view should follow the calls", {
+                descendants(tab.canvas).any { it is dev.insight.diff.FileStructurePanel }
+            }, 20)
+            assertEquals("File · Main.java", (0 until tab.canvas.tabs.tabCount).map(tab.canvas.tabs::getTitleAt).single { it.startsWith("File") })
+            // Worker has no topic yet, so it has a placeholder card on the right rail.
+            assertTrue(descendants(tab.canvas).any { it.name?.startsWith("reached-topic:") == true && it.name.endsWith(":\u0000pending") })
+            tab.update(codeSnapshot(codeFile("other/x.kt", "val x = 1\n")))
+            assertTrue((0 until tab.canvas.tabs.tabCount).map(tab.canvas.tabs::getTitleAt).none { it.startsWith("File") })
+        } finally { Disposer.dispose(panel) }
+    }
+
     fun `test excluding a selected folder reloads without it and keeps the exclusions for a new folder`() {
         myFixture.addFileToProject("excl/a.kt", "fun a() = 1\n")
         myFixture.addFileToProject("excl/sub/b.kt", "fun b() = 2\n")

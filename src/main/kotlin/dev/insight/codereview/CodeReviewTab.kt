@@ -4,6 +4,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -32,6 +33,8 @@ import dev.insight.diff.DiffNote
 import dev.insight.diff.DiffReviewCanvasFile
 import dev.insight.diff.DiffSourceRange
 import dev.insight.diff.DiffSymbols
+import dev.insight.diff.FileStructure
+import dev.insight.diff.FileViewCard
 import dev.insight.diff.NoteCanvas
 import dev.insight.diff.ReviewCanvasOwner
 import dev.insight.diff.ReviewTraceLauncher
@@ -50,6 +53,7 @@ import dev.insight.diff.summariesReply
 import dev.insight.diff.topicsReply
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -57,7 +61,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -123,7 +129,18 @@ internal class CodeReviewTab(
         vocabulary = ReviewVocabulary.CODE,
         openNode = { node -> openFile(node.path, node.lines?.first) },
         showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
+        openFileAt = { path, line -> openFile(path, line) },
+        showFileLines = { path, lines -> showSourceBlock(path, lines) },
+        removeFileView = { closeFileView() },
     )
+
+    /** The file shown in File view, its structure once analyzed or why it could not be, and the analysis in progress. */
+    private var fileViewPath: String? = null
+    private var fileStructure: FileStructure? = null
+    private var fileViewError: String? = null
+    private var fileViewJob: Job? = null
+    private var fileViewTarget: CodeFile? = null
+    private var fileViewRevision = -1
 
     val canvasFile = DiffReviewCanvasFile(this)
     private val summariesButton = JButton("Summaries").apply {
@@ -219,7 +236,7 @@ internal class CodeReviewTab(
                 }, BorderLayout.CENTER)
                 add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
                     add(JButton("Clear tabs").apply {
-                        addActionListener { state.clearNotes(); renderCanvas() }
+                        addActionListener { state.clearNotes(); closeFileView() }
                     }, BorderLayout.WEST)
                 }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
@@ -264,6 +281,9 @@ internal class CodeReviewTab(
         val previousNotes = state.notes.size
         state.update(snapshot)
         if (state.revision != previousRevision) session.stop()
+        // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
+        if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
+        else if (fileViewPath != null && state.revision != previousRevision) { fileStructure = null; analyzeFileView() }
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
@@ -345,7 +365,72 @@ internal class CodeReviewTab(
     private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
     /** The topics card shows the file summaries too, so it follows every summary and chat update. */
-    private fun summariesChanged() { canvas.updateSummaries(summariesCard()); canvas.updateTopics(topicsCard()) }
+    private fun summariesChanged() {
+        canvas.updateSummaries(summariesCard())
+        canvas.updateTopics(topicsCard())
+        canvas.updateFileView(fileViewCard())
+    }
+
+    /** File view reads the topics and summaries of the files [fileStructure] reaches, so it follows them like the topics card. */
+    private fun fileViewCard(): FileViewCard? {
+        val file = fileViewPath?.let { state.snapshot.byPath[it] } ?: return null
+        val structure = fileStructure?.takeIf { it.path == file.path && it.fingerprint == file.fingerprint }
+        return FileViewCard(file, structure, fileViewError, state.topics, state.summaries, canSummarize)
+    }
+
+    /**
+     * Shows [path] in File view: each block beside its neighboring topics, with summaries on hover. False when
+     * the file is not in this tab's scope.
+     */
+    fun openFileView(path: String): Boolean {
+        if (disposed || path !in state.snapshot.byPath) return false
+        if (path != fileViewPath) {
+            fileViewPath = path
+            fileStructure = null
+            fileViewError = null
+        }
+        analyzeFileView()
+        renderCanvas()
+        showCanvas { canvas.focusFileView() }
+        return true
+    }
+
+    private fun closeFileView() {
+        fileViewJob?.cancel()
+        fileViewJob = null
+        fileViewPath = null
+        fileStructure = null
+        fileViewError = null
+        renderCanvas()
+    }
+
+    /** Resolves the viewed file's calls in the background, unless its current text is already analyzed or being analyzed. */
+    private fun analyzeFileView() {
+        val file = fileViewPath?.let { state.snapshot.byPath[it] } ?: return
+        if (fileStructure?.let { it.path == file.path && it.fingerprint == file.fingerprint } == true) return
+        if (fileViewJob?.isActive == true && fileViewTarget == file && fileViewRevision == state.revision) return
+        fileViewJob?.cancel()
+        fileViewError = null
+        fileViewTarget = file
+        val revision = state.revision
+        fileViewRevision = revision
+        val snapshot = state.snapshot
+        fileViewJob = scope.launch {
+            val result = try {
+                Result.success(withBackgroundProgress(project, "Following the calls of ${file.path.substringAfterLast('/')}") {
+                    smartReadAction(project) { CodeFileStructureBuilder(project, snapshot).build(file) }
+                })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            if (disposed || fileViewPath != file.path || state.revision != revision) return@launch
+            fileStructure = result.getOrNull()
+            fileViewError = result.exceptionOrNull()?.let { "Could not follow the calls: ${it.message ?: it.javaClass.simpleName}" }
+            canvas.updateFileView(fileViewCard())
+        }
+    }
 
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
     private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
@@ -378,7 +463,7 @@ internal class CodeReviewTab(
     }
 
     private fun renderCanvas() {
-        canvas.showNotes(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard())
+        canvas.showNotes(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard())
         canvas.highlight(selectedPaths().toSet())
     }
 

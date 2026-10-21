@@ -8,11 +8,23 @@ import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.JComponent
 import kotlin.math.roundToInt
 
-/** Complete, read-only snapshot text with line numbers. Only visible lines are painted, even for a very large file. */
-internal class SourceTextView(private val text: String?, viewWidth: Int, zoom: Double) : JComponent() {
+/**
+ * Complete, read-only snapshot text with line numbers. Only visible lines are painted, even for a very large file. A block of a
+ * file numbers its lines from [firstLine]; [digits] keeps the number gutter as wide as the whole file's.
+ */
+internal class SourceTextView(
+    private val text: String?,
+    viewWidth: Int,
+    zoom: Double,
+    private val firstLine: Int = 1,
+    digits: Int = 0,
+    private val hoverLine: ((Int?) -> Unit)? = null,
+) : JComponent() {
     private val scheme = EditorColorsManager.getInstance().globalScheme
     private val lineFont = scheme.getFont(EditorFontType.PLAIN).deriveFont((scheme.editorFontSize2D * zoom).toFloat())
     private val metrics = getFontMetrics(lineFont)
@@ -21,6 +33,8 @@ internal class SourceTextView(private val text: String?, viewWidth: Int, zoom: D
     private val lineStarts: IntArray
     private val numberWidth: Int
     val lineCount: Int get() = lineStarts.size
+    var highlightedLines: Set<Int> = emptySet()
+        set(value) { if (field != value) { field = value; repaint() } }
 
     init {
         val source = text.orEmpty()
@@ -28,10 +42,24 @@ internal class SourceTextView(private val text: String?, viewWidth: Int, zoom: D
         lineStarts = IntArray(count)
         var line = 1
         for (index in source.indices) if (source[index] == '\n' && line < count) lineStarts[line++] = index + 1
-        numberWidth = metrics.stringWidth("0".repeat(maxOf(3, count.toString().length)))
+        numberWidth = metrics.stringWidth("0".repeat(maxOf(3, digits, (firstLine + count - 1).toString().length)))
         font = lineFont
         preferredSize = Dimension(viewWidth, maxOf(count, 1) * lineHeight + 2 * pad)
+        if (hoverLine != null) {
+            val listener = object : MouseAdapter() {
+                override fun mouseEntered(e: MouseEvent) = update(e)
+                override fun mouseMoved(e: MouseEvent) = update(e)
+                override fun mouseExited(e: MouseEvent) { hoverLine.invoke(null) }
+                private fun update(e: MouseEvent) { hoverLine.invoke(lineAt(e.y)) }
+            }
+            addMouseListener(listener)
+            addMouseMotionListener(listener)
+        }
     }
+
+    /** Snapshot line at this pixel, excluding the padding and empty rows. */
+    internal fun lineAt(y: Int): Int? =
+        if (y < pad || y >= pad + lineCount * lineHeight) null else firstLine + (y - pad) / lineHeight
 
     /** The snapshot line without its final separator; leading characters, including '+' and '-', stay intact. */
     internal fun line(index: Int): String {
@@ -55,8 +83,12 @@ internal class SourceTextView(private val text: String?, viewWidth: Int, zoom: D
                 g2.drawString(if (text == null) "Source text unavailable" else "Empty file", pad, pad + metrics.ascent)
             }
             for (index in from until to) {
+                if (firstLine + index in highlightedLines) {
+                    g2.color = UIUtil.getListSelectionBackground(false)
+                    g2.fillRect(0, pad + index * lineHeight, width, lineHeight)
+                }
                 val baseline = pad + index * lineHeight + metrics.ascent
-                val number = (index + 1).toString()
+                val number = (firstLine + index).toString()
                 g2.color = UIUtil.getContextHelpForeground()
                 g2.drawString(number, pad + numberWidth - metrics.stringWidth(number), baseline)
                 g2.color = scheme.defaultForeground

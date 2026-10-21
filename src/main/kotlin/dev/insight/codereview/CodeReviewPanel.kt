@@ -189,6 +189,10 @@ internal class CodeReviewPanel(
         toolTipText = "Start a fresh chat and canvas scoped to the selected files or folders"
         addActionListener { selectedEntries().toSet().takeIf { it.isNotEmpty() }?.let { addTab(it) } }
     }
+    private val viewFile = JButton("View").apply {
+        toolTipText = "Open the selected file in File view, with neighboring topics and summaries on hover"
+        addActionListener { viewSelectedFile() }
+    }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
 
     init {
@@ -196,7 +200,10 @@ internal class CodeReviewPanel(
         val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
             add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
                 add(JLabel("Files in scope · double-click to open"), BorderLayout.NORTH)
-                add(newSelectedTab, BorderLayout.CENTER)
+                add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+                    add(newSelectedTab, BorderLayout.CENTER)
+                    add(viewFile, BorderLayout.EAST)
+                }, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
             add(JBScrollPane(tree), BorderLayout.CENTER)
             add(skippedBlock, BorderLayout.SOUTH)
@@ -281,6 +288,11 @@ internal class CodeReviewPanel(
             override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) selectedFile()?.let { openFile(it.path, null) } }
         })
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
+            object : DumbAwareAction("Open in File View", "Read the file block by block with the topics of the code its calls reach", AllIcons.Actions.Preview) {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = canViewSelectedFile() }
+                override fun actionPerformed(e: AnActionEvent) { viewSelectedFile() }
+            },
             object : DumbAwareAction("Exclude from Scope", "Leave the selected files and folders out of the review", AllIcons.Actions.Cancel) {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
                 override fun update(e: AnActionEvent) { e.presentation.isEnabled = refreshJob?.isActive != true && excludeSelectionPatterns().isNotEmpty() }
@@ -440,6 +452,21 @@ internal class CodeReviewPanel(
 
     private fun updateControls() {
         newSelectedTab.isEnabled = snapshot != null && refreshJob?.isActive != true && selectedEntries().isNotEmpty()
+        viewFile.isEnabled = canViewSelectedFile()
+    }
+
+    /** File view shows one loaded file: a single file is selected and the review is not reloading. */
+    private fun canViewSelectedFile(): Boolean =
+        snapshot != null && refreshJob?.isActive != true && tree.selectionCount == 1 && selectedFile() != null
+
+    /** Opens the selected file in the current tab's File view; a file outside a tab's fixed selection is reported. */
+    private fun viewSelectedFile() {
+        val file = selectedFile()?.takeIf { canViewSelectedFile() } ?: return
+        val tab = selectedTab() ?: return
+        if (!tab.openFileView(file.path)) {
+            status.text = "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+            status.toolTipText = status.text
+        }
     }
 
     private fun addTab(paths: Set<String>? = null) {

@@ -51,6 +51,10 @@ internal class NoteCanvas(
     openNode: ((SummaryNode) -> Unit)? = null,
     /** Put a summary node's source on the canvas. Null shows the node's file by path like [showDiffCard]. */
     showNode: ((SummaryNode) -> Unit)? = null,
+    /** File view: open a file at a line, put lines of the viewed file on the canvas, and close the view. */
+    private val openFileAt: (String, Int?) -> Unit = { path, _ -> open(path) },
+    private val showFileLines: (String, IntRange) -> Unit = { path, _ -> showDiffCard(path) },
+    private val removeFileView: () -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -74,6 +78,8 @@ internal class NoteCanvas(
         it.visibleOnly = vocabulary.scoreVisibleOnly
     }
     private var summariesScroll = 0
+    private var fileView: FileViewCard? = null
+    private var fileViewScroll = 0
     private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, ::refreshSummaries)
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
@@ -96,8 +102,11 @@ internal class NoteCanvas(
         flows: ChangeFlows? = null,
         summaries: SummariesCard? = null,
         topics: TopicsCard? = null,
+        fileView: FileViewCard? = null,
     ) {
         if (topics == null) topicsScroll = 0
+        if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
+        this.fileView = fileView
         this.topics = topics
         topics?.let { topicsTrace.retain(it.reading) } ?: topicsTrace.stop()
         this.notes = notes
@@ -121,7 +130,7 @@ internal class NoteCanvas(
         val scrolls = pages.mapValues { Point(it.value.viewport.viewPosition) }
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
-        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -165,6 +174,8 @@ internal class NoteCanvas(
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
 
+    internal fun focusFileView() { focusCard(FILE_VIEW_KEY) }
+
     internal fun focusSummaries() {
         focusCard(SUMMARIES_KEY)
     }
@@ -179,6 +190,7 @@ internal class NoteCanvas(
     private fun tabTitle(key: DiffNoteKey): String = when (key) {
         TOPICS_KEY -> "Topics"
         SUMMARIES_KEY -> "Summaries"
+        FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         FLOWS_KEY -> "Change flows"
         FLOW_KEY -> "Symbol flow"
         else -> {
@@ -223,7 +235,11 @@ internal class NoteCanvas(
             ((previous.x + point.x) * ratio - point.x).roundToInt().coerceAtLeast(0),
             ((previous.y + point.y) * ratio - point.y).roundToInt().coerceAtLeast(0),
         )
-        if (key == TOPICS_KEY) topicsScroll = target.y else summariesScroll = target.y
+        when (key) {
+            TOPICS_KEY -> topicsScroll = target.y
+            FILE_VIEW_KEY -> fileViewScroll = target.y
+            else -> summariesScroll = target.y
+        }
         SwingUtilities.invokeLater {
             if (cards[key]?.let(::bodyScroll) === updated) updated.viewport.viewPosition = target
         }
@@ -536,7 +552,7 @@ internal class NoteCanvas(
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
     fun updateTopics(content: TopicsCard?) {
         if ((content == null) != (topics == null) || (content != null && cards[TOPICS_KEY] == null)) {
-            showNotes(notes, sources, diffs, flows, summaries, content)
+            showNotes(notes, sources, diffs, flows, summaries, content, fileView)
             return
         }
         if (content == topics) return
@@ -729,7 +745,7 @@ internal class NoteCanvas(
     /** Follows every summary and chat update without rebuilding the other cards while the card stays on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
         if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
-            showNotes(notes, sources, diffs, flows, content, topics)
+            showNotes(notes, sources, diffs, flows, content, topics, fileView)
             return
         }
         if (content == summaries) return
@@ -742,6 +758,89 @@ internal class NoteCanvas(
         val content = summaries ?: return
         val card = summariesCard(content)
         replaceCard(SUMMARIES_KEY, card)
+    }
+
+    /**
+     * One file block by block, each beside the topics and summaries of the files its calls end in; zoom, selection and new
+     * topics or summaries rebuild only this card, in place.
+     */
+    private fun fileViewCard(content: FileViewCard): JPanel {
+        val structure = content.structure
+        val width = DocumentColumnsPanel.defaultWidth(FileStructurePanel.railDepth(content), documentZoom)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel(listOfNotNull("File view · ${content.file.path}", structure?.let {
+                "${it.blocks.size} ${if (it.blocks.size == 1) "block" else "blocks"} · reaches ${files(content.reached().size)}"
+            }).joinToString(" · ")).apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Blocks, calls and reached files come from resolving the source: each call is followed through the call graph " +
+                    "to the next project file, following local helpers. Hover a source line or topic card for its neighbors' summaries. " +
+                    "Calls are static, not runtime order. Topics and summaries are the assistant's interpretation."
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                if (structure != null) add(documentZoomControls(FILE_VIEW_KEY))
+                if (content.missingTopics > 0) add(JButton("Classify").apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun
+                    toolTipText = "${files(content.missingTopics)} reached from this file have no topic yet (/topics)"
+                    addActionListener { generateTopics() }
+                })
+                if (content.missingSummaries > 0) add(JButton("Summarize").apply {
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    isEnabled = content.canRun
+                    toolTipText = "${files(content.missingSummaries)} reached from this file have no summary yet (/summaries)"
+                    addActionListener { summarize() }
+                })
+                add(InplaceButton(IconButton("Close file view", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFileView() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
+        }
+        val inner = width - scaled(2 * PADDING + 4) - scaled(16)
+        val body = JPanel(VerticalLayout(scaled(8))).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            val status = when {
+                content.error != null -> content.error
+                structure == null -> "Following the calls of ${content.file.path}…"
+                structure.truncated -> "Some local helper chains reached the analysis limit; neighboring calls may be incomplete."
+                else -> null
+            }
+            status?.let { add(JLabel(it).apply { name = "file-view-status"; font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() }) }
+            if (structure != null) add(FileStructurePanel(content, structure, inner, documentZoom,
+                FileStructureActions(openFile = openFileAt, showLines = showFileLines), vocabulary))
+        }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        card.add(header, BorderLayout.NORTH)
+        card.add(JBScrollPane(body).apply {
+            border = null; isOpaque = false; viewport.isOpaque = false
+            // Several neighboring topics may scroll sideways; leave room for that scroll bar.
+            val sideways = if (body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
+            preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
+            verticalScrollBar.unitIncrement = scaled(16)
+            horizontalScrollBar.unitIncrement = scaled(16)
+            if (structure != null) installDocumentWheelZoom(FILE_VIEW_KEY, this)
+            // The viewport has no size yet; restore the reading position after layout.
+            val restore = fileViewScroll
+            verticalScrollBar.addAdjustmentListener { fileViewScroll = it.value }
+            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
+        }, BorderLayout.CENTER)
+        return card
+    }
+
+    /** Follows the analysis, topics, summaries and chat state without rebuilding the other cards. */
+    fun updateFileView(content: FileViewCard?) {
+        if ((content == null) != (fileView == null) || (content != null && cards[FILE_VIEW_KEY] == null)) {
+            showNotes(notes, sources, diffs, flows, summaries, topics, content)
+            return
+        }
+        if (content == fileView) return
+        if (content?.file?.path != fileView?.file?.path) fileViewScroll = 0
+        fileView = content
+        refreshCard(FILE_VIEW_KEY)
     }
 
     private fun descendantsOf(component: Container): List<Component> =
@@ -762,6 +861,7 @@ internal class NoteCanvas(
             FLOWS_KEY -> flows?.let(::flowsCard)
             TOPICS_KEY -> topics?.let(::topicsCard)
             SUMMARIES_KEY -> summaries?.let(::summariesCard)
+            FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
             FLOW_KEY -> flowCard(changeFlow(notes))
             else -> notes.firstOrNull { it.key == key }?.let(::card)
                 ?: sources.firstOrNull { it.key == key }?.let(::sourceCard)
@@ -929,6 +1029,7 @@ internal class NoteCanvas(
         val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
         val TOPICS_KEY = DiffNoteKey(emptyList(), "change-topics")
         val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
+        val FILE_VIEW_KEY = DiffNoteKey(emptyList(), "file-view")
         const val SUMMARIES_WIDTH = 840
         const val MAX_SUMMARIES_HEIGHT = 820
         const val MAX_TOPICS_HEIGHT = 900
