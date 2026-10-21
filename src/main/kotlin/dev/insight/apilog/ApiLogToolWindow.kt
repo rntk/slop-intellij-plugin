@@ -4,13 +4,15 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.ide.actions.RevealFileAction
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.fileChooser.FileChooserFactory
 import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -86,7 +88,12 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
     init {
         add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
             border = JBUI.Borders.empty(4)
-            add(button("Copy all", "Copy every exchange as JSON") { log -> copy(ApiTrafficLog.toPrettyJson(log.entries())) })
+            add(button("Copy all", "Copy every exchange as JSON") { log ->
+                runLogTask("Copying API log") {
+                    val json = ApiTrafficLog.toPrettyJson(log.entries())
+                    SwingUtilities.invokeLater { if (!disposed) copy(json) }
+                }
+            })
             add(button("Export…", "Save every exchange to a JSON file") { log -> export(log) })
             add(button("Open folder", "Show the JSON-lines files the log is stored in") { log -> log.file?.parent?.let(::reveal) })
             add(button("Expand all", null) { expandAll(true) })
@@ -115,7 +122,7 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
             }
         }, BorderLayout.CENTER)
         tree.addTreeSelectionListener { showSelection() }
-        ApplicationManager.getApplication().executeOnPooledThread {
+        runLogTask("Loading API log") {
             val loaded = log()
             SwingUtilities.invokeLater {
                 if (disposed) return@invokeLater
@@ -213,8 +220,23 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
         val descriptor = FileSaverDescriptor("Export ${log.api} API Log", "Save the raw requests and responses as JSON", "json")
         val target = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
             .save("insight-${log.api.lowercase()}-api-log.json") ?: return
-        val json = ApiTrafficLog.toPrettyJson(log.entries())
-        ApplicationManager.getApplication().executeOnPooledThread { Files.writeString(target.file.toPath(), json) }
+        runLogTask("Exporting ${log.api} API log") {
+            Files.writeString(target.file.toPath(), ApiTrafficLog.toPrettyJson(log.entries()))
+        }
+    }
+
+    /** Log parsing/serialization can involve large bodies; disk writes must finish once started. */
+    private fun runLogTask(title: String, task: () -> Unit) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, title, false) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                if (!disposed) task()
+            }
+
+            override fun onThrowable(error: Throwable) {
+                if (!disposed) Messages.showErrorDialog(project, error.message ?: error.javaClass.simpleName, title)
+            }
+        })
     }
 
     private fun reveal(directory: Path) {
@@ -224,7 +246,7 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
 
     private fun clear(log: ApiTrafficLog) {
         val answer = Messages.showYesNoDialog(project, "Delete all recorded ${log.api} requests and responses?", "Clear API Log", null)
-        if (answer == Messages.YES) log.clear()
+        if (answer == Messages.YES) runLogTask("Clearing ${log.api} API log") { log.clear() }
     }
 
     private enum class Part(val title: String) { EXCHANGE("Request and response"), REQUEST("Request"), RESPONSE("Response") }

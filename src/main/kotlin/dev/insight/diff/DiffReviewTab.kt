@@ -9,7 +9,6 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
@@ -78,39 +77,41 @@ internal class DiffReviewTab(
     val session = object : ChatSession(project, scope, welcome =
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
             "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic.") {
+        override fun replyProgressTitle(text: String): String = when {
+            isTopicsRequest(text) -> "Generating change topics"
+            isSummariesRequest(text) || text == "/topic-summaries" -> "Generating change summaries"
+            else -> "Insight change review chat"
+        }
+
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, total) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files.size }
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val client = ChatSettings.getInstance().createClient()
                 if (isTopicsRequest(question)) {
-                    val run = withBackgroundProgress(project, "Generating change topics") {
-                        reportRawProgress { reporter ->
-                            reporter.text("Classifying changed files…")
-                            ChangeTopicGenerator(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
-                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
-                                    onProgress = { done, total ->
-                                        reporter.details("$done of $total files classified")
-                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                    })
-                        }
+                    val run = reportRawProgress { reporter ->
+                        reporter.text("Classifying changed files…")
+                        ChangeTopicGenerator(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                            .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
+                                onProgress = { done, total ->
+                                    reporter.details("$done of $total files classified")
+                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                })
                     }
                     return topicsReply(run)
                 }
                 if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
                     val topicSummaries = question.trim() == "/topic-summaries"
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
-                    val run = withBackgroundProgress(project, "Generating change summaries") {
-                        reportRawProgress { reporter ->
-                            reporter.text("Summarizing the change…")
-                            ChangeSummarizer(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
-                                .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
-                                    onProgress = { done, total ->
-                                        reporter.details("$done of $total summaries")
-                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                    })
-                        }
+                    val run = reportRawProgress { reporter ->
+                        reporter.text("Summarizing the change…")
+                        ChangeSummarizer(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                            .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
+                                if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
+                                onProgress = { done, total ->
+                                    reporter.details("$done of $total summaries")
+                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                })
                     }
                     return if (topicSummaries) summariesReply(run).replace("They show their names in the Summaries card.",
                         "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else summariesReply(run)

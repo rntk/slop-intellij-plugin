@@ -30,6 +30,7 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.vcs.changes.ChangeListListener
 import com.intellij.ui.components.JBTextField
 import com.intellij.openapi.project.Project
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -148,23 +149,34 @@ class OpenSideBySideAction : GraphSymbolAction() {
     override fun perform(e: AnActionEvent, project: Project, pointer: SmartPsiElementPointer<PsiElement>) {
         val editor = e.getData(CommonDataKeys.EDITOR)
         val service = project.service<CallGraphService>()
+        fun showNotice(text: String) {
+            if (project.isDisposed) return
+            if (editor != null && !editor.isDisposed) HintManager.getInstance().showInformationHint(editor, text)
+            else StatusBar.Info.set(text, project)
+        }
         service.scope.launch(Dispatchers.EDT) {
-            val built = service.currentProject()
-            val found = readAction {
-                val element = pointer.element ?: return@readAction null
-                val path = element.containingFile?.virtualFile?.path
-                val node = built.graph.nodes.firstOrNull { it.filePath == path && built.pointers.getOrNull(it.id)?.element == element }
-                    ?: return@readAction null
-                val tree = built.graph.hierarchy()
-                tree.sourceCallChain(node.id) to tree.nodes[node.id].name
+            try {
+                val built = service.currentProject()
+                val found = withBackgroundProgress(project, "Preparing source call chain") {
+                    readAction {
+                        val element = pointer.element ?: return@readAction null
+                        val path = element.containingFile?.virtualFile?.path
+                        val node = built.graph.nodes.firstOrNull { it.filePath == path && built.pointers.getOrNull(it.id)?.element == element }
+                            ?: return@readAction null
+                        val tree = built.graph.hierarchy()
+                        tree.sourceCallChain(node.id) to tree.nodes[node.id].name
+                    }
+                }
+                if (found == null) {
+                    showNotice("This symbol is not in the application graph.")
+                    return@launch
+                }
+                openSourceCallChain(project, built, found.first, found.second)
+            } catch (e: CancellationException) {
+                ensureActive()
+                showNotice("Side-by-side view cancelled. Choose Side by side to retry.")
+                throw e
             }
-            if (found == null) {
-                val text = "This symbol is not in the application graph."
-                if (editor != null && !editor.isDisposed) HintManager.getInstance().showInformationHint(editor, text)
-                else StatusBar.Info.set(text, project)
-                return@launch
-            }
-            openSourceCallChain(project, built, found.first, found.second)
         }
     }
 }

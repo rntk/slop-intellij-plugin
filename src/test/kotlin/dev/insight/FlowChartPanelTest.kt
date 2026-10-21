@@ -1,6 +1,8 @@
 package dev.insight
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.ui.SearchTextField
 import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.SmartPointerManager
@@ -184,10 +186,18 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             { actions += "enrich" }, { actions += "report" }, { false })
         try {
             panel.showResult(result())
-            button(panel, "Refresh").doClick()
-            button(panel, "Enrich").doClick()
+            val toolbar = controls(panel).filterIsInstance<ActionToolbar>()
+                .single { it.targetComponent === panel }
+            fun command(label: String) = toolbar.actionGroup.getChildren(null).single { it.templatePresentation.text == label }
+            for (label in listOf("Refresh", "Enrich")) {
+                val action = command(label)
+                action.actionPerformed(TestActionEvent.createTestEvent(action))
+            }
             assertEquals(listOf("refresh", "enrich"), actions)
-            assertFalse(button(panel, "Report").isEnabled)
+            val report = command("Report")
+            val event = TestActionEvent.createTestEvent(report)
+            report.update(event)
+            assertFalse(event.presentation.isEnabled)
         } finally { panel.dispose() }
     }
 

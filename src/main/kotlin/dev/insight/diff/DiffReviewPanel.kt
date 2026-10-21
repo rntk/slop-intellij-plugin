@@ -33,6 +33,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
@@ -271,12 +272,16 @@ internal class DiffReviewPanel(
         repositoriesJob?.cancel()
         repositoriesJob = scope.launch {
             try {
-                val repositories = withContext(Dispatchers.IO) {
-                    ReviewDiffProvider.EP_NAME.extensionList.flatMap { it.repositories(project) }.distinctBy { it.path }
+                val repositories = withBackgroundProgress(project, "Finding review repositories") {
+                    withContext(Dispatchers.IO) {
+                        ReviewDiffProvider.EP_NAME.extensionList.flatMap { it.repositories(project) }.distinctBy { it.path }
+                    }
                 }
                 sourceControls.setRepositories(repositories, preferredReviewRepository(repositories,
                     FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.path, project.basePath))
             } catch (e: CancellationException) {
+                ensureActive()
+                sourceControls.setRepositoryError("Repository discovery cancelled. Refresh to retry.")
                 throw e
             } catch (e: Exception) {
                 sourceControls.setRepositoryError(e.message ?: e.javaClass.simpleName)
@@ -310,7 +315,9 @@ internal class DiffReviewPanel(
         val selectedRequest = request
         refreshJob = scope.launch {
             try {
-                val snapshot = withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
+                val snapshot = withBackgroundProgress(project, "Loading diff review: ${selectedRequest.mode.title}") {
+                    withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
+                }
                 state.update(snapshot)
                 val removed = reviewTabs.sumOf { it.update(snapshot) }
                 if (selectedRequest.mode.usesWorkingTree)
@@ -320,6 +327,8 @@ internal class DiffReviewPanel(
                     " · ${snapshot.untracked.count { it.absolutePath !in included }} untracked outside review" else " · ${snapshot.comparison.summary}"
                 if (removed > 0) status.text += " · $removed outdated notes removed"
             } catch (e: CancellationException) {
+                ensureActive()
+                status.text = "Diff loading cancelled. Refresh to retry."
                 throw e
             } catch (e: Exception) {
                 status.text = "Could not load diff: ${e.message ?: e.javaClass.simpleName}"

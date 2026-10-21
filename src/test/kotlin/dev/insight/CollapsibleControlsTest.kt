@@ -7,13 +7,11 @@ import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
-import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JTextField
 
 class CollapsibleControlsTest : BasePlatformTestCase() {
-    private fun toolbar(controls: CollapsibleControls) = controls.components.filterIsInstance<JComponent>()
-        .mapNotNull { it.getClientProperty(ActionToolbar.ACTION_TOOLBAR_PROPERTY_KEY) as? ActionToolbar }.single()
+    private fun toolbar(controls: CollapsibleControls) = controls.components.filterIsInstance<ActionToolbar>().single()
 
     fun `test collapsed settings retain values and persisted visibility can be revealed`() {
         val key = "insight.test.controls"

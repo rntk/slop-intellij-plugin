@@ -30,6 +30,8 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBList
@@ -48,6 +50,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
@@ -424,7 +427,15 @@ internal class CodeReviewPanel(
         val previous = snapshot
         refreshJob = coroutines.launch(start = CoroutineStart.LAZY) {
             try {
-                val loaded = CodeReviewLoader(project).load(scope, previous)
+                val loaded = withBackgroundProgress(project, "Loading code review: ${scope.displayName}") {
+                    reportRawProgress { reporter ->
+                        CodeReviewLoader(project).load(scope, previous, progress = { phase, done, total ->
+                            reporter.text(phase)
+                            reporter.details(if (total > 0) "$done / $total files" else null)
+                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                        })
+                    }
+                }
                 snapshot = loaded
                 if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
                 val removed = reviewTabs.sumOf { it.update(loaded) }
@@ -435,6 +446,8 @@ internal class CodeReviewPanel(
                     (if (loaded.ignoredCount > 0) "\n${loaded.ignoredCount} ignored files and folders were not read." else "") +
                     if (loaded.scope.excludes.isNotEmpty()) "\nExcluded: ${CodeExclusions.format(loaded.scope.excludes)}" else ""
             } catch (e: CancellationException) {
+                coroutineContext.ensureActive()
+                status.text = "Loading ${scope.displayName} cancelled. Click Load to retry."
                 throw e
             } catch (e: Exception) {
                 status.text = "Could not load ${scope.displayName}: ${e.message ?: e.javaClass.simpleName}"

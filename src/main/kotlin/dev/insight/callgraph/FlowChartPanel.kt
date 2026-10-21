@@ -7,7 +7,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.ex.ActionUtil
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooserFactory
 import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
@@ -24,6 +23,7 @@ import dev.insight.entrypoints.EntryPointService
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.SmartPsiElementPointer
@@ -400,7 +400,13 @@ internal class FlowChartPanel(
             add(JMenu("${tour.name} · ${tour.beats.size} beats").apply {
                 add(item("Play") {
                     chatScope.launch(Dispatchers.EDT) {
-                        try { playTour(tour.name) } catch (e: ToolInputException) { status.text = e.message }
+                        try {
+                            withBackgroundProgress(project, "Loading chart tour") { playTour(tour.name) }
+                        } catch (e: CancellationException) {
+                            ensureActive()
+                            if (!disposed) status.text = "Tour loading cancelled. Choose Play to retry."
+                            throw e
+                        } catch (e: ToolInputException) { status.text = e.message }
                     }
                 })
                 add(item("Rename…") {
@@ -422,8 +428,16 @@ internal class FlowChartPanel(
                         FileSaverDescriptor("Export Tour", "Save the tour as Markdown", "md"), project)
                         .save(tour.name.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "tour" } + ".md") ?: return@item
                     val text = tourMarkdown(tour, project.basePath)
-                    ApplicationManager.getApplication().executeOnPooledThread {
-                        java.nio.file.Files.writeString(target.file.toPath(), text)
+                    chatScope.launch(Dispatchers.EDT) {
+                        try {
+                            withBackgroundProgress(project, "Exporting chart tour", cancellable = false) {
+                                withContext(Dispatchers.IO) { java.nio.file.Files.writeString(target.file.toPath(), text) }
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            if (!disposed) status.text = "Could not export tour: ${e.message ?: e.javaClass.simpleName}"
+                        }
                     }
                 })
             })
@@ -461,12 +475,17 @@ internal class FlowChartPanel(
         ) }
         chatScope.launch(Dispatchers.EDT) {
             val captured = try {
-                smartReadAction(project) {
-                    if (PsiModificationTracker.getInstance(project).modificationCount != sourceStamp)
-                        throw ToolInputException("Source changed while opening scoped chat; choose To chat again")
-                    scopedChartContext(project, built, revision, target)
+                withBackgroundProgress(project, "Opening scoped chart chat") {
+                    smartReadAction(project) {
+                        if (PsiModificationTracker.getInstance(project).modificationCount != sourceStamp)
+                            throw ToolInputException("Source changed while opening scoped chat; choose To chat again")
+                        scopedChartContext(project, built, revision, target)
+                    }
                 }
             } catch (e: CancellationException) {
+                ensureActive()
+                if (!disposed && result === built && chatRevision == revision)
+                    status.text = "Opening scoped chat cancelled. Choose To chat to retry."
                 throw e
             } catch (e: Exception) {
                 thisLogger().warn("Could not capture chart chat context", e)
@@ -782,9 +801,12 @@ internal class FlowChartPanel(
         if (missing.isEmpty()) return
         flowJob = service.scope.launch(Dispatchers.EDT) {
             val (sites, facts) = try {
-                smartReadAction(project) {
-                    val callees = missing.flatMap { id -> lens.calls[id].orEmpty().map { it.callee } }
-                    CallSiteAnalyzer.collect(built, missing, callees) to SymbolFactsExtractor.extract(project, built, only = missing.toSet())
+                // Automatic source loading must finish for branch conditions to appear. Rebuild/dispose still cancel its job.
+                withBackgroundProgress(project, "Reading flow chart steps", cancellable = false) {
+                    smartReadAction(project) {
+                        val callees = missing.flatMap { id -> lens.calls[id].orEmpty().map { it.callee } }
+                        CallSiteAnalyzer.collect(built, missing, callees) to SymbolFactsExtractor.extract(project, built, only = missing.toSet())
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -819,33 +841,35 @@ internal class FlowChartPanel(
         summarizeButton.text = "Stop summary"
         summaryJob = service.scope.launch(Dispatchers.EDT) {
             try {
-                val ids = batch.flatMap { listOf(it.owner) + it.sites.map(CallSite::callee) }.toSet()
-                val (facts, currentSites, stamp) = smartReadAction(project) {
-                    val owners = batch.map { it.owner }.distinct()
-                    val callees = owners.flatMap { lens.calls[it].orEmpty().map(CallGraphEdge::callee) }
-                    Triple(SymbolFactsExtractor.extract(project, built, only = ids),
-                        CallSiteAnalyzer.collect(built, owners, callees), PsiModificationTracker.getInstance(project).modificationCount)
+                withBackgroundProgress(project, "Summarizing subflows") {
+                    val ids = batch.flatMap { listOf(it.owner) + it.sites.map(CallSite::callee) }.toSet()
+                    val (facts, currentSites, stamp) = smartReadAction(project) {
+                        val owners = batch.map { it.owner }.distinct()
+                        val callees = owners.flatMap { lens.calls[it].orEmpty().map(CallGraphEdge::callee) }
+                        Triple(SymbolFactsExtractor.extract(project, built, only = ids),
+                            CallSiteAnalyzer.collect(built, owners, callees), PsiModificationTracker.getInstance(project).modificationCount)
+                    }
+                    val folded = if (flowCanvas.board.compact) lens.folded else emptySet()
+                    val current = currentSites.flatMap { (owner, sites) -> flowRegionCandidates(owner, sites, folded) }.toSet()
+                    if (batch.any { it !in current }) {
+                        summaryNotice.text = "Source changed; refresh the chart before summarizing."
+                        return@withBackgroundProgress
+                    }
+                    val summaries = enrichment.summarizeSubflows(batch, facts, lens.freshSummaries(facts))
+                    if (disposed || result !== built) return@withBackgroundProgress
+                    val unchanged = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount == stamp }
+                    if (!unchanged || disposed || result !== built) {
+                        summaryNotice.text = "Source changed during summary; stale interpretations were discarded."
+                        return@withBackgroundProgress
+                    }
+                    regionPlans += summaries.plans
+                    stepFacts += facts
+                    renderFlow()
+                    val accepted = summaries.plans.values.sumOf { it.size }
+                    summaryNotice.text = "$accepted LLM subflows · ${summaries.failedBlocks} regions kept structural" +
+                        (if (summaries.rejectedGroups > 0) " · ${summaries.rejectedGroups} invalid groups rejected" else "") +
+                        (if (pending.size > batch.size) " · summarize again for remaining regions" else "")
                 }
-                val folded = if (flowCanvas.board.compact) lens.folded else emptySet()
-                val current = currentSites.flatMap { (owner, sites) -> flowRegionCandidates(owner, sites, folded) }.toSet()
-                if (batch.any { it !in current }) {
-                    summaryNotice.text = "Source changed; refresh the chart before summarizing."
-                    return@launch
-                }
-                val summaries = enrichment.summarizeSubflows(batch, facts, lens.freshSummaries(facts))
-                if (disposed || result !== built) return@launch
-                val unchanged = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount == stamp }
-                if (!unchanged || disposed || result !== built) {
-                    summaryNotice.text = "Source changed during summary; stale interpretations were discarded."
-                    return@launch
-                }
-                regionPlans += summaries.plans
-                stepFacts += facts
-                renderFlow()
-                val accepted = summaries.plans.values.sumOf { it.size }
-                summaryNotice.text = "$accepted LLM subflows · ${summaries.failedBlocks} regions kept structural" +
-                    (if (summaries.rejectedGroups > 0) " · ${summaries.rejectedGroups} invalid groups rejected" else "") +
-                    (if (pending.size > batch.size) " · summarize again for remaining regions" else "")
             } catch (e: CancellationException) {
                 if (!disposed && result === built) summaryNotice.text = "Summary stopped; existing subflows retained."
                 throw e

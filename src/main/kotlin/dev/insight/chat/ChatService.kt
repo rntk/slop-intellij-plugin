@@ -5,10 +5,12 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CopyOnWriteArrayList
@@ -56,17 +58,21 @@ open class ChatSession(
         val request = messages.filter { it.role == ChatMessage.USER || it.role == ChatMessage.ASSISTANT }
         turn = scope.launch(Dispatchers.EDT) {
             try {
-                val reply = withContext(Dispatchers.IO) {
-                    createBackend().reply(request) { event ->
-                        withContext(Dispatchers.EDT) {
-                            history += ChatMessage(ChatMessage.TOOL, describe(event))
-                            notifyViews()
+                val reply = withBackgroundProgress(project, replyProgressTitle(text.trim())) {
+                    withContext(Dispatchers.IO) {
+                        createBackend().reply(request) { event ->
+                            withContext(Dispatchers.EDT) {
+                                history += ChatMessage(ChatMessage.TOOL, describe(event))
+                                notifyViews()
+                            }
                         }
                     }
                 }
                 history += ChatMessage(ChatMessage.ASSISTANT, reply, chart?.revision, chart?.storyId)
                 followups = proposed
             } catch (e: CancellationException) {
+                // The IDE cancels the progress scope; Stop/discard cancel this entire turn instead.
+                if (coroutineContext.isActive) history += ChatMessage(ChatMessage.NOTICE, "Stopped.")
                 throw e
             } catch (e: Exception) {
                 LOG.warn("Chat reply failed", e)
@@ -144,6 +150,9 @@ open class ChatSession(
 
     /** Chart tools whose follow-up suggestions belong to this session. */
     internal fun sessionChartTools(chart: ChartChatContext) = chartTools(chart) { proposed = it }
+
+    /** The whole turn, including tool calls and retries, shares one native IDE progress task. */
+    protected open fun replyProgressTitle(text: String): String = "Insight chat"
 
     /** Runs on IO: reading the API key from the password safe can block. */
     internal open fun createBackend(): ChatBackend {

@@ -156,6 +156,12 @@ internal class CodeReviewTab(
     val session = object : ChatSession(project, scope, welcome =
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility.") {
+        override fun replyProgressTitle(text: String): String = when {
+            isTopicsRequest(text) -> "Generating code topics"
+            isSummariesRequest(text) || text == "/topic-summaries" -> "Generating code summaries"
+            else -> "Insight code review chat"
+        }
+
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, scopeName) = withContext(Dispatchers.EDT) { captureContext() to promptScope() }
@@ -165,18 +171,16 @@ internal class CodeReviewTab(
                     val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                     if (!confirm(requests, "topics")) return cancelledReply(requests)
                     val run = pipeline {
-                        withBackgroundProgress(project, "Generating code topics") {
-                            reportRawProgress { reporter ->
-                                reporter.text("Classifying files in scope…")
-                                ChangeTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
-                                    system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
-                                    concurrency = CODE_TOPIC_CONCURRENCY)
-                                    .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
-                                        onProgress = { done, total ->
-                                            reporter.details("$done of $total files classified")
-                                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                        })
-                            }
+                        reportRawProgress { reporter ->
+                            reporter.text("Classifying files in scope…")
+                            ChangeTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
+                                system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
+                                concurrency = CODE_TOPIC_CONCURRENCY)
+                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
+                                    onProgress = { done, total ->
+                                        reporter.details("$done of $total files classified")
+                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                    })
                         }
                     }
                     return topicsReply(run).replace("There are no changed files to classify.", "There are no files in scope to classify.")
@@ -192,17 +196,15 @@ internal class CodeReviewTab(
                     if (!confirm(requests, if (topicSummaries) "topic summaries" else "summaries")) return cancelledReply(requests)
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = pipeline {
-                        withBackgroundProgress(project, "Generating code summaries") {
-                            reportRawProgress { reporter ->
-                                reporter.text("Summarizing the code…")
-                                ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
-                                    .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                                        if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
-                                        onProgress = { done, total ->
-                                            reporter.details("$done of $total summaries")
-                                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                        })
-                            }
+                        reportRawProgress { reporter ->
+                            reporter.text("Summarizing the code…")
+                            ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
+                                .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
+                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
+                                    onProgress = { done, total ->
+                                        reporter.details("$done of $total summaries")
+                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                    })
                         }
                     }
                     val reply = summariesReply(run, empty = "There are no files in scope to summarize.")
@@ -421,13 +423,17 @@ internal class CodeReviewTab(
                     smartReadAction(project) { CodeFileStructureBuilder(project, snapshot).build(file) }
                 })
             } catch (e: CancellationException) {
-                throw e
+                currentCoroutineContext().ensureActive()
+                Result.failure(e)
             } catch (e: Exception) {
                 Result.failure(e)
             }
             if (disposed || fileViewPath != file.path || state.revision != revision) return@launch
             fileStructure = result.getOrNull()
-            fileViewError = result.exceptionOrNull()?.let { "Could not follow the calls: ${it.message ?: it.javaClass.simpleName}" }
+            fileViewError = result.exceptionOrNull()?.let {
+                if (it is CancellationException) "Following calls cancelled. Reopen File view to retry."
+                else "Could not follow the calls: ${it.message ?: it.javaClass.simpleName}"
+            }
             canvas.updateFileView(fileViewCard())
         }
     }

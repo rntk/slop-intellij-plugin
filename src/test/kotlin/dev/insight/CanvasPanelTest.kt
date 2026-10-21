@@ -13,8 +13,7 @@ class CanvasPanelTest : BasePlatformTestCase() {
     private fun controls(container: Container): List<JComponent> = container.components.flatMap {
         listOfNotNull(it as? JComponent) + if (it is Container) controls(it) else emptyList()
     }
-    private fun command(panel: CanvasPanel, text: String) = controls(panel)
-        .mapNotNull { it.getClientProperty(ActionToolbar.ACTION_TOOLBAR_PROPERTY_KEY) as? ActionToolbar }
+    private fun command(panel: CanvasPanel, text: String) = controls(panel).filterIsInstance<ActionToolbar>()
         .flatMap { it.actionGroup.getChildren(null).toList() }
         .filterIsInstance<PanelCommand>().single { it.text == text }
 

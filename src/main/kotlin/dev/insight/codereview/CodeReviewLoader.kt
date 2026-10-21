@@ -27,8 +27,10 @@ import kotlin.coroutines.coroutineContext
  * the previous snapshot are reused without reading them again. Never modifies files.
  */
 internal class CodeReviewLoader(private val project: Project) {
-    suspend fun load(scope: CodeScope, previous: CodeSnapshot?, limits: CodeLimits = CodeLimits()): CodeSnapshot =
+    suspend fun load(scope: CodeScope, previous: CodeSnapshot?, limits: CodeLimits = CodeLimits(),
+        progress: (String, Int, Int) -> Unit = { _, _, _ -> }): CodeSnapshot =
         withContext(Dispatchers.IO) {
+            progress(if (scope.entry) "Following entry-file dependencies…" else "Finding files in scope…", 0, 0)
             val start = readAction { findCodeScopeFile(project, scope.absolutePath, directory = !scope.entry) }
                 ?: throw IllegalArgumentException("The ${if (scope.entry) "file" else "folder"} ${scope.path.ifEmpty { "Project root" }} no longer exists.")
             val found = if (scope.entry) dependencies(start, limits, scope.exclusions) else enumerate(start, scope.exclusions)
@@ -40,6 +42,7 @@ internal class CodeReviewLoader(private val project: Project) {
             for ((index, entry) in found.files.withIndex()) {
                 coroutineContext.ensureActive()
                 val (path, file) = entry
+                progress("Reading $path", index, found.files.size)
                 val loaded = if (files.size >= limits.maxFiles) null else when (val result = read(path, file, reusable[path], limits)) {
                     is LoadResult.Skipped -> { skipped += SkippedFile(path, result.reason); continue }
                     is LoadResult.Loaded -> result.file.takeIf { totalChars + it.text.length <= limits.maxTotalChars }
@@ -55,6 +58,7 @@ internal class CodeReviewLoader(private val project: Project) {
                 files += loaded
             }
             overLimit += found.beyond
+            progress("Code snapshot loaded", found.files.size, found.files.size)
             // Dependencies are read nearest first, so the limits cut the farthest; the snapshot is in path order.
             CodeSnapshot(scope, files.sortedBy { it.path }, skipped.sortedBy { it.path }, found.ignored, overLimit > 0, overLimit, limits,
                 found.excluded)
