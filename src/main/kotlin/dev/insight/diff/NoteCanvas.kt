@@ -66,11 +66,13 @@ internal class NoteCanvas(
     internal val flowsView = ChangeFlowsViewState()
     private var flowsScroll = 0
     private var topics: TopicsCard? = null
-    internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics,
-        if (vocabulary.documentMode) ChangeTopicsMode.DOCUMENT else ChangeTopicsMode.HIERARCHY).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
+    internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
     private var summaries: SummariesCard? = null
-    internal val summariesView = ChangeSummariesViewState().also { it.visibleOnly = vocabulary.scoreVisibleOnly }
+    internal val summariesView = ChangeSummariesViewState().also {
+        it.mode = vocabulary.summariesMode
+        it.visibleOnly = vocabulary.scoreVisibleOnly
+    }
     private var summariesScroll = 0
     private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, ::refreshSummaries)
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }) { refreshCard(TOPICS_KEY) }
@@ -432,12 +434,11 @@ internal class NoteCanvas(
                 if (document) add(documentZoomControls(TOPICS_KEY))
                 if (outline.depth > 0) add(topicLevels(outline))
                 val group = ButtonGroup()
-                // Document mode shows patches, so it only exists for diffs.
-                if (vocabulary.documentMode) ChangeTopicsMode.entries.forEach { mode ->
+                ChangeTopicsMode.entries.forEach { mode ->
                     add(JToggleButton(if (mode == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy", topicsView.mode == mode).apply {
                         font = scaledFont(JBFont.small())
                         cursor = Cursor.getDefaultCursor()
-                        toolTipText = if (mode == ChangeTopicsMode.DOCUMENT) "Every diff in topic order, with its summary and the topic rail"
+                        toolTipText = if (mode == ChangeTopicsMode.DOCUMENT) "Every file in topic order, with its summary and the topic rail"
                             else "Topics broad to specific, left to right, with each file's summary"
                         group.add(this)
                         addActionListener { topicsView.mode = mode; topicsScroll = 0; refreshCard(TOPICS_KEY) }
@@ -557,7 +558,7 @@ internal class NoteCanvas(
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
         val width = when {
             hierarchy -> cardWidth(HierarchyColumnsPanel.defaultWidth(branchLevels))
-            document -> DocumentColumnsPanel.defaultWidth(summariesView.railDepth(tree), viewZoom)
+            document -> DocumentColumnsPanel.defaultWidth(ChangeSummaryDocumentPanel.railDepth(tree, summariesView), viewZoom)
             else -> cardWidth(SUMMARIES_WIDTH)
         }
         val header = JPanel(BorderLayout()).apply {
@@ -573,8 +574,7 @@ internal class NoteCanvas(
                 val summaries = content.summaries
                 if ((hierarchy || document) && branchLevels > 0) add(summaryLevels(tree, branchLevels))
                 val group = ButtonGroup()
-                // Document mode shows patches, so it only exists for diffs.
-                ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DOCUMENT || vocabulary.documentMode }.forEach { mode ->
+                ChangeSummariesMode.entries.forEach { mode ->
                     add(JToggleButton(when (mode) {
                         ChangeSummariesMode.OUTLINE -> "Outline"
                         ChangeSummariesMode.HIERARCHY -> "Hierarchy"
@@ -586,7 +586,7 @@ internal class NoteCanvas(
                         toolTipText = when (mode) {
                             ChangeSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
                             ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
-                            ChangeSummariesMode.DOCUMENT -> "Every diff in folder order, with its summary and the folder rail"
+                            ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }

@@ -40,7 +40,7 @@ internal fun isFolderBranch(node: SummaryNode): Boolean =
 
 /**
  * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
- * every diff in tree order with its summary and the folder rail, as topics do.
+ * every file in tree order with its summary and the folder rail, as topics do.
  */
 internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT }
 
@@ -287,7 +287,7 @@ internal class ChangeSummariesViewState : SummaryTraceState() {
         return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.depth(it.id) < level) } }
     }
 
-    /** Document mode keeps every diff visible and limits the rail to the picked levels. */
+    /** Document mode keeps every file visible and limits the rail to the picked levels. */
     fun railDepth(tree: ChangeSummaryTree): Int =
         minOf(branchLevels(tree), (shownLevel(tree) ?: branchLevels(tree)) + 1)
 

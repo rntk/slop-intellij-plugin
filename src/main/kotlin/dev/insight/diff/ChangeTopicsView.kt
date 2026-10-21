@@ -50,7 +50,7 @@ internal data class TopicsCard(
     val reading: ChangeSummaries by lazy { topicReadingSummaries(topicSummaries, summaries) }
 }
 
-/** The document reads every diff in topic order; the hierarchy reads the topics left to right with each file's summary. */
+/** The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary. */
 internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
 
 /**
@@ -101,7 +101,7 @@ internal class ChangeTopicsViewState(
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
 
-    /** Document mode keeps every diff visible and limits the rail to the picked levels. */
+    /** Document mode keeps every file visible and limits the rail to the picked levels. */
     fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)
 
     /** A node is on screen when no topic above it is folded; [tree] is the reading tree, see [showTrace]. */
@@ -152,9 +152,9 @@ internal class ChangeTopicActions(
 )
 
 /**
- * A change read as one document with its hierarchy rail: every file's diff down the middle, its summary in the left margin
- * and the hierarchy on the right, broadest level outermost. Each rail card spans the diffs of its files, and a section is as
- * tall as the taller of its diff and summary, so the three columns stay aligned.
+ * A review read as one document: every file's diff or source down the middle, its summary in the left margin and the
+ * hierarchy on the right, broadest level outermost. Each rail card spans its files, and a section is as tall as the taller
+ * of its contents and summary, so the three columns stay aligned.
  */
 internal abstract class DocumentColumnsPanel(
     protected val zoom: Double,
@@ -198,14 +198,14 @@ internal abstract class DocumentColumnsPanel(
 
     init { isOpaque = false }
 
-    protected abstract fun openFile(file: ReviewFile)
-    protected abstract fun showDiff(file: ReviewFile)
+    protected abstract fun openFile(file: ReviewSource)
+    protected abstract fun showFile(file: ReviewSource)
     protected abstract fun isSelected(item: RailItem): Boolean
     protected abstract fun select(item: RailItem)
     protected open fun selectedFiles(): IntRange? = null
 
     protected fun layoutDocument(
-        files: List<ReviewFile>,
+        files: List<ReviewSource>,
         summaries: Map<String, String?>,
         items: List<RailItem>,
         depth: Int,
@@ -329,7 +329,7 @@ internal abstract class DocumentColumnsPanel(
         preferredSize = Dimension(width, preferredSize.height)
     }
 
-    private fun section(file: ReviewFile, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
+    private fun section(file: ReviewSource, width: Int): JComponent = JPanel(stickyHeaders.layout()).apply {
         name = "file:${file.path}"
         background = UIUtil.getListBackground()
         border = frame(false)
@@ -337,18 +337,20 @@ internal abstract class DocumentColumnsPanel(
         val heading = fileHeader(file)
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
-        val patch = PatchView(file.patch, inner, zoom)
-        add(patch, BorderLayout.CENTER)
-        if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
-            isOpaque = false
-            add(JLabel("… ${patch.hiddenLines} more lines").apply { font = font(JBFont.small()); foreground = help })
-            add(ActionLink("View full diff") { openFile(file) }.apply { font = font(JBFont.small()) })
-        }, BorderLayout.SOUTH)
+        if (file is ReviewFile) {
+            val patch = PatchView(file.patch, inner, zoom)
+            add(patch, BorderLayout.CENTER)
+            if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
+                isOpaque = false
+                add(JLabel("… ${patch.hiddenLines} more lines").apply { font = font(JBFont.small()); foreground = help })
+                add(ActionLink("View full diff") { openFile(file) }.apply { font = font(JBFont.small()) })
+            }, BorderLayout.SOUTH)
+        } else add(SourceTextView(file.text, inner, zoom), BorderLayout.CENTER)
         preferredSize = Dimension(width, preferredSize.height)
     }
 
-    /** File name as a link, its folder and status dimmed beside it; the full path stays in the tooltip. */
-    private fun fileHeader(file: ReviewFile): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
+    /** A source file's full path, or a diff's file name, followed by its snapshot facts. */
+    private fun fileHeader(file: ReviewSource): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
         background = UIUtil.getPanelBackground()
         border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), EmptyBorder(scaled(4), scaled(8), scaled(4), scaled(4)))
         toolTipText = file.path
@@ -358,20 +360,21 @@ internal abstract class DocumentColumnsPanel(
             isOpaque = false
             add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
             add(Box.createHorizontalStrut(scaled(6)))
-            add(ActionLink(name) { openFile(file) }.apply {
-                font = cardFont(JBFont.label().asBold()); toolTipText = "View changes in ${file.path}"
+            add(ActionLink(if (file is ReviewFile) name else file.path) { openFile(file) }.apply {
+                font = cardFont(JBFont.label().asBold()); toolTipText = vocabulary.openTooltip(file.path)
                 minimumSize = Dimension(0, preferredSize.height)
             })
-            val details = listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }, file.status,
-                file.previousPath?.let { "renamed from $it" })
+            val details = listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { file is ReviewFile && it.isNotEmpty() }) + file.facts
             add(Box.createHorizontalStrut(scaled(6)))
             add(JLabel(details.joinToString(" · ")).apply {
                 font = font(JBFont.small()); foreground = help; toolTipText = file.path
                 minimumSize = Dimension(0, preferredSize.height)
             })
         }, BorderLayout.CENTER)
-        add(InplaceButton(IconButton("Show diff in tab", AllIcons.Actions.Diff, AllIcons.Actions.Diff)) { showDiff(file) }
-            .apply { cursor = Cursor.getDefaultCursor(); toolTipText = "Show diff in tab" }, BorderLayout.EAST)
+        vocabulary.showOnCanvas?.let { label ->
+            add(InplaceButton(IconButton(label, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showFile(file) }
+                .apply { cursor = Cursor.getDefaultCursor(); toolTipText = label }, BorderLayout.EAST)
+        }
     }
 
     /** The summary's margin beside its whole section, so the note stays in view while the diff beside it scrolls. */
@@ -493,7 +496,7 @@ internal abstract class DocumentColumnsPanel(
 }
 
 /**
- * The change read as one document, like an article with its topic rail: every file's diff in topic order down the middle,
+ * The review read as one document, like an article with its topic rail: every file in topic order down the middle,
  * its summary in the left margin and the topic hierarchy on the right, broad topics outermost. Each rail card spans exactly
  * the diffs of its files, and a section is as tall as the taller of its diff and summary, so the three columns stay aligned.
  */
@@ -542,12 +545,11 @@ internal class ChangeTopicsPanel(
             )
         })
         val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
-        // Document mode shows patches, so it only exists for diffs.
-        layoutDocument(outline.files.map { it as ReviewFile }, summaries, items, depth, width)
+        layoutDocument(outline.files, summaries, items, depth, width)
     }
 
-    override fun openFile(file: ReviewFile) = actions.openFile(file.path)
-    override fun showDiff(file: ReviewFile) = actions.showDiffCard(file.path)
+    override fun openFile(file: ReviewSource) = actions.openFile(file.path)
+    override fun showFile(file: ReviewSource) = actions.showDiffCard(file.path)
     override fun isSelected(item: RailItem): Boolean = nodesByKey[item.key]?.let(state::isSelected) == true
     override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }
 

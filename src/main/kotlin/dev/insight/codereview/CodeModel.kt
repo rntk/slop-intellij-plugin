@@ -12,7 +12,7 @@ import java.util.Locale
 class CodeFile(
     override val path: String,
     override val absolutePath: String,
-    val text: String,
+    override val text: String,
     override val fingerprint: String = reviewFingerprint("code", path, text),
     val chunks: List<SourceChunk> = emptyList(),
     internal val stamp: Long = -1,

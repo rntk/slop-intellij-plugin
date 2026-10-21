@@ -526,6 +526,12 @@ internal class ChangeFlowsPanel(
  * layouts can briefly make tiny, wrapping every character onto its own line.
  */
 internal class WrappedText(value: String, private val wrapWidth: Int) : JTextArea(value) {
+    init {
+        // These read-only labels measure the full content width. BasicTextUI otherwise reserves a pixel for the caret
+        // during painting, making the wrapped view alternate widths and request another layout on every repaint.
+        putClientProperty("caretWidth", 0)
+    }
+
     override fun getPreferredSize(): Dimension {
         val insets = insets
         val root = getUI()?.getRootView(this) ?: return super.getPreferredSize()

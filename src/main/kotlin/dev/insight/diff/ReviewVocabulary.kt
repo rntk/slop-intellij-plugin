@@ -34,8 +34,8 @@ internal data class ReviewVocabulary(
     val showOnCanvasIcon: Icon,
     /** What a file node's details say after its name: "modified file · renamed from x" | "420 lines · 3 parts". */
     val describeFile: (ReviewSource?) -> String,
-    /** Topics Document mode shows patches, so it exists only for diffs. */
-    val documentMode: Boolean,
+    /** The initial summaries view; source reviews start with the complete files as a document. */
+    val summariesMode: ChangeSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
     /** Score only the nodes currently shown, as a huge tree has too many words to score at once. */
@@ -72,7 +72,7 @@ internal data class ReviewVocabulary(
                 val review = file as? ReviewFile
                 "${review?.status ?: "changed"} file" + (review?.previousPath?.let { " · renamed from $it" } ?: "")
             },
-            documentMode = true,
+            summariesMode = ChangeSummariesMode.OUTLINE,
             foldLargeTopics = false,
             scoreVisibleOnly = false,
         )
@@ -82,8 +82,8 @@ internal data class ReviewVocabulary(
             canvasHeading = "Code review tabs",
             canvasHints = listOf(
                 "Ask about the code in scope; answers cite files and lines.",
-                "Click Summaries or type /summaries to read the code from the whole scope down to each file.",
-                "Click Topics or type /topics to group the files by responsibility, with each file's summary.",
+                "Click Summaries or type /summaries to read every source file as one document, with file paths and summaries.",
+                "Click Topics or type /topics to read every source file as one document, grouped by topic.",
             ),
             summariesTitle = "Code summaries · From the whole scope down to each file",
             summariesTooltip = "The tree comes from the folders in scope. Each summary is the assistant's interpretation, written from the code up to the root.",
@@ -92,7 +92,8 @@ internal data class ReviewVocabulary(
             summariesFooter = "The tree comes from the folders in scope; single-entry folders are merged, large folders split into groups " +
                 "and large files into parts. Summaries are LLM interpretation. Select one to see its file or folder.",
             topicsTitle = "Code topics",
-            topicsTooltip = "The files in scope grouped by topic. Topics and summaries are the assistant's interpretation of the code.",
+            topicsTooltip = "Every source file in one document, ordered by topic, with file summaries and topic cards. " +
+                "Topics and summaries are the assistant's interpretation of the code.",
             topicsSummarizeTooltip = "Write the file summaries shown beside each file (/summaries)",
             rootName = "Whole scope",
             noFiles = "No files in scope",
@@ -101,7 +102,7 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
-            documentMode = false,
+            summariesMode = ChangeSummariesMode.DOCUMENT,
             foldLargeTopics = true,
             scoreVisibleOnly = true,
         )

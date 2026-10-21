@@ -3,17 +3,21 @@ package dev.insight.diff
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.components.ActionLink
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.codereview.CodeFile
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JTextArea
 import javax.swing.JToggleButton
+import javax.swing.JComponent
+import javax.swing.RepaintManager
 
 /** The canvas serves a code base as well as a diff: other words, parts of large files, and a canvas owned by another tab. */
 class ReviewVocabularyTest : BasePlatformTestCase() {
     private data class Source(override val path: String, override val facts: List<String> = listOf("420 lines")) : ReviewSource {
         override val absolutePath: String get() = "/repo/$path"
         override val fingerprint: String get() = "1"
+        override val text: String get() = "val answer = 42\n"
     }
 
     private fun parts(count: Int) = List(count) { SourceChunk(it, (it * 10 + 1)..(it * 10 + 10), "h$it") }
@@ -35,8 +39,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         layoutTree(canvas)
     }
 
-    fun testCodeVocabularyHasNoDocumentModeAndSpeaksOfSourceFiles() {
-        val files = listOf(Source("src/wallet.kt"), Source("src/auth.kt"))
+    fun testCodeTopicsDefaultToACompleteSourceDocumentAndSpeakOfSourceFiles() {
+        val files = listOf(Source("src/wallet.kt"), Source("src/auth.kt"), Source("src/pending.kt"))
         val topics = ChangeTopics(files).assign("src/wallet.kt", "Storage>Wallet").assign("src/auth.kt", "Storage>Auth")
         val summaries = ChangeSummaries(buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName))
         val opened = mutableListOf<String>()
@@ -45,21 +49,28 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = true))
             layoutTree(canvas)
-            // There is no Document mode to pick; the hierarchy is the only view.
-            assertTrue(descendants(canvas).filterIsInstance<JToggleButton>().none { it.text == "Document" || it.text == "Hierarchy" })
-            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
-            assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
-            assertTrue(descendants(canvas).none { it is ChangeTopicsPanel })
+            assertEquals(ChangeTopicsMode.DOCUMENT, canvas.topicsView.mode)
+            val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            assertEquals(listOf("src/auth.kt", "src/wallet.kt", "src/pending.kt"), panel.outline.files.map { it.path })
+            assertEquals(3, descendants(panel).filterIsInstance<SourceTextView>().size)
+            assertTrue(descendants(canvas).none { it is PatchView || it is ChangeTopicHierarchyPanel })
+            assertTrue(panel.components.any { it.name == "topic:1:storage > auth" })
+            assertTrue(panel.components.any { it.name == "topic:pending" })
             val buttons = descendants(canvas).filterIsInstance<InplaceButton>().filter { it.toolTipText == "Show source in tab" }
-            assertEquals(2, buttons.size)
+            assertEquals(3, buttons.size)
             assertTrue(descendants(canvas).filterIsInstance<InplaceButton>().none { it.toolTipText == "Show diff in tab" })
-            val link = descendants(canvas).filterIsInstance<ActionLink>().first { it.text == "auth.kt" }
+            val link = descendants(canvas).filterIsInstance<ActionLink>().first { it.text == "src/auth.kt" }
             assertEquals("Open src/auth.kt in the editor", link.toolTipText)
             link.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
             // Without a node callback the canvas shows the file by path, as before.
             buttons.first().doClick()
             assertEquals(1, shown.size)
+            descendants(canvas).filterIsInstance<JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            layoutTree(canvas)
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
+            assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
+            assertTrue(descendants(canvas).none { it is SourceTextView })
         } finally { canvas.dispose() }
     }
 
@@ -70,7 +81,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }).apply { setSize(1600, 900) }
         try {
             canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
-            assertTrue(descendants(canvas).filterIsInstance<JToggleButton>().none { it.name == "summaries-mode:document" })
+            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -80,6 +91,100 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             descendants(card).filterIsInstance<ActionLink>().single().doClick()
             assertEquals(listOf("file:lib/c.kt"), opened.map { it.identity })
         } finally { canvas.dispose() }
+    }
+
+    fun testCodeSummaryDocumentShowsWholeFilesAndPathCardsIncludingChunkedAndEmptyFiles() {
+        val big = CodeFile("src/Big.kt", "/repo/src/Big.kt", (1..620).joinToString("\n", postfix = "\n") { "val line$it = $it" },
+            chunks = listOf(SourceChunk(0, 1..300, "first"), SourceChunk(1, 301..620, "second")))
+        val files = listOf(big, CodeFile("src/Small.kt", "/repo/src/Small.kt", "val small = 1\n"),
+            CodeFile("docs/empty.txt", "/repo/docs/empty.txt", ""))
+        val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName, chunks = { (it as CodeFile).chunks })
+        val bigNode = tree.nodes.single { it.identity == "file:src/Big.kt" }
+        val summaries = ChangeSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { "Explains the complete file." })
+        val opened = mutableListOf<SummaryNode>()
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }).apply { setSize(1600, 900) }
+        fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
+            layoutTree(canvas)
+            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
+            assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
+            assertTrue(descendants(canvas).none { it is PatchView })
+            for (file in files) {
+                val section = panel().components.single { it.name == "file:${file.path}" } as Container
+                val card = panel().components.single { it.name == "node:file:${file.path}" } as Container
+                val summary = panel().components.single { it.name == "summary:${file.path}" }
+                assertEquals(section.y, card.y)
+                assertEquals(section.height, card.height)
+                assertEquals(section.y, summary.y)
+                assertTrue(card.x >= section.x + section.width)
+                assertTrue(descendants(card).filterIsInstance<JTextArea>().any { it.text == file.path })
+                assertTrue(descendants(section).filterIsInstance<ActionLink>().any { it.text == file.path })
+                val source = descendants(section).filterIsInstance<SourceTextView>().single()
+                assertEquals(file.lineCount, source.lineCount)
+                if (file == big) assertEquals("val line620 = 620", source.line(619))
+            }
+            // Level controls keep every file and path card, even while the folders are limited to the root.
+            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summary-level:0" }.doClick()
+            layoutTree(canvas)
+            assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
+            assertEquals(3, panel().components.count { it.name?.startsWith("node:file:") == true })
+            descendants(panel()).filterIsInstance<ActionLink>().single { it.text == big.path }.doClick()
+            assertEquals(listOf(bigNode), opened)
+
+            val smallNode = tree.nodes.single { it.identity == "file:src/Small.kt" }
+            canvas.updateSummaries(SummariesCard(summaries.summarize(mapOf(smallNode.id to "A new small file summary.")), false, false))
+            assertTrue(descendants(panel()).filterIsInstance<JTextArea>().any { it.text == "A new small file summary." })
+            assertEquals(620, descendants(panel()).filterIsInstance<SourceTextView>().maxOf { it.lineCount })
+        } finally { canvas.dispose() }
+    }
+
+    fun testSourceDocumentPreservesBlankLinesAndPatchLikeSourceWithoutTruncation() {
+        val text = "+source\n-ordinary source\n\n\tindented\n" + "line\n".repeat(800) + "last"
+        val view = SourceTextView(text, 600, 1.0)
+        assertEquals(805, view.lineCount)
+        assertEquals("+source", view.line(0))
+        assertEquals("-ordinary source", view.line(1))
+        assertEquals("", view.line(2))
+        assertEquals("\tindented", view.line(3))
+        assertEquals("last", view.line(804))
+        assertEquals(1, SourceTextView("\n", 600, 1.0).lineCount)
+        assertEquals(2, SourceTextView("\n\n", 600, 1.0).lineCount)
+        assertEquals(0, SourceTextView("", 600, 1.0).lineCount)
+    }
+
+    fun testIdleSourceDocumentLayoutAndPaintingDoNotKeepInvalidatingText() {
+        val files = listOf(CodeFile("src/main/kotlin/example/Document.kt", "/repo/Document.kt", "val answer = 42\n".repeat(620)))
+        val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "A summary that wraps across several lines. ".repeat(8) })
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
+        val previous = RepaintManager.currentManager(canvas)
+        val invalidated = mutableListOf<String>()
+        val tracking = object : RepaintManager() {
+            override fun addInvalidComponent(component: JComponent) {
+                if (component is WrappedText) invalidated += component.text
+                super.addInvalidComponent(component)
+            }
+        }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, false),
+                topics = TopicsCard(ChangeTopics(files).assign(files.single().path, "Example>Document"), summaries, false))
+            layoutTree(canvas)
+            val texts = descendants(canvas).filterIsInstance<WrappedText>()
+            fun paintText() = texts.forEach { text ->
+                val image = java.awt.image.BufferedImage(text.width, text.height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                val graphics = image.createGraphics()
+                try { text.paint(graphics) } finally { graphics.dispose() }
+            }
+            paintText()
+            RepaintManager.setCurrentManager(tracking)
+            repeat(3) { layoutTree(canvas); paintText() }
+            assertTrue("Idle layout/paint keeps invalidating wrapped text: $invalidated", invalidated.isEmpty())
+        } finally {
+            RepaintManager.setCurrentManager(previous)
+            canvas.dispose()
+        }
     }
 
     fun testChunkedFileIsABranchAndItsChunkLeavesOpenTheirNode() {
@@ -95,7 +200,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun names() = panel().components.mapNotNull { it.name }
         try {
             canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
-            assertTrue(descendants(canvas).filterIsInstance<JToggleButton>().none { it.name == "summaries-mode:document" })
+            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.

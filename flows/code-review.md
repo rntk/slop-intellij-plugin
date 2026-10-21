@@ -6,6 +6,8 @@ The user picks a scope — a folder, or a single entry file together with the co
 
 Two generated views help navigate a large scope: hierarchical summaries describe the scope from the whole down to individual files, and topics group files by responsibility rather than by folder. Summaries and topics are tied to file contents, so they survive reloads for code that has not changed. Code decides what is read and in what order; the assistant only writes text.
 
+Summaries and Topics both open in **Document** view, reusing Diff Review's document layout with complete source files in place of diffs. Every file in the tab's scope appears once in one long, read-only document, with line numbers and its summary alongside it. Summaries follows the file tree and shows cards with the full file paths, together with folder and group cards. Topics orders the same files by topic and shows topic cards spanning their files; files still awaiting a topic remain visible at the end. Files summarized in parts are still displayed as complete files. Level controls limit the cards shown without hiding source files, and document zoom and sticky headings help with long scopes. The summary outline and file and topic hierarchies remain available through the view switchers.
+
 Entry points for further exploration:
 
 - [CodeReviewPanel.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewPanel.kt) — tool window entry point: scope selection, file tree, and review tabs

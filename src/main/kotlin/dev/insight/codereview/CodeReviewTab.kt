@@ -127,10 +127,10 @@ internal class CodeReviewTab(
 
     val canvasFile = DiffReviewCanvasFile(this)
     private val summariesButton = JButton("Summaries").apply {
-        toolTipText = "Read the code as summaries, from the whole scope down to each file and the parts of large files (/summaries)"
+        toolTipText = "Read every source file as one document, with file paths and summaries (/summaries)"
     }
     private val topicsButton = JButton("Topics").apply {
-        toolTipText = "Group the files in scope by responsibility, with each file's summary (/topics)"
+        toolTipText = "Read every source file as one document, grouped by topic, with each file's summary (/topics)"
     }
     private val scopeLabel = JLabel()
     /** Coalesces canvas updates while a run saves summaries or topics. */

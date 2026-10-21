@@ -108,7 +108,7 @@ internal class ChangeSummaryHierarchyPanel(
 }
 
 /**
- * The change read as one document with its folder rail, like the topics document: every file's diff in tree order down the
+ * The review read as one document with its folder rail, like the topics document: every file in tree order down the
  * middle, its summary in the left margin and the folders and groups on the right, the root outermost. Each rail card spans
  * the diffs of its files, and each top-level folder keeps one hue down its columns.
  */
@@ -122,18 +122,19 @@ internal class ChangeSummaryDocumentPanel(
 ) : DocumentColumnsPanel(zoom, vocabulary) {
     private val summaries = card.summaries
     private val tree = summaries.tree
-    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file is ReviewFile }
-    val files: List<ReviewFile> = fileNodes.map { it.file as ReviewFile }
+    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null }
+    val files: List<ReviewSource> = fileNodes.map { requireNotNull(it.file) }
     private val nodesByPath = fileNodes.associateBy { it.path }
 
     init {
         state.update(tree)
         val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
         val missing = if (card.running) "Summarizing…" else "No summary yet"
-        val depth = state.railDepth(tree)
+        val folderDepth = state.railDepth(tree)
+        val depth = railDepth(tree, state)
         val items = mutableListOf<RailItem>()
         fun collect(node: SummaryNode, level: Int, family: String?) {
-            if (!isFolderBranch(node) || level >= depth) return
+            if (!isFolderBranch(node) || level >= folderDepth) return
             val first = indexByPath[node.files.firstOrNull()]
             val last = indexByPath[node.files.lastOrNull()]
             if (first != null && last != null) {
@@ -150,7 +151,7 @@ internal class ChangeSummaryDocumentPanel(
                     summary = summaries.text(node.id),
                     missingSummary = missing,
                     summaryLabel = when (node.kind) {
-                        SummaryKind.ROOT -> "Change summary"
+                        SummaryKind.ROOT -> if (files.firstOrNull() is ReviewFile) "Change summary" else "Scope summary"
                         SummaryKind.GROUP -> "Group summary"
                         else -> "Folder summary"
                     },
@@ -160,15 +161,33 @@ internal class ChangeSummaryDocumentPanel(
             for (child in node.children.map(tree::get)) collect(child, level + 1, family ?: child.identity)
         }
         if (files.isNotEmpty()) collect(tree.root, 0, null)
+        // Source reviews give every complete file a path card, including files summarized in parts.
+        if (depth > folderDepth) fileNodes.forEachIndexed { index, node ->
+            items += RailItem(
+                key = node.identity,
+                name = "node:${node.identity}",
+                title = node.path,
+                family = generateSequence(node) { it.parent?.let(tree::get)?.takeUnless { parent -> parent.kind == SummaryKind.ROOT } }
+                    .last().identity,
+                level = folderDepth,
+                first = index,
+                last = index,
+                tooltip = node.path,
+                icon = summaryNodeIcon(node),
+                summary = summaries.text(node.id),
+                missingSummary = missing,
+                summaryLabel = "File summary",
+            )
+        }
         val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
         layoutDocument(files, fileSummaries, items, depth, width, missing)
     }
 
-    override fun openFile(file: ReviewFile) {
+    override fun openFile(file: ReviewSource) {
         nodesByPath[file.path]?.let(actions.openNode) ?: actions.openFile(file.path)
     }
 
-    override fun showDiff(file: ReviewFile) {
+    override fun showFile(file: ReviewSource) {
         val show = actions.showNode
         val node = nodesByPath[file.path]
         if (show != null && node != null) show(node) else actions.showDiffCard(file.path)
@@ -180,6 +199,11 @@ internal class ChangeSummaryDocumentPanel(
 
     override fun selectedFiles(): IntRange? =
         files.indexOfFirst { "file:${it.path}" == state.selected }.takeIf { it >= 0 }?.let { it..it }
+
+    companion object {
+        fun railDepth(tree: ChangeSummaryTree, state: ChangeSummariesViewState): Int = state.railDepth(tree) +
+            if (tree.nodes.any { it.kind == SummaryKind.FILE && it.file !is ReviewFile }) 1 else 0
+    }
 }
 
 /** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
