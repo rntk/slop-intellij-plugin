@@ -32,6 +32,7 @@ internal class DiffReviewTab(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
     private var disposed = false
+    private val sourcePoints = SourcePoints(project, "Diff chat")
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String get() = ReviewVocabulary.DIFF.canvasTitle
     var onCanvasSelected: () -> Unit = {}
@@ -76,7 +77,7 @@ internal class DiffReviewTab(
         toolTipText = "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"
     }
     private val scopeLabel = JLabel()
-    val session = object : ChatSession(project, scope, welcome =
+    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
             "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic.") {
         override fun replyProgressTitle(text: String): String = when {
@@ -135,7 +136,7 @@ internal class DiffReviewTab(
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(client::complete, diffReviewTools(context) + changeFlowTools(context) + changeSummaryTools(context), diffReviewPrompt(project.name),
+                val reply = LlmChatBackend(client::complete, diffChatTools(context, flows), diffReviewPrompt(project.name),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
@@ -179,6 +180,7 @@ internal class DiffReviewTab(
         add(chat, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
+        Disposer.register(this, sourcePoints)
         Disposer.register(this, session.subscribe { updateControls(); summariesChanged() })
         updateControls()
     }
@@ -203,7 +205,7 @@ internal class DiffReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) session.stop()
+        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear() }
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
@@ -272,6 +274,17 @@ internal class DiffReviewTab(
         }
         fun file(path: String) = snapshot.files.firstOrNull { it.path == path } ?: throw ToolInputException("$path is not a file included in this diff")
         return object : DiffReviewContext {
+            override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {
+                current()
+                val sourceFile = file(point.path)
+                val source = when (point.side) {
+                    "before" -> sourceFile.before
+                    "after" -> sourceFile.after
+                    else -> throw ToolInputException("side must be before or after")
+                } ?: throw ToolInputException("The ${point.side} source is unavailable for ${point.path}.")
+                sourcePoints.show(point, source)
+            }
+
             override suspend fun state(offset: Int, patchBudget: Int): String = withContext(Dispatchers.EDT) {
                 current()
                 diffStateResult(snapshot, live.scopePaths, selected, live.notes, offset, patchBudget, live.sources)

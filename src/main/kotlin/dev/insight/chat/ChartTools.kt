@@ -73,7 +73,7 @@ interface ChartChatContext {
     fun hoverReference(revision: Int, node: Int?) {}
 }
 
-fun chartChatSystemPrompt(projectName: String): String = """
+fun chartChatSystemPrompt(projectName: String): String = visualCodeAssistantPrompt + "\n\n" + """
     You are Insight, a guide to the flow chart of project "$projectName". You help the user understand the project, its
     data flows and pipelines by showing them on the chart and explaining briefly. You explain; you do not write or change code.
 

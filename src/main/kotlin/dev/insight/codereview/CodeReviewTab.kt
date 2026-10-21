@@ -91,6 +91,7 @@ internal class CodeReviewTab(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = CodeReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
     private var disposed = false
+    private val sourcePoints = dev.insight.chat.SourcePoints(project, "Code chat")
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String get() = ReviewVocabulary.CODE.canvasTitle
     var onCanvasSelected: () -> Unit = {}
@@ -157,7 +158,7 @@ internal class CodeReviewTab(
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
-    val session = object : ChatSession(project, scope, welcome =
+    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility.") {
         override fun replyProgressTitle(text: String): String = when {
@@ -250,6 +251,7 @@ internal class CodeReviewTab(
         add(chat, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
+        Disposer.register(this, sourcePoints)
         Disposer.register(this, session.subscribe {
             if (!session.busy) applyHeld()
             updateControls()
@@ -286,7 +288,7 @@ internal class CodeReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) session.stop()
+        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear() }
         // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
         if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
         else if (fileViewPath != null && state.revision != previousRevision) { fileStructure = null; analyzeFileView() }
@@ -495,6 +497,12 @@ internal class CodeReviewTab(
             missing = { path -> "$path is not a file in this review's scope." },
             findTool = "find_code_symbols")
         return object : CodeReviewContext {
+            override suspend fun pointToCode(point: dev.insight.chat.SourcePoint): String = withContext(Dispatchers.EDT) {
+                current()
+                if (point.side != null) throw ToolInputException("Code review has no diff sides")
+                sourcePoints.show(point, file(point.path).text)
+            }
+
             override val snapshot: CodeSnapshot get() = captured
 
             override suspend fun overview(): String = withContext(Dispatchers.EDT) {

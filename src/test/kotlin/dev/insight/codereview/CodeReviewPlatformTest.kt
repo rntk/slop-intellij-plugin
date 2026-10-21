@@ -36,6 +36,46 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreePath
 
 class CodeReviewPlatformTest : FileEditorManagerTestCase() {
+    fun `test chat points stay in the code scope and omit diff and flow tools`() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val source = codeFile("src/a.kt", "fun a() {\n    println(1)\n}")
+            tab.update(codeSnapshot(source))
+            val tools = codeReviewTools(tab.captureContext())
+            assertEquals(setOf("point_to_code", "list_code_files", "read_code", "search_code", "find_code_symbols", "show_code_source",
+                "add_code_notes", "get_code_summaries"), tools.map { it.definition.name }.toSet())
+            val point = tools.single { it.definition.name == "point_to_code" }
+            assertFalse(point.definition.parameters["properties"].asJsonObject.has("side"))
+            runWithEvents {
+                point.call(com.google.gson.JsonParser.parseString("""{"path":"src/a.kt","line":2,"comment":"Writes to stdout"}""").asJsonObject)
+                for (args in listOf("""{"path":"outside.kt","line":1}""", """{"path":"src/a.kt","line":99}""")) {
+                    try { point.call(com.google.gson.JsonParser.parseString(args).asJsonObject); fail("Invalid source point") }
+                    catch (_: dev.insight.chat.ToolInputException) { }
+                }
+            }
+            val view = manager.openFiles.filterIsInstance<dev.insight.chat.SourcePointsFile>().single()
+            assertEquals(source.text, view.source.points.single().text)
+            assertEquals("Writes to stdout", view.source.points.single().point.comment)
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
+            assertTrue(tab.session.messages.isEmpty())
+            assertFalse(manager.isFileOpen(view))
+            assertTrue(view.source.points.isEmpty())
+            runWithEvents {
+                point.call(com.google.gson.JsonParser.parseString("""{"path":"src/a.kt","line":1,"comment":"New conversation"}""").asJsonObject)
+            }
+            assertTrue(manager.isFileOpen(view))
+            assertEquals("New conversation", view.source.points.single().point.comment)
+            tab.update(codeSnapshot(codeFile("src/a.kt", "fun a() = 2")))
+            assertFalse(manager.isFileOpen(view))
+            assertTrue(view.source.points.isEmpty())
+            runWithEvents {
+                try { point.call(com.google.gson.JsonParser.parseString("""{"path":"src/a.kt","line":1}""").asJsonObject); fail("Stale context") }
+                catch (_: dev.insight.chat.ToolInputException) { }
+            }
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test canvas opens closes and reopens as a code review editor`() {
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
         val manager = FileEditorManager.getInstance(project)

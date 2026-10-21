@@ -7,6 +7,10 @@ At a high level: the tool window collects user input, a service orchestrates the
 conversation, a backend produces the assistant reply (backed by the configured LLM endpoint), and the backend can call project tools to read
 from the open project before answering.
 
+Across chat modes, the assistant is a read-only guide in a graphical IDE. It uses visual
+tools to show relevant source and relationships in context, with chat explaining the
+evidence and uncertainty. Presentation may change the views, but never project source.
+
 Entry points for further exploration:
 
 - [ChatService.kt](../src/main/kotlin/dev/insight/chat/ChatService.kt) — conversation orchestration

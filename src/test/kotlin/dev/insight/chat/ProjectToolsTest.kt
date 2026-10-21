@@ -34,7 +34,7 @@ class ProjectToolsTest : BasePlatformTestCase() {
 
     fun `test tool definitions are valid function schemas`() {
         val tools = projectTools(project)
-        assertEquals(listOf("list_files", "read_file", "search_text", "open_file"), tools.map { it.definition.name })
+        assertEquals(listOf("list_files", "read_file", "search_text", "open_file", "point_to_code"), tools.map { it.definition.name })
         tools.forEach { assertEquals("object", it.definition.parameters["type"].asString) }
     }
 

@@ -24,7 +24,9 @@ open class ChatSession(
     private val scope: CoroutineScope,
     private val chart: ChartChatContext? = null,
     welcome: String? = null,
+    private val onClear: () -> Unit = {},
 ) {
+    private val sourcePoints = SourcePoints(project, "Chat")
     private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, welcome ?: if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
         else "Ask about this flow chart. I show the answer on the chart: paths, entry points, data flows and the steps involved."))
@@ -124,6 +126,8 @@ open class ChatSession(
 
     fun clear() {
         if (busy) return
+        sourcePoints.clear()
+        onClear()
         history.clear()
         followups = emptyList()
         notifyViews()
@@ -132,6 +136,7 @@ open class ChatSession(
     /** Permanently releases an owned conversation, including a turn cancelled before it starts. */
     internal fun discard() {
         discarded = true
+        sourcePoints.dispose()
         turn?.cancel()
         turn = null
         busy = false
@@ -157,8 +162,8 @@ open class ChatSession(
     /** Runs on IO: reading the API key from the password safe can block. */
     internal open fun createBackend(): ChatBackend {
         val client = ChatSettings.getInstance().createClient()
-        return if (chart == null) LlmChatBackend(client::complete, projectTools(project), projectChatSystemPrompt(project.name))
-        else LlmChatBackend(client::complete, sessionChartTools(chart) + projectTools(project).filter { it.definition.name in setOf("read_file", "list_files", "search_text") },
+        return if (chart == null) LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt(project.name))
+        else LlmChatBackend(client::complete, sessionChartTools(chart) + projectTools(project, sourcePoints).filter { it.definition.name in setOf("read_file", "list_files", "search_text", "point_to_code") },
             chartChatSystemPrompt(project.name), maxToolRounds = 100, context = chart::snapshot)
     }
 

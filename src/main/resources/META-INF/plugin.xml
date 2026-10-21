@@ -49,6 +49,7 @@
         <fileEditorProvider implementation="dev.insight.diff.DiffReviewEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->
     <extensions defaultExtensionNs="org.jetbrains.kotlin">

@@ -481,7 +481,7 @@ class DiffReviewTest {
     @Test fun `prompt and schemas name only the current tools`() {
         val prompt = diffReviewPrompt("test")
         val names = diffReviewTools(Context()).map { it.definition.name }
-        assertEquals(listOf("get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source", "add_diff_notes"), names)
+        assertEquals(listOf("point_to_code", "get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source", "add_diff_notes"), names)
         for (name in Regex("[a-z]+(?:_[a-z]+)+").findAll(prompt).map { it.value }.filter { it.endsWith("_diff") || it.contains("_diff_") })
             assertTrue("Unknown tool $name in the prompt", name in names)
         assertFalse(diffReviewTools(Context()).any { it.definition.parameters.toString().contains("revision") })

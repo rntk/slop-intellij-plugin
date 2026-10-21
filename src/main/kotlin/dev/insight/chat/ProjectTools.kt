@@ -27,12 +27,22 @@ import java.util.regex.PatternSyntaxException
 /**
  * Tools over the project's content files (sources, tests, and resources; excluded directories such
  * as build output are skipped). Paths are relative to the project directory. Lookups run in
- * cancellable read actions, so they neither block the EDT nor delay edits. Only [OpenFileTool]
- * touches the UI: it shows a location to the user and never modifies files.
+ * cancellable read actions, so they neither block the EDT nor delay edits. Presentation tools show
+ * locations in the editor without modifying project files.
  */
-fun projectTools(project: Project): List<ChatTool> {
+fun projectTools(project: Project): List<ChatTool> = projectTools(project, SourcePoints(project, "Project chat"))
+
+internal fun projectTools(project: Project, sourcePoints: SourcePoints): List<ChatTool> {
     val files = ProjectFiles(project)
-    return listOf(ListFilesTool(files), ReadFileTool(files), SearchTextTool(files), OpenFileTool(files))
+    return listOf(ListFilesTool(files), ReadFileTool(files), SearchTextTool(files), OpenFileTool(files), sourcePointTool { point ->
+        val text = readAction {
+            val file = files.resolve(point.path)
+            if (file.isDirectory) throw ToolInputException("${point.path} is a directory; use list_files.")
+            files.text(file) ?: throw ToolInputException("${point.path} is binary or too large to read.")
+        }
+        if (ApplicationManager.getApplication().isDispatchThread) sourcePoints.show(point, text)
+        else withContext(Dispatchers.EDT) { sourcePoints.show(point, text) }
+    })
 }
 
 internal class ProjectFiles(val project: Project) {

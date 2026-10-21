@@ -39,6 +39,51 @@ import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.intellij.vcsUtil.VcsUtil
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
+    fun `test chat tools point at exact snapshot sides and flow tools require an explicit flow turn`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val source = file("src/deleted-or-historical.kt").copy(before = "old first\nold second", after = "new first\nnew second")
+            tab.update(ReviewSnapshot(listOf(source), emptyList()))
+            val context = tab.captureContext()
+            val tools = diffChatTools(context)
+            val names = tools.map { it.definition.name }.toSet()
+            assertEquals(setOf("point_to_code", "get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source",
+                "add_diff_notes", "get_change_summaries", "get_change_flows", "read_change_nodes"), names)
+            assertEquals(names + changeFlowTools(context).map { it.definition.name }, diffChatTools(context, flows = true).map { it.definition.name }.toSet())
+            val point = tools.single { it.definition.name == "point_to_code" }
+            runWithEvents {
+                point.call(JsonParser.parseString("""{"path":"${source.path}","line":2,"side":"before","comment":"Removed behavior"}""").asJsonObject)
+                point.call(JsonParser.parseString("""{"path":"${source.path}","line":1,"end_line":2}""").asJsonObject)
+                try {
+                    point.call(JsonParser.parseString("""{"path":"outside.kt","line":1}""").asJsonObject)
+                    fail("Out-of-scope source must be rejected")
+                } catch (_: ToolInputException) { }
+            }
+            val view = manager.openFiles.filterIsInstance<dev.insight.chat.SourcePointsFile>().single()
+            assertEquals(listOf(source.before, source.after), view.source.points.map { it.text })
+            assertEquals(listOf("before", "after"), view.source.points.map { it.point.side })
+            assertEquals("Removed behavior", view.source.points.first().point.comment)
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
+            assertTrue(tab.session.messages.isEmpty())
+            assertFalse(manager.isFileOpen(view))
+            assertTrue(view.source.points.isEmpty())
+            runWithEvents {
+                point.call(JsonParser.parseString("""{"path":"${source.path}","line":1,"comment":"New conversation"}""").asJsonObject)
+            }
+            assertTrue(manager.isFileOpen(view))
+            assertEquals("New conversation", view.source.points.single().point.comment)
+            tab.update(ReviewSnapshot(listOf(source.copy(fingerprint = "changed")), emptyList()))
+            assertFalse(manager.isFileOpen(view))
+            assertTrue(view.source.points.isEmpty())
+            runWithEvents {
+                try { point.call(JsonParser.parseString("""{"path":"${source.path}","line":1}""").asJsonObject); fail("Stale context") }
+                catch (_: ToolInputException) { }
+            }
+            assertFalse(manager.isFileOpen(view))
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test canvas fills native editor and survives closing and reopening independently of chat`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
