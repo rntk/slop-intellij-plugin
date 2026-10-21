@@ -54,7 +54,7 @@ internal class ChangeSummaryHierarchyPanel(
             rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
-            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace) { actions.toggle(node.identity) } }
+            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection) { actions.toggle(node.identity) } }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
@@ -86,7 +86,7 @@ internal class ChangeSummaryHierarchyPanel(
             name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null)
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
-        if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace)
+        if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[node.identity] = leaf
@@ -198,7 +198,7 @@ internal class ChangeSummaryDocumentPanel(
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         super.summaryBody(identity, summary, missingSummary, width).also { area ->
-            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace)
+            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace, actions.searchSelection)
         }
 
     override fun isSelected(item: RailItem): Boolean = state.selected == item.key

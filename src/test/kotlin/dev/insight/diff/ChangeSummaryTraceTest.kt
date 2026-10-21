@@ -108,6 +108,20 @@ class ChangeSummaryTraceTest {
         assertEquals("deleted the views hierarchy", SummaryTracer.query(summary, words.filter { it.text in setOf("deleted", "views", "hierarchy") }))
     }
 
+    @Test fun `a selection widens to whole words and is its own query`() {
+        val summary = "Deletes the canvas\nviews and the tests."
+        // "he canv" starts inside "the" and ends inside "canvas".
+        val context = selectionContext("root", summary, summary.indexOf("he canv"), summary.indexOf("he canv") + 7)!!
+        assertEquals("the canvas", context.query)
+        assertEquals(listOf("the", "canvas"), context.context.map { it.text })
+        // The focus spans the selection but keeps the index of its first meaningful word, so hovering it keeps the search.
+        assertEquals("canvas", SummaryWord.split(summary)[context.word.index].text)
+        assertEquals(summary.indexOf("the canvas") to summary.indexOf("the canvas") + 10, context.word.start to context.word.end)
+        assertEquals("canvas views", selectionContext("root", summary, summary.indexOf("canvas"), summary.indexOf("views") + 5)!!.query)
+        assertNull("Only filler words", selectionContext("root", summary, summary.indexOf("and"), summary.indexOf("and the") + 7))
+        assertNull("Punctuation only", selectionContext("root", summary, summary.length - 1, summary.length))
+    }
+
     @Test fun `context never asks about stop words`() = runBlocking {
         val summary = "deleted the views of canvas and the hierarchy"
         val fake = FakeDecisions { _, _ -> 0.9 }

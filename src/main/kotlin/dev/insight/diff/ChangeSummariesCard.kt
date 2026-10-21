@@ -20,8 +20,11 @@ import java.awt.event.MouseEvent
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.JTextArea
+import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
 import javax.swing.text.DefaultHighlighter
 import kotlinx.coroutines.Job
@@ -164,11 +167,12 @@ internal object TraceStyle {
     val PATH = JBColor(Color(0xE0A800), Color(0xC9A227))
 }
 
-/** What scoring has done, or what to do next, in the status area. */
-internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries): String = when {
+/** What scoring has done, or what to do next, in the status area; [selection] mentions searching selected text. */
+internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries, selection: Boolean = false): String = when {
     state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
-    state.scored.isEmpty() -> "Click Score to precalculate word contexts for " + scoredSummaries(state) + "."
+    state.scored.isEmpty() -> "Click Score to precalculate word contexts for " + scoredSummaries(state) +
+        if (selection) ", or select text and right-click Search." else "."
     state.traceLeaves -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries, " +
         "or a file's lines."
     else -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries."
@@ -211,11 +215,11 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
 /**
  * Moving the pointer over a scored word of [summary] immediately shows its cached context; clicking a highlight searches for
  * matches. The traced word is marked strongly and its context, the words the query keeps, lightly. A click beside the words
- * calls [select].
+ * calls [select]. With [searchSelection], right-clicking selected text offers to search for it, scored or not.
  */
 internal fun installWordTracing(
     area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
-    trace: (String, Int, Boolean) -> Unit, select: () -> Unit = {},
+    trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null, select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
@@ -256,13 +260,42 @@ internal fun installWordTracing(
         }
 
         override fun mouseClicked(e: MouseEvent) {
-            if (e.clickCount != 1) return
+            if (e.clickCount != 1 || !SwingUtilities.isLeftMouseButton(e)) return
             val word = wordAt(e.point)
             if (word == null) select() else trace(identity, word.index, highlighted(word))
         }
+
+        override fun mousePressed(e: MouseEvent) = popup(e)
+        override fun mouseReleased(e: MouseEvent) = popup(e)
+
+        private fun popup(e: MouseEvent) {
+            if (!e.isPopupTrigger || !area.isShowing) return
+            selectionMenu(area)?.show(area, e.x, e.y)
+            e.consume()
+        }
     }
+    if (searchSelection != null) area.putClientProperty(SELECTION_MENU, {
+        val start = area.selectionStart
+        val end = area.selectionEnd
+        if (start == end) null else JPopupMenu().apply {
+            add(JMenuItem("Search").apply {
+                name = "search-selection"
+                isEnabled = selectionContext(identity, summary, start, end) != null
+                toolTipText = "Search for the selected words, as clicking a scored word does"
+                addActionListener { searchSelection(identity, start, end) }
+            })
+        }
+    })
     area.addMouseListener(pointer)
     area.addMouseMotionListener(pointer)
+}
+
+private val SELECTION_MENU = Any()
+
+/** The menu for the text selected in a summary, or null without a selection or where selections are not searched. */
+internal fun selectionMenu(area: JTextArea): JPopupMenu? {
+    @Suppress("UNCHECKED_CAST")
+    return (area.getClientProperty(SELECTION_MENU) as? (() -> JPopupMenu?))?.invoke()
 }
 
 private val WORD_TRACING_UPDATE = Any()
@@ -480,6 +513,20 @@ internal class SummaryTraceSession(
         updatePresentation()
     }
 
+    /** Searches for the words selected in [identity]'s summary, as a click on a highlight does, without needing Score. */
+    fun searchSelection(identity: String, start: Int, end: Int) {
+        if (launcher == null) return
+        val content = content() ?: return
+        val node = content.tree.nodes.firstOrNull { it.identity == identity } ?: return
+        val text = content.text(node.id) ?: return
+        val context = selectionContext(identity, text, start, end) ?: return
+        traceJob?.cancel()
+        val file = node.path.takeIf { node.children.isEmpty() && node.file != null }
+        state.tracing = SummaryTracing(identity, text, context.word, context = context, file = file, searchRequested = true)
+        updatePresentation()
+        search()
+    }
+
     private fun search() {
         val launcher = launcher ?: return
         val content = content() ?: return
@@ -555,6 +602,8 @@ internal class ChangeSummaryActions(
     val showDiffCard: (String) -> Unit,
     /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
+    /** Searches the selected characters of a summary like a clicked highlight; null hides the context menu. */
+    val searchSelection: ((String, Int, Int) -> Unit)? = null,
     /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     /** Put a node's source on the canvas; null hides the buttons. */
@@ -621,7 +670,7 @@ internal class ChangeSummariesPanel(
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
                 .also { area ->
-                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, activate)
+                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {

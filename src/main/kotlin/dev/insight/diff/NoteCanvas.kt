@@ -639,6 +639,7 @@ internal class NoteCanvas(
             openNode = openSummaryNode,
             showNode = showSummaryNode,
             trace = summariesTrace::trace,
+            searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
@@ -663,7 +664,7 @@ internal class NoteCanvas(
         if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
-            traceStatusLines(summariesView, content.summaries, summariesTrace, inner).forEach(::add)
+            traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true).forEach(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
@@ -726,7 +727,9 @@ internal class NoteCanvas(
     }
 
     /** Two fixed-height status lines: changing hover queries never changes the reading area's geometry. */
-    private fun traceStatusLines(state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int): List<JComponent> {
+    private fun traceStatusLines(
+        state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int, selection: Boolean = false,
+    ): List<JComponent> {
         if (!session.available) return emptyList()
         fun line(text: String, name: String, lineWidth: Int = width) = JLabel(text).apply {
             this.name = name
@@ -735,9 +738,9 @@ internal class NoteCanvas(
             toolTipText = text.takeIf { it.isNotBlank() }
             preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
         }
-        return listOf(line(scoringStatus(state, summaries), "scoring-status").apply {
+        return listOf(line(scoringStatus(state, summaries, selection), "scoring-status").apply {
             putClientProperty(TRACE_PRESENTATION_UPDATE, {
-                text = scoringStatus(state, summaries)
+                text = scoringStatus(state, summaries, selection)
                 toolTipText = text
             })
         }, JPanel(BorderLayout(scaled(8), 0)).apply {

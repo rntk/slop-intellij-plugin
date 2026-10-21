@@ -1230,6 +1230,69 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
+    fun testSelectedSummaryTextSearchesWithoutScoring() = ChangeSummariesMode.entries.forEach { mode ->
+        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
+        val launcher = FakeTraceLauncher()
+        val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
+            .apply { setSize(1600, 900); summariesView.mode = mode }
+        fun named(name: String) = descendants(canvas).filter { it.name == name }
+        fun area(identity: String, path: String): javax.swing.JTextArea {
+            val component = named("summary:${if (mode == ChangeSummariesMode.DOCUMENT) path else identity}").single()
+            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>().first()
+        }
+        fun fileArea() = area(file.identity, file.path)
+        fun status() = (named("trace-status").single() as JLabel).text
+        fun search(area: javax.swing.JTextArea, text: String) {
+            area.select(area.text.indexOf(text), area.text.indexOf(text) + text.length)
+            val item = selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-selection" }
+            assertTrue(item.isEnabled)
+            item.doClick()
+            layoutTree(canvas)
+        }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
+            assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
+            assertNull("No selection, no menu", selectionMenu(fileArea()))
+
+            // A right click neither folds nor selects the row.
+            val expanded = canvas.summariesView.expanded.toSet()
+            fileArea().dispatchEvent(MouseEvent(fileArea(), MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON3))
+            layoutTree(canvas)
+            assertEquals(expanded, canvas.summariesView.expanded)
+            assertNull(canvas.summariesView.selected)
+
+            // A file summary's selection searches its lines and opens the best, with nothing scored.
+            search(fileArea(), "canvas border")
+            assertTrue(launcher.scoredWords.isEmpty())
+            assertEquals("canvas border", launcher.searchedLines.single().query)
+            assertTrue(status(), status().contains("Searching the lines of Paint.kt"))
+            assertTrue(fileArea().highlighter.highlights.isNotEmpty())
+            val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
+            launcher.finishLines!!(Result.success(LineTrace(file.identity, file.path, "canvas border", listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
+            layoutTree(canvas)
+            assertEquals(file.identity, opened.single().first.identity)
+            assertTrue(status(), status().contains("Best match at Paint.kt:1 · 80%"))
+
+            // A summary with summaries below searches them instead.
+            if (mode == ChangeSummariesMode.OUTLINE) {
+                search(area("root", tree.root.path), "Paints")
+                assertEquals("Paints", launcher.searched.single().query)
+                assertTrue(status(), status().contains("Searching the summaries"))
+                assertTrue(launcher.scoredWords.isEmpty())
+            }
+        } finally {
+            canvas.dispose()
+        }
+    }
+
     fun testTopicFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeTopicsMode.entries.forEach { mode ->
         val source = ReviewFile("ui/Paint.kt", "/repo/ui/Paint.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         val tree = buildSummaryTree(listOf(source))

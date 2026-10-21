@@ -47,6 +47,19 @@ data class SummaryContext(
 )
 
 /**
+ * The words the reader selected in [summary] (characters [start] until [end]) as a context that needs no scoring: the
+ * selection widened to whole words is both the query and its focus. Null when it holds no meaningful word.
+ */
+internal fun selectionContext(identity: String, summary: String, start: Int, end: Int): SummaryContext? {
+    val words = SummaryWord.split(summary).filter { it.end > start && it.start < end }
+    val first = words.firstOrNull { it.meaningful } ?: return null
+    val from = words.first().start
+    val to = words.last().end
+    val query = summary.substring(from, to).replace(Regex("""\s+"""), " ")
+    return SummaryContext(identity, summary, SummaryWord(first.index, from, to, query), words, query)
+}
+
+/**
  * What one word of a summary refers to. [context] are the word's own context within its summary (the word included), not its
  * siblings; [query] is the summary narrowed to them; [matches] are the summaries below, most probable first.
  */
