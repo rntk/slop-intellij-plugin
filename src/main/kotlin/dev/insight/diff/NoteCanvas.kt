@@ -64,6 +64,7 @@ internal class NoteCanvas(
     private val deleteOriginalSummaries: (() -> Unit)? = null,
     private val openWholeFile: ((ReviewFile) -> Unit)? = null,
     private val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
+    private val removeWords: () -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -91,6 +92,10 @@ internal class NoteCanvas(
     }
     private var fileView: FileViewCard? = null
     private var fileViewScroll = 0
+    private var words: WordChanges? = null
+    private var wordFiles = emptyList<ReviewFile>()
+    /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
+    private var wordChart: WordChangeChart? = null
 
     /**
      * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
@@ -180,7 +185,11 @@ internal class NoteCanvas(
         summaries: SummariesCard? = null,
         topics: TopicsCard? = null,
         fileView: FileViewCard? = null,
+        words: WordChanges? = null,
+        wordFiles: List<ReviewFile> = emptyList(),
     ) {
+        this.words = words
+        this.wordFiles = wordFiles
         if (topics == null) topicsScroll = 0
         if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
         this.fileView = fileView
@@ -215,7 +224,8 @@ internal class NoteCanvas(
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
-        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }).toMap() +
+        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
+            words?.let { WORDS_KEY to wordsCard(it) }).toMap() +
             summaryCards +
             listOfNotNull(fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
@@ -258,6 +268,8 @@ internal class NoteCanvas(
 
     internal fun focusTopics() { focusCard(TOPICS_KEY) }
 
+    internal fun focusWords() { focusCard(WORDS_KEY) }
+
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
 
@@ -291,6 +303,7 @@ internal class NoteCanvas(
         } ?: "Search"
         FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         FLOWS_KEY -> "Change flows"
+        WORDS_KEY -> "Word changes"
         FLOW_KEY -> "Symbol flow"
         else -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
@@ -508,6 +521,40 @@ internal class NoteCanvas(
             SwingUtilities.invokeLater { verticalScrollBar.value = restore }
         }, BorderLayout.CENTER)
         return card
+    }
+
+    /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
+    private fun wordsCard(words: WordChanges): JPanel {
+        val width = cardWidth(WORDS_WIDTH)
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel("Word changes · ${words.words.size} most frequent words of the changed lines").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
+                    "A word's position compares its share of removed and added words, its size how often it occurs. Click a word to open its files' diffs."
+            }, BorderLayout.CENTER)
+            add(InplaceButton(IconButton("Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
+                .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
+        }
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(if (words.words.isEmpty()) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
+                else wordChart?.takeIf { it.changes === words } ?: WordChangeChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT)) { word ->
+                    val files = wordFiles.filter { it.path in word.paths }
+                    val directory = openDirectoryDiff
+                    when {
+                        files.size == 1 || (directory == null && files.isNotEmpty()) -> open(files.first().path)
+                        directory != null && files.isNotEmpty() -> directory(files)
+                    }
+                }.also { wordChart = it }, BorderLayout.CENTER)
+        }
+        return JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground(); border = cardBorder(false)
+            add(header, BorderLayout.NORTH)
+            add(body, BorderLayout.CENTER)
+        }
     }
 
     private fun refreshFlows() {
@@ -1255,6 +1302,7 @@ internal class NoteCanvas(
         if (key !in cards) return
         val card = when (key) {
             FLOWS_KEY -> flows?.let(::flowsCard)
+            WORDS_KEY -> words?.let(::wordsCard)
             TOPICS_KEY -> topics?.let(::topicsCard)
             in summaryTabs().map { it.key } -> summaries?.let { summariesCard(summaryTab(key)!!, it) }
             FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
@@ -1428,6 +1476,9 @@ internal class NoteCanvas(
         val TOPICS_KEY = DiffNoteKey(emptyList(), "change-topics")
         val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
         val FILE_VIEW_KEY = DiffNoteKey(emptyList(), "file-view")
+        val WORDS_KEY = DiffNoteKey(emptyList(), "word-changes")
+        const val WORDS_WIDTH = 1100
+        const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840
         const val MAX_SUMMARIES_HEIGHT = 820
         const val MAX_TOPICS_HEIGHT = 900

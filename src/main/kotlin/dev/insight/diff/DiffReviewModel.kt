@@ -80,6 +80,17 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     var topicsVisible = false
         private set
 
+    /** Whether the word-changes chart is on the canvas; it is counted from the current snapshot when first needed. */
+    var wordsVisible = false
+        private set
+    private var wordsOf: List<ReviewFile>? = null
+    private var counted: WordChanges? = null
+    internal val words: WordChanges get() = counted?.takeIf { wordsOf === snapshot.files } ?: wordChanges(snapshot.files).also {
+        counted = it; wordsOf = snapshot.files
+    }
+    fun showWords() { wordsVisible = true }
+    fun hideWords() { wordsVisible = false }
+
     fun startTopics(): ChangeTopics {
         if (topics.complete) {
             topics = ChangeTopics(snapshot.files)
@@ -185,7 +196,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false; topicsVisible = false }
+    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false; topicsVisible = false; wordsVisible = false }
 
     fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
         check(expected)
