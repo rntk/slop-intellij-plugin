@@ -2,6 +2,9 @@ package dev.insight.diff
 
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
+import com.intellij.diff.DiffDialogHints
+import com.intellij.diff.chains.DiffRequestProducer
+import com.intellij.diff.chains.SimpleDiffRequestChain
 import com.intellij.diff.contents.DocumentContent
 import com.intellij.diff.impl.DiffRequestProcessor
 import com.intellij.diff.impl.DiffRequestProcessorListener
@@ -14,9 +17,12 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.impl.EditorComponentImpl
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Pair
+import com.intellij.openapi.util.UserDataHolder
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
@@ -24,6 +30,35 @@ import java.awt.Dimension
 import javax.swing.JPanel
 import javax.swing.Timer
 import kotlin.math.roundToInt
+
+/** Deleted files have an empty after side; their complete source is on the before side. */
+internal val ReviewFile.fullFileText: String? get() = if (status == "deleted") before else after
+
+internal fun createFullFileSnapshot(file: ReviewFile): LightVirtualFile {
+    val label = if (file.status == "deleted") file.beforeLabel else file.afterLabel
+    val type = FileTypeManager.getInstance().getFileTypeByFileName(file.path.substringAfterLast('/'))
+    return LightVirtualFile("${file.path.substringAfterLast('/')} ($label snapshot)", type, requireNotNull(file.fullFileText)).apply {
+        isWritable = false
+    }
+}
+
+/** Build each native diff only when visited, keeping large folders inexpensive to open. */
+internal fun createDirectoryDiffChain(project: Project?, files: List<ReviewFile>): SimpleDiffRequestChain {
+    require(files.isNotEmpty())
+    return SimpleDiffRequestChain.fromProducers(files.map { file ->
+        object : DiffRequestProducer {
+            override fun getName() = file.path
+            override fun process(context: UserDataHolder, indicator: ProgressIndicator): SimpleDiffRequest {
+                indicator.checkCanceled()
+                return createDiffRequest(project, file)
+            }
+        }
+    })
+}
+
+internal fun showDirectoryDiff(project: Project, files: List<ReviewFile>) {
+    if (files.isNotEmpty()) DiffManager.getInstance().showDiff(project, createDirectoryDiffChain(project, files), DiffDialogHints.DEFAULT)
+}
 
 internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffRequest {
     val factory = DiffContentFactory.getInstance()

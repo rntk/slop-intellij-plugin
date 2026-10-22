@@ -60,6 +60,10 @@ internal class NoteCanvas(
     private val openFileAt: (String, Int?) -> Unit = { path, _ -> open(path) },
     private val showFileLines: (String, IntRange) -> Unit = { path, _ -> showDiffCard(path) },
     private val removeFileView: () -> Unit = {},
+    private val contextSummaries: ContextSummaryLauncher? = null,
+    private val deleteOriginalSummaries: (() -> Unit)? = null,
+    private val openWholeFile: ((ReviewFile) -> Unit)? = null,
+    private val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -79,6 +83,8 @@ internal class NoteCanvas(
     internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
     private var summaries: SummariesCard? = null
+    private val summaryVersions = mutableListOf<ContextSummaryVersion>()
+    private var summaryVersionCount = 0
     internal val summariesView = ChangeSummariesViewState().also {
         it.mode = vocabulary.summariesMode
         it.visibleOnly = vocabulary.scoreVisibleOnly
@@ -92,7 +98,8 @@ internal class NoteCanvas(
      */
     private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val query: String? = null) {
         var scroll = 0
-        val trace = SummaryTraceSession(traceSummaries, view, { summaries?.summaries }, openSummaryLines,
+        var version: Int? = null
+        val trace = SummaryTraceSession(traceSummaries, view, { reading(this) }, openSummaryLines,
             update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
         /** Kept across rebuilds of the card, so typing never loses focus or caret. */
         val searchField = SearchTextField(false).apply {
@@ -116,6 +123,22 @@ internal class NoteCanvas(
     private var searchTabCount = 0
     private fun summaryTabs() = listOf(mainSummaries) + searchTabs
     private fun summaryTab(key: DiffNoteKey) = summaryTabs().firstOrNull { it.key == key }
+    private fun version(tab: SummariesTab) = summaryVersions.firstOrNull { it.id == tab.version }
+    private fun reading(tab: SummariesTab): ChangeSummaries? = version(tab)?.summaries ?: summaries?.summaries
+
+    private fun retainSummaryVersions(tree: ChangeSummaryTree) {
+        summaryVersions.forEach { version ->
+            if (version.summaries.tree !== tree) {
+                if (version.running && version.summaries.tree.nodes.map { it.key } != tree.nodes.map { it.key }) {
+                    version.job?.cancel()
+                    version.running = false
+                    version.error = "Source changed; resummarize with context again to update this version."
+                }
+                version.summaries = version.summaries.retainedIn(tree)
+                version.request = version.request.copy(nodeIds = tree.summarizable.filter { it.identity in version.related }.mapTo(hashSetOf()) { it.id })
+            }
+        }
+    }
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
@@ -155,7 +178,11 @@ internal class NoteCanvas(
         if (summaries == null) {
             summaryTabs().forEach { it.trace.stop() }
             searchTabs.clear()
-        } else summaryTabs().forEach { it.view.update(summaries.summaries.tree); it.trace.retain(summaries.summaries) }
+            summaryVersions.filter { it.running }.forEach { it.job?.cancel(); it.running = false }
+        } else {
+            retainSummaryVersions(summaries.summaries.tree)
+            summaryTabs().forEach { it.view.update(summaries.summaries.tree); it.trace.retain(reading(it)!!) }
+        }
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -617,7 +644,10 @@ internal class NoteCanvas(
      * mode changes, expanding, selecting and new summaries rebuild only this card, in place. A search tab shows the same
      * card with only the summaries its searches found related, and its queries as breadcrumbs.
      */
-    private fun summariesCard(tab: SummariesTab, content: SummariesCard): JPanel {
+    private fun summariesCard(tab: SummariesTab, original: SummariesCard): JPanel {
+        val version = version(tab)
+        val content = original.copy(summaries = reading(tab) ?: original.summaries,
+            running = version?.running ?: original.running)
         val summariesView = tab.view
         val summariesTrace = tab.trace
         val key = tab.key
@@ -665,13 +695,14 @@ internal class NoteCanvas(
                 }
                 if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
                 add(JButton(when {
+                    version != null -> "Regenerate original"
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
                     else -> "Continue"
                 }).apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
-                    isEnabled = content.canRun && summaries.total > 0
+                    isEnabled = content.canRun && summaries.total > 0 && summaryVersions.none { it.running }
                     toolTipText = if (summaries.complete) "Write every summary again (/summaries)"
                         else vocabulary.summarizeTooltip
                     addActionListener { summarize() }
@@ -689,6 +720,12 @@ internal class NoteCanvas(
             showDiffCard = showDiffCard,
             openNode = openSummaryNode,
             showNode = showSummaryNode,
+            openWholeFile = openWholeFile,
+            openDirectory = openDirectoryDiff?.let { open ->
+                val files = tree.nodes.mapNotNull { (it.file as? ReviewFile)?.let { file -> file.path to file } }.toMap()
+                val navigate: (SummaryNode) -> Unit = { node -> open(node.files.mapNotNull(files::get)) }
+                navigate
+            },
             trace = summariesTrace::trace,
             searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
@@ -715,13 +752,17 @@ internal class NoteCanvas(
         card.add(JPanel(BorderLayout()).apply {
             isOpaque = false
             add(header, BorderLayout.NORTH)
-            add(searchRow(tab), BorderLayout.SOUTH)
+            add(JPanel(VerticalLayout(0)).apply {
+                isOpaque = false
+                add(summaryVersionRow(tab, original))
+                add(searchRow(tab))
+            }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
             traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true,
-                where = if (tab.search) "the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
+                where = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
@@ -749,6 +790,102 @@ internal class NoteCanvas(
         }, BorderLayout.CENTER)
         return card
     }
+
+    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard): JComponent =
+        JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 12)
+            add(JLabel("Version"))
+            add(JComboBox<Any>((listOf("Original") + summaryVersions).toTypedArray()).apply {
+                name = "summaries-version"
+                selectedItem = version(tab) ?: "Original"
+                maximumRowCount = 12
+                val selected = version(tab)
+                toolTipText = selected?.request?.query ?: "The ordinary summaries, without query context"
+                preferredSize = Dimension(scaled(250), preferredSize.height)
+                addActionListener {
+                    tab.trace.stop()
+                    tab.version = (selectedItem as? ContextSummaryVersion)?.id
+                    reading(tab)?.let { tab.trace.retain(it) }
+                    refreshSummaries(tab)
+                }
+            })
+            add(JButton("Delete version").apply {
+                name = "delete-summary-version"
+                isEnabled = version(tab) != null || deleteOriginalSummaries != null && content.summaries.count > 0
+                addActionListener {
+                    val selected = version(tab)
+                    if (selected == null) deleteOriginalSummaries?.invoke()
+                    else {
+                        selected.job?.cancel()
+                        summaryVersions.remove(selected)
+                        summaryTabs().filter { it.version == selected.id }.forEach {
+                            it.trace.stop()
+                            it.version = null
+                            reading(it)?.let(it.trace::retain)
+                        }
+                    }
+                    summaryTabs().forEach { refreshSummaries(it) }
+                }
+            })
+            val request = contextSummaryRequest(tab)
+            val pendingSearch = tab.view.tracing?.let { it.searchRequested && it.trace == null && it.error == null } == true
+            add(JButton("Resummarize with context").apply {
+                name = "resummarize-with-context"
+                isEnabled = contextSummaries != null && content.canRun && request != null &&
+                    !pendingSearch && summaryVersions.none { it.running }
+                toolTipText = request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
+                    ?: "Search related summaries to choose a query and the summaries to rewrite"
+                addActionListener { startContextSummaries(tab) }
+            })
+            version(tab)?.let { selected ->
+                val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
+                add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} related summaries"
+                    else "$count of ${selected.request.nodeIds.size} related summaries rewritten").apply {
+                    name = "summary-version-status"
+                    foreground = UIUtil.getContextHelpForeground()
+                    toolTipText = text
+                })
+            }
+        }
+
+    private fun startContextSummaries(tab: SummariesTab) {
+        val launcher = contextSummaries ?: return
+        val current = reading(tab) ?: return
+        val request = contextSummaryRequest(tab) ?: return
+        if (summaryVersions.any { it.running }) return
+        val version = ContextSummaryVersion(++summaryVersionCount, request, current.without(request.nodeIds))
+        summaryVersions += version
+        tab.trace.stop()
+        tab.version = version.id
+        summaryTabs().forEach { refreshSummaries(it) }
+        try {
+            version.job = launcher.launch(version.summaries, request, updated = { updated ->
+                if (version in summaryVersions && version.running) {
+                    version.summaries = summaries?.summaries?.tree?.let { tree ->
+                        if (updated.tree === tree) updated else updated.retainedIn(tree)
+                    } ?: updated
+                    summaryTabs().filter { it.version == version.id }.forEach { it.trace.retain(version.summaries); refreshSummaries(it) }
+                }
+            }, done = { result ->
+                if (version in summaryVersions && version.running) {
+                    version.running = false
+                    version.error = result.fold({ run ->
+                        run.error ?: "Some related summaries could not be rewritten. Resummarize with context to try again."
+                            .takeIf { request.nodeIds.any { run.summaries.text(it) == null } }
+                    }, { it.message ?: "Resummarizing stopped." })
+                    summaryTabs().forEach { refreshSummaries(it) }
+                }
+            })
+        } catch (e: Exception) {
+            version.running = false
+            version.error = e.message ?: e.javaClass.simpleName
+            summaryTabs().forEach { refreshSummaries(it) }
+        }
+    }
+
+    private fun contextSummaryRequest(tab: SummariesTab): ContextSummaryRequest? =
+        reading(tab)?.let(tab.view::resummaryRequest) ?: version(tab)?.request?.takeIf { it.nodeIds.isNotEmpty() }
 
     /**
      * A search tab's queries as breadcrumbs, each going back to the summaries left after it, and the search field. The typed
@@ -792,6 +929,7 @@ internal class NoteCanvas(
     private fun openSearchTab(from: SummariesTab, context: SummaryContext) {
         val content = summaries ?: return
         val tab = SummariesTab(DiffNoteKey(emptyList(), "summary-search-${++searchTabCount}"), from.view.fork(), context.query)
+        tab.version = from.version
         searchTabs += tab
         tab.view.update(content.summaries.tree)
         // Searching first lets the new card show the running query.
@@ -838,9 +976,10 @@ internal class NoteCanvas(
     private fun updateTracePresentation(key: DiffNoteKey) {
         val card = cards[key] ?: return
         val state = summaryTab(key)?.view ?: topicsView
+        val results = state.resultTrace
         descendantsOf(card).forEach { component ->
             if (component is JTextArea) updateWordTracing(component)
-            if (component is JComponent && state.tracing?.trace == null) resetTraceDecoration(component)
+            if (component is JComponent && results == null) resetTraceDecoration(component)
             @Suppress("UNCHECKED_CAST")
             ((component as? JComponent)?.getClientProperty(TRACE_PRESENTATION_UPDATE) as? (() -> Unit))?.invoke()
         }
@@ -880,8 +1019,8 @@ internal class NoteCanvas(
                 update()
             }, BorderLayout.CENTER)
             add(ActionLink("Clear") { session.clear() }.apply {
-                name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = state.tracing != null
-                putClientProperty(TRACE_PRESENTATION_UPDATE, { isEnabled = state.tracing != null })
+                name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = state.tracing != null || state.resultTrace != null
+                putClientProperty(TRACE_PRESENTATION_UPDATE, { isEnabled = state.tracing != null || state.resultTrace != null })
             }, BorderLayout.EAST)
         })
     }
@@ -915,7 +1054,10 @@ internal class NoteCanvas(
         }
         if (content == summaries) return
         summaries = content
-        content?.let { summaryTabs().forEach { tab -> tab.view.update(it.summaries.tree); tab.trace.retain(it.summaries) } }
+        content?.let {
+            retainSummaryVersions(it.summaries.tree)
+            summaryTabs().forEach { tab -> tab.view.update(it.summaries.tree); tab.trace.retain(reading(tab)!!) }
+        }
         summaryTabs().forEach { refreshSummaries(it) }
     }
 
@@ -1181,6 +1323,7 @@ internal class NoteCanvas(
     private fun scaled(value: Int) = (JBUI.scale(value) * zoom).roundToInt().coerceAtLeast(1)
     private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
     override fun dispose() {
+        summaryVersions.forEach { it.job?.cancel() }
         summaryTabs().forEach { it.trace.stop() }
         topicsTrace.stop()
         editors.values.forEach { it.dispose() }

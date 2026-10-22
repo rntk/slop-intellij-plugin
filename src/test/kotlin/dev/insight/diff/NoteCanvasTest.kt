@@ -6,6 +6,7 @@ import java.awt.Container
 import java.awt.Point
 import java.awt.event.MouseEvent
 import javax.swing.JLabel
+import javax.swing.JComponent
 import kotlinx.coroutines.Job
 
 class NoteCanvasTest : BasePlatformTestCase() {
@@ -404,7 +405,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val root = hierarchy.components.single { it.name == "node:${tree.root.identity}" } as Container
             val heading = root.components.first()
             val outer = canvas.tabs.selectedComponent as javax.swing.JScrollPane
-            outer.verticalScrollBar.value = 120
+            // Scroll past the controls and into the folder, regardless of the header's height.
+            outer.verticalScrollBar.value = javax.swing.SwingUtilities.convertPoint(root, 0, 0, outer.viewport).y + 120
             assertTrue(heading.y > root.insets.top)
             assertTrue(javax.swing.SwingUtilities.convertPoint(heading, 0, 0, outer.viewport).y >= 0)
             outer.verticalScrollBar.value = 0
@@ -1144,14 +1146,24 @@ class NoteCanvasTest : BasePlatformTestCase() {
             launcher.finish(launcher.searched.single(), 4, SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.9, 1),
                 SummaryMatch(canvasDir.id, canvasDir.identity, 0.1, 1))
             layoutTree(canvas)
-            // Only the related folder, everything beneath it and the way up to the root are left; nothing is marked.
+            // Only the related folder, everything beneath it and the way up to the root are left; the match is marked.
             val related = shown(1)
             assertTrue(hierarchyDir.identity in related && hierarchyFile.identity in related && columnsFile.identity in related && "root" in related)
             assertFalse(canvasDir.identity in related)
-            assertTrue(descendants(page(1)).none { it.name?.startsWith("match:") == true })
+            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
+            assertEquals(TraceStyle.BEST_MATCH, named(1, "summary:${hierarchyDir.identity}").single().background)
+            assertTrue(named(1, "match:${hierarchyFile.identity}").isEmpty())
             assertEquals("“hierarchy”", (named(1, "summaries-crumb:1").single() as JLabel).text)
             assertEquals(everything, shown(0))
             assertTrue(canvas.summariesView.crumbs.isEmpty())
+
+            // Hovering another scored word keeps this breadcrumb's result highlights in place.
+            (named(1, "summaries-score").single() as javax.swing.JButton).doClick()
+            val resultRow = named(1, "summary:${hierarchyDir.identity}").single()
+            pointAtWord(canvas, summaryArea(1, "root"), "Deleted", MouseEvent.MOUSE_MOVED)
+            assertSame(resultRow, named(1, "summary:${hierarchyDir.identity}").single())
+            assertEquals(TraceStyle.BEST_MATCH, resultRow.background)
+            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
 
             // Searching again in the search tab narrows it and adds the query to the breadcrumbs.
             menuItem(summaryArea(1, hierarchyDir.identity), "Deletes", "search-selection").doClick()
@@ -1161,12 +1173,26 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertFalse(columnsFile.identity in shown(1))
             assertEquals("“Deletes”", (named(1, "summaries-crumb:2").single() as JLabel).text)
             assertEquals("Search · Deletes", canvas.tabs.getTitleAt(1))
+            assertTrue(named(1, "match:${hierarchyDir.identity}").isEmpty())
+            assertEquals("● Best match · 80%", (named(1, "match:${hierarchyFile.identity}").single() as JLabel).text)
 
             // An earlier breadcrumb goes back to the summaries left after it.
             (named(1, "summaries-crumb:1").single() as com.intellij.ui.components.ActionLink).doClick()
             layoutTree(canvas)
             assertTrue(columnsFile.identity in shown(1))
+            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
+            assertTrue(named(1, "match:${hierarchyFile.identity}").isEmpty())
             assertEquals(1, descendants(page(1)).count { it.name?.startsWith("summaries-crumb:") == true && it.name != "summaries-crumb:0" })
+            val clear = named(1, "trace-clear").single() as com.intellij.ui.components.ActionLink
+            assertTrue("Restored breadcrumb highlights can be cleared", clear.isEnabled)
+            clear.doClick()
+            assertTrue(named(1, "match:${hierarchyDir.identity}").isEmpty())
+            assertTrue(columnsFile.identity in shown(1))
+            menuItem(summaryArea(1, "root"), "hierarchy", "search-selection").doClick()
+            launcher.finish(launcher.searched.last(), 4, SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.9, 1))
+            layoutTree(canvas)
+            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
+            assertTrue(named(1, "summaries-crumb:2").isEmpty())
 
             // Typing filters fuzzily, with the folders above every match, and stays out of the breadcrumbs.
             val field = named(0, "summaries-search").single() as com.intellij.ui.SearchTextField
@@ -1187,6 +1213,90 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testSearchAndSearchTabsHighlightResultsInEveryLayout() {
+        val files = listOf("ui/Canvas.kt", "ui/Unrelated.kt", "docs/Readme.md").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val root = "Updates canvas and documentation."
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+            node.id to if (node.kind == SummaryKind.ROOT) root else "Updates ${node.label}."
+        })
+        val folder = tree.nodes.single { it.path == "ui" }
+        val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
+        val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
+        for (mode in ChangeSummariesMode.entries) for (searchTab in listOf(false, true)) {
+            val launcher = FakeTraceLauncher()
+            val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply {
+                setSize(1600, 900)
+                summariesView.apply {
+                    this.mode = mode
+                    update(tree)
+                    if (mode == ChangeSummariesMode.HIERARCHY) selectLevel(0, tree)
+                    if (mode == ChangeSummariesMode.DOCUMENT) selected = tree.root.identity
+                }
+            }
+            try {
+                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                layoutTree(canvas)
+                val area = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().singleOrNull { it.text == root }
+                assertNotNull("$mode shows the root summary to search", area)
+                val start = root.indexOf("canvas")
+                area!!.select(start, start + "canvas".length)
+                selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
+                    .single { it.name == if (searchTab) "search-tab" else "search-selection" }.doClick()
+                launcher.finish(launcher.searched.single(), 3,
+                    SummaryMatch(folder.id, folder.identity, 0.9, 1),
+                    SummaryMatch(matching.id, matching.identity, 0.8, 2),
+                    SummaryMatch(rejected.id, rejected.identity, 0.1, 2))
+                layoutTree(canvas)
+                val page = canvas.tabs.selectedComponent as Container
+                val texts = descendants(page).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+                assertTrue("$mode keeps the matching summary", summaries.text(matching.id) in texts)
+                assertEquals("$mode hides rejected summaries only in search tabs", !searchTab, summaries.text(rejected.id) in texts)
+                val badges = descendants(page).filterIsInstance<JLabel>()
+                fun matchTexts(identity: String): List<String> {
+                    val components = if (mode == ChangeSummariesMode.HIERARCHY) {
+                        val card = descendants(page).single { it.name == if (identity.startsWith("file:")) identity else "node:$identity" } as Container
+                        descendants(card).filter { it.name == "match" }
+                    } else descendants(page).filter { it.name == "match:$identity" }
+                    return components.mapNotNull { (it as? JLabel)?.text ?: (it as? javax.swing.JTextArea)?.text }
+                }
+                assertTrue("$mode labels the best result", "● Best match · 90%" in matchTexts(folder.identity))
+                assertTrue("$mode labels related results", "● Related · 80%" in matchTexts(matching.identity))
+                if (!searchTab) assertTrue("$mode does not label rejected results", matchTexts(rejected.identity).isEmpty())
+                val highlighted = descendants(page).filterIsInstance<JComponent>().filter { it.isOpaque }
+                assertTrue("$mode highlights the best result", highlighted.any { it.background == TraceStyle.BEST_MATCH })
+                assertTrue("$mode highlights related results", highlighted.any { it.background == TraceStyle.RELATED })
+                assertTrue("$mode reports highlighting", badges.any { it.name == "trace-status" && it.text.contains("highlighted in the view") })
+                if (searchTab) assertTrue("$mode reports that unrelated summaries are hidden", badges
+                    .any { it.name == "trace-status" && it.text.contains("the rest are hidden") })
+                (descendants(page).single { it.name == "trace-clear" } as com.intellij.ui.components.ActionLink).doClick()
+                assertTrue("$mode clears result badges", descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
+                assertTrue("$mode clears result backgrounds", highlighted.none { it.isOpaque && it.background in listOf(TraceStyle.BEST_MATCH, TraceStyle.RELATED) })
+                assertEquals("Clearing highlights preserves filtering", !searchTab, summaries.text(rejected.id) in texts)
+            } finally { canvas.dispose() }
+        }
+    }
+
+    fun testSearchWithNoMatchesHidesAllSummariesAndKeepsItsBreadcrumb() {
+        val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+        })
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Deletes ${it.label}." })
+        val state = ChangeSummariesViewState(filtering = true)
+        val context = selectionContext(tree.root.identity, summaries.text(tree.root.id)!!, 0, 7)!!
+        val trace = SummaryTrace(context.identity, context.summary, context.word, context.context, context.query,
+            tree.root.children.map { SummaryMatch(it, tree[it].identity, 0.1, 1) }, tree.root.children.size)
+        state.shownNodes(summaries)
+        state.showTrace(tree, trace)
+        assertEquals(emptySet<String>(), state.shownNodes(summaries))
+        assertEquals(context.query, state.crumbs.single().query)
+        assertNull(state.resummaryRequest(summaries))
+        state.backTo(0)
+        assertNull(state.shownNodes(summaries))
     }
 
     fun testFuzzyMatchingIsNaiveButForgiving() {

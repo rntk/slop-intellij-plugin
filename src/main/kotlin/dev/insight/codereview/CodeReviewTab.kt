@@ -40,6 +40,7 @@ import dev.insight.diff.FileViewCard
 import dev.insight.diff.NoteCanvas
 import dev.insight.diff.ReviewCanvasOwner
 import dev.insight.diff.ReviewTraceLauncher
+import dev.insight.diff.ReviewContextSummaryLauncher
 import dev.insight.diff.ReviewVocabulary
 import dev.insight.diff.SummariesCard
 import dev.insight.diff.SummaryNode
@@ -130,6 +131,13 @@ internal class CodeReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = ReviewTraceLauncher(project, scope),
+        contextSummaries = ReviewContextSummaryLauncher(project, scope) {
+            val snapshot = state.snapshot
+            val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
+                this.complete ?: ChatSettings.getInstance().createClient()::complete)
+            ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
+        },
+        deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
         vocabulary = ReviewVocabulary.CODE,
         openNode = { node -> openFile(node.path, node.lines?.first) },
         showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },

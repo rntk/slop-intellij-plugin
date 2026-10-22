@@ -111,7 +111,7 @@ internal abstract class HierarchyColumnsPanel(
     protected fun branchCard(
         name: String, title: String, family: String?, column: Int, files: Int, active: Boolean, tooltip: String,
         toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
-        caption: String? = null, select: (() -> Unit)? = null,
+        caption: String? = null, openDiff: (() -> Unit)? = null, select: (() -> Unit)? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
@@ -137,6 +137,7 @@ internal abstract class HierarchyColumnsPanel(
                     add(heading, BorderLayout.CENTER)
                 })
                 add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+                openDiff?.let { open -> add(ActionLink("View diff") { open() }.apply { font = font(JBFont.small()) }) }
                 badge?.let { add(badge(it, inner)) }
             }, BorderLayout.CENTER)
         }
@@ -149,7 +150,7 @@ internal abstract class HierarchyColumnsPanel(
             override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) select() }
         }
         fun attach(component: Component) {
-            if (component.name?.startsWith("toggle:") == true) return
+            if (component is ActionLink || component.name?.startsWith("toggle:") == true) return
             component.addMouseListener(listener)
             (component as? JComponent)?.toolTipText = tooltip
             if (component is Container) component.components.forEach(::attach)
@@ -187,6 +188,7 @@ internal abstract class HierarchyColumnsPanel(
         open: () -> Unit, showOnCanvas: (() -> Unit)?, mark: TraceMark? = null, badge: String? = null,
         select: (() -> Unit)? = null,
         name: String = "file:${file.path}", tooltip: String = file.path, icon: Icon? = null, details: List<String>? = null,
+        openWholeFile: (() -> Unit)? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
@@ -216,6 +218,7 @@ internal abstract class HierarchyColumnsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
             add(detailsLabel)
+            openWholeFile?.let { open -> add(ActionLink("Open file") { open() }.apply { font = font(JBFont.small()) }) }
             badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
         }
         headingRow.add(center, BorderLayout.CENTER)

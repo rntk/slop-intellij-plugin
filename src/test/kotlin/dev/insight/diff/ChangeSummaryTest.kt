@@ -263,6 +263,60 @@ class ChangeSummaryTest {
         assertEquals("Kept.", result.summaries.text(tree.byLocation("app/b.kt").id))
     }
 
+    @Test fun `context rewrite requests only related subtrees and preserves the original and navigation summaries`() = runBlocking {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md"), file("docs/d.md")))
+        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val app = tree.byLocation("app/")
+        val related = relatedSummaryNodes(tree, listOf(app.identity))
+        val ids = tree.nodes.filter { it.identity in related }.mapTo(hashSetOf()) { it.id }
+        assertEquals(setOf("app/", "app/a.kt", "app/b.kt"), ids.map { tree[it].location }.toSet())
+        var version = original.without(ids)
+        val model = Model()
+        val progress = mutableListOf<Pair<Int, Int>>()
+        val run = ChangeSummarizer(model::complete, null).run(version, "", {
+            version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
+        }, onProgress = { count, total -> progress += count to total }, nodeIds = ids, queryContext = "How does parsing work?")
+        assertEquals(2, run.requests)
+        assertEquals(ids.map { tree[it].location }.toSet(), model.requests.flatMap(model::nodes).map { it["location"].asString }.toSet())
+        for (node in tree.nodes) {
+            assertEquals("Original ${node.location}", original.text(node.id))
+            if (node.id !in ids) assertEquals(original.text(node.id), version.text(node.id))
+        }
+        assertEquals(listOf(0 to 3, 2 to 3, 3 to 3), progress)
+        val evidence = DiffSummaryEvidence(ChangeSummaryOptions())
+        assertTrue(model.requests[0].messages.first().content.startsWith(evidence.leafSystem(tree, "")))
+        assertTrue(model.requests[1].messages.first().content.startsWith(evidence.branchSystem("")))
+        assertTrue(model.requests.all { it.messages.first().content.contains("The reader is exploring this query: How does parsing work?") })
+        assertTrue(model.requests.all { it.messages.first().content.contains("rather than answering the query as a question") })
+    }
+
+    @Test fun `context rewrite does not fill unrelated missing summaries`() = runBlocking {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md")))
+        val id = tree.byLocation("app/a.kt").id
+        var version = ChangeSummaries(tree)
+        val model = Model()
+        val run = ChangeSummarizer(model::complete, null).run(version, "", {
+            version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
+        }, nodeIds = setOf(id), queryContext = "parsing")
+        assertEquals(1, run.requests)
+        assertEquals(1, version.count)
+        assertNull(version.text(tree.root.id))
+        assertNull(run.error)
+    }
+
+    @Test fun `rewriting an only child does not replace its navigation parent`() = runBlocking {
+        val tree = buildSummaryTree(listOf(file("a.kt")))
+        val original = ChangeSummaries(tree).summarize(mapOf(tree.nodes.last().id to "Original."))
+        val ids = setOf(tree.nodes.last().id)
+        var version = original.without(ids)
+        ChangeSummarizer(Model()::complete, null).run(version, "", {
+            version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
+        }, nodeIds = ids, queryContext = "parsing")
+        assertEquals("Original.", version.text(tree.root.id))
+        assertEquals("file a.kt", version.text(tree.nodes.last().id))
+        assertEquals("Original.", original.text(tree.nodes.last().id))
+    }
+
     @Test fun `progress includes retained summaries and advances after each concurrent batch is saved`() = runBlocking {
         val tree = buildSummaryTree((1..5).map { file("app/f$it.kt") })
         var saved = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("app/f1.kt").id to "Kept."))

@@ -4,6 +4,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
+import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
@@ -33,6 +34,7 @@ internal class DiffReviewTab(
     val state = DiffReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
     private var disposed = false
     private val sourcePoints = SourcePoints(project, "Diff chat")
+    private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String get() = ReviewVocabulary.DIFF.canvasTitle
     var onCanvasSelected: () -> Unit = {}
@@ -61,8 +63,23 @@ internal class DiffReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = ReviewTraceLauncher(project, scope),
+        contextSummaries = ReviewContextSummaryLauncher(project, scope) {
+            val context = captureContext()
+            val files = state.snapshot.files
+            val client = ChatSettings.getInstance().createClient()
+            val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
+            ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+        },
+        deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
         // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
         openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
+        openWholeFile = { file ->
+            WriteIntentReadAction.run {
+                val snapshot = fullFileSnapshots.getOrPut(file) { createFullFileSnapshot(file) }
+                FileEditorManager.getInstance(project).openFile(snapshot, true)
+            }
+        },
+        openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -207,7 +224,7 @@ internal class DiffReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear() }
+        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear(); fullFileSnapshots.clear() }
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
@@ -427,6 +444,7 @@ internal class DiffReviewTab(
 
     override fun dispose() {
         disposed = true
+        fullFileSnapshots.clear()
         onCanvasSelected = {}
         FileEditorManager.getInstance(project).closeFile(canvasFile)
         canvasFile.setValid(false)

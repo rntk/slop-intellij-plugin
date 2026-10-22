@@ -11,6 +11,7 @@ import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import dev.insight.apilog.ApiLogs
 import dev.insight.core.decisionsClient
 import java.awt.BorderLayout
@@ -118,5 +119,44 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
             Result.failure(e)
         }
         done(result)
+    }
+}
+
+/** Uses the same evidence and prompts as an ordinary run, writing only the requested version's nodes. */
+internal class ReviewContextSummaryLauncher(
+    private val project: Project,
+    private val scope: CoroutineScope,
+    private val create: suspend () -> ChangeSummarizer,
+) : ContextSummaryLauncher {
+    override fun launch(start: ChangeSummaries, request: ContextSummaryRequest,
+                        updated: (ChangeSummaries) -> Unit, done: (Result<ChangeSummaryRun>) -> Unit): Job {
+        return scope.launch {
+            val result = try {
+                // Capture the review's evidence on the EDT, before starting background work.
+                val summarizer = create()
+                Result.success(withBackgroundProgress(project, "Resummarizing with context", cancellable = true) {
+                    withContext(Dispatchers.IO) {
+                        reportRawProgress { reporter ->
+                            var current = start
+                            summarizer.run(start, "", save = { entries ->
+                                current = current.summarize(entries, reuseSingleChildren = false)
+                                withContext(Dispatchers.EDT) { updated(current) }
+                                current
+                            }, onProgress = { count, total ->
+                                reporter.text("Resummarizing related summaries…")
+                                reporter.details("$count of $total summaries")
+                                reporter.fraction(if (total > 0) count.toDouble() / total else null)
+                            }, nodeIds = request.nodeIds, queryContext = request.query)
+                        }
+                    }
+                })
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                Result.failure(e)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            done(result)
+        }
     }
 }

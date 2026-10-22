@@ -60,6 +60,7 @@ internal abstract class SummaryTraceState(
     var scoring = false
     var scoringError: String? = null
     var tracing: SummaryTracing? = null
+    open val resultTrace: SummaryTrace? get() = tracing?.trace
     /** A node to scroll into view once the card is laid out again. */
     var reveal: String? = null
 
@@ -116,6 +117,9 @@ internal abstract class SummaryTraceState(
 
     /** Opens the levels between the traced summary and its related ones, so every match is visible, and selects the best. */
     abstract fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace)
+
+    /** Clears the current word context and result decorations. */
+    open fun clearTrace() { tracing = null }
 }
 
 /**
@@ -361,12 +365,17 @@ internal fun resetTraceDecoration(component: JComponent) {
 }
 
 /** One search of a search tab: the summary searched, its query, and the nodes still shown after it. */
-internal data class SearchCrumb(val identity: String, val query: String, val shown: Set<String>)
+internal data class SearchCrumb(
+    val identity: String, val query: String, val shown: Set<String>,
+    /** Related nodes and their unsearched descendants, excluding ancestors kept only for navigation. */
+    val related: Set<String> = shown,
+    val trace: SummaryTrace? = null,
+)
 
 /**
  * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
  * modes, so folding a folder in the hierarchy collapses it in the outline too. A search tab ([filtering]) hides what its
- * searches found unrelated instead of marking the matches; the search field hides what does not match the typed text.
+ * searches found unrelated and highlights the matches; the search field hides what does not match the typed text.
  */
 internal class ChangeSummariesViewState(
     val filtering: Boolean = false,
@@ -382,6 +391,26 @@ internal class ChangeSummariesViewState(
 
     /** A search tab's searches, broadest first; each narrows the one before it. */
     val crumbs = mutableListOf<SearchCrumb>()
+
+    /** Search tabs keep the current breadcrumb's results while hovering or returning to an earlier query. */
+    override val resultTrace: SummaryTrace? get() = if (filtering) crumbs.lastOrNull()?.trace else super.resultTrace
+
+    override fun clearTrace() {
+        super.clearTrace()
+        if (filtering && crumbs.isNotEmpty()) crumbs[crumbs.lastIndex] = crumbs.last().copy(trace = null)
+    }
+
+    fun resummaryRequest(summaries: ChangeSummaries): ContextSummaryRequest? {
+        val crumb = crumbs.lastOrNull()
+        val trace = tracing?.trace
+        val query = if (filtering) crumb?.query else trace?.query
+        val related = if (filtering) crumb?.related else trace?.let {
+            relatedSummaryNodes(summaries.tree, it.related.map { match -> match.identity })
+        }
+        if (query.isNullOrBlank() || related.isNullOrEmpty()) return null
+        val ids = summaries.tree.summarizable.filter { it.identity in related }.mapTo(hashSetOf()) { it.id }
+        return ContextSummaryRequest(query, ids).takeIf { ids.isNotEmpty() }
+    }
 
     /** The text of the search field. Folders above a match open while it is typed, unless folded by hand meanwhile. */
     var fuzzy = ""
@@ -480,7 +509,8 @@ internal class ChangeSummariesViewState(
     /**
      * The outline only opens the levels down to the matches. The hierarchy shows a branch's summary only while it is folded,
      * so it also folds related branches with no related node beneath them. A search tab instead keeps only the traced
-     * summary, the nodes above it, its related summaries with everything beneath them, and the way down to them.
+     * summary, the nodes above it, its related summaries and their unsearched descendants, and the way down to them.
+     * Explicitly rejected descendants stay hidden even when their parent is related; no matches leaves an empty tab.
      */
     override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
         val path = tracePath(tree, trace)
@@ -492,15 +522,30 @@ internal class ChangeSummariesViewState(
             trace.best?.let { selected = it.identity; reveal = it.identity }
             return
         }
-        if (path == null || trace.related.isEmpty()) return
-        if (crumbs.lastOrNull()?.let { it.identity == trace.identity && it.query == trace.query } == true) return
+        if (path == null) return
+        if (crumbs.lastOrNull()?.let { it.identity == trace.identity && it.query == trace.query } == true) {
+            crumbs[crumbs.lastIndex] = crumbs.last().copy(trace = trace)
+            return
+        }
         val byIdentity = tree.nodes.associateBy { it.identity }
-        val shown = HashSet(path.path)
-        generateSequence(byIdentity[path.traced]?.parent) { tree[it].parent }.forEach { shown += tree[it].identity; expanded += tree[it].identity }
-        val below = trace.related.mapNotNull { byIdentity[it.identity] }.toCollection(ArrayDeque())
-        while (below.isNotEmpty()) below.removeFirst().children.forEach { child -> shown += tree[child].identity; below += tree[child] }
+        val rejected = trace.matches.filter { it.probability < SummaryTrace.MATCH_THRESHOLD }.mapTo(hashSetOf()) { it.identity }
+        val related = hashSetOf<String>()
+        val below = trace.related.filter { it.identity in path.path }.mapNotNull { byIdentity[it.identity] }.toCollection(ArrayDeque())
+        while (below.isNotEmpty()) {
+            val node = below.removeFirst()
+            if (!related.add(node.identity)) continue
+            node.children.map(tree::get).filterTo(below) { it.identity !in rejected }
+        }
+        val shown = hashSetOf<String>()
+        if (related.isNotEmpty()) {
+            shown += path.path
+            shown += related
+            generateSequence(byIdentity[path.traced]?.parent) { tree[it].parent }.forEach { shown += tree[it].identity; expanded += tree[it].identity }
+        }
         val previous = crumbs.lastOrNull()?.shown
-        crumbs += SearchCrumb(trace.identity, trace.query, if (previous == null) shown else shown.filterTo(hashSetOf()) { it in previous })
+        val kept = if (previous == null) shown else shown.filterTo(hashSetOf()) { it in previous }
+        related.retainAll(kept)
+        crumbs += SearchCrumb(trace.identity, trace.query, kept, related, trace)
     }
 
     /** A search tab's state starting from this one: the same mode, folding, scored words and searches so far. */
@@ -737,7 +782,7 @@ internal class SummaryTraceSession(
     fun clear() {
         traceJob?.cancel()
         traceJob = null
-        state.tracing = null
+        state.clearTrace()
         updatePresentation()
     }
 
@@ -779,7 +824,18 @@ internal class ChangeSummaryActions(
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     /** Put a node's source on the canvas; null hides the buttons. */
     val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
-)
+    val openWholeFile: ((ReviewFile) -> Unit)? = null,
+    val openDirectory: ((SummaryNode) -> Unit)? = null,
+) {
+    fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
+        val file = (node.file as? ReviewFile)?.takeIf { it.fullFileText != null } ?: return null
+        return openWholeFile?.let { open -> { open(file) } }
+    }
+
+    fun directoryAction(node: SummaryNode): (() -> Unit)? =
+        if (node.file == null && node.files.isNotEmpty() && node.kind in setOf(SummaryKind.ROOT, SummaryKind.DIRECTORY, SummaryKind.GROUP))
+            openDirectory?.let { open -> { open(node) } } else null
+}
 
 /**
  * The summary tree as an outline: every file, folder and group reads as its summary, so the top levels tell the change
@@ -800,8 +856,7 @@ internal class ChangeSummariesPanel(
     private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
     private val help get() = UIUtil.getContextHelpForeground()
-    /** A search tab hides unrelated summaries instead of marking the related ones. */
-    private val trace = state.tracing?.trace?.takeUnless { state.filtering }
+    private val trace = state.resultTrace
     private val matches = trace?.related.orEmpty().associateBy { it.identity }
     private val best = trace?.best?.identity
     /** Rows added so far; a huge tree stops at [HierarchyColumnsPanel.MAX_ROWS] and says how many entries it left out. */
@@ -870,9 +925,9 @@ internal class ChangeSummariesPanel(
             name = "summary:${node.identity}"
             isOpaque = selected || match != null
             background = when {
-                selected -> UIUtil.getListSelectionBackground(false)
                 match != null && match.identity == best -> TraceStyle.BEST_MATCH
-                else -> TraceStyle.RELATED
+                match != null -> TraceStyle.RELATED
+                else -> UIUtil.getListSelectionBackground(false)
             }
             if (match != null) installTraceDecorationReset(this) {
                 isOpaque = selected
@@ -948,6 +1003,12 @@ internal class ChangeSummariesPanel(
                 val show = actions.showNode
                 val showText = vocabulary.showOnCanvas
                 if (show != null && showText != null) add(ActionLink(showText) { show(node) }.apply { font = font(JBFont.small()) })
+            }
+            actions.wholeFileAction(node)?.let { open ->
+                add(ActionLink("Open file") { open() }.apply { font = font(JBFont.small()) })
+            }
+            actions.directoryAction(node)?.let { open ->
+                add(ActionLink("View diff") { open() }.apply { font = font(JBFont.small()) })
             }
         }
         return JPanel(BorderLayout(scaled(8), 0)).apply {

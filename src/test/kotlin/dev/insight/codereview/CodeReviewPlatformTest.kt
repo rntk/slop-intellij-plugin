@@ -280,6 +280,44 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         }
     }
 
+    fun `test resummarize with context uses only related source and preserves the ordinary summaries`() {
+        val model = SummaryModel()
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, complete = model::complete)
+        try {
+            tab.update(codeSnapshot(codeFile("app/a.kt", "fun parse() = 1\n"), codeFile("app/b.kt", "fun read() = 2\n"),
+                codeFile("docs/c.kt", "fun help() = 3\n")))
+            val original = fillAll(tab.state.summaries) { tab.state.summarize(tab.state.revision, it) }
+            tab.openSummaries()
+            val tree = original.tree
+            val app = tree.nodes.single { it.location == "app/" }
+            val text = original.text(tree.root.id)!!
+            val word = dev.insight.diff.SummaryWord.split(text).first()
+            val trace = dev.insight.diff.SummaryTrace(tree.root.identity, text, word, listOf(word), "parsing",
+                listOf(dev.insight.diff.SummaryMatch(app.id, app.identity, 0.9, 1)), 2)
+            tab.canvas.summariesView.tracing = dev.insight.diff.SummaryTracing(tree.root.identity, text, word, trace = trace)
+            tab.canvas.showNotes(emptyList(), summaries = dev.insight.diff.SummariesCard(original, false, true))
+            descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "resummarize-with-context" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The contextual version should finish", {
+                descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
+                    .any { it.name == "summary-version-status" && it.text == "3 of 3 related summaries rewritten" }
+            }, 10)
+            assertSame(original, tab.state.summaries)
+            assertEquals(2, model.requests.size)
+            assertEquals(setOf("app/", "app/a.kt", "app/b.kt"), model.requests.flatMap(model::nodes).map { it["location"].asString }.toSet())
+            assertTrue(model.requests.all { it.messages.first().content.contains("The reader is exploring this query: parsing") })
+            assertTrue(model.requests.first().messages.last().content.contains("fun parse() = 1"))
+            // Deleting the ordinary summaries leaves the contextual version available.
+            fun selector() = descendants(tab.canvas).filterIsInstance<javax.swing.JComboBox<*>>().single { it.name == "summaries-version" }
+            selector().selectedIndex = 0
+            descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "delete-summary-version" }.doClick()
+            assertEquals(0, tab.state.summaries.count)
+            assertEquals(2, selector().itemCount)
+            selector().selectedIndex = 1
+            assertTrue(descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
+                .any { it.name == "summary-version-status" && it.text == "3 of 3 related summaries rewritten" })
+        } finally { Disposer.dispose(tab) }
+    }
+
     private fun runWithEvents(action: suspend () -> Unit) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
         var failure: Throwable? = null

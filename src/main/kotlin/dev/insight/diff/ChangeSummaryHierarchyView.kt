@@ -28,8 +28,7 @@ internal class ChangeSummaryHierarchyPanel(
         while (pending.isNotEmpty()) pending.removeFirst().let { ids += it.identity; it.children.mapTo(pending, tree::get) }
         ids
     }.orEmpty()
-    /** A search tab hides unrelated summaries instead of marking the related ones. */
-    private val trace = state.tracing?.trace?.takeUnless { state.filtering }
+    private val trace = state.resultTrace
     private val marks = traceMarks(tree, trace)
 
     init {
@@ -56,7 +55,9 @@ internal class ChangeSummaryHierarchyPanel(
         val mark = marks[node.identity]
         val component = branchCard("node:${node.identity}", title(node), family, column, node.files.size,
             node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node),
-            caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null) { actions.select(node.identity) }
+            caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null,
+            openDiff = actions.directoryAction(node),
+            select = { actions.select(node.identity) })
         val height = if (collapsed) {
             rowsPlaced++
             val summary = summaries.text(node.id)
@@ -91,7 +92,8 @@ internal class ChangeSummaryHierarchyPanel(
             { actions.openNode(node) }, actions.showNode?.let { show -> { show(node) } }, mark, badge(node),
             select = { actions.select(node.identity) },
             name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
-            icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null)
+            icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
+            openWholeFile = actions.wholeFileAction(node))
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
@@ -196,6 +198,8 @@ internal class ChangeSummaryDocumentPanel(
         layoutDocument(files, fileSummaries, items, depth, width, missing)
     }
 
+    override fun resultTrace(): SummaryTrace? = state.resultTrace
+
     override fun openFile(file: ReviewSource) {
         nodesByPath[file.path]?.let(actions.openNode) ?: actions.openFile(file.path)
     }
@@ -205,6 +209,11 @@ internal class ChangeSummaryDocumentPanel(
         val node = nodesByPath[file.path]
         if (show != null && node != null) show(node) else actions.showDiffCard(file.path)
     }
+
+    override fun wholeFileAction(file: ReviewSource): (() -> Unit)? = nodesByPath[file.path]?.let(actions::wholeFileAction)
+
+    override fun directoryDiffAction(item: RailItem): (() -> Unit)? =
+        tree.nodes.firstOrNull { it.identity == item.key }?.let(actions::directoryAction)
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         super.summaryBody(identity, summary, missingSummary, width).also { area ->

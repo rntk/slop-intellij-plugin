@@ -214,9 +214,50 @@ internal abstract class DocumentColumnsPanel(
 
     protected abstract fun openFile(file: ReviewSource)
     protected abstract fun showFile(file: ReviewSource)
+    protected open fun wholeFileAction(file: ReviewSource): (() -> Unit)? = null
+    protected open fun directoryDiffAction(item: RailItem): (() -> Unit)? = null
     protected abstract fun isSelected(item: RailItem): Boolean
     protected abstract fun select(item: RailItem)
     protected open fun selectedFiles(): IntRange? = null
+    /** Reading views can mark semantic search results beside the source and on the folder rail. */
+    protected open fun resultTrace(): SummaryTrace? = null
+
+    private fun resultColor(identity: String): Color? {
+        val trace = resultTrace() ?: return null
+        if (trace.related.none { it.identity == identity }) return null
+        return if (trace.best?.identity == identity) TraceStyle.BEST_MATCH else TraceStyle.RELATED
+    }
+
+    private fun markResult(component: JComponent, identity: String) {
+        val color = resultColor(identity) ?: return
+        val opaque = component.isOpaque
+        val background = component.background
+        component.isOpaque = true
+        component.background = color
+        installTraceDecorationReset(component) {
+            component.isOpaque = opaque
+            component.background = background
+            component.repaint()
+        }
+    }
+
+    private fun resultBadge(identity: String): JLabel? {
+        val trace = resultTrace() ?: return null
+        val match = trace.related.firstOrNull { it.identity == identity } ?: return null
+        val title = if (trace.best?.identity == identity) "● Best match" else "● Related"
+        return JLabel("$title · ${(match.probability * 100).roundToInt()}%").apply {
+            name = "match:$identity"
+            font = cardFont(JBFont.small())
+            foreground = TraceStyle.MATCH_TEXT
+            toolTipText = matchLabel(match, trace)
+            installTraceDecorationReset(this) {
+                preferredSize = preferredSize
+                text = ""
+                name = null
+                toolTipText = null
+            }
+        }
+    }
     /** "1 file", "3 files": what a rail card or its summary spans. */
     protected open fun countLabel(count: Int): String = if (count == 1) "1 file" else "$count files"
     /** The sticky heading of a section; a file's path and facts by default. */
@@ -314,7 +355,8 @@ internal abstract class DocumentColumnsPanel(
         showCardSummary(active?.takeUnless { it.placeholder })
         rail.forEach { (item, component) ->
             component.border = railBorder(item, item == active || (hovered == null && item.key in sourceCards))
-            component.background = if (!item.placeholder && isSelected(item)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
+            component.background = resultColor(item.key)
+                ?: if (!item.placeholder && isSelected(item)) UIUtil.getListSelectionBackground(false) else UIUtil.getListBackground()
         }
         activeChanged(active)
         repaint()
@@ -364,6 +406,7 @@ internal abstract class DocumentColumnsPanel(
         add(JLabel("${item.summaryLabel} · ${countLabel(item.last - item.first + 1)}").apply { font = cardFont(JBFont.small()); foreground = help })
         val summary = item.summary
         add(summaryBody(item.key, summary, item.missingSummary, inner))
+        markResult(this, item.key)
         toolTipText = "Summary of ${item.tooltip} · LLM interpretation"
         preferredSize = Dimension(width, preferredSize.height)
     }
@@ -412,10 +455,18 @@ internal abstract class DocumentColumnsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
         }, BorderLayout.CENTER)
-        vocabulary.showOnCanvas?.let { label ->
-            add(InplaceButton(IconButton(label, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showFile(file) }
-                .apply { cursor = Cursor.getDefaultCursor(); toolTipText = label }, BorderLayout.EAST)
-        }
+        add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
+            isOpaque = false
+            resultBadge("file:${file.path}")?.let(::add)
+            wholeFileAction(file)?.let { open ->
+                add(ActionLink("Open file") { open() }.apply { font = cardFont(JBFont.small()) })
+            }
+            vocabulary.showOnCanvas?.let { label ->
+                add(InplaceButton(IconButton(label, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showFile(file) }
+                    .apply { cursor = Cursor.getDefaultCursor(); toolTipText = label })
+            }
+        }, BorderLayout.EAST)
+        markResult(this, "file:${file.path}")
     }
 
     /** The summary's margin beside its whole section, so the note stays in view while the diff beside it scrolls. */
@@ -431,6 +482,7 @@ internal abstract class DocumentColumnsPanel(
         border = noteBorder(false)
         toolTipText = "Summary of ${file.path} · LLM interpretation"
         add(noteBody(file, summary, missingSummary, width - cardScaled(NOTE_INSET) - cardScaled(2)), BorderLayout.CENTER)
+        markResult(this, "file:${file.path}")
         preferredSize = Dimension(width, preferredSize.height)
     }
 
@@ -451,9 +503,14 @@ internal abstract class DocumentColumnsPanel(
                 add(title, BorderLayout.CENTER)
             })
             add(JLabel(countLabel(item.last - item.first + 1)).apply { font = cardFont(JBFont.small()); foreground = help })
+            resultBadge(item.key)?.let(::add)
+            directoryDiffAction(item)?.let { open ->
+                add(ActionLink("View diff") { open() }.apply { font = cardFont(JBFont.small()) })
+            }
         }
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
+        markResult(this, item.key)
         toolTipText = item.tooltip
         if (item.placeholder) return@apply
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -467,6 +524,7 @@ internal abstract class DocumentColumnsPanel(
             override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) { select(item); applyActive() } }
         }
         fun attach(component: Component) {
+            if (component is ActionLink) return
             component.addMouseListener(listener)
             (component as? JComponent)?.toolTipText = item.tooltip
             if (component is Container) component.components.forEach(::attach)

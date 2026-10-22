@@ -135,24 +135,36 @@ class ChangeSummarizer internal constructor(
         save: suspend (Map<Int, String>) -> ChangeSummaries,
         onToolCall: suspend (ToolCallEvent) -> Unit = {},
         onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> },
+        /** Limits generation to these nodes; existing text outside them is only context. */
+        nodeIds: Set<Int>? = null,
+        /** Adds query context without changing the normal summary instructions or the explicit /summaries focus. */
+        queryContext: String = "",
     ): ChangeSummaryRun {
         var current = start
         val tries = HashMap<Int, Int>()
         val requests = AtomicInteger()
         var error: String? = null
         val mutex = Mutex()
-        val leafSystem = evidence.leafSystem(start.tree, focus)
-        val branchSystem = evidence.branchSystem(focus)
-        onProgress(current.count, current.total)
+        val context = if (queryContext.isBlank()) "" else "\n\n" + """
+            The reader is exploring this query: ${queryContext.clipLine(2_000)}
+            Use the query as context to ground these summaries in the responsibilities and behavior relevant to it.
+            Keep writing summaries of the supplied evidence, rather than answering the query as a question.
+            Emphasize concrete relevant details where the evidence supports them; do not invent a connection.
+        """.trimIndent()
+        val leafSystem = evidence.leafSystem(start.tree, focus) + context
+        val branchSystem = evidence.branchSystem(focus) + context
+        suspend fun progress() = onProgress(
+            nodeIds?.count { current.text(it) != null } ?: current.count, nodeIds?.size ?: current.total)
+        progress()
         while (true) {
-            val ready = current.ready().filter { (tries[it] ?: 0) < options.attempts }.sorted()
+            val ready = current.ready().filter { (nodeIds == null || it in nodeIds) && (tries[it] ?: 0) < options.attempts }.sorted()
             if (ready.isEmpty()) break
             val (reused, asked) = ready.map { current.tree[it] }.partition { it.children.size == 1 }
             if (reused.isNotEmpty()) {
                 val texts = reused.associate { it.id to current.text(it.children.single())!! }
                 mutex.withLock {
                     current = save(texts)
-                    onProgress(current.count, current.total)
+                    progress()
                 }
                 continue
             }
@@ -173,12 +185,13 @@ class ChangeSummarizer internal constructor(
                 }
                 if (texts.isNotEmpty()) mutex.withLock {
                     current = save(texts)
-                    onProgress(current.count, current.total)
+                    progress()
                 }
             }
             // Missing nodes remain eligible until their attempt budget is spent, even after an empty wave.
         }
-        return ChangeSummaryRun(current, requests.get(), error.takeIf { !current.complete })
+        val complete = nodeIds?.all { current.text(it) != null } ?: current.complete
+        return ChangeSummaryRun(current, requests.get(), error.takeIf { !complete })
     }
 
     private fun cut(node: SummaryNode): Boolean = evidence.size(node) > options.patchChars

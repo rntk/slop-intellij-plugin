@@ -173,6 +173,8 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
     val count: Int get() = texts.size
     val total: Int get() = tree.summarizable.size
     val complete: Boolean get() = missing().isEmpty()
+    /** Starts a separate version, retaining the text outside the requested nodes. */
+    fun without(ids: Set<Int>): ChangeSummaries = ChangeSummaries(tree, texts.filterKeys { it !in ids })
     fun missing(): List<Int> = tree.summarizable.filter { it.id !in texts }.map { it.id }
     /** Missing nodes whose children are all summarized: leaves (files and parts), then the rest from the deepest, which can be written now. */
     fun ready(): List<Int> = tree.summarizable
@@ -193,7 +195,9 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
      * Validates the whole batch before anything changes. A folder, group or the root needs every child summarized, before or in
      * the same batch, so summaries are written from the bottom up. A parent with a single child reuses that child's summary.
      */
-    fun summarize(entries: Map<Int, String>): ChangeSummaries {
+    fun summarize(entries: Map<Int, String>): ChangeSummaries = summarize(entries, reuseSingleChildren = true)
+
+    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ChangeSummaries {
         if (tree.summarizable.isEmpty()) throw ToolInputException("There are no files to summarize.")
         if (entries.isEmpty()) throw ToolInputException("Add at least one summary.")
         if (entries.size > MAX_PER_CALL) throw ToolInputException("Add at most $MAX_PER_CALL summaries per call.")
@@ -209,7 +213,7 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
             if (waiting.isNotEmpty()) throw ToolInputException("Node $id: summarize its children first (ids ${waiting.joinToString()}), " +
                 "then write its summary from theirs. Nothing was saved.")
         }
-        for (node in tree.nodes.asReversed()) if (node.id !in entries && node.children.size == 1)
+        for (node in tree.nodes.asReversed()) if (reuseSingleChildren && node.id !in entries && node.children.size == 1)
             next[node.children.single()]?.let { next[node.id] = it }
         return ChangeSummaries(tree, next)
     }
