@@ -613,21 +613,22 @@ internal class NoteCanvas(
     /** Level n shows topic levels 1..n+1 and folds the rest, as in the article hierarchy; the last level shows every file. */
     private fun topicLevels(outline: TopicOutline): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
         isOpaque = false
+        val selector = JComboBox((0..outline.depth).map { level ->
+            if (level == outline.depth) "Files" else "${level + 1}"
+        }.toTypedArray()).apply {
+            name = "topic-level-selector"
+            font = scaledFont(JBFont.small())
+            selectedIndex = topicsView.effectiveLevel(outline)
+            toolTipText = if (topicsView.mode == ChangeTopicsMode.DOCUMENT)
+                "Show topic rail levels through the selected level; Files shows every rail level"
+            else "Show topic levels through the selected level; Files shows every topic and file"
+            addActionListener { topicsView.selectLevel(selectedIndex, outline); refreshCard(TOPICS_KEY) }
+        }
         add(JLabel("Levels").apply {
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
+            labelFor = selector
         })
-        val group = ButtonGroup()
-        val current = topicsView.effectiveLevel(outline)
-        for (level in 0..outline.depth) add(JToggleButton(if (level == outline.depth) "Files" else "${level + 1}", level == current).apply {
-            name = "level:$level"
-            font = scaledFont(JBFont.small())
-            cursor = Cursor.getDefaultCursor()
-            toolTipText = if (topicsView.mode == ChangeTopicsMode.DOCUMENT)
-                if (level == outline.depth) "Show every topic rail level" else "Show topic rail levels 1–${level + 1}"
-            else if (level == outline.depth) "Show every topic level and file" else "Show topic levels 1–${level + 1}"
-            group.add(this)
-            addActionListener { topicsView.selectLevel(level, outline); refreshCard(TOPICS_KEY) }
-        })
+        add(selector)
     }
 
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
