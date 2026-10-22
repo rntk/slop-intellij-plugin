@@ -604,7 +604,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             toggleButton("Outline").doClick(); layoutTree(canvas)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
             assertTrue(descendants(canvas).none { it.name?.startsWith("details:") == true })
-            assertTrue((descendants(canvas).single { it.name == "summary-name:directory:src" } as JLabel).text.contains("folder · 3 files"))
+            val folderHeader = descendants(canvas).single { it.name == "summary-name:directory:src" } as JLabel
+            assertEquals("src/ · folder · 3 files", folderHeader.text)
+            assertTrue(folderHeader.toolTipText.contains("/repo/src/"))
         } finally { canvas.dispose() }
     }
 
@@ -982,16 +984,20 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue("Scoring alone must not search candidates", searched.isEmpty())
             assertNull(canvas.summariesView.selected)
             assertEquals(3, rootText().highlighter.highlights.size)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("Click a highlighted word"))
+            assertTrue((named("trace-status").single() as JLabel).text.contains("Right-click a scored word"))
 
-            // Clicking a context word searches the original query, without rescoring that word.
+            // A left click on a scored word must not search, so it cannot conflict with selecting words by hand.
             clickWord("Deleted")
+            assertTrue("Clicking a scored word must not search", searched.isEmpty())
+
+            // Choosing Search from a context word's context menu searches the original query, without rescoring that word.
+            searchScoredWord(canvas, rootText(), "Deleted")
             assertEquals(scoredCount, traced.size)
             assertEquals("hierarchy", searched.single().word.text)
             assertTrue((named("trace-status").single() as JLabel).text.contains("Searching"))
             assertEquals("Starting a search must not move rows", beforeHover, rowBounds())
-            clickWord("views")
-            assertEquals("Repeated clicks must not start overlapping searches", 1, searched.size)
+            searchScoredWord(canvas, rootText(), "views")
+            assertEquals("Repeated searches must not start overlapping searches", 1, searched.size)
             val context = searched.single()
             val result = SummaryTrace("root", root, context.word, context.context, context.query,
                 listOf(SummaryMatch(hierarchy.id, hierarchy.identity, 0.9, 1), SummaryMatch(canvasFile.id, canvasFile.identity, 0.1, 1)), 3)
@@ -1007,15 +1013,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
             // The traced word and its two context words are highlighted, not the siblings.
             assertEquals(3, rootText().highlighter.highlights.size)
 
-            clickWord("hierarchy")
-            assertEquals("Hover and clicks never request scoring", scoredCount, traced.size)
+            searchScoredWord(canvas, rootText(), "hierarchy")
+            assertEquals("Hover and searches never request scoring", scoredCount, traced.size)
             assertEquals("Completed searches are reused", 1, searched.size)
 
             // Moving onto another cached word cancels pending searches and ignores their late results.
-            clickWord("canvas")
-            clickWord("canvas")
+            searchScoredWord(canvas, rootText(), "canvas")
+            searchScoredWord(canvas, rootText(), "canvas")
             assertEquals(2, searched.size)
-            clickWord("hierarchy")
+            hoverWord("hierarchy")
             assertTrue(searchJobs.last().isCancelled)
             finishSearch!!(Result.success(result))
             assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
@@ -1082,6 +1088,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
         layoutTree(canvas)
     }
 
+    /** Chooses Search from the context menu of the scored [word] in [area], as a right click on it does. */
+    private fun searchScoredWord(canvas: Container, area: javax.swing.JTextArea, word: String) {
+        val box = area.modelToView2D(area.text.indexOf(word) + 1)
+        val item = selectionMenu(area, Point(box.centerX.toInt(), box.centerY.toInt()))!!
+            .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-selection" }
+        item.doClick()
+        layoutTree(canvas)
+    }
+
     fun testSummariesHierarchyTracesFoldedSummariesAndOpensThePathToTwoLevelsBelow() {
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
@@ -1127,8 +1142,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(sizeBeforeHover, panel().preferredSize)
             assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
             assertEquals(3, note("root").highlighter.highlights.size)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("Click a highlighted word"))
-            pointAtWord(canvas, note("root"), "hierarchy", MouseEvent.MOUSE_CLICKED)
+            assertTrue((named("trace-status").single() as JLabel).text.contains("Right-click a scored word"))
+            searchScoredWord(canvas, note("root"), "hierarchy")
             val context = launcher.searched.single()
             launcher.finish(context, 6,
                 SummaryMatch(hierarchyFile.id, hierarchyFile.identity, 0.9, 2),
@@ -1209,8 +1224,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("ui/canvas/Paint.kt", canvas.summariesView.tracing!!.file)
             assertEquals(3, area().highlighter.highlights.size)
             assertTrue(status().contains("find its lines in Paint.kt"))
+            val unscoredBox = area().modelToView2D(area().text.indexOf("the") + 1)
+            assertNull("A pointed menu on an unscored word must not fall back to the traced word",
+                selectionMenu(area(), Point(unscoredBox.centerX.toInt(), unscoredBox.centerY.toInt())))
 
             pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
+            assertTrue("Clicking a scored word must not search its lines", launcher.searchedLines.isEmpty())
+            searchScoredWord(canvas, area(), "border")
             val context = launcher.searchedLines.single()
             assertTrue("A file summary searches its lines, not summaries", launcher.searched.isEmpty())
             assertTrue(status().contains("Searching the lines of Paint.kt"))
@@ -1221,8 +1241,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(listOf(1), opened.single().second.after)
             assertTrue(status(), status().contains("Best match at Paint.kt:1 · 80%"))
 
-            // Clicking a highlight again reopens the found lines without searching again.
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
+            // Choosing Search on a highlight again reopens the found lines without searching again.
+            searchScoredWord(canvas, area(), "border")
             assertEquals(2, opened.size)
             assertEquals(1, launcher.searchedLines.size)
         } finally {
@@ -1319,6 +1339,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(3, area().highlighter.highlights.size)
             assertTrue(launcher.searchedLines.isEmpty())
             pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
+            assertTrue("Clicking a scored word must not search its lines", launcher.searchedLines.isEmpty())
+            searchScoredWord(canvas, area(), "border")
             val context = launcher.searchedLines.single()
             assertTrue(launcher.searched.isEmpty())
             val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
@@ -1328,7 +1350,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(context.identity, opened.single().first.identity)
             assertEquals(listOf(1), opened.single().second.after)
             assertTrue((named("trace-status") as JLabel).text.contains("Best match at Paint.kt:1"))
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
+            searchScoredWord(canvas, area(), "border")
             assertEquals(2, opened.size)
             assertEquals(1, launcher.searchedLines.size)
         } finally { canvas.dispose() }
@@ -1377,7 +1399,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             pointAtWord(canvas, note("0:storage"), "auth", MouseEvent.MOUSE_MOVED)
             assertEquals("auth", canvas.topicsView.tracing!!.word.text)
             assertEquals(3, note("0:storage").highlighter.highlights.size)
-            pointAtWord(canvas, note("0:storage"), "auth", MouseEvent.MOUSE_CLICKED)
+            searchScoredWord(canvas, note("0:storage"), "auth")
             val context = launcher.searched.single()
             fun match(identity: String, probability: Double, levels: Int) =
                 SummaryMatch(reading.tree.nodes.single { it.identity == identity }.id, identity, probability, levels)
@@ -1490,7 +1512,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    fun testSummariesAlwaysShowInlineMetadataAndSummaryClicksToggleChildren() {
+    fun testSummariesShowOnlyFileNamesWithMetadataInTooltipsAndSummaryClicksToggleChildren() {
         val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
@@ -1510,11 +1532,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             assertEquals(listOf("Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
             assertTrue(descendants(canvas).none { it.name == "summaries-show-names" })
-            assertTrue(header("root").text.startsWith("ui/ · All changes · 2 files"))
+            assertEquals("ui/ · All changes · 2 files", header("root").text)
+            assertTrue(header("root").toolTipText.contains("/repo/ui/"))
             val fileHeader = header("file:ui/canvas/Canvas.kt")
-            assertTrue(fileHeader.text.startsWith("canvas/Canvas.kt · modified file"))
-            assertTrue(fileHeader.text.contains("/repo/ui/canvas/Canvas.kt"))
-            assertEquals(fileHeader.text, fileHeader.toolTipText)
+            assertEquals("Canvas.kt", fileHeader.text)
+            assertTrue(fileHeader.toolTipText.contains("modified file"))
+            assertTrue(fileHeader.toolTipText.contains("ui/canvas/Canvas.kt"))
+            assertTrue(fileHeader.toolTipText.contains("/repo/ui/canvas/Canvas.kt"))
             val rootSummary = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single { it.text == "Summary of root." }
             click(rootSummary)
             assertFalse("root" in canvas.summariesView.expanded)

@@ -173,9 +173,9 @@ internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries,
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
     state.scored.isEmpty() -> "Click Score to precalculate word contexts for " + scoredSummaries(state) +
         if (selection) ", or select text and right-click Search." else "."
-    state.traceLeaves -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries, " +
+    state.traceLeaves -> "Hover over a scored word to highlight its context. Right-click a scored word and choose Search to search related summaries, " +
         "or a file's lines."
-    else -> "Hover over a scored word to highlight its context. Click a highlight to search related summaries."
+    else -> "Hover over a scored word to highlight its context. Right-click a scored word and choose Search to search related summaries."
 }
 
 /** Which summaries Score covers: "the summaries shown now", "summaries with children". */
@@ -185,7 +185,7 @@ internal fun scoredSummaries(state: SummaryTraceState): String = when {
 }
 
 /** The query and progress of a trace; [where] says where its matches are shown. */
-internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted below. Click a highlighted word to jump to the best."): String {
+internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted below. Right-click a scored word and choose Search to jump to the best."): String {
     val trace = tracing.trace
     val levels = "the ${SummaryTracer.LEVELS} levels below"
     val lines = tracing.lines
@@ -193,13 +193,13 @@ internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted b
     return when {
         tracing.error != null -> "Tracing “${tracing.word.text}” failed: ${tracing.error}"
         tracing.context == null -> "Scoring the words around “${tracing.word.text}”…"
-        file != null && lines == null && !tracing.searchRequested -> "“${tracing.context.query}” · Click a highlighted word to find its lines in $file."
+        file != null && lines == null && !tracing.searchRequested -> "“${tracing.context.query}” · Right-click a scored word and choose Search to find its lines in $file."
         file != null && lines == null -> "“${tracing.context.query}” · Searching the lines of $file…"
         lines != null && lines.blocks.isEmpty() -> "“${lines.query}” · $file has no lines to search."
         lines != null && lines.best == null -> "“${lines.query}” · None of the ${lines.blocks.size} blocks of $file is related."
         lines != null -> "“${lines.query}” · Best match at ${lines.label} · ${(lines.best!!.probability * 100).roundToInt()}%, " +
-            "opened and highlighted. Click a highlighted word to open it again."
-        trace == null && !tracing.searchRequested -> "“${tracing.context.query}” · Click a highlighted word to search related summaries."
+            "opened and highlighted. Right-click a scored word and choose Search to open it again."
+        trace == null && !tracing.searchRequested -> "“${tracing.context.query}” · Right-click a scored word and choose Search to search related summaries."
         trace == null -> "“${tracing.context.query}” · Searching the summaries in $levels…"
         trace.candidates == 0 -> "“${trace.query}” · There are no summaries below this one to search."
         trace.related.isEmpty() -> "“${trace.query}” · None of the ${trace.candidates} summaries in $levels is related."
@@ -213,9 +213,11 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
 }
 
 /**
- * Moving the pointer over a scored word of [summary] immediately shows its cached context; clicking a highlight searches for
- * matches. The traced word is marked strongly and its context, the words the query keeps, lightly. A click beside the words
- * calls [select]. With [searchSelection], right-clicking selected text offers to search for it, scored or not.
+ * Moving the pointer over a scored word of [summary] immediately shows its cached context. A left click on a scored word
+ * does not search, so the reader can place the caret or select words there; searching starts only from the context menu:
+ * right-clicking a scored word offers Search for that word, as right-clicking selected text does. The traced word is marked
+ * strongly and its context, the words the query keeps, lightly. A click beside the words calls [select]. With
+ * [searchSelection], right-clicking selected text offers to search for it, scored or not.
  */
 internal fun installWordTracing(
     area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
@@ -252,6 +254,30 @@ internal fun installWordTracing(
     fun highlighted(word: SummaryWord) = tracing()?.let { current ->
         word.index == current.word.index || current.context?.context?.any { it.index == word.index } == true
     } == true
+    fun contextMenu(point: Point?): JPopupMenu? {
+        val start = area.selectionStart
+        val end = area.selectionEnd
+        if (searchSelection != null && start != end) return JPopupMenu().apply {
+            add(JMenuItem("Search").apply {
+                name = "search-selection"
+                isEnabled = selectionContext(identity, summary, start, end) != null
+                toolTipText = "Search for the selected words"
+                addActionListener { searchSelection(identity, start, end) }
+            })
+        }
+        // A supplied point must hit a scored word itself; only a point-less menu may fall back to the traced or caret word.
+        val word = if (point != null) wordAt(point) else tracing()?.word?.takeIf { state.cached(identity, summary, it.index) != null }
+            ?: words.firstOrNull { area.caretPosition in it.start..it.end }
+                ?.takeIf { it.meaningful && state.cached(identity, summary, it.index) != null }
+        if (word == null) return null
+        return JPopupMenu().apply {
+            add(JMenuItem("Search").apply {
+                name = "search-selection"
+                toolTipText = "Search for “${word.text}” and the words in its context"
+                addActionListener { trace(identity, word.index, true) }
+            })
+        }
+    }
     val pointer = object : MouseAdapter() {
         override fun mouseMoved(e: MouseEvent) {
             val word = wordAt(e.point)
@@ -261,8 +287,8 @@ internal fun installWordTracing(
 
         override fun mouseClicked(e: MouseEvent) {
             if (e.clickCount != 1 || !SwingUtilities.isLeftMouseButton(e)) return
-            val word = wordAt(e.point)
-            if (word == null) select() else trace(identity, word.index, highlighted(word))
+            // A scored word is left alone so the click can place the caret or start a manual selection instead of searching.
+            if (wordAt(e.point) == null) select()
         }
 
         override fun mousePressed(e: MouseEvent) = popup(e)
@@ -270,32 +296,28 @@ internal fun installWordTracing(
 
         private fun popup(e: MouseEvent) {
             if (!e.isPopupTrigger || !area.isShowing) return
-            selectionMenu(area)?.show(area, e.x, e.y)
+            val menu = contextMenu(e.point) ?: return
+            menu.show(area, e.x, e.y)
             e.consume()
         }
     }
-    if (searchSelection != null) area.putClientProperty(SELECTION_MENU, {
-        val start = area.selectionStart
-        val end = area.selectionEnd
-        if (start == end) null else JPopupMenu().apply {
-            add(JMenuItem("Search").apply {
-                name = "search-selection"
-                isEnabled = selectionContext(identity, summary, start, end) != null
-                toolTipText = "Search for the selected words, as clicking a scored word does"
-                addActionListener { searchSelection(identity, start, end) }
-            })
-        }
-    })
+    area.putClientProperty(SELECTION_MENU, { point: Point? -> contextMenu(point) })
     area.addMouseListener(pointer)
     area.addMouseMotionListener(pointer)
 }
 
 private val SELECTION_MENU = Any()
 
-/** The menu for the text selected in a summary, or null without a selection or where selections are not searched. */
-internal fun selectionMenu(area: JTextArea): JPopupMenu? {
+/**
+ * The context menu for a summary: Search for the selected text, or for the scored word under the pointer (or the word
+ * currently traced, without a point). Null with neither a selection nor a scored word.
+ */
+internal fun selectionMenu(area: JTextArea): JPopupMenu? = selectionMenu(area, null)
+
+/** The context menu for a summary at [point]; see [selectionMenu]. */
+internal fun selectionMenu(area: JTextArea, point: Point?): JPopupMenu? {
     @Suppress("UNCHECKED_CAST")
-    return (area.getClientProperty(SELECTION_MENU) as? (() -> JPopupMenu?))?.invoke()
+    return (area.getClientProperty(SELECTION_MENU) as? ((Point?) -> JPopupMenu?))?.invoke(point)
 }
 
 private val WORD_TRACING_UPDATE = Any()
@@ -414,8 +436,8 @@ internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabu
 }
 
 /**
- * Scoring publishes [context] first. A click requests the separate search and selects its best match; for the summary of a
- * [file] or part, it searches the file's [lines] and opens the best ones.
+ * Scoring publishes [context] first. Choosing Search from a scored word's context menu requests the separate search and
+ * selects its best match; for the summary of a [file] or part, it searches the file's [lines] and opens the best ones.
  */
 internal data class SummaryTracing(
     val identity: String,
@@ -441,8 +463,8 @@ internal interface SummaryTraceLauncher {
 
 /**
  * Prescoring and searching for one card's [content], kept in [state]; [update] repaints contexts and progress in place,
- * [refresh] rebuilds changed search results. Hover reads saved contexts synchronously; clicking a highlight searches the
- * levels below, or the lines of a file, which [openLines] opens.
+ * [refresh] rebuilds changed search results. Hover reads saved contexts synchronously; choosing Search from a scored
+ * word's context menu searches the levels below, or the lines of a file, which [openLines] opens.
  * Late results of a replaced run are ignored.
  */
 internal class SummaryTraceSession(
@@ -509,11 +531,12 @@ internal class SummaryTraceSession(
         traceJob?.cancel()
         val context = state.cached(identity, text, word) ?: return
         val file = node.path.takeIf { node.children.isEmpty() && node.file != null }
-        state.tracing = SummaryTracing(identity, text, words[word], context = context, file = file)
+        state.tracing = SummaryTracing(identity, text, words[word], context = context, file = file, searchRequested = search)
         updatePresentation()
+        if (search) search()
     }
 
-    /** Searches for the words selected in [identity]'s summary, as a click on a highlight does, without needing Score. */
+    /** Searches for the words selected in [identity]'s summary, as Search on a scored word does, without needing Score. */
     fun searchSelection(identity: String, start: Int, end: Int) {
         if (launcher == null) return
         val content = content() ?: return
@@ -600,9 +623,9 @@ internal class ChangeSummaryActions(
     val select: (String) -> Unit,
     val openFile: (String) -> Unit,
     val showDiffCard: (String) -> Unit,
-    /** Scores word [Int]; with `true`, clicking a highlight requests a search and selects the best match. */
+    /** Scores word [Int]; with `true`, Search from a scored word's context menu requests a search and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
-    /** Searches the selected characters of a summary like a clicked highlight; null hides the context menu. */
+    /** Searches the selected characters of a summary like Search on a scored word; null hides the selection's context menu. */
     val searchSelection: ((String, Int, Int) -> Unit)? = null,
     /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
@@ -723,7 +746,7 @@ internal class ChangeSummariesPanel(
         SummaryKind.ROOT -> node.location
     }
 
-    /** One stable header line, with the full metadata available in its tooltip when the row is narrow. */
+    /** Headers use local names; full paths and metadata remain available in the tooltip. */
     private fun header(node: SummaryNode, width: Int): JPanel {
         val count = plural(node.files.size, "file")
         val title = when (node.kind) {
@@ -740,7 +763,14 @@ internal class ChangeSummariesPanel(
         }
         val metadata = (listOf(title) + listOfNotNull(node.location, absolute).distinct()
             .filter { it != displayName(node) }).joinToString(" · ")
-        val nameText = label(metadata, font(JBFont.small().asBold()), help).apply {
+        val heading = when (node.kind) {
+            SummaryKind.FILE -> node.path.substringAfterLast('/')
+            SummaryKind.DIRECTORY -> "${node.path.substringAfterLast('/')}/ · folder · $count"
+            SummaryKind.ROOT -> "${node.path.substringAfterLast('/').ifEmpty { "." }}/ · ${vocabulary.rootName} · $count"
+            SummaryKind.GROUP -> "${node.label} · ${node.children.size} entries · $count"
+            SummaryKind.CHUNK -> title
+        }
+        val nameText = label(heading, font(JBFont.small().asBold()), help).apply {
             name = "summary-name:${node.identity}"
             toolTipText = metadata
         }

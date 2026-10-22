@@ -123,7 +123,7 @@ class SummaryTracer(
         return SummaryContext(node.identity, summary, word, context, query)
     }
 
-    /** Uses the already scored context after the reader clicks a highlighted word. */
+    /** Uses the already scored context after the reader chooses Search from a scored word's context menu. */
     suspend fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext): SummaryTrace {
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
@@ -135,7 +135,7 @@ class SummaryTracer(
     }
 
     /**
-     * A file's summary has no summaries below it, so a click searches the file instead: every block of its source, or of its
+     * A file's summary has no summaries below it, so Search searches the file instead: every block of its source, or of its
      * diff's changed lines, gets a Noul for the query; then each candidate line of the best block gets one, so the reader is
      * shown the lines that do it rather than the whole block. Only the first [maxBlocks] blocks are searched.
      */

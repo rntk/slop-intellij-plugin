@@ -141,7 +141,7 @@ internal class ChangeTopicsViewState(
 
 /**
  * [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. [trace] scores word
- * [Int] of a summary; with `true`, a click on a highlight searches and opens the path to the matches.
+ * [Int] of a summary; with `true`, Search from a scored word's context menu searches and opens the path to the matches.
  */
 internal class ChangeTopicActions(
     val openFile: (String) -> Unit,
