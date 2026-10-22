@@ -126,7 +126,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
                 if (file == big) assertEquals("val line620 = 620", source.line(619))
             }
             // Level controls keep every file and path card, even while the folders are limited to the root.
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summary-level:0" }.doClick()
+            (descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>).selectedItem = 1
+            (descendants(canvas).single { it.name == "summary-fold" } as javax.swing.JButton).doClick()
             layoutTree(canvas)
             assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
             assertEquals(3, panel().components.count { it.name?.startsWith("node:file:") == true })
@@ -264,6 +265,30 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         // Opening a file by hand does not change the level the folders show.
         state.toggle(file.identity)
         assertEquals(levels, state.shownLevel(chunked))
+    }
+
+    fun testLevelActionsOverrideSearchExpansionAndApplyToNewFolders() {
+        val files = listOf(Source("root.kt")) + (1..6).map { depth ->
+            Source((1..depth).joinToString("/") { "dir$it" } + "/file$depth.kt")
+        }
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree)
+        val state = ChangeSummariesViewState().apply { update(tree); fuzzy = "file6"; selectedLevel = 4 }
+        val deep = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && tree.depth(it.id) == 4 }
+        assertTrue(state.isOpen(deep, summaries))
+        state.selectLevel(4, tree)
+        assertFalse("Search must not reopen a deeper folder", state.isOpen(deep, summaries))
+        state.foldLevel(4, tree)
+        for (node in tree.nodes.filter(::isFolderBranch)) {
+            assertEquals(node.identity, tree.depth(node.id) < 3, state.isOpen(node, summaries))
+        }
+        assertEquals(4, state.fork().selectedLevel)
+
+        val updated = buildSummaryTree(files + listOf(Source("dir1/new/one.kt"), Source("dir1/new/two.kt"),
+            Source("dir1/dir2/dir3/new/one.kt"), Source("dir1/dir2/dir3/new/two.kt")))
+        state.update(updated)
+        assertTrue("directory:dir1/new" in state.expanded)
+        assertFalse("directory:dir1/dir2/dir3/new" in state.expanded)
     }
 
     fun testCanvasFileTitleComesFromTheOwner() {

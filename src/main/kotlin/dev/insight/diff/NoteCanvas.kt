@@ -673,7 +673,7 @@ internal class NoteCanvas(
                 isOpaque = false
                 if (document) add(documentZoomControls(key))
                 val summaries = content.summaries
-                if ((hierarchy || document) && branchLevels > 0) add(summaryLevels(tab, tree, branchLevels))
+                if (branchLevels > 0) add(summaryLevels(tab, tree, branchLevels))
                 val group = ButtonGroup()
                 ChangeSummariesMode.entries.forEach { mode ->
                     add(JToggleButton(when (mode) {
@@ -1025,24 +1025,41 @@ internal class NoteCanvas(
         })
     }
 
-    /** Level n shows folder levels 1..n+1 and folds the rest, as in the topic hierarchy; the last level shows every file. */
-    private fun summaryLevels(tab: SummariesTab, tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+    /** Pick a 1-based folder level, then fold from it or unfold through it. */
+    private fun summaryLevels(tab: SummariesTab, tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
         isOpaque = false
         val summariesView = tab.view
-        add(JLabel("Levels").apply {
+        val selector = JComboBox((1..levels).toList().toTypedArray()).apply {
+            name = "summary-level-selector"
+            font = scaledFont(JBFont.small())
+            selectedItem = summariesView.selectedLevel.coerceIn(1, levels)
+            toolTipText = "Folder level (root is level 1); choose Fold or Unfold to apply"
+            addActionListener { summariesView.selectedLevel = selectedItem as Int }
+        }
+        add(JLabel("Level").apply {
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
+            labelFor = selector
         })
-        val group = ButtonGroup()
-        val current = summariesView.shownLevel(tree)
-        for (level in 0..levels) add(JToggleButton(if (level == levels) "Files" else "${level + 1}", level == current).apply {
-            name = "summary-level:$level"
+        add(selector)
+        add(JButton("Fold").apply {
+            name = "summary-fold"
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
-            toolTipText = if (summariesView.mode == ChangeSummariesMode.DOCUMENT)
-                if (level == levels) "Show every folder rail level" else "Show folder rail levels 1–${level + 1}"
-            else if (level == levels) "Show every folder level and file" else "Show folder levels 1–${level + 1}"
-            group.add(this)
-            addActionListener { summariesView.selectLevel(level, tree); refreshSummaries(tab) }
+            toolTipText = "Fold folders at the selected level and deeper"
+            addActionListener {
+                summariesView.foldLevel(selector.selectedItem as Int, tree)
+                refreshSummaries(tab)
+            }
+        })
+        add(JButton("Unfold").apply {
+            name = "summary-unfold"
+            font = scaledFont(JBFont.small())
+            cursor = Cursor.getDefaultCursor()
+            toolTipText = "Unfold folders through the selected level; deeper folders stay folded"
+            addActionListener {
+                summariesView.selectLevel(selector.selectedItem as Int, tree)
+                refreshSummaries(tab)
+            }
         })
     }
 

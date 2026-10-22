@@ -82,6 +82,8 @@ internal abstract class HierarchyColumnsPanel(
         preferredSize = Dimension(maxOf(availableWidth, right), (bottom - scaled(ROW_GAP)).coerceAtLeast(0))
     }
 
+    protected open fun summaryFont(): Font = font(JBFont.label())
+
     /**
      * Text beside a leaf or folded card; it starts one column to the right and takes the rest of the width. A traced match is
      * tinted like its row in the outline.
@@ -91,7 +93,7 @@ internal abstract class HierarchyColumnsPanel(
         val width = (availableWidth - x).coerceAtLeast(scaled(MIN_SUMMARY_WIDTH))
         // The top inset matches the cards' so the first line sits level with the card title.
         val inset = scaled(CARD_PAD) + 2
-        val note = text(value, width - scaled(NOTE_INSET), if (written) font(JBFont.label()) else italic(JBFont.small()), if (written) null else help).apply {
+        val note = text(value, width - scaled(NOTE_INSET), if (written) summaryFont() else italic(JBFont.small()), if (written) null else help).apply {
             this.name = name
             border = EmptyBorder(inset, scaled(NOTE_INSET), inset, 0)
             toolTipText = if (written) "Summary · LLM interpretation" else null
@@ -111,7 +113,7 @@ internal abstract class HierarchyColumnsPanel(
     protected fun branchCard(
         name: String, title: String, family: String?, column: Int, files: Int, active: Boolean, tooltip: String,
         toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
-        caption: String? = null, openDiff: (() -> Unit)? = null, select: (() -> Unit)? = null,
+        caption: String? = null, openDiff: (() -> Unit)? = null, levelLabel: String? = null, select: (() -> Unit)? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
@@ -137,6 +139,7 @@ internal abstract class HierarchyColumnsPanel(
                     add(heading, BorderLayout.CENTER)
                 })
                 add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
+                levelLabel?.let { level -> add(JLabel(level).apply { font = font(JBFont.small()); foreground = help }) }
                 openDiff?.let { open -> add(ActionLink("View diff") { open() }.apply { font = font(JBFont.small()) }) }
                 badge?.let { add(badge(it, inner)) }
             }, BorderLayout.CENTER)
@@ -188,7 +191,7 @@ internal abstract class HierarchyColumnsPanel(
         open: () -> Unit, showOnCanvas: (() -> Unit)?, mark: TraceMark? = null, badge: String? = null,
         select: (() -> Unit)? = null,
         name: String = "file:${file.path}", tooltip: String = file.path, icon: Icon? = null, details: List<String>? = null,
-        openWholeFile: (() -> Unit)? = null,
+        levelLabel: String? = null, openWholeFile: (() -> Unit)? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
@@ -218,6 +221,7 @@ internal abstract class HierarchyColumnsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
             add(detailsLabel)
+            levelLabel?.let { level -> add(JLabel(level).apply { font = font(JBFont.small()); foreground = help }) }
             openWholeFile?.let { open -> add(ActionLink("Open file") { open() }.apply { font = font(JBFont.small()) }) }
             badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
         }

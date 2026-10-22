@@ -33,6 +33,9 @@ import kotlin.math.roundToInt
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
 internal data class SummariesCard(val summaries: ChangeSummaries, val running: Boolean, val canRun: Boolean)
 
+/** Summary prose is slightly larger than the surrounding labels, at every zoom level. */
+internal fun Font.forSummaryText(): Font = deriveFont(size2D * 1.15f)
+
 /**
  * A folder, group or the root: the branches that levels and "Files" open. A file with parts is a branch too, but is opened by
  * hand, so reading by level never unfolds every part of every large file.
@@ -385,8 +388,10 @@ internal class ChangeSummariesViewState(
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
-    /** The level picked in the hierarchy's switcher; nodes that appear later open to that level too. */
+    /** The last applied unfolding depth; nodes that appear later follow it too. */
     private var level: Int? = null
+    /** The 1-based level picked for the next Fold or Unfold action. Picking it does not change the tree. */
+    var selectedLevel = 1
     private var tree: ChangeSummaryTree? = null
 
     /** A search tab's searches, broadest first; each narrows the one before it. */
@@ -464,9 +469,11 @@ internal class ChangeSummariesViewState(
         this.tree = tree
         val small = tree.nodes.size <= SMALL_TREE
         val level = level
-        for (node in tree.nodes) if (seen.add(node.identity) && isFolderBranch(node) &&
-            (if (level != null) tree.depth(node.id) < level else small || node.kind == SummaryKind.ROOT))
-            expanded += node.identity
+        for (node in tree.nodes) if (seen.add(node.identity) && isFolderBranch(node)) {
+            if (if (level != null) tree.depth(node.id) < level else small || node.kind == SummaryKind.ROOT)
+                expanded += node.identity
+            else if (level != null) folded += node.identity
+        }
         if (tree.nodes.none { it.identity == selected }) selected = null
     }
 
@@ -481,8 +488,23 @@ internal class ChangeSummariesViewState(
     fun selectLevel(level: Int, tree: ChangeSummaryTree) {
         this.level = level
         for (node in tree.nodes) if (isFolderBranch(node)) {
-            if (tree.depth(node.id) < level) expanded += node.identity else expanded -= node.identity
+            if (tree.depth(node.id) < level) {
+                expanded += node.identity
+                folded -= node.identity
+            } else {
+                expanded -= node.identity
+                folded += node.identity
+            }
         }
+    }
+
+    /** Folds the selected 1-based level and everything deeper, keeping shallower folders as they are. */
+    fun foldLevel(level: Int, tree: ChangeSummaryTree) {
+        for (node in tree.nodes) if (isFolderBranch(node) && tree.depth(node.id) >= level - 1) {
+            expanded -= node.identity
+            folded += node.identity
+        }
+        this.level = minOf(this.level ?: branchLevels(tree), level - 1)
     }
 
     /** The level the current folding matches, if any; folding by hand can leave it between levels. */
@@ -555,6 +577,8 @@ internal class ChangeSummariesViewState(
         it.expanded += expanded
         it.seen += seen
         it.level = level
+        it.selectedLevel = selectedLevel
+        it.folded += folded
         it.tree = tree
         it.crumbs += crumbs
     }
@@ -898,7 +922,7 @@ internal class ChangeSummariesPanel(
         val activate = { if (node.children.isNotEmpty()) actions.toggle(node.identity) else actions.select(node.identity) }
         val header = header(node, textWidth)
         val missing = if (card.running) "summarizing…" else "no summary yet"
-        val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
+        val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(), null)
                 .also { area ->
                     if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection,
                         actions.searchTab.takeIf { node.children.isNotEmpty() }, activate)
@@ -984,6 +1008,9 @@ internal class ChangeSummariesPanel(
         }
         val links = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
             isOpaque = false
+            add(label("Level ${tree.depth(node.id) + 1}", font(JBFont.small()), help).apply {
+                name = "summary-level-label:${node.identity}"
+            })
             matches[node.identity]?.let { match ->
                 val badge = if (node.identity == best) "● Best match" else "● Related"
                 add(label("$badge · ${(match.probability * 100).roundToInt()}%", font(JBFont.small()), TraceStyle.MATCH_TEXT).apply {

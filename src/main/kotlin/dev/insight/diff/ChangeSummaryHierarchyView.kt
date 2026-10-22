@@ -31,6 +31,8 @@ internal class ChangeSummaryHierarchyPanel(
     private val trace = state.resultTrace
     private val marks = traceMarks(tree, trace)
 
+    override fun summaryFont() = super.summaryFont().forSummaryText()
+
     init {
         state.update(tree)
         cardWidth = measureCardWidth(tree.nodes.map(::title))
@@ -56,6 +58,7 @@ internal class ChangeSummaryHierarchyPanel(
         val component = branchCard("node:${node.identity}", title(node), family, column, node.files.size,
             node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node),
             caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null,
+            levelLabel = "Level ${column + 1}",
             openDiff = actions.directoryAction(node),
             select = { actions.select(node.identity) })
         val height = if (collapsed) {
@@ -93,6 +96,7 @@ internal class ChangeSummaryHierarchyPanel(
             select = { actions.select(node.identity) },
             name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
+            levelLabel = "Level ${column + 1}",
             openWholeFile = actions.wholeFileAction(node))
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection)
@@ -159,6 +163,7 @@ internal class ChangeSummaryDocumentPanel(
                     title = summaryNodeTitle(node),
                     family = family,
                     level = level,
+                    levelLabel = "Level ${tree.depth(node.id) + 1}",
                     first = first,
                     last = last,
                     tooltip = node.location,
@@ -185,6 +190,7 @@ internal class ChangeSummaryDocumentPanel(
                 family = generateSequence(node) { it.parent?.let(tree::get)?.takeUnless { parent -> parent.kind == SummaryKind.ROOT } }
                     .last().identity,
                 level = folderDepth,
+                levelLabel = "Level ${tree.depth(node.id) + 1}",
                 first = index,
                 last = index,
                 tooltip = node.path,
@@ -197,6 +203,8 @@ internal class ChangeSummaryDocumentPanel(
         val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
         layoutDocument(files, fileSummaries, items, depth, width, missing)
     }
+
+    override fun summaryFont() = super.summaryFont().forSummaryText()
 
     override fun resultTrace(): SummaryTrace? = state.resultTrace
 

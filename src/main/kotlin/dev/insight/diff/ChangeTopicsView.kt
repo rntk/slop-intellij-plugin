@@ -177,6 +177,7 @@ internal abstract class DocumentColumnsPanel(
         val summary: String? = null,
         val missingSummary: String = "No summary yet",
         val summaryLabel: String = "Summary",
+        val levelLabel: String? = null,
     )
 
     private val sections = mutableListOf<JComponent>()
@@ -268,9 +269,11 @@ internal abstract class DocumentColumnsPanel(
     protected open fun noteBody(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent =
         summaryBody("file:${file.path}", summary, missingSummary, width)
 
+    protected open fun summaryFont(): Font = cardFont(JBFont.label())
+
     /** A file or rail card's summary; reading views attach cached word tracing here. */
     protected open fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
-        if (summary != null) text(summary, width, cardFont(JBFont.label()), null)
+        if (summary != null) text(summary, width, summaryFont(), null)
         else text(missingSummary, width, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help)
 
     protected fun layoutDocument(
@@ -289,7 +292,7 @@ internal abstract class DocumentColumnsPanel(
             return
         }
         val railTitleMetrics = getFontMetrics(cardFont(JBFont.label().asBold()))
-        val summaryMetrics = getFontMetrics(cardFont(JBFont.label()))
+        val summaryMetrics = getFontMetrics(summaryFont())
         val wordBoundary = Regex("\\s+")
         fun longestWord(value: String, metrics: java.awt.FontMetrics): Int =
             value.split(wordBoundary).maxOfOrNull(metrics::stringWidth) ?: 0
@@ -503,6 +506,9 @@ internal abstract class DocumentColumnsPanel(
                 add(title, BorderLayout.CENTER)
             })
             add(JLabel(countLabel(item.last - item.first + 1)).apply { font = cardFont(JBFont.small()); foreground = help })
+            item.levelLabel?.let { level ->
+                add(JLabel(level).apply { font = cardFont(JBFont.small()); foreground = help })
+            }
             resultBadge(item.key)?.let(::add)
             directoryDiffAction(item)?.let { open ->
                 add(ActionLink("View diff") { open() }.apply { font = cardFont(JBFont.small()) })
