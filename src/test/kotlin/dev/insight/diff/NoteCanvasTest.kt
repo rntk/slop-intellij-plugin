@@ -101,6 +101,36 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testTopicAndSummarySearchFieldsFilterDocumentAndHierarchy() {
+        val files = listOf("src/wallet.kt", "src/cart.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val topics = ChangeTopics(files).assign(files[0].path, "Storage>Wallet").assign(files[1].path, "UI>Checkout")
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
+            .associate { it.id to if (it.path == files[0].path) "Persists balances" else "Renders the basket" })
+        val canvas = canvas().apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false))
+            fun field(name: String) = descendants(canvas).single { it.name == name } as com.intellij.ui.SearchTextField
+            fun shownFiles() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("file:") }.map { it.removePrefix("file:") }.toSet()
+            val topicField = field("topics-topic-search")
+            topicField.text = "checkout"
+            layoutTree(canvas)
+            assertEquals(setOf(files[1].path), shownFiles())
+            assertSame("The search field survives the rebuilt card", topicField, field("topics-topic-search"))
+            field("topics-summary-search").text = "balances"
+            layoutTree(canvas)
+            assertEquals(1, descendants(canvas).count { it.name == "topics-no-matches" })
+            topicField.text = ""
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            layoutTree(canvas)
+            val hierarchy = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
+            assertEquals(listOf(files[0].path), hierarchy.outline.files.map { it.path })
+            assertEquals("balances", field("topics-summary-search").text)
+        } finally { canvas.dispose() }
+    }
+
     fun testDocumentZoomReachesTenPercentWithButtonsAndWheel() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")

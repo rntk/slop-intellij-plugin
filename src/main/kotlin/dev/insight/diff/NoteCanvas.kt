@@ -138,6 +138,25 @@ internal class NoteCanvas(
             }
         }
     }
+    /** The topics card's search fields, kept across rebuilds of the card so typing never loses focus or caret. */
+    private val topicSearchField = topicsSearchField("topics-topic-search", "Filter topics",
+        "Hide files whose topic does not match the typed words (fuzzy)", { topicsView.topicFilter }) { topicsView.topicFilter = it }
+    private val topicSummarySearchField = topicsSearchField("topics-summary-search", "Filter summaries",
+        "Hide files whose name, path or summary does not match the typed words (fuzzy)", { topicsView.summaryFilter }) { topicsView.summaryFilter = it }
+
+    private fun topicsSearchField(name: String, empty: String, tooltip: String, get: () -> String, set: (String) -> Unit) =
+        SearchTextField(false).apply {
+            this.name = name
+            textEditor.emptyText.text = empty
+            toolTipText = tooltip
+            addDocumentListener(object : DocumentAdapter() {
+                override fun textChanged(e: DocumentEvent) {
+                    if (get() == text) return
+                    set(text)
+                    refreshTopics()
+                }
+            })
+        }
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
@@ -511,8 +530,9 @@ internal class NoteCanvas(
      */
     private fun topicsCard(content: TopicsCard): JPanel {
         val topics = content.topics
-        val outline = topicOutline(topics)
-        topicsView.update(outline)
+        // The header, levels and width follow every file, so typing in the search fields does not move them.
+        val outline = topicsView.fullOutline(content)
+        val shown = topicsView.outline(content)
         val hierarchy = topicsView.mode == ChangeTopicsMode.HIERARCHY
         val document = !hierarchy
         val viewZoom = if (document) documentZoom else zoom
@@ -521,7 +541,8 @@ internal class NoteCanvas(
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("${vocabulary.topicsTitle} · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}").apply {
+            val matching = if (topicsView.filtering) " · ${shown.files.size} shown" else ""
+            add(JLabel("${vocabulary.topicsTitle} · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}$matching").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.topicsTooltip
             }, BorderLayout.CENTER)
@@ -580,12 +601,29 @@ internal class NoteCanvas(
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
-                add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary)
+                if (shown.files.isEmpty() && outline.files.isNotEmpty()) add(JLabel("No files match the search.").apply {
+                    name = "topics-no-matches"
+                    font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
+                })
+                else add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary)
                     else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary))
             }, BorderLayout.CENTER)
         }
+        val search = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(4, 12, 4, 8))
+            for ((field, text) in listOf(topicSearchField to topicsView.topicFilter, topicSummarySearchField to topicsView.summaryFilter))
+                add(field.apply {
+                    preferredSize = Dimension(scaled(220), preferredSize.height)
+                    if (this.text != text) this.text = text
+                })
+        }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
-        card.add(header, BorderLayout.NORTH)
+        card.add(JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(header, BorderLayout.NORTH)
+            add(search, BorderLayout.SOUTH)
+        }, BorderLayout.NORTH)
         card.add(JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             // A deep hierarchy may scroll sideways; leave room for that scroll bar.
@@ -640,7 +678,14 @@ internal class NoteCanvas(
         if (content == topics) return
         topics = content
         content?.let { topicsTrace.retain(it.reading) }
+        refreshTopics()
+    }
+
+    /** Rebuilding moves the search fields into the new card; typing goes on where it was. */
+    private fun refreshTopics() {
+        val typing = listOf(topicSearchField, topicSummarySearchField).firstOrNull { it.textEditor.isFocusOwner }
         refreshCard(TOPICS_KEY)
+        typing?.textEditor?.requestFocusInWindow()
     }
 
     /**

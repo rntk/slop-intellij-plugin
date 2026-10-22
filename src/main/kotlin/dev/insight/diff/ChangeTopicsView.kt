@@ -57,7 +57,8 @@ internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
 /**
  * The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists, and is
  * shared by both modes. Folded topics and the chosen level belong to the hierarchy; topics that appear after a level was
- * chosen fold to that level too. Word tracing reads the hierarchy's summaries, whose root is not shown.
+ * chosen fold to that level too. Word tracing reads the hierarchy's summaries, whose root is not shown. The two search
+ * fields hide the files whose topic, or whose name, path and summary, do not match, with the topics left without files.
  */
 internal class ChangeTopicsViewState(
     /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
@@ -74,10 +75,59 @@ internal class ChangeTopicsViewState(
     private val seen = hashSetOf<String>()
     private var folded = false
 
+    /** The text of the topic search field, matched against each file's whole topic. */
+    var topicFilter = ""
+    /** The text of the summary search field. Topics above its matches open while it is typed, unless folded by hand meanwhile. */
+    var summaryFilter = ""
+        set(value) { if (field.trim() != value.trim()) handFolded.clear(); field = value }
+    private val handFolded = hashSetOf<String>()
+    /** While the summary field opens the topics above its matches, only topics folded by hand since then fold. */
+    private val folds get() = if (summaryFilter.isBlank()) collapsed else handFolded
+    val filtering get() = topicFilter.isNotBlank() || summaryFilter.isNotBlank()
+
+    private var filterFor: Triple<TopicsCard, String, String>? = null
+    private var full: TopicOutline? = null
+    private var shown: TopicOutline? = null
+    /** The paths and topic identities left by the search fields; null hides nothing. */
+    private var shownFiles: Set<String>? = null
+    private var shownTopics: Set<String>? = null
+
+    /** Every file of [card] in topic order. Like [outline], it updates this state. */
+    fun fullOutline(card: TopicsCard): TopicOutline = outlines(card).first
+
+    /** The files of [card] the search fields leave, in topic order, with only the topics above them. */
+    fun outline(card: TopicsCard): TopicOutline = outlines(card).second
+
+    private fun outlines(card: TopicsCard): Pair<TopicOutline, TopicOutline> {
+        val topicQuery = topicFilter.trim()
+        val summaryQuery = summaryFilter.trim()
+        val previous = filterFor
+        if (previous == null || previous.first !== card || previous.second != topicQuery || previous.third != summaryQuery) {
+            filterFor = Triple(card, topicQuery, summaryQuery)
+            val outline = full.takeIf { previous?.first?.topics === card.topics } ?: topicOutline(card.topics)
+            full = outline
+            shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty()) outline else {
+                val summaries = card.summaries
+                val texts = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to summaries.text(it.id) }
+                val kept = card.topics.files.filter { file ->
+                    (topicQuery.isEmpty() || card.topics.labels[file.path]?.let { fuzzyMatches(topicQuery, it) } == true) &&
+                        (summaryQuery.isEmpty() || fuzzyMatches(summaryQuery, listOfNotNull(file.path, texts[file.path]).joinToString(" ")))
+                }
+                val paths = kept.mapTo(hashSetOf()) { it.path }
+                topicOutline(ChangeTopics(kept, card.topics.labels.filterKeys { it in paths }))
+            }
+            shownFiles = shown?.takeIf { it !== outline }?.files?.mapTo(hashSetOf()) { it.path }
+            shownTopics = shown?.takeIf { it !== outline }?.nodes?.mapTo(hashSetOf()) { it.identity }
+        }
+        update(full!!)
+        return full!! to shown!!
+    }
+
     fun update(outline: TopicOutline) {
         val keys = outline.nodes.mapTo(hashSetOf(), ::key)
         if (selected !in keys) selected = null
         collapsed.retainAll(keys)
+        handFolded.retainAll(keys)
         seen.retainAll(keys)
         // Nothing was chosen yet and the outline is huge: start at level 1, the topics beneath fold.
         if (this.level == null && foldLargeOutline && !folded && outline.files.size > LARGE_OUTLINE && outline.nodes.isNotEmpty()) {
@@ -90,14 +140,16 @@ internal class ChangeTopicsViewState(
 
     fun select(node: TopicNode) { selected = key(node).takeUnless { it == selected } }
     fun isSelected(node: TopicNode) = key(node) == selected
-    fun toggle(node: TopicNode) { if (!collapsed.remove(key(node))) collapsed += key(node) }
-    fun isCollapsed(node: TopicNode) = key(node) in collapsed
+    fun toggle(node: TopicNode) { if (!folds.remove(key(node))) folds += key(node) }
+    fun isCollapsed(node: TopicNode) = key(node) in folds
 
     /** Level n keeps levels 0..n visible and folds the topics at n and below; the outline's depth shows every file. */
     fun selectLevel(level: Int, outline: TopicOutline) {
         this.level = level
         collapsed.clear()
         outline.nodes.filter { it.level >= level }.mapTo(collapsed, ::key)
+        handFolded.clear()
+        handFolded += collapsed
     }
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
@@ -107,9 +159,16 @@ internal class ChangeTopicsViewState(
 
     /** Documents keep every file visible; hierarchies hide nodes under folded topics. [tree] is the reading tree. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean = { node ->
-        if (mode == ChangeTopicsMode.DOCUMENT) node.kind == SummaryKind.FILE || tree.depth(node.id) - 1 <= (level ?: Int.MAX_VALUE)
+        filtered(node) && if (mode == ChangeTopicsMode.DOCUMENT) node.kind == SummaryKind.FILE || tree.depth(node.id) - 1 <= (level ?: Int.MAX_VALUE)
         else generateSequence(node.parent) { tree[it].parent }.map(tree::get)
-            .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in collapsed }
+            .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in folds }
+    }
+
+    /** Whether the search fields leave [node] of the reading tree on screen. */
+    private fun filtered(node: SummaryNode): Boolean = when {
+        node.identity.startsWith(TOPIC) -> shownTopics?.contains(node.identity.removePrefix(TOPIC)) ?: true
+        node.kind == SummaryKind.FILE -> shownFiles?.contains(node.path) ?: true
+        else -> true
     }
 
     /**
@@ -120,8 +179,8 @@ internal class ChangeTopicsViewState(
         fun keys(identities: Set<String>) = tree.nodes.filter { it.identity in identities && it.identity.startsWith(TOPIC) }
             .map { "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" }
         tracePath(tree, trace)?.let { path ->
-            collapsed -= keys(path.open).toSet()
-            collapsed += keys(path.fold)
+            folds -= keys(path.open).toSet()
+            folds += keys(path.fold)
         }
         val best = trace.best ?: return
         selected = keys(setOf(best.identity)).firstOrNull()
@@ -610,11 +669,10 @@ internal class ChangeTopicsPanel(
     private val actions: ChangeTopicActions,
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : DocumentColumnsPanel(zoom, vocabulary) {
-    val outline = topicOutline(card.topics)
+    val outline = state.outline(card)
     private val nodesByKey = outline.nodes.associateBy { "${it.level}:${it.identity}" }
 
     init {
-        state.update(outline)
         // Files awaiting a topic still get a placeholder in the leaf column.
         val depth = maxOf(state.railDepth(outline), if (outline.pending != null) 1 else 0)
         // A topic reads its own summary, else the summary of exactly its files, as in the hierarchy.

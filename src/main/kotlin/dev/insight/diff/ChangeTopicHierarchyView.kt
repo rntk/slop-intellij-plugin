@@ -13,7 +13,7 @@ internal class ChangeTopicHierarchyPanel(
     private val actions: ChangeTopicActions,
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : HierarchyColumnsPanel(availableWidth, zoom, vocabulary) {
-    val outline = topicOutline(card.topics)
+    val outline = state.outline(card)
     private val summaries = card.summaries
     private val fileNodes = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associateBy { it.path }
     private val fileSummaries = fileNodes.mapValues { summaries.text(it.value.id) }
@@ -25,7 +25,6 @@ internal class ChangeTopicHierarchyPanel(
     private val marks = traceMarks(reading.tree, trace)
 
     init {
-        state.update(outline)
         cardWidth = measureCardWidth(outline.nodes.map { it.name } + outline.files.map { it.path.substringAfterLast('/') })
         if (outline.files.isEmpty()) showEmpty(vocabulary.noFiles) else layoutHierarchy()
     }

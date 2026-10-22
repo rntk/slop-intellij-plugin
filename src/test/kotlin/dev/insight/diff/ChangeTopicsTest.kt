@@ -217,6 +217,42 @@ class ChangeTopicsTest {
         assertTrue(outline.nodes.none(state::isCollapsed))
     }
 
+    @Test fun `topic and summary filters hide unmatched files and the topics left empty`() {
+        val topics = ChangeTopics(listOf("a", "b", "c", "d").map { file(it) })
+            .assign("a", "Storage>User>Wallet").assign("b", "Storage>Cache").assign("c", "UI>Checkout")
+        val tree = buildSummaryTree(topics.files)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
+            .associate { it.id to "Summary of ${it.path}: " + if (it.path == "c" || it.path == "d") "renders the payment form" else "persists records" })
+        val card = TopicsCard(topics, summaries, canRun = false)
+        val state = ChangeTopicsViewState()
+        assertSame(state.fullOutline(card), state.outline(card))
+
+        state.topicFilter = "storge"
+        assertEquals(listOf("b", "a"), state.outline(card).files.map { it.path })
+        assertEquals(4, state.fullOutline(card).files.size)
+        state.summaryFilter = "payment"
+        assertTrue("Both fields must match", state.outline(card).files.isEmpty())
+        state.topicFilter = ""
+        // A file awaiting a topic still matches by summary and stays last.
+        assertEquals(listOf("c", "d"), state.outline(card).files.map { it.path })
+        assertEquals(listOf("UI", "UI > Checkout"), state.outline(card).nodes.map { it.fullPath })
+    }
+
+    @Test fun `summary filter opens folded topics until folded by hand`() {
+        val topics = ChangeTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User").assign("b", "UI>Checkout")
+        val card = TopicsCard(topics, ChangeSummaries(buildSummaryTree(topics.files)), canRun = false)
+        val state = ChangeTopicsViewState()
+        state.selectLevel(0, state.fullOutline(card))
+        assertTrue(state.outline(card).nodes.all(state::isCollapsed))
+        state.summaryFilter = "a"
+        val storage = state.outline(card).nodes.single { it.fullPath == "Storage" }
+        assertFalse(state.isCollapsed(storage))
+        state.toggle(storage)
+        assertTrue(state.isCollapsed(storage))
+        state.summaryFilter = ""
+        assertTrue("Clearing the field restores the folding", state.fullOutline(card).nodes.all(state::isCollapsed))
+    }
+
     @Test fun `command recognizes topics without capturing ordinary questions`() {
         listOf("topics", "/topics", " /TOPICS auth ").forEach { assertTrue(isTopicsRequest(it)) }
         listOf("topics about auth", "/topicsExtra", "What topics changed?").forEach { assertFalse(isTopicsRequest(it)) }

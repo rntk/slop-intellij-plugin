@@ -14,6 +14,8 @@ In Summaries, files can also be opened as complete, read-only snapshot source (t
 
 The Summaries outline always shows file and folder names, with metadata and file actions on the same header line. Clicking a summary expands or collapses its children, like its arrow; scored words retain their context and search actions. Selecting text in a summary and choosing Search from its context menu runs the same search for the selection, without needing Score first. A left click on a scored word does not search, so it can place the caret or start a selection; right-clicking a scored word and choosing Search from its context menu runs the word's search. File and part summaries are scored too: choosing Search on a highlighted word in one scores the blocks of the file's changed lines against the word's query, then the lines of the best block, and opens the diff scrolled to those lines with them highlighted. Outline and Hierarchy show scoring and hover status in a fixed footer so hints do not move the summaries.
 
+In Topics, both Document and Hierarchy have two separate fuzzy filters: one matches each file’s topic, the other its name, path and summary. Files must match both; topics left without files hide, and the summary filter opens the topics above its matches.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — tool window entry point: comparison and file selection, review tabs
