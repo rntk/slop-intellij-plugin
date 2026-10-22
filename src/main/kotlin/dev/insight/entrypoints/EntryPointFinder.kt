@@ -65,11 +65,11 @@ class EntryPointFinder(
     init {
         require(maxFileReads > 0 && maxSourceLines > 0 && maxSourceChars > 0) { "Read budgets must be positive" }
     }
-    suspend fun find(projectName: String, hints: List<EntryPointHint>, progress: EntryPointProgress = EntryPointProgress.NONE): EntryPointResult {
+    suspend fun find(hints: List<EntryPointHint>, progress: EntryPointProgress = EntryPointProgress.NONE): EntryPointResult {
         progress.report("Listing project files…")
         val files = snapshot.files()
         val tree = FileTree.render(files, treeChars)
-        val key = digest(PROMPT_VERSION.toString(), projectName, tree, hints.joinToString("\n") { it.key })
+        val key = digest(PROMPT_VERSION.toString(), tree, hints.joinToString("\n") { it.key })
 
         progress.report("Checking earlier results…")
         cache.run(key)?.let { run ->
@@ -116,7 +116,7 @@ class EntryPointFinder(
         }, maxToolRounds = maxToolRounds)
         val messages = listOf(
             LlmMessage.system(systemPrompt(maxFileReads, maxSourceLines, maxSourceChars)),
-            LlmMessage.user(userPrompt(projectName, tree, hints, known, changed)),
+            LlmMessage.user(userPrompt(tree, hints, known, changed)),
         )
         progress.report("Asking the model…")
         val chat = runner.run(messages) { event ->
@@ -258,7 +258,7 @@ class EntryPointFinder(
 
     companion object {
         /** Bump when the prompts or the answer format change, so cached whole answers are not reused. */
-        const val PROMPT_VERSION = 4
+        const val PROMPT_VERSION = 5
         const val READ_TOOL = "read_file"
         const val LIST_TOOL = "list_files"
         const val SEARCH_TOOL = "search_text"
@@ -338,8 +338,7 @@ class EntryPointFinder(
             $ANSWER_FORMAT
         """.trimIndent()
 
-        fun userPrompt(projectName: String, tree: String, hints: List<EntryPointHint>, known: List<FileNote>, changed: List<String>) = buildString {
-            append("Project: ").append(projectName).append("\n\n")
+        fun userPrompt(tree: String, hints: List<EntryPointHint>, known: List<FileNote>, changed: List<String>) = buildString {
             append("File tree (folders end with /; \"…\" summarizes files not listed, which list_files can show):\n")
             append(tree).append('\n')
             if (hints.isNotEmpty()) {

@@ -66,6 +66,7 @@ class CodeTopicsTest {
         val generator = ChangeTopicGenerator({ request ->
             synchronized(systems) { inFlight++; peak = maxOf(peak, inFlight); systems += request.messages.first().content }
             val input = JsonParser.parseString(request.messages.last().content).asJsonObject
+            assertEquals(listOf("focus", "existing_topics", "path"), input.keySet().take(3))
             assertTrue(input.has("excerpt") && input.has("existing_topics"))
             delay(5)
             synchronized(systems) { inFlight-- }

@@ -92,6 +92,7 @@ class ChangeTopicsTest {
         val progress = mutableListOf<Int>()
         val generator = ChangeTopicGenerator({ request ->
             val input = JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content).asJsonObject
+            assertEquals(listOf("focus", "existing_topics", "path"), input.keySet().take(3))
             visited += input["path"].asString
             if (visited.size == 1) Completion("""{"topic":"Invalid"}""") else {
                 if (input["path"].asString != "a") assertEquals("Storage > User > Wallet", input["existing_topics"].asJsonArray[0].asString)

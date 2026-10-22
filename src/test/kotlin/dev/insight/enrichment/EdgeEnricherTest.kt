@@ -27,7 +27,7 @@ class EdgeEnricherTest {
         val request = requests.single()
         assertEquals(Questions.edge().keys, request.questions.keys)
         val state = request.state.asJsonObject
-        assertEquals("demo", state["project"].asString)
+        assertFalse(state.has("project"))
         val caller = state["caller"].asJsonObject
         val callee = state["callee"].asJsonObject
         assertEquals(setOf("name", "kind", "container", "path", "signature", "code"), caller.keySet())

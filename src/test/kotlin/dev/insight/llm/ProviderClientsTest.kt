@@ -179,7 +179,8 @@ class ProviderClientsTest {
         assertEquals(8192, body["max_tokens"].asInt)
         assertEquals(0.2, body["temperature"].asDouble, 0.0)
         assertEquals("standard_only", body["service_tier"].asString)
-        assertEquals("Be brief.\n\nUse tools.", body["system"].asString)
+        assertEquals(json("""{"type":"text","text":"Be brief.\n\nUse tools.","cache_control":{"type":"ephemeral"}}"""),
+            body.getAsJsonArray("system").single())
         assertEquals(json("""{"type":"tool","name":"get_weather","disable_parallel_tool_use":true}"""), body["tool_choice"])
         val tool = body.getAsJsonArray("tools")[0].asJsonObject
         assertEquals(weatherTool.parameters, tool["input_schema"])
@@ -194,6 +195,33 @@ class ProviderClientsTest {
         assertEquals(listOf("tool_result", "tool_result", "text"), results.map { it["type"].asString })
         assertEquals(listOf("call_1", "call_2"), results.take(2).map { it["tool_use_id"].asString })
         assertEquals("Answer now.", results[2]["text"].asString)
+    }
+
+    @Test fun `Anthropic marks only the policy prefix for caching and decodes cache usage`() = runBlocking {
+        respond("/v1/messages",
+            200 to """{"stop_reason":"end_turn","content":[{"type":"text","text":"First"}],
+                "usage":{"input_tokens":20,"cache_creation_input_tokens":1100,"cache_read_input_tokens":0,"output_tokens":1}}""",
+            200 to """{"stop_reason":"end_turn","content":[{"type":"text","text":"Second"}],
+                "usage":{"input_tokens":30,"cache_creation_input_tokens":0,"cache_read_input_tokens":1100,"output_tokens":1}}""")
+        val client = AnthropicClient("sk", "claude-sonnet-4-5", baseUrl)
+        val policy = LlmMessage.system("Describe the supplied file.")
+        val results = listOf("File one", "File two").map { evidence ->
+            client.complete(CompletionRequest(listOf(policy, LlmMessage.user(evidence)), tools = listOf(weatherTool)))
+        }
+        val (first, second) = requests.map { it.second }
+        assertEquals(first["system"], second["system"])
+        assertEquals(first["tools"], second["tools"])
+        assertEquals(json("""{"type":"ephemeral"}"""),
+            first.getAsJsonArray("system").single().asJsonObject["cache_control"])
+        listOf(first, second).forEach { body ->
+            assertFalse(body.has("cache_control"))
+            assertEquals(1, Regex("cache_control").findAll(body.toString()).count())
+        }
+        assertEquals(listOf("File one", "File two"), listOf(first, second).map {
+            it.getAsJsonArray("messages").single().asJsonObject["content"].asString
+        })
+        assertEquals(LlmUsage(1120, 1, 1121, cachedInputTokens = 0, cacheWriteTokens = 1100), results[0].usage)
+        assertEquals(LlmUsage(1130, 1, 1131, cachedInputTokens = 1100, cacheWriteTokens = 0), results[1].usage)
     }
 
     @Test fun `Anthropic maps tool choices and omits unset or unsupported options`() = runBlocking {

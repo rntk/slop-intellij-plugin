@@ -75,7 +75,7 @@ class DecisionsEntryPointFinder(
         val cacheHits: Int = 0,
     )
 
-    suspend fun find(projectName: String, hints: List<EntryPointHint>, progress: EntryPointProgress = EntryPointProgress.NONE): EntryPointResult {
+    suspend fun find(hints: List<EntryPointHint>, progress: EntryPointProgress = EntryPointProgress.NONE): EntryPointResult {
         progress.report("Listing project files…")
         val eligible = snapshot.files().filter { supported(it) && !EntryPointHints.isTest(it) }
         val hinted = hints.mapTo(hashSetOf()) { it.path }
@@ -97,7 +97,7 @@ class DecisionsEntryPointFinder(
                         progress.report("Decisions API: reading $path (${started.incrementAndGet()}/${paths.size})…")
                         val text = if (path in manifestTexts) manifestTexts[path] else read(path)
                         if (text == null) FileScan(readable = false)
-                        else scan(projectName, path, text, hints.filter { it.path == path }, registrations(path, text, manifestLines), progress)
+                        else scan(path, text, hints.filter { it.path == path }, registrations(path, text, manifestLines), progress)
                     }
                 }
             }.awaitAll()
@@ -118,7 +118,7 @@ class DecisionsEntryPointFinder(
             requests, requests == 0 && cacheHits > 0)
     }
 
-    private suspend fun scan(projectName: String, path: String, text: String, hints: List<EntryPointHint>,
+    private suspend fun scan(path: String, text: String, hints: List<EntryPointHint>,
         registrations: List<String>, progress: EntryPointProgress): FileScan {
         val lines = text.lines()
         val candidates = candidates(path, lines)
@@ -137,7 +137,7 @@ class DecisionsEntryPointFinder(
         // Bound model work as well as wire size: every candidate adds two questions and a full kind rubric.
         val batches = candidates.values.asSequence().map { candidate ->
             val batch = listOf(candidate)
-            batch to boundedRequest(projectName, path, lines, registrations, batch)
+            batch to boundedRequest(path, lines, registrations, batch)
         }
         for ((batch, request) in batches) {
             currentCoroutineContext().ensureActive()
@@ -251,12 +251,11 @@ class DecisionsEntryPointFinder(
         return names
     }
 
-    private fun request(projectName: String, path: String, lines: List<String>, registrations: List<String>,
+    private fun request(path: String, lines: List<String>, registrations: List<String>,
         batch: List<Candidate>, sourceBudget: Int): DecisionRequest {
         val field = minOf(200, sourceBudget / 8)
         // Candidate text stays in state; instructions are fixed text that only refers to it.
         val state = JsonObject().apply {
-            addProperty("project", projectName.takeUtf8(120))
             addProperty("path", path.takeUtf8(300))
             add("candidates", JsonArray().apply {
                 batch.forEach { candidate ->
@@ -293,11 +292,11 @@ class DecisionsEntryPointFinder(
      * Each request judges one candidate. Trim nearby source until it fits; a candidate that cannot fit even
      * with minimal source is returned without a request and reported as skipped.
      */
-    private fun boundedRequest(projectName: String, path: String, lines: List<String>, registrations: List<String>,
+    private fun boundedRequest(path: String, lines: List<String>, registrations: List<String>,
         batch: List<Candidate>): DecisionRequest? {
         var sourceBudget = 1200
         while (true) {
-            val request = request(projectName, path, lines, registrations, batch, sourceBudget)
+            val request = request(path, lines, registrations, batch, sourceBudget)
             if (DecisionJson.encode(request).toByteArray(Charsets.UTF_8).size <= maxRequestBytes) return request
             if (sourceBudget <= MIN_SOURCE_BUDGET) return null
             sourceBudget = (sourceBudget / 2).coerceAtLeast(MIN_SOURCE_BUDGET)

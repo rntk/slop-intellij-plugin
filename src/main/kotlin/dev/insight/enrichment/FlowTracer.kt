@@ -96,7 +96,6 @@ class FlowTracer(
         failures: AtomicInteger,
     ): Map<Int, Pair<String, String?>> {
         val user = buildString {
-            append("Project: ").append(input.projectName).append("\n\n")
             batch.forEachIndexed { index, flow ->
                 append("[").append(index + 1).append("] entry ").append(describe(input, flow.entry)).append('\n')
                 for (member in flow.nodes.drop(1)) {

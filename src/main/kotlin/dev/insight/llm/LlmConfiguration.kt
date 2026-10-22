@@ -43,7 +43,7 @@ data class LlmConfiguration(
             LlmProvider.OPENAI -> OpenAiClient(key!!, model.trim(), baseUrl, serviceTier, promptCacheKey, timeout, maxRetries, traffic = traffic)
             LlmProvider.DEEPSEEK -> DeepSeekClient(key!!, model.trim(), baseUrl, timeout, maxRetries, traffic = traffic)
             LlmProvider.ANTHROPIC -> AnthropicClient(key!!, model.trim(), baseUrl, serviceTier = serviceTier,
-                requestTimeout = timeout, maxRetries = maxRetries, traffic = traffic)
+                requestTimeout = timeout, maxRetries = maxRetries, traffic = traffic, cachePrompt = cachePrompt)
         }
         if (maxOutputTokens == 0) return client
         return object : LlmClient {

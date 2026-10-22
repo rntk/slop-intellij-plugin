@@ -19,6 +19,9 @@ import java.time.Duration
  * out for models that reject it (Claude 4.7 and later). [CompletionRequest.responseFormat] is not sent:
  * Anthropic's structured outputs require strict schemas, so JSON output relies on the prompt instead.
  * [serviceTier] is sent as given (`auto` or `standard_only`).
+ * With [cachePrompt] and a system policy, a single explicit 5-minute cache breakpoint covers that policy
+ * and preceding tool definitions.
+ * Per-request evidence is left uncached to avoid paying for cache writes on changing file content.
  * See [LlamaCppClient] for transport, retry, and traffic-log behaviour; 529 (overloaded) is retried.
  */
 class AnthropicClient(
@@ -31,6 +34,7 @@ class AnthropicClient(
     maxRetries: Int = 6,
     httpClient: HttpClient = LlmHttp.sharedHttpClient,
     traffic: ApiTrafficLog? = null,
+    private val cachePrompt: Boolean = true,
 ) : LlmClient {
     init {
         require(model.isNotBlank()) { "Model is required" }
@@ -44,7 +48,7 @@ class AnthropicClient(
     override val endpoint: URI get() = http.endpoint
 
     override suspend fun complete(request: CompletionRequest): Completion =
-        http.post(AnthropicJson.encode(request, model, defaultMaxTokens, serviceTier), AnthropicJson::decode)
+        http.post(AnthropicJson.encode(request, model, defaultMaxTokens, serviceTier, cachePrompt), AnthropicJson::decode)
 
     companion object {
         const val DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -57,7 +61,7 @@ internal object AnthropicJson {
     // A minor version has at most two digits, so a dated ID such as `claude-sonnet-4-20250514` reads as 4.0.
     private val modelVersion = Regex("^claude-(?:opus|sonnet|haiku)-(\\d{1,2})(?:-(\\d{1,2}))?(?!\\d)")
 
-    fun encode(request: CompletionRequest, model: String, defaultMaxTokens: Int, serviceTier: String?): String {
+    fun encode(request: CompletionRequest, model: String, defaultMaxTokens: Int, serviceTier: String?, cachePrompt: Boolean): String {
         LlmJson.validate(request)
         // A tool_use block without an ID cannot be matched to its tool_result.
         request.messages.flatMap { it.toolCalls }
@@ -67,7 +71,13 @@ internal object AnthropicJson {
         body.addProperty("max_tokens", request.maxTokens ?: defaultMaxTokens)
         val system = request.messages.filter { it.role == LlmRole.SYSTEM && it.content.isNotEmpty() }
             .joinToString("\n\n") { it.content }
-        if (system.isNotEmpty()) body.addProperty("system", system)
+        if (system.isNotEmpty() && cachePrompt) body.add("system", JsonArray().apply {
+            add(textBlock(system).apply {
+                // Explicitly cache the reusable prefix, not the varying messages. Automatic caching
+                // would instead write the last message on every one-shot classification request.
+                add("cache_control", JsonObject().apply { addProperty("type", "ephemeral") })
+            })
+        }) else if (system.isNotEmpty()) body.addProperty("system", system)
         body.add("messages", messages(request.messages))
         if (request.temperature != null && !rejectsTemperature(model)) body.addProperty("temperature", request.temperature)
         serviceTier?.takeIf { it.isNotBlank() }?.let { body.addProperty("service_tier", it) }

@@ -89,9 +89,12 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                     row("Max retries:") {
                         intTextField(0..100).bindIntText({ options.maxRetries }, { options.maxRetries = it })
                     }
-                    if (provider == LlmProvider.LLAMA_CPP) {
+                    if (provider == LlmProvider.LLAMA_CPP || provider == LlmProvider.ANTHROPIC) {
                         row {
-                            checkBox("Cache prompt").bindSelected({ options.cachePrompt }, { options.cachePrompt = it })
+                            val caching = checkBox("Cache prompt").bindSelected({ options.cachePrompt }, { options.cachePrompt = it })
+                            if (provider == LlmProvider.ANTHROPIC) caching.comment(
+                                "Caches the system policy and tool definitions for five minutes. Cache writes and reads use Anthropic's cache pricing."
+                            )
                         }
                     }
                     if (provider == LlmProvider.OPENAI || provider == LlmProvider.ANTHROPIC) {

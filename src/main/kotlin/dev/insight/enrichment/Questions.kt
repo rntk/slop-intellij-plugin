@@ -11,7 +11,7 @@ data class Concern(val id: String, val label: String, val description: String)
  * so cached answers to the old wording are not reused.
  */
 object Questions {
-    const val VERSION = 1
+    const val VERSION = 2
 
     val concerns = listOf(
         Concern("storage", "Storage", "reading or writing persistent data: files, databases, key-value stores, on-disk caches or settings persistence"),
@@ -67,7 +67,7 @@ object Questions {
 
     /**
      * Questions about `symbol` in a state shaped like
-     * `{project, symbol: {name, kind, container, path, language, signature, doc, annotations, code}, callers: [...], callees: [...]}`.
+     * `{symbol: {name, kind, container, path, language, signature, doc, annotations, code}, callers: [...], callees: [...]}`.
      * [domains] adds the project-specific domain choice when a taxonomy exists.
      */
     fun node(domains: List<Domain>): Map<String, DecisionQuestion> = buildMap {
@@ -79,7 +79,7 @@ object Questions {
         put(PHASE, DecisionQuestion.Choice("In which lifecycle phase of the application does `symbol` typically run?", phases.json()))
         put(LAYER, DecisionQuestion.Choice("Which architectural layer does `symbol` belong to?", layers.json()))
         put(IMPORTANCE, DecisionQuestion.Score(
-            "How central is `symbol` to what this application (`project`) does? Judge the symbol's own logic, not its callers or callees.",
+            "How central is `symbol` to what this application does? Judge the symbol's own logic, not its callers or callees.",
             importance.map(::JsonPrimitive)))
         put(ENTRY_POINT, DecisionQuestion.Noul(
             "Is `symbol` an entry point that the runtime, framework, user or another process invokes directly, such as a main function, " +
@@ -91,13 +91,13 @@ object Questions {
             val options = LinkedHashMap<String, String>()
             domains.forEach { options[it.id] = "${it.name}: ${it.description}" }
             options[Domain.NONE] = "none of these areas; generic or cross-cutting code"
-            put(DOMAIN, DecisionQuestion.Choice("Which functional area of `project` does `symbol` mainly belong to?", options.json()))
+            put(DOMAIN, DecisionQuestion.Choice("Which functional area of the application does `symbol` mainly belong to?", options.json()))
         }
     }
 
     /**
      * Questions about the call from `caller` to `callee` in a state shaped like
-     * `{project, caller: {name, kind, container, path, signature, code}, callee: {name, kind, container, path, signature, doc}}`.
+     * `{caller: {name, kind, container, path, signature, code}, callee: {name, kind, container, path, signature, doc}}`.
      */
     fun edge(): Map<String, DecisionQuestion> = linkedMapOf(
         ERROR_PATH to DecisionQuestion.Noul(

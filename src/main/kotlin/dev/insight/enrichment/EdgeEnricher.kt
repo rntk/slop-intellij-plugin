@@ -61,7 +61,7 @@ class EdgeEnricher(
         coroutineScope {
             targets.map { (edge, caller, callee) ->
                 async {
-                    val state = state(input.projectName, caller, callee)
+                    val state = state(caller, callee)
                     val key = "edge:" + sha256("v${Questions.VERSION}\n${caller.contentHash}\n${callee.contentHash}\nedge\n$state")
                     val cached = cache.edge(key)
                     if (cached != null) {
@@ -88,8 +88,7 @@ class EdgeEnricher(
         return EdgeEnrichmentResult(annotations.toMap(), requests.get(), cacheHits.get(), failures.get(), tokens.get())
     }
 
-    private fun state(project: String, caller: SymbolFacts, callee: SymbolFacts) = JsonObject().apply {
-        put("project", project)
+    private fun state(caller: SymbolFacts, callee: SymbolFacts) = JsonObject().apply {
         add("caller", JsonObject().apply {
             identity(caller)
             put("code", caller.code.take(MAX_CALLER_CODE))

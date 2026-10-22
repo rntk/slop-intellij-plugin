@@ -25,7 +25,8 @@ class LlmChatBackend(
     override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
         val question = messages.lastOrNull()?.takeIf { it.role == ChatMessage.USER }
             ?: throw IllegalArgumentException("The conversation must end with a user message")
-        // The system prompt and history come first and change least, so llama.cpp can reuse its prompt cache.
+        // Rebuild bounded text history and attach fresh context only to this question. Historical tool rounds and
+        // augmented questions are not retained; cache reuse across turns ends at the first changed message.
         val request = listOf(LlmMessage.system(systemPrompt)) +
             messages.dropLast(1).mapNotNull { message ->
                 when (message.role) {
@@ -68,8 +69,8 @@ internal val visualCodeAssistantPrompt = """
     Use concise plain text; the chat panel does not render Markdown or HTML.
 """.trimIndent()
 
-fun projectChatSystemPrompt(projectName: String): String = visualCodeAssistantPrompt + "\n\n" + """
-    You are exploring project "$projectName". Inspect project files using the available search, listing and reading tools.
+fun projectChatSystemPrompt(): String = visualCodeAssistantPrompt + "\n\n" + """
+    Inspect project files using the available search, listing and reading tools.
     Project reads include current unsaved editor changes; re-read relevant code if it may have changed.
 """.trimIndent()
 

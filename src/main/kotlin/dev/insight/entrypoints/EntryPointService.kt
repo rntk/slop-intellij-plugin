@@ -47,14 +47,14 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
         val result = withContext(Dispatchers.IO) {
             when (api) {
                 EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
-                    .find(project.name, hints, progress)
+                    .find(hints, progress)
                 EntryPointApi.DECISIONS -> DecisionsEntryPointFinder(
                     decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4,
                         traffic = ApiLogs.decisions)::evaluate,
                     IdeSnapshot(files),
                     { path -> readAction { files.text(files.resolve(path)) } },
                     cache = decisionsCache,
-                ).find(project.name, hints, progress)
+                ).find(hints, progress)
             }
         }
         currentCoroutineContext().ensureActive()

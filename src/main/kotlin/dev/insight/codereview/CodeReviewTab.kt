@@ -228,7 +228,7 @@ internal class CodeReviewTab(
                         "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else reply
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                return LlmChatBackend(complete, codeReviewTools(context), codeReviewPrompt(project.name, scopeName),
+                return LlmChatBackend(complete, codeReviewTools(context), codeReviewPrompt(scopeName),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.overview() },
                     contextLabel = "Current code scope", evictionTarget = 0.7)
                     .reply(messages, onToolCall)

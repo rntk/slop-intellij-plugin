@@ -71,7 +71,7 @@ class EntryPointFinderTest {
         val tool = ReadTool(project)
         val model = FakeModel(read("build.gradle.kts", "./src/Main.kt"), answer)
         val cache = EntryPointCache()
-        val result = EntryPointFinder(model::complete, project, listOf(tool), cache).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, project, listOf(tool), cache).find(emptyList())
 
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         val main = result.entryPoints.first()
@@ -95,28 +95,28 @@ class EntryPointFinderTest {
         val project = setup()
         val cache = EntryPointCache()
         val model = FakeModel(read("src/Main.kt"), answer)
-        EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find("demo", emptyList())
+        EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find(emptyList())
 
-        val again = EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find("demo", emptyList())
+        val again = EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find(emptyList())
         assertTrue(again.cached)
         assertEquals(0, again.requestCount)
         assertEquals(2, model.requests.size)
 
         // A file the answer did not use may change freely.
         project.contents["src/Util.kt"] = "fun util2() {}"
-        assertTrue(EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find("demo", emptyList()).cached)
+        assertTrue(EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find(emptyList()).cached)
     }
 
     @Test fun `after a change only changed files are read again and unchanged notes are passed on`() = runBlocking {
         val project = setup()
         val cache = EntryPointCache()
         EntryPointFinder(FakeModel(read("build.gradle.kts", "src/Main.kt"), answer)::complete, project, listOf(ReadTool(project)), cache)
-            .find("demo", emptyList())
+            .find(emptyList())
 
         project.contents["src/Main.kt"] = "fun main(args: Array<String>) {}"
         val tool = ReadTool(project)
         val model = FakeModel(read("src/Main.kt"), answer)
-        val result = EntryPointFinder(model::complete, project, listOf(tool), cache).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, project, listOf(tool), cache).find(emptyList())
 
         assertFalse(result.cached)
         assertEquals(listOf("src/Main.kt"), tool.reads)
@@ -131,7 +131,7 @@ class EntryPointFinderTest {
         val project = setup()
         val tool = ReadTool(project)
         val model = FakeModel(read("src/Main.kt", "src/Util.kt", "src/Main.kt"), answer)
-        val result = EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxFileReads = 1).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxFileReads = 1).find(emptyList())
         assertEquals(listOf("src/Main.kt", "src/Main.kt"), tool.reads)
         assertEquals(listOf("src/Main.kt"), result.filesRead)
         val results = model.requests[1].messages.filter { it.role == LlmRole.TOOL }.map { it.content }
@@ -141,7 +141,7 @@ class EntryPointFinderTest {
     @Test fun `converts a prose answer into JSON with one extra request`() = runBlocking {
         val project = setup()
         val model = FakeModel(Completion("The app starts in src/Main.kt line 3."), answer)
-        val result = EntryPointFinder(model::complete, project, emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, project, emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(2, result.requestCount)
         assertNotNull(model.requests[1].responseFormat)
         assertEquals("src/Main.kt", result.entryPoints.first().path)
@@ -150,7 +150,7 @@ class EntryPointFinderTest {
     @Test fun `repairs parseable JSON with an invalid kind using a constrained request`() = runBlocking {
         val invalid = answer.copy(content = answer.content.replace("\"kind\": \"application\"", "\"kind\": \"frontend\""))
         val model = FakeModel(invalid, answer)
-        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(2, result.requestCount)
         assertEquals(EntryPointKind.APPLICATION, result.entryPoints.first().kind)
         assertEquals("json_schema", model.requests[1].responseFormat!!["type"].asString)
@@ -162,10 +162,10 @@ class EntryPointFinderTest {
         val cache = EntryPointCache()
         val model = FakeModel(invalid, invalid)
         val finder = EntryPointFinder(model::complete, setup(), emptyList(), cache)
-        val result = finder.find("demo", emptyList())
+        val result = finder.find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         assertEquals(EntryPointKind.APPLICATION, result.entryPoints.first().kind)
-        assertTrue(finder.find("demo", emptyList()).cached)
+        assertTrue(finder.find(emptyList()).cached)
     }
 
     @Test fun `malformed entries and notes do not discard valid entries after repair`() = runBlocking {
@@ -178,16 +178,16 @@ class EntryPointFinderTest {
         val cache = EntryPointCache()
         val finder = EntryPointFinder(FakeModel(read("src/Main.kt"), incomplete, incomplete)::complete, project,
             listOf(ReadTool(project)), cache)
-        val result = finder.find("demo", emptyList())
+        val result = finder.find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
-        assertTrue(finder.find("demo", emptyList()).cached)
+        assertTrue(finder.find(emptyList()).cached)
         assertEquals(listOf("main"), cache.notes().single().entryPoints.map { it.symbol })
     }
 
     @Test fun `accepts integral floating point lines without repair or rounding`() = runBlocking {
         val integral = answer.copy(content = answer.content.replace("\"line\": \"3\"", "\"line\": 3.0"))
         val model = FakeModel(integral)
-        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(3, result.entryPoints.first().line)
         assertEquals(1, model.requests.size)
     }
@@ -195,7 +195,7 @@ class EntryPointFinderTest {
     @Test fun `a failed formatting request preserves the original parseable answer`() = runBlocking {
         val incomplete = answer.copy(content = answer.content.replace("\"kind\": \"application\"", "\"kind\": \"frontend\""))
         val model = FakeModel(incomplete, Completion("unparseable"), Completion("still unparseable"))
-        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         assertEquals(3, result.requestCount)
     }
@@ -203,7 +203,7 @@ class EntryPointFinderTest {
     @Test fun `an empty repair cannot erase valid original entries`() = runBlocking {
         val incomplete = answer.copy(content = answer.content.replace("\"kind\": \"application\"", "\"kind\": \"frontend\""))
         val model = FakeModel(incomplete, Completion("{}"))
-        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         assertEquals("A CLI.", result.summary)
     }
@@ -211,7 +211,7 @@ class EntryPointFinderTest {
     @Test fun `rejects an answer with no usable analysis`() = runBlocking {
         try {
             EntryPointFinder(FakeModel(Completion("{}"), Completion("{}"))::complete, setup(), emptyList(), EntryPointCache())
-                .find("demo", emptyList())
+                .find(emptyList())
             fail("Expected unusable output to be rejected")
         } catch (e: IOException) {
             assertTrue(e.message.orEmpty().contains("no usable analysis"))
@@ -225,7 +225,7 @@ class EntryPointFinderTest {
             completion.copy(toolCalls = completion.toolCalls.map { it.copy(arguments = it.arguments.deepCopy().apply { addProperty("end_line", 400) }) })
         }
         val model = FakeModel(oversized, read("src/Main.kt"), read("src/Util.kt"), answer)
-        EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxSourceLines = 100).find("demo", emptyList())
+        EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxSourceLines = 100).find(emptyList())
         assertEquals(listOf(80, 20), tool.argumentsRead.map { it["end_line"].asInt })
         assertTrue(model.requests[3].messages.last().content.contains("Source read budget reached"))
     }
@@ -234,7 +234,7 @@ class EntryPointFinderTest {
         val project = setup().apply { contents["src/Util.kt"] = "x".repeat(500) }
         val tool = ReadTool(project)
         val model = FakeModel(read("src/Util.kt"), read("src/Main.kt"), answer)
-        EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxSourceChars = 100).find("demo", emptyList())
+        EntryPointFinder(model::complete, project, listOf(tool), EntryPointCache(), maxSourceChars = 100).find(emptyList())
         assertEquals(listOf("src/Util.kt"), tool.reads)
         val first = model.requests[1].messages.last().content
         assertTrue(first.contains("Source character budget reached"))
@@ -252,10 +252,10 @@ class EntryPointFinderTest {
         val searching = Completion("", toolCalls = listOf(LlmToolCall("search", EntryPointFinder.SEARCH_TOOL, JsonObject())))
         val model = FakeModel(searching, answer, answer)
         val finder = EntryPointFinder(model::complete, project, listOf(search), cache)
-        finder.find("demo", emptyList())
-        assertTrue(finder.find("demo", emptyList()).cached)
+        finder.find(emptyList())
+        assertTrue(finder.find(emptyList()).cached)
         project.contents["src/Util.kt"] = "fun bootstrap() {}"
-        assertFalse(finder.find("demo", emptyList()).cached)
+        assertFalse(finder.find(emptyList()).cached)
         assertEquals(3, model.requests.size)
     }
 
@@ -273,9 +273,9 @@ class EntryPointFinderTest {
             JsonParser.parseString("""{"query":"main","glob":"*.kt","directory":"src","max_results":200}""").asJsonObject)))
         val model = FakeModel(searching, answer)
         val finder = EntryPointFinder(model::complete, project, listOf(search), EntryPointCache())
-        finder.find("demo", emptyList())
+        finder.find(emptyList())
         project.contents["docs/Doc1.md"] = "edited documentation"
-        assertTrue(finder.find("demo", emptyList()).cached)
+        assertTrue(finder.find(emptyList()).cached)
         assertEquals(2, queries.size)
         assertEquals(queries[0], queries[1])
         assertEquals(80, queries[0]["max_results"].asInt)
@@ -295,7 +295,7 @@ class EntryPointFinderTest {
         val searching = Completion("", toolCalls = listOf(LlmToolCall("search", EntryPointFinder.SEARCH_TOOL, JsonObject())))
         val tool = ReadTool(project)
         val model = FakeModel(read("src/Main.kt"), searching, read("src/Util.kt"), answer)
-        EntryPointFinder(model::complete, project, listOf(tool, search), EntryPointCache(), maxSourceLines = 85).find("demo", emptyList())
+        EntryPointFinder(model::complete, project, listOf(tool, search), EntryPointCache(), maxSourceLines = 85).find(emptyList())
         assertEquals(5, queries.single()["max_results"].asInt)
         assertEquals(listOf("src/Main.kt"), tool.reads)
         assertTrue(model.requests[3].messages.last().content.contains("Source read budget reached"))
@@ -310,7 +310,7 @@ class EntryPointFinderTest {
         val tool = ReadTool(setup())
         val model = FakeModel(searching, read("src/Main.kt"), answer)
         EntryPointFinder(model::complete, tool.project, listOf(tool, search), EntryPointCache(), maxSourceChars = 100)
-            .find("demo", emptyList())
+            .find(emptyList())
         assertTrue(tool.reads.isEmpty())
         assertTrue(model.requests[1].messages.last().content.contains("Source character budget reached"))
         assertFalse(model.requests[1].messages.last().content.contains("x".repeat(101)))
@@ -320,26 +320,26 @@ class EntryPointFinderTest {
         val project = setup()
         val hints = listOf(EntryPointHint("src/Main.kt", 3, "main", "reaches 2 functions"))
         val finder = EntryPointFinder(FakeModel(answer)::complete, project, emptyList(), EntryPointCache())
-        finder.find("demo", hints)
+        finder.find(hints)
         project.contents[".traverse-cache/new.json"] = "cache"
-        assertTrue(finder.find("demo", listOf(hints.single().copy(line = 4, reason = "reaches 3 functions"))).cached)
+        assertTrue(finder.find(listOf(hints.single().copy(line = 4, reason = "reaches 3 functions"))).cached)
     }
 
     @Test fun `new visible launch files invalidate cached discovery`() = runBlocking {
         val project = setup()
         val finder = EntryPointFinder(FakeModel(answer, answer)::complete, project, emptyList(), EntryPointCache())
-        finder.find("demo", emptyList())
+        finder.find(emptyList())
         project.contents["new-cli.sh"] = "python graph.py"
-        assertFalse(finder.find("demo", emptyList()).cached)
+        assertFalse(finder.find(emptyList()).cached)
     }
 
     @Test fun `drops nonexistent line locations and preserves model priority order`() = runBlocking {
         val reversed = answer.copy(content = answer.content.replace("\"confidence\": 0.9", "\"confidence\": 0.1")
             .replace("\"confidence\": 0}", "\"confidence\": 0.99}"))
-        val result = EntryPointFinder(FakeModel(reversed)::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val result = EntryPointFinder(FakeModel(reversed)::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         val outside = answer.copy(content = answer.content.replace("\"line\": \"3\"", "\"line\": 999"))
-        val filtered = EntryPointFinder(FakeModel(outside)::complete, setup(), emptyList(), EntryPointCache()).find("demo", emptyList())
+        val filtered = EntryPointFinder(FakeModel(outside)::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("scripts/run.sh"), filtered.entryPoints.map { it.path })
     }
 

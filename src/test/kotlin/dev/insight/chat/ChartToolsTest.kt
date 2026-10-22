@@ -154,7 +154,7 @@ class ChartToolsTest {
     }
 
     @Test fun `system prompt is a project-neutral guide with evidence rules`() {
-        val prompt = chartChatSystemPrompt("demo")
+        val prompt = chartChatSystemPrompt()
         for (text in listOf("show_scene", "trace_path", "reachability", "badges", "path:line", "untrusted", "do not write",
             "present_story", "suggest_followups", "[[node:ID|Name]]", "only markup", "groups", "externals", "suggest_externals", "snippets", "get_project_map", "list_tours", "play_tour", "save",
             "group_chart_calls", "groupable_blocks", "set_chart_region_expansion", "drill down", "path:line"))
@@ -197,7 +197,7 @@ class ChartToolsTest {
         val backend = LlmChatBackend({ request ->
             requests += request
             Completion("Answer", finishReason = FinishReason.COMPLETE)
-        }, chartTools(context), chartChatSystemPrompt("test"), context = context::snapshot)
+        }, chartTools(context), chartChatSystemPrompt(), context = context::snapshot)
         val history = listOf(ChatMessage(ChatMessage.USER, "Explain selection"))
         backend.reply(history)
         context.revision = 2

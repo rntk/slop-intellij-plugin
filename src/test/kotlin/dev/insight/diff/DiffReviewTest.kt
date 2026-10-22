@@ -414,7 +414,7 @@ class DiffReviewTest {
             Completion("2 notes covering 2/2 files."),
         ))
         val result = ToolChatRunner({ completions.removeFirst() }, diffReviewTools(context))
-            .run(listOf(LlmMessage.system(diffReviewPrompt("test")), LlmMessage.user("/description")))
+            .run(listOf(LlmMessage.system(diffReviewPrompt()), LlmMessage.user("/description")))
         assertEquals(3, result.requestCount)
         assertEquals(listOf(listOf("a.kt", "b.kt")), context.reads)
         assertEquals(listOf("Replaces the old value.", "Switches the literal."), context.state.notes.map { it.text })
@@ -431,7 +431,7 @@ class DiffReviewTest {
         ))
         val result = ToolChatRunner({ requests += it; completions.removeFirst() }, diffReviewTools(context),
             followUp = { context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, 2) } })
-            .run(listOf(LlmMessage.system(diffReviewPrompt("test")), LlmMessage.user("/description")))
+            .run(listOf(LlmMessage.system(diffReviewPrompt()), LlmMessage.user("/description")))
         assertEquals("2 notes covering 2/2 files.", result.reply)
         assertTrue(context.state.uncovered().isEmpty())
         val nudge = requests[2].messages.last()
@@ -479,7 +479,7 @@ class DiffReviewTest {
     }
 
     @Test fun `prompt and schemas name only the current tools`() {
-        val prompt = diffReviewPrompt("test")
+        val prompt = diffReviewPrompt()
         val names = diffReviewTools(Context()).map { it.definition.name }
         assertEquals(listOf("point_to_code", "get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source", "add_diff_notes"), names)
         for (name in Regex("[a-z]+(?:_[a-z]+)+").findAll(prompt).map { it.value }.filter { it.endsWith("_diff") || it.contains("_diff_") })

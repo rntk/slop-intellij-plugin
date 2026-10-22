@@ -16,8 +16,7 @@ class TaxonomyDiscovery(
     suspend fun discover(input: EnrichmentInput, labels: Map<String, GroupLabel>): List<Domain> {
         val overview = if (labels.isNotEmpty()) labelOverview(input, labels) else structureOverview(input)
         if (overview.isBlank()) return emptyList()
-        val user = "Project: ${input.projectName}\n\n$overview"
-        val answer = cachedJson(cache, "taxonomy", complete, SYSTEM, user, schema, maxTokens = 4000) {} ?: return emptyList()
+        val answer = cachedJson(cache, "taxonomy", complete, SYSTEM, overview, schema, maxTokens = 4000) {} ?: return emptyList()
         return domains(answer)
     }
 

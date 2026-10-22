@@ -74,7 +74,7 @@ class NodeEnricherTest {
         val request = requests.single()
         assertEquals(Questions.node(domains).keys, request.questions.keys)
         val state = request.state.asJsonObject
-        assertEquals("demo", state["project"].asString)
+        assertFalse(state.has("project"))
         val symbol = state["symbol"].asJsonObject
         assertEquals("load", symbol["name"].asString)
         assertEquals("function", symbol["kind"].asString)

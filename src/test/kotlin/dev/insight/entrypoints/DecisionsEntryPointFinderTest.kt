@@ -29,7 +29,7 @@ class DecisionsEntryPointFinderTest {
 
     private fun find(sources: Sources, hints: List<EntryPointHint> = emptyList(),
         evaluate: suspend (DecisionRequest) -> DecisionResponse = { response(it) }) =
-        runBlocking { DecisionsEntryPointFinder(evaluate, sources, { sources.contents[it] }).find("demo", hints) }
+        runBlocking { DecisionsEntryPointFinder(evaluate, sources, { sources.contents[it] }).find(hints) }
 
     @Test fun `judges source candidates independently and keeps real locations above threshold`() = runBlocking {
         val sources = Sources(mapOf("Main.kt" to "// launch\nfun main() {}\nfun helper() {}", "src/test/MainTest.kt" to "fun main() {}"))
@@ -37,7 +37,7 @@ class DecisionsEntryPointFinderTest {
         val result = DecisionsEntryPointFinder({ request ->
             requests += request
             response(request) { if (it["code"].asString.contains("fun helper")) 0.69 else 0.9 }
-        }, sources, { sources.contents[it] }).find("demo", emptyList())
+        }, sources, { sources.contents[it] }).find(emptyList())
         assertEquals(2, requests.size)
         val state = requests.first().state.asJsonObject
         assertEquals("Main.kt", state["path"].asString)
@@ -57,7 +57,7 @@ class DecisionsEntryPointFinderTest {
     @Test fun `uses graph hints and launch manifests without depending on an LLM`() = runBlocking {
         val sources = Sources(mapOf("Boot.kt" to "// framework\nval boot = Runnable { }", "package.json" to "{\"scripts\":{\"start\":\"node app.js\"}}"))
         val result = DecisionsEntryPointFinder({ response(it) }, sources, { sources.contents[it] }).find(
-            "demo", listOf(EntryPointHint("Boot.kt", 2, "boot", "framework callback")),
+            listOf(EntryPointHint("Boot.kt", 2, "boot", "framework callback")),
         )
         assertEquals(listOf("Boot.kt", "package.json"), result.entryPoints.map { it.path })
         assertEquals("boot", result.entryPoints.first().symbol)
@@ -70,7 +70,7 @@ class DecisionsEntryPointFinderTest {
         val result = DecisionsEntryPointFinder({ response(it) }, sources, {
             read += it
             if (it == "A.kt") null else sources.contents[it]
-        }, maxFiles = 2, concurrency = 1).find("demo", listOf(EntryPointHint("C.kt", 1, "main", "start")))
+        }, maxFiles = 2, concurrency = 1).find(listOf(EntryPointHint("C.kt", 1, "main", "start")))
         assertEquals(listOf("C.kt", "A.kt"), read)
         assertEquals(listOf("C.kt"), result.filesRead)
         assertTrue(result.summary.contains("1 files outside"))
@@ -79,14 +79,14 @@ class DecisionsEntryPointFinderTest {
 
     @Test fun `empty project needs no requests and repeated runs reuse decisions`() = runBlocking {
         val empty = Sources(emptyMap())
-        val result = DecisionsEntryPointFinder({ error("No candidates") }, empty, { null }).find("empty", emptyList())
+        val result = DecisionsEntryPointFinder({ error("No candidates") }, empty, { null }).find(emptyList())
         assertEquals(0, result.requestCount)
         assertTrue(result.entryPoints.isEmpty())
         val sources = Sources(mapOf("Main.kt" to "fun main() {}"))
         var calls = 0
         val finder = DecisionsEntryPointFinder({ calls++; response(it) }, sources, { sources.contents[it] })
-        val first = finder.find("demo", emptyList())
-        val second = finder.find("demo", emptyList())
+        val first = finder.find(emptyList())
+        val second = finder.find(emptyList())
         assertEquals(1, calls)
         assertFalse(first.cached)
         assertTrue(second.cached)
@@ -103,7 +103,7 @@ class DecisionsEntryPointFinderTest {
         suspend fun run(hints: List<EntryPointHint> = emptyList()): EntryPointResult {
             val sources = Sources(contents)
             return DecisionsEntryPointFinder({ calls += path(it); response(it) }, sources,
-                { contents[it] }, concurrency = 1, cache = cache).find("demo", hints)
+                { contents[it] }, concurrency = 1, cache = cache).find(hints)
         }
         run()
         calls.clear()
@@ -133,7 +133,7 @@ class DecisionsEntryPointFinderTest {
         val cache = EntryPointDecisionCache()
         var calls = 0
         suspend fun run(threshold: Double) = DecisionsEntryPointFinder({ calls++; response(it) { 0.6 } },
-            sources, { sources.contents[it] }, threshold = threshold, cache = cache).find("demo", emptyList())
+            sources, { sources.contents[it] }, threshold = threshold, cache = cache).find(emptyList())
         assertTrue(run(0.7).entryPoints.isEmpty())
         val second = run(0.5)
         assertTrue(second.cached)
@@ -150,11 +150,11 @@ class DecisionsEntryPointFinderTest {
             response(it)
         }, sources, { sources.contents[it] })
         try {
-            finder.find("demo", emptyList())
+            finder.find(emptyList())
             fail("Failure should propagate")
         } catch (_: EntryPointDecisionException) { }
-        assertFalse(finder.find("demo", emptyList()).cached)
-        assertTrue(finder.find("demo", emptyList()).cached)
+        assertFalse(finder.find(emptyList()).cached)
+        assertTrue(finder.find(emptyList()).cached)
         assertEquals(2, calls)
     }
 
@@ -164,7 +164,7 @@ class DecisionsEntryPointFinderTest {
         val result = DecisionsEntryPointFinder({ request ->
             sizes += request.questions.size
             response(request) { 0.7 }
-        }, sources, { sources.contents[it] }).find("demo", listOf(EntryPointHint("Main.kt", 1000, "invalid", "stale hint")))
+        }, sources, { sources.contents[it] }).find(listOf(EntryPointHint("Main.kt", 1000, "invalid", "stale hint")))
         assertEquals(23, sizes.size)
         assertTrue(sizes.all { it == 2 })
         assertEquals(46, sizes.sum())
@@ -193,7 +193,7 @@ class DecisionsEntryPointFinderTest {
             }
             assertFalse(source.contains('�'))
             response(request)
-        }, sources, { sources.contents[it] }).find("漢😀".repeat(500), hints)
+        }, sources, { sources.contents[it] }).find(hints)
         assertEquals(23, result.entryPoints.size)
         assertEquals(23, requests.size)
     }
@@ -202,7 +202,7 @@ class DecisionsEntryPointFinderTest {
         val sources = Sources(mapOf("Main.kt" to "fun main() {}"))
         for (failure in listOf(IllegalStateException("API unavailable"), CancellationException("Cancelled"))) {
             try {
-                DecisionsEntryPointFinder({ throw failure }, sources, { sources.contents[it] }).find("demo", emptyList())
+                DecisionsEntryPointFinder({ throw failure }, sources, { sources.contents[it] }).find(emptyList())
                 fail("Failure should propagate")
             } catch (actual: Exception) {
                 // Files are evaluated in child coroutines, which may rethrow a stack-trace-recovered copy.
@@ -216,7 +216,7 @@ class DecisionsEntryPointFinderTest {
         val sources = Sources(mapOf("Main.kt" to "// source\nfun main() {}"))
         val failure = DecisionApiException(500, """{"error":{"message":"Failed to evaluate question: context exhausted"}}""", null)
         try {
-            DecisionsEntryPointFinder({ throw failure }, sources, { sources.contents[it] }).find("demo", emptyList())
+            DecisionsEntryPointFinder({ throw failure }, sources, { sources.contents[it] }).find(emptyList())
             fail("Failure should propagate")
         } catch (actual: EntryPointDecisionException) {
             assertSame(failure, actual.cause)
@@ -316,7 +316,7 @@ class DecisionsEntryPointFinderTest {
         val sources = Sources(mapOf("Main.kt" to "fun main() {}"))
         var calls = 0
         val result = DecisionsEntryPointFinder({ calls++; response(it) }, sources, { sources.contents[it] }, maxRequestBytes = 100)
-            .find("demo", emptyList())
+            .find(emptyList())
         assertEquals(0, calls)
         assertTrue(result.entryPoints.isEmpty())
         assertTrue(result.summary.contains("1 candidates too large"))

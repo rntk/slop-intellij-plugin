@@ -99,6 +99,23 @@ class LlmConfigurationTest {
         assertTrue(requests.isEmpty())
     }
 
+    @Test fun `Anthropic configuration enables or disables the policy cache breakpoint`() = runBlocking {
+        val request = CompletionRequest(listOf(LlmMessage.system("Review the supplied code."), LlmMessage.user("file content")))
+        for (enabled in listOf(true, false)) {
+            LlmConfiguration(LlmProvider.ANTHROPIC, baseUrl, "m", cachePrompt = enabled).createClient("key").complete(request)
+            val body = requests.last().second
+            assertFalse(body.has("cache_control"))
+            if (enabled) {
+                val system = body.getAsJsonArray("system").single().asJsonObject
+                assertEquals("Review the supplied code.", system["text"].asString)
+                assertEquals("ephemeral", system.getAsJsonObject("cache_control")["type"].asString)
+            } else {
+                assertEquals("Review the supplied code.", body["system"].asString)
+                assertFalse(body.toString().contains("cache_control"))
+            }
+        }
+    }
+
     @Test fun `blank URL uses the selected providers default endpoint`() {
         assertEquals(URI("https://api.openai.com/v1/chat/completions"), LlmConfiguration(LlmProvider.OPENAI).endpoint)
         assertEquals(URI("https://api.deepseek.com/chat/completions"), LlmConfiguration(LlmProvider.DEEPSEEK).endpoint)

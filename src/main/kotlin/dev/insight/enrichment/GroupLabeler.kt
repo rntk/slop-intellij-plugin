@@ -34,14 +34,14 @@ class GroupLabeler(
 
         forEachConcurrently(outlines.entries.chunked(batchSize), concurrency) { batch ->
             val items = batch.map { (path, outline) -> path to outline }
-            labels += ask(input.projectName, FILE_TASK, items, FILE_ITEM, requests, failures)
+            labels += ask(FILE_TASK, items, FILE_ITEM, requests, failures)
             progress.report("Labeling files", done.addAndGet(batch.size), total)
         }
         // Deepest first, so every directory sees its subdirectories' labels.
         directories.entries.groupBy { it.key.count { c -> c == '/' } }.toSortedMap(reverseOrder()).values.forEach { level ->
             forEachConcurrently(level.chunked(batchSize), concurrency) { batch ->
                 val items = batch.map { (path, children) -> path to directoryOutline(path, children, directories.keys, labels) }
-                labels += ask(input.projectName, DIRECTORY_TASK, items, DIRECTORY_ITEM, requests, failures)
+                labels += ask(DIRECTORY_TASK, items, DIRECTORY_ITEM, requests, failures)
                 progress.report("Labeling directories", done.addAndGet(batch.size), total)
             }
         }
@@ -49,11 +49,10 @@ class GroupLabeler(
     }
 
     private suspend fun ask(
-        project: String, task: String, items: List<Pair<String, String>>, item: String,
+        task: String, items: List<Pair<String, String>>, item: String,
         requests: AtomicInteger, failures: AtomicInteger,
     ): Map<String, GroupLabel> {
         val user = buildString {
-            append("Project: ").append(project).append("\n\n")
             items.forEachIndexed { index, (_, outline) -> append("[").append(index + 1).append("] ").append(outline).append("\n\n") }
         }
         val system = "$CODE_AS_DATA\n\n$task\n\nFor every numbered $item return {\"id\": its number, \"label\": a 2-5 word noun phrase " +

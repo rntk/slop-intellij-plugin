@@ -155,7 +155,7 @@ internal class DiffReviewTab(
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(complete, diffChatTools(context, flows), diffReviewPrompt(project.name),
+                val reply = LlmChatBackend(complete, diffChatTools(context, flows), diffReviewPrompt(),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)

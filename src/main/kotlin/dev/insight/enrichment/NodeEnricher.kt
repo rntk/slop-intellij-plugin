@@ -62,7 +62,7 @@ class NodeEnricher(
         coroutineScope {
             targets.map { facts ->
                 async {
-                    val state = state(input.projectName, facts, neighbours.callers(facts.id), neighbours.callees(facts.id))
+                    val state = state(facts, neighbours.callers(facts.id), neighbours.callees(facts.id))
                     val key = "node:" + sha256("v${Questions.VERSION}\n${facts.contentHash}\n$domainsHash\n$state")
                     val cached = cache.node(key)
                     if (cached != null) {
@@ -109,8 +109,7 @@ class NodeEnricher(
         fun callees(id: Int) = callees[id].orEmpty().take(maxNeighbours)
     }
 
-    private fun state(project: String, facts: SymbolFacts, callers: List<String>, callees: List<String>) = JsonObject().apply {
-        put("project", project)
+    private fun state(facts: SymbolFacts, callers: List<String>, callees: List<String>) = JsonObject().apply {
         add("symbol", JsonObject().apply {
             put("name", facts.name)
             put("kind", facts.kind.name.lowercase())

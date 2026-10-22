@@ -173,9 +173,9 @@ open class ChatSession(
     /** Runs on IO: reading the API key from the password safe can block. */
     internal open fun createBackend(): ChatBackend {
         val client = ChatSettings.getInstance().createClient()
-        return if (chart == null) LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt(project.name))
+        return if (chart == null) LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt())
         else LlmChatBackend(client::complete, sessionChartTools(chart) + projectTools(project, sourcePoints).filter { it.definition.name in setOf("read_file", "list_files", "search_text", "point_to_code") },
-            chartChatSystemPrompt(project.name), maxToolRounds = 100, context = chart::snapshot)
+            chartChatSystemPrompt(), maxToolRounds = 100, context = chart::snapshot)
     }
 
     private fun describe(event: ToolCallEvent): String {
