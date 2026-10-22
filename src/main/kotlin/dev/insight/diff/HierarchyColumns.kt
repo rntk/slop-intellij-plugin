@@ -57,7 +57,7 @@ internal abstract class HierarchyColumnsPanel(
 
     /** Fits the widest name within bounds; longer names wrap. */
     protected fun measureCardWidth(names: List<String>): Int {
-        val metrics = getFontMetrics(font(JBFont.label().asBold()))
+        val metrics = getFontMetrics(font(JBFont.label().asBold()).forReviewName())
         val widest = names.maxOfOrNull(metrics::stringWidth) ?: 0
         val chrome = scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) + 4
         return (widest + chrome).coerceIn(scaled(MIN_CARD_WIDTH), scaled(MAX_CARD_WIDTH))
@@ -132,7 +132,7 @@ internal abstract class HierarchyColumnsPanel(
             add(JPanel(VerticalLayout(scaled(2))).apply {
                 isOpaque = false
                 val heading = text(title, inner - if (icon != null) icon.iconWidth + scaled(4) else 0,
-                    if (placeholder) italic(JBFont.label()) else font(JBFont.label().asBold()), if (placeholder) help else null)
+                    (if (placeholder) italic(JBFont.label()) else font(JBFont.label().asBold())).forReviewName(), if (placeholder) help else null)
                 add(if (icon == null) heading else JPanel(BorderLayout(scaled(4), 0)).apply {
                     isOpaque = false
                     add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
@@ -217,7 +217,7 @@ internal abstract class HierarchyColumnsPanel(
         val center = JPanel(VerticalLayout(scaled(2))).apply {
             isOpaque = false
             add(ActionLink(title) { open() }.apply {
-                font = font(JBFont.label()); toolTipText = vocabulary.openTooltip(file.path)
+                font = font(JBFont.label()).forReviewName(); toolTipText = vocabulary.openTooltip(file.path)
                 minimumSize = Dimension(0, preferredSize.height)
             })
             add(detailsLabel)

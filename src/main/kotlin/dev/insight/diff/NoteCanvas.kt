@@ -94,9 +94,9 @@ internal class NoteCanvas(
 
     /**
      * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
-     * field. [query] names a search tab until its first search is done.
+     * field.
      */
-    private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val query: String? = null) {
+    private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
         var scroll = 0
         var version: Int? = null
         val trace = SummaryTraceSession(traceSummaries, view, { reading(this) }, openSummaryLines,
@@ -114,7 +114,6 @@ internal class NoteCanvas(
                 }
             })
         }
-        val search get() = query != null
     }
 
     private val mainSummaries = SummariesTab(SUMMARIES_KEY, summariesView)
@@ -261,12 +260,16 @@ internal class NoteCanvas(
     } ?: key.paths.joinToString(", ").ifEmpty { tabTitle(key) }
 
     /** A search tab's queries: the finished searches, or the first query while it is still searched. */
-    private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty { listOfNotNull(tab.query) }
+    private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty {
+        listOfNotNull(tab.view.tracing?.takeIf { it.searchRequested }?.context?.query)
+    }
 
     private fun tabTitle(key: DiffNoteKey): String = when (key) {
         TOPICS_KEY -> "Topics"
         SUMMARIES_KEY -> "Summaries"
-        in searchTabs.map { it.key } -> "Search · " + searchPath(summaryTab(key)!!).last().let { if (it.length > 32) it.take(31) + "…" else it }
+        in searchTabs.map { it.key } -> searchPath(summaryTab(key)!!).lastOrNull()?.let {
+            "Search · " + if (it.length > 32) it.take(31) + "…" else it
+        } ?: "Search"
         FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         FLOWS_KEY -> "Change flows"
         FLOW_KEY -> "Symbol flow"
@@ -919,16 +922,33 @@ internal class NoteCanvas(
                 })
             }
         }, BorderLayout.CENTER)
-        add(tab.searchField.apply {
-            preferredSize = Dimension(scaled(260), preferredSize.height)
-            if (text != tab.view.fuzzy) text = tab.view.fuzzy
+        add(JPanel(BorderLayout(scaled(8), 0)).apply {
+            isOpaque = false
+            add(tab.searchField.apply {
+                preferredSize = Dimension(scaled(260), preferredSize.height)
+                if (text != tab.view.fuzzy) text = tab.view.fuzzy
+            }, BorderLayout.CENTER)
+            add(JButton("Cancel search").apply {
+                name = "summaries-cancel-search"
+                font = scaledFont(JBFont.small())
+                cursor = Cursor.getDefaultCursor()
+                toolTipText = "Cancel the current search and clear highlights, selected words and all filters in this tab"
+                addActionListener { cancelSearch(tab) }
+            }, BorderLayout.EAST)
         }, BorderLayout.EAST)
+    }
+
+    private fun cancelSearch(tab: SummariesTab) {
+        tab.trace.clear()
+        tab.view.clearSearch()
+        tab.searchField.text = ""
+        refreshSummaries(tab)
     }
 
     /** Opens a search tab that starts from [from]'s view and searches, and searches [context] there. */
     private fun openSearchTab(from: SummariesTab, context: SummaryContext) {
         val content = summaries ?: return
-        val tab = SummariesTab(DiffNoteKey(emptyList(), "summary-search-${++searchTabCount}"), from.view.fork(), context.query)
+        val tab = SummariesTab(DiffNoteKey(emptyList(), "summary-search-${++searchTabCount}"), from.view.fork(), search = true)
         tab.version = from.version
         searchTabs += tab
         tab.view.update(content.summaries.tree)

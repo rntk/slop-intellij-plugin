@@ -291,7 +291,7 @@ internal abstract class DocumentColumnsPanel(
             applyActive()
             return
         }
-        val railTitleMetrics = getFontMetrics(cardFont(JBFont.label().asBold()))
+        val railTitleMetrics = getFontMetrics(cardFont(JBFont.label().asBold()).forReviewName())
         val summaryMetrics = getFontMetrics(summaryFont())
         val wordBoundary = Regex("\\s+")
         fun longestWord(value: String, metrics: java.awt.FontMetrics): Int =
@@ -400,7 +400,7 @@ internal abstract class DocumentColumnsPanel(
         border = noteBorder(true)
         val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
         val icon = item.icon
-        val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0, cardFont(JBFont.label().asBold()), null)
+        val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0, cardFont(JBFont.label().asBold()).forReviewName(), null)
         add(if (icon == null) title else JPanel(BorderLayout(cardScaled(4), 0)).apply {
             isOpaque = false
             add(JLabel(icon).apply { verticalAlignment = SwingConstants.TOP }, BorderLayout.WEST)
@@ -448,7 +448,7 @@ internal abstract class DocumentColumnsPanel(
             add(JLabel(FileTypeManager.getInstance().getFileTypeByFileName(name).icon ?: AllIcons.FileTypes.Any_type))
             add(Box.createHorizontalStrut(scaled(6)))
             add(ActionLink(if (file is ReviewFile) name else file.path) { openFile(file) }.apply {
-                font = cardFont(JBFont.label().asBold()); toolTipText = vocabulary.openTooltip(file.path)
+                font = cardFont(JBFont.label().asBold()).forReviewName(); toolTipText = vocabulary.openTooltip(file.path)
                 minimumSize = Dimension(0, preferredSize.height)
             })
             val details = listOfNotNull(file.path.substringBeforeLast('/', "").takeIf { file is ReviewFile && it.isNotEmpty() }) + file.facts
@@ -497,7 +497,7 @@ internal abstract class DocumentColumnsPanel(
         val inner = width - cardScaled(RAIL_ACCENT) - cardScaled(8) - cardScaled(6) - 2
         val icon = item.icon
         val title = text(item.title, inner - if (icon != null) icon.iconWidth + cardScaled(4) else 0,
-            if (item.placeholder) cardFont(JBFont.label()).deriveFont(Font.ITALIC) else cardFont(JBFont.label().asBold()), if (item.placeholder) help else null)
+            (if (item.placeholder) cardFont(JBFont.label()).deriveFont(Font.ITALIC) else cardFont(JBFont.label().asBold())).forReviewName(), if (item.placeholder) help else null)
         val heading = JPanel(VerticalLayout(cardScaled(2))).apply {
             isOpaque = false
             add(if (icon == null) title else JPanel(BorderLayout(cardScaled(4), 0)).apply {

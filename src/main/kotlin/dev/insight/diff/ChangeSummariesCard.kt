@@ -36,6 +36,9 @@ internal data class SummariesCard(val summaries: ChangeSummaries, val running: B
 /** Summary prose is slightly larger than the surrounding labels, at every zoom level. */
 internal fun Font.forSummaryText(): Font = deriveFont(size2D * 1.15f)
 
+/** File and folder headings stand out from the surrounding metadata. */
+internal fun Font.forReviewName(): Font = deriveFont(size2D * 1.2f)
+
 /**
  * A folder, group or the root: the branches that levels and "Files" open. A file with parts is a branch too, but is opened by
  * hand, so reading by level never unfolds every part of every large file.
@@ -403,6 +406,18 @@ internal class ChangeSummariesViewState(
     override fun clearTrace() {
         super.clearTrace()
         if (filtering && crumbs.isNotEmpty()) crumbs[crumbs.lastIndex] = crumbs.last().copy(trace = null)
+    }
+
+    /** Returns to unfiltered summaries without dropping scored contexts or the reader's view settings. */
+    fun clearSearch() {
+        clearTrace()
+        crumbs.clear()
+        fuzzy = ""
+        selected = null
+        reveal = null
+        filterFor = null
+        shown = null
+        opened = emptySet()
     }
 
     fun resummaryRequest(summaries: ChangeSummaries): ContextSummaryRequest? {
@@ -1002,7 +1017,7 @@ internal class ChangeSummariesPanel(
             SummaryKind.GROUP -> "${node.label} · ${node.children.size} entries · $count"
             SummaryKind.CHUNK -> title
         }
-        val nameText = label(heading, font(JBFont.small().asBold()), help).apply {
+        val nameText = label(heading, font(JBFont.label().asBold()).forReviewName(), help).apply {
             name = "summary-name:${node.identity}"
             toolTipText = metadata
         }

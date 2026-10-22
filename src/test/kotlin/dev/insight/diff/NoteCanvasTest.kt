@@ -1094,6 +1094,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     private class FakeTraceLauncher : SummaryTraceLauncher {
         val scoredWords = mutableListOf<Pair<Int, Int>>()
         val searched = mutableListOf<SummaryContext>()
+        val searchJobs = mutableListOf<Job>()
         var finishSearch: ((Result<SummaryTrace>) -> Unit)? = null
         val searchedLines = mutableListOf<SummaryContext>()
         var finishLines: ((Result<LineTrace>) -> Unit)? = null
@@ -1114,13 +1115,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         override fun search(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
             searched += context
             finishSearch = done
-            return Job()
+            return Job().also { searchJobs += it }
         }
 
         override fun searchLines(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
             searchedLines += context
             finishLines = done
-            return Job()
+            return Job().also { searchJobs += it }
         }
 
         fun finish(context: SummaryContext, candidates: Int, vararg matches: SummaryMatch) = finishSearch!!(Result.success(
@@ -1321,8 +1322,98 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertTrue("$mode clears result badges", descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
                 assertTrue("$mode clears result backgrounds", highlighted.none { it.isOpaque && it.background in listOf(TraceStyle.BEST_MATCH, TraceStyle.RELATED) })
                 assertEquals("Clearing highlights preserves filtering", !searchTab, summaries.text(rejected.id) in texts)
+
+                // Cancel resets both kinds of filtering, even after Clear has removed the current trace.
+                (descendants(page).single { it.name == "summaries-score" } as javax.swing.JButton).doClick()
+                val scored = canvas.summariesView.scored.toMap()
+                assertTrue(scored.isNotEmpty())
+                val field = descendants(page).single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
+                field.text = "no-such-summary"
+                if (searchTab) {
+                    val mainField = descendants(canvas.tabs.getComponentAt(0) as Container)
+                        .single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
+                    mainField.text = "Readme"
+                }
+                (descendants(page).single { it.name == "summaries-cancel-search" } as javax.swing.JButton).doClick()
+                layoutTree(canvas)
+                assertEquals("", field.text)
+                assertSame(field, descendants(page).single { it.name == "summaries-search" })
+                assertTrue("$mode restores rejected summaries", descendants(page).filterIsInstance<javax.swing.JTextArea>()
+                    .any { it.text == summaries.text(rejected.id) })
+                assertTrue(descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
+                assertTrue(descendants(page).none { it.name == "summaries-crumb:1" || it.name == "summaries-crumb:searching" })
+                assertTrue(descendants(page).filterIsInstance<javax.swing.JTextArea>()
+                    .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
+                assertEquals(scored, canvas.summariesView.scored)
+                if (searchTab) {
+                    assertEquals("Search", canvas.tabs.getTitleAt(1))
+                    assertEquals("Summaries", canvas.tabs.getToolTipTextAt(1))
+                    assertEquals("Cancel affects only its tab", "Readme", canvas.summariesView.fuzzy)
+                } else {
+                    assertNull(canvas.summariesView.selected)
+                    assertNull(canvas.summariesView.reveal)
+                    assertNull(canvas.summariesView.shownNodes(summaries))
+                }
             } finally { canvas.dispose() }
         }
+    }
+
+    fun testCancelSearchCancelsPendingResultsAndLineNavigation() {
+        val file = ReviewFile("ui/Canvas.kt", "/repo/ui/Canvas.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        val tree = buildSummaryTree(listOf(file))
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val leaf = tree.nodes.single { it.path == file.path }
+        for (node in listOf(tree.root, leaf)) {
+            val launcher = FakeTraceLauncher()
+            val opened = mutableListOf<LineTrace>()
+            val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { _, lines -> opened += lines })
+                .apply { setSize(1600, 900) }
+            try {
+                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                layoutTree(canvas)
+                val row = descendants(canvas).single { it.name == "summary:${node.identity}" } as Container
+                val area = descendants(row).filterIsInstance<javax.swing.JTextArea>().first()
+                area.select(0, "Paints".length)
+                selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
+                    .single { it.name == "search-selection" }.doClick()
+                assertNotNull(canvas.summariesView.tracing)
+                (descendants(canvas).single { it.name == "summaries-cancel-search" } as javax.swing.JButton).doClick()
+                assertTrue(launcher.searchJobs.single().isCancelled)
+                assertNull(canvas.summariesView.tracing)
+
+                // A request may deliver its callback despite cancellation.
+                if (node === leaf) {
+                    val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
+                    launcher.finishLines!!(Result.success(LineTrace(leaf.identity, leaf.path, "Paints",
+                        listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
+                } else {
+                    launcher.finish(launcher.searched.single(), 1, SummaryMatch(leaf.id, leaf.identity, 0.9, 1))
+                }
+                layoutTree(canvas)
+                assertTrue(opened.isEmpty())
+                assertNull(canvas.summariesView.tracing)
+                assertNull(canvas.summariesView.selected)
+                assertNull(canvas.summariesView.reveal)
+                assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>()
+                    .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
+            } finally { canvas.dispose() }
+        }
+    }
+
+    fun testCancelSearchClearsTextFilterWithoutTraceLauncher() {
+        val file = ReviewFile("Canvas.kt", "/repo/Canvas.kt", null, "modified", "-old\n+new\n", "1")
+        val summaries = ChangeSummaries(buildSummaryTree(listOf(file)))
+        val canvas = NoteCanvas({}, {})
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            val field = descendants(canvas).single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
+            field.text = "no-such-summary"
+            assertTrue(descendants(canvas).any { it.name == "no-matches" })
+            (descendants(canvas).single { it.name == "summaries-cancel-search" } as javax.swing.JButton).doClick()
+            assertEquals("", field.text)
+            assertNull(canvas.summariesView.shownNodes(summaries))
+            assertTrue(descendants(canvas).none { it.name == "no-matches" })
+        } finally { canvas.dispose() }
     }
 
     fun testSearchWithNoMatchesHidesAllSummariesAndKeepsItsBreadcrumb() {
