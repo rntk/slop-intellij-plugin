@@ -28,13 +28,18 @@ internal class ChangeSummaryHierarchyPanel(
         while (pending.isNotEmpty()) pending.removeFirst().let { ids += it.identity; it.children.mapTo(pending, tree::get) }
         ids
     }.orEmpty()
-    private val trace = state.tracing?.trace
+    /** A search tab hides unrelated summaries instead of marking the related ones. */
+    private val trace = state.tracing?.trace?.takeUnless { state.filtering }
     private val marks = traceMarks(tree, trace)
 
     init {
         state.update(tree)
         cardWidth = measureCardWidth(tree.nodes.map(::title))
-        if (summaries.total == 0) showEmpty(vocabulary.noFiles) else finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
+        when {
+            summaries.total == 0 -> showEmpty(vocabulary.noFiles)
+            !state.shows(tree.root, summaries) -> showEmpty("No summaries match the search.")
+            else -> finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
+        }
     }
 
     /** Lays out [node] with its top-left at column [column] and row [y], and returns its height. */
@@ -42,7 +47,9 @@ internal class ChangeSummaryHierarchyPanel(
         if (node.children.isEmpty()) fileRow(node, column, y, family) else branch(node, column, y, family)
 
     private fun branch(node: SummaryNode, column: Int, y: Int, family: String?): Int {
-        val collapsed = node.identity !in state.expanded
+        // A branch whose entries are all hidden by a search reads as folded, with its own summary beside it.
+        val children = node.children.map(tree::get).filter { state.shows(it, summaries) }
+        val collapsed = !state.isOpen(node, summaries) || children.isEmpty()
         val toggle = toggle("toggle:${node.identity}", collapsed, "Show subfolders and files", "Fold subfolders and files") {
             actions.toggle(node.identity)
         }
@@ -54,15 +61,15 @@ internal class ChangeSummaryHierarchyPanel(
             rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
-            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection) { actions.toggle(node.identity) } }
+            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab) { actions.toggle(node.identity) } }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
             var childY = y
             // Each top-level folder keeps one hue down its columns; the root stays neutral.
-            for ((index, child) in node.children.map(tree::get).withIndex()) {
+            for ((index, child) in children.withIndex()) {
                 if (rowsLeft <= 0) {
-                    childY += moreNote(node.children.size - index, column + 1, childY) + gap
+                    childY += moreNote(children.size - index, column + 1, childY) + gap
                     break
                 }
                 childY += place(child, column + 1, childY, family ?: child.identity) + gap
@@ -125,9 +132,10 @@ internal class ChangeSummaryDocumentPanel(
 ) : DocumentColumnsPanel(zoom, vocabulary) {
     private val summaries = card.summaries
     private val tree = summaries.tree
-    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null }
+    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null && state.shows(it, summaries) }
     val files: List<ReviewSource> = fileNodes.map { requireNotNull(it.file) }
     private val nodesByPath = fileNodes.associateBy { it.path }
+    private val branches = tree.nodes.filter { it.children.isNotEmpty() }.mapTo(hashSetOf()) { it.identity }
 
     init {
         state.update(tree)
@@ -137,9 +145,11 @@ internal class ChangeSummaryDocumentPanel(
         val depth = railDepth(tree, state)
         val items = mutableListOf<RailItem>()
         fun collect(node: SummaryNode, level: Int, family: String?) {
-            if (!isFolderBranch(node) || level >= folderDepth) return
-            val first = indexByPath[node.files.firstOrNull()]
-            val last = indexByPath[node.files.lastOrNull()]
+            if (!isFolderBranch(node) || level >= folderDepth || !state.shows(node, summaries)) return
+            // A search may hide some of a folder's files; its card spans the ones left.
+            val shown = node.files.mapNotNull(indexByPath::get)
+            val first = shown.minOrNull()
+            val last = shown.maxOrNull()
             if (first != null && last != null) {
                 items += RailItem(
                     key = node.identity,
@@ -198,7 +208,8 @@ internal class ChangeSummaryDocumentPanel(
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         super.summaryBody(identity, summary, missingSummary, width).also { area ->
-            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace, actions.searchSelection)
+            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace, actions.searchSelection,
+                actions.searchTab.takeIf { identity in branches })
         }
 
     override fun isSelected(item: RailItem): Boolean = state.selected == item.key

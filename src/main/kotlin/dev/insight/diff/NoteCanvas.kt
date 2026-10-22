@@ -6,8 +6,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
+import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.panels.VerticalLayout
@@ -27,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import javax.swing.*
+import javax.swing.event.DocumentEvent
 
 /** Review artifacts, each in its own normally scrollable tab. */
 internal class NoteCanvas(
@@ -80,11 +83,39 @@ internal class NoteCanvas(
         it.mode = vocabulary.summariesMode
         it.visibleOnly = vocabulary.scoreVisibleOnly
     }
-    private var summariesScroll = 0
     private var fileView: FileViewCard? = null
     private var fileViewScroll = 0
-    private val summariesTrace = SummaryTraceSession(traceSummaries, summariesView, { summaries?.summaries }, openSummaryLines,
-        update = { updateTracePresentation(SUMMARIES_KEY) }, refresh = ::refreshSummaries)
+
+    /**
+     * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
+     * field. [query] names a search tab until its first search is done.
+     */
+    private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val query: String? = null) {
+        var scroll = 0
+        val trace = SummaryTraceSession(traceSummaries, view, { summaries?.summaries }, openSummaryLines,
+            update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
+        /** Kept across rebuilds of the card, so typing never loses focus or caret. */
+        val searchField = SearchTextField(false).apply {
+            name = "summaries-search"
+            textEditor.emptyText.text = "Filter summaries"
+            toolTipText = "Hide summaries whose name, path or text does not match the typed words (fuzzy)"
+            addDocumentListener(object : DocumentAdapter() {
+                override fun textChanged(e: DocumentEvent) {
+                    if (view.fuzzy == text) return
+                    view.fuzzy = text
+                    refreshSummaries(this@SummariesTab)
+                }
+            })
+        }
+        val search get() = query != null
+    }
+
+    private val mainSummaries = SummariesTab(SUMMARIES_KEY, summariesView)
+    private val summariesTrace get() = mainSummaries.trace
+    private val searchTabs = mutableListOf<SummariesTab>()
+    private var searchTabCount = 0
+    private fun summaryTabs() = listOf(mainSummaries) + searchTabs
+    private fun summaryTab(key: DiffNoteKey) = summaryTabs().firstOrNull { it.key == key }
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
@@ -121,7 +152,10 @@ internal class NoteCanvas(
         this.flows = flows
         flowsView.reset(flows)
         this.summaries = summaries
-        summaries?.let { summariesView.update(it.summaries.tree); summariesTrace.retain(it.summaries) } ?: summariesTrace.stop()
+        if (summaries == null) {
+            summaryTabs().forEach { it.trace.stop() }
+            searchTabs.clear()
+        } else summaryTabs().forEach { it.view.update(summaries.summaries.tree); it.trace.retain(summaries.summaries) }
         val sourcesByKey = sources.associateBy { it.key }
         editors.entries.removeIf { (key, editor) ->
             (sourcesByKey[key] != editor.block).also { if (it) editor.dispose() }
@@ -135,7 +169,10 @@ internal class NoteCanvas(
         val scrolls = pages.mapValues { Point(it.value.viewport.viewPosition) }
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
-        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }, summaries?.let { SUMMARIES_KEY to summariesCard(it) }, fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+        val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
+        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) }).toMap() +
+            summaryCards +
+            listOfNotNull(fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -145,7 +182,7 @@ internal class NoteCanvas(
             pages[key] = page
             installStickyScrolling(key, page, card)
             tabs.addTab(tabTitle(key), page)
-            tabs.setToolTipTextAt(tabs.tabCount - 1, key.paths.joinToString(", ").ifEmpty { tabTitle(key) })
+            tabs.setToolTipTextAt(tabs.tabCount - 1, tabTooltip(key))
             bodyScrolls[key]?.let { position -> SwingUtilities.invokeLater {
                 if (cards[key] === card) bodyScroll(card)?.viewport?.viewPosition = position
             } }
@@ -192,9 +229,17 @@ internal class NoteCanvas(
         highlight(highlighted)
     }
 
+    private fun tabTooltip(key: DiffNoteKey): String = summaryTab(key)?.takeIf { it.search }?.let { tab ->
+        (listOf("Summaries") + searchPath(tab).map { "“$it”" }).joinToString(" › ")
+    } ?: key.paths.joinToString(", ").ifEmpty { tabTitle(key) }
+
+    /** A search tab's queries: the finished searches, or the first query while it is still searched. */
+    private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty { listOfNotNull(tab.query) }
+
     private fun tabTitle(key: DiffNoteKey): String = when (key) {
         TOPICS_KEY -> "Topics"
         SUMMARIES_KEY -> "Summaries"
+        in searchTabs.map { it.key } -> "Search · " + searchPath(summaryTab(key)!!).last().let { if (it.length > 32) it.take(31) + "…" else it }
         FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         FLOWS_KEY -> "Change flows"
         FLOW_KEY -> "Symbol flow"
@@ -243,7 +288,7 @@ internal class NoteCanvas(
         when (key) {
             TOPICS_KEY -> topicsScroll = target.y
             FILE_VIEW_KEY -> fileViewScroll = target.y
-            else -> summariesScroll = target.y
+            else -> summaryTab(key)?.scroll = target.y
         }
         SwingUtilities.invokeLater {
             if (cards[key]?.let(::bodyScroll) === updated) updated.viewport.viewPosition = target
@@ -569,9 +614,13 @@ internal class NoteCanvas(
 
     /**
      * The summary tree as a wide reading card, as an outline, as the folder hierarchy, or as a document with its folder rail;
-     * mode changes, expanding, selecting and new summaries rebuild only this card, in place.
+     * mode changes, expanding, selecting and new summaries rebuild only this card, in place. A search tab shows the same
+     * card with only the summaries its searches found related, and its queries as breadcrumbs.
      */
-    private fun summariesCard(content: SummariesCard): JPanel {
+    private fun summariesCard(tab: SummariesTab, content: SummariesCard): JPanel {
+        val summariesView = tab.view
+        val summariesTrace = tab.trace
+        val key = tab.key
         val tree = content.summaries.tree
         summariesView.update(tree)
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
@@ -586,15 +635,15 @@ internal class NoteCanvas(
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(vocabulary.summariesTitle).apply {
+            add(JLabel(vocabulary.summariesTitle + if (tab.search) " · Search" else "").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.summariesTooltip
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (document) add(documentZoomControls(SUMMARIES_KEY))
+                if (document) add(documentZoomControls(key))
                 val summaries = content.summaries
-                if ((hierarchy || document) && branchLevels > 0) add(summaryLevels(tree, branchLevels))
+                if ((hierarchy || document) && branchLevels > 0) add(summaryLevels(tab, tree, branchLevels))
                 val group = ButtonGroup()
                 ChangeSummariesMode.entries.forEach { mode ->
                     add(JToggleButton(when (mode) {
@@ -611,7 +660,7 @@ internal class NoteCanvas(
                             ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
                         }
                         group.add(this)
-                        addActionListener { summariesView.mode = mode; summariesScroll = 0; refreshSummaries() }
+                        addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
                     })
                 }
                 if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
@@ -627,19 +676,22 @@ internal class NoteCanvas(
                         else vocabulary.summarizeTooltip
                     addActionListener { summarize() }
                 })
-                add(InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSummaries() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
+                add(if (tab.search) InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { closeSearchTab(tab) }
+                        .apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() }
+                    else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSummaries() }
+                        .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
         val actions = ChangeSummaryActions(
-            toggle = { identity -> summariesView.toggle(identity); refreshSummaries() },
-            select = { identity -> summariesView.select(identity); refreshSummaries() },
+            toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
+            select = { identity -> summariesView.select(identity); refreshSummaries(tab) },
             openFile = open,
             showDiffCard = showDiffCard,
             openNode = openSummaryNode,
             showNode = showSummaryNode,
             trace = summariesTrace::trace,
             searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
+            searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
@@ -660,11 +712,16 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
-        card.add(header, BorderLayout.NORTH)
+        card.add(JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(header, BorderLayout.NORTH)
+            add(searchRow(tab), BorderLayout.SOUTH)
+        }, BorderLayout.NORTH)
         if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
-            traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true).forEach(::add)
+            traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true,
+                where = if (tab.search) "the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
@@ -675,15 +732,15 @@ internal class NoteCanvas(
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
-            if (document) installDocumentWheelZoom(SUMMARIES_KEY, this)
+            if (document) installDocumentWheelZoom(key, this)
             // The viewport has no size yet; restore the reading position after layout.
-            val restore = summariesScroll
-            verticalScrollBar.addAdjustmentListener { summariesScroll = it.value }
+            val restore = tab.scroll
+            verticalScrollBar.addAdjustmentListener { tab.scroll = it.value }
             SwingUtilities.invokeLater {
                 verticalScrollBar.value = restore
                 // A jump to a traced summary scrolls its row into view once the rebuilt card is laid out.
                 // A newer rebuild owns the reveal.
-                if (cards[SUMMARIES_KEY] !== card) return@invokeLater
+                if (cards[key] !== card) return@invokeLater
                 val target = summariesView.reveal ?: return@invokeLater
                 summariesView.reveal = null
                 card.validate()
@@ -691,6 +748,69 @@ internal class NoteCanvas(
             }
         }, BorderLayout.CENTER)
         return card
+    }
+
+    /**
+     * A search tab's queries as breadcrumbs, each going back to the summaries left after it, and the search field. The typed
+     * filter stays out of the breadcrumbs: the field itself shows it.
+     */
+    private fun searchRow(tab: SummariesTab): JComponent = JPanel(BorderLayout(scaled(8), 0)).apply {
+        isOpaque = false
+        border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(4, 12, 4, 8))
+        add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
+            name = "summaries-breadcrumbs"
+            isOpaque = false
+            if (!tab.search) return@apply
+            val crumbs = tab.view.crumbs
+            fun separator() = add(JLabel("›").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+            fun crumb(text: String, index: Int, current: Boolean, tooltip: String) = add(
+                if (current) JLabel(text).apply { font = scaledFont(JBFont.small().asBold()) }
+                else ActionLink(text) { backTo(tab, index) }.apply { font = scaledFont(JBFont.small()) }
+            ).also { it.name = "summaries-crumb:$index"; (it as JComponent).toolTipText = tooltip }
+            // A search still running shows its query, not yet a step to go back to.
+            val running = tab.view.tracing?.takeIf { it.searchRequested && it.file == null && it.trace == null && it.error == null }
+            crumb("Summaries", 0, crumbs.isEmpty() && running == null, "Every summary")
+            crumbs.forEachIndexed { index, it ->
+                separator()
+                crumb("“${it.query}”", index + 1, index == crumbs.lastIndex && running == null, "Summaries related to “${it.query}”")
+            }
+            if (running != null) {
+                separator()
+                add(JLabel("“${running.context?.query ?: running.word.text}”…").apply {
+                    name = "summaries-crumb:searching"
+                    font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                })
+            }
+        }, BorderLayout.CENTER)
+        add(tab.searchField.apply {
+            preferredSize = Dimension(scaled(260), preferredSize.height)
+            if (text != tab.view.fuzzy) text = tab.view.fuzzy
+        }, BorderLayout.EAST)
+    }
+
+    /** Opens a search tab that starts from [from]'s view and searches, and searches [context] there. */
+    private fun openSearchTab(from: SummariesTab, context: SummaryContext) {
+        val content = summaries ?: return
+        val tab = SummariesTab(DiffNoteKey(emptyList(), "summary-search-${++searchTabCount}"), from.view.fork(), context.query)
+        searchTabs += tab
+        tab.view.update(content.summaries.tree)
+        // Searching first lets the new card show the running query.
+        tab.trace.searchContext(context)
+        showNotes(notes, sources, diffs, flows, summaries, topics, fileView)
+        focusCard(tab.key)
+    }
+
+    private fun closeSearchTab(tab: SummariesTab) {
+        tab.trace.stop()
+        searchTabs -= tab
+        showNotes(notes, sources, diffs, flows, summaries, topics, fileView)
+    }
+
+    /** Goes back to the summaries left after the first [count] searches of a search tab; zero shows every summary. */
+    private fun backTo(tab: SummariesTab, count: Int) {
+        tab.trace.clear()
+        tab.view.backTo(count)
+        refreshSummaries(tab)
     }
 
     /** Scrolls a traced match into view: its card in a hierarchy, else its outline row. */
@@ -717,7 +837,7 @@ internal class NoteCanvas(
     /** Hover and scoring updates keep the live components and both viewports intact. */
     private fun updateTracePresentation(key: DiffNoteKey) {
         val card = cards[key] ?: return
-        val state = if (key == SUMMARIES_KEY) summariesView else topicsView
+        val state = summaryTab(key)?.view ?: topicsView
         descendantsOf(card).forEach { component ->
             if (component is JTextArea) updateWordTracing(component)
             if (component is JComponent && state.tracing?.trace == null) resetTraceDecoration(component)
@@ -726,9 +846,13 @@ internal class NoteCanvas(
         }
     }
 
-    /** Two fixed-height status lines: changing hover queries never changes the reading area's geometry. */
+    /**
+     * Two fixed-height status lines: changing hover queries never changes the reading area's geometry. [where] tells what
+     * became of a search's matches.
+     */
     private fun traceStatusLines(
         state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int, selection: Boolean = false,
+        where: String = "highlighted in the view.",
     ): List<JComponent> {
         if (!session.available) return emptyList()
         fun line(text: String, name: String, lineWidth: Int = width) = JLabel(text).apply {
@@ -748,7 +872,7 @@ internal class NoteCanvas(
             add(line(" ", "trace-status", width - scaled(56)).apply {
                 val update = {
                     val tracing = state.tracing
-                    text = tracing?.let { traceStatus(it, "highlighted in the view.") } ?: " "
+                    text = tracing?.let { traceStatus(it, where) } ?: " "
                     toolTipText = text.takeIf { it.isNotBlank() }
                     foreground = if (tracing?.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
                 }
@@ -763,8 +887,9 @@ internal class NoteCanvas(
     }
 
     /** Level n shows folder levels 1..n+1 and folds the rest, as in the topic hierarchy; the last level shows every file. */
-    private fun summaryLevels(tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+    private fun summaryLevels(tab: SummariesTab, tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
         isOpaque = false
+        val summariesView = tab.view
         add(JLabel("Levels").apply {
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
         })
@@ -778,11 +903,11 @@ internal class NoteCanvas(
                 if (level == levels) "Show every folder rail level" else "Show folder rail levels 1–${level + 1}"
             else if (level == levels) "Show every folder level and file" else "Show folder levels 1–${level + 1}"
             group.add(this)
-            addActionListener { summariesView.selectLevel(level, tree); refreshSummaries() }
+            addActionListener { summariesView.selectLevel(level, tree); refreshSummaries(tab) }
         })
     }
 
-    /** Follows every summary and chat update without rebuilding the other cards while the card stays on the canvas. */
+    /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
         if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
             showNotes(notes, sources, diffs, flows, content, topics, fileView)
@@ -790,14 +915,20 @@ internal class NoteCanvas(
         }
         if (content == summaries) return
         summaries = content
-        content?.let { summariesView.update(it.summaries.tree); summariesTrace.retain(it.summaries) }
-        refreshSummaries()
+        content?.let { summaryTabs().forEach { tab -> tab.view.update(it.summaries.tree); tab.trace.retain(it.summaries) } }
+        summaryTabs().forEach { refreshSummaries(it) }
     }
 
-    private fun refreshSummaries() {
+    private fun refreshSummaries(tab: SummariesTab = mainSummaries) {
         val content = summaries ?: return
-        val card = summariesCard(content)
-        replaceCard(SUMMARIES_KEY, card)
+        // Rebuilding moves the search field into the new card; typing goes on where it was.
+        val typing = tab.searchField.textEditor.isFocusOwner
+        replaceCard(tab.key, summariesCard(tab, content))
+        if (typing) tab.searchField.textEditor.requestFocusInWindow()
+        pages[tab.key]?.let { page -> tabs.indexOfComponent(page).takeIf { it >= 0 } }?.let { index ->
+            tabs.setTitleAt(index, tabTitle(tab.key))
+            tabs.setToolTipTextAt(index, tabTooltip(tab.key))
+        }
     }
 
     /**
@@ -900,7 +1031,7 @@ internal class NoteCanvas(
         val card = when (key) {
             FLOWS_KEY -> flows?.let(::flowsCard)
             TOPICS_KEY -> topics?.let(::topicsCard)
-            SUMMARIES_KEY -> summaries?.let(::summariesCard)
+            in summaryTabs().map { it.key } -> summaries?.let { summariesCard(summaryTab(key)!!, it) }
             FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
             FLOW_KEY -> flowCard(changeFlow(notes))
             else -> notes.firstOrNull { it.key == key }?.let(::card)
@@ -1050,7 +1181,7 @@ internal class NoteCanvas(
     private fun scaled(value: Int) = (JBUI.scale(value) * zoom).roundToInt().coerceAtLeast(1)
     private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
     override fun dispose() {
-        summariesTrace.stop()
+        summaryTabs().forEach { it.trace.stop() }
         topicsTrace.stop()
         editors.values.forEach { it.dispose() }
         editors.clear()

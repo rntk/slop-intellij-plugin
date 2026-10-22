@@ -36,6 +36,7 @@ internal class CodeSummaryEvidence(
 
     override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
         val file = node.file as? CodeFile ?: return
+        item.addProperty("path", file.path)
         languageOf(file.path)?.let { item.addProperty("language", it) }
         val lines = node.lines ?: 1..file.lineCount
         if (!lines.isEmpty()) {

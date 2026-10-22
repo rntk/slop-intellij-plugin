@@ -49,10 +49,14 @@ internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT }
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so
  * hovering never needs a request. [traceRoot] is false where the root summary is not shown, so its words are not scored;
- * [traceLeaves] scores the summaries of files and parts too, whose highlights search the file's lines.
+ * [traceLeaves] scores the summaries of files and parts too, whose highlights search the file's lines. Views of the same
+ * summaries may share [scored], so words scored in one are ready in the others.
  */
-internal abstract class SummaryTraceState(private val traceRoot: Boolean = true, val traceLeaves: Boolean = false) {
-    val scored = mutableMapOf<Pair<String, Int>, SummaryContext>()
+internal abstract class SummaryTraceState(
+    private val traceRoot: Boolean = true,
+    val traceLeaves: Boolean = false,
+    val scored: MutableMap<Pair<String, Int>, SummaryContext> = mutableMapOf(),
+) {
     var scoring = false
     var scoringError: String? = null
     var tracing: SummaryTracing? = null
@@ -217,11 +221,13 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
  * does not search, so the reader can place the caret or select words there; searching starts only from the context menu:
  * right-clicking a scored word offers Search for that word, as right-clicking selected text does. The traced word is marked
  * strongly and its context, the words the query keeps, lightly. A click beside the words calls [select]. With
- * [searchSelection], right-clicking selected text offers to search for it, scored or not.
+ * [searchSelection], right-clicking selected text offers to search for it, scored or not. With [searchTab], both menus
+ * also offer Search tab, which searches in a new tab of its own.
  */
 internal fun installWordTracing(
     area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
-    trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null, select: () -> Unit = {},
+    trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null,
+    searchTab: ((SummaryContext) -> Unit)? = null, select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
@@ -254,16 +260,27 @@ internal fun installWordTracing(
     fun highlighted(word: SummaryWord) = tracing()?.let { current ->
         word.index == current.word.index || current.context?.context?.any { it.index == word.index } == true
     } == true
+    fun JPopupMenu.addSearchTab(context: SummaryContext?) {
+        if (searchTab == null) return
+        add(JMenuItem("Search tab").apply {
+            name = "search-tab"
+            isEnabled = context != null
+            toolTipText = "Search in a new tab that shows only the related summaries"
+            addActionListener { context?.let(searchTab) }
+        })
+    }
     fun contextMenu(point: Point?): JPopupMenu? {
         val start = area.selectionStart
         val end = area.selectionEnd
         if (searchSelection != null && start != end) return JPopupMenu().apply {
+            val context = selectionContext(identity, summary, start, end)
             add(JMenuItem("Search").apply {
                 name = "search-selection"
-                isEnabled = selectionContext(identity, summary, start, end) != null
+                isEnabled = context != null
                 toolTipText = "Search for the selected words"
                 addActionListener { searchSelection(identity, start, end) }
             })
+            addSearchTab(context)
         }
         // A supplied point must hit a scored word itself; only a point-less menu may fall back to the traced or caret word.
         val word = if (point != null) wordAt(point) else tracing()?.word?.takeIf { state.cached(identity, summary, it.index) != null }
@@ -276,6 +293,7 @@ internal fun installWordTracing(
                 toolTipText = "Search for “${word.text}” and the words in its context"
                 addActionListener { trace(identity, word.index, true) }
             })
+            addSearchTab(state.cached(identity, summary, word.index))
         }
     }
     val pointer = object : MouseAdapter() {
@@ -342,11 +360,18 @@ internal fun resetTraceDecoration(component: JComponent) {
     reset()
 }
 
+/** One search of a search tab: the summary searched, its query, and the nodes still shown after it. */
+internal data class SearchCrumb(val identity: String, val query: String, val shown: Set<String>)
+
 /**
  * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
- * modes, so folding a folder in the hierarchy collapses it in the outline too.
+ * modes, so folding a folder in the hierarchy collapses it in the outline too. A search tab ([filtering]) hides what its
+ * searches found unrelated instead of marking the matches; the search field hides what does not match the typed text.
  */
-internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) {
+internal class ChangeSummariesViewState(
+    val filtering: Boolean = false,
+    scored: MutableMap<Pair<String, Int>, SummaryContext> = mutableMapOf(),
+) : SummaryTraceState(traceLeaves = true, scored = scored) {
     var mode = ChangeSummariesMode.OUTLINE
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
@@ -354,6 +379,52 @@ internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) 
     /** The level picked in the hierarchy's switcher; nodes that appear later open to that level too. */
     private var level: Int? = null
     private var tree: ChangeSummaryTree? = null
+
+    /** A search tab's searches, broadest first; each narrows the one before it. */
+    val crumbs = mutableListOf<SearchCrumb>()
+
+    /** The text of the search field. Folders above a match open while it is typed, unless folded by hand meanwhile. */
+    var fuzzy = ""
+        set(value) { if (field.trim() != value.trim()) folded.clear(); field = value }
+    private val folded = hashSetOf<String>()
+    private var filterFor: Triple<ChangeSummaries, String, SearchCrumb?>? = null
+    private var shown: Set<String>? = null
+    private var opened = emptySet<String>()
+
+    /** The nodes left by the searches and the search field, every match with the nodes above it; null hides nothing. */
+    fun shownNodes(summaries: ChangeSummaries): Set<String>? {
+        val query = fuzzy.trim()
+        val crumb = crumbs.lastOrNull()
+        val key = Triple(summaries, query, crumb)
+        if (filterFor == key) return shown
+        filterFor = key
+        val searched = crumb?.shown
+        opened = emptySet()
+        shown = if (query.isEmpty()) searched else {
+            val tree = summaries.tree
+            val above = hashSetOf<String>()
+            val kept = hashSetOf<String>()
+            for (node in tree.nodes) {
+                if (searched != null && node.identity !in searched || !fuzzyMatches(query, searchableText(node, summaries))) continue
+                kept += node.identity
+                generateSequence(node.parent) { tree[it].parent }.forEach { above += tree[it].identity }
+            }
+            opened = above
+            kept + above
+        }
+        return shown
+    }
+
+    fun shows(node: SummaryNode, summaries: ChangeSummaries): Boolean = shownNodes(summaries)?.contains(node.identity) ?: true
+
+    /** Whether [node]'s children show: unfolded by hand, or above a match of the search field. */
+    fun isOpen(node: SummaryNode, summaries: ChangeSummaries): Boolean {
+        shownNodes(summaries)
+        return node.identity in expanded || node.identity in opened && node.identity !in folded
+    }
+
+    /** Drops the searches after the first [count]; zero shows every summary again. */
+    fun backTo(count: Int) { while (crumbs.size > count) crumbs.removeAt(crumbs.lastIndex) }
 
     /**
      * New nodes open by default in a small tree, only the root in a large one, or down to the picked level; nodes the reader
@@ -370,7 +441,11 @@ internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) 
         if (tree.nodes.none { it.identity == selected }) selected = null
     }
 
-    fun toggle(identity: String) { if (!expanded.remove(identity)) expanded += identity }
+    fun toggle(identity: String) {
+        if (identity in opened && identity !in folded) { folded += identity; expanded -= identity; return }
+        folded -= identity
+        if (!expanded.remove(identity)) expanded += identity
+    }
     fun select(identity: String) { selected = if (selected == identity) null else identity }
 
     /** Level n opens the folders above depth n and folds the rest; [branchLevels] opens every folder down to the files. */
@@ -392,23 +467,51 @@ internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) 
         minOf(branchLevels(tree), (shownLevel(tree) ?: branchLevels(tree)) + 1)
 
     /** Documents keep every file visible; outlines and hierarchies hide nodes under folded folders. */
-    override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean =
-        { node ->
-            if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
+    override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean {
+        // The filter of the last rendering; scoring follows what is on screen.
+        val filter = shown.takeIf { filterFor?.first?.tree === tree }
+        return { node ->
+            (filter == null || node.identity in filter) && if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
                 isFolderBranch(node) && tree.depth(node.id) < railDepth(tree)
-            else generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded }
+            else generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded || tree[it].identity in opened && tree[it].identity !in folded }
         }
+    }
 
     /**
      * The outline only opens the levels down to the matches. The hierarchy shows a branch's summary only while it is folded,
-     * so it also folds related branches with no related node beneath them.
+     * so it also folds related branches with no related node beneath them. A search tab instead keeps only the traced
+     * summary, the nodes above it, its related summaries with everything beneath them, and the way down to them.
      */
     override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
-        tracePath(tree, trace)?.let { path ->
+        val path = tracePath(tree, trace)
+        path?.let {
             expanded += path.open
             if (mode == ChangeSummariesMode.HIERARCHY) expanded -= path.fold
         }
-        trace.best?.let { selected = it.identity; reveal = it.identity }
+        if (!filtering) {
+            trace.best?.let { selected = it.identity; reveal = it.identity }
+            return
+        }
+        if (path == null || trace.related.isEmpty()) return
+        if (crumbs.lastOrNull()?.let { it.identity == trace.identity && it.query == trace.query } == true) return
+        val byIdentity = tree.nodes.associateBy { it.identity }
+        val shown = HashSet(path.path)
+        generateSequence(byIdentity[path.traced]?.parent) { tree[it].parent }.forEach { shown += tree[it].identity; expanded += tree[it].identity }
+        val below = trace.related.mapNotNull { byIdentity[it.identity] }.toCollection(ArrayDeque())
+        while (below.isNotEmpty()) below.removeFirst().children.forEach { child -> shown += tree[child].identity; below += tree[child] }
+        val previous = crumbs.lastOrNull()?.shown
+        crumbs += SearchCrumb(trace.identity, trace.query, if (previous == null) shown else shown.filterTo(hashSetOf()) { it in previous })
+    }
+
+    /** A search tab's state starting from this one: the same mode, folding, scored words and searches so far. */
+    fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true, scored = scored).also {
+        it.mode = mode
+        it.visibleOnly = visibleOnly
+        it.expanded += expanded
+        it.seen += seen
+        it.level = level
+        it.tree = tree
+        it.crumbs += crumbs
     }
 
     companion object {
@@ -418,6 +521,44 @@ internal class ChangeSummariesViewState : SummaryTraceState(traceLeaves = true) 
         fun branchLevels(tree: ChangeSummaryTree): Int =
             tree.nodes.filter(::isFolderBranch).maxOfOrNull { tree.depth(it.id) + 1 } ?: 0
     }
+}
+
+/** What the search field matches in a node: its name, its path and its summary. */
+private fun searchableText(node: SummaryNode, summaries: ChangeSummaries): String =
+    listOfNotNull(node.label, node.path, summaries.text(node.id)).joinToString(" ")
+
+/**
+ * A quick, naive fuzzy match: every word of [query] must be in [text], as a substring, as the letters of one of its words
+ * in order (`chsum` for `ChangeSummary`), or, from four letters on, with one letter wrong, missing or extra.
+ */
+internal fun fuzzyMatches(query: String, text: String): Boolean {
+    val haystack = text.lowercase()
+    val words by lazy { SummaryWord.split(haystack).map { it.text } }
+    return query.lowercase().split(Regex("""\s+""")).filter { it.isNotEmpty() }.all { token ->
+        token in haystack || words.any { word -> abbreviates(token, word) || token.length >= 4 && nearlyStarts(token, word) }
+    }
+}
+
+/** [token]'s letters appear in order in [word], starting with its first letter. */
+private fun abbreviates(token: String, word: String): Boolean {
+    if (token.length < 2 || word.isEmpty() || token[0] != word[0]) return false
+    var at = 0
+    for (char in word) if (char == token[at] && ++at == token.length) return true
+    return false
+}
+
+/** [word] starts with [token] but for one letter changed, dropped or added. */
+private fun nearlyStarts(token: String, word: String): Boolean =
+    (token.length - 1..token.length + 1).any { length -> length <= word.length && editDistance(token, word.substring(0, length)) <= 1 }
+
+private fun editDistance(a: String, b: String): Int {
+    var previous = IntArray(b.length + 1) { it }
+    for (i in 1..a.length) {
+        val current = IntArray(b.length + 1).also { it[0] = i }
+        for (j in 1..b.length) current[j] = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1)
+        previous = current
+    }
+    return previous[b.length]
 }
 
 /** How far summarizing has come, shown at the top of both modes. */
@@ -538,14 +679,19 @@ internal class SummaryTraceSession(
 
     /** Searches for the words selected in [identity]'s summary, as Search on a scored word does, without needing Score. */
     fun searchSelection(identity: String, start: Int, end: Int) {
+        val text = content()?.tree?.nodes?.firstOrNull { it.identity == identity }?.let { content()?.text(it.id) } ?: return
+        searchContext(selectionContext(identity, text, start, end) ?: return)
+    }
+
+    /** Searches a scored word's or a selection's [context], as long as its summary is unchanged. */
+    fun searchContext(context: SummaryContext) {
         if (launcher == null) return
         val content = content() ?: return
-        val node = content.tree.nodes.firstOrNull { it.identity == identity } ?: return
-        val text = content.text(node.id) ?: return
-        val context = selectionContext(identity, text, start, end) ?: return
+        val node = content.tree.nodes.firstOrNull { it.identity == context.identity } ?: return
+        val text = content.text(node.id)?.takeIf { it == context.summary } ?: return
         traceJob?.cancel()
         val file = node.path.takeIf { node.children.isEmpty() && node.file != null }
-        state.tracing = SummaryTracing(identity, text, context.word, context = context, file = file, searchRequested = true)
+        state.tracing = SummaryTracing(context.identity, text, context.word, context = context, file = file, searchRequested = true)
         updatePresentation()
         search()
     }
@@ -627,6 +773,8 @@ internal class ChangeSummaryActions(
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
     /** Searches the selected characters of a summary like Search on a scored word; null hides the selection's context menu. */
     val searchSelection: ((String, Int, Int) -> Unit)? = null,
+    /** Searches a summary with children in a new tab that keeps only the related summaries; null hides Search tab. */
+    val searchTab: ((SummaryContext) -> Unit)? = null,
     /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     /** Put a node's source on the canvas; null hides the buttons. */
@@ -652,7 +800,8 @@ internal class ChangeSummariesPanel(
     private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
     private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
     private val help get() = UIUtil.getContextHelpForeground()
-    private val trace = state.tracing?.trace
+    /** A search tab hides unrelated summaries instead of marking the related ones. */
+    private val trace = state.tracing?.trace?.takeUnless { state.filtering }
     private val matches = trace?.related.orEmpty().associateBy { it.identity }
     private val best = trace?.best?.identity
     /** Rows added so far; a huge tree stops at [HierarchyColumnsPanel.MAX_ROWS] and says how many entries it left out. */
@@ -662,7 +811,8 @@ internal class ChangeSummariesPanel(
     init {
         isOpaque = false
         add(text(summariesStatus(card, vocabulary.noFiles), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
-        if (summaries.total > 0) addNode(tree.root, 0)
+        if (summaries.total > 0 && state.shows(tree.root, summaries)) addNode(tree.root, 0)
+        else if (summaries.total > 0) add(text("No summaries match the search.", cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
         if (skipped > 0) add(text("+$skipped more — fold or pick a level", cardWidth, italic(JBFont.small()), help)
             .apply { name = "more"; border = pad(scaled(4), scaled(TOGGLE), scaled(4), 0) })
         add(text(vocabulary.summariesFooter, cardWidth, font(JBFont.small()), help)
@@ -672,18 +822,20 @@ internal class ChangeSummariesPanel(
     private fun addNode(node: SummaryNode, depth: Int) {
         rows++
         add(row(node, depth))
-        if (node.identity !in state.expanded) return
-        for ((index, child) in node.children.withIndex()) {
+        if (!state.isOpen(node, summaries)) return
+        val children = node.children.map(tree::get).filter { state.shows(it, summaries) }
+        for ((index, child) in children.withIndex()) {
             if (rows >= HierarchyColumnsPanel.MAX_ROWS) {
-                skipped += node.children.size - index
+                skipped += children.size - index
                 return
             }
-            addNode(tree[child], depth + 1)
+            addNode(child, depth + 1)
         }
     }
 
     private fun row(node: SummaryNode, depth: Int): JComponent {
         val selected = node.identity == state.selected
+        val open = state.isOpen(node, summaries)
         val gutter = scaled(TOGGLE) + scaled(ICON) + scaled(8)
         val textWidth = (cardWidth - depth * scaled(INDENT) - gutter - scaled(8)).coerceAtLeast(scaled(160))
         val summary = summaries.text(node.id)
@@ -693,7 +845,8 @@ internal class ChangeSummariesPanel(
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()), null)
                 .also { area ->
-                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection, activate)
+                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection,
+                        actions.searchTab.takeIf { node.children.isNotEmpty() }, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
@@ -704,10 +857,10 @@ internal class ChangeSummariesPanel(
         val gutterPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
             add(if (node.children.isEmpty()) JLabel().apply { preferredSize = Dimension(scaled(TOGGLE), 1) }
-                else label(if (node.identity in state.expanded) "▾" else "▸", font(JBFont.label()), help).apply {
+                else label(if (open) "▾" else "▸", font(JBFont.label()), help).apply {
                     preferredSize = Dimension(scaled(TOGGLE), preferredSize.height)
                     cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    toolTipText = if (node.identity in state.expanded) "Collapse" else "Expand"
+                    toolTipText = if (open) "Collapse" else "Expand"
                     name = "toggle:${node.identity}"
                     addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { actions.toggle(node.identity) } })
                 })

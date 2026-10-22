@@ -24,6 +24,8 @@ import dev.insight.chat.ChatSettings
 import dev.insight.chat.LlmChatBackend
 import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolInputException
+import dev.insight.chat.TraceFile
+import dev.insight.chat.tracedFileCompletion
 import dev.insight.diff.ChangeSummaries
 import dev.insight.diff.ChangeSummarizer
 import dev.insight.diff.ChangeSummaryOptions
@@ -171,7 +173,8 @@ internal class CodeReviewTab(
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, scopeName) = withContext(Dispatchers.EDT) { captureContext() to promptScope() }
                 val question = messages.lastOrNull()?.text.orEmpty()
-                val complete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+                val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
+                    this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete)
                 if (isTopicsRequest(question)) {
                     val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                     if (!confirm(requests, "topics")) return cancelledReply(requests)
@@ -224,7 +227,7 @@ internal class CodeReviewTab(
             }
         }
     }
-    private val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false)
+    private val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
 
     init {
         minimumSize = Dimension(300, 200)

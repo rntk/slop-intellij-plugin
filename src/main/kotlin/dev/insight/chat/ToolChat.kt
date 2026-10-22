@@ -11,6 +11,7 @@ import dev.insight.llm.LlmProtocolException
 import dev.insight.llm.LlmTool
 import dev.insight.llm.ToolChoice
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 
 /** A function the model may call during a chat turn. Implementations validate their own arguments. */
 interface ChatTool {
@@ -134,6 +135,7 @@ class ToolChatRunner(
             val roundMessages = mutableListOf(assistant)
             transcript += assistant.copy(reasoning = null, thinkingBlocks = emptyList())
             for (call in calls) {
+                currentCoroutineContext()[FileTraceContext]?.trace?.requestTool(call.name, call.arguments)
                 val (result, failed) = execute(call.name, call.arguments)
                 val toolMessage = LlmMessage.tool(call.id!!, result)
                 roundMessages += toolMessage

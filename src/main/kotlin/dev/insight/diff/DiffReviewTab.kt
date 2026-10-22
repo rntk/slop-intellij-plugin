@@ -88,13 +88,15 @@ internal class DiffReviewTab(
 
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-                val (context, total) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files.size }
+                val (context, files) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files }
+                val total = files.size
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val client = ChatSettings.getInstance().createClient()
+                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
                 if (isTopicsRequest(question)) {
                     val run = reportRawProgress { reporter ->
                         reporter.text("Classifying changed files…")
-                        ChangeTopicGenerator(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                        ChangeTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
                                 onProgress = { done, total ->
                                     reporter.details("$done of $total files classified")
@@ -108,7 +110,7 @@ internal class DiffReviewTab(
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = reportRawProgress { reporter ->
                         reporter.text("Summarizing the change…")
-                        ChangeSummarizer(client::complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                        ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
                                 if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
                                 onProgress = { done, total ->
@@ -136,7 +138,7 @@ internal class DiffReviewTab(
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(client::complete, diffChatTools(context, flows), diffReviewPrompt(project.name),
+                val reply = LlmChatBackend(complete, diffChatTools(context, flows), diffReviewPrompt(project.name),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
@@ -151,7 +153,7 @@ internal class DiffReviewTab(
             }
         }
     }
-    private val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false)
+    private val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
 
     init {
         minimumSize = Dimension(300, 200)

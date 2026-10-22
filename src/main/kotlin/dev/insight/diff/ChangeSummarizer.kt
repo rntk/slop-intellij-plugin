@@ -60,6 +60,7 @@ internal class DiffSummaryEvidence(private val options: ChangeSummaryOptions) : 
 
     override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
         val file = node.file as? ReviewFile ?: return
+        item.addProperty("path", file.path)
         item.addProperty("status", file.status)
         file.previousPath?.let { item.addProperty("previous_path", it) }
         item.addProperty("lines", changedLines(file))

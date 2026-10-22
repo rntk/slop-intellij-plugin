@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,6 +37,7 @@ open class ChatSession(
     var busy: Boolean = false
         private set
     val messages: List<ChatMessage> get() = history.toList()
+    internal val fileTraces = mutableListOf<FileTrace>()
     /** Follow-up questions the latest reply suggested; cleared when a message is sent or the chat is cleared. */
     var followups: List<String> = emptyList()
         private set
@@ -52,6 +54,10 @@ open class ChatSession(
     fun send(text: String) {
         if (discarded || busy || text.isBlank()) return
         history += ChatMessage(ChatMessage.USER, text.trim())
+        val fileTrace = FileTrace(text.trim()) {
+            withContext(NonCancellable + Dispatchers.EDT) { if (!discarded) notifyViews() }
+        }
+        fileTraces += fileTrace
         followups = emptyList()
         proposed = emptyList()
         busy = true
@@ -61,9 +67,10 @@ open class ChatSession(
         turn = scope.launch(Dispatchers.EDT) {
             try {
                 val reply = withBackgroundProgress(project, replyProgressTitle(text.trim())) {
-                    withContext(Dispatchers.IO) {
+                    withContext(Dispatchers.IO + FileTraceContext(fileTrace)) {
                         createBackend().reply(request) { event ->
                             withContext(Dispatchers.EDT) {
+                                fileTrace.tool(event)
                                 history += ChatMessage(ChatMessage.TOOL, describe(event))
                                 notifyViews()
                             }
@@ -80,8 +87,10 @@ open class ChatSession(
                 LOG.warn("Chat reply failed", e)
                 history += ChatMessage(ChatMessage.NOTICE, "The response failed: ${describeChatFailure(e)}")
             } finally {
+                fileTrace.finish()
                 if (discarded) {
                     history.clear()
+                    fileTraces.clear()
                     followups = emptyList()
                     proposed = emptyList()
                 }
@@ -129,6 +138,7 @@ open class ChatSession(
         sourcePoints.clear()
         onClear()
         history.clear()
+        fileTraces.clear()
         followups = emptyList()
         notifyViews()
     }
@@ -141,6 +151,7 @@ open class ChatSession(
         turn = null
         busy = false
         history.clear()
+        fileTraces.clear()
         followups = emptyList()
         proposed = emptyList()
         listeners.clear()

@@ -1097,6 +1097,107 @@ class NoteCanvasTest : BasePlatformTestCase() {
         layoutTree(canvas)
     }
 
+    fun testSearchTabKeepsOnlyRelatedSummariesAndNarrowsWithBreadcrumbs() {
+        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val root = "Deleted views: canvas, hierarchy."
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label} view."
+        })
+        fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
+        val canvasDir = node("ui/canvas")
+        val hierarchyDir = node("ui/hierarchy")
+        val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
+        val columnsFile = node("ui/hierarchy/Columns.kt")
+        val launcher = FakeTraceLauncher()
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        fun page(index: Int) = canvas.tabs.getComponentAt(index) as Container
+        fun named(index: Int, name: String) = descendants(page(index)).filter { it.name == name }
+        fun shown(index: Int) = descendants(page(index)).mapNotNull { it.name?.removePrefix("summary:")?.takeIf { _ -> it.name!!.startsWith("summary:") } }.toSet()
+        fun summaryArea(index: Int, identity: String) =
+            descendants(named(index, "summary:$identity").single() as Container).filterIsInstance<javax.swing.JTextArea>().first()
+        fun menuItem(area: javax.swing.JTextArea, word: String, name: String): javax.swing.JMenuItem {
+            val start = area.text.indexOf(word)
+            area.select(start, start + word.length)
+            return selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == name }
+        }
+        try {
+            canvas.summariesView.mode = ChangeSummariesMode.OUTLINE
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            val everything = shown(0)
+            assertTrue(canvasDir.identity in everything && hierarchyFile.identity in everything)
+            // A file's summary has no summaries below it to keep, so it offers no Search tab.
+            menuItem(summaryArea(0, hierarchyFile.identity), "Deletes", "search-selection")
+            assertTrue(selectionMenu(summaryArea(0, hierarchyFile.identity))!!.components.none { it.name == "search-tab" })
+
+            // Search tab opens a second tab and searches there; the summaries tab keeps showing everything.
+            menuItem(summaryArea(0, "root"), "hierarchy", "search-tab").doClick()
+            layoutTree(canvas)
+            assertEquals(2, canvas.tabs.tabCount)
+            assertEquals(1, canvas.tabs.selectedIndex)
+            assertEquals("Search · hierarchy", canvas.tabs.getTitleAt(1))
+            assertEquals("hierarchy", launcher.searched.single().query)
+            assertEquals("“hierarchy”…", (named(1, "summaries-crumb:searching").single() as JLabel).text)
+            launcher.finish(launcher.searched.single(), 4, SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.9, 1),
+                SummaryMatch(canvasDir.id, canvasDir.identity, 0.1, 1))
+            layoutTree(canvas)
+            // Only the related folder, everything beneath it and the way up to the root are left; nothing is marked.
+            val related = shown(1)
+            assertTrue(hierarchyDir.identity in related && hierarchyFile.identity in related && columnsFile.identity in related && "root" in related)
+            assertFalse(canvasDir.identity in related)
+            assertTrue(descendants(page(1)).none { it.name?.startsWith("match:") == true })
+            assertEquals("“hierarchy”", (named(1, "summaries-crumb:1").single() as JLabel).text)
+            assertEquals(everything, shown(0))
+            assertTrue(canvas.summariesView.crumbs.isEmpty())
+
+            // Searching again in the search tab narrows it and adds the query to the breadcrumbs.
+            menuItem(summaryArea(1, hierarchyDir.identity), "Deletes", "search-selection").doClick()
+            launcher.finish(launcher.searched.last(), 2, SummaryMatch(hierarchyFile.id, hierarchyFile.identity, 0.8, 1))
+            layoutTree(canvas)
+            assertTrue(hierarchyFile.identity in shown(1))
+            assertFalse(columnsFile.identity in shown(1))
+            assertEquals("“Deletes”", (named(1, "summaries-crumb:2").single() as JLabel).text)
+            assertEquals("Search · Deletes", canvas.tabs.getTitleAt(1))
+
+            // An earlier breadcrumb goes back to the summaries left after it.
+            (named(1, "summaries-crumb:1").single() as com.intellij.ui.components.ActionLink).doClick()
+            layoutTree(canvas)
+            assertTrue(columnsFile.identity in shown(1))
+            assertEquals(1, descendants(page(1)).count { it.name?.startsWith("summaries-crumb:") == true && it.name != "summaries-crumb:0" })
+
+            // Typing filters fuzzily, with the folders above every match, and stays out of the breadcrumbs.
+            val field = named(0, "summaries-search").single() as com.intellij.ui.SearchTextField
+            field.text = "colmns"
+            layoutTree(canvas)
+            assertEquals(generateSequence(columnsFile) { it.parent?.let(tree::get) }.map { it.identity }.toSet(), shown(0))
+            assertTrue(named(0, "summaries-crumb:1").isEmpty())
+            assertSame("The search field survives the rebuilt card", field, named(0, "summaries-search").single())
+            field.text = "zzz"
+            layoutTree(canvas)
+            assertEquals(1, named(0, "no-matches").size)
+            field.text = ""
+            layoutTree(canvas)
+            assertEquals(everything, shown(0))
+
+            (named(1, "close-search-tab").single() as com.intellij.ui.InplaceButton).doClick()
+            assertEquals(1, canvas.tabs.tabCount)
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testFuzzyMatchingIsNaiveButForgiving() {
+        assertTrue(fuzzyMatches("summary", "ChangeSummaryModel.kt"))
+        assertTrue("Letters in order of one word", fuzzyMatches("chsum", "ChangeSummaryModel.kt builds the tree"))
+        assertTrue("One typo from four letters on", fuzzyMatches("trea", "builds the tree"))
+        assertTrue("Every word must match", fuzzyMatches("tree builds", "builds the tree"))
+        assertFalse(fuzzyMatches("tree parser", "builds the tree"))
+        assertFalse("Short words need an exact substring", fuzzyMatches("tx", "builds the tree"))
+    }
+
     fun testSummariesHierarchyTracesFoldedSummariesAndOpensThePathToTwoLevelsBelow() {
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")

@@ -35,6 +35,7 @@ import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.Scrollable
 import javax.swing.SwingUtilities
+import javax.swing.JTabbedPane
 import javax.swing.event.HyperlinkEvent
 
 class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
@@ -54,12 +55,14 @@ class ChatPanel(
     private val scopeLabel: String? = null,
     private val title: String? = null,
     private val showDashboard: Boolean = !chartMode,
+    showFileTrace: Boolean = false,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
     // Chart replies are wrapping HTML panes, so the chart transcript follows the viewport width.
     private val transcript = (if (chartMode) WidthTrackingPanel() else JPanel()).apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
     /** The chart reference under the mouse, cleared before the transcript is rebuilt. */
     private var hovered: Pair<Int, Int>? = null
     private val scroll = JBScrollPane(transcript)
+    private val fileTrace = if (showFileTrace) FileTracePanel(project) else null
     val input = JBTextArea(3, 24).apply {
         lineWrap = true
         wrapStyleWord = true
@@ -98,7 +101,12 @@ class ChatPanel(
                 })
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
-        add(scroll, BorderLayout.CENTER)
+        add(fileTrace?.let { report -> JTabbedPane().apply {
+            addTab("Chat", scroll)
+            addTab("Files", report)
+            setToolTipTextAt(1, "Files read, percentage of content read, and clickable line ranges")
+            addChangeListener { if (selectedComponent === report) report.render(service.fileTraces) }
+        } } ?: scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, 8)).apply {
             add(status, BorderLayout.NORTH)
             add(JPanel(BorderLayout(0, 4)).apply {
@@ -133,6 +141,7 @@ class ChatPanel(
     }
 
     private fun render() {
+        fileTrace?.takeIf { it.isShowing || service.fileTraces.isEmpty() }?.render(service.fileTraces)
         hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
         hovered = null
         transcript.removeAll()
