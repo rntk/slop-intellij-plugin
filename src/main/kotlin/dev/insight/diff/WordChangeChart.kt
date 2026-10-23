@@ -26,7 +26,13 @@ internal data class WordChange(val word: String, val removed: Int, val added: In
 }
 
 /** The words of the changed lines; context lines are not counted. */
-internal data class WordChanges(val words: List<WordChange>, val removedWords: Int, val addedWords: Int) {
+internal data class WordChanges(
+    val words: List<WordChange>,
+    val removedWords: Int,
+    val addedWords: Int,
+    /** Every changed line, including blank lines and lines without words. */
+    val lines: ChangedLineCounts = ChangedLineCounts(),
+) {
     /**
      * Below 0.5 when a word is used more in removed lines, above 0.5 when more in added lines, relative to how many words
      * each side has; a word used on one side only always lies on that side. Smoothing keeps rare words nearer the middle
@@ -48,25 +54,30 @@ internal fun wordChanges(files: List<ReviewFile>, limit: Int = 300): WordChanges
     val counts = hashMapOf<String, Count>()
     var removed = 0
     var added = 0
+    var deletedLines = 0
+    var addedLines = 0
     files.forEach { file ->
         var inHunk = false
         file.patch.lineSequence().forEach { line ->
             when {
+                line.startsWith("diff --git ") -> inHunk = false
                 line.startsWith("@@") -> inHunk = true
-                inHunk && (line.startsWith('-') || line.startsWith('+')) -> WORD.findAll(line, 1).forEach { match ->
-                    val word = match.value
-                    if (word.length < 2) return@forEach
-                    val count = counts.getOrPut(word) { Count() }
-                    if (line[0] == '-') { count.removed++; removed++ } else { count.added++; added++ }
-                    count.paths += file.path
+                inHunk && (line.startsWith('-') || line.startsWith('+')) -> {
+                    if (line[0] == '-') deletedLines++ else addedLines++
+                    WORD.findAll(line, 1).forEach { match ->
+                        val word = match.value
+                        if (word.length < 2) return@forEach
+                        val count = counts.getOrPut(word) { Count() }
+                        if (line[0] == '-') { count.removed++; removed++ } else { count.added++; added++ }
+                        count.paths += file.path
+                    }
                 }
             }
         }
     }
     val words = counts.map { (word, count) -> WordChange(word, count.removed, count.added, count.paths) }
         .sortedWith(compareByDescending<WordChange> { it.total }.thenBy { it.word })
-        .take(limit)
-    return WordChanges(words, removed, added)
+    return WordChanges(words.take(limit), removed, added, ChangedLineCounts(deletedLines, addedLines))
 }
 
 /** The changed files the word chart counts: one file, the files beneath a directory, or every file when [path] is empty. */

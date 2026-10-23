@@ -90,6 +90,10 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
     fun showWords() { wordsVisible = true }
     fun hideWords() { wordsVisible = false }
+    var diffOverviewVisible = false
+        private set
+    fun showDiffOverview() { diffOverviewVisible = true }
+    fun hideDiffOverview() { diffOverviewVisible = false }
 
     fun startTopics(): ChangeTopics {
         if (topics.complete) {
@@ -196,7 +200,10 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null; summariesVisible = false; topicsVisible = false; wordsVisible = false }
+    fun clearNotes() {
+        cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null
+        summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false
+    }
 
     fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
         check(expected)

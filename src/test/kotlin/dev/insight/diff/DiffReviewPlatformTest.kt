@@ -39,6 +39,29 @@ import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.intellij.vcsUtil.VcsUtil
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
+    fun testWordChartsOpenAndCloseIndependently() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+newWord\n")), emptyList()))
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Words" }.doClick()
+            assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
+            assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart })
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Diff overview" }.doClick()
+            assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
+            assertEquals(1, descendants(tab.canvas).filterIsInstance<DiffOverviewChart>().size)
+            descendants(tab.canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove diff overview" }.doClick()
+            assertTrue(tab.state.wordsVisible)
+            assertFalse(tab.state.diffOverviewVisible)
+            assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart })
+            tab.openDiffOverview()
+            tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+updatedWord\n", fingerprint = "updated")), emptyList()))
+            assertTrue(descendants(tab.canvas).filterIsInstance<DiffOverviewChart>().single().changes.words.any { it.word == "updatedWord" })
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
+            assertFalse(tab.state.wordsVisible)
+            assertFalse(tab.state.diffOverviewVisible)
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test chat tools point at exact snapshot sides and flow tools require an explicit flow turn`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)

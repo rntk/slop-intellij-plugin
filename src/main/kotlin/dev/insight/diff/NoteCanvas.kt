@@ -66,6 +66,7 @@ internal class NoteCanvas(
     private val openWholeFile: ((ReviewFile) -> Unit)? = null,
     private val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
     private val removeWords: () -> Unit = {},
+    private val removeDiffOverview: () -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -97,6 +98,8 @@ internal class NoteCanvas(
     private var wordFiles = emptyList<ReviewFile>()
     /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
     private var wordChart: WordChangeChart? = null
+    private var diffOverview: WordChanges? = null
+    private var diffOverviewChart: DiffOverviewChart? = null
     /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
     private var wordScope = WordScope("", true, 0)
     /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
@@ -192,8 +195,10 @@ internal class NoteCanvas(
         fileView: FileViewCard? = null,
         words: WordChanges? = null,
         wordFiles: List<ReviewFile> = emptyList(),
+        diffOverview: WordChanges? = null,
     ) {
         this.words = words
+        this.diffOverview = diffOverview
         this.wordFiles = wordFiles
         if (topics == null) topicsScroll = 0
         if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
@@ -230,7 +235,7 @@ internal class NoteCanvas(
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
         val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
-            words?.let { WORDS_KEY to wordsCard(it) }).toMap() +
+            words?.let { WORDS_KEY to wordsCard(it) }, diffOverview?.let { DIFF_OVERVIEW_KEY to wordsCard(it, overview = true) }).toMap() +
             summaryCards +
             listOfNotNull(fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
@@ -274,6 +279,7 @@ internal class NoteCanvas(
     internal fun focusTopics() { focusCard(TOPICS_KEY) }
 
     internal fun focusWords() { focusCard(WORDS_KEY) }
+    internal fun focusDiffOverview() { focusCard(DIFF_OVERVIEW_KEY) }
 
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
@@ -309,6 +315,7 @@ internal class NoteCanvas(
         FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         FLOWS_KEY -> "Change flows"
         WORDS_KEY -> "Word changes"
+        DIFF_OVERVIEW_KEY -> "Diff overview"
         FLOW_KEY -> "Symbol flow"
         else -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
@@ -529,7 +536,7 @@ internal class NoteCanvas(
     }
 
     /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
-    private fun wordsCard(all: WordChanges): JPanel {
+    private fun wordsCard(all: WordChanges, overview: Boolean = false): JPanel {
         val width = cardWidth(WORDS_WIDTH)
         val scopes = wordScopes(wordFiles)
         wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
@@ -539,35 +546,45 @@ internal class NoteCanvas(
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Word changes · ${words.words.size} most frequent words of the changed lines").apply {
+            add(JLabel(if (overview) "Diff overview · Deleted and added lines"
+                else "Word changes · ${words.words.size} most frequent words of the changed lines").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
-                    "A word's position compares its share of removed and added words, its size how often it occurs. Click a word to open its files' diffs."
+                    (if (overview) "Compact word lists fill opposite corners, longest first. The middle chart compares deleted and added line counts, including blank lines. "
+                    else "A word's position compares its share of removed and added words, its size how often it occurs. ") +
+                    "Click a word to open its files' diffs."
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
                 add(wordScopeButton(scopes))
-                add(InplaceButton(IconButton("Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
+                add(InplaceButton(IconButton(if (overview) "Remove diff overview" else "Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                    if (overview) removeDiffOverview() else removeWords()
+                }
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(if (words.words.isEmpty()) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
-                else wordChart?.takeIf { it.changes === words } ?: WordChangeChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT)) { word ->
-                    val files = wordFiles.filter { it.path in word.paths }
-                    val directory = openDirectoryDiff
-                    when {
-                        files.size == 1 || (directory == null && files.isNotEmpty()) -> open(files.first().path)
-                        directory != null && files.isNotEmpty() -> directory(files)
-                    }
-                }.also { wordChart = it }, BorderLayout.CENTER)
+            add(if (words.words.isEmpty() && !overview) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
+                else if (overview) diffOverviewChart?.takeIf { it.changes === words }
+                    ?: DiffOverviewChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { diffOverviewChart = it }
+                else wordChart?.takeIf { it.changes === words }
+                    ?: WordChangeChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { wordChart = it }, BorderLayout.CENTER)
         }
         return JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground(); border = cardBorder(false)
             add(header, BorderLayout.NORTH)
             add(body, BorderLayout.CENTER)
+        }
+    }
+
+    private fun openWordDiff(word: WordChange) {
+        val files = wordFiles.filter { it.path in word.paths }
+        val directory = openDirectoryDiff
+        when {
+            files.size == 1 || (directory == null && files.isNotEmpty()) -> open(files.first().path)
+            directory != null && files.isNotEmpty() -> directory(files)
         }
     }
 
@@ -593,6 +610,7 @@ internal class NoteCanvas(
         if (scope == wordScope) return
         wordScope = scope
         refreshCard(WORDS_KEY)
+        refreshCard(DIFF_OVERVIEW_KEY)
     }
 
     private fun refreshFlows() {
@@ -1350,7 +1368,8 @@ internal class NoteCanvas(
         if (key !in cards) return
         val card = when (key) {
             FLOWS_KEY -> flows?.let(::flowsCard)
-            WORDS_KEY -> words?.let(::wordsCard)
+            WORDS_KEY -> words?.let { wordsCard(it) }
+            DIFF_OVERVIEW_KEY -> diffOverview?.let { wordsCard(it, overview = true) }
             TOPICS_KEY -> topics?.let(::topicsCard)
             in summaryTabs().map { it.key } -> summaries?.let { summariesCard(summaryTab(key)!!, it) }
             FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
@@ -1525,6 +1544,7 @@ internal class NoteCanvas(
         val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
         val FILE_VIEW_KEY = DiffNoteKey(emptyList(), "file-view")
         val WORDS_KEY = DiffNoteKey(emptyList(), "word-changes")
+        val DIFF_OVERVIEW_KEY = DiffNoteKey(emptyList(), "diff-overview")
         const val WORDS_WIDTH = 1100
         const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840

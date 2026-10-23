@@ -81,6 +81,7 @@ internal class DiffReviewTab(
         },
         openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
         removeWords = { state.hideWords(); renderCanvas() },
+        removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -96,6 +97,9 @@ internal class DiffReviewTab(
     }
     private val wordsButton = JButton("Words").apply {
         toolTipText = "Chart the words of the removed and added lines: removed on the left, added on the right"
+    }
+    private val diffOverviewButton = JButton("Diff overview").apply {
+        toolTipText = "Compare deleted and added line counts with compact word lists filling opposite corners"
     }
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
@@ -197,7 +201,10 @@ internal class DiffReviewTab(
                     add(JButton("Clear tabs").apply {
                         addActionListener { state.clearNotes(); renderCanvas() }
                     }, BorderLayout.WEST)
-                    add(wordsButton.apply { addActionListener { openWords() } }, BorderLayout.EAST)
+                    add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
+                        add(wordsButton.apply { addActionListener { openWords() } })
+                        add(diffOverviewButton.apply { addActionListener { openDiffOverview() } })
+                    }, BorderLayout.EAST)
                 }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
@@ -263,6 +270,12 @@ internal class DiffReviewTab(
         showCanvas { canvas.focusWords() }
     }
 
+    fun openDiffOverview() {
+        state.showDiffOverview()
+        renderCanvas()
+        showCanvas { canvas.focusDiffOverview() }
+    }
+
     /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
     private fun showCanvas(focus: () -> Unit) {
         openCanvas(true)
@@ -282,6 +295,7 @@ internal class DiffReviewTab(
         topicsButton.isEnabled = describe.isEnabled
         summariesButton.isEnabled = !state.refreshing && state.snapshot.files.isNotEmpty()
         wordsButton.isEnabled = summariesButton.isEnabled
+        diffOverviewButton.isEnabled = wordsButton.isEnabled
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
@@ -292,7 +306,8 @@ internal class DiffReviewTab(
 
     private fun renderCanvas() {
         canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard(),
-            words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files)
+            words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
+            diffOverview = if (state.diffOverviewVisible) state.words else null)
         canvas.highlight(selectedPaths().toSet())
     }
 

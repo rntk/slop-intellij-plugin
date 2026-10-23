@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.Container
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 
 class WordChangeChartTest : BasePlatformTestCase() {
@@ -73,10 +74,47 @@ class WordChangeChartTest : BasePlatformTestCase() {
             assertEquals(setOf("oldOne", "newOne", "newTwo", "readme"), chartWords())
             canvas.chooseWordScope(scopes.single { it.path == "src/b" })
             assertEquals(setOf("newTwo"), chartWords())
+            assertEquals(ChangedLineCounts(0, 1),
+                descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.lines)
             assertEquals("src/b/ · 1", descendants(canvas).filterIsInstance<javax.swing.JButton>().single { it.name == "word-scope" }.text)
             canvas.showNotes(emptyList(), words = wordChanges(files.take(1)), wordFiles = files.take(1))
             assertEquals("a scope without changed files falls back to all files", setOf("oldOne", "newOne"), chartWords())
         } finally { canvas.dispose() }
+    }
+
+    fun testLineCountsIncludeBlankAndPunctuationLinesAndIgnoreHeadersContextAndTheWordLimit() {
+        val changes = wordChanges(listOf(
+            file("a.kt", "diff --git a/a.kt b/a.kt\n--- a/a.kt\n+++ b/a.kt\n" +
+                "@@ -1,3 +1,4 @@\n context ignored\n-oldWord oldWord\n-\n+newWord\n+\n+{}\n" +
+                "\\ No newline at end of file\n@@ -10 +11 @@\n-x\n+123\n"),
+            file("b.kt", "--- /dev/null\n+++ b/b.kt\n@@ -0,0 +1,2 @@\n+otherName\n+}\n"),
+        ), limit = 1)
+        assertEquals(listOf("oldWord"), changes.words.map { it.word })
+        assertEquals(ChangedLineCounts(deleted = 3, added = 6), changes.lines)
+    }
+
+    fun testLineCountsHandleEmptyAndOneSidedChanges() {
+        assertEquals(ChangedLineCounts(), wordChanges(emptyList()).lines)
+        assertEquals(ChangedLineCounts(), wordChanges(listOf(file("image.png", "Binary files differ"))).lines)
+        assertEquals(ChangedLineCounts(0, 2), wordChanges(listOf(file("a.kt", "@@ -0,0 +1,2 @@\n+\n+}\n"))).lines)
+        assertEquals(ChangedLineCounts(2, 0), wordChanges(listOf(file("a.kt", "@@ -1,2 +0,0 @@\n-\n-}\n"))).lines)
+    }
+
+    fun testWordClicksAndTooltipsRemainAvailableAroundTheLineChart() {
+        val changes = wordChanges(listOf(file("a.kt", "@@ -1 +1 @@\n-oldWord\n+newWord\n")))
+        val opened = mutableListOf<WordChange>()
+        val chart = DiffOverviewChart(changes, 1000, 600) { opened += it }.apply { setSize(preferredSize) }
+        val word = chart.placedWords().single { it.change.word == "newWord" }.bounds
+        fun event(x: Int, y: Int) = MouseEvent(chart, MouseEvent.MOUSE_CLICKED, 0, 0, x, y, 1, false, MouseEvent.BUTTON1)
+        val click = event(word.centerX.toInt(), word.centerY.toInt())
+        chart.dispatchEvent(click)
+        assertEquals(listOf("newWord"), opened.map { it.word })
+        assertTrue(chart.getToolTipText(click)!!.contains("+1 added"))
+        val center = chart.lineChartBounds
+        val chartClick = event(center.centerX.toInt(), center.centerY.toInt())
+        chart.dispatchEvent(chartClick)
+        assertEquals(1, opened.size)
+        assertEquals("Deleted lines: 1 · Added lines: 1 in this scope", chart.getToolTipText(chartClick))
     }
 
     private fun descendants(component: Container): List<java.awt.Component> = component.components.flatMap {
