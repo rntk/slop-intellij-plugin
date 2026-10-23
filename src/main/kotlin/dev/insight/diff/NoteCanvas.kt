@@ -916,6 +916,8 @@ internal class NoteCanvas(
         summariesView.update(tree)
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
         val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
+        val explorer = summariesView.mode == ChangeSummariesMode.EXPLORER
+        if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
         val width = when {
@@ -934,7 +936,7 @@ internal class NoteCanvas(
                 isOpaque = false
                 if (document) add(documentZoomControls(key))
                 val summaries = content.summaries
-                if (branchLevels > 0) add(summaryLevels(tab, tree, branchLevels))
+                if (branchLevels > 0 && !explorer) add(summaryLevels(tab, tree, branchLevels))
                 add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
                     name = "summaries-tags-cloud"
                     isOpaque = false
@@ -949,6 +951,7 @@ internal class NoteCanvas(
                         ChangeSummariesMode.OUTLINE -> "Outline"
                         ChangeSummariesMode.HIERARCHY -> "Hierarchy"
                         ChangeSummariesMode.DOCUMENT -> "Document"
+                        ChangeSummariesMode.EXPLORER -> "Explorer"
                     }, summariesView.mode == mode).apply {
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
@@ -957,6 +960,7 @@ internal class NoteCanvas(
                             ChangeSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
                             ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
                             ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
+                            ChangeSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
@@ -1016,7 +1020,12 @@ internal class NoteCanvas(
                     add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
                     add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
                 }
-                else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary)
+                else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary,
+                    browse = if (explorer) { identity ->
+                        summariesView.browse(identity, tree)
+                        tab.scroll = 0
+                        refreshSummaries(tab)
+                    } else null)
             }, BorderLayout.CENTER)
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
@@ -1027,6 +1036,7 @@ internal class NoteCanvas(
                 isOpaque = false
                 add(summaryVersionRow(tab, original))
                 add(searchRow(tab))
+                if (explorer) add(summaryExplorerNavigation(tab, tree))
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
@@ -1118,6 +1128,46 @@ internal class NoteCanvas(
                     toolTipText = text
                 })
             }
+        }
+
+    /** Page navigation stays above the scrolling summaries, independently of search breadcrumbs. */
+    private fun summaryExplorerNavigation(tab: SummariesTab, tree: ChangeSummaryTree): JComponent =
+        JPanel(BorderLayout(scaled(8), 0)).apply {
+            name = "summary-explorer-navigation"
+            isOpaque = false
+            border = JBUI.Borders.empty(6, PADDING, 6, PADDING)
+            val path = tab.view.explorerBreadcrumbs(tree)
+            fun refresh() { tab.scroll = 0; refreshSummaries(tab) }
+            add(JButton("Back", AllIcons.Actions.Back).apply {
+                name = "summary-explorer-back"
+                font = scaledFont(JBFont.small())
+                isEnabled = path.isNotEmpty()
+                addActionListener { tab.view.explorerBack(); refresh() }
+            }, BorderLayout.WEST)
+            val crumbs = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
+                isOpaque = false
+                fun crumb(title: String, identity: String?, current: Boolean) {
+                    add(ActionLink(title) { tab.view.browse(identity, tree); refresh() }.apply {
+                        name = "summary-explorer-crumb:${identity ?: "overview"}"
+                        font = scaledFont(JBFont.small())
+                        isEnabled = !current
+                        toolTipText = identity?.let { id -> path.firstOrNull { it.identity == id }?.location }
+                    })
+                }
+                crumb("Overview", null, path.isEmpty())
+                path.forEachIndexed { index, node ->
+                    add(JLabel("›").apply { foreground = UIUtil.getContextHelpForeground() })
+                    crumb(node.label, node.identity, index == path.lastIndex)
+                }
+            }
+            add(JBScrollPane(crumbs).apply {
+                border = null
+                isOpaque = false
+                viewport.isOpaque = false
+                verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+                preferredSize = Dimension(1, crumbs.preferredSize.height + horizontalScrollBar.preferredSize.height)
+            }, BorderLayout.CENTER)
         }
 
     private fun startContextSummaries(tab: SummariesTab) {

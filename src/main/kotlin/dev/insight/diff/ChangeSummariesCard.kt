@@ -48,9 +48,9 @@ internal fun isFolderBranch(node: SummaryNode): Boolean =
 
 /**
  * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
- * every file in tree order with its summary and the folder rail, as topics do.
+ * every file in tree order with its summary and the folder rail, as topics do. Explorer shows one page of siblings at a time.
  */
-internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT }
+internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER }
 
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so
@@ -446,6 +446,32 @@ internal class ChangeSummariesViewState(
     /** The 1-based level picked for the next Fold or Unfold action. Picking it does not change the tree. */
     var selectedLevel = 1
     private var tree: ChangeSummaryTree? = null
+    /** Open containers, from the root to the current page; an empty path shows only the scope summary. */
+    private var explorerPath = emptyList<String>()
+
+    fun explorerBreadcrumbs(tree: ChangeSummaryTree): List<SummaryNode> {
+        val nodes = tree.nodes.associateBy { it.identity }
+        return explorerPath.mapNotNull(nodes::get)
+    }
+
+    fun browse(identity: String?, tree: ChangeSummaryTree) {
+        val node = tree.nodes.firstOrNull { it.identity == identity }
+        explorerPath = node?.let { generateSequence(it) { current -> current.parent?.let(tree::get) }
+            .toList().asReversed().map { it.identity } }.orEmpty()
+    }
+
+    fun explorerBack() { explorerPath = explorerPath.dropLast(1) }
+
+    fun explorerEntries(summaries: ChangeSummaries): List<SummaryNode> {
+        val tree = summaries.tree
+        val current = explorerBreadcrumbs(tree).lastOrNull { shows(it, summaries) }
+        return (current?.children?.map(tree::get) ?: listOf(tree.root)).filter { shows(it, summaries) }
+    }
+
+    /** A filter that removes the current folder returns to its closest visible ancestor. */
+    fun updateExplorer(summaries: ChangeSummaries) {
+        explorerPath = explorerBreadcrumbs(summaries.tree).takeWhile { shows(it, summaries) }.map { it.identity }
+    }
 
     /** A search tab's searches, broadest first; each narrows the one before it. */
     val crumbs = mutableListOf<SearchCrumb>()
@@ -464,6 +490,7 @@ internal class ChangeSummariesViewState(
         crumbs.clear()
         fuzzy = ""
         selected = null
+        explorerPath = emptyList()
         reveal = null
         filterFor = null
         shown = null
@@ -540,6 +567,8 @@ internal class ChangeSummariesViewState(
             else if (level != null) folded += node.identity
         }
         if (tree.nodes.none { it.identity == selected }) selected = null
+        val identities = tree.nodes.mapTo(hashSetOf()) { it.identity }
+        explorerPath = explorerPath.takeWhile { it in identities }
     }
 
     fun toggle(identity: String) {
@@ -586,8 +615,13 @@ internal class ChangeSummariesViewState(
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean {
         // The filter of the last rendering; scoring follows what is on screen.
         val filter = shown.takeIf { filterFor?.first?.tree === tree }
+        val explorerEntries = if (mode == ChangeSummariesMode.EXPLORER) {
+            val current = explorerBreadcrumbs(tree).lastOrNull { filter == null || it.identity in filter }
+            current?.children?.toSet() ?: setOf(tree.root.id)
+        } else emptySet()
         return { node ->
-            (filter == null || node.identity in filter) && if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
+            (filter == null || node.identity in filter) && if (mode == ChangeSummariesMode.EXPLORER) node.id in explorerEntries
+            else if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
                 isFolderBranch(node) && tree.depth(node.id) < railDepth(tree)
             else generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded || tree[it].identity in opened && tree[it].identity !in folded }
         }
@@ -600,6 +634,9 @@ internal class ChangeSummariesViewState(
      * Explicitly rejected descendants stay hidden even when their parent is related; no matches leaves an empty tab.
      */
     override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
+        if (mode == ChangeSummariesMode.EXPLORER) trace.best?.let { best ->
+            tree.nodes.firstOrNull { it.identity == best.identity }?.let { browse(it.parent?.let(tree::get)?.identity, tree) }
+        }
         val path = tracePath(tree, trace)
         path?.let {
             expanded += path.open
@@ -646,6 +683,7 @@ internal class ChangeSummariesViewState(
         it.selectedLevel = selectedLevel
         it.folded += folded
         it.tree = tree
+        it.explorerPath = explorerPath
         it.crumbs += crumbs
     }
 
@@ -944,6 +982,7 @@ internal class ChangeSummariesPanel(
     private val zoom: Double,
     private val actions: ChangeSummaryActions,
     private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+    private val browse: ((String) -> Unit)? = null,
 ) : JPanel(VerticalLayout(0)) {
     private val summaries = card.summaries
     private val wordWeights = SummaryWordWeights(summaries)
@@ -962,11 +1001,19 @@ internal class ChangeSummariesPanel(
     init {
         isOpaque = false
         add(text(summariesStatus(card, vocabulary.noFiles), cardWidth, font(JBFont.small()), help).apply { border = pad(bottom = scaled(8)) })
-        if (summaries.total > 0 && state.shows(tree.root, summaries)) addNode(tree.root, 0)
+        if (summaries.total > 0 && state.shows(tree.root, summaries)) {
+            if (browse != null) {
+                val entries = state.explorerEntries(summaries)
+                entries.forEach { add(row(it, 0)) }
+                if (entries.isEmpty()) add(text("No summaries match the search.", cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
+            }
+            else addNode(tree.root, 0)
+        }
         else if (summaries.total > 0) add(text("No summaries match the search.", cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
         if (skipped > 0) add(text("+$skipped more — fold or pick a level", cardWidth, italic(JBFont.small()), help)
             .apply { name = "more"; border = pad(scaled(4), scaled(TOGGLE), scaled(4), 0) })
-        add(text(vocabulary.summariesFooter, cardWidth, font(JBFont.small()), help)
+        add(text(if (browse != null) "Click a folder to browse its summaries, or a file to open it. Use Back or the breadcrumbs to return."
+            else vocabulary.summariesFooter, cardWidth, font(JBFont.small()), help)
             .apply { border = pad(top = scaled(10)) })
     }
 
@@ -991,7 +1038,11 @@ internal class ChangeSummariesPanel(
         val textWidth = (cardWidth - depth * scaled(INDENT) - gutter - scaled(8)).coerceAtLeast(scaled(160))
         val summary = summaries.text(node.id)
         val match = matches[node.identity]
-        val activate = { if (node.children.isNotEmpty()) actions.toggle(node.identity) else actions.select(node.identity) }
+        val activate = {
+            if (browse != null) {
+                if (node.file != null) actions.openNode(node) else if (node.children.isNotEmpty()) browse.invoke(node.identity)
+            } else if (node.children.isNotEmpty()) actions.toggle(node.identity) else actions.select(node.identity)
+        }
         val header = header(node, textWidth)
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) WrappedSummaryText(summary, textWidth,
@@ -1009,13 +1060,17 @@ internal class ChangeSummariesPanel(
         }
         val gutterPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
-            add(if (node.children.isEmpty()) JLabel().apply { preferredSize = Dimension(scaled(TOGGLE), 1) }
-                else label(if (open) "▾" else "▸", font(JBFont.label()), help).apply {
+            add(if (node.children.isEmpty() || browse != null && node.file != null) JLabel().apply { preferredSize = Dimension(scaled(TOGGLE), 1) }
+                else label(if (browse == null && open) "▾" else "▸", font(JBFont.label()), help).apply {
                     preferredSize = Dimension(scaled(TOGGLE), preferredSize.height)
                     cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    toolTipText = if (open) "Collapse" else "Expand"
+                    toolTipText = if (browse != null) "Open folder" else if (open) "Collapse" else "Expand"
                     name = "toggle:${node.identity}"
-                    addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { actions.toggle(node.identity) } })
+                    addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) {
+                        if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
+                            if (browse != null) browse.invoke(node.identity) else actions.toggle(node.identity)
+                        }
+                    } })
                 })
             add(JLabel(icon(node)).apply { preferredSize = Dimension(scaled(ICON) + scaled(8), preferredSize.height) })
         }
@@ -1036,9 +1091,12 @@ internal class ChangeSummariesPanel(
             toolTipText = node.location
             add(gutterPanel, BorderLayout.WEST)
             add(content, BorderLayout.CENTER)
-            // Scored words keep their trace action; the rest of the row behaves like its disclosure arrow.
-            val click = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) activate() } }
+            // Scored words keep their trace action; the rest of the row opens the entry or toggles the outline.
+            val click = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) activate()
+            } }
             (listOf(this, gutterPanel, content, header) + header.components.filterIsInstance<JLabel>() +
+                gutterPanel.components.filterIsInstance<JLabel>().filter { it.name == null } +
                 listOfNotNull(summaryText.takeIf { summary == null || !state.traced(node) }))
                 .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -1099,6 +1157,8 @@ internal class ChangeSummariesPanel(
                 })
             }
             if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) {
+                if (browse != null && node.children.isNotEmpty()) add(ActionLink("Browse parts") { browse.invoke(node.identity) }
+                    .apply { font = font(JBFont.small()) })
                 add(ActionLink(if (node.kind == SummaryKind.CHUNK) "Open lines" else vocabulary.openLabel) { actions.openNode(node) }
                     .apply { font = font(JBFont.small()) })
                 val show = actions.showNode

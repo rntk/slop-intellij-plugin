@@ -26,15 +26,20 @@ class SummaryNavigationTest : BasePlatformTestCase() {
             val opened = mutableListOf<ReviewFile>()
             val directories = mutableListOf<List<ReviewFile>>()
             val canvas = NoteCanvas({}, {}, openWholeFile = { opened += it }, openDirectoryDiff = { directories += it })
-                .apply { setSize(1600, 900); summariesView.mode = mode }
+                .apply {
+                    setSize(1600, 900); summariesView.mode = mode
+                    if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(folder.identity, tree)
+                }
             try {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
                 fun named(name: String) = descendants(canvas).single { it.name == name } as Container
-                val fileHeader = named(if (mode == ChangeSummariesMode.OUTLINE) "summary-header:file:src/a.kt" else "file:src/a.kt")
+                val fileHeader = named(if (mode in listOf(ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER)) "summary-header:file:src/a.kt" else "file:src/a.kt")
                 links(fileHeader).single { it.text == "Open file" }.doClick()
                 assertEquals(listOf(files[0]), opened)
+                if (mode == ChangeSummariesMode.EXPLORER)
+                    (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
                 val folderHeader = named(when (mode) {
-                    ChangeSummariesMode.OUTLINE -> "summary-header:${folder.identity}"
+                    ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:${folder.identity}"
                     else -> "node:${folder.identity}"
                 })
                 links(folderHeader).single { it.text == "View diff" }.doClick()
