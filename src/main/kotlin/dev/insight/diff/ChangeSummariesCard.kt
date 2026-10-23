@@ -94,17 +94,24 @@ internal abstract class SummaryTraceState(
         if (pendingFor !== summaries || pendingScored != scored.size) {
             pendingAll = summaries.tree.nodes
                 .filter { traced(it) }
-                .flatMap { node ->
-                    val summary = summaries.text(node.id) ?: return@flatMap emptyList()
-                    SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
-                        .map { node.id to it.index }
-                }
+                .flatMap { pendingWords(summaries, it) }
             pendingFor = summaries
             pendingScored = scored.size
         }
         val filter = visible ?: (if (visibleOnly) visibility(summaries.tree) else null) ?: return pendingAll
         val shown = HashMap<Int, Boolean>()
         return pendingAll.filter { (id, _) -> shown.getOrPut(id) { filter(summaries.tree[id]) } }
+    }
+
+    /** Only this summary's missing words, independent of folding and visibility. */
+    fun pending(summaries: ChangeSummaries, identity: String): List<Pair<Int, Int>> =
+        summaries.tree.nodes.firstOrNull { it.identity == identity && traced(it) }
+            ?.let { pendingWords(summaries, it) }.orEmpty()
+
+    private fun pendingWords(summaries: ChangeSummaries, node: SummaryNode): List<Pair<Int, Int>> {
+        val summary = summaries.text(node.id) ?: return emptyList()
+        return SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
+            .map { node.id to it.index }
     }
 
     /** A trace stays only while the traced summary is unchanged; matches whose node is gone are dropped. */
@@ -232,12 +239,12 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
  * right-clicking a scored word offers Search for that word, as right-clicking selected text does. The traced word is marked
  * strongly and its context, the words the query keeps, lightly. A click beside the words calls [select]. With
  * [searchSelection], right-clicking selected text offers to search for it, scored or not. With [searchTab], both menus
- * also offer Search tab, which searches in a new tab of its own.
+ * also offer Search tab, which searches in a new tab of its own. [score] offers to score only this summary's missing words.
  */
 internal fun installWordTracing(
     area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
     trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null,
-    searchTab: ((SummaryContext) -> Unit)? = null, select: () -> Unit = {},
+    searchTab: ((SummaryContext) -> Unit)? = null, score: ((String) -> Unit)? = null, select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
@@ -280,9 +287,16 @@ internal fun installWordTracing(
         })
     }
     fun contextMenu(point: Point?): JPopupMenu? {
+        val menu = JPopupMenu()
+        if (score != null) menu.add(JMenuItem("Score").apply {
+            name = "score-summary"
+            isEnabled = !state.scoring && words.any { it.meaningful && state.cached(identity, summary, it.index) == null }
+            toolTipText = "Precalculate word contexts for this summary only. Uses the Decisions API."
+            addActionListener { score(identity) }
+        })
         val start = area.selectionStart
         val end = area.selectionEnd
-        if (searchSelection != null && start != end) return JPopupMenu().apply {
+        if (searchSelection != null && start != end) return menu.apply {
             val context = selectionContext(identity, summary, start, end)
             add(JMenuItem("Search").apply {
                 name = "search-selection"
@@ -296,8 +310,8 @@ internal fun installWordTracing(
         val word = if (point != null) wordAt(point) else tracing()?.word?.takeIf { state.cached(identity, summary, it.index) != null }
             ?: words.firstOrNull { area.caretPosition in it.start..it.end }
                 ?.takeIf { it.meaningful && state.cached(identity, summary, it.index) != null }
-        if (word == null) return null
-        return JPopupMenu().apply {
+        if (word == null) return menu.takeIf { it.componentCount > 0 }
+        return menu.apply {
             add(JMenuItem("Search").apply {
                 name = "search-selection"
                 toolTipText = "Search for “${word.text}” and the words in its context"
@@ -338,7 +352,7 @@ private val SELECTION_MENU = Any()
 
 /**
  * The context menu for a summary: Search for the selected text, or for the scored word under the pointer (or the word
- * currently traced, without a point). Null with neither a selection nor a scored word.
+ * currently traced, without a point), and Score when supported. Null when no actions are available.
  */
 internal fun selectionMenu(area: JTextArea): JPopupMenu? = selectionMenu(area, null)
 
@@ -707,10 +721,10 @@ internal class SummaryTraceSession(
 
     val available: Boolean get() = launcher != null
 
-    fun prescore() {
+    fun prescore(identity: String? = null) {
         val launcher = launcher ?: return
         val content = content() ?: return
-        val pending = state.pending(content)
+        val pending = if (identity == null) state.pending(content) else state.pending(content, identity)
         if (state.scoring || pending.isEmpty()) return
         val token = Any()
         scoreToken = token
@@ -865,6 +879,8 @@ internal class ChangeSummaryActions(
     val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
     val openWholeFile: ((ReviewFile) -> Unit)? = null,
     val openDirectory: ((SummaryNode) -> Unit)? = null,
+    /** Score only the summary with this identity; null hides Score in its context menu. */
+    val score: ((String) -> Unit)? = null,
 ) {
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
         val file = (node.file as? ReviewFile)?.takeIf { it.fullFileText != null } ?: return null
@@ -940,7 +956,7 @@ internal class ChangeSummariesPanel(
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(), null)
                 .also { area ->
                     if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection,
-                        actions.searchTab.takeIf { node.children.isNotEmpty() }, activate)
+                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {

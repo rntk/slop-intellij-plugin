@@ -1574,6 +1574,68 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
+    fun testSummaryContextMenuScoresOnlyThatSummary() = ChangeSummariesMode.entries.forEach { mode ->
+        val tree = buildSummaryTree(listOf("ui/Canvas.kt", "ui/Paint.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        })
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val file = tree.nodes.single { it.path == "ui/Paint.kt" }
+        val launcher = FakeTraceLauncher()
+        val canvas = NoteCanvas({}, {}, traceSummaries = launcher)
+            .apply { setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true }
+        fun area(node: SummaryNode): javax.swing.JTextArea {
+            val name = when {
+                mode != ChangeSummariesMode.DOCUMENT -> "summary:${node.identity}"
+                node.kind == SummaryKind.FILE -> "summary:${node.path}"
+                else -> "card-summary:${node.identity}"
+            }
+            val component = descendants(canvas).single { it.name == name }
+            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>()
+                .single { it.text == summaries.text(node.id) }
+        }
+        fun scoreItem(area: javax.swing.JTextArea) = selectionMenu(area)!!.components
+            .filterIsInstance<javax.swing.JMenuItem>().single { it.name == "score-summary" }
+        fun expected(node: SummaryNode) = SummaryWord.split(summaries.text(node.id)!!)
+            .filter { it.meaningful }.map { node.id to it.index }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            val fileArea = area(file)
+            assertTrue("An unscored summary offers Score", scoreItem(fileArea).isEnabled)
+            canvas.summariesView.scoring = true
+            assertFalse("Score is disabled during another scoring run", scoreItem(fileArea).isEnabled)
+            canvas.summariesView.scoring = false
+            val first = SummaryWord.split(fileArea.text).first()
+            canvas.summariesView.scored[file.identity to first.index] = SummaryContext(
+                file.identity, fileArea.text, first, listOf(first), first.text)
+            fileArea.select(fileArea.text.indexOf("canvas"), fileArea.text.indexOf("canvas") + "canvas".length)
+            assertTrue("Score remains available with selected text", scoreItem(fileArea).isEnabled)
+            scoreItem(fileArea).doClick()
+            assertEquals(expected(file).filter { it.second != first.index }, launcher.scoredWords)
+            assertEquals(setOf(file.identity), canvas.summariesView.scored.values.map { it.identity }.toSet())
+            assertFalse("A fully scored summary disables Score", scoreItem(fileArea).isEnabled)
+            assertTrue(launcher.searched.isEmpty())
+            assertTrue(launcher.searchedLines.isEmpty())
+
+            if (mode == ChangeSummariesMode.HIERARCHY) {
+                descendants(canvas).single { it.name == "toggle:root" }.let { toggle ->
+                    toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                }
+                layoutTree(canvas)
+            }
+            if (mode == ChangeSummariesMode.DOCUMENT) {
+                descendants(canvas).single { it.name == "node:root" }.let { rail ->
+                    rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                }
+                layoutTree(canvas)
+            }
+            launcher.scoredWords.clear()
+            scoreItem(area(tree.root)).doClick()
+            assertEquals("Scoring a parent must not score its descendants", expected(tree.root), launcher.scoredWords)
+            assertEquals(setOf(file.identity, tree.root.identity), canvas.summariesView.scored.values.map { it.identity }.toSet())
+        } finally { canvas.dispose() }
+    }
+
     fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeSummariesMode.entries.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
@@ -1605,8 +1667,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(3, area().highlighter.highlights.size)
             assertTrue(status().contains("find its lines in Paint.kt"))
             val unscoredBox = area().modelToView2D(area().text.indexOf("the") + 1)
-            assertNull("A pointed menu on an unscored word must not fall back to the traced word",
-                selectionMenu(area(), Point(unscoredBox.centerX.toInt(), unscoredBox.centerY.toInt())))
+            assertTrue("A pointed menu on an unscored word must not fall back to the traced word",
+                selectionMenu(area(), Point(unscoredBox.centerX.toInt(), unscoredBox.centerY.toInt()))!!
+                    .components.none { it.name == "search-selection" })
 
             pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
             assertTrue("Clicking a scored word must not search its lines", launcher.searchedLines.isEmpty())
@@ -1660,7 +1723,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
-            assertNull("No selection, no menu", selectionMenu(fileArea()))
+            assertEquals("Without a selection or scored word, only Score is offered", listOf("score-summary"),
+                selectionMenu(fileArea())!!.components.map { it.name })
 
             // A right click neither folds nor selects the row.
             val expanded = canvas.summariesView.expanded.toSet()

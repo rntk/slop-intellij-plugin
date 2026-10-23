@@ -5,6 +5,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
@@ -96,6 +97,10 @@ internal class NoteCanvas(
     private var wordFiles = emptyList<ReviewFile>()
     /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
     private var wordChart: WordChangeChart? = null
+    /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
+    private var wordScope = WordScope("", true, 0)
+    /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
+    private var scopedWords: Triple<WordChanges, WordScope, WordChanges>? = null
 
     /**
      * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
@@ -524,8 +529,13 @@ internal class NoteCanvas(
     }
 
     /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
-    private fun wordsCard(words: WordChanges): JPanel {
+    private fun wordsCard(all: WordChanges): JPanel {
         val width = cardWidth(WORDS_WIDTH)
+        val scopes = wordScopes(wordFiles)
+        wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
+        val words = if (wordScope.path.isEmpty()) all
+            else scopedWords?.takeIf { it.first === all && it.second == wordScope }?.third
+                ?: wordChanges(wordFiles.filter { wordScope.contains(it.path) }).also { scopedWords = Triple(all, wordScope, it) }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -534,8 +544,12 @@ internal class NoteCanvas(
                 toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
                     "A word's position compares its share of removed and added words, its size how often it occurs. Click a word to open its files' diffs."
             }, BorderLayout.CENTER)
-            add(InplaceButton(IconButton("Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
-                .apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                add(wordScopeButton(scopes))
+                add(InplaceButton(IconButton("Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -555,6 +569,30 @@ internal class NoteCanvas(
             add(header, BorderLayout.NORTH)
             add(body, BorderLayout.CENTER)
         }
+    }
+
+    /** Limits the chart to one changed file or directory, chosen from a list that typing filters. */
+    private fun wordScopeButton(scopes: List<WordScope>): JButton = JButton(wordScope.toString(), AllIcons.General.ArrowDown).apply {
+        name = "word-scope"
+        horizontalTextPosition = SwingConstants.LEFT
+        font = scaledFont(JBFont.small())
+        toolTipText = "Count the words of one changed file or directory · type in the list to filter it"
+        addActionListener {
+            JBPopupFactory.getInstance().createPopupChooserBuilder(scopes)
+                .setTitle("Word Changes Scope")
+                .setNamerForFiltering { if (it.path.isEmpty()) "All changed files" else it.path }
+                .setSelectedValue(wordScope, true)
+                .setMovable(true)
+                .setResizable(true)
+                .setItemChosenCallback(::chooseWordScope)
+                .createPopup().showUnderneathOf(this)
+        }
+    }
+
+    internal fun chooseWordScope(scope: WordScope) {
+        if (scope == wordScope) return
+        wordScope = scope
+        refreshCard(WORDS_KEY)
     }
 
     private fun refreshFlows() {
@@ -825,6 +863,7 @@ internal class NoteCanvas(
             trace = summariesTrace::trace,
             searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
+            score = summariesTrace::prescore.takeIf { summariesTrace.available },
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {

@@ -43,6 +43,42 @@ class WordChangeChartTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testWordsOfOneSideStayOnThatSideWhenTheOtherHasNoWords() {
+        val added = wordChanges(listOf(file("a.kt", "@@ -0,0 +1,40 @@\n" + (1..40).joinToString("") { "+val added$it = shared\n" })))
+        assertEquals(0, added.removedWords)
+        added.words.forEach { assertTrue("${it.word} at ${added.side(it)}", added.side(it) > 0.5) }
+        val removed = wordChanges(listOf(file("a.kt", "@@ -1,40 +0,0 @@\n" + (1..40).joinToString("") { "-val removed$it = shared\n" })))
+        removed.words.forEach { assertTrue("${it.word} at ${removed.side(it)}", removed.side(it) < 0.5) }
+
+        val chart = WordChangeChart(added, 1000, 600) {}.apply { setSize(preferredSize) }
+        chart.paint(BufferedImage(chart.width, chart.height, BufferedImage.TYPE_INT_ARGB).createGraphics())
+        val placed = chart.placedWords()
+        assertTrue(placed.isNotEmpty())
+        placed.forEach { (word, bounds) -> assertTrue("$word at $bounds", bounds.x >= chart.width / 2) }
+    }
+
+    fun testScopesListEveryFileAndDirectoryAndLimitTheChart() {
+        val files = listOf(
+            file("src/a/One.kt", "@@ -1 +1 @@\n-oldOne\n+newOne\n"),
+            file("src/b/Two.kt", "@@ -1 +1 @@\n+newTwo\n"),
+            file("README.md", "@@ -1 +1 @@\n+readme\n"),
+        )
+        val scopes = wordScopes(files)
+        assertEquals(listOf("", "README.md", "src", "src/a", "src/a/One.kt", "src/b", "src/b/Two.kt"), scopes.map { it.path })
+        assertEquals(2, scopes.single { it.path == "src" }.files)
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
+        try {
+            canvas.showNotes(emptyList(), words = wordChanges(files), wordFiles = files)
+            fun chartWords() = descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word }.toSet()
+            assertEquals(setOf("oldOne", "newOne", "newTwo", "readme"), chartWords())
+            canvas.chooseWordScope(scopes.single { it.path == "src/b" })
+            assertEquals(setOf("newTwo"), chartWords())
+            assertEquals("src/b/ · 1", descendants(canvas).filterIsInstance<javax.swing.JButton>().single { it.name == "word-scope" }.text)
+            canvas.showNotes(emptyList(), words = wordChanges(files.take(1)), wordFiles = files.take(1))
+            assertEquals("a scope without changed files falls back to all files", setOf("oldOne", "newOne"), chartWords())
+        } finally { canvas.dispose() }
+    }
+
     private fun descendants(component: Container): List<java.awt.Component> = component.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }

@@ -28,13 +28,15 @@ internal data class WordChange(val word: String, val removed: Int, val added: In
 /** The words of the changed lines; context lines are not counted. */
 internal data class WordChanges(val words: List<WordChange>, val removedWords: Int, val addedWords: Int) {
     /**
-     * 0 when a word is only used in removed lines, 1 when only in added lines, relative to how many words each side has.
-     * Smoothing keeps rare words nearer the middle than frequent ones.
+     * Below 0.5 when a word is used more in removed lines, above 0.5 when more in added lines, relative to how many words
+     * each side has; a word used on one side only always lies on that side. Smoothing keeps rare words nearer the middle
+     * than frequent ones.
      */
     fun side(word: WordChange): Double {
-        val added = (word.added + 0.5) / (addedWords + 1)
-        val removed = (word.removed + 0.5) / (removedWords + 1)
-        return added / (added + removed)
+        val added = if (addedWords == 0) 0.0 else word.added.toDouble() / addedWords
+        val removed = if (removedWords == 0) 0.0 else word.removed.toDouble() / removedWords
+        val smoothing = 1.0 / (removedWords + addedWords + 1)
+        return (added + smoothing) / (added + removed + 2 * smoothing)
     }
 }
 
@@ -65,6 +67,32 @@ internal fun wordChanges(files: List<ReviewFile>, limit: Int = 300): WordChanges
         .sortedWith(compareByDescending<WordChange> { it.total }.thenBy { it.word })
         .take(limit)
     return WordChanges(words, removed, added)
+}
+
+/** The changed files the word chart counts: one file, the files beneath a directory, or every file when [path] is empty. */
+internal data class WordScope(val path: String, val directory: Boolean, val files: Int) {
+    fun contains(file: String) = path.isEmpty() || if (directory) file.startsWith("$path/") else file == path
+
+    override fun toString() = when {
+        path.isEmpty() -> "All changed files · $files"
+        directory -> "$path/ · $files"
+        else -> path
+    }
+}
+
+/** Every changed file and every directory above one, after the scope of all files; a directory comes before its contents. */
+internal fun wordScopes(files: List<ReviewFile>): List<WordScope> {
+    val directories = hashMapOf<String, Int>()
+    files.forEach { file ->
+        var end = file.path.lastIndexOf('/')
+        while (end > 0) {
+            val directory = file.path.substring(0, end)
+            directories.merge(directory, 1, Int::plus)
+            end = directory.lastIndexOf('/')
+        }
+    }
+    val scopes = directories.map { (path, count) -> WordScope(path, true, count) } + files.map { WordScope(it.path, false, 1) }
+    return listOf(WordScope("", true, files.size)) + scopes.sortedWith(compareBy({ it.path.replace('/', '\u0000') }, { !it.directory }))
 }
 
 /**
@@ -118,14 +146,19 @@ internal class WordChangeChart(
         val taken = hashMapOf<Int, MutableList<Rectangle>>()
         fun bands(r: Rectangle) = r.y / band..(r.y + r.height) / band
         val gap = JBUI.scale(2)
+        val middle = margin + usable / 2
         changes.words.mapNotNull { change ->
             val size = JBUI.scale(MIN_FONT) + (JBUI.scale(MAX_FONT - MIN_FONT) * sqrt(change.total.toDouble() / max)).toFloat()
             val font = base.deriveFont(size)
             val metrics = getFontMetrics(font)
             val width = metrics.stringWidth(change.word)
             val height = metrics.ascent + metrics.descent
-            val center = margin + (changes.side(change) * usable).roundToInt()
-            val x = (center - width / 2).coerceIn(0, maxOf(0, chartWidth - width))
+            val side = changes.side(change)
+            val center = margin + (side * usable).roundToInt()
+            // A word stays within its side's half, even when it drifts: removed left of the middle, added right of it.
+            val minLeft = if (side > 0.5) middle else 0
+            val maxLeft = maxOf(minLeft, if (side < 0.5) middle - width else chartWidth - width)
+            val x = (center - width / 2).coerceIn(minLeft, maxLeft)
             // A stable, word-dependent start height scatters the words like the reference chart, and keeps them in place across refreshes.
             val span = chartHeight - top - height
             if (span <= 0) return@mapNotNull null
@@ -135,7 +168,7 @@ internal class WordChangeChart(
             val shifts = (0..usable / MAX_DRIFT_PARTS + width step drift).flatMap { if (it == 0) listOf(0) else listOf(-it, it) }
             for (shift in shifts) for (offset in 0..span step step) for (sign in intArrayOf(1, -1)) {
                 val y = top + Math.floorMod(start - top + sign * offset, span)
-                val left = (x + shift).coerceIn(0, maxOf(0, chartWidth - width))
+                val left = (x + shift).coerceIn(minLeft, maxLeft)
                 val bounds = Rectangle(left, y, width, height)
                 val padded = Rectangle(left - gap, y - gap, width + 2 * gap, height + 2 * gap)
                 if (bands(padded).none { b -> taken[b]?.any { it.intersects(padded) } == true }) {
@@ -167,7 +200,11 @@ internal class WordChangeChart(
             g2.drawLine(middle, JBUI.scale(TOP_MARGIN), middle, chartHeight)
             placement().forEach { word ->
                 g2.font = word.font
-                g2.color = color(changes.side(word.change))
+                g2.color = when {
+                    word.change.removed == 0 -> ADDED
+                    word.change.added == 0 -> REMOVED
+                    else -> color(changes.side(word.change))
+                }
                 g2.drawString(word.change.word, word.bounds.x, word.baseline)
             }
         } finally { g2.dispose() }
@@ -185,7 +222,7 @@ internal class WordChangeChart(
         val ADDED = JBColor(Color(0x1E8449), Color(0x6FCF97))
         val SHARED = JBColor(Color(0x7F8C8D), Color(0x9AA0A6))
 
-        /** Red for removed, grey in the middle, green for added. */
+        /** For words on both sides: red when mostly removed, grey in the middle, green when mostly added. */
         fun color(side: Double): Color = if (side < 0.5) mix(REMOVED, SHARED, side * 2) else mix(SHARED, ADDED, side * 2 - 1)
 
         fun mix(from: Color, to: Color, t: Double): Color = Color(
