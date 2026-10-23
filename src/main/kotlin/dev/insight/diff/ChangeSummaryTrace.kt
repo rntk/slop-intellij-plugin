@@ -46,16 +46,27 @@ data class SummaryContext(
     val query: String,
 )
 
+/** Keeps the first occurrence of each query word, including identifiers, regardless of case. */
+private fun deduplicatedQuery(query: String): String = buildString {
+    val seen = hashSetOf<String>()
+    var end = 0
+    for (word in SummaryWord.split(query)) {
+        if (seen.add(word.text.lowercase())) append(query, end, word.end)
+        end = word.end
+    }
+    append(query, end, query.length)
+}.trim()
+
 /**
  * The words the reader selected in [summary] (characters [start] until [end]) as a context that needs no scoring: the
- * selection widened to whole words is both the query and its focus. Null when it holds no meaningful word.
+ * selection widened to whole words supplies the deduplicated query and its focus. Null when it holds no meaningful word.
  */
 internal fun selectionContext(identity: String, summary: String, start: Int, end: Int): SummaryContext? {
     val words = SummaryWord.split(summary).filter { it.end > start && it.start < end }
     val first = words.firstOrNull { it.meaningful } ?: return null
     val from = words.first().start
     val to = words.last().end
-    val query = summary.substring(from, to).replace(Regex("""\s+"""), " ")
+    val query = deduplicatedQuery(summary.substring(from, to).replace(Regex("""\s+"""), " "))
     return SummaryContext(identity, summary, SummaryWord(first.index, from, to, query), words, query)
 }
 
@@ -89,7 +100,7 @@ data class SummaryTrace(
  *    thing? That covers the pointed word's own phrase and every other phrase about the same thing, but not its siblings.
  *    In "moves caching into the parser and client, adding retries to the client", the context of the first "client" is
  *    "moves caching" and "adding retries to the client", not "parser".
- * 2. The summary narrowed to those words ("moves caching client, adding retries to the client") is the query.
+ * 2. The summary narrowed to those words, with repeated words removed, is the query.
  * 3. Only on an explicit search, every summary up to [levels] levels below gets a Noul: does it describe what the query
  *    says about the pointed word? Deeper levels are not searched; trace a match to go further.
  *
@@ -127,11 +138,12 @@ class SummaryTracer(
     suspend fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext): SummaryTrace {
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
+        val query = deduplicatedQuery(context.query)
         val candidates = candidates(summaries, id)
-        val ranked = rank(context.query, context.word.text, node, context.summary, candidates.map { (candidate, _) -> candidate to summaries.text(candidate.id).orEmpty() })
+        val ranked = rank(query, context.word.text, node, context.summary, candidates.map { (candidate, _) -> candidate to summaries.text(candidate.id).orEmpty() })
         val matches = candidates.zip(ranked) { (candidate, depth), probability -> SummaryMatch(candidate.id, candidate.identity, probability, depth) }
             .sortedWith(compareByDescending<SummaryMatch> { it.probability }.thenByDescending { it.levelsBelow }.thenBy { it.id })
-        return SummaryTrace(node.identity, context.summary, context.word, context.context, context.query, matches, candidates.size)
+        return SummaryTrace(node.identity, context.summary, context.word, context.context, query, matches, candidates.size)
     }
 
     /**
@@ -142,13 +154,14 @@ class SummaryTracer(
     suspend fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext): LineTrace {
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
+        val query = deduplicatedQuery(context.query)
         val all = lineBlocks(evidenceLines(node))
         val blocks = all.take(maxBlocks)
-        val trace = LineTrace(node.identity, node.path, context.query, emptyList(), emptyList(), all.size - blocks.size)
+        val trace = LineTrace(node.identity, node.path, query, emptyList(), emptyList(), all.size - blocks.size)
         if (blocks.isEmpty()) return trace
         val diff = node.file is ReviewFile
         val state = JsonObject().apply {
-            addProperty("query", context.query)
+            addProperty("query", query)
             addProperty("query_focus", context.word.text)
             add("pointed_summary", JsonObject().apply { addProperty("location", node.location); addProperty("summary", context.summary) })
             addProperty("file", node.path)
@@ -494,7 +507,7 @@ class SummaryTracer(
         /**
          * The summary narrowed to [context]: words separated only by filler words keep the text between them, and a skipped
          * meaningful run is replaced by the separator that followed the last kept word, so "deleted views: canvas, hierarchy"
-         * narrows to "deleted views: hierarchy" and "deleted the views of hierarchy" stays whole.
+         * narrows to "deleted views: hierarchy" and "deleted the views of hierarchy" stays whole. Repeated query words are removed.
          */
         internal fun query(summary: String, context: List<SummaryWord>): String = buildString {
             context.forEachIndexed { position, word ->
@@ -505,7 +518,7 @@ class SummaryTracer(
                 }
                 append(word.text)
             }
-        }.trim()
+        }.let(::deduplicatedQuery)
 
         private fun separatorAfter(summary: String, word: SummaryWord): String {
             val next = SummaryWord.split(summary.substring(word.end)).firstOrNull()

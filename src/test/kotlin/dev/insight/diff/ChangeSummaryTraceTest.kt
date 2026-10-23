@@ -96,7 +96,7 @@ class ChangeSummaryTraceTest {
         val words = SummaryWord.split(summary)
         val pointed = words.first { it.text == "UI" }
         val context = SummaryTracer(fake.evaluate).context(summary, words, pointed)
-        assertEquals("Introduces custom instruction handling across UI, adding UI controls", SummaryTracer.query(summary, context))
+        assertEquals("Introduces custom instruction handling across UI, adding controls", SummaryTracer.query(summary, context))
         // The later "UI" is pointed out to the model as another mention of the same word.
         val mentions = fake.requests.single().state.asJsonObject["pointed_word"].asJsonObject["other_mentions"].asJsonArray
         assertEquals(listOf(words.last { it.text == "UI" }.index + 1), mentions.map { it.asInt })
@@ -273,6 +273,33 @@ class ChangeSummaryTraceTest {
         assertEquals(example, match["pointed_summary"].asJsonObject["summary"].asString)
     }
 
+    @Test fun `related summary requests deduplicate scored and selected query words`() = runBlocking {
+        val summary = "Engine updates the engine settings and restarts the ENGINE."
+        val original = viewsTree()
+        val summaries = original.summarize(mapOf(0 to summary))
+        val fake = FakeDecisions { _, _ -> 0.9 }
+        val tracer = SummaryTracer(fake.evaluate)
+        val scored = tracer.score(summaries, 0, 0)
+        val selected = selectionContext("root", summary, 0, summary.length)!!
+        val expected = "Engine updates the settings and restarts"
+        assertEquals(expected, scored.query)
+        assertEquals(expected, selected.query)
+        assertEquals(3, scored.context.count { it.text.equals("engine", ignoreCase = true) })
+
+        // Also normalize contexts supplied by a caller before sending them to the API.
+        for (context in listOf(scored, selected, scored.copy(query = summary.dropLast(1)))) {
+            fake.requests.clear()
+            val trace = SummaryTracer(fake.evaluate).search(summaries, 0, context)
+            assertEquals(expected, trace.query)
+            assertTrue(fake.matchRequests().isNotEmpty())
+            fake.matchRequests().forEach { request ->
+                val state = request.state.asJsonObject
+                assertEquals(expected, state["query"].asString)
+                assertEquals(summary, state["pointed_summary"].asJsonObject["summary"].asString)
+            }
+        }
+    }
+
     @Test fun `trace without related summaries has no best match`() = runBlocking {
         val trace = SummaryTracer(FakeDecisions { _, _ -> 0.1 }.evaluate).trace(viewsTree(), 0, 3)
         assertEquals(4, trace.matches.size)
@@ -359,7 +386,7 @@ class ChangeSummaryTraceTest {
             .joinToString("\n")
         val tree = buildSummaryTree(listOf(Source("ui/Paint.kt", text)))
         val node = tree.nodes.single { it.kind == SummaryKind.FILE }
-        val summary = "Paints the canvas border."
+        val summary = "Paints the canvas border and repaints the CANVAS border."
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
         val fake = FakeDecisions { state, instructions ->
             when {
@@ -372,7 +399,7 @@ class ChangeSummaryTraceTest {
         val words = SummaryWord.split(summary)
         val context = tracer.score(summaries, node.id, words.indexOfFirst { it.text == "border" })
         fake.requests.clear()
-        val trace = tracer.searchLines(summaries, node.id, context)
+        val trace = tracer.searchLines(summaries, node.id, context.copy(query = summary.dropLast(1)))
         assertEquals(listOf(listOf(1, 2, 3), listOf(5, 6, 7, 8), listOf(10, 11, 12)), trace.blocks.sortedBy { it.lines.first().number }.map { block -> block.lines.map { it.number } })
         assertEquals(listOf(5, 6, 7, 8), trace.best!!.lines.map { it.number })
         assertEquals(listOf(6), trace.after)
@@ -383,6 +410,8 @@ class ChangeSummaryTraceTest {
         assertEquals("Only the best block's lines are asked about", 4, lines.flatMap { it.questions.values }.size)
         assertEquals("5| fun paint() {\n6|     drawBorder()\n7|     log()\n8| }", lines.first().state.asJsonObject["block"].asString)
         assertEquals(context.query, blocks.first().state.asJsonObject["query"].asString)
+        assertEquals(context.query, trace.query)
+        fake.requests.forEach { assertEquals("Paints the canvas border and repaints", it.state.asJsonObject["query"].asString) }
     }
 
     @Test fun `a file search without a related block opens nothing`() = runBlocking {
