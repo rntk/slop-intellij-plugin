@@ -206,7 +206,7 @@ class SummaryTracer(
         val key = listOf(summary, word.index)
         val chosen = contexts[key] ?: run {
             val state = JsonObject().apply {
-                addProperty("summary", summary)
+                // Only the numbered text: the questions refer to words by number, so a plain copy would only double the state.
                 addProperty("numbered_summary", numbered(summary, words))
                 add("pointed_word", JsonObject().apply {
                     addProperty("number", word.index + 1)

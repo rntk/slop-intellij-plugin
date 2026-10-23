@@ -75,7 +75,8 @@ class ChangeSummaryTraceTest {
         assertEquals(1, fake.requests.size)
         assertEquals(setOf("deleted", "views", "canvas", "summaries"), fake.askedWords().toSet())
         val state = fake.requests.single().state.asJsonObject
-        assertEquals(example, state["summary"].asString)
+        assertFalse("Only the numbered summary is sent", state.has("summary"))
+        assertEquals(SummaryTracer.numbered(example, words), state["numbered_summary"].asString)
         assertEquals(4, state["pointed_word"].asJsonObject["number"].asInt)
         assertEquals("hierarchy", state["pointed_word"].asJsonObject["word"].asString)
 
