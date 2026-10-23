@@ -25,6 +25,7 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
+import javax.swing.text.JTextComponent
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
@@ -88,12 +89,14 @@ internal abstract class HierarchyColumnsPanel(
      * Text beside a leaf or folded card; it starts one column to the right and takes the rest of the width. A traced match is
      * tinted like its row in the outline.
      */
-    protected fun note(name: String, value: String, written: Boolean, column: Int, y: Int, mark: TraceMark? = null): JTextArea {
+    protected fun note(name: String, value: String, written: Boolean, column: Int, y: Int, mark: TraceMark? = null,
+                       weights: Map<String, Double>? = null): JTextComponent {
         val x = column * step
         val width = (availableWidth - x).coerceAtLeast(scaled(MIN_SUMMARY_WIDTH))
         // The top inset matches the cards' so the first line sits level with the card title.
         val inset = scaled(CARD_PAD) + 2
-        val note = text(value, width - scaled(NOTE_INSET), if (written) summaryFont() else italic(JBFont.small()), if (written) null else help).apply {
+        val note = (if (written && weights != null) WrappedSummaryText(value, width - scaled(NOTE_INSET), summaryFont(), weights)
+            else text(value, width - scaled(NOTE_INSET), if (written) summaryFont() else italic(JBFont.small()), if (written) null else help)).apply {
             this.name = name
             border = EmptyBorder(inset, scaled(NOTE_INSET), inset, 0)
             toolTipText = if (written) "Summary · LLM interpretation" else null

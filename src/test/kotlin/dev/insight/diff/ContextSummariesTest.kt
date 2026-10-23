@@ -6,7 +6,7 @@ import java.awt.Container
 import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JMenuItem
-import javax.swing.JTextArea
+import javax.swing.text.JTextComponent
 import kotlinx.coroutines.Job
 
 class ContextSummariesTest : BasePlatformTestCase() {
@@ -58,8 +58,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
         descendants(canvas.tabs.getComponentAt(tab) as Container).single { it.name == name }
     private fun button(canvas: NoteCanvas, tab: Int, name: String) = named(canvas, tab, name) as JButton
     private fun versions(canvas: NoteCanvas, tab: Int) = named(canvas, tab, "summaries-version") as JComboBox<*>
-    private fun summary(canvas: NoteCanvas, tab: Int, identity: String): JTextArea =
-        descendants(named(canvas, tab, "summary:$identity") as Container).filterIsInstance<JTextArea>().first()
+    private fun summary(canvas: NoteCanvas, tab: Int, identity: String): JTextComponent =
+        descendants(named(canvas, tab, "summary:$identity") as Container).filterIsInstance<JTextComponent>().first()
 
     private fun openSearch(canvas: NoteCanvas) {
         val root = summary(canvas, 0, tree.root.identity)
@@ -129,7 +129,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             assertTrue((named(canvas, 1, "summary-version-status") as javax.swing.JLabel).text.startsWith("Source changed"))
             launcher.finish()
             assertTrue((named(canvas, 1, "summary-version-status") as javax.swing.JLabel).text.startsWith("Source changed"))
-            assertFalse(descendants(canvas).filterIsInstance<JTextArea>().any { it.text == "Context app/" })
+            assertFalse(descendants(canvas).filterIsInstance<JTextComponent>().any { it.text == "Context app/" })
         } finally { canvas.dispose() }
     }
 

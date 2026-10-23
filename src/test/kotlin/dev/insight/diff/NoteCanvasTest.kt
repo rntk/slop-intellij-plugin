@@ -12,6 +12,71 @@ import kotlinx.coroutines.Job
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
+    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ChangeSummariesMode.entries.forEach { mode ->
+        val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
+        })
+        val summary = "Token cache and new; Token."
+        val leafSummary = "token TOKEN token cache " + "and ".repeat(50)
+        val summaries = ChangeSummaries(tree, mapOf(0 to summary,
+            tree.root.children[0] to leafSummary, tree.root.children[1] to "Token and"))
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = mode }
+        fun area(): WrappedSummaryText = descendants(canvas).filterIsInstance<WrappedSummaryText>().single { it.text == summary }
+        fun size(word: String): Int = area().let { it.styledDocument.getFont(it.styledDocument.getCharacterElement(it.text.indexOf(word)).attributes).size }
+        fun cloud() = descendants(canvas).single { it.name == "summaries-tags-cloud" } as javax.swing.JCheckBox
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            if (mode == ChangeSummariesMode.HIERARCHY) {
+                val toggle = descendants(canvas).single { it.name == "toggle:root" }
+                toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                layoutTree(canvas)
+            }
+            if (mode == ChangeSummariesMode.DOCUMENT) {
+                val rail = descendants(canvas).single { it.name == "node:root" }
+                rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                layoutTree(canvas)
+            }
+            assertEquals(summary, area().text)
+            assertFalse("$mode starts with normal text", cloud().isSelected)
+            assertEquals(size("Token"), size("cache"))
+            assertEquals(size("Token"), size("new"))
+            val expanded = canvas.summariesView.expanded.toSet()
+            val selected = canvas.summariesView.selected
+            cloud().doClick()
+            layoutTree(canvas)
+            assertTrue(cloud().isSelected)
+            assertTrue(canvas.summariesView.tagsCloud)
+            assertEquals(expanded, canvas.summariesView.expanded)
+            assertEquals(selected, canvas.summariesView.selected)
+            assertTrue("$mode enlarges frequently repeated words", size("Token") > size("cache"))
+            assertTrue("$mode leaves unsupported words at their base size", size("cache") > size("new"))
+            assertEquals("$mode keeps filler words at normal size", size("new"), size("and"))
+            val document = area().styledDocument
+            assertEquals(size("Token"), document.getFont(document.getCharacterElement(summary.lastIndexOf("Token")).attributes).size)
+            area().select(summary.indexOf("cache"), summary.indexOf("cache") + 5)
+            assertEquals("cache", area().selectedText)
+            assertWordFitsOnOneLine(area(), "Token")
+            assertWordFitsOnOneLine(area(), "cache")
+            // A leaf has no child summaries to support larger words.
+            if (mode != ChangeSummariesMode.HIERARCHY) {
+                val leaf = descendants(canvas).filterIsInstance<WrappedSummaryText>().first { it.text == leafSummary }
+                assertEquals(leaf.font.size, leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(0).attributes).size)
+            }
+            assertTrue(canvas.summariesView.fork().tagsCloud)
+            cloud().doClick()
+            layoutTree(canvas)
+            assertFalse(cloud().isSelected)
+            assertFalse(canvas.summariesView.tagsCloud)
+            assertFalse(canvas.summariesView.fork().tagsCloud)
+            assertEquals(size("Token"), size("cache"))
+            assertEquals(size("Token"), size("new"))
+            assertEquals(summary, area().text)
+            assertEquals(expanded, canvas.summariesView.expanded)
+            assertEquals(selected, canvas.summariesView.selected)
+        } finally { canvas.dispose() }
+    }
+
     fun testTabsKeepSelectionAcrossUpdatesAndFocusSelectsTheRequestedBlock() {
         val other = DiffNote(listOf("src/b.kt"), "Other note")
         val canvas = canvas()
@@ -54,7 +119,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(listOf(note.copy(text = "Long explanation. ".repeat(2000))))
             layoutTree(canvas)
-            val text = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single()
+            val text = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().single()
             val font = text.font
             val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, text) as javax.swing.JScrollPane
             assertTrue(scroll.verticalScrollBar.maximum > scroll.verticalScrollBar.visibleAmount)
@@ -76,7 +141,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false))
             layoutTree(canvas)
             fun document() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
-            fun title() = descendants(document()).filterIsInstance<javax.swing.JTextArea>().first { it.text == "Feature" }
+            fun title() = descendants(document()).filterIsInstance<javax.swing.text.JTextComponent>().first { it.text == "Feature" }
             val originalWidth = document().preferredSize.width
             val originalFont = title().font.size2D
             val originalRailWidth = document().components.single { it.name == "topic:1:product > feature" }.width
@@ -215,8 +280,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             val rail = panel.components.single { it.name == "topic:1:product > ${label.lowercase()}" }
             val summary = panel.components.single { it.name == "summary:src/feature.kt" }
-            val title = descendants(rail as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == label }
-            val summaryText = descendants(summary as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == longWord }
+            val title = descendants(rail as Container).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == label }
+            val summaryText = descendants(summary as Container).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == longWord }
             assertTrue(rail.width > com.intellij.util.ui.JBUI.scale(DocumentColumnsPanel.RAIL_CARD_WIDTH))
             assertTrue(summary.width > com.intellij.util.ui.JBUI.scale(DocumentColumnsPanel.SUMMARY_WIDTH))
             assertTrue(title.getFontMetrics(title.font).stringWidth(label) <= title.width)
@@ -227,7 +292,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
             val selectedSummary = panel.components.single { it.name?.startsWith("card-summary:") == true } as Container
-            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.JTextArea>()
+            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.text.JTextComponent>()
                 .single { it.text == longWord }, longWord)
         } finally { canvas.dispose() }
     }
@@ -262,8 +327,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertTrue("Summary card must not shrink as its font grows", summary().width >= summaryWidth)
                 railWidth = rail().width
                 summaryWidth = summary().width
-                assertWordFitsOnOneLine(descendants(rail()).filterIsInstance<javax.swing.JTextArea>().single(), "$folder/")
-                assertWordFitsOnOneLine(descendants(summary()).filterIsInstance<javax.swing.JTextArea>().single(), word)
+                assertWordFitsOnOneLine(descendants(rail()).filterIsInstance<javax.swing.text.JTextComponent>().single(), "$folder/")
+                assertWordFitsOnOneLine(descendants(summary()).filterIsInstance<javax.swing.text.JTextComponent>().single(), word)
             }
             assertTrue(railWidth > initialRailWidth)
             assertTrue(summaryWidth > initialSummaryWidth)
@@ -271,7 +336,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
             val selectedSummary = document().components.single { it.name == "card-summary:${folderNode.identity}" } as Container
-            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.JTextArea>()
+            assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.text.JTextComponent>()
                 .single { it.text == sentence }, word)
         } finally { canvas.dispose() }
     }
@@ -323,7 +388,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(column.height - text.height, text.y)
             panel.updateStickyHeaders(0)
             assertEquals(0, text.y)
-            val texts = descendants(panel).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            val texts = descendants(panel).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
             assertTrue(texts.contains("Adds token refresh."))
             assertEquals(3, texts.count { it == "No summary yet" })
             assertEquals(listOf("hunk - - @@ -1,2 +1,2 @@", "context 1 1  ctx", "removed 2 - -old", "added - 2 +new"),
@@ -339,7 +404,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(authSummary.x + authSummary.width <= sections[1].x)
             assertFalse(named("summary:src/auth.kt").isVisible)
             assertTrue(named("summary:src/wallet.kt").isVisible)
-            assertTrue(descendants(authSummary).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Adds token refresh." })
+            assertTrue(descendants(authSummary).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Adds token refresh." })
             // Hovering another card shows its summary instead; leaving it brings the selection's back.
             val storage = named("topic:0:storage") as javax.swing.JComponent
             storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
@@ -347,7 +412,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(storage.y, storageSummary.y)
             assertTrue(panel.components.none { it.name == "card-summary:2:storage > user > auth" })
             assertTrue(listOf("src/auth.kt", "src/wallet.kt").none { named("summary:$it").isVisible })
-            assertTrue(descendants(storageSummary).filterIsInstance<javax.swing.JTextArea>().any { it.text == "No summary yet" })
+            assertTrue(descendants(storageSummary).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "No summary yet" })
             storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_EXITED, 0, 0, -5, -5, 0, false))
             assertTrue(panel.components.none { it.name == "card-summary:0:storage" })
             assertTrue(named("summary:src/wallet.kt").isVisible)
@@ -356,7 +421,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
             assertEquals(bounds, canvas.components.single().bounds)
-            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Validates the card number." })
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Validates the card number." })
             assertEquals("storage > user > auth", canvas.topicsView.selected?.substringAfter(':'))
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
@@ -507,16 +572,16 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertTrue(note.x >= leaf.x + leaf.width)
                 assertTrue(leaf.height >= note.height)
             }
-            val texts = descendants(panel()).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            val texts = descendants(panel()).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
             assertTrue(texts.contains("Adds token refresh."))
             assertEquals(3, texts.count { it == "No summary yet" })
 
             // A folded topic takes one row and shows the summary of exactly its files, else their names.
             click(descendants(panel()).single { it.name == "toggle:2:storage > user > auth" })
             assertFalse("file:src/auth.kt" in names())
-            assertEquals("Adds token refresh.", (named("summary:2:storage > user > auth") as javax.swing.JTextArea).text)
+            assertEquals("Adds token refresh.", (named("summary:2:storage > user > auth") as javax.swing.text.JTextComponent).text)
             click(descendants(panel()).single { it.name == "toggle:1:storage > user" })
-            assertEquals("auth.kt, wallet.kt", (named("summary:1:storage > user") as javax.swing.JTextArea).text)
+            assertEquals("auth.kt, wallet.kt", (named("summary:1:storage > user") as javax.swing.text.JTextComponent).text)
             assertEquals(named("topic:1:storage > user").height, named("topic:0:storage").height)
 
             // Level 1 folds every top-level topic; Files shows every level again.
@@ -539,7 +604,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
             assertEquals(bounds, canvas.components.single().bounds)
-            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Validates the card number." })
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Validates the card number." })
             assertEquals("storage > user > auth", canvas.topicsView.selected?.substringAfter(':'))
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
@@ -566,7 +631,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun names() = panel().components.mapNotNull { it.name }
         fun named(name: String) = panel().components.single { it.name == name }
-        fun note(identity: String) = (named("summary:$identity") as javax.swing.JTextArea).text
+        fun note(identity: String) = (named("summary:$identity") as javax.swing.text.JTextComponent).text
         fun bottom(component: Component) = component.y + component.height
         fun click(component: Component) {
             component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
@@ -737,7 +802,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(5, text.y)
             panel.updateStickyHeaders(0)
             assertEquals(0, text.y)
-            val texts = descendants(panel).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            val texts = descendants(panel).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
             assertTrue(texts.contains("Adds token refresh."))
             assertEquals(3, texts.count { it == "No summary yet" })
 
@@ -753,7 +818,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(named("summary:docs/README.md").isVisible)
             val more = summaries.summarize(mapOf(id("file:docs/README.md") to "Documents the setup."))
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = false))
-            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>().any { it.text == "Documents the setup." })
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Documents the setup." })
             assertEquals("directory:src", canvas.summariesView.selected)
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
             assertEquals(listOf("src/auth/Auth.kt"), opened)
@@ -962,7 +1027,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertTrue(diagram.components.all { diagram.bounds.contains(it.bounds) })
 
         links[2].doClick()
-        assertTrue(descendants(canvas.tabs.selectedComponent as Container).filterIsInstance<javax.swing.JTextArea>().any { it.text.startsWith("c ") })
+        assertTrue(descendants(canvas.tabs.selectedComponent as Container).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text.startsWith("c ") })
         canvas.showNotes(notes.take(3))
         assertEquals(4, canvas.tabs.tabCount)
         canvas.showNotes(listOf(notes[3]))
@@ -1013,7 +1078,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun rootText() = descendants(named("summary:root").single() as Container).filterIsInstance<javax.swing.JTextArea>().first()
+        fun rootText() = descendants(named("summary:root").single() as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         fun pointAtWord(text: String, event: Int) {
             val area = rootText()
             val start = area.text.indexOf(text)
@@ -1162,7 +1227,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             SummaryTrace(context.identity, context.summary, context.word, context.context, context.query, matches.sortedByDescending { it.probability }, candidates)))
     }
 
-    private fun pointAtWord(canvas: Container, area: javax.swing.JTextArea, word: String, event: Int) {
+    private fun pointAtWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String, event: Int) {
         val box = area.modelToView2D(area.text.indexOf(word) + 1)
         area.dispatchEvent(MouseEvent(area, event, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false,
             if (event == MouseEvent.MOUSE_CLICKED) MouseEvent.BUTTON1 else MouseEvent.NOBUTTON))
@@ -1170,7 +1235,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     /** Chooses Search from the context menu of the scored [word] in [area], as a right click on it does. */
-    private fun searchScoredWord(canvas: Container, area: javax.swing.JTextArea, word: String) {
+    private fun searchScoredWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String) {
         val box = area.modelToView2D(area.text.indexOf(word) + 1)
         val item = selectionMenu(area, Point(box.centerX.toInt(), box.centerY.toInt()))!!
             .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-scored-query" }
@@ -1198,8 +1263,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun named(index: Int, name: String) = descendants(page(index)).filter { it.name == name }
         fun shown(index: Int) = descendants(page(index)).mapNotNull { it.name?.removePrefix("summary:")?.takeIf { _ -> it.name!!.startsWith("summary:") } }.toSet()
         fun summaryArea(index: Int, identity: String) =
-            descendants(named(index, "summary:$identity").single() as Container).filterIsInstance<javax.swing.JTextArea>().first()
-        fun menuItem(area: javax.swing.JTextArea, word: String, name: String): javax.swing.JMenuItem {
+            descendants(named(index, "summary:$identity").single() as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
+        fun menuItem(area: javax.swing.text.JTextComponent, word: String, name: String): javax.swing.JMenuItem {
             val start = area.text.indexOf(word)
             area.select(start, start + word.length)
             return selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == name }
@@ -1320,7 +1385,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             try {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
                 layoutTree(canvas)
-                val area = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().singleOrNull { it.text == root }
+                val area = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().singleOrNull { it.text == root }
                 assertNotNull("$mode shows the root summary to search", area)
                 val start = root.indexOf("canvas")
                 area!!.select(start, start + "canvas".length)
@@ -1332,7 +1397,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                     SummaryMatch(rejected.id, rejected.identity, 0.1, 2))
                 layoutTree(canvas)
                 val page = canvas.tabs.selectedComponent as Container
-                val texts = descendants(page).filterIsInstance<javax.swing.JTextArea>().map { it.text }
+                val texts = descendants(page).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
                 assertTrue("$mode keeps the matching summary", summaries.text(matching.id) in texts)
                 assertEquals("$mode hides rejected summaries only in search tabs", !searchTab, summaries.text(rejected.id) in texts)
                 val badges = descendants(page).filterIsInstance<JLabel>()
@@ -1341,7 +1406,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                         val card = descendants(page).single { it.name == if (identity.startsWith("file:")) identity else "node:$identity" } as Container
                         descendants(card).filter { it.name == "match" }
                     } else descendants(page).filter { it.name == "match:$identity" }
-                    return components.mapNotNull { (it as? JLabel)?.text ?: (it as? javax.swing.JTextArea)?.text }
+                    return components.mapNotNull { (it as? JLabel)?.text ?: (it as? javax.swing.text.JTextComponent)?.text }
                 }
                 assertTrue("$mode labels the best result", "● Best match · 90%" in matchTexts(folder.identity))
                 assertTrue("$mode labels related results", "● Related · 80%" in matchTexts(matching.identity))
@@ -1372,11 +1437,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 layoutTree(canvas)
                 assertEquals("", field.text)
                 assertSame(field, descendants(page).single { it.name == "summaries-search" })
-                assertTrue("$mode restores rejected summaries", descendants(page).filterIsInstance<javax.swing.JTextArea>()
+                assertTrue("$mode restores rejected summaries", descendants(page).filterIsInstance<javax.swing.text.JTextComponent>()
                     .any { it.text == summaries.text(rejected.id) })
                 assertTrue(descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
                 assertTrue(descendants(page).none { it.name == "summaries-crumb:1" || it.name == "summaries-crumb:searching" })
-                assertTrue(descendants(page).filterIsInstance<javax.swing.JTextArea>()
+                assertTrue(descendants(page).filterIsInstance<javax.swing.text.JTextComponent>()
                     .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
                 assertEquals(scored, canvas.summariesView.scored)
                 if (searchTab) {
@@ -1406,7 +1471,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
                 layoutTree(canvas)
                 val row = descendants(canvas).single { it.name == "summary:${node.identity}" } as Container
-                val area = descendants(row).filterIsInstance<javax.swing.JTextArea>().first()
+                val area = descendants(row).filterIsInstance<javax.swing.text.JTextComponent>().first()
                 area.select(0, "Paints".length)
                 selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
                     .single { it.name == "search-selection" }.doClick()
@@ -1428,7 +1493,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertNull(canvas.summariesView.tracing)
                 assertNull(canvas.summariesView.selected)
                 assertNull(canvas.summariesView.reveal)
-                assertTrue(descendants(canvas).filterIsInstance<javax.swing.JTextArea>()
+                assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>()
                     .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
             } finally { canvas.dispose() }
         }
@@ -1494,9 +1559,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun note(identity: String) = panel().components.single { it.name == "summary:$identity" } as javax.swing.JTextArea
+        fun note(identity: String) = panel().components.single { it.name == "summary:$identity" } as javax.swing.text.JTextComponent
         fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
-            .filterIsInstance<javax.swing.JTextArea>().filter { it.name == "match" }.map { it.text }
+            .filterIsInstance<javax.swing.text.JTextComponent>().filter { it.name == "match" }.map { it.text }
         fun click(component: Component) {
             component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
@@ -1583,17 +1648,17 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val launcher = FakeTraceLauncher()
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher)
             .apply { setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true }
-        fun area(node: SummaryNode): javax.swing.JTextArea {
+        fun area(node: SummaryNode): javax.swing.text.JTextComponent {
             val name = when {
                 mode != ChangeSummariesMode.DOCUMENT -> "summary:${node.identity}"
                 node.kind == SummaryKind.FILE -> "summary:${node.path}"
                 else -> "card-summary:${node.identity}"
             }
             val component = descendants(canvas).single { it.name == name }
-            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>()
+            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>()
                 .single { it.text == summaries.text(node.id) }
         }
-        fun scoreItem(area: javax.swing.JTextArea) = selectionMenu(area)!!.components
+        fun scoreItem(area: javax.swing.text.JTextComponent) = selectionMenu(area)!!.components
             .filterIsInstance<javax.swing.JMenuItem>().single { it.name == "score-summary" }
         fun expected(node: SummaryNode) = SummaryWord.split(summaries.text(node.id)!!)
             .filter { it.meaningful }.map { node.id to it.index }
@@ -1648,9 +1713,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
             .apply { setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun area(): javax.swing.JTextArea {
+        fun area(): javax.swing.text.JTextComponent {
             val component = named("summary:${if (mode == ChangeSummariesMode.DOCUMENT) file.path else file.identity}").single()
-            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>().first()
+            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         fun status() = (named("trace-status").single() as JLabel).text
         try {
@@ -1747,13 +1812,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
             .apply { setSize(1600, 900); summariesView.mode = mode }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun area(identity: String, path: String): javax.swing.JTextArea {
+        fun area(identity: String, path: String): javax.swing.text.JTextComponent {
             val component = named("summary:${if (mode == ChangeSummariesMode.DOCUMENT) path else identity}").single()
-            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>().first()
+            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         fun fileArea() = area(file.identity, file.path)
         fun status() = (named("trace-status").single() as JLabel).text
-        fun search(area: javax.swing.JTextArea, text: String) {
+        fun search(area: javax.swing.text.JTextComponent, text: String) {
             area.select(area.text.indexOf(text), area.text.indexOf(text) + text.length)
             val item = selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-selection" }
             assertTrue(item.isEnabled)
@@ -1809,9 +1874,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
             .apply { setSize(1600, 900); topicsView.mode = mode; topicsView.visibleOnly = true }
         fun named(name: String) = descendants(canvas).single { it.name == name }
-        fun area(): javax.swing.JTextArea {
+        fun area(): javax.swing.text.JTextComponent {
             val component = named("summary:${source.path}")
-            return component as? javax.swing.JTextArea ?: descendants(component as Container).filterIsInstance<javax.swing.JTextArea>().first()
+            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         try {
             canvas.showNotes(emptyList(), topics = card)
@@ -1859,9 +1924,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
         fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun note(name: String) = panel().components.single { it.name == "summary:$name" } as javax.swing.JTextArea
+        fun note(name: String) = panel().components.single { it.name == "summary:$name" } as javax.swing.text.JTextComponent
         fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
-            .filterIsInstance<javax.swing.JTextArea>().filter { it.name == "match" }.map { it.text }
+            .filterIsInstance<javax.swing.text.JTextComponent>().filter { it.name == "match" }.map { it.text }
         fun click(component: Component) {
             component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
@@ -1940,11 +2005,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 scored[target.identity to word.index] = SummaryContext(target.identity, summary, word, listOf(word), query)
                 scored[target.identity to nextWord.index] = SummaryContext(target.identity, summary, nextWord, listOf(nextWord), "Another query")
             }
-            fun area(): javax.swing.JTextArea {
+            fun area(): javax.swing.text.JTextComponent {
                 val row = descendants(canvas).single {
                     it.name == if (mode == ChangeSummariesMode.DOCUMENT) "card-summary:${target.identity}" else "summary:${target.identity}"
                 }
-                return if (row is javax.swing.JTextArea) row else descendants(row as Container).filterIsInstance<javax.swing.JTextArea>().single { it.text == summary }
+                return if (row is javax.swing.text.JTextComponent) row else descendants(row as Container).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == summary }
             }
             fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, area()) as javax.swing.JScrollPane
             fun bounds() = javax.swing.SwingUtilities.convertRectangle(area().parent, area().bounds, canvas)
@@ -2007,7 +2072,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun texts(identity: String) = descendants(descendants(canvas).single { it.name == "summary:$identity" } as Container)
-            .filterIsInstance<javax.swing.JTextArea>().map { it.text }
+            .filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
         fun header(identity: String) = descendants(canvas).single { it.name == "summary-name:$identity" } as JLabel
         fun click(component: Component) {
             component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
@@ -2025,7 +2090,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(fileHeader.toolTipText.contains("modified file"))
             assertTrue(fileHeader.toolTipText.contains("ui/canvas/Canvas.kt"))
             assertTrue(fileHeader.toolTipText.contains("/repo/ui/canvas/Canvas.kt"))
-            val rootSummary = descendants(canvas).filterIsInstance<javax.swing.JTextArea>().single { it.text == "Summary of root." }
+            val rootSummary = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == "Summary of root." }
             click(rootSummary)
             assertFalse("root" in canvas.summariesView.expanded)
             assertTrue(descendants(canvas).none { it.name == "summary:file:ui/canvas/Canvas.kt" })
@@ -2053,7 +2118,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     /** Check the laid out Swing text, including the wrapping performed when it is painted. */
-    private fun assertWordFitsOnOneLine(text: javax.swing.JTextArea, word: String) {
+    private fun assertWordFitsOnOneLine(text: javax.swing.text.JTextComponent, word: String) {
         val image = java.awt.image.BufferedImage(text.width, text.height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
         val graphics = image.createGraphics()
         try { text.paint(graphics) } finally { graphics.dispose() }

@@ -330,6 +330,9 @@ internal abstract class DocumentColumnsPanel(
 
     protected open fun summaryFont(): Font = cardFont(JBFont.label())
 
+    protected open fun summaryWordWidth(identity: String, summary: String): Int =
+        summary.split(Regex("\\s+")).maxOfOrNull(getFontMetrics(summaryFont())::stringWidth) ?: 0
+
     /** A file or rail card's summary; reading views attach cached word tracing here. */
     protected open fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         if (summary != null) text(summary, width, summaryFont(), null)
@@ -351,7 +354,6 @@ internal abstract class DocumentColumnsPanel(
             return
         }
         val railTitleMetrics = getFontMetrics(cardFont(JBFont.label().asBold()).forReviewName())
-        val summaryMetrics = getFontMetrics(summaryFont())
         val wordBoundary = Regex("\\s+")
         fun longestWord(value: String, metrics: java.awt.FontMetrics): Int =
             value.split(wordBoundary).maxOfOrNull(metrics::stringWidth) ?: 0
@@ -360,8 +362,8 @@ internal abstract class DocumentColumnsPanel(
         val railInsets = 2 + cardScaled(RAIL_ACCENT) + cardScaled(8) + cardScaled(6)
         val cardWidth = maxOf(cardScaled(RAIL_CARD_WIDTH),
             (items.maxOfOrNull(::titleWidth) ?: 0) + railInsets + JBUI.scale(2))
-        val summaryWordWidth = (summaries.values.filterNotNull() + items.mapNotNull { it.summary })
-            .maxOfOrNull { longestWord(it, summaryMetrics) } ?: 0
+        val summaryWordWidth = (summaries.mapNotNull { (path, summary) -> summary?.let { summaryWordWidth("file:$path", it) } } +
+            items.mapNotNull { item -> item.summary?.let { summaryWordWidth(item.key, it) } }).maxOrNull() ?: 0
         val summaryTitleWidth = items.maxOfOrNull(::titleWidth) ?: 0
         val summaryWidth = maxOf(cardScaled(SUMMARY_WIDTH),
             maxOf(summaryWordWidth, summaryTitleWidth) + cardScaled(NOTE_INSET) + cardScaled(2) + JBUI.scale(2))

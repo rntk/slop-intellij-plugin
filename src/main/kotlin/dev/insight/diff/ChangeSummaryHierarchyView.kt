@@ -4,7 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
 import javax.swing.Icon
 import javax.swing.JComponent
-import javax.swing.JTextArea
+import javax.swing.text.JTextComponent
 
 /**
  * The summary tree read left to right, like the topic hierarchy: the root folder in the first column, its folders and groups
@@ -20,6 +20,7 @@ internal class ChangeSummaryHierarchyPanel(
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : HierarchyColumnsPanel(availableWidth, zoom, vocabulary) {
     private val summaries = card.summaries
+    private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
     /** The selected node is outlined with every file or part beneath it. */
     private val active: Set<String> = tree.nodes.firstOrNull { it.identity == state.selected }?.let { selected ->
@@ -64,7 +65,8 @@ internal class ChangeSummaryHierarchyPanel(
         val height = if (collapsed) {
             rowsPlaced++
             val summary = summaries.text(node.id)
-            val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark)
+            val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark,
+                if (state.tagsCloud) wordWeights[node.id] else emptyMap())
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.score, actions.follow) { actions.toggle(node.identity) } }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -98,7 +100,8 @@ internal class ChangeSummaryHierarchyPanel(
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
             levelLabel = "Level ${column + 1}",
             openWholeFile = actions.wholeFileAction(node))
-        val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark)
+        val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
+            if (state.tagsCloud) wordWeights[node.id] else emptyMap())
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, score = actions.score, follow = actions.follow)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
@@ -137,7 +140,9 @@ internal class ChangeSummaryDocumentPanel(
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : DocumentColumnsPanel(zoom, vocabulary) {
     private val summaries = card.summaries
+    private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
+    private val nodesByIdentity = tree.nodes.associateBy { it.identity }
     private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null && state.shows(it, summaries) }
     val files: List<ReviewSource> = fileNodes.map { requireNotNull(it.file) }
     private val nodesByPath = fileNodes.associateBy { it.path }
@@ -224,10 +229,17 @@ internal class ChangeSummaryDocumentPanel(
         tree.nodes.firstOrNull { it.identity == item.key }?.let(actions::directoryAction)
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
-        super.summaryBody(identity, summary, missingSummary, width).also { area ->
-            if (summary != null) installWordTracing(area as JTextArea, identity, summary, state, actions.trace, actions.searchSelection,
+        (if (summary != null) summaryText(identity, summary, width)
+            else super.summaryBody(identity, null, missingSummary, width)).also { area ->
+            if (summary != null) installWordTracing(area as JTextComponent, identity, summary, state, actions.trace, actions.searchSelection,
                 actions.searchTab.takeIf { identity in branches }, actions.score, actions.follow)
         }
+
+    private fun summaryText(identity: String, summary: String, width: Int) =
+        WrappedSummaryText(summary, width, summaryFont(),
+            if (state.tagsCloud) nodesByIdentity[identity]?.let { wordWeights[it.id] }.orEmpty() else emptyMap())
+
+    override fun summaryWordWidth(identity: String, summary: String): Int = summaryText(identity, summary, 1).longestWordWidth()
 
     override fun isSelected(item: RailItem): Boolean = state.selected == item.key
 

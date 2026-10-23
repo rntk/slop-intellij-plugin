@@ -19,7 +19,6 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.border.EmptyBorder
-import javax.swing.text.View
 import kotlin.math.roundToInt
 
 /** Expansion survives re-rendering; keys are only meaningful for the graph they were made for. */
@@ -526,6 +525,7 @@ internal class ChangeFlowsPanel(
  * layouts can briefly make tiny, wrapping every character onto its own line.
  */
 internal class WrappedText(value: String, private val wrapWidth: Int) : JTextArea(value) {
+    private var measurement: WrappedTextMeasurement? = null
     init {
         // These read-only labels measure the full content width. BasicTextUI otherwise reserves a pixel for the caret
         // during painting, making the wrapped view alternate widths and request another layout on every repaint.
@@ -533,10 +533,8 @@ internal class WrappedText(value: String, private val wrapWidth: Int) : JTextAre
     }
 
     override fun getPreferredSize(): Dimension {
-        val insets = insets
-        val root = getUI()?.getRootView(this) ?: return super.getPreferredSize()
-        root.setSize((wrapWidth - insets.left - insets.right).coerceAtLeast(1).toFloat(), Int.MAX_VALUE.toFloat())
-        return Dimension(wrapWidth, root.getPreferredSpan(View.Y_AXIS).toInt() + insets.top + insets.bottom)
+        val measure = measurement ?: WrappedTextMeasurement(this, wrapWidth).also { measurement = it }
+        return measure.preferredSize() ?: super.getPreferredSize()
     }
     override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
 }

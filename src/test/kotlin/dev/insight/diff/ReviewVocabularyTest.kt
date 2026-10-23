@@ -7,7 +7,7 @@ import dev.insight.codereview.CodeFile
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
-import javax.swing.JTextArea
+import javax.swing.text.JTextComponent
 import javax.swing.JToggleButton
 import javax.swing.JComponent
 import javax.swing.RepaintManager
@@ -119,7 +119,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
                 assertEquals(section.height, card.height)
                 assertEquals(section.y, summary.y)
                 assertTrue(card.x >= section.x + section.width)
-                assertTrue(descendants(card).filterIsInstance<JTextArea>().any { it.text == file.path })
+                assertTrue(descendants(card).filterIsInstance<JTextComponent>().any { it.text == file.path })
                 assertTrue(descendants(section).filterIsInstance<ActionLink>().any { it.text == file.path })
                 val source = descendants(section).filterIsInstance<SourceTextView>().single()
                 assertEquals(file.lineCount, source.lineCount)
@@ -136,7 +136,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
 
             val smallNode = tree.nodes.single { it.identity == "file:src/Small.kt" }
             canvas.updateSummaries(SummariesCard(summaries.summarize(mapOf(smallNode.id to "A new small file summary.")), false, false))
-            assertTrue(descendants(panel()).filterIsInstance<JTextArea>().any { it.text == "A new small file summary." })
+            assertTrue(descendants(panel()).filterIsInstance<JTextComponent>().any { it.text == "A new small file summary." })
             assertEquals(620, descendants(panel()).filterIsInstance<SourceTextView>().maxOf { it.lineCount })
         } finally { canvas.dispose() }
     }
@@ -363,7 +363,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val rows = panel.components.count { it.name?.startsWith("summary:") == true }
         assertEquals(HierarchyColumnsPanel.MAX_ROWS, rows)
         assertEquals(1, panel.components.count { it.name?.startsWith("more") == true })
-        val note = descendants(panel).filterIsInstance<JTextArea>().single { it.name?.startsWith("more") == true }
+        val note = descendants(panel).filterIsInstance<JTextComponent>().single { it.name?.startsWith("more") == true }
         assertTrue(note.text, note.text.endsWith("more — fold or pick a level"))
 
         val small = ChangeSummariesPanel(SummariesCard(ChangeSummaries(buildSummaryTree(files.take(10))), false, true), ChangeSummariesViewState(),

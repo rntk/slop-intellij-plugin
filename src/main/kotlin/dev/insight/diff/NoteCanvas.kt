@@ -808,6 +808,14 @@ internal class NoteCanvas(
                 if (document) add(documentZoomControls(key))
                 val summaries = content.summaries
                 if (branchLevels > 0) add(summaryLevels(tab, tree, branchLevels))
+                add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
+                    name = "summaries-tags-cloud"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Size summary words by their importance in the child summaries"
+                    addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
+                })
                 val group = ButtonGroup()
                 ChangeSummariesMode.entries.forEach { mode ->
                     add(JToggleButton(when (mode) {
@@ -1131,7 +1139,7 @@ internal class NoteCanvas(
         val state = summaryTab(key)?.view ?: topicsView
         val results = state.resultTrace
         descendantsOf(card).forEach { component ->
-            if (component is JTextArea) updateWordTracing(component)
+            if (component is javax.swing.text.JTextComponent) updateWordTracing(component)
             if (component is JComponent && results == null) resetTraceDecoration(component)
             @Suppress("UNCHECKED_CAST")
             ((component as? JComponent)?.getClientProperty(TRACE_PRESENTATION_UPDATE) as? (() -> Unit))?.invoke()

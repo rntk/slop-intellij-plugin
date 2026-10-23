@@ -23,10 +23,10 @@ import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
-import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
 import javax.swing.text.DefaultHighlighter
+import javax.swing.text.JTextComponent
 import kotlinx.coroutines.Job
 import kotlin.math.roundToInt
 
@@ -247,7 +247,7 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
  * choosing Search on it, searches further down from them.
  */
 internal fun installWordTracing(
-    area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
+    area: JTextComponent, identity: String, summary: String, state: SummaryTraceState,
     trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null,
     searchTab: ((SummaryContext) -> Unit)? = null, score: ((String) -> Unit)? = null,
     follow: ((SummaryContext) -> Unit)? = null, select: () -> Unit = {},
@@ -389,10 +389,10 @@ private val SELECTION_MENU = Any()
  * The context menu for a summary: search the current word, its whole scored query, selected text, or a continuation query,
  * and Score when supported. Null when no actions are available.
  */
-internal fun selectionMenu(area: JTextArea): JPopupMenu? = selectionMenu(area, null)
+internal fun selectionMenu(area: JTextComponent): JPopupMenu? = selectionMenu(area, null)
 
 /** The context menu for a summary at [point]; see [selectionMenu]. */
-internal fun selectionMenu(area: JTextArea, point: Point?): JPopupMenu? {
+internal fun selectionMenu(area: JTextComponent, point: Point?): JPopupMenu? {
     @Suppress("UNCHECKED_CAST")
     return (area.getClientProperty(SELECTION_MENU) as? ((Point?) -> JPopupMenu?))?.invoke(point)
 }
@@ -400,7 +400,7 @@ internal fun selectionMenu(area: JTextArea, point: Point?): JPopupMenu? {
 private val WORD_TRACING_UPDATE = Any()
 
 /** Repaint cached word contexts without replacing text components or their scroll panes. */
-internal fun updateWordTracing(area: JTextArea) {
+internal fun updateWordTracing(area: JTextComponent) {
     @Suppress("UNCHECKED_CAST")
     (area.getClientProperty(WORD_TRACING_UPDATE) as? (() -> Unit))?.invoke()
 }
@@ -437,6 +437,7 @@ internal class ChangeSummariesViewState(
     scored: MutableMap<Pair<String, Int>, SummaryContext> = mutableMapOf(),
 ) : SummaryTraceState(traceLeaves = true, scored = scored) {
     var mode = ChangeSummariesMode.OUTLINE
+    var tagsCloud = false
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
@@ -637,6 +638,7 @@ internal class ChangeSummariesViewState(
     /** A search tab's state starting from this one: the same mode, folding, scored words and searches so far. */
     fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true, scored = scored).also {
         it.mode = mode
+        it.tagsCloud = tagsCloud
         it.visibleOnly = visibleOnly
         it.expanded += expanded
         it.seen += seen
@@ -944,6 +946,7 @@ internal class ChangeSummariesPanel(
     private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
 ) : JPanel(VerticalLayout(0)) {
     private val summaries = card.summaries
+    private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
     private val files = tree.nodes.mapNotNull { it.file }.associateBy { it.path }
     private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
@@ -991,9 +994,11 @@ internal class ChangeSummariesPanel(
         val activate = { if (node.children.isNotEmpty()) actions.toggle(node.identity) else actions.select(node.identity) }
         val header = header(node, textWidth)
         val missing = if (card.running) "summarizing…" else "no summary yet"
-        val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(), null)
+        val summaryText = if (summary != null) WrappedSummaryText(summary, textWidth,
+                font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
+                if (state.tagsCloud) wordWeights[node.id] else emptyMap())
                 .also { area ->
-                    if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection,
+                    if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
                         actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
