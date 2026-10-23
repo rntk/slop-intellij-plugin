@@ -184,6 +184,8 @@ internal object TraceStyle {
     val BEST_MATCH = JBColor(Color(0xFFF1C2), Color(0x4A4126))
     val RELATED = JBColor(Color(0xEEF5FF), Color(0x2B3545))
     val MATCH_TEXT = JBColor(Color(0x8A6100), Color(0xD9B44A))
+    /** The words of a match that continue the search below it, clicked to follow it. */
+    val TRAIL_WORD = JBColor(Color(0xCDEFC4), Color(0x2F5A33))
     /** The outline of the traced card and every card on the way to a match. */
     val PATH = JBColor(Color(0xE0A800), Color(0xC9A227))
 }
@@ -224,7 +226,8 @@ internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted b
         trace == null -> "“${tracing.context.query}” · Searching the summaries in $levels…"
         trace.candidates == 0 -> "“${trace.query}” · There are no summaries below this one to search."
         trace.related.isEmpty() -> "“${trace.query}” · None of the ${trace.candidates} summaries in $levels is related."
-        else -> "“${trace.query}” · ${trace.related.size} of ${trace.candidates} summaries in $levels are related, $where"
+        else -> "“${trace.query}” · ${trace.related.size} of ${trace.candidates} summaries in $levels are related, $where" +
+            if (trace.related.any { it.next != null }) " Click a green word to follow the search further down." else ""
     }
 }
 
@@ -236,26 +239,34 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
 /**
  * Moving the pointer over a scored word of [summary] immediately shows its cached context. A left click on a scored word
  * does not search, so the reader can place the caret or select words there; searching starts only from the context menu:
- * right-clicking a scored word offers Search for that word, as right-clicking selected text does. The traced word is marked
+ * right-clicking a word offers searches for that word, its whole scored query, and selected text. The traced word is marked
  * strongly and its context, the words the query keeps, lightly. A click beside the words calls [select]. With
  * [searchSelection], right-clicking selected text offers to search for it, scored or not. With [searchTab], both menus
  * also offer Search tab, which searches in a new tab of its own. [score] offers to score only this summary's missing words.
+ * With [follow], a summary the current search found related marks the words that continue it, and clicking one, or
+ * choosing Search on it, searches further down from them.
  */
 internal fun installWordTracing(
     area: JTextArea, identity: String, summary: String, state: SummaryTraceState,
     trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null,
-    searchTab: ((SummaryContext) -> Unit)? = null, score: ((String) -> Unit)? = null, select: () -> Unit = {},
+    searchTab: ((SummaryContext) -> Unit)? = null, score: ((String) -> Unit)? = null,
+    follow: ((SummaryContext) -> Unit)? = null, select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
+    fun trail() = follow?.let { state.resultTrace?.related?.firstOrNull { it.identity == identity }?.next?.takeIf { it.summary == summary } }
     val highlights = mutableListOf<Any>()
     var painted: SummaryTracing? = null
+    var paintedTrail: SummaryContext? = null
     fun updateHighlights() {
         val current = tracing()
-        if (current === painted) return
+        val next = trail()
+        if (current === painted && next === paintedTrail) return
         painted = current
+        paintedTrail = next
         highlights.forEach(area.highlighter::removeHighlight)
         highlights.clear()
+        next?.context?.forEach { highlights += area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.TRAIL_WORD)) }
         current?.let {
             val context = current.context?.context.orEmpty().filter { it.index != current.word.index }
             context.forEach { highlights += area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.CONTEXT_WORD)) }
@@ -264,16 +275,19 @@ internal fun installWordTracing(
     }
     area.putClientProperty(WORD_TRACING_UPDATE, ::updateHighlights)
     updateHighlights()
-    fun wordAt(point: Point): SummaryWord? {
+    /** The word of [candidates] under [point]: the nearest offset is not enough, the pointer must be on the word itself. */
+    fun hit(point: Point, candidates: (SummaryWord) -> Boolean): SummaryWord? {
         val offset = area.viewToModel2D(point)
-        val word = words.firstOrNull { offset in it.start..it.end }?.takeIf { it.meaningful && state.cached(identity, summary, it.index) != null } ?: return null
-        // The nearest offset is not enough: the pointer must be on the word, not beside it or past the end of its line.
+        val word = words.firstOrNull { offset in it.start..it.end }?.takeIf(candidates) ?: return null
         val start = area.modelToView2D(word.start) ?: return null
         val end = area.modelToView2D(word.end) ?: return null
         val onLine = point.y >= start.y && point.y <= end.maxY
         val inWord = if (start.y == end.y) point.x >= start.x && point.x <= end.x else point.y <= start.maxY && point.x >= start.x || point.y >= end.y && point.x <= end.x
         return word.takeIf { onLine && inWord }
     }
+    fun wordAt(point: Point): SummaryWord? = hit(point) { it.meaningful && state.cached(identity, summary, it.index) != null }
+    /** The search to follow when [point] is on one of the words that continue it. */
+    fun trailAt(point: Point): SummaryContext? = trail()?.takeIf { next -> hit(point) { word -> next.context.any { it.index == word.index } } != null }
     fun highlighted(word: SummaryWord) = tracing()?.let { current ->
         word.index == current.word.index || current.context?.context?.any { it.index == word.index } == true
     } == true
@@ -282,7 +296,8 @@ internal fun installWordTracing(
         add(JMenuItem("Search tab").apply {
             name = "search-tab"
             isEnabled = context != null
-            toolTipText = "Search in a new tab that shows only the related summaries"
+            toolTipText = context?.let { "Search for “${it.query}” in a new tab that shows only the related summaries" }
+                ?: "Search in a new tab that shows only the related summaries"
             addActionListener { context?.let(searchTab) }
         })
     }
@@ -296,32 +311,50 @@ internal fun installWordTracing(
         })
         val start = area.selectionStart
         val end = area.selectionEnd
-        if (searchSelection != null && start != end) return menu.apply {
-            val context = selectionContext(identity, summary, start, end)
-            add(JMenuItem("Search").apply {
-                name = "search-selection"
-                isEnabled = context != null
-                toolTipText = "Search for the selected words"
-                addActionListener { searchSelection(identity, start, end) }
-            })
-            addSearchTab(context)
-        }
-        // A supplied point must hit a scored word itself; only a point-less menu may fall back to the traced or caret word.
-        val word = if (point != null) wordAt(point) else tracing()?.word?.takeIf { state.cached(identity, summary, it.index) != null }
-            ?: words.firstOrNull { area.caretPosition in it.start..it.end }
-                ?.takeIf { it.meaningful && state.cached(identity, summary, it.index) != null }
-        if (word == null) return menu.takeIf { it.componentCount > 0 }
-        return menu.apply {
-            add(JMenuItem("Search").apply {
-                name = "search-selection"
-                toolTipText = "Search for “${word.text}” and the words in its context"
-                addActionListener { trace(identity, word.index, true) }
-            })
-            addSearchTab(state.cached(identity, summary, word.index))
-        }
+        // Resolve the pointed word independently of selected text so all applicable scopes remain available.
+        val word = if (point != null) hit(point) { it.meaningful } else
+            (if (start == end) tracing()?.word?.let { words.getOrNull(it.index) } else null)
+                ?: words.firstOrNull { (if (start != end) start else area.caretPosition) in it.start until it.end }
+                    ?.takeIf { it.meaningful }
+        // A highlighted context word belongs to the active scored query. Manual selections are not scored queries.
+        val scored = tracing()?.takeIf { current ->
+            word != null && highlighted(word) && current.context == state.cached(identity, summary, current.word.index)
+        }?.context ?: word?.let { state.cached(identity, summary, it.index) }
+        val selected = selectionContext(identity, summary, start, end).takeIf { start != end }
+        val next = point?.let(::trailAt)
+        if (searchSelection != null && word != null) menu.add(JMenuItem("Search current word").apply {
+            name = "search-word"
+            toolTipText = "Search only for “${word.text}”"
+            addActionListener { searchSelection(identity, word.start, word.end) }
+        })
+        if (scored != null) menu.add(JMenuItem("Search whole scored query").apply {
+            name = "search-scored-query"
+            toolTipText = "Search for “${scored.query}”"
+            addActionListener { trace(identity, scored.word.index, true) }
+        })
+        if (searchSelection != null && start != end) menu.add(JMenuItem("Search selected query").apply {
+            name = "search-selection"
+            isEnabled = selected != null
+            toolTipText = selected?.let { "Search for “${it.query}”" } ?: "Select text containing a meaningful word"
+            addActionListener { searchSelection(identity, start, end) }
+        })
+        if (follow != null && next != null) menu.add(JMenuItem("Search continuation query").apply {
+            name = "search-trail"
+            toolTipText = "Follow the search further down: search for “${next.query}”"
+            addActionListener { follow(next) }
+        })
+        val tabContext = if (start != end) selected else next ?: scored
+            ?: word?.let { selectionContext(identity, summary, it.start, it.end) }
+        if (word != null || start != end || next != null) menu.addSearchTab(tabContext)
+        return menu.takeIf { it.componentCount > 0 }
     }
+    val tooltip = area.toolTipText
     val pointer = object : MouseAdapter() {
         override fun mouseMoved(e: MouseEvent) {
+            // A word that continues the search stays put on hover, so reaching it never replaces the search it belongs to.
+            val next = trailAt(e.point)
+            area.toolTipText = next?.let { "Click to follow the search further down: “${it.query}”" } ?: tooltip
+            if (next != null) { area.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR); return }
             val word = wordAt(e.point)
             area.cursor = Cursor.getPredefinedCursor(if (word != null) Cursor.HAND_CURSOR else Cursor.TEXT_CURSOR)
             if (word != null && !highlighted(word)) trace(identity, word.index, false)
@@ -329,6 +362,8 @@ internal fun installWordTracing(
 
         override fun mouseClicked(e: MouseEvent) {
             if (e.clickCount != 1 || !SwingUtilities.isLeftMouseButton(e)) return
+            val next = trailAt(e.point)
+            if (follow != null && next != null && area.selectionStart == area.selectionEnd) { follow(next); return }
             // A scored word is left alone so the click can place the caret or start a manual selection instead of searching.
             if (wordAt(e.point) == null) select()
         }
@@ -351,8 +386,8 @@ internal fun installWordTracing(
 private val SELECTION_MENU = Any()
 
 /**
- * The context menu for a summary: Search for the selected text, or for the scored word under the pointer (or the word
- * currently traced, without a point), and Score when supported. Null when no actions are available.
+ * The context menu for a summary: search the current word, its whole scored query, selected text, or a continuation query,
+ * and Score when supported. Null when no actions are available.
  */
 internal fun selectionMenu(area: JTextArea): JPopupMenu? = selectionMenu(area, null)
 
@@ -756,7 +791,8 @@ internal class SummaryTraceSession(
         if (word !in words.indices) return
         val current = state.tracing?.takeIf { it.identity == identity && it.summary == text }
         val highlighted = current != null && (current.word.index == word || current.context?.context?.any { it.index == word } == true)
-        if (current != null && highlighted && (current.error == null || current.context != null)) {
+        val sameQuery = current != null && current.word.index == word && current.context == state.cached(identity, text, word)
+        if (current != null && highlighted && (!search || sameQuery) && (current.error == null || current.context != null)) {
             if (!search) return
             if (current.trace != null) state.showTrace(content.tree, current.trace)
             else if (current.lines != null) { if (current.lines.best != null) openLines(node, current.lines) }
@@ -873,6 +909,8 @@ internal class ChangeSummaryActions(
     val searchSelection: ((String, Int, Int) -> Unit)? = null,
     /** Searches a summary with children in a new tab that keeps only the related summaries; null hides Search tab. */
     val searchTab: ((SummaryContext) -> Unit)? = null,
+    /** Searches further down from the words of a match that continue the search; null leaves them unmarked. */
+    val follow: ((SummaryContext) -> Unit)? = null,
     /** Open the file of a node, at the node's first line for a part; by default the file by its path. */
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     /** Put a node's source on the canvas; null hides the buttons. */
@@ -956,7 +994,7 @@ internal class ChangeSummariesPanel(
         val summaryText = if (summary != null) text(summary, textWidth, font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(), null)
                 .also { area ->
                     if (state.traced(node)) installWordTracing(area as JTextArea, node.identity, summary, state, actions.trace, actions.searchSelection,
-                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, activate)
+                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {

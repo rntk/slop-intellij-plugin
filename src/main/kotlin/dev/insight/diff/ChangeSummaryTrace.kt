@@ -34,8 +34,11 @@ data class SummaryWord(val index: Int, val start: Int, val end: Int, val text: S
     }
 }
 
-/** A summary below the traced one that the pointed words were condensed from, with the Decisions API's probability. */
-data class SummaryMatch(val id: Int, val identity: String, val probability: Double, val levelsBelow: Int)
+/**
+ * A summary below the traced one that the pointed words were condensed from, with the Decisions API's probability. [next] is
+ * the search that follows the same topic further down from it: the words of its summary that carry the query on.
+ */
+data class SummaryMatch(val id: Int, val identity: String, val probability: Double, val levelsBelow: Int, val next: SummaryContext? = null)
 
 /** The scored words and narrowed query, ready to highlight without searching any other summaries. */
 data class SummaryContext(
@@ -90,6 +93,7 @@ data class SummaryTrace(
         /** Starting points, not validated values: tune them on real reviews. */
         const val CONTEXT_THRESHOLD = 0.5
         const val MATCH_THRESHOLD = 0.5
+        const val TRAIL_THRESHOLD = 0.5
     }
 }
 
@@ -103,6 +107,8 @@ data class SummaryTrace(
  * 2. The summary narrowed to those words, with repeated words removed, is the query.
  * 3. Only on an explicit search, every summary up to [levels] levels below gets a Noul: does it describe what the query
  *    says about the pointed word? Deeper levels are not searched; trace a match to go further.
+ * 4. To go further, every meaningful word of each related summary with no related summary below it gets a Noul: does it
+ *    carry the query on, however that summary phrases it? Those words are the next search from it, ready to follow.
  *
  * Questions over the same state go in one request, with the rules they share in that state; requests of up to [maxQuestions]
  * questions and [maxRequestBytes] of JSON run in parallel.
@@ -121,6 +127,7 @@ class SummaryTracer(
 
     private val contexts = Lru<List<Any>, Set<Int>>(256)
     private val probabilities = Lru<List<String>, Double>(2048)
+    private val trails = Lru<List<String>, List<Double>>(512)
     private val scoreWrites = Mutex()
 
     /** Scores only this summary's words; candidate enumeration and ranking are deferred to [search]. */
@@ -143,7 +150,58 @@ class SummaryTracer(
         val ranked = rank(query, context.word.text, node, context.summary, candidates.map { (candidate, _) -> candidate to summaries.text(candidate.id).orEmpty() })
         val matches = candidates.zip(ranked) { (candidate, depth), probability -> SummaryMatch(candidate.id, candidate.identity, probability, depth) }
             .sortedWith(compareByDescending<SummaryMatch> { it.probability }.thenByDescending { it.levelsBelow }.thenBy { it.id })
-        return SummaryTrace(node.identity, context.summary, context.word, context.context, query, matches, candidates.size)
+        val followed = trails(summaries, query, context.word.text, node, context.summary, matches)
+        return SummaryTrace(node.identity, context.summary, context.word, context.context, query, followed, candidates.size)
+    }
+
+    /**
+     * [matches] with the next search from each related match that has no related match below it, where the reader goes on.
+     * A match above another already leads to it, and the rest are unrelated.
+     */
+    internal suspend fun trails(
+        summaries: ChangeSummaries,
+        query: String,
+        focus: String,
+        node: SummaryNode,
+        summary: String,
+        matches: List<SummaryMatch>,
+    ): List<SummaryMatch> = coroutineScope {
+        val tree = summaries.tree
+        val related = matches.filter { it.probability >= SummaryTrace.MATCH_THRESHOLD }
+        val above = related.flatMapTo(hashSetOf()) { match -> generateSequence(tree[match.id].parent) { tree[it].parent }.toList() }
+        val next = related.filter { it.id !in above }.map { match ->
+            async { match.id to summaries.text(match.id)?.let { text -> next(query, focus, node, summary, tree[match.id], text) } }
+        }.awaitAll().toMap()
+        matches.map { it.copy(next = next[it.id]) }
+    }
+
+    /**
+     * The words of [candidate]'s summary that carry [query] on, as a search from it: the most probable is its focus. The
+     * candidate may name the same thing differently, so its own words, not the query's, make the next query. Null when none do.
+     */
+    private suspend fun next(query: String, focus: String, node: SummaryNode, summary: String, candidate: SummaryNode, text: String): SummaryContext? {
+        val words = SummaryWord.split(text)
+        val asked = words.filter { it.meaningful }.take(maxWords)
+        if (asked.isEmpty()) return null
+        val key = listOf(query, focus, node.location, summary, candidate.kind.id, candidate.location, text)
+        val nouls = trails[key] ?: run {
+            val state = JsonObject().apply {
+                addProperty("query", query)
+                addProperty("query_focus", focus)
+                add("pointed_summary", JsonObject().apply { addProperty("location", node.location); addProperty("summary", summary) })
+                add("candidate", JsonObject().apply {
+                    addProperty("kind", candidate.kind.id)
+                    addProperty("location", candidate.location)
+                    addProperty("numbered_summary", numbered(text, words))
+                })
+                add("trail_rules", trailRules())
+            }
+            ask(state, asked) { word -> trailQuestion(word) }.also { trails[key] = it }
+        }
+        val chosen = asked.zip(nouls).filter { (_, noul) -> noul >= SummaryTrace.TRAIL_THRESHOLD }
+        if (chosen.isEmpty()) return null
+        val trail = chosen.map { it.first }
+        return SummaryContext(candidate.identity, text, chosen.maxBy { it.second }.first, trail, query(text, trail))
     }
 
     /**
@@ -351,6 +409,18 @@ class SummaryTracer(
         ),
     )
 
+    private fun trailQuestion(candidate: SummaryWord) = DecisionQuestion.Noul(
+        JsonObject().apply {
+            add("candidate_word", JsonObject().apply { addProperty("number", candidate.index + 1); addProperty("word", candidate.text) })
+            addProperty("question", "Following `trail_rules`, does `candidate_word` in `candidate.numbered_summary` belong to what " +
+                "`candidate` says about the thing `query` says about `query_focus`, so searching from it continues the same search?")
+        },
+        mapOf(
+            true to JsonPrimitive("`candidate_word` fits a case of `trail_rules.include`."),
+            false to JsonPrimitive("`candidate_word` fits a case of `trail_rules.exclude`."),
+        ),
+    )
+
     /** Summaries up to [levels] levels below [id]. A parent with a single child repeats its summary, so that child adds no level. */
     internal fun candidates(summaries: ChangeSummaries, id: Int): List<Pair<SummaryNode, Int>> {
         val tree = summaries.tree
@@ -452,6 +522,36 @@ class SummaryTracer(
                 "The candidate mentions the focus only in passing, or shares only the isolated word while describing a different " +
                     "kind, purpose or object. Matching a generic head word does not match the qualified phrase.",
             ))
+        }
+
+        /** Which words of a related summary carry the search on below it; every trail question refers to it. */
+        private fun trailRules() = JsonObject().apply {
+            addProperty("evidence_policy", EVIDENCE_POLICY)
+            addProperty("goal", "A reader searched `query` from `pointed_summary`, and `candidate`, a summary of one of its parts, " +
+                "was found related. To follow the same topic further down, the reader searches again from the words of `candidate` " +
+                "that say what it does about the focus item, which `candidate` may name differently: by another name, a more " +
+                "specific term, an identifier, or the part that does it. The chosen words become the next query; interpret " +
+                "`query_focus` as the complete phrase it belongs to in `query`.")
+            add("include", strings(
+                "The word names the focus item as `candidate` refers to it, or a part of it, even when spelled differently from `query`.",
+                "The word states the behavior, change or responsibility `query` states about the focus, or completes the phrase " +
+                    "naming it: its head, modifiers, compound terms or object.",
+            ))
+            add("exclude", strings(
+                "The word is about another item `candidate` describes, including siblings listed next to the focus, or behavior " +
+                    "the query does not state for it.",
+                "The word is general commentary or only broadly related to the topic, so it would not narrow the next search.",
+            ))
+            add("examples", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("query", "deleted views: hierarchy")
+                    addProperty("query_focus", "hierarchy")
+                    addProperty("numbered_summary", "Deletes[1] HierarchyPanel[2] and[3] its[4] layout[5] helpers[6]; " +
+                        "updates[7] canvas[8] imports[9]")
+                    add("include", strings("Deletes[1]", "HierarchyPanel[2]", "layout[5]", "helpers[6]"))
+                    add("exclude", strings("updates[7]", "canvas[8]", "imports[9]"))
+                })
+            })
         }
 
         private fun lineFormat(diff: Boolean): JsonPrimitive = JsonPrimitive(

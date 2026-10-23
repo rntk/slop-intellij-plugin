@@ -863,6 +863,7 @@ internal class NoteCanvas(
             trace = summariesTrace::trace,
             searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
+            follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)

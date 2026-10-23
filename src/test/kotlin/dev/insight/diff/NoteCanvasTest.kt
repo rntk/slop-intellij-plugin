@@ -1173,7 +1173,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     private fun searchScoredWord(canvas: Container, area: javax.swing.JTextArea, word: String) {
         val box = area.modelToView2D(area.text.indexOf(word) + 1)
         val item = selectionMenu(area, Point(box.centerX.toInt(), box.centerY.toInt()))!!
-            .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-selection" }
+            .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-scored-query" }
         item.doClick()
         layoutTree(canvas)
     }
@@ -1688,9 +1688,51 @@ class NoteCanvasTest : BasePlatformTestCase() {
             searchScoredWord(canvas, area(), "border")
             assertEquals(2, opened.size)
             assertEquals(1, launcher.searchedLines.size)
+
+            // Switching scopes on the same word must replace the query, even inside an existing highlight.
+            val word = SummaryWord.split(area().text).single { it.text == "border" }
+            val box = area().modelToView2D(word.start + 1)
+            selectionMenu(area(), Point(box.centerX.toInt(), box.centerY.toInt()))!!.components
+                .filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-word" }.doClick()
+            assertEquals("border", launcher.searchedLines.last().query)
+            searchScoredWord(canvas, area(), "border")
+            assertEquals(context, launcher.searchedLines.last())
+            assertEquals(3, launcher.searchedLines.size)
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testWordMenuOffersIndependentSearchScopes() {
+        val summary = "Paints the canvas border."
+        val words = SummaryWord.split(summary)
+        val word = words.single { it.text == "canvas" }
+        val state = ChangeSummariesViewState()
+        val scored = SummaryContext("root", summary, word, words, "Paints the canvas border")
+        state.scored["root" to word.index] = scored
+        val area = javax.swing.JTextArea(summary).apply { setSize(400, 100) }
+        val searches = mutableListOf<String>()
+        val traces = mutableListOf<Int>()
+        installWordTracing(area, "root", summary, state,
+            trace = { _, index, search -> if (search) traces += index },
+            searchSelection = { identity, start, end -> searches += selectionContext(identity, summary, start, end)!!.query })
+        area.select(word.start, words.last().end)
+        val box = area.modelToView2D(word.start + 1)
+        val point = Point(box.centerX.toInt(), box.centerY.toInt())
+        val items = selectionMenu(area, point)!!.components.filterIsInstance<javax.swing.JMenuItem>()
+        assertEquals(listOf("Search current word", "Search whole scored query", "Search selected query"), items.map { it.text })
+        items.forEach { it.doClick() }
+        assertEquals(listOf("canvas", "canvas border"), searches)
+        assertEquals(listOf(word.index), traces)
+
+        // Word-only search stays available without a score or selection.
+        state.scored.clear()
+        area.select(word.start, word.start)
+        val unscored = selectionMenu(area, point)!!.components.filterIsInstance<javax.swing.JMenuItem>()
+        assertEquals(listOf("search-word"), unscored.map { it.name })
+        unscored.single().doClick()
+        assertEquals("canvas", searches.last())
+        assertNull("Blank space must not fall back to another word", selectionMenu(area, Point(390, 80)))
     }
 
     fun testSelectedSummaryTextSearchesWithoutScoring() = ChangeSummariesMode.entries.forEach { mode ->
@@ -1723,7 +1765,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
-            assertEquals("Without a selection or scored word, only Score is offered", listOf("score-summary"),
+            assertEquals("The caret word can be searched without scoring", listOf("score-summary", "search-word"),
                 selectionMenu(fileArea())!!.components.map { it.name })
 
             // A right click neither folds nor selects the row.

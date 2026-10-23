@@ -29,7 +29,7 @@ class ChangeSummaryTraceTest {
         }, DecisionUsage(1, 1))
 
         fun contextRequests() = requests.filter { it.state.asJsonObject.has("pointed_word") }
-        fun matchRequests() = requests.filter { it.state.asJsonObject.has("query") }
+        fun matchRequests() = requests.filter { it.state.asJsonObject.has("match_rules") }
         fun askedWords() = contextRequests().flatMap { request ->
             request.questions.values.map { (it.instructions.asJsonObject["candidate_word"].asJsonObject)["word"].asString }
         }
@@ -298,6 +298,44 @@ class ChangeSummaryTraceTest {
                 assertEquals(summary, state["pointed_summary"].asJsonObject["summary"].asString)
             }
         }
+    }
+
+    @Test fun `search marks the words that carry the query on in related summaries with nothing related below`() = runBlocking {
+        val summaries = viewsTree()
+        val fake = FakeDecisions { state, instructions ->
+            if (!state.has("trail_rules")) matchAnswer(state, instructions)
+            else when (word(state, instructions)) { "hierarchy" -> 0.95; "Deletes" -> 0.9; "view" -> 0.7; else -> 0.1 }
+        }
+        val tracer = SummaryTracer(fake.evaluate)
+        val trace = tracer.trace(summaries, 0, 3)
+        val byLocation = trace.matches.associateBy { summaries.tree[it.id].location }
+        // views/ already leads to its related files, and other.kt is unrelated: neither is followed from.
+        assertNull(byLocation.getValue("views/").next)
+        assertNull(byLocation.getValue("other.kt").next)
+        val next = byLocation.getValue("views/hierarchy.kt").next!!
+        assertEquals(byLocation.getValue("views/hierarchy.kt").identity, next.identity)
+        assertEquals("Deletes the hierarchy view", next.query)
+        assertEquals("hierarchy", next.word.text)
+        assertEquals(listOf("Deletes", "hierarchy", "view"), next.context.map { it.text })
+        // The candidate's own words make the next query, skipping what it says about other things.
+        assertEquals("Deletes view", byLocation.getValue("views/canvas.kt").next!!.query)
+
+        val trail = fake.requests.map { it.state.asJsonObject }
+            .single { it.has("trail_rules") && it["candidate"].asJsonObject["location"].asString == "views/hierarchy.kt" }
+        assertEquals("deleted views: hierarchy", trail["query"].asString)
+        assertEquals("hierarchy", trail["query_focus"].asString)
+        assertEquals("Deletes[1] the[2] hierarchy[3] view[4].", trail["candidate"].asJsonObject["numbered_summary"].asString)
+
+        fake.requests.clear()
+        assertEquals(trace, tracer.trace(summaries, 0, 3))
+        assertTrue("Trails are cached like matches", fake.requests.isEmpty())
+    }
+
+    @Test fun `a related summary with no word that carries the query on has nothing to follow`() = runBlocking {
+        val fake = FakeDecisions { state, instructions -> if (state.has("trail_rules")) 0.1 else matchAnswer(state, instructions) }
+        val trace = SummaryTracer(fake.evaluate).trace(viewsTree(), 0, 3)
+        assertTrue(trace.related.isNotEmpty())
+        assertTrue(trace.matches.all { it.next == null })
     }
 
     @Test fun `trace without related summaries has no best match`() = runBlocking {
