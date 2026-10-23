@@ -94,6 +94,25 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         private set
     fun showDiffOverview() { diffOverviewVisible = true }
     fun hideDiffOverview() { diffOverviewVisible = false }
+    /** Whether the semantic changes card is on the canvas; counting needs PSI, so the tab delivers it with [setSemantic]. */
+    var semanticVisible = false
+        private set
+    private var semanticOf: List<ReviewFile>? = null
+    private var semanticCounted: SemanticResult? = null
+    /** The result for the current snapshot; [SemanticResult.Counting] until one is delivered. */
+    internal val semantic: SemanticResult get() = semanticCounted?.takeIf { semanticOf === snapshot.files } ?: SemanticResult.Counting
+    internal val semanticPending: Boolean get() = semantic === SemanticResult.Counting
+    /** Keeps [result] unless the snapshot changed since [files] were counted. */
+    internal fun setSemantic(files: List<ReviewFile>, result: SemanticResult): Boolean {
+        if (files !== snapshot.files) return false
+        semanticCounted = result; semanticOf = files
+        return true
+    }
+    fun showSemantic() {
+        if (semantic is SemanticResult.Failed) semanticCounted = null
+        semanticVisible = true
+    }
+    fun hideSemantic() { semanticVisible = false }
 
     fun startTopics(): ChangeTopics {
         if (topics.complete) {
@@ -202,7 +221,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun removeDiff(path: String) { diffCards.remove(path) }
     fun clearNotes() {
         cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null
-        summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false
+        summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
     }
 
     fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {

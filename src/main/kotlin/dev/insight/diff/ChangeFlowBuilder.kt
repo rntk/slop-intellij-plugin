@@ -190,86 +190,9 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
     private fun parse(path: String, type: LanguageFileType, text: String): PsiFile? =
         PsiFileFactory.getInstance(project).createFileFromText(path.substringAfterLast('/'), type, text)
 
-    /** Named functions, classes and properties of one parsed side, in source order. */
-    private fun declarations(file: PsiFile): List<Pair<PsiElement, SideDeclaration>> {
-        val index = LineIndex(file.text)
-        val kinds = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS, SymbolKind.PROPERTY)
-        return ProjectGraphAnalyzer.declarations(file).mapNotNull { element ->
-            ProgressManager.checkCanceled()
-            val kind = ProjectGraphAnalyzer.kind(element)?.takeIf { it in kinds } ?: return@mapNotNull null
-            if (element is PsiFile) return@mapNotNull null
-            val name = (element as? PsiNamedElement)?.name ?: return@mapNotNull null
-            val start = element.textRange.startOffset
-            val nested = nestedDeclarations(element)
-            val own = without(element, nested.map { it.textRange })
-            val comments = PsiTreeUtil.collectElementsOfType(element, PsiComment::class.java)
-                .filter { comment -> nested.none { PsiTreeUtil.isAncestor(it, comment, false) } }.map { it.textRange }
-            val code = without(element, nested.map { it.textRange } + comments)
-            element to SideDeclaration(name, qualifiedName(element), kind, declarationHeader(code), own,
-                tokens(element, nested, comments = false).joinToString("") { "${it.length}:$it" },
-                index.line(start)..index.line((element.textRange.endOffset - 1).coerceAtLeast(start)), element.textOffset,
-                nested.map { index.line(it.textRange.startOffset)..index.line((it.textRange.endOffset - 1).coerceAtLeast(it.textRange.startOffset)) },
-                formattingTokens = tokens(element, nested, comments = true))
-        }
-    }
-
-    /** Compare leaves rather than source strings: whitespace inside a literal is behavior. */
-    private fun tokens(element: PsiElement, nested: List<PsiElement>, comments: Boolean): List<String> {
-        val result = mutableListOf<String>()
-        element.accept(object : PsiRecursiveElementWalkingVisitor() {
-            override fun visitElement(child: PsiElement) {
-                if (child in nested) return
-                if (child is PsiComment) {
-                    if (comments) result += child.text
-                    return
-                }
-                // Only Java is whitespace insensitive here. Other languages retain whitespace
-                // conservatively because indentation and newlines can change execution.
-                if (child is PsiWhiteSpace && element.language.id == "JAVA") return
-                if (child.firstChild == null) result += child.text
-                else super.visitElement(child)
-            }
-        })
-        return result
-    }
-
     private fun header(element: PsiElement): String =
         declarationHeader(without(element, nestedDeclarations(element).map { it.textRange } +
             PsiTreeUtil.collectElementsOfType(element, PsiComment::class.java).map { it.textRange }))
-
-    /** Outermost functions and classes inside [element]. */
-    private fun nestedDeclarations(element: PsiElement): List<PsiElement> {
-        val result = mutableListOf<PsiElement>()
-        element.accept(object : PsiRecursiveElementWalkingVisitor() {
-            override fun visitElement(child: PsiElement) {
-                if (child !== element && ProjectGraphAnalyzer.kind(child).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS } &&
-                    child.textRange.length > 0) { result += child; return }
-                super.visitElement(child)
-            }
-        })
-        return result
-    }
-
-    private fun without(element: PsiElement, ranges: List<com.intellij.openapi.util.TextRange>): String {
-        val text = element.text
-        val start = element.textRange.startOffset
-        val builder = StringBuilder()
-        var position = 0
-        for (range in ranges.sortedBy { it.startOffset }) {
-            val from = (range.startOffset - start).coerceIn(position, text.length)
-            builder.append(text, position, from)
-            position = (range.endOffset - start).coerceIn(from, text.length)
-        }
-        return builder.append(text, position, text.length).toString()
-    }
-
-    /** Owners that are functions or classes, then the name: `Outer.Inner.method`. */
-    private fun qualifiedName(element: PsiElement): String {
-        val owners = generateSequence(element.parent) { it.parent }.takeWhile { it !is PsiFile }
-            .filter { ProjectGraphAnalyzer.kind(it).let { kind -> kind == SymbolKind.CLASS || kind == SymbolKind.FUNCTION } }
-            .mapNotNull { (it as? PsiNamedElement)?.name }.toList().asReversed()
-        return (owners + ((element as? PsiNamedElement)?.name ?: "?")).joinToString(".")
-    }
 
     /** In-project calls and certain exits of [function] in source order; calls inside nested functions and classes are theirs. */
     private fun walk(function: PsiElement, index: LineIndex, changed: Set<Int>): Walked {
@@ -342,6 +265,83 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
     }
 
     companion object {
+        /** Named functions, classes and properties of one parsed side, in source order. */
+        internal fun declarations(file: PsiFile): List<Pair<PsiElement, SideDeclaration>> {
+            val index = LineIndex(file.text)
+            val kinds = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS, SymbolKind.PROPERTY)
+            return ProjectGraphAnalyzer.declarations(file).mapNotNull { element ->
+                ProgressManager.checkCanceled()
+                val kind = ProjectGraphAnalyzer.kind(element)?.takeIf { it in kinds } ?: return@mapNotNull null
+                if (element is PsiFile) return@mapNotNull null
+                val name = (element as? PsiNamedElement)?.name ?: return@mapNotNull null
+                val start = element.textRange.startOffset
+                val nested = nestedDeclarations(element)
+                val own = without(element, nested.map { it.textRange })
+                val comments = PsiTreeUtil.collectElementsOfType(element, PsiComment::class.java)
+                    .filter { comment -> nested.none { PsiTreeUtil.isAncestor(it, comment, false) } }.map { it.textRange }
+                val code = without(element, nested.map { it.textRange } + comments)
+                element to SideDeclaration(name, qualifiedName(element), kind, declarationHeader(code), own,
+                    tokens(element, nested, comments = false).joinToString("") { "${it.length}:$it" },
+                    index.line(start)..index.line((element.textRange.endOffset - 1).coerceAtLeast(start)), element.textOffset,
+                    nested.map { index.line(it.textRange.startOffset)..index.line((it.textRange.endOffset - 1).coerceAtLeast(it.textRange.startOffset)) },
+                    formattingTokens = tokens(element, nested, comments = true))
+            }
+        }
+
+        /** Compare leaves rather than source strings: whitespace inside a literal is behavior. */
+        private fun tokens(element: PsiElement, nested: List<PsiElement>, comments: Boolean): List<String> {
+            val result = mutableListOf<String>()
+            element.accept(object : PsiRecursiveElementWalkingVisitor() {
+                override fun visitElement(child: PsiElement) {
+                    if (child in nested) return
+                    if (child is PsiComment) {
+                        if (comments) result += child.text
+                        return
+                    }
+                    // Only Java is whitespace insensitive here. Other languages retain whitespace
+                    // conservatively because indentation and newlines can change execution.
+                    if (child is PsiWhiteSpace && element.language.id == "JAVA") return
+                    if (child.firstChild == null) result += child.text
+                    else super.visitElement(child)
+                }
+            })
+            return result
+        }
+
+        /** Outermost functions and classes inside [element]. */
+        internal fun nestedDeclarations(element: PsiElement): List<PsiElement> {
+            val result = mutableListOf<PsiElement>()
+            element.accept(object : PsiRecursiveElementWalkingVisitor() {
+                override fun visitElement(child: PsiElement) {
+                    if (child !== element && ProjectGraphAnalyzer.kind(child).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS } &&
+                        child.textRange.length > 0) { result += child; return }
+                    super.visitElement(child)
+                }
+            })
+            return result
+        }
+
+        private fun without(element: PsiElement, ranges: List<com.intellij.openapi.util.TextRange>): String {
+            val text = element.text
+            val start = element.textRange.startOffset
+            val builder = StringBuilder()
+            var position = 0
+            for (range in ranges.sortedBy { it.startOffset }) {
+                val from = (range.startOffset - start).coerceIn(position, text.length)
+                builder.append(text, position, from)
+                position = (range.endOffset - start).coerceIn(from, text.length)
+            }
+            return builder.append(text, position, text.length).toString()
+        }
+
+        /** Owners that are functions or classes, then the name: `Outer.Inner.method`. */
+        internal fun qualifiedName(element: PsiElement): String {
+            val owners = generateSequence(element.parent) { it.parent }.takeWhile { it !is PsiFile }
+                .filter { ProjectGraphAnalyzer.kind(it).let { kind -> kind == SymbolKind.CLASS || kind == SymbolKind.FUNCTION } }
+                .mapNotNull { (it as? PsiNamedElement)?.name }.toList().asReversed()
+            return (owners + ((element as? PsiNamedElement)?.name ?: "?")).joinToString(".")
+        }
+
         const val MAX_CHANGED = 400
         const val MAX_STEPS = 80
         const val MAX_CALLERS = 6

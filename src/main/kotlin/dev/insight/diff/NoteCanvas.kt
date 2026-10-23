@@ -11,6 +11,7 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
+import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.panels.VerticalLayout
@@ -67,6 +68,7 @@ internal class NoteCanvas(
     private val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
     private val removeWords: () -> Unit = {},
     private val removeDiffOverview: () -> Unit = {},
+    private val removeSemantic: () -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -100,6 +102,12 @@ internal class NoteCanvas(
     private var wordChart: WordChangeChart? = null
     private var diffOverview: WordChanges? = null
     private var diffOverviewChart: DiffOverviewChart? = null
+    private var semantic: SemanticResult? = null
+    /** The selected view and plotted metric of the semantic changes card, kept across rebuilds. */
+    private var semanticMode = SemanticMode.METRICS
+    private var semanticMetric = Metric.CYCLOMATIC
+    private var semanticChart: SemanticComplexityChart? = null
+    private var constructChart: Pair<SemanticChanges, WordChangeChart>? = null
     /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
     private var wordScope = WordScope("", true, 0)
     /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
@@ -196,9 +204,11 @@ internal class NoteCanvas(
         words: WordChanges? = null,
         wordFiles: List<ReviewFile> = emptyList(),
         diffOverview: WordChanges? = null,
+        semantic: SemanticResult? = null,
     ) {
         this.words = words
         this.diffOverview = diffOverview
+        this.semantic = semantic
         this.wordFiles = wordFiles
         if (topics == null) topicsScroll = 0
         if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
@@ -235,7 +245,8 @@ internal class NoteCanvas(
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
         val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
-            words?.let { WORDS_KEY to wordsCard(it) }, diffOverview?.let { DIFF_OVERVIEW_KEY to wordsCard(it, overview = true) }).toMap() +
+            words?.let { WORDS_KEY to wordsCard(it) }, diffOverview?.let { DIFF_OVERVIEW_KEY to wordsCard(it, overview = true) },
+            semantic?.let { SEMANTIC_KEY to semanticCard(it) }).toMap() +
             summaryCards +
             listOfNotNull(fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
@@ -280,6 +291,7 @@ internal class NoteCanvas(
 
     internal fun focusWords() { focusCard(WORDS_KEY) }
     internal fun focusDiffOverview() { focusCard(DIFF_OVERVIEW_KEY) }
+    internal fun focusSemantic() { focusCard(SEMANTIC_KEY) }
 
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
@@ -316,6 +328,7 @@ internal class NoteCanvas(
         FLOWS_KEY -> "Change flows"
         WORDS_KEY -> "Word changes"
         DIFF_OVERVIEW_KEY -> "Diff overview"
+        SEMANTIC_KEY -> "Semantic changes"
         FLOW_KEY -> "Symbol flow"
         else -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
@@ -579,14 +592,110 @@ internal class NoteCanvas(
         }
     }
 
-    private fun openWordDiff(word: WordChange) {
-        val files = wordFiles.filter { it.path in word.paths }
+    /**
+     * Semantic metrics counted from both sides of the changed files, as a delta table, a scatter of function complexity
+     * or a cloud of the constructs added and removed. The mode and the plotted metric survive rebuilds.
+     */
+    private fun semanticCard(result: SemanticResult): JPanel {
+        val width = cardWidth(WORDS_WIDTH)
+        val changes = (result as? SemanticResult.Ready)?.changes
+        val skipped = changes?.files?.filter { it.skipped != null }.orEmpty()
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
+                isOpaque = false
+                if (changes != null) {
+                    val group = ButtonGroup()
+                    SemanticMode.entries.forEach { mode ->
+                        add(JToggleButton(mode.label, mode == semanticMode).apply {
+                            name = "semantic-mode:${mode.name}"
+                            font = scaledFont(JBFont.small())
+                            toolTipText = when (mode) {
+                                SemanticMode.METRICS -> "Totals of each metric before and after the change; click a row to open the diffs of its files"
+                                SemanticMode.COMPLEXITY -> "Each function's value before and after the change; click a point to open its diff"
+                                SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
+                            }
+                            group.add(this)
+                            addActionListener { if (semanticMode != mode) { semanticMode = mode; refreshCard(SEMANTIC_KEY) } }
+                        })
+                    }
+                } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+            }, BorderLayout.WEST)
+            add(JLabel(if (skipped.isEmpty()) "" else "${files(skipped.size)} skipped").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                horizontalAlignment = SwingConstants.CENTER
+                name = "semantic-skipped"
+                toolTipText = if (skipped.isEmpty()) null else "<html>Not counted:<br>" + skipped.take(20).joinToString("<br>") {
+                    "${escapeHtml(it.path)} · ${escapeHtml(it.skipped.orEmpty())}"
+                } + (if (skipped.size > 20) "<br>… ${skipped.size - 20} more" else "") + "</html>"
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+                isOpaque = false
+                if (changes != null && semanticMode == SemanticMode.COMPLEXITY) add(JComboBox(COMPLEXITY_METRICS.toTypedArray()).apply {
+                    name = "semantic-metric"
+                    font = scaledFont(JBFont.small())
+                    renderer = SimpleListCellRenderer.create("") { it.label }
+                    toolTipText = "The metric plotted for each function"
+                    selectedItem = semanticMetric
+                    addActionListener { (selectedItem as? Metric)?.takeIf { it != semanticMetric }?.let { semanticMetric = it; refreshCard(SEMANTIC_KEY) } }
+                })
+                add(InplaceButton(IconButton("Remove semantic changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSemantic() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.EAST)
+        }
+        val chartWidth = width - scaled(2 * PADDING + 4)
+        fun note(text: String) = JLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(when (result) {
+                SemanticResult.Counting -> note("Counting…").apply { name = "semantic-counting" }
+                is SemanticResult.Failed -> note("Could not count semantic changes: ${result.message}").apply {
+                    name = "semantic-error"; foreground = JBColor.RED
+                }
+                is SemanticResult.Ready -> when (semanticMode) {
+                    SemanticMode.METRICS -> SemanticMetricsTable(result.changes, chartWidth, ::openMetricDiff).let { table ->
+                        if (table.rows().isEmpty()) note("No metric differs.") else scrollBody(table, chartWidth, scaled(WORDS_HEIGHT))
+                    }
+                    SemanticMode.COMPLEXITY ->
+                        (semanticChart?.takeIf { it.changes === result.changes && it.metric == semanticMetric }
+                            ?: SemanticComplexityChart(result.changes, semanticMetric, chartWidth, scaled(WORDS_HEIGHT), ::openDeclarationDiff)
+                                .also { semanticChart = it }).let { if (it.hasFunctions()) it else note("No functions in the changed files.") }
+                    SemanticMode.CONSTRUCTS -> constructChart?.takeIf { it.first === result.changes }?.second
+                        ?: constructChanges(result.changes).let { constructs ->
+                            if (constructs.words.isEmpty()) note("No construct was added or removed.")
+                            else WordChangeChart(constructs, chartWidth, scaled(WORDS_HEIGHT), ::openWordDiff).also { constructChart = result.changes to it }
+                        }
+                }
+            }, BorderLayout.CENTER)
+        }
+        return JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground(); border = cardBorder(false)
+            add(header, BorderLayout.NORTH)
+            add(body, BorderLayout.CENTER)
+        }
+    }
+
+    private fun openMetricDiff(metric: Metric) {
+        val changes = (semantic as? SemanticResult.Ready)?.changes ?: return
+        openPaths(changes.filesChanging(metric).map { it.path }.toSet())
+    }
+
+    private fun openDeclarationDiff(declaration: DeclarationMetrics) { open(declaration.path) }
+
+    private fun openWordDiff(word: WordChange) { openPaths(word.paths) }
+
+    private fun openPaths(paths: Set<String>) {
+        val files = wordFiles.filter { it.path in paths }
         val directory = openDirectoryDiff
         when {
             files.size == 1 || (directory == null && files.isNotEmpty()) -> open(files.first().path)
             directory != null && files.isNotEmpty() -> directory(files)
         }
     }
+
+    private fun escapeHtml(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     /** Limits the chart to one changed file or directory, chosen from a list that typing filters. */
     private fun wordScopeButton(scopes: List<WordScope>): JButton = JButton(wordScope.toString(), AllIcons.General.ArrowDown).apply {
@@ -1370,6 +1479,7 @@ internal class NoteCanvas(
             FLOWS_KEY -> flows?.let(::flowsCard)
             WORDS_KEY -> words?.let { wordsCard(it) }
             DIFF_OVERVIEW_KEY -> diffOverview?.let { wordsCard(it, overview = true) }
+            SEMANTIC_KEY -> semantic?.let(::semanticCard)
             TOPICS_KEY -> topics?.let(::topicsCard)
             in summaryTabs().map { it.key } -> summaries?.let { summariesCard(summaryTab(key)!!, it) }
             FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
@@ -1545,6 +1655,7 @@ internal class NoteCanvas(
         val FILE_VIEW_KEY = DiffNoteKey(emptyList(), "file-view")
         val WORDS_KEY = DiffNoteKey(emptyList(), "word-changes")
         val DIFF_OVERVIEW_KEY = DiffNoteKey(emptyList(), "diff-overview")
+        val SEMANTIC_KEY = DiffNoteKey(emptyList(), "semantic-changes")
         const val WORDS_WIDTH = 1100
         const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840

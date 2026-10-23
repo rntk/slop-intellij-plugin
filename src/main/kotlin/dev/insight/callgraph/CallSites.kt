@@ -241,7 +241,7 @@ object CallSiteAnalyzer {
     }
 
     private val CAMEL = Regex("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-    private fun words(element: PsiElement): Set<String> = element.javaClass.simpleName.removeSuffix("Impl").split(CAMEL).toSet()
+    internal fun words(element: PsiElement): Set<String> = element.javaClass.simpleName.removeSuffix("Impl").split(CAMEL).toSet()
 
     /** Words of elements that are parts of a construct rather than the construct (`PyIfPart`, `KtWhenEntry`, `…ForControlStructureBody`). */
     private val PARTS = setOf("Part", "Clause", "Entry", "Label", "Labeled", "Rule", "Condition", "Body", "Section", "Block", "List", "Node")

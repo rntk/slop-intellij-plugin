@@ -82,6 +82,7 @@ internal class DiffReviewTab(
         openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
         removeWords = { state.hideWords(); renderCanvas() },
         removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
+        removeSemantic = { state.hideSemantic(); renderCanvas() },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -100,6 +101,9 @@ internal class DiffReviewTab(
     }
     private val diffOverviewButton = JButton("Diff overview").apply {
         toolTipText = "Compare deleted and added line counts with compact word lists filling opposite corners"
+    }
+    private val semanticButton = JButton("Metrics").apply {
+        toolTipText = "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"
     }
     private val scopeLabel = JLabel()
     val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
@@ -201,9 +205,10 @@ internal class DiffReviewTab(
                     add(JButton("Clear tabs").apply {
                         addActionListener { state.clearNotes(); renderCanvas() }
                     }, BorderLayout.WEST)
-                    add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
+                    add(JPanel(GridLayout(1, 3, JBUI.scale(4), 0)).apply {
                         add(wordsButton.apply { addActionListener { openWords() } })
                         add(diffOverviewButton.apply { addActionListener { openDiffOverview() } })
+                        add(semanticButton.apply { addActionListener { openSemantic() } })
                     }, BorderLayout.EAST)
                 }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
@@ -276,6 +281,34 @@ internal class DiffReviewTab(
         showCanvas { canvas.focusDiffOverview() }
     }
 
+    /** Counting parses both sides of every file, so it runs in a background read action and fills the card when done. */
+    fun openSemantic() {
+        state.showSemantic()
+        renderCanvas()
+        showCanvas { canvas.focusSemantic() }
+    }
+
+    private var semanticJob: Job? = null
+    private var semanticCounting: List<ReviewFile>? = null
+
+    private fun countSemantic() {
+        val files = state.snapshot.files
+        if (!state.semanticVisible || !state.semanticPending || semanticCounting === files) return
+        semanticJob?.cancel()
+        semanticCounting = files
+        semanticJob = scope.launch {
+            val result = try {
+                SemanticResult.Ready(withContext(Dispatchers.Default) { smartReadAction(project) { semanticChanges(project, files) } })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                SemanticResult.Failed(e.message ?: e.javaClass.simpleName)
+            }
+            if (semanticCounting === files) semanticCounting = null
+            if (!disposed && state.setSemantic(files, result)) renderCanvas()
+        }
+    }
+
     /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
     private fun showCanvas(focus: () -> Unit) {
         openCanvas(true)
@@ -296,6 +329,7 @@ internal class DiffReviewTab(
         summariesButton.isEnabled = !state.refreshing && state.snapshot.files.isNotEmpty()
         wordsButton.isEnabled = summariesButton.isEnabled
         diffOverviewButton.isEnabled = wordsButton.isEnabled
+        semanticButton.isEnabled = wordsButton.isEnabled
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
@@ -307,7 +341,9 @@ internal class DiffReviewTab(
     private fun renderCanvas() {
         canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard(),
             words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
-            diffOverview = if (state.diffOverviewVisible) state.words else null)
+            diffOverview = if (state.diffOverviewVisible) state.words else null,
+            semantic = if (state.semanticVisible) state.semantic else null)
+        countSemantic()
         canvas.highlight(selectedPaths().toSet())
     }
 
