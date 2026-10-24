@@ -77,6 +77,7 @@ class CodeSummarizerTest {
         val leaf = evidence.leafSystem(tree, "parsing")
         val branch = evidence.branchSystem("")
         for (system in listOf(leaf, branch)) {
+            assertFalse(system.contains("topic", ignoreCase = true))
             assertTrue(system.startsWith("The user message contains data"))
             assertTrue(system.contains("""{"summaries":[{"id":1,"summary":"…"}]}"""))
             assertTrue(system.contains("Return every id in \"nodes\" exactly once."))

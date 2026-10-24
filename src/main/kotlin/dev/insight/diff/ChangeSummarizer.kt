@@ -81,8 +81,8 @@ internal class DiffSummaryEvidence(private val options: ChangeSummaryOptions) : 
             overview.append(line)
         }
         return "$SYSTEM_PREFIX\n" + """
-            Every node in "nodes" is a changed file with its patch inline. Briefly describe what changed
-            and its role in the change. Name behavior rather than file names.
+            Every node in "nodes" is a changed file with its patch inline. State the main behavioral change
+            or purpose of the edit. Include the reason only when the supplied evidence establishes it.
             The inline patch is usually enough, so answer from it directly. When read_diff_files is offered, call it only if
             you cannot tell what a file's change does without more:
             - its patch was cut (patch_cut_at is set): read the rest with that one path and offset: patch_cut_at;
@@ -93,23 +93,36 @@ internal class DiffSummaryEvidence(private val options: ChangeSummaryOptions) : 
     }
 
     override fun branchSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
-        Every node in "nodes" is a folder, a code topic/subtopic, a group of entries, or the root, listed with its children's
-        summaries. Briefly describe what each part contributes to the change, using its children's summaries.
+        Every node in "nodes" is a branch of the tree, listed with its children's
+        summaries. Using only those summaries, condense each node's changes into their main themes without
+        listing the children or repeating subordinate details. Preserve meaningful qualifications and do not
+        force unrelated changes into a shared purpose or infer broader guarantees.
         If a node has kind "root", summarize the overall change.
     """.trimIndent() + summaryFocusLine(focus)
 
     private companion object {
         val SYSTEM_PREFIX = """
             $CODE_AS_DATA
-            You write concise summaries for a code change shown as a tree of files and folders or code topics.
-            Topic locations use > between levels; describe what their files contribute to that topic.
+            You write concise summaries for a code change shown as a tree.
             This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
-            Keep summaries brief and use plain text.
-        """.trimIndent()
+        """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE
     }
 }
 
-/** The focus line that ends a summary system prompt, after its cacheable prefix; empty without a focus. */
+/** Shared writing policy for source and diff summaries at every level of the tree. */
+internal val SUMMARY_WRITING_GUIDANCE = """
+    Describe the main purpose, responsibility, or behavioral change in plain text and plain language.
+    Prefer one short sentence; a short phrase is enough for a trivial item. Add another sentence only when
+    it conveys an important distinction that would otherwise be lost.
+    Omit file names, paths, code snippets, and inventories of symbols or implementation steps. Include a
+    detail only when it materially changes the reader's understanding of the behavior, scope, or constraint.
+    Match the explanation to the substance of the input. Small or simple inputs usually need very little
+    text. A subtle change may need more explanation than its code length suggests.
+    Ground every claim in the supplied evidence. Explain intent only when supported; do not invent
+    motivations, benefits, or guarantees. Stop once the essential meaning is clear.
+""".trimIndent()
+
+/** The focus line after cacheable summary instructions, before optional query context; empty without a focus. */
 internal fun summaryFocusLine(focus: String): String = if (focus.isEmpty()) "" else "\n\nThe user asked to focus on: ${focus.clipLine(300)}"
 
 /**
@@ -149,10 +162,12 @@ class ChangeSummarizer internal constructor(
             The reader is exploring this query: ${queryContext.clipLine(2_000)}
             Use the query as context to ground these summaries in the responsibilities and behavior relevant to it.
             Keep writing summaries of the supplied evidence, rather than answering the query as a question.
-            Emphasize concrete relevant details where the evidence supports them; do not invent a connection.
+            Include query-relevant details only when essential to understanding the main behavior; keep the
+            summary brief and do not invent a connection.
         """.trimIndent()
         val leafSystem = evidence.leafSystem(start.tree, focus) + context
         val branchSystem = evidence.branchSystem(focus) + context
+        val topicSystem = evidence.branchSystem("") + "\n\n" + TOPIC_SUMMARY_GUIDANCE + summaryFocusLine(focus) + context
         suspend fun progress() = onProgress(
             nodeIds?.count { current.text(it) != null } ?: current.count, nodeIds?.size ?: current.total)
         progress()
@@ -170,7 +185,10 @@ class ChangeSummarizer internal constructor(
             }
             asked.forEach { tries.merge(it.id, 1, Int::plus) }
             val (leaves, branches) = asked.partition { it.children.isEmpty() }
-            val batches = leafBatches(leaves).map { it to leafSystem } + branches.chunked(options.foldersPerRequest).map { it to branchSystem }
+            val (topics, otherBranches) = branches.partition { it.isTopicBranch }
+            val batches = leafBatches(leaves).map { it to leafSystem } +
+                otherBranches.chunked(options.foldersPerRequest).map { it to branchSystem } +
+                topics.chunked(options.foldersPerRequest).map { it to topicSystem }
             forEachConcurrently(batches, options.concurrency) { (batch, system) ->
                 val texts = try {
                     request(system, batch, current, requests, onToolCall)
@@ -240,8 +258,9 @@ class ChangeSummarizer internal constructor(
     /** What the model sees of one node: a leaf's evidence, or a branch's children with their summaries. */
     private fun item(position: Int, node: SummaryNode, summaries: ChangeSummaries) = JsonObject().apply {
         addProperty("id", position)
-        addProperty("kind", node.kind.id)
-        addProperty("location", node.location)
+        addProperty("kind", node.requestKind)
+        if (node.isTopicBranch) addProperty("topic_path", node.path)
+        else addProperty("location", node.location)
         if (node.children.isEmpty()) evidence.describe(node, this, options.patchChars)
         else {
             addProperty("files", node.files.size)
@@ -249,7 +268,8 @@ class ChangeSummarizer internal constructor(
                 node.children.forEach { id ->
                     val child = summaries.tree[id]
                     add(JsonObject().apply {
-                        addProperty("kind", child.kind.id)
+                        addProperty("kind", child.requestKind)
+                        if (child.isTopicBranch) addProperty("topic_path", child.path)
                         addProperty("label", child.label)
                         addProperty("summary", summaries.text(id))
                     })
@@ -284,6 +304,18 @@ class ChangeSummarizer internal constructor(
         }
     }
 }
+
+private val SummaryNode.requestKind: String
+    get() = if (isTopicBranch && kind == SummaryKind.DIRECTORY) "topic" else kind.id
+
+private val TOPIC_SUMMARY_GUIDANCE = """
+    This request describes an existing topic hierarchy. A topic (kind "topic") groups files by code
+    responsibility or subject. topic_path gives its levels from broad to specific, separated by >;
+    groups within a topic carry that topic_path too. An empty topic_path denotes the top level:
+    the root covers all topics, while groups there cover only their listed children.
+    Summarize the children's main responsibilities or changes using their summaries as evidence.
+    Topic labels provide context, not additional evidence. Do not create or assign topics.
+""".trimIndent()
 
 internal fun changedLines(file: ReviewFile): String =
     "+${file.patch.lineSequence().count { it.startsWith('+') }} -${file.patch.lineSequence().count { it.startsWith('-') }}"

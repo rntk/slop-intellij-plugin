@@ -7,7 +7,7 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) 
     fun add(kind: SummaryKind, path: String, label: String, identity: String, parent: Int?,
             file: ReviewSource? = null, entries: () -> List<Int>): Int {
         val id = nodes.size
-        nodes += SummaryNode(id, kind, path, label, parent, emptyList(), emptyList(), "", identity, file)
+        nodes += SummaryNode(id, kind, path, label, parent, emptyList(), emptyList(), "", identity, file, isTopicBranch = kind != SummaryKind.FILE)
         var children = entries()
         // Keep large topics bounded just like large directories in /summaries.
         while (children.size > ChangeSummaryTree.MAX_CHILDREN) {
@@ -16,7 +16,7 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) 
                 val files = members.flatMap { nodes[it].files }
                 nodes += SummaryNode(group, SummaryKind.GROUP, path, "${nodes[members.first()].label} … ${nodes[members.last()].label}",
                     id, members, files, reviewFingerprint(*members.map { nodes[it].key }.toTypedArray()),
-                    "topic-group:$identity:${files.first()}:${files.last()}")
+                    "topic-group:$identity:${files.first()}:${files.last()}", isTopicBranch = true)
                 members.forEach { nodes[it] = nodes[it].copy(parent = group) }
                 group
             }

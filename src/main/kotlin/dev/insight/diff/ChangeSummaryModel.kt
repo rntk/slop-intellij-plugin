@@ -8,7 +8,7 @@ enum class SummaryKind(val id: String) { ROOT("root"), DIRECTORY("directory"), G
 data class SummaryNode(
     val id: Int,
     val kind: SummaryKind,
-    /** A file path, or the directory that holds the node's entries without a trailing slash ("" for the repository root). */
+    /** A file/directory path, or topic ancestry for [isTopicBranch]; empty for the repository or topic root. */
     val path: String,
     /** Name relative to the parent: a file name, a merged folder chain such as `main/kotlin`, a group's first and last entry, or a part's lines. */
     val label: String,
@@ -24,6 +24,8 @@ data class SummaryNode(
     val file: ReviewSource? = null,
     /** The 1-based lines of a part of a large file, or of a group of parts. */
     val lines: IntRange? = null,
+    /** A topic, topic group, or topic root; [path] is its topic ancestry (empty at the root). */
+    val isTopicBranch: Boolean = false,
 ) {
     /** The node's position, for a reader who sees only its summary. */
     val location: String get() = when (kind) {

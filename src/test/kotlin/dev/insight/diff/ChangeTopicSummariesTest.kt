@@ -32,9 +32,29 @@ class ChangeTopicSummariesTest {
         val existingFile = state.summaries.tree.nodes.single { it.path == "a.kt" && it.kind == SummaryKind.FILE }
         state.summarize(state.revision, mapOf(existingFile.id to "Existing summary"))
         var requests = 0
+        var topicRequests = 0
+        var fileRequests = 0
         val summarizer = ChangeSummarizer({ request ->
             requests++
             val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
+            val system = request.messages.first().content
+            if (nodes.all { it.asJsonObject["kind"].asString == "file" }) {
+                fileRequests++
+                assertFalse(system.contains("topic", ignoreCase = true))
+                assertTrue(nodes.all { !it.asJsonObject.has("topic_path") })
+            } else {
+                topicRequests++
+                assertTrue(system.contains("Topic labels provide context, not additional evidence."))
+                nodes.map { it.asJsonObject }.filter { it["kind"].asString == "topic" }.forEach {
+                    assertEquals("Storage > Wallet", it["topic_path"].asString)
+                    assertFalse(it.has("location"))
+                }
+                nodes.map { it.asJsonObject }.filter { it["kind"].asString == "root" }.forEach {
+                    assertTrue(it["children"].asJsonArray.all { child ->
+                        child.asJsonObject["kind"].asString == "topic" && child.asJsonObject.has("topic_path")
+                    })
+                }
+            }
             val answers = nodes.map { node ->
                 "{\"id\":${node.asJsonObject.get("id")},\"summary\":\"Generated summary\"}"
             }
@@ -42,11 +62,57 @@ class ChangeTopicSummariesTest {
         }, null)
         val run = summarizer.run(state.startTopicSummaries(state.revision), "", { state.summarizeTopics(state.revision, it) })
         assertTrue(run.summaries.complete)
+        assertTrue(fileRequests > 0)
+        assertTrue(topicRequests > 0)
         assertEquals("Existing summary", state.summaries.text(existingFile.id))
         assertTrue(state.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.all { state.summaries.text(it.id) != null })
         val before = requests
         summarizer.run(state.startTopicSummaries(state.revision), "", { state.summarizeTopics(state.revision, it) })
         assertEquals(before, requests)
+    }
+
+    @Test fun `topic metadata survives identity changes and large topic sets`() = runBlocking {
+        val files = (1..10).flatMap { topic -> (1..10).map { file("T$topic/F$it.kt") } }
+        val topics = ChangeTopics(files, files.associate { it.path to it.path.substringBefore('/') })
+        // UI identities may change without changing the meaning of requests.
+        val tree = ChangeSummaryTree(buildTopicSummaryTree(topics).nodes.map { it.copy(identity = "ui-node-${it.id}") })
+        assertTrue(tree.nodes.filter { it.kind == SummaryKind.FILE }.none { it.isTopicBranch })
+        assertTrue(tree.nodes.filter { it.kind != SummaryKind.FILE }.all { it.isTopicBranch })
+        var current = ChangeSummaries(tree)
+        val seen = mutableSetOf<Pair<String, String>>()
+        val summarizer = ChangeSummarizer({ request ->
+            val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
+            val system = request.messages.first().content
+            val guidance = system.indexOf("This request describes an existing topic hierarchy.")
+            val focus = system.indexOf("The user asked to focus on: reliability")
+            val query = system.indexOf("The reader is exploring this query: persistence")
+            assertTrue(focus >= 0)
+            assertTrue(query > focus)
+            nodes.map { it.asJsonObject }.forEach { node ->
+                val kind = node["kind"].asString
+                if (kind == "file") {
+                    assertEquals(-1, guidance)
+                    assertTrue(node.has("location"))
+                    assertFalse(node.has("topic_path"))
+                } else {
+                    assertTrue(guidance >= 0 && guidance < focus)
+                    assertFalse(node.has("location"))
+                    seen += kind to node["topic_path"].asString
+                    node["children"].asJsonArray.map { it.asJsonObject }.forEach { child ->
+                        if (child["kind"].asString != "file") assertTrue(child.has("topic_path"))
+                    }
+                }
+            }
+            Completion("{\"summaries\":[" + nodes.joinToString {
+                "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated summary\"}"
+            } + "]}")
+        }, null, ChangeSummaryOptions(concurrency = 1))
+        val run = summarizer.run(current, "reliability", { current = current.summarize(it); current }, queryContext = "persistence")
+        assertTrue(run.summaries.complete)
+        assertTrue("root" to "" in seen)
+        assertTrue("group" to "" in seen)
+        assertTrue("group" to "T1" in seen)
+        assertTrue("topic" to "T1" in seen)
     }
 
     @Test fun `changed membership invalidates affected topics while unrelated summaries survive`() {

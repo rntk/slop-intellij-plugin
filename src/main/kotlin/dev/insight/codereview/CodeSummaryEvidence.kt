@@ -3,6 +3,7 @@ package dev.insight.codereview
 import com.google.gson.JsonObject
 import dev.insight.diff.ChangeSummaryOptions
 import dev.insight.diff.ChangeSummaryTree
+import dev.insight.diff.SUMMARY_WRITING_GUIDANCE
 import dev.insight.diff.SummaryEvidence
 import dev.insight.diff.SummaryNode
 import dev.insight.diff.summaryFocusLine
@@ -61,9 +62,8 @@ internal class CodeSummaryEvidence(
         val outline = folderOutline(tree.root.files, commonFolder(tree.root.files), options.overviewChars)
         return "${systemPrefix()}\n" + """
             Every node in "nodes" is a source file (kind "file") or one part of a large file (kind "chunk": lines start_line to
-            end_line of total_lines, part "i of n"), with its code inline. Describe its responsibility and behavior: the main
-            types and functions, what it provides to other code and what it depends on. Name behavior, not syntax; do not
-            narrate the code line by line or list every member.
+            end_line of total_lines, part "i of n"), with its code inline. State its main responsibility and behavior.
+            Mention dependencies or interactions only when essential to understanding that responsibility.
             For a part, describe only the code in that part. The other parts are summarized separately and combined later;
             a part may start or end inside a declaration.
             If code_cut_at is set, the code was cut there; summarize what is shown without guessing the rest.
@@ -73,23 +73,21 @@ internal class CodeSummaryEvidence(
 
     override fun branchSystem(focus: String): String = "${systemPrefix()}\n" + """
         Every node in "nodes" is written from its children's summaries: a folder, a group of entries, a large file written
-        from its parts (kind "file"), a range of parts of a large file (kind "chunk"), a code topic or subtopic, or the root.
-        Using only the children's summaries, briefly describe what each node is responsible for and how its children fit
-        together, rather than listing them.
+        from its parts (kind "file"), a range of parts of a large file (kind "chunk"), or another branch of the tree.
+        Using only the children's summaries, condense each node's responsibilities into their main themes without
+        listing the children or repeating subordinate details. Preserve meaningful qualifications and do not
+        force unrelated responsibilities into a shared purpose or infer broader guarantees.
         If a node has kind "file", summarize the whole file. If a node has kind "chunk", summarize those lines of the file.
-        If a node has kind "root", summarize the whole scope: its purpose, its main parts and how they fit together.
+        If a node has kind "root", summarize the whole scope's main purpose or responsibilities.
         For the root of an entry-file scope, describe what the entry file does and how the other parts serve it.
     """.trimIndent() + scopeContext() + summaryFocusLine(focus)
 
     /** Fixed policy comes before scope context in both leaf and branch requests. */
     private fun systemPrefix() = """
         $CODE_AS_DATA
-        You write concise summaries of source code, shown as a tree: files and parts of large files,
-        the folders above them, and the whole scope at the top. Topic locations use > between levels; describe what their
-        files provide for that topic.
+        You write concise summaries of source code, shown as a tree with the whole scope at the top.
         This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
-        Keep summaries brief and use plain text.
-    """.trimIndent()
+    """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE
 
     private fun scopeName() = snapshot.scope.let { scope ->
         when {
