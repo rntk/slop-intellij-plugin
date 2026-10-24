@@ -25,6 +25,26 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
         apiKeys.clear()
         val state = settings.state
         return panel {
+            group("API concurrency") {
+                row("Max concurrent LLM requests:") {
+                    intTextField(1..Int.MAX_VALUE)
+                        .bindIntText({ state.maxConcurrentLlmRequests }, { state.maxConcurrentLlmRequests = it })
+                        .comment("Shared by all providers, chats, and analyses across projects in this IDE. Individual jobs may use fewer requests.")
+                        .validationOnApply {
+                            if (it.text.toIntOrNull()?.let { value -> value > 0 } == true) null
+                            else error("Concurrent request limit must be a positive integer")
+                        }
+                }
+                row("Max concurrent Decisions requests:") {
+                    intTextField(1..Int.MAX_VALUE)
+                        .bindIntText({ state.maxConcurrentDecisionRequests }, { state.maxConcurrentDecisionRequests = it })
+                        .comment("Separate limit for the Decisions API across projects. Changes apply immediately; running requests finish normally.")
+                        .validationOnApply {
+                            if (it.text.toIntOrNull()?.let { value -> value > 0 } == true) null
+                            else error("Concurrent request limit must be a positive integer")
+                        }
+                }
+            }
             lateinit var selection: ComboBox<LlmProvider>
             row("Current provider:") {
                 selection = comboBox(LlmProvider.entries)
@@ -118,6 +138,7 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
 
     override fun apply() {
         super.apply()
+        settings.updateRequestLimits()
         apiKeys.forEach { (provider, value) ->
             val key = value.trim()
             if (key != storedApiKeys[provider]) {

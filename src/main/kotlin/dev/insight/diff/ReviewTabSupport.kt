@@ -12,8 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
-import dev.insight.apilog.ApiLogs
-import dev.insight.core.decisionsClient
+import dev.insight.chat.ChatSettings
 import java.awt.BorderLayout
 import java.time.Duration
 import javax.swing.SwingUtilities
@@ -78,7 +77,7 @@ internal fun highlightLines(project: Project, editor: Editor, lines: List<Int>) 
  */
 internal class ReviewTraceLauncher(private val project: Project, private val scope: CoroutineScope) : SummaryTraceLauncher {
     private val summaryTracer by lazy {
-        SummaryTracer(decisionsClient("local", requestTimeout = Duration.ofMinutes(5), traffic = ApiLogs.decisions)::evaluate,
+        SummaryTracer(ChatSettings.getInstance().createDecisionsClient(requestTimeout = Duration.ofMinutes(5), maxRetries = 2)::evaluate,
             cache = ReviewDiskCache.forProject(project))
     }
 

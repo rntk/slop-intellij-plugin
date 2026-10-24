@@ -11,9 +11,13 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 import dev.insight.apilog.ApiLogs
+import dev.insight.core.ApiRequestLimits
+import dev.insight.core.decisionsClient
+import dev.insight.decisions.DecisionsClient
 import dev.insight.llm.LlmClient
 import dev.insight.llm.LlmConfiguration
 import dev.insight.llm.LlmProvider
+import java.time.Duration
 
 /** Shared by chat and background analyses. Each provider keeps its own options and credentials. */
 @Service(Service.Level.APP)
@@ -25,6 +29,8 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
         var openAi by property(ProviderState())
         var deepSeek by property(ProviderState())
         var anthropic by property(ProviderState())
+        var maxConcurrentLlmRequests by property(ApiRequestLimits.DEFAULT_MAX_CONCURRENT_REQUESTS)
+        var maxConcurrentDecisionRequests by property(ApiRequestLimits.DEFAULT_MAX_CONCURRENT_REQUESTS)
 
         fun options(provider: LlmProvider): ProviderState = when (provider) {
             LlmProvider.LLAMA_CPP -> this
@@ -52,8 +58,26 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
 
     /** Reading the password safe can block; call on IO outside settings dialogs. */
     fun createClient(): LlmClient {
+        updateRequestLimits()
         val configuration = state.configuration()
         return configuration.createClient(apiKey(configuration.provider), ApiLogs.llm)
+    }
+
+    /** The local Decisions server accepts any bearer token. */
+    fun createDecisionsClient(requestTimeout: Duration = Duration.ofSeconds(120), maxRetries: Int = 4): DecisionsClient {
+        updateRequestLimits()
+        return decisionsClient("local", requestTimeout = requestTimeout, maxRetries = maxRetries, traffic = ApiLogs.decisions)
+    }
+
+    override fun loadState(state: State) {
+        super.loadState(state)
+        updateRequestLimits()
+    }
+
+    /** Keeps the same limiters alive so Apply also affects clients already running. */
+    internal fun updateRequestLimits() {
+        ApiRequestLimits.llm.resize(state.maxConcurrentLlmRequests.coerceAtLeast(1))
+        ApiRequestLimits.decisions.resize(state.maxConcurrentDecisionRequests.coerceAtLeast(1))
     }
 
     var apiKey: String?

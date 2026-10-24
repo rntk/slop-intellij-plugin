@@ -12,6 +12,8 @@ A Kotlin plugin for JetBrains IDEs that combines interactive codebase visualizat
 
 ## Build & Run
 
+Settings → Tools → Insight Chat includes separate maximum concurrent request limits for the LLM and Decisions APIs. Each limit is shared across jobs and projects in the IDE. Excess requests wait without blocking the UI, and applying a new limit also affects existing clients. Individual jobs may use fewer requests than the configured maximum.
+
 Run the plugin in a development IDE instance:
 
 ```sh

@@ -16,6 +16,8 @@ class ChatSettingsTest : BasePlatformTestCase() {
         assertEquals("http://localhost:8080", state.configuration().baseUrl)
         assertEquals("local-model", state.configuration().model)
         assertEquals(300, state.configuration().requestTimeoutSeconds)
+        assertEquals(4, state.maxConcurrentLlmRequests)
+        assertEquals(4, state.maxConcurrentDecisionRequests)
 
         state.provider = LlmProvider.OPENAI
         state.openAi.model = "cloud-model"
@@ -24,9 +26,13 @@ class ChatSettingsTest : BasePlatformTestCase() {
         state.openAi.maxRetries = 4
         state.openAi.serviceTier = "flex"
         state.deepSeek.model = "other-model"
+        state.maxConcurrentLlmRequests = 3
+        state.maxConcurrentDecisionRequests = 7
         val restored = XmlSerializer.deserialize(XmlSerializer.serialize(state), ChatSettings.State::class.java)
         assertEquals(state.configuration(), restored.configuration())
         assertEquals("other-model", restored.deepSeek.model)
+        assertEquals(3, restored.maxConcurrentLlmRequests)
+        assertEquals(7, restored.maxConcurrentDecisionRequests)
         restored.provider = LlmProvider.LLAMA_CPP
         assertEquals("local-model", restored.configuration().model)
         assertEquals("http://localhost:8080", restored.configuration().baseUrl)

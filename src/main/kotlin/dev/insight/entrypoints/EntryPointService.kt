@@ -1,17 +1,15 @@
 package dev.insight.entrypoints
 
-import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.insight.callgraph.CallGraphResult
 import dev.insight.chat.ProjectFiles
+import dev.insight.chat.ChatSettings
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.projectTools
 import dev.insight.enrichment.configuredLlmClient
-import dev.insight.core.decisionsClient
-import java.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,8 +47,7 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
                 EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
                     .find(hints, progress)
                 EntryPointApi.DECISIONS -> DecisionsEntryPointFinder(
-                    decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4,
-                        traffic = ApiLogs.decisions)::evaluate,
+                    ChatSettings.getInstance().createDecisionsClient()::evaluate,
                     IdeSnapshot(files),
                     { path -> readAction { files.text(files.resolve(path)) } },
                     cache = decisionsCache,

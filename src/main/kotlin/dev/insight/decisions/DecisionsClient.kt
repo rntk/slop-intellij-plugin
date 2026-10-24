@@ -1,5 +1,7 @@
 package dev.insight.decisions
 
+import dev.insight.core.ApiCall
+import dev.insight.core.ApiRequestLimits
 import dev.insight.core.ApiTrafficLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -66,12 +68,19 @@ class DecisionsClient(
             .build()
         var attempt = 0
         while (true) {
-            val call = traffic?.begin(httpRequest, body, attempt)
+            var call: ApiCall? = null
             val response = try {
-                send(httpRequest)
-            } catch (e: Throwable) {
-                call?.fail(e)
-                if (e !is IOException || attempt >= maxRetries) throw e
+                ApiRequestLimits.decisions.withPermit {
+                    call = traffic?.begin(httpRequest, body, attempt)
+                    try {
+                        send(httpRequest)
+                    } catch (e: Throwable) {
+                        call?.fail(e)
+                        throw e
+                    }
+                }
+            } catch (e: IOException) {
+                if (attempt >= maxRetries) throw e
                 delay(retryDelay(null, attempt++))
                 continue
             }

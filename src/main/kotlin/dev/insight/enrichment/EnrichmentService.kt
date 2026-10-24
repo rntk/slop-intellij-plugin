@@ -1,6 +1,5 @@
 package dev.insight.enrichment
 
-import dev.insight.apilog.ApiLogs
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
@@ -13,14 +12,12 @@ import dev.insight.callgraph.CallGraphResult
 import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.callgraph.SymbolKind
 import dev.insight.chat.ChatSettings
-import dev.insight.core.decisionsClient
 import dev.insight.llm.LlmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Duration
 
 /** One enrichment of one graph build. Ids in [enrichment] refer to [graph]. */
 class EnrichmentSnapshot(val graph: CallGraph, val input: EnrichmentInput, val enrichment: Enrichment, val report: Path)
@@ -114,9 +111,7 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
             }
         }
 
-    // The local decisions server accepts any bearer token.
-    private fun decisions() =
-        decisionsClient("local", requestTimeout = Duration.ofSeconds(120), maxRetries = 4, traffic = ApiLogs.decisions)
+    private fun decisions() = ChatSettings.getInstance().createDecisionsClient()
 
     private fun llm() = configuredLlmClient()
 }
