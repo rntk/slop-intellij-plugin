@@ -961,6 +961,7 @@ internal class ChangeSummaryActions(
     val score: ((String) -> Unit)? = null,
     /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
     val explain: ((SummaryNode) -> Unit)? = null,
+    val review: SummaryReviewPresentation? = null,
 ) {
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
         val file = (node.file as? ReviewFile)?.takeIf { it.fullFileText != null } ?: return null
@@ -1054,6 +1055,7 @@ internal class ChangeSummariesPanel(
                 font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
                 .also { area ->
+                    actions.review?.decorate(area, node)
                     if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
                         actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, activate)
                 }
@@ -1145,6 +1147,7 @@ internal class ChangeSummariesPanel(
         }
         val links = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
             isOpaque = false
+            actions.review?.control(node, font(JBFont.small()))?.let(::add)
             add(label("Level ${tree.depth(node.id) + 1}", font(JBFont.small()), help).apply {
                 name = "summary-level-label:${node.identity}"
             })

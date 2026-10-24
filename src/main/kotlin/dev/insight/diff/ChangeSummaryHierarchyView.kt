@@ -62,12 +62,14 @@ internal class ChangeSummaryHierarchyPanel(
             levelLabel = "Level ${column + 1}",
             openDiff = actions.directoryAction(node),
             select = { actions.select(node.identity) },
+            review = actions.review?.control(node, summaryFont()),
             explain = actions.explainAction(node), explainEnabled = card.canRun)
         val height = if (collapsed) {
             rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark,
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
+            actions.review?.decorate(note, node)
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.score, actions.follow) { actions.toggle(node.identity) } }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -101,9 +103,11 @@ internal class ChangeSummaryHierarchyPanel(
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
             levelLabel = "Level ${column + 1}",
             openWholeFile = actions.wholeFileAction(node),
-            explain = actions.explainAction(node), explainEnabled = card.canRun)
+            explain = actions.explainAction(node), explainEnabled = card.canRun,
+            review = actions.review?.control(node, summaryFont()))
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
+        actions.review?.decorate(note, node)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, score = actions.score, follow = actions.follow)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
@@ -241,7 +245,7 @@ internal class ChangeSummaryDocumentPanel(
             else super.summaryBody(identity, null, missingSummary, width)).also { area ->
             if (summary != null) installWordTracing(area as JTextComponent, identity, summary, state, actions.trace, actions.searchSelection,
                 actions.searchTab.takeIf { identity in branches }, actions.score, actions.follow)
-        }
+        }.let { actions.review?.body(identity, it) ?: it }
 
     private fun summaryText(identity: String, summary: String, width: Int) =
         WrappedSummaryText(summary, width, summaryFont(),

@@ -210,6 +210,7 @@ internal class ChangeTopicActions(
     /** Open or show a file node of the summary tree; by default by its path. A null [showNode] hides the canvas button. */
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
+    val review: SummaryReviewPresentation? = null,
 )
 
 /**
@@ -718,9 +719,13 @@ internal class ChangeTopicsPanel(
     override fun openFile(file: ReviewSource) = actions.openFile(file.path)
     override fun showFile(file: ReviewSource) = actions.showDiffCard(file.path)
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
-        super.summaryBody(identity, summary, missingSummary, width).also { area ->
+        (if (summary != null) WrappedSummaryText(summary, width, summaryFont(), emptyMap())
+            else super.summaryBody(identity, summary, missingSummary, width)).also { area ->
             val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
-            if (summary != null) installWordTracing(area as JTextArea, readingIdentity, summary, state, actions.trace)
+            if (summary != null) installWordTracing(area as javax.swing.text.JTextComponent, readingIdentity, summary, state, actions.trace)
+        }.let { area ->
+            val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
+            actions.review?.body(readingIdentity, area) ?: area
         }
     override fun isSelected(item: RailItem): Boolean = nodesByKey[item.key]?.let(state::isSelected) == true
     override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }

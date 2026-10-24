@@ -6,6 +6,8 @@ The same summary process describes both the folder hierarchy and an existing top
 
 The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly.
 
+Readers can mark files or directories as reviewed. Their summaries dim, and related words in higher summaries dim only when every contributing item is reviewed. Review marks follow the underlying evidence; cached semantic links let repeated toggles reuse earlier judgments.
+
 Summaries favor a short statement of purpose or behavior, with only essential distinctions supported by the evidence. They omit file names, paths, code, and implementation inventories. Simple items need very little text; subtle behavior may need more explanation. Higher levels condense the main themes rather than repeat the details below.
 
 Entry points for further exploration:

@@ -64,6 +64,9 @@ internal class DiffReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = ReviewTraceLauncher(project, scope),
+        reviewed = state.reviewed,
+        markReviewed = state::setReviewed,
+        reviewSummaries = ReviewSummaryLinkLauncher(project, scope),
         contextSummaries = ReviewContextSummaryLauncher(project, scope) {
             val context = captureContext()
             val files = state.snapshot.files

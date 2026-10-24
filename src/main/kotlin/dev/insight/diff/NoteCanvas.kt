@@ -71,6 +71,9 @@ internal class NoteCanvas(
     private val removeSemantic: () -> Unit = {},
     /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
     private val explainNode: ((SummaryNode) -> Unit)? = null,
+    private val reviewed: ReviewedFiles = ReviewedFiles(),
+    private val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
+    private val reviewSummaries: SummaryReviewLauncher? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -121,6 +124,7 @@ internal class NoteCanvas(
      * field.
      */
     private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
+        val review = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(key) }
         var scroll = 0
         var version: Int? = null
         val trace = SummaryTraceSession(traceSummaries, view, { reading(this) }, openSummaryLines,
@@ -183,6 +187,26 @@ internal class NoteCanvas(
         }
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
+    private val topicsReview = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(TOPICS_KEY) }
+
+    /** Marks restyle the live cards; rebuilding them would reset both viewports and make the reading position jump. */
+    private fun toggleReviewed(node: SummaryNode, value: Boolean) {
+        if (markReviewed != null) markReviewed.invoke(node, value) else reviewed.set(node.files, value)
+        summaryTabs().forEach { updateReview(it.key, it.review, summaries?.summaries) }
+        updateReview(TOPICS_KEY, topicsReview, topics?.reading)
+    }
+
+    private fun updateReview(key: DiffNoteKey, session: SummaryReviewSession, content: ChangeSummaries?) {
+        if (key !in cards) return
+        content?.let(session::sync)
+        restyleReview(key)
+    }
+
+    private fun restyleReview(key: DiffNoteKey) {
+        val card = cards[key] ?: return
+        descendantsOf(card).forEach { (it as? JComponent)?.let(::updateReviewPresentation) }
+    }
+
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
@@ -219,6 +243,7 @@ internal class NoteCanvas(
         if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
         this.fileView = fileView
         this.topics = topics
+        if (topics == null) topicsReview.stop()
         topics?.let { topicsTrace.retain(it.reading) } ?: topicsTrace.stop()
         this.notes = notes
         this.sources = sources
@@ -228,7 +253,7 @@ internal class NoteCanvas(
         flowsView.reset(flows)
         this.summaries = summaries
         if (summaries == null) {
-            summaryTabs().forEach { it.trace.stop() }
+            summaryTabs().forEach { it.trace.stop(); it.review.stop() }
             searchTabs.clear()
             summaryVersions.filter { it.running }.forEach { it.job?.cancel(); it.running = false }
         } else {
@@ -816,11 +841,13 @@ internal class NoteCanvas(
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
-                trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode)
+                trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode,
+                review = topicsReview.presentation(content.reading, ::toggleReviewed))
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
+                reviewStatus(topicsReview)?.let(::add)
                 if (shown.files.isEmpty() && outline.files.isNotEmpty()) add(JLabel("No files match the search.").apply {
                     name = "topics-no-matches"
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
@@ -1013,6 +1040,7 @@ internal class NoteCanvas(
             follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
             explain = explainNode,
+            review = tab.review.presentation(content.summaries, ::toggleReviewed),
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
@@ -1048,11 +1076,12 @@ internal class NoteCanvas(
                 if (explorer) add(summaryExplorerNavigation(tab, tree))
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        if (summariesTrace.available) card.add(JPanel(VerticalLayout(scaled(4))).apply {
+        if (summariesTrace.available || reviewSummaries != null) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
             traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true,
                 where = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
+            reviewStatus(tab.review)?.let(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         card.add(JBScrollPane(body).apply {
@@ -1079,6 +1108,21 @@ internal class NoteCanvas(
             }
         }, BorderLayout.CENTER)
         return card
+    }
+
+    /** A fixed-height line, so linking starting or finishing never moves the summaries. */
+    private fun reviewStatus(session: SummaryReviewSession): JComponent? {
+        if (reviewSummaries == null) return null
+        fun message() = when {
+            session.running -> "Linking reviewed summary text…"
+            session.error != null -> "Review links unavailable: ${session.error}. Toggle Reviewed to retry."
+            else -> " "
+        }
+        return JLabel(message()).apply {
+            name = "review-link-status"; foreground = UIUtil.getContextHelpForeground()
+            preferredSize = Dimension(preferredSize.width, getFontMetrics(font).height)
+            installReviewPresentationUpdate(this) { text = message() }
+        }
     }
 
     private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard): JComponent =
@@ -1287,6 +1331,7 @@ internal class NoteCanvas(
 
     private fun closeSearchTab(tab: SummariesTab) {
         tab.trace.stop()
+        tab.review.stop()
         searchTabs -= tab
         showNotes(notes, sources, diffs, flows, summaries, topics, fileView, explanation = explanation)
     }
@@ -1691,8 +1736,9 @@ internal class NoteCanvas(
     private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
     override fun dispose() {
         summaryVersions.forEach { it.job?.cancel() }
-        summaryTabs().forEach { it.trace.stop() }
+        summaryTabs().forEach { it.trace.stop(); it.review.stop() }
         topicsTrace.stop()
+        topicsReview.stop()
         editors.values.forEach { it.dispose() }
         editors.clear()
         diffEditors.values.forEach { Disposer.dispose(it) }

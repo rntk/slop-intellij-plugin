@@ -143,6 +143,9 @@ internal class CodeReviewTab(
         removeTopics = { state.hideTopics(); renderCanvas() },
         removeSummaries = { state.hideSummaries(); renderCanvas() },
         traceSummaries = ReviewTraceLauncher(project, scope),
+        reviewed = state.reviewed,
+        markReviewed = state::setReviewed,
+        reviewSummaries = dev.insight.diff.ReviewSummaryLinkLauncher(project, scope),
         contextSummaries = ReviewContextSummaryLauncher(project, scope) {
             val snapshot = state.snapshot
             val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },

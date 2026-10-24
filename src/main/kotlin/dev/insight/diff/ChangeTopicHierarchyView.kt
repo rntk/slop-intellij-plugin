@@ -79,11 +79,13 @@ internal class ChangeTopicHierarchyPanel(
         }
         val mark = marks[identity]
         val component = branchCard("topic:${node.level}:${node.identity}", node.name, node.path.first(), column, node.size,
-            state.isSelected(node), node.fullPath, toggle, mark = mark, badge = badge(identity)) { state.select(node); actions.refresh() }
+            state.isSelected(node), node.fullPath, toggle, mark = mark, badge = badge(identity),
+            review = readingIds[identity]?.let { actions.review?.control(reading.tree[it], summaryFont()) }) { state.select(node); actions.refresh() }
         val height = if (collapsed) {
             rowsPlaced++
             val summary = readingIds[identity]?.let(reading::text)
-            val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark)
+            val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, emptyMap())
+            readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
             summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -105,8 +107,10 @@ internal class ChangeTopicHierarchyPanel(
         val mark = marks[identity]
         val leaf = fileCard(file, file.path.substringAfterLast('/'), topLevel, column, active?.contains(index) == true,
             { fileNodes[file.path]?.let(actions.openNode) ?: actions.openFile(file.path) },
-            actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity))
-        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark)
+            actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity),
+            review = readingIds[identity]?.let { actions.review?.control(reading.tree[it], summaryFont()) })
+        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, emptyMap())
+        readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
         if (summary != null) installWordTracing(note, identity, summary, state, actions.trace)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })

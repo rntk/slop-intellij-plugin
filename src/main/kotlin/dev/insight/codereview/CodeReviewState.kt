@@ -11,6 +11,7 @@ import dev.insight.diff.DiffSourceBlock
 import dev.insight.diff.DiffSourceRange
 import dev.insight.diff.ReviewSource
 import dev.insight.diff.ReviewVocabulary
+import dev.insight.diff.ReviewedFiles
 import dev.insight.diff.SummaryKind
 import dev.insight.diff.SummaryNode
 import dev.insight.diff.buildSummaryTree
@@ -32,6 +33,11 @@ private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orE
  */
 class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
     private val disk = ReviewCacheSession(cache, "code", paths)
+    val reviewed = ReviewedFiles()
+    fun setReviewed(node: SummaryNode, value: Boolean) {
+        val keys = reviewed.set(node.files, value)
+        disk.saveReviewed(keys, value)
+    }
     private fun persist() = disk.save(summaries, topics, topicSummaries)
     /** Null follows the whole snapshot; a fixed set of files and folders stays scoped as the snapshot changes. */
     val scopePaths: Set<String>? = paths?.map { it.trim('/') }?.toSet()
@@ -78,6 +84,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             topicSummaries = topicSummaries.retainedIn(codeTopicSummaryTree(topics))
             // Saved entries are keyed by content, so the scope alone picks the slot; changed files simply miss their keys.
             disk.load(listOf(next.scope.path, next.scope.entry, next.scope.excludes))
+            disk.restoreReviewed(reviewed, next.files)
             summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
             topics = disk.restoreTopics(topics)
             topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(codeTopicSummaryTree(topics)))

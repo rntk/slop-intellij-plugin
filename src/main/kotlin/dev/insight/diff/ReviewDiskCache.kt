@@ -11,7 +11,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
-/** Disposable generated results only. A damaged or unwritable cache never prevents a review. */
+/** Review marks and generated results keyed by evidence. A damaged or unwritable cache never prevents a review. */
 class ReviewDiskCache(private val directory: Path) {
     /** Results per slot, shared by every tab of the scope so one tab's save never drops another's entries. */
     private val results = HashMap<String, Map<String, LinkedHashMap<String, String>>>()
@@ -78,7 +78,8 @@ class ReviewDiskCache(private val directory: Path) {
         internal const val SUMMARIES = "summaries"
         internal const val TOPICS = "topics"
         internal const val FILLED = "filled"
-        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED)
+        internal const val REVIEWED = "reviewed"
+        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED, REVIEWED)
         private val projects = ConcurrentHashMap<Path, ReviewDiskCache>()
         fun forProject(project: Project): ReviewDiskCache? = project.basePath?.let {
             projects.computeIfAbsent(Path.of(it, DIRECTORY, "review-cache"), ::ReviewDiskCache)
@@ -110,6 +111,20 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         if (restored.isEmpty()) return current
         thisLogger().debug("Restored ${restored.size} of ${current.tree.summarizable.size} $name from the review cache")
         return ChangeSummaries(current.tree, current.tree.nodes.mapNotNull { node -> current.text(node.id)?.let { node.id to it } }.toMap() + restored)
+    }
+
+    fun restoreReviewed(current: ReviewedFiles, sources: List<ReviewSource>) {
+        current.restore(sources, saved(ReviewDiskCache.REVIEWED)?.keys ?: current.keys)
+    }
+
+    /** Apply only this operation so stale tabs cannot discard or resurrect unrelated marks. */
+    fun saveReviewed(keys: List<String>, reviewed: Boolean) {
+        if (disk == null || slot.isEmpty()) return
+        synchronized(disk) {
+            val saved = disk.results(slot).getValue(ReviewDiskCache.REVIEWED)
+            keys.forEach { if (reviewed) saved[it] = "true" else saved.remove(it) }
+            disk.writeResults(slot)
+        }
     }
 
     fun restoreTopics(current: ChangeTopics): ChangeTopics {

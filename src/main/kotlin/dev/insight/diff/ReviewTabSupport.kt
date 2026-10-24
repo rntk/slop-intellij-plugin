@@ -121,6 +121,36 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
     }
 }
 
+/** Resolves semantic review links off the EDT, using the review's existing Decisions configuration. */
+internal class ReviewSummaryLinkLauncher(private val project: Project, private val scope: CoroutineScope) : SummaryReviewLauncher {
+    private val linker by lazy {
+        SummaryReviewLinker(ChatSettings.getInstance().createDecisionsClient(requestTimeout = Duration.ofMinutes(5), maxRetries = 2)::evaluate,
+            ReviewDiskCache.forProject(project))
+    }
+
+    override fun launch(summaries: ChangeSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job = scope.launch {
+        val result = try {
+            Result.success(withBackgroundProgress(project, "Linking reviewed summaries", cancellable = true) {
+                withContext(Dispatchers.IO) {
+                    reportRawProgress { reporter ->
+                        reporter.text("Linking reviewed summaries…")
+                        linker.dimming(summaries, reviewed) { count, total ->
+                            reporter.details("$count of $total summaries")
+                            reporter.fraction(if (total > 0) count.toDouble() / total else null)
+                        }
+                    }
+                }
+            })
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        done(result)
+    }
+}
+
 /** Uses the same evidence and prompts as an ordinary run, writing only the requested version's nodes. */
 internal class ReviewContextSummaryLauncher(
     private val project: Project,

@@ -49,6 +49,11 @@ internal fun diffNoteKey(path: String) = DiffNoteKey(listOf(path), null, diff = 
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
 class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
     private val disk = ReviewCacheSession(cache, "diff", paths)
+    val reviewed = ReviewedFiles()
+    fun setReviewed(node: SummaryNode, value: Boolean) {
+        val keys = reviewed.set(node.files, value)
+        disk.saveReviewed(keys, value)
+    }
     private fun persist() = disk.save(summaries, topics, topicSummaries)
     /** Null follows all changes; a fixed set stays scoped even when its files leave the diff. */
     val scopePaths: Set<String>? = paths?.toSet()
@@ -162,6 +167,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             topicSummaries = if (requestChanged) ChangeSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
             // Saved entries are keyed by content, so the request alone picks the slot; changed files simply miss their keys.
             disk.load(next.comparison.request)
+            if (requestChanged) reviewed.restore(next.files, emptySet())
+            disk.restoreReviewed(reviewed, next.files)
             summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
             topics = disk.restoreTopics(topics)
             topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(buildTopicSummaryTree(topics)))

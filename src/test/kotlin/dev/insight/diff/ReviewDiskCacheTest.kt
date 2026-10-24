@@ -203,4 +203,45 @@ class ReviewDiskCacheTest {
         SummaryTracer(evaluate, cache = cache()).rank("token validation", "token", tree.root, "Adds validation", candidates.map { (node, text) -> node to "$text again" })
         assertEquals(6, questions)
     }
+
+    @Test fun `stale code and diff tabs persist only the targeted review marks`() {
+        for (mode in listOf("code", "diff")) {
+            val directory = temp.root.toPath().resolve(mode)
+            val shared = ReviewDiskCache(directory)
+            val codeSnapshot = snapshot().let { it.copy(files = it.files + CodeFile("b.kt", "/repo/b.kt", "fun b() = 2")) }
+            val diffSnapshot = ReviewSnapshot(listOf("a.kt", "b.kt").map {
+                ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash")
+            }, emptyList())
+            fun tab(cache: ReviewDiskCache = shared): Pair<ReviewedFiles, (String, Boolean) -> Unit> =
+                if (mode == "code") {
+                    val state = CodeReviewState(cache = cache).apply { update(codeSnapshot) }
+                    state.reviewed to { path, value -> state.setReviewed(state.summaries.tree.nodes.single { it.path == path }, value) }
+                } else {
+                    val state = DiffReviewState(cache = cache).apply { update(diffSnapshot) }
+                    state.reviewed to { path, value -> state.setReviewed(state.summaries.tree.nodes.single { it.path == path }, value) }
+                }
+            val sources: List<ReviewSource> = if (mode == "code") codeSnapshot.files else diffSnapshot.files
+            val a = ReviewedFiles.key(sources[0])
+            val b = ReviewedFiles.key(sources[1])
+            fun assertSaved(vararg keys: String) = assertEquals(mode, keys.toSet(), tab(ReviewDiskCache(directory)).first.keys)
+
+            val first = tab().second
+            val second = tab().second
+            first("a.kt", true)
+            second("b.kt", true)
+            assertSaved(a, b)
+
+            val stale = tab().second
+            first("a.kt", false)
+            stale("b.kt", false)
+            assertSaved()
+
+            // Explicit marks still apply when a stale tab already considers the file reviewed.
+            stale("a.kt", true)
+            assertSaved(a)
+            // Explicit unmarks still apply when this tab already considers the file unreviewed.
+            first("a.kt", false)
+            assertSaved()
+        }
+    }
 }
