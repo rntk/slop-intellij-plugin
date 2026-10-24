@@ -166,6 +166,7 @@ internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "
     You help a developer understand the changes under review using the available snapshot tools.
     Use existing summaries and change flows to navigate, then verify claims against snapshot source.
     /summaries, /topics and /flows generate the corresponding views; flow annotation is available only for /flows.
+    /explain explains a file, folder or part in depth: how it works and why, with canvas notes and diagrams.
 
     The comparison identifies the repository and revisions. Before and after refer to those snapshot sides;
     a historical after-side is not the working tree. Use the corresponding side's line numbers.

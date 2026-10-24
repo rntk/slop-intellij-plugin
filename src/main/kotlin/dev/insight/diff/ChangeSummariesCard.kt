@@ -959,6 +959,8 @@ internal class ChangeSummaryActions(
     val openDirectory: ((SummaryNode) -> Unit)? = null,
     /** Score only the summary with this identity; null hides Score in its context menu. */
     val score: ((String) -> Unit)? = null,
+    /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
+    val explain: ((SummaryNode) -> Unit)? = null,
 ) {
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
         val file = (node.file as? ReviewFile)?.takeIf { it.fullFileText != null } ?: return null
@@ -968,6 +970,9 @@ internal class ChangeSummaryActions(
     fun directoryAction(node: SummaryNode): (() -> Unit)? =
         if (node.file == null && node.files.isNotEmpty() && node.kind in setOf(SummaryKind.ROOT, SummaryKind.DIRECTORY, SummaryKind.GROUP))
             openDirectory?.let { open -> { open(node) } } else null
+
+    fun explainAction(node: SummaryNode): (() -> Unit)? =
+        if (node.files.isEmpty() || node.isTopicBranch) null else explain?.let { explain -> { explain(node) } }
 }
 
 /**
@@ -1170,6 +1175,9 @@ internal class ChangeSummariesPanel(
             }
             actions.directoryAction(node)?.let { open ->
                 add(ActionLink("View diff") { open() }.apply { font = font(JBFont.small()) })
+            }
+            actions.explainAction(node)?.let { explain ->
+                add(explainLink(explain, card.canRun, font(JBFont.small())))
             }
         }
         return JPanel(BorderLayout(scaled(8), 0)).apply {

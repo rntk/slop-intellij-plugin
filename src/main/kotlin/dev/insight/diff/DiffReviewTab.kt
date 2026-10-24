@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
+import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.*
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
@@ -83,6 +84,7 @@ internal class DiffReviewTab(
         removeWords = { state.hideWords(); renderCanvas() },
         removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
         removeSemantic = { state.hideSemantic(); renderCanvas() },
+        explainNode = { node -> explain(node) },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -106,11 +108,14 @@ internal class DiffReviewTab(
         toolTipText = "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"
     }
     private val scopeLabel = JLabel()
+    private val explanations = ExplainResults()
     val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
-            "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic.") {
+            "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic. " +
+            "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
         override fun replyProgressTitle(text: String): String = when {
             isTopicsRequest(text) -> "Generating change topics"
+            isExplainRequest(text) -> "Explaining the change"
             isSummariesRequest(text) || text == "/topic-summaries" -> "Generating change summaries"
             else -> "Insight change review chat"
         }
@@ -152,14 +157,21 @@ internal class DiffReviewTab(
                 }
                 val description = isDescriptionRequest(question)
                 val flows = isFlowsRequest(question)
+                val explain = if (isExplainRequest(question)) withContext(Dispatchers.EDT) { takeExplain(question, files.map { it.path }) } else null
+                if (explain != null && explain.files.isEmpty()) return "There are no changed files to explain."
+                val chart = explainChartFor(project, explain, messages) { paths -> files.filter { it.path in paths }.map { it.absolutePath } }
+                if (explain != null) withContext(Dispatchers.EDT) { explanations.chartPrepared(chart) }
                 // The graph is built and drawn before the model runs, so the structure never depends on a reply.
                 val graph = if (flows) context.buildFlows() else null
                 // Only this turn carries the command's instructions; the transcript keeps the command as typed.
                 val request = when {
                     description -> messages.dropLast(1) + messages.last().copy(text = descriptionRequest(question))
                     graph != null -> messages.dropLast(1) + messages.last().copy(text = flowsRequest(question, graph))
+                    explain != null -> messages.dropLast(1) + messages.last().copy(text = explainRequest(explain, diff = true,
+                        (chart as? ExplainChartResult.Ready)?.chart?.functions, (chart as? ExplainChartResult.Unavailable)?.reason))
                     else -> messages
                 }
+                val chartTools = (chart as? ExplainChartResult.Ready)?.chart?.tools.orEmpty()
                 // Code, not the model, checks that a description covers every file in scope and that flows interpret every change.
                 val coverage: (suspend () -> String?)? = when {
                     description -> suspend { context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, total) } }
@@ -167,7 +179,8 @@ internal class DiffReviewTab(
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(complete, diffChatTools(context, flows), diffReviewPrompt(),
+                val reply = LlmChatBackend(complete, diffChatTools(context, flows) + chartTools,
+                    diffReviewPrompt() + if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt(),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
                     contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
@@ -186,7 +199,7 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/description, /flows, /summaries, /topics or ask about this tab's changes…"
+        chat.input.emptyText.text = "/description, /flows, /summaries, /topics, /explain or ask about this tab's changes…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
@@ -217,7 +230,14 @@ internal class DiffReviewTab(
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, sourcePoints)
-        Disposer.register(this, session.subscribe { updateControls(); summariesChanged() })
+        Disposer.register(this, session.subscribe {
+            updateControls()
+            summariesChanged()
+            if (explanations.update(session.messages, session.busy)) {
+                renderCanvas()
+                if (explanations.result != null) showCanvas { canvas.focusExplanation() }
+            }
+        })
         updateControls()
     }
 
@@ -252,6 +272,28 @@ internal class DiffReviewTab(
     private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
 
     private fun summarize() { if (canSummarize) session.send("/summaries") }
+
+    /** The target of the /explain command an Explain link sent, until its turn takes it; see [takeExplain]. */
+    private var pendingExplain: Pair<String, ExplainTarget>? = null
+
+    /** Asks what to focus on, then sends /explain for a summary entry; its files and lines need no parsing of the command. */
+    private fun explain(node: SummaryNode) {
+        if (!canSummarize) return
+        val dialog = ExplainDialog(project, node.location, state.summaries.textOf(node))
+        if (!dialog.showAndGet() || !canSummarize) return
+        val target = explainTarget(node, state.summaries, dialog)
+        val command = explainCommand(node.location, target.instructions)
+        pendingExplain = command to target
+        session.send(command)
+    }
+
+    /** The pending link target when [question] is its command, else the typed one; limited to the [paths] still in scope (EDT). */
+    private fun takeExplain(question: String, paths: List<String>): ExplainTarget {
+        val pending = pendingExplain?.takeIf { it.first == question.trim() }?.second
+        pendingExplain = null
+        val inScope = paths.toSet()
+        return pending?.let { it.copy(files = it.files.filter(inScope::contains)) } ?: typedExplainTarget(question, state.summaries, paths)
+    }
 
     /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
     fun openSummaries() {
@@ -342,7 +384,7 @@ internal class DiffReviewTab(
         canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard(),
             words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
             diffOverview = if (state.diffOverviewVisible) state.words else null,
-            semantic = if (state.semanticVisible) state.semantic else null)
+            semantic = if (state.semanticVisible) state.semantic else null, explanation = explanations.result)
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
     }

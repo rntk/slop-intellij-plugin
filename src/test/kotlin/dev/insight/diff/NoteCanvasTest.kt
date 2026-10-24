@@ -2167,6 +2167,79 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
+    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ChangeSummariesMode.entries.forEach { mode ->
+        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val explained = mutableListOf<String>()
+        val canvas = NoteCanvas({}, {}, explainNode = { explained += it.identity }).apply { setSize(1600, 900) }
+        fun links() = descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().filter { it.text == "Explain" }
+        try {
+            canvas.summariesView.mode = mode
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            layoutTree(canvas)
+            assertTrue(mode.name, links().isNotEmpty())
+            assertTrue(mode.name, links().all { it.isEnabled })
+            links().forEach { it.doClick() }
+            assertTrue(mode.name, explained.isNotEmpty())
+            assertTrue(mode.name, explained.all { identity -> tree.nodes.any { it.identity == identity } })
+            if (mode != ChangeSummariesMode.EXPLORER) assertTrue(mode.name, "file:ui/canvas/Canvas.kt" in explained)
+            canvas.updateSummaries(SummariesCard(summaries, running = true, canRun = false))
+            layoutTree(canvas)
+            assertTrue(mode.name, links().none { it.isEnabled })
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testExplanationRemainsAccessibleAcrossCanvasUpdatesAndOpensItsChart() {
+        var chartOpened = 0
+        val chart = dev.insight.callgraph.ExplainChartResult.Ready(
+            dev.insight.callgraph.ExplainChart(emptyList(), "{}") { chartOpened++ })
+        val result = ExplainResult("/explain src/a.kt", "The cache avoids repeated reads.", running = false, chart)
+        val canvas = canvas()
+        try {
+            canvas.showNotes(listOf(note), explanation = result)
+            canvas.focusExplanation()
+            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            assertTrue(descendants(canvas.tabs.selectedComponent as Container)
+                .filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == result.text })
+            descendants(canvas).filterIsInstance<javax.swing.JButton>().single { it.text == "Open Flow Chart" }.doClick()
+            assertEquals(1, chartOpened)
+            canvas.showNotes(listOf(note.copy(text = "Updated note")), explanation = result)
+            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            canvas.updateSummaries(null)
+            canvas.updateTopics(null)
+            canvas.updateFileView(null)
+            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            canvas.focusNote(note)
+            assertEquals("Note · a.kt", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            canvas.focusExplanation()
+            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            canvas.showNotes(listOf(note))
+            assertEquals(1, canvas.tabs.tabCount)
+            assertEquals("Note · a.kt", canvas.tabs.getTitleAt(0))
+        } finally { canvas.dispose() }
+    }
+
+    fun testExplanationShowsProgressAndWhyTheChartIsUnavailable() {
+        val canvas = canvas()
+        try {
+            val result = ExplainResult("/explain", "Explaining…", running = true)
+            canvas.showNotes(emptyList(), explanation = result)
+            assertEquals("Explaining…", canvas.tabs.getTitleAt(0))
+            canvas.showNotes(emptyList(), explanation = result.copy(text = "Stopped.", running = false,
+                chart = dev.insight.callgraph.ExplainChartResult.Unavailable("the graph is building.")))
+            assertEquals("Explanation", canvas.tabs.getTitleAt(0))
+            val texts = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
+            assertTrue("Stopped." in texts)
+            assertTrue("Flow Chart unavailable: the graph is building." in texts)
+            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JButton>().none { it.text == "Open Flow Chart" })
+        } finally { canvas.dispose() }
+    }
+
     private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }
     private fun clickSummary(canvas: NoteCanvas, identity: String) {
         val row = descendants(canvas).single { it.name == "summary:$identity" }

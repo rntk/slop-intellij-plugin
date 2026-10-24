@@ -26,7 +26,19 @@ import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.TraceFile
 import dev.insight.chat.tracedFileCompletion
+import dev.insight.callgraph.ExplainChartResult
 import dev.insight.diff.ChangeSummaries
+import dev.insight.diff.ExplainDialog
+import dev.insight.diff.ExplainResults
+import dev.insight.diff.ExplainTarget
+import dev.insight.diff.explainChartFor
+import dev.insight.diff.explainChartPrompt
+import dev.insight.diff.explainCommand
+import dev.insight.diff.explainRequest
+import dev.insight.diff.explainTarget
+import dev.insight.diff.isExplainRequest
+import dev.insight.diff.textOf
+import dev.insight.diff.typedExplainTarget
 import dev.insight.diff.ChangeSummarizer
 import dev.insight.diff.ChangeSummaryOptions
 import dev.insight.diff.ChangeTopicGenerator
@@ -147,6 +159,7 @@ internal class CodeReviewTab(
         openFileAt = { path, line -> openFile(path, line) },
         showFileLines = { path, lines -> showSourceBlock(path, lines) },
         removeFileView = { closeFileView() },
+        explainNode = { node -> explain(node) },
     )
 
     /** The file shown in File view, its structure once analyzed or why it could not be, and the analysis in progress. */
@@ -168,11 +181,14 @@ internal class CodeReviewTab(
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
+    private val explanations = ExplainResults()
     val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
-            "from the whole scope down to each file, or /topics to group the files by responsibility.") {
+            "from the whole scope down to each file, or /topics to group the files by responsibility. " +
+            "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
         override fun replyProgressTitle(text: String): String = when {
             isTopicsRequest(text) -> "Generating code topics"
+            isExplainRequest(text) -> "Explaining the code"
             isSummariesRequest(text) || text == "/topic-summaries" -> "Generating code summaries"
             else -> "Insight code review chat"
         }
@@ -227,11 +243,21 @@ internal class CodeReviewTab(
                     return if (topicSummaries) reply.replace("They show their names in the Summaries card.",
                         "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else reply
                 }
+                val files = context.snapshot.files
+                val explain = if (isExplainRequest(question)) withContext(Dispatchers.EDT) { takeExplain(question, files.map { it.path }) } else null
+                if (explain != null && explain.files.isEmpty()) return "There are no files in scope to explain."
+                val chart = explainChartFor(project, explain, messages) { paths -> files.filter { it.path in paths }.map { it.absolutePath } }
+                if (explain != null) withContext(Dispatchers.EDT) { explanations.chartPrepared(chart) }
+                val chartTools = (chart as? ExplainChartResult.Ready)?.chart?.tools.orEmpty()
+                // Only this turn carries the command's instructions; the transcript keeps the command as typed.
+                val request = if (explain == null) messages else messages.dropLast(1) + messages.last().copy(text = explainRequest(explain,
+                    diff = false, (chart as? ExplainChartResult.Ready)?.chart?.functions, (chart as? ExplainChartResult.Unavailable)?.reason))
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                return LlmChatBackend(complete, codeReviewTools(context), codeReviewPrompt(scopeName),
+                return LlmChatBackend(complete, codeReviewTools(context) + chartTools,
+                    codeReviewPrompt(scopeName) + if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt(),
                     maxContextChars = 160_000, maxToolRounds = 100, context = { context.overview() },
                     contextLabel = "Current code scope", evictionTarget = 0.7)
-                    .reply(messages, onToolCall)
+                    .reply(request, onToolCall)
             }
         }
     }
@@ -239,7 +265,7 @@ internal class CodeReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/summaries, /topics or ask about the code in scope…"
+        chat.input.emptyText.text = "/summaries, /topics, /explain or ask about the code in scope…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
@@ -267,6 +293,10 @@ internal class CodeReviewTab(
             if (!session.busy) applyHeld()
             updateControls()
             summariesChanged()
+            if (explanations.update(session.messages, session.busy)) {
+                renderCanvas()
+                if (explanations.result != null) showCanvas { canvas.focusExplanation() }
+            }
         })
         updateControls()
     }
@@ -348,6 +378,28 @@ internal class CodeReviewTab(
     private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
 
     private fun summarize() { if (canSummarize) session.send("/summaries") }
+
+    /** The target of the /explain command an Explain link sent, until its turn takes it; see [takeExplain]. */
+    private var pendingExplain: Pair<String, ExplainTarget>? = null
+
+    /** Asks what to focus on, then sends /explain for a summary entry; its files and lines need no parsing of the command. */
+    private fun explain(node: SummaryNode) {
+        if (!canSummarize) return
+        val dialog = ExplainDialog(project, node.location, state.summaries.textOf(node))
+        if (!dialog.showAndGet() || !canSummarize) return
+        val target = explainTarget(node, state.summaries, dialog)
+        val command = explainCommand(node.location, target.instructions)
+        pendingExplain = command to target
+        session.send(command)
+    }
+
+    /** The pending link target when [question] is its command, else the typed one; limited to the [paths] still in scope (EDT). */
+    private fun takeExplain(question: String, paths: List<String>): ExplainTarget {
+        val pending = pendingExplain?.takeIf { it.first == question.trim() }?.second
+        pendingExplain = null
+        val inScope = paths.toSet()
+        return pending?.let { it.copy(files = it.files.filter(inScope::contains)) } ?: typedExplainTarget(question, state.summaries, paths)
+    }
 
     /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
     fun openSummaries() {
@@ -486,7 +538,8 @@ internal class CodeReviewTab(
     }
 
     private fun renderCanvas() {
-        canvas.showNotes(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard())
+        canvas.showNotes(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
+            explanation = explanations.result)
         canvas.highlight(selectedPaths().toSet())
     }
 

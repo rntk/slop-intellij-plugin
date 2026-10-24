@@ -69,6 +69,8 @@ internal class NoteCanvas(
     private val removeWords: () -> Unit = {},
     private val removeDiffOverview: () -> Unit = {},
     private val removeSemantic: () -> Unit = {},
+    /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
+    private val explainNode: ((SummaryNode) -> Unit)? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -103,6 +105,7 @@ internal class NoteCanvas(
     private var diffOverview: WordChanges? = null
     private var diffOverviewChart: DiffOverviewChart? = null
     private var semantic: SemanticResult? = null
+    private var explanation: ExplainResult? = null
     /** The selected view and plotted metric of the semantic changes card, kept across rebuilds. */
     private var semanticMode = SemanticMode.METRICS
     private var semanticMetric = Metric.CYCLOMATIC
@@ -205,7 +208,9 @@ internal class NoteCanvas(
         wordFiles: List<ReviewFile> = emptyList(),
         diffOverview: WordChanges? = null,
         semantic: SemanticResult? = null,
+        explanation: ExplainResult? = null,
     ) {
+        this.explanation = explanation
         this.words = words
         this.diffOverview = diffOverview
         this.semantic = semantic
@@ -244,7 +249,8 @@ internal class NoteCanvas(
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
-        val built = listOfNotNull(topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
+        val built = listOfNotNull(explanation?.let { EXPLANATION_KEY to explanationCard(it) },
+            topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
             words?.let { WORDS_KEY to wordsCard(it) }, diffOverview?.let { DIFF_OVERVIEW_KEY to wordsCard(it, overview = true) },
             semantic?.let { SEMANTIC_KEY to semanticCard(it) }).toMap() +
             summaryCards +
@@ -292,6 +298,7 @@ internal class NoteCanvas(
     internal fun focusWords() { focusCard(WORDS_KEY) }
     internal fun focusDiffOverview() { focusCard(DIFF_OVERVIEW_KEY) }
     internal fun focusSemantic() { focusCard(SEMANTIC_KEY) }
+    internal fun focusExplanation() { focusCard(EXPLANATION_KEY) }
 
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
@@ -329,6 +336,7 @@ internal class NoteCanvas(
         WORDS_KEY -> "Word changes"
         DIFF_OVERVIEW_KEY -> "Diff overview"
         SEMANTIC_KEY -> "Semantic changes"
+        EXPLANATION_KEY -> if (explanation?.running == true) "Explaining…" else "Explanation"
         FLOW_KEY -> "Symbol flow"
         else -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
@@ -884,7 +892,7 @@ internal class NoteCanvas(
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
     fun updateTopics(content: TopicsCard?) {
         if ((content == null) != (topics == null) || (content != null && cards[TOPICS_KEY] == null)) {
-            showNotes(notes, sources, diffs, flows, summaries, content, fileView)
+            showNotes(notes, sources, diffs, flows, summaries, content, fileView, explanation = explanation)
             return
         }
         if (content == topics) return
@@ -1004,6 +1012,7 @@ internal class NoteCanvas(
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
             follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
+            explain = explainNode,
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(BorderLayout()).apply {
@@ -1272,14 +1281,14 @@ internal class NoteCanvas(
         tab.view.update(content.summaries.tree)
         // Searching first lets the new card show the running query.
         tab.trace.searchContext(context)
-        showNotes(notes, sources, diffs, flows, summaries, topics, fileView)
+        showNotes(notes, sources, diffs, flows, summaries, topics, fileView, explanation = explanation)
         focusCard(tab.key)
     }
 
     private fun closeSearchTab(tab: SummariesTab) {
         tab.trace.stop()
         searchTabs -= tab
-        showNotes(notes, sources, diffs, flows, summaries, topics, fileView)
+        showNotes(notes, sources, diffs, flows, summaries, topics, fileView, explanation = explanation)
     }
 
     /** Goes back to the summaries left after the first [count] searches of a search tab; zero shows every summary. */
@@ -1404,7 +1413,7 @@ internal class NoteCanvas(
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
         if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
-            showNotes(notes, sources, diffs, flows, content, topics, fileView)
+            showNotes(notes, sources, diffs, flows, content, topics, fileView, explanation = explanation)
             return
         }
         if (content == summaries) return
@@ -1502,7 +1511,7 @@ internal class NoteCanvas(
     /** Follows the analysis, topics, summaries and chat state without rebuilding the other cards. */
     fun updateFileView(content: FileViewCard?) {
         if ((content == null) != (fileView == null) || (content != null && cards[FILE_VIEW_KEY] == null)) {
-            showNotes(notes, sources, diffs, flows, summaries, topics, content)
+            showNotes(notes, sources, diffs, flows, summaries, topics, content, explanation = explanation)
             return
         }
         if (content == fileView) return
@@ -1706,6 +1715,7 @@ internal class NoteCanvas(
         val WORDS_KEY = DiffNoteKey(emptyList(), "word-changes")
         val DIFF_OVERVIEW_KEY = DiffNoteKey(emptyList(), "diff-overview")
         val SEMANTIC_KEY = DiffNoteKey(emptyList(), "semantic-changes")
+        val EXPLANATION_KEY = DiffNoteKey(emptyList(), "explanation")
         const val WORDS_WIDTH = 1100
         const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840

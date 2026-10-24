@@ -61,7 +61,7 @@ import java.awt.event.ActionEvent
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 
-private const val TOOL_WINDOW_ID = "Application Graph"
+internal const val TOOL_WINDOW_ID = "Application Graph"
 
 /** Shared by editor actions and the call graph's semantic exploration entry point. */
 fun openFlowChart(project: Project, pointer: SmartPsiElementPointer<PsiElement>) {

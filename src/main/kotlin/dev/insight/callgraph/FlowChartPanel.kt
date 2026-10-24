@@ -454,6 +454,22 @@ internal class FlowChartPanel(
     }
 
     internal val chatContext: ChartChatContext = SessionChartContext()
+
+    /** Whether chart tools can act now: a finished graph that is not rebuilding (EDT). */
+    internal val chartReady: Boolean get() = !disposed && result != null && !building()
+
+    /**
+     * A chart session of its own for a review's /explain turn, and the functions declared in the [paths] (absolute) at the
+     * current revision as JSON. Selects the chart tab; the result's Open Flow Chart action shows its window (EDT).
+     */
+    internal fun explainSession(paths: Set<String>): Pair<ChartChatContext, String> {
+        val nodes = result?.graph?.nodes.orEmpty().filter { it.inProject && it.filePath in paths }
+        val functions = nodes.take(MAX_EXPLAIN_FUNCTIONS).map { mapOf("id" to it.id, "name" to it.name,
+            "kind" to it.kind.name.lowercase(), "container" to it.container, "location" to it.location) }
+        activateChart()
+        return SessionChartContext() to Gson().toJson(mapOf("revision" to chatRevision, "functions" to functions,
+            "omitted" to (nodes.size - functions.size)))
+    }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
     private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
     private lateinit var chatSection: CollapsibleControls.Section
@@ -988,6 +1004,7 @@ internal class FlowChartPanel(
     }
     private class FlowLensFor(val graph: CallGraph, val snapshot: EnrichmentSnapshot?, val colorBy: ColorBy, val lens: FlowChartLens)
     private companion object {
+        const val MAX_EXPLAIN_FUNCTIONS = 80
         const val FLOW_HINT = "Click to select · Enter opens source · Up/Down step · Left toggles callers · Right/Space toggles calls · Delete removes column"
     }
 }

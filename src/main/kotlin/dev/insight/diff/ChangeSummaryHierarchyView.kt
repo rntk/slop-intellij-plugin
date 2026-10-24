@@ -61,7 +61,8 @@ internal class ChangeSummaryHierarchyPanel(
             caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null,
             levelLabel = "Level ${column + 1}",
             openDiff = actions.directoryAction(node),
-            select = { actions.select(node.identity) })
+            select = { actions.select(node.identity) },
+            explain = actions.explainAction(node), explainEnabled = card.canRun)
         val height = if (collapsed) {
             rowsPlaced++
             val summary = summaries.text(node.id)
@@ -99,7 +100,8 @@ internal class ChangeSummaryHierarchyPanel(
             name = if (part) node.identity else "file:${file.path}", tooltip = if (part) node.location else file.path,
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
             levelLabel = "Level ${column + 1}",
-            openWholeFile = actions.wholeFileAction(node))
+            openWholeFile = actions.wholeFileAction(node),
+            explain = actions.explainAction(node), explainEnabled = card.canRun)
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, score = actions.score, follow = actions.follow)
@@ -132,7 +134,7 @@ internal class ChangeSummaryHierarchyPanel(
  * the diffs of its files, and each top-level folder keeps one hue down its columns.
  */
 internal class ChangeSummaryDocumentPanel(
-    card: SummariesCard,
+    private val card: SummariesCard,
     private val state: ChangeSummariesViewState,
     width: Int,
     zoom: Double,
@@ -227,6 +229,12 @@ internal class ChangeSummaryDocumentPanel(
 
     override fun directoryDiffAction(item: RailItem): (() -> Unit)? =
         tree.nodes.firstOrNull { it.identity == item.key }?.let(actions::directoryAction)
+
+    override fun explainFileAction(file: ReviewSource): (() -> Unit)? = nodesByPath[file.path]?.let(actions::explainAction)
+
+    override fun explainItemAction(item: RailItem): (() -> Unit)? = nodesByIdentity[item.key]?.let(actions::explainAction)
+
+    override val explainEnabled: Boolean get() = card.canRun
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         (if (summary != null) summaryText(identity, summary, width)

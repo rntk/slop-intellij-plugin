@@ -280,6 +280,35 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         }
     }
 
+    fun `test explain opens its result in the canvas even when the review chat is hidden`() {
+        val gate = CompletableDeferred<Completion>()
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, complete = { gate.await() })
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            tab.update(codeSnapshot(codeFile("src/a.kt", "fun a() = 1\n")))
+            assertFalse(manager.isFileOpen(tab.canvasFile))
+            tab.session.send("/explain src/a.kt")
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+            assertEquals("Explaining…", tab.canvas.tabs.getTitleAt(tab.canvas.tabs.selectedIndex))
+
+            gate.complete(Completion("The function returns a constant."))
+            PlatformTestUtil.waitWithEventsDispatching("The explanation should finish", { !tab.session.busy }, 10)
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+            assertEquals("Explanation", tab.canvas.tabs.getTitleAt(tab.canvas.tabs.selectedIndex))
+            assertTrue(descendants(tab.canvas).filterIsInstance<javax.swing.text.JTextComponent>()
+                .any { it.text == "The function returns a constant." })
+            // Ordinary canvas refreshes must retain the answer.
+            tab.update(codeSnapshot(codeFile("src/a.kt", "fun a() = 1\n")))
+            assertTrue((0 until tab.canvas.tabs.tabCount).any { tab.canvas.tabs.getTitleAt(it) == "Explanation" })
+            tab.session.clear()
+            assertFalse((0 until tab.canvas.tabs.tabCount).any { tab.canvas.tabs.getTitleAt(it) == "Explanation" })
+        } finally {
+            gate.cancel()
+            Disposer.dispose(tab)
+        }
+    }
+
     fun `test resummarize with context uses only related source and preserves the ordinary summaries`() {
         val model = SummaryModel()
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, complete = model::complete)

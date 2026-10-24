@@ -276,6 +276,9 @@ internal abstract class DocumentColumnsPanel(
     protected abstract fun showFile(file: ReviewSource)
     protected open fun wholeFileAction(file: ReviewSource): (() -> Unit)? = null
     protected open fun directoryDiffAction(item: RailItem): (() -> Unit)? = null
+    protected open fun explainFileAction(file: ReviewSource): (() -> Unit)? = null
+    protected open fun explainItemAction(item: RailItem): (() -> Unit)? = null
+    protected open val explainEnabled: Boolean get() = true
     protected abstract fun isSelected(item: RailItem): Boolean
     protected abstract fun select(item: RailItem)
     protected open fun selectedFiles(): IntRange? = null
@@ -525,6 +528,7 @@ internal abstract class DocumentColumnsPanel(
             wholeFileAction(file)?.let { open ->
                 add(ActionLink("Open file") { open() }.apply { font = cardFont(JBFont.small()) })
             }
+            explainFileAction(file)?.let { add(explainLink(it, explainEnabled, cardFont(JBFont.small()))) }
             vocabulary.showOnCanvas?.let { label ->
                 add(InplaceButton(IconButton(label, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showFile(file) }
                     .apply { cursor = Cursor.getDefaultCursor(); toolTipText = label })
@@ -574,6 +578,7 @@ internal abstract class DocumentColumnsPanel(
             directoryDiffAction(item)?.let { open ->
                 add(ActionLink("View diff") { open() }.apply { font = cardFont(JBFont.small()) })
             }
+            explainItemAction(item)?.let { add(explainLink(it, explainEnabled, cardFont(JBFont.small()))) }
         }
         add(heading, BorderLayout.NORTH)
         stickyHeaders.add(this, heading)
