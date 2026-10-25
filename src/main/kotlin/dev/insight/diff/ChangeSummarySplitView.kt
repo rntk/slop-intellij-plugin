@@ -32,6 +32,7 @@ import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
 import javax.swing.SwingUtilities
 import javax.swing.Timer
+import javax.swing.ViewportLayout
 import javax.swing.border.EmptyBorder
 import javax.swing.event.PopupMenuEvent
 import javax.swing.event.PopupMenuListener
@@ -99,6 +100,9 @@ internal class ChangeSummarySplitPanel(
             viewport.isOpaque = false
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS
             verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+            // IntelliJ's viewport fits the view to its height when the vertical bar is hidden, clipping the lower rows.
+            // The standard layout keeps the tree at its full height, so it can follow the summaries to the bottom.
+            viewport.layout = ViewportLayout()
             horizontalScrollBar.unitIncrement = scaled(16)
             verticalScrollBar.unitIncrement = summaryScroll.verticalScrollBar.unitIncrement
             minimumSize = Dimension(scaled(120), 0)

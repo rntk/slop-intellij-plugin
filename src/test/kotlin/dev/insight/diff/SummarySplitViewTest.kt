@@ -409,6 +409,34 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         }
     }
 
+    fun testTreeKeepsItsFullHeightWhenSummariesScrollToTheBottom() {
+        for (wrap in listOf(false, true)) {
+            val tree = buildSummaryTree((1..80).map { file("src/pkg${it % 7}/longFileName$it.kt") })
+            val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Important summary words. ".repeat(12) })
+            val canvas = NoteCanvas({}, {}).apply {
+                setSize(1600, 900)
+                summariesView.mode = ChangeSummariesMode.SPLIT
+                summariesView.softWrap = wrap
+                summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
+            }
+            fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
+            try {
+                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                repeat(5) { layoutTree(canvas) }
+                val left = named("summary-split-tree-scroll") as JScrollPane
+                val right = named("summary-split-summary-scroll") as JScrollPane
+                assertTrue("the rows outgrow the viewport", right.viewport.view.height > right.viewport.height)
+                right.verticalScrollBar.value = right.verticalScrollBar.maximum
+                repeat(5) { layoutTree(canvas) }
+                assertEquals("wrap=$wrap: the tree is as tall as the summaries", right.viewport.view.height, left.viewport.view.height)
+                assertEquals(right.viewport.viewPosition.y, left.viewport.viewPosition.y)
+                val row = descendants(named("summary-split-tree")).filter { it.name?.startsWith("summary-tree:") == true }.maxBy { it.y }
+                assertTrue("wrap=$wrap: the last file is visible beside its summary",
+                    row.y >= left.viewport.viewRect.y && row.y + row.height <= left.viewport.viewRect.let { it.y + it.height })
+            } finally { canvas.dispose() }
+        }
+    }
+
     private fun descendants(component: Container): List<Component> = component.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }
