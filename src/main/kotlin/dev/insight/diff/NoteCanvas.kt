@@ -977,6 +977,14 @@ internal class NoteCanvas(
                 if (document) add(documentZoomControls(key))
                 val summaries = content.summaries
                 if (branchLevels > 0 && !explorer) add(summaryLevels(tab, tree, branchLevels))
+                if (splitMode) add(JCheckBox("Soft-wrap", summariesView.softWrap).apply {
+                    name = "summaries-soft-wrap"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Wrap summaries to the available width and expand their tree rows to match"
+                    addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
+                })
                 add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
                     name = "summaries-tags-cloud"
                     isOpaque = false
@@ -1002,7 +1010,7 @@ internal class NoteCanvas(
                             ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
                             ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
                             ChangeSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
-                            ChangeSummariesMode.SPLIT -> "The file tree beside one-line summaries; hover a row to match it with its summary"
+                            ChangeSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
@@ -1097,7 +1105,11 @@ internal class NoteCanvas(
             reviewStatus(tab.review)?.let(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
-        val bodyScroll = JBScrollPane(body).apply {
+        val bodyScroll = object : JBScrollPane(body) {
+            override fun getPreferredSize(): Dimension = if (split != null && summariesView.softWrap)
+                Dimension(width, minOf(body.preferredSize.height + horizontalScrollBar.preferredSize.height, maxBody))
+            else super.getPreferredSize()
+        }.apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             if (split != null) {
                 // One-line summaries usually outgrow the viewport; keep the sideways reading position across folding.

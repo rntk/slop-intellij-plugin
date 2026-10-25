@@ -4,7 +4,7 @@ Summaries provide a hierarchical guide to a review scope, from an overall view d
 
 The same summary process describes both the folder hierarchy and an existing topic hierarchy; topic classification happens separately.
 
-The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly.
+The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly. Hovering or selecting words in a summary highlights where they recur in the summaries below it and in the folders above it.
 
 Readers can mark files or directories as reviewed. Their summaries dim, and related words in higher summaries dim only when every contributing item is reviewed. Review marks follow the underlying evidence; cached semantic links let repeated toggles reuse earlier judgments.
 

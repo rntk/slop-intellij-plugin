@@ -15,6 +15,7 @@ import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.Toolkit
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -28,6 +29,7 @@ import javax.swing.JPopupMenu
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
 import javax.swing.ScrollPaneConstants
+import javax.swing.Scrollable
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.border.EmptyBorder
@@ -37,7 +39,7 @@ import kotlin.math.roundToInt
 
 /**
  * The summary tree split in two aligned columns: a foldable file tree on the left and, on the right, each visible entry's
- * summary on one unwrapped line at the height of its tree row. A resizable divider separates independently horizontally
+ * summary beside its tree row, optionally wrapping to the viewport width. A resizable divider separates horizontally
  * scrolling panels, with a shared vertical scroll position. Hovering either side highlights both halves of the row;
  * folding a folder hides the rows, and so the summaries, beneath it.
  */
@@ -59,8 +61,8 @@ internal class ChangeSummarySplitPanel(
     private val best = trace?.best?.identity
     private val pairs = mutableListOf<Pair<SplitRow, SplitRow>>()
     private val treeRows = SplitColumn("summary-split-tree")
-    private val summaryRows = SplitColumn("summary-split-summaries")
-    /** The summaries, one line per tree row, for the viewport. */
+    private val summaryRows = SplitColumn("summary-split-summaries", state.softWrap)
+    /** Each summary shares its full height with the corresponding tree row. */
     val summariesColumn: JComponent get() = summaryRows
 
     init {
@@ -69,11 +71,6 @@ internal class ChangeSummarySplitPanel(
             summaries.total == 0 -> message(vocabulary.noFiles)
             !state.shows(tree.root, summaries) -> message("No summaries match the search.")
             else -> addNode(tree.root, 0)
-        }
-        pairs.forEach { (left, right) ->
-            val height = maxOf(left.preferredSize.height, right.preferredSize.height)
-            left.preferredSize = Dimension(left.preferredSize.width, height)
-            right.preferredSize = Dimension(right.preferredSize.width, height)
         }
         treeRows.rows += pairs.map { it.first }
         summaryRows.rows += pairs.map { it.second }
@@ -117,6 +114,28 @@ internal class ChangeSummarySplitPanel(
                 event.consume()
             }
         }
+        if (state.softWrap) {
+            var wrapWidth = 0
+            fun resizeRows() {
+                val available = summaryScroll.viewport.extentSize.width
+                if (available <= 0 || available == wrapWidth) return
+                wrapWidth = available
+                pairs.forEach { (_, right) ->
+                    val insets = right.insets
+                    right.components.filterIsInstance<WrappedSummaryText>().forEach {
+                        it.wrapAt(available - insets.left - insets.right)
+                    }
+                }
+                // Both preferred heights derive from the same pairs, including the newly wrapped text.
+                treeRows.revalidate()
+                summaryRows.revalidate()
+                summaryScroll.parent?.revalidate()
+                treeRows.repaint()
+                summaryRows.repaint()
+            }
+            summaryScroll.viewport.addChangeListener { resizeRows() }
+            resizeRows()
+        }
         // The summaries own vertical scrolling. Swing can reset a hidden scrollbar during layout, so the tree follows
         // the summary viewport even when its own layout changes. Horizontal positions remain independent.
         var synchronizing = false
@@ -130,14 +149,15 @@ internal class ChangeSummarySplitPanel(
         summaryScroll.viewport.addChangeListener { synchronize(summaryScroll, treeScroll) }
         treeScroll.viewport.addChangeListener { synchronize(summaryScroll, treeScroll) }
         SwingUtilities.invokeLater { treeScroll.horizontalScrollBar.value = treeScrollX }
-        return JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScroll, summaryScroll).apply {
+        return object : JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScroll, summaryScroll) {
+            override fun getPreferredSize(): Dimension = Dimension(width, summaryScroll.preferredSize.height)
+        }.apply {
             name = "summary-split-panels"
             border = null
             isOpaque = false
             isContinuousLayout = true
             dividerSize = scaled(5)
             resizeWeight = 0.0
-            preferredSize = summaryScroll.preferredSize
             dividerLocation = (treeWidth ?: minOf(treeRows.preferredSize.width, (width * 0.3).roundToInt()))
                 .coerceIn(scaled(120), (width - scaled(180) - dividerSize).coerceAtLeast(scaled(120)))
             addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
@@ -218,6 +238,7 @@ internal class ChangeSummarySplitPanel(
                 if (clicks == 2) navigate?.invoke() else if (clicks == 1) activateLater.start()
             }
             addHierarchyListener { if (!isShowing) activateLater.stop() }
+            if (state.softWrap) alignTop()
         }
         val summary = summaries.text(node.id)
         val read = Timer(clickDelay) {
@@ -235,8 +256,7 @@ internal class ChangeSummarySplitPanel(
         val text: JComponent = if (summary != null) WrappedSummaryText(
             summary.replace('\n', ' ').replace('\r', ' ').replace('\u2028', ' ').replace('\u2029', ' '), null,
             font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
-            if (state.tagsCloud) wordWeights[node.id] else emptyMap()).also { area ->
-                area.toolTipText = "Click to read the summary" + (if (navigate != null) "; double-click to ${if (vocabulary == ReviewVocabulary.DIFF) "open the diff" else "open the file"}" else "")
+            if (state.tagsCloud) wordWeights[node.id] else emptyMap(), breakLongWords = state.softWrap).also { area ->
                 if (!state.traced(node)) area.componentPopupMenu = menu(node)
                 actions.review?.decorate(area, node)
                 if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
@@ -250,7 +270,12 @@ internal class ChangeSummarySplitPanel(
         val right = SplitRow("summary:${node.identity}", selected, mark).apply {
             layout = GridBagLayout()
             border = EmptyBorder(scaled(4), scaled(8), scaled(4), scaled(12))
-            add(text, GridBagConstraints().apply { anchor = GridBagConstraints.WEST; weightx = 1.0 })
+            add(text, GridBagConstraints().apply {
+                anchor = GridBagConstraints.NORTHWEST
+                weightx = 1.0
+                weighty = 1.0
+                if (state.softWrap) fill = GridBagConstraints.HORIZONTAL
+            })
             componentPopupMenu = menu(node)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             onClick(listOf(text).filter { summary == null || !state.traced(node) }, ::summaryClick)
@@ -310,6 +335,18 @@ internal class ChangeSummarySplitPanel(
             if (mark != null) installTraceDecorationReset(this) { mark = null; paintBackground() }
         }
 
+        /** Keep the filename, fold control and review marker beside the summary's first line. */
+        fun alignTop() {
+            val layout = layout as BorderLayout
+            val entries = components.map { it to layout.getConstraints(it) }
+            removeAll()
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                inheritsPopupMenu = true
+                entries.forEach { (component, position) -> add(component, position) }
+            }, BorderLayout.NORTH)
+        }
+
         fun hover(on: Boolean) {
             if (hovered == on) return
             hovered = on
@@ -352,7 +389,7 @@ internal class ChangeSummarySplitPanel(
     }
 
     /** Rows stacked at their shared heights and stretched to the column's width, so both columns line up exactly. */
-    private class SplitColumn(name: String) : JPanel(null) {
+    private inner class SplitColumn(name: String, private val wrap: Boolean = false) : JPanel(null), Scrollable {
         val rows = mutableListOf<JComponent>()
 
         init {
@@ -363,19 +400,27 @@ internal class ChangeSummarySplitPanel(
         override fun getPreferredSize(): Dimension {
             val insets = insets
             return Dimension((rows.maxOfOrNull { it.preferredSize.width } ?: 0) + insets.left + insets.right,
-                rows.sumOf { it.preferredSize.height } + insets.top + insets.bottom)
+                pairs.sumOf { (left, right) -> maxOf(left.preferredSize.height, right.preferredSize.height) } + insets.top + insets.bottom)
         }
 
         override fun doLayout() {
             val insets = insets
             var y = insets.top
             val width = maxOf(width - insets.left - insets.right, 0)
-            for (row in rows) {
-                val height = row.preferredSize.height
+            for ((index, row) in rows.withIndex()) {
+                val (left, right) = pairs[index]
+                val height = maxOf(left.preferredSize.height, right.preferredSize.height)
                 row.setBounds(insets.left, y, width, height)
                 y += height
             }
         }
+
+        override fun getScrollableTracksViewportWidth(): Boolean = wrap
+        override fun getScrollableTracksViewportHeight(): Boolean = false
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = scaled(16)
+        override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int =
+            if (orientation == SwingUtilities.VERTICAL) visibleRect.height else visibleRect.width
     }
 
     companion object {

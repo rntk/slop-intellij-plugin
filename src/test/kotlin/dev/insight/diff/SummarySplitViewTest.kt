@@ -22,6 +22,124 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
     private val files get() = listOf("src/a.kt", "src/nested/b.kt", "docs/readme.md").map(::file)
 
+    fun testSoftWrapExpandsAlignedRowsAndCanBeTurnedOff() {
+        val tree = buildSummaryTree(files)
+        val long = "A summary whose words continue on the next line. ".repeat(20)
+        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Short summary." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
+        fun checkbox() = named("summaries-soft-wrap") as JCheckBox
+        fun area() = descendants(named("summary:file:src/a.kt")).filterIsInstance<WrappedSummaryText>().single()
+        fun layout() = repeat(4) { layoutTree(canvas) }
+        fun assertAligned() {
+            val rows = descendants(named("summary-split-summaries")).filter { it.name?.startsWith("summary:") == true }
+            var bottom = 0
+            for (row in rows) {
+                val left = named("summary-tree:${row.name.removePrefix("summary:")}")
+                assertEquals(row.name, left.y, row.y)
+                assertEquals(row.name, left.height, row.height)
+                assertTrue("${row.name} starts below the previous summary", row.y >= bottom)
+                bottom = row.y + row.height
+            }
+        }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            layout()
+            assertFalse(checkbox().isSelected)
+            val originalHeight = named("summary:file:src/a.kt").height
+            val originalPanelHeight = named("summary-split-panels").preferredSize.height
+            val expanded = canvas.summariesView.expanded.toSet()
+            checkbox().doClick()
+            layout()
+            assertTrue(canvas.summariesView.softWrap)
+            assertTrue(canvas.summariesView.fork().softWrap)
+            assertEquals(expanded, canvas.summariesView.expanded)
+            assertEquals(long, area().text)
+            assertTrue(area().modelToView2D(0).y < area().modelToView2D(long.length - 1).y)
+            assertTrue(named("summary:file:src/a.kt").height > originalHeight * 2)
+            assertTrue("the reading pane also grows for multiline summaries",
+                named("summary-split-panels").preferredSize.height > originalPanelHeight)
+            assertAligned()
+            val name = named("summary-name:file:src/a.kt")
+            val summaryRow = named("summary:file:src/a.kt")
+            assertTrue("filename stays beside the first line", SwingUtilities.convertPoint(name, 0, 0, canvas).y -
+                SwingUtilities.convertPoint(summaryRow, 0, 0, canvas).y < originalHeight)
+            area().select(0, long.length)
+            assertEquals("wrapping preserves copied text and tracing offsets", long, area().selectedText)
+
+            fun fold() {
+                val toggle = named("toggle:directory:src")
+                toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 2, 2, 1, false, MouseEvent.BUTTON1))
+                layout()
+            }
+            fold()
+            assertTrue(checkbox().isSelected)
+            assertAligned()
+            assertTrue(descendants(canvas).none { it.name == "summary:file:src/a.kt" })
+            fold()
+            assertAligned()
+            assertTrue(named("summary:file:src/a.kt").height > originalHeight * 2)
+
+            checkbox().doClick()
+            layout()
+            assertFalse(canvas.summariesView.fork().softWrap)
+            assertEquals(originalHeight, named("summary:file:src/a.kt").height)
+            assertEquals(area().modelToView2D(0).y, area().modelToView2D(long.length - 1).y)
+            assertAligned()
+        } finally { canvas.dispose() }
+    }
+
+    fun testSoftWrapRemeasuresOnResizeAndKeepsScrolledRowsAlignedWithTagsCloud() {
+        val tree = buildSummaryTree((1..24).map { file("src/longFileName$it.kt") })
+        val long = "Important summary words. ".repeat(12) + "LongIdentifier".repeat(30)
+        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to long })
+        val canvas = NoteCanvas({}, {}).apply {
+            setSize(1600, 900)
+            summariesView.mode = ChangeSummariesMode.SPLIT
+            summariesView.softWrap = true
+            summariesView.tagsCloud = true
+            summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
+        }
+        fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
+        fun layout() = repeat(5) { layoutTree(canvas) }
+        try {
+            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            layout()
+            val left = named("summary-split-tree-scroll") as JScrollPane
+            val right = named("summary-split-summary-scroll") as JScrollPane
+            val panels = named("summary-split-panels") as JSplitPane
+            fun assertAlignedAndWithinViewport() {
+                assertEquals(right.viewport.viewPosition.y, left.viewport.viewPosition.y)
+                assertEquals("wrapped summaries fit the viewport", right.viewport.width, right.viewport.view.width)
+                assertEquals(0, right.viewport.viewPosition.x)
+                for (node in tree.nodes) {
+                    val treeRow = named("summary-tree:${node.identity}")
+                    val summaryRow = named("summary:${node.identity}")
+                    assertEquals(node.identity, treeRow.height, summaryRow.height)
+                    assertEquals(node.identity, SwingUtilities.convertPoint(treeRow, 0, 0, canvas).y,
+                        SwingUtilities.convertPoint(summaryRow, 0, 0, canvas).y)
+                    val area = descendants(summaryRow).filterIsInstance<WrappedSummaryText>().single()
+                    assertTrue("text fits within its row", area.y + area.height <= summaryRow.height)
+                    assertTrue("long identifiers wrap", area.modelToView2D(long.length - 1).maxX <= area.width + 1)
+                    assertTrue("the last line fits in the allocated height", area.modelToView2D(long.length - 1).maxY <= area.height)
+                }
+            }
+            panels.dividerLocation = 180
+            layout()
+            assertAlignedAndWithinViewport()
+            val wideHeight = named("summary:root").height
+            panels.dividerLocation = 430
+            layout()
+            assertTrue("narrower summaries need taller rows", named("summary:root").height > wideHeight)
+            right.verticalScrollBar.value = 400
+            assertAlignedAndWithinViewport()
+            panels.dividerLocation = 180
+            layout()
+            assertEquals("widening shrinks the rows again", wideHeight, named("summary:root").height)
+            assertAlignedAndWithinViewport()
+        } finally { canvas.dispose() }
+    }
+
     fun testTreeAndOneLineSummariesShareRowsHoverAndFolding() {
         val tree = buildSummaryTree(files)
         val long = "A long summary that stays on one line however wide it gets, never wrapping. ".repeat(12).trim()

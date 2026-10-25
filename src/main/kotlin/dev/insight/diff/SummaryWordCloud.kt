@@ -3,8 +3,13 @@ package dev.insight.diff
 import java.awt.Dimension
 import java.awt.Font
 import javax.swing.JTextPane
+import javax.swing.text.AbstractDocument
+import javax.swing.text.LabelView
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
+import javax.swing.text.StyledEditorKit
+import javax.swing.text.View
+import javax.swing.text.ViewFactory
 import kotlin.math.ln
 import kotlin.math.roundToInt
 
@@ -31,9 +36,10 @@ internal class SummaryWordWeights(private val summaries: ChangeSummaries) {
  */
 internal class WrappedSummaryText(
     value: String,
-    private val wrapWidth: Int?,
+    private var wrapWidth: Int?,
     baseFont: Font,
     weights: Map<String, Double>,
+    breakLongWords: Boolean = false,
 ) : JTextPane() {
     private var measurement: WrappedTextMeasurement? = null
 
@@ -42,6 +48,16 @@ internal class WrappedSummaryText(
         isOpaque = false
         border = null
         putClientProperty("caretWidth", 0)
+        if (breakLongWords) editorKit = object : StyledEditorKit() {
+            override fun getViewFactory(): ViewFactory {
+                val standard = super.getViewFactory()
+                return ViewFactory { element ->
+                    if (element.name == AbstractDocument.ContentElementName) object : LabelView(element) {
+                        override fun getMinimumSpan(axis: Int): Float = if (axis == View.X_AXIS) 0f else super.getMinimumSpan(axis)
+                    } else standard.create(element)
+                }
+            }
+        }
         font = baseFont
         text = value
         val maximum = weights.values.maxOrNull() ?: 0.0
@@ -62,6 +78,15 @@ internal class WrappedSummaryText(
     }
 
     override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
+
+    /** Remeasure only when the viewport width changes; keep the document and its character offsets intact. */
+    fun wrapAt(width: Int) {
+        val next = width.coerceAtLeast(1)
+        if (wrapWidth == next) return
+        wrapWidth = next
+        measurement?.wrapAt(next)
+        revalidate()
+    }
 
     /** Include enlarged words when the document reserves enough width to keep identifiers on one line. */
     fun longestWordWidth(): Int = Regex("\\S+").findAll(text).maxOfOrNull { match ->

@@ -12,7 +12,7 @@ import kotlin.math.ceil
  * Measures at the intended wrap width without repeatedly changing the live view's layout during painting. A null wrap width
  * measures the text unwrapped, on as few lines as its own line breaks allow.
  */
-internal class WrappedTextMeasurement(private val component: JTextComponent, private val wrapWidth: Int?) {
+internal class WrappedTextMeasurement(private val component: JTextComponent, private var wrapWidth: Int?) {
     private var measuredSize: Dimension? = null
     private val listener = object : DocumentListener {
         override fun insertUpdate(event: DocumentEvent) { measuredSize = null }
@@ -33,6 +33,12 @@ internal class WrappedTextMeasurement(private val component: JTextComponent, pri
                 "lineWrap", "wrapStyleWord", "tabSize" -> measuredSize = null
             }
         }
+    }
+
+    fun wrapAt(width: Int) {
+        if (wrapWidth == width) return
+        wrapWidth = width
+        measuredSize = null
     }
 
     fun preferredSize(): Dimension? {

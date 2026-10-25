@@ -49,7 +49,7 @@ internal fun isFolderBranch(node: SummaryNode): Boolean =
 /**
  * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
  * every file in tree order with its summary and the folder rail, as topics do. Explorer shows one page of siblings at a time.
- * Split keeps a foldable file tree on the left and each entry's summary on one unwrapped line beside its row.
+ * Split keeps a foldable file tree on the left and each entry's optionally wrapped summary beside its row.
  */
 internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT }
 
@@ -71,26 +71,30 @@ internal abstract class SummaryTraceState(
     /** A node to scroll into view once the card is laid out again. */
     var reveal: String? = null
 
-    /** The words of the last hover or selection, highlighted wherever they recur in the summaries shown below it. */
+    /** The words of the last hover or selection, highlighted wherever they recur in the summaries below and above it. */
     var echo: SummaryEcho? = null
         private set
     /** Set by the session that owns this state: the current tree, and how to repaint highlights in place. */
     var echoTree: () -> ChangeSummaryTree? = { null }
     var echoChanged: () -> Unit = {}
 
-    /** Echoes the meaningful [words] of [identity]'s summary in its descendants; repaints only when they change. */
+    /** Echoes the meaningful [words] of [identity]'s summary in its descendants and ancestors; repaints only when they change. */
     fun echo(identity: String, words: Collection<SummaryWord>, selection: Boolean = false) {
         val texts = words.filter { it.meaningful }.mapTo(hashSetOf()) { it.text.lowercase() }
         if (texts.isEmpty()) return clearEcho()
         val current = echo
         if (current != null && current.identity == identity && current.words == texts && current.selection == selection) return
-        val below = if (current?.identity == identity) current.below else echoTree()?.let { tree ->
-            tree.nodes.firstOrNull { it.identity == identity }?.let { node ->
-                generateSequence(node.children) { ids -> ids.flatMap { tree[it].children }.takeIf { it.isNotEmpty() } }
-                    .flatten().mapTo(hashSetOf()) { tree[it].identity }
-            }
+        val node = if (current?.identity == identity) null else echoTree()?.let { tree ->
+            tree.nodes.firstOrNull { it.identity == identity }?.let { tree to it }
+        }
+        val below = if (current?.identity == identity) current.below else node?.let { (tree, node) ->
+            generateSequence(node.children) { ids -> ids.flatMap { tree[it].children }.takeIf { it.isNotEmpty() } }
+                .flatten().mapTo(hashSetOf()) { tree[it].identity }
         }.orEmpty()
-        echo = SummaryEcho(identity, below, texts, selection)
+        val above = if (current?.identity == identity) current.above else node?.let { (tree, node) ->
+            generateSequence(node.parent) { tree[it].parent }.mapTo(hashSetOf()) { tree[it].identity }
+        }.orEmpty()
+        echo = SummaryEcho(identity, below, above, texts, selection)
         echoChanged()
     }
 
@@ -167,8 +171,15 @@ internal abstract class SummaryTraceState(
     open fun clearTrace() { tracing = null; echo = null }
 }
 
-/** Words of [identity]'s summary, lowercased, to highlight in the summaries [below] it; [selection] when selected by hand. */
-internal data class SummaryEcho(val identity: String, val below: Set<String>, val words: Set<String>, val selection: Boolean)
+/**
+ * Words of [identity]'s summary, lowercased, to highlight in the summaries [below] it and in the ancestors [above] it up to the
+ * root; [selection] when selected by hand.
+ */
+internal data class SummaryEcho(
+    val identity: String, val below: Set<String>, val above: Set<String>, val words: Set<String>, val selection: Boolean,
+) {
+    fun reaches(other: String): Boolean = other in below || other in above
+}
 
 /**
  * The nodes a trace marks: the traced one, every node on the way down to a related one, and the related ones. [open] must be
@@ -219,7 +230,7 @@ internal object TraceStyle {
     val BEST_MATCH = JBColor(Color(0xFFF1C2), Color(0x4A4126))
     val RELATED = JBColor(Color(0xEEF5FF), Color(0x2B3545))
     val MATCH_TEXT = JBColor(Color(0x8A6100), Color(0xD9B44A))
-    /** Hovered, scored or selected words recurring in the summaries below theirs. */
+    /** Hovered, scored or selected words recurring in the summaries below and above theirs. */
     val ECHO_WORD = JBColor(Color(0xE6DAFF), Color(0x463A66))
     /** The words of a match that continue the search below it, clicked to follow it. */
     val TRAIL_WORD = JBColor(Color(0xCDEFC4), Color(0x2F5A33))
@@ -283,7 +294,8 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
  * With [follow], a summary the current search found related marks the words that continue it, and clicking one, or
  * choosing Search on it, searches further down from them.
  * [click] overrides left clicks for views with a summary reader; [entryMenu] adds navigation to the word menu.
- * Hovering a word, or selecting text, echoes it in the summaries shown below this one: a scored word echoes its whole
+ * Hovering a word, or selecting text, echoes it in the summaries shown below this one and in its folders up to the root,
+ * so a file's words can be found in the summaries that condense them: a scored word echoes its whole
  * context, any other meaningful word just itself, and a selection its meaningful words.
  */
 internal fun installWordTracing(
@@ -304,7 +316,7 @@ internal fun installWordTracing(
     fun updateHighlights() {
         val current = tracing()
         val next = trail()
-        val echo = state.echo?.takeIf { identity in it.below }
+        val echo = state.echo?.takeIf { it.reaches(identity) }
         if (current === painted && next === paintedTrail && echo === paintedEcho) return
         painted = current
         paintedTrail = next
@@ -500,6 +512,7 @@ internal class ChangeSummariesViewState(
 ) : SummaryTraceState(traceLeaves = true, scored = scored) {
     var mode = ChangeSummariesMode.OUTLINE
     var tagsCloud = false
+    var softWrap = false
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
@@ -738,6 +751,7 @@ internal class ChangeSummariesViewState(
     fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true, scored = scored).also {
         it.mode = mode
         it.tagsCloud = tagsCloud
+        it.softWrap = softWrap
         it.visibleOnly = visibleOnly
         it.expanded += expanded
         it.seen += seen

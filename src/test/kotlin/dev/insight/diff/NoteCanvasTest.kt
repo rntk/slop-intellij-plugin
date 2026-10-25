@@ -1909,6 +1909,29 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val sibling = tree.nodes.single { it.path == "docs/Guide.md" }
         state.echo(child.identity, SummaryWord.split(childSummary))
         assertFalse(sibling.identity in state.echo!!.below)
+        assertFalse(state.echo!!.reaches(sibling.identity))
+        state.clearEcho()
+
+        // Hovering a file's word echoes it in its folders up to the root, but not in the hovered summary itself.
+        fun echoedAbove() = area.highlighter.highlights.filter {
+            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
+        }.map { summary.substring(it.startOffset, it.endOffset) }
+        val folder = tree.nodes.single { it.path == "ui/canvas" }
+        val folderSummary = "Canvas drawing and its border."
+        val middle = javax.swing.JTextArea(folderSummary).apply { setSize(400, 100) }
+        installWordTracing(middle, folder.identity, folderSummary, state, trace = { _, _, _ -> })
+        areas += middle
+        val childWord = SummaryWord.split(childSummary).single { it.text == "border" }
+        val box = below.modelToView2D(childWord.start + 1)
+        val event = java.awt.event.MouseEvent(below, java.awt.event.MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
+        below.mouseMotionListeners.forEach { it.mouseMoved(event) }
+        assertEquals(listOf("border"), echoedAbove())
+        assertEquals(1, middle.highlighter.highlights.count {
+            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
+        })
+        assertEquals(emptyList<String>(), echoed())
+        assertTrue(state.echo!!.reaches(parent.identity))
+        assertFalse(state.echo!!.reaches(sibling.identity))
     }
 
     fun testSelectedSummaryTextSearchesWithoutScoring() =ChangeSummariesMode.entries.forEach { mode ->
