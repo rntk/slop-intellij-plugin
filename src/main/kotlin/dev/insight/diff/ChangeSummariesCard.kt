@@ -49,8 +49,9 @@ internal fun isFolderBranch(node: SummaryNode): Boolean =
 /**
  * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
  * every file in tree order with its summary and the folder rail, as topics do. Explorer shows one page of siblings at a time.
+ * Split keeps a foldable file tree on the left and each entry's summary on one unwrapped line beside its row.
  */
-internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER }
+internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT }
 
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so
@@ -69,6 +70,37 @@ internal abstract class SummaryTraceState(
     open val resultTrace: SummaryTrace? get() = tracing?.trace
     /** A node to scroll into view once the card is laid out again. */
     var reveal: String? = null
+
+    /** The words of the last hover or selection, highlighted wherever they recur in the summaries shown below it. */
+    var echo: SummaryEcho? = null
+        private set
+    /** Set by the session that owns this state: the current tree, and how to repaint highlights in place. */
+    var echoTree: () -> ChangeSummaryTree? = { null }
+    var echoChanged: () -> Unit = {}
+
+    /** Echoes the meaningful [words] of [identity]'s summary in its descendants; repaints only when they change. */
+    fun echo(identity: String, words: Collection<SummaryWord>, selection: Boolean = false) {
+        val texts = words.filter { it.meaningful }.mapTo(hashSetOf()) { it.text.lowercase() }
+        if (texts.isEmpty()) return clearEcho()
+        val current = echo
+        if (current != null && current.identity == identity && current.words == texts && current.selection == selection) return
+        val below = if (current?.identity == identity) current.below else echoTree()?.let { tree ->
+            tree.nodes.firstOrNull { it.identity == identity }?.let { node ->
+                generateSequence(node.children) { ids -> ids.flatMap { tree[it].children }.takeIf { it.isNotEmpty() } }
+                    .flatten().mapTo(hashSetOf()) { tree[it].identity }
+            }
+        }.orEmpty()
+        echo = SummaryEcho(identity, below, texts, selection)
+        echoChanged()
+    }
+
+    /** Clears the echo; with [identity], only a selection's echo from that summary. */
+    fun clearEcho(identity: String? = null) {
+        val current = echo ?: return
+        if (identity != null && (current.identity != identity || !current.selection)) return
+        echo = null
+        echoChanged()
+    }
 
     fun cached(identity: String, summary: String, word: Int): SummaryContext? =
         scored[identity to word]?.takeIf { it.summary == summary }
@@ -132,8 +164,11 @@ internal abstract class SummaryTraceState(
     abstract fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace)
 
     /** Clears the current word context and result decorations. */
-    open fun clearTrace() { tracing = null }
+    open fun clearTrace() { tracing = null; echo = null }
 }
+
+/** Words of [identity]'s summary, lowercased, to highlight in the summaries [below] it; [selection] when selected by hand. */
+internal data class SummaryEcho(val identity: String, val below: Set<String>, val words: Set<String>, val selection: Boolean)
 
 /**
  * The nodes a trace marks: the traced one, every node on the way down to a related one, and the related ones. [open] must be
@@ -184,6 +219,8 @@ internal object TraceStyle {
     val BEST_MATCH = JBColor(Color(0xFFF1C2), Color(0x4A4126))
     val RELATED = JBColor(Color(0xEEF5FF), Color(0x2B3545))
     val MATCH_TEXT = JBColor(Color(0x8A6100), Color(0xD9B44A))
+    /** Hovered, scored or selected words recurring in the summaries below theirs. */
+    val ECHO_WORD = JBColor(Color(0xE6DAFF), Color(0x463A66))
     /** The words of a match that continue the search below it, clicked to follow it. */
     val TRAIL_WORD = JBColor(Color(0xCDEFC4), Color(0x2F5A33))
     /** The outline of the traced card and every card on the way to a match. */
@@ -245,12 +282,17 @@ internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String {
  * also offer Search tab, which searches in a new tab of its own. [score] offers to score only this summary's missing words.
  * With [follow], a summary the current search found related marks the words that continue it, and clicking one, or
  * choosing Search on it, searches further down from them.
+ * [click] overrides left clicks for views with a summary reader; [entryMenu] adds navigation to the word menu.
+ * Hovering a word, or selecting text, echoes it in the summaries shown below this one: a scored word echoes its whole
+ * context, any other meaningful word just itself, and a selection its meaningful words.
  */
 internal fun installWordTracing(
     area: JTextComponent, identity: String, summary: String, state: SummaryTraceState,
     trace: (String, Int, Boolean) -> Unit, searchSelection: ((String, Int, Int) -> Unit)? = null,
     searchTab: ((SummaryContext) -> Unit)? = null, score: ((String) -> Unit)? = null,
-    follow: ((SummaryContext) -> Unit)? = null, select: () -> Unit = {},
+    follow: ((SummaryContext) -> Unit)? = null,
+    click: ((MouseEvent) -> Unit)? = null, entryMenu: (() -> JPopupMenu)? = null,
+    select: () -> Unit = {},
 ) {
     val words = SummaryWord.split(summary)
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
@@ -258,14 +300,19 @@ internal fun installWordTracing(
     val highlights = mutableListOf<Any>()
     var painted: SummaryTracing? = null
     var paintedTrail: SummaryContext? = null
+    var paintedEcho: SummaryEcho? = null
     fun updateHighlights() {
         val current = tracing()
         val next = trail()
-        if (current === painted && next === paintedTrail) return
+        val echo = state.echo?.takeIf { identity in it.below }
+        if (current === painted && next === paintedTrail && echo === paintedEcho) return
         painted = current
         paintedTrail = next
+        paintedEcho = echo
         highlights.forEach(area.highlighter::removeHighlight)
         highlights.clear()
+        echo?.let { words.filter { it.text.lowercase() in echo.words } }
+            ?.forEach { highlights += area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.ECHO_WORD)) }
         next?.context?.forEach { highlights += area.highlighter.addHighlight(it.start, it.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.TRAIL_WORD)) }
         current?.let {
             val context = current.context?.context.orEmpty().filter { it.index != current.word.index }
@@ -302,7 +349,8 @@ internal fun installWordTracing(
         })
     }
     fun contextMenu(point: Point?): JPopupMenu? {
-        val menu = JPopupMenu()
+        val menu = entryMenu?.invoke() ?: JPopupMenu()
+        if (menu.componentCount > 0) menu.addSeparator()
         if (score != null) menu.add(JMenuItem("Score").apply {
             name = "score-summary"
             isEnabled = !state.scoring && words.any { it.meaningful && state.cached(identity, summary, it.index) == null }
@@ -358,10 +406,18 @@ internal fun installWordTracing(
             val word = wordAt(e.point)
             area.cursor = Cursor.getPredefinedCursor(if (word != null) Cursor.HAND_CURSOR else Cursor.TEXT_CURSOR)
             if (word != null && !highlighted(word)) trace(identity, word.index, false)
+            // A manual selection keeps its echo until it is cleared.
+            if (area.selectionStart != area.selectionEnd && state.echo?.let { it.identity == identity && it.selection } == true) return
+            if (word != null) {
+                val context = tracing()?.takeIf { highlighted(word) }?.context ?: state.cached(identity, summary, word.index)
+                state.echo(identity, context?.context.orEmpty() + word)
+            } else hit(e.point) { it.meaningful }?.let { state.echo(identity, listOf(it)) }
         }
 
         override fun mouseClicked(e: MouseEvent) {
-            if (e.clickCount != 1 || !SwingUtilities.isLeftMouseButton(e)) return
+            if (!SwingUtilities.isLeftMouseButton(e)) return
+            if (click != null) { click(e); return }
+            if (e.clickCount != 1) return
             val next = trailAt(e.point)
             if (follow != null && next != null && area.selectionStart == area.selectionEnd) { follow(next); return }
             // A scored word is left alone so the click can place the caret or start a manual selection instead of searching.
@@ -379,6 +435,12 @@ internal fun installWordTracing(
         }
     }
     area.putClientProperty(SELECTION_MENU, { point: Point? -> contextMenu(point) })
+    area.addCaretListener { event ->
+        val start = minOf(event.dot, event.mark)
+        val end = maxOf(event.dot, event.mark)
+        if (start == end) state.clearEcho(identity)
+        else state.echo(identity, words.filter { it.end > start && it.start < end }, selection = true)
+    }
     area.addMouseListener(pointer)
     area.addMouseMotionListener(pointer)
 }
@@ -796,6 +858,11 @@ internal class SummaryTraceSession(
 
     val available: Boolean get() = launcher != null
 
+    init {
+        state.echoTree = { content()?.tree }
+        state.echoChanged = ::updatePresentation
+    }
+
     fun prescore(identity: String? = null) {
         val launcher = launcher ?: return
         val content = content() ?: return
@@ -1057,7 +1124,7 @@ internal class ChangeSummariesPanel(
                 .also { area ->
                     actions.review?.decorate(area, node)
                     if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
-                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, activate)
+                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, select = activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {

@@ -267,12 +267,12 @@ internal class ChangeSummaryDocumentPanel(
 }
 
 /** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
-private fun summaryNodeTitle(node: SummaryNode): String = when (node.kind) {
+internal fun summaryNodeTitle(node: SummaryNode): String = when (node.kind) {
     SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
     SummaryKind.DIRECTORY -> "${node.label}/"
 }
 
-private fun summaryNodeIcon(node: SummaryNode): Icon = when (node.kind) {
+internal fun summaryNodeIcon(node: SummaryNode): Icon = when (node.kind) {
     SummaryKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(node.path.substringAfterLast('/')).icon ?: AllIcons.FileTypes.Any_type
     SummaryKind.CHUNK -> AllIcons.FileTypes.Text
     SummaryKind.DIRECTORY -> AllIcons.Nodes.Folder

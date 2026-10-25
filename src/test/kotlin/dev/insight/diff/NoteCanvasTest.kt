@@ -745,7 +745,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 for (node in tree.nodes.filter(::isFolderBranch)) {
                     assertEquals(node.identity, tree.depth(node.id) < 4, node.identity in canvas.summariesView.expanded)
                 }
-                assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "Level 4" })
+                if (mode == ChangeSummariesMode.SPLIT) assertTrue(descendants(canvas).filterIsInstance<JComponent>()
+                    .any { it.name?.startsWith("summary-tree:") == true && it.toolTipText.orEmpty().contains("Level 4") })
+                else assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "Level 4" })
                 if (mode == ChangeSummariesMode.OUTLINE) {
                     assertEquals("Level 1", (descendants(canvas).single { it.name == "summary-level-label:root" } as JLabel).text)
                 }
@@ -1855,7 +1857,61 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertNull("Blank space must not fall back to another word", selectionMenu(area, Point(390, 80)))
     }
 
-    fun testSelectedSummaryTextSearchesWithoutScoring() = ChangeSummariesMode.entries.forEach { mode ->
+    fun testHoveredAndSelectedWordsEchoInSummariesBelow() {
+        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "docs/Guide.md").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val tree = buildSummaryTree(files)
+        val parent = tree.root
+        val child = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
+        val summary = "Paints the canvas border and the frame."
+        val childSummary = "Draws the Canvas border twice."
+        val state = ChangeSummariesViewState()
+        val areas = mutableListOf<javax.swing.text.JTextComponent>()
+        state.echoTree = { tree }
+        state.echoChanged = { areas.forEach(::updateWordTracing) }
+        val area = javax.swing.JTextArea(summary).apply { setSize(400, 100) }
+        val below = javax.swing.JTextArea(childSummary).apply { setSize(400, 100) }
+        installWordTracing(area, parent.identity, summary, state, trace = { _, _, _ -> })
+        installWordTracing(below, child.identity, childSummary, state, trace = { _, _, _ -> })
+        areas += listOf(area, below)
+        fun echoed() = below.highlighter.highlights.filter {
+            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
+        }.map { childSummary.substring(it.startOffset, it.endOffset) }
+        fun hover(text: String) {
+            val word = SummaryWord.split(summary).single { it.text == text }
+            val box = area.modelToView2D(word.start + 1)
+            val event = java.awt.event.MouseEvent(area, java.awt.event.MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
+            area.mouseMotionListeners.forEach { it.mouseMoved(event) }
+        }
+
+        // Without a score, the hovered word alone recurs below, regardless of case.
+        hover("canvas")
+        assertEquals(listOf("Canvas"), echoed())
+
+        // A scored word echoes its whole context.
+        val words = SummaryWord.split(summary)
+        val border = words.single { it.text == "border" }
+        state.scored[parent.identity to border.index] =
+            SummaryContext(parent.identity, summary, border, words.filter { it.text in setOf("canvas", "border") }, "canvas border")
+        hover("border")
+        assertEquals(listOf("Canvas", "border"), echoed())
+
+        // A selection echoes its meaningful words until it is cleared; summaries outside the subtree never echo.
+        area.select(summary.indexOf("frame"), summary.indexOf("frame") + 5)
+        assertEquals(emptyList<String>(), echoed())
+        hover("canvas")
+        assertEquals("Hovering keeps the selection's echo", emptyList<String>(), echoed())
+        area.select(0, summary.indexOf(" border"))
+        assertEquals(listOf("Canvas"), echoed())
+        area.select(0, 0)
+        assertNull(state.echo)
+        val sibling = tree.nodes.single { it.path == "docs/Guide.md" }
+        state.echo(child.identity, SummaryWord.split(childSummary))
+        assertFalse(sibling.identity in state.echo!!.below)
+    }
+
+    fun testSelectedSummaryTextSearchesWithoutScoring() =ChangeSummariesMode.entries.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
@@ -1889,7 +1945,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
             assertEquals("The caret word can be searched without scoring", listOf("score-summary", "search-word"),
-                selectionMenu(fileArea())!!.components.map { it.name })
+                selectionMenu(fileArea())!!.components.mapNotNull { it.name }.filter { it == "score-summary" || it.startsWith("search-") })
 
             // A right click neither folds nor selects the row.
             val expanded = canvas.summariesView.expanded.toSet()
@@ -2175,7 +2231,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
         val explained = mutableListOf<String>()
         val canvas = NoteCanvas({}, {}, explainNode = { explained += it.identity }).apply { setSize(1600, 900) }
-        fun links() = descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().filter { it.text == "Explain" }
+        // The split view keeps entry actions in each tree row's context menu.
+        fun links(): List<javax.swing.AbstractButton> = (descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>() +
+            descendants(canvas).mapNotNull { (it as? JComponent)?.componentPopupMenu }.distinct()
+                .flatMap { it.components.filterIsInstance<javax.swing.JMenuItem>() }).filter { it.text == "Explain" }
         try {
             canvas.summariesView.mode = mode
             canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))

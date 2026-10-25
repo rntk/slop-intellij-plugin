@@ -6,6 +6,7 @@ import kotlinx.coroutines.Job
 import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.JComponent
+import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.text.JTextComponent
@@ -98,6 +99,20 @@ internal class SummaryReviewPresentation(
             addActionListener { toggle(node, isSelected) }
             installReviewPresentationUpdate(this) { isSelected = reviewed.isReviewed(node) }
         }
+    }
+
+    /** The context-menu twin of [control]; [refresh] relabels it for the entry's current state before the menu shows. */
+    fun menuItem(node: SummaryNode): JMenuItem? {
+        if (node.files.isEmpty() || node.kind == SummaryKind.CHUNK) return null
+        return JMenuItem().apply {
+            name = "reviewed-menu:${node.identity}"
+            refresh(this, node)
+            addActionListener { toggle(node, !reviewed.isReviewed(node)) }
+        }
+    }
+
+    fun refresh(item: JMenuItem, node: SummaryNode) {
+        item.text = if (reviewed.isReviewed(node)) "Mark as not reviewed" else "Mark as reviewed"
     }
 
     fun decorate(area: JTextComponent, node: SummaryNode) {

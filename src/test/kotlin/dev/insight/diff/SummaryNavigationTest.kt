@@ -33,16 +33,21 @@ class SummaryNavigationTest : BasePlatformTestCase() {
             try {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
                 fun named(name: String) = descendants(canvas).single { it.name == name } as Container
-                val fileHeader = named(if (mode in listOf(ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER)) "summary-header:file:src/a.kt" else "file:src/a.kt")
-                links(fileHeader).single { it.text == "Open file" }.doClick()
+                val fileHeader = named(when (mode) {
+                    ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:file:src/a.kt"
+                    ChangeSummariesMode.SPLIT -> "summary-tree:file:src/a.kt"
+                    else -> "file:src/a.kt"
+                })
+                actions(fileHeader).single { it.text == "Open file" }.doClick()
                 assertEquals(listOf(files[0]), opened)
                 if (mode == ChangeSummariesMode.EXPLORER)
                     (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
                 val folderHeader = named(when (mode) {
                     ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:${folder.identity}"
+                    ChangeSummariesMode.SPLIT -> "summary-tree:${folder.identity}"
                     else -> "node:${folder.identity}"
                 })
-                links(folderHeader).single { it.text == "View diff" }.doClick()
+                actions(folderHeader).single { it.text == if (mode == ChangeSummariesMode.SPLIT) "Open diff" else "View diff" }.doClick()
                 assertEquals(folder.files, directories.single().map { it.path })
                 assertEquals(setOf("src/a.kt", "src/nested/b.kt"), directories.single().map { it.path }.toSet())
                 assertSame(files[0], directories.single().single { it.path == "src/a.kt" })
@@ -58,8 +63,8 @@ class SummaryNavigationTest : BasePlatformTestCase() {
                 .apply { setSize(1600, 900); summariesView.mode = mode }
             try {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, false))
-                assertTrue(links(canvas).none { it.text == "Open file" })
-                assertTrue(links(canvas).any { it.text == "View diff" })
+                assertTrue(actions(canvas).none { it.text == "Open file" })
+                assertTrue(actions(canvas).any { it.text == if (mode == ChangeSummariesMode.SPLIT) "Open diff" else "View diff" })
             } finally { canvas.dispose() }
         }
     }
@@ -117,6 +122,10 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     }
 
     private fun links(container: Container) = descendants(container).filterIsInstance<ActionLink>()
+    /** Entry actions: links in most views, the tree row's context menu in the split view. */
+    private fun actions(container: Container): List<javax.swing.AbstractButton> = links(container) +
+        (listOf(container) + descendants(container)).mapNotNull { (it as? javax.swing.JComponent)?.componentPopupMenu }.distinct()
+            .flatMap { it.components.filterIsInstance<javax.swing.JMenuItem>() }
     private fun descendants(container: Container): List<Component> = container.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }

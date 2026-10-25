@@ -126,6 +126,10 @@ internal class NoteCanvas(
     private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
         val review = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(key) }
         var scroll = 0
+        /** The sideways reading position of the split view's one-line summaries. */
+        var scrollX = 0
+        var treeScrollX = 0
+        var treeWidth: Int? = null
         var version: Int? = null
         val trace = SummaryTraceSession(traceSummaries, view, { reading(this) }, openSummaryLines,
             update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
@@ -952,6 +956,7 @@ internal class NoteCanvas(
         val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
         val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
         val explorer = summariesView.mode == ChangeSummariesMode.EXPLORER
+        val splitMode = summariesView.mode == ChangeSummariesMode.SPLIT
         if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
@@ -987,6 +992,7 @@ internal class NoteCanvas(
                         ChangeSummariesMode.HIERARCHY -> "Hierarchy"
                         ChangeSummariesMode.DOCUMENT -> "Document"
                         ChangeSummariesMode.EXPLORER -> "Explorer"
+                        ChangeSummariesMode.SPLIT -> "Split"
                     }, summariesView.mode == mode).apply {
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
@@ -996,6 +1002,7 @@ internal class NoteCanvas(
                             ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
                             ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
                             ChangeSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
+                            ChangeSummariesMode.SPLIT -> "The file tree beside one-line summaries; hover a row to match it with its summary"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
@@ -1043,7 +1050,8 @@ internal class NoteCanvas(
             review = tab.review.presentation(content.summaries, ::toggleReviewed),
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val body = JPanel(BorderLayout()).apply {
+        val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, actions, vocabulary) else null
+        val body = if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(when {
@@ -1074,6 +1082,11 @@ internal class NoteCanvas(
                 add(summaryVersionRow(tab, original))
                 add(searchRow(tab))
                 if (explorer) add(summaryExplorerNavigation(tab, tree))
+                if (split != null) add(JLabel(summariesStatus(content, vocabulary.noFiles) +
+                    " · Click a summary to read it. Double-click to ${if (vocabulary == ReviewVocabulary.DIFF) "open the diff" else "open the file"}. Drag the divider to resize.").apply {
+                    font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                    border = JBUI.Borders.empty(6, PADDING, 6, PADDING)
+                })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         if (summariesTrace.available || reviewSummaries != null) card.add(JPanel(VerticalLayout(scaled(4))).apply {
@@ -1084,11 +1097,18 @@ internal class NoteCanvas(
             reviewStatus(tab.review)?.let(::add)
         }, BorderLayout.SOUTH)
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
-        card.add(JBScrollPane(body).apply {
+        val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
+            if (split != null) {
+                // One-line summaries usually outgrow the viewport; keep the sideways reading position across folding.
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS
+                val restoreX = tab.scrollX
+                horizontalScrollBar.addAdjustmentListener { tab.scrollX = it.value }
+                SwingUtilities.invokeLater { horizontalScrollBar.value = restoreX }
+            }
             // A deep hierarchy or document rail may scroll sideways; leave room for that scroll bar.
-            val sideways = if ((hierarchy || document) && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
-            if (!hierarchy && !document) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+            val sideways = if (split != null || (hierarchy || document) && body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
+            if (!hierarchy && !document && split == null) horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, maxBody))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
@@ -1106,7 +1126,10 @@ internal class NoteCanvas(
                 card.validate()
                 revealIn(body, target)
             }
-        }, BorderLayout.CENTER)
+        }
+        card.add(if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
+            rememberTreeWidth = { tab.treeWidth = it }, rememberTreeScrollX = { tab.treeScrollX = it }) else bodyScroll,
+            BorderLayout.CENTER)
         return card
     }
 

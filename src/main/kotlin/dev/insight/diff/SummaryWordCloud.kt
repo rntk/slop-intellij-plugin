@@ -25,10 +25,13 @@ internal class SummaryWordWeights(private val summaries: ChangeSummaries) {
     }
 }
 
-/** Original prose and character offsets, with word sizes grounded in the direct children's word counts. */
+/**
+ * Original prose and character offsets, with word sizes grounded in the direct children's word counts. A null [wrapWidth]
+ * keeps the summary on one line, as wide as it needs.
+ */
 internal class WrappedSummaryText(
     value: String,
-    private val wrapWidth: Int,
+    private val wrapWidth: Int?,
     baseFont: Font,
     weights: Map<String, Double>,
 ) : JTextPane() {

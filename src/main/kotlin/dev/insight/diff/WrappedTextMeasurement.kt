@@ -8,8 +8,11 @@ import javax.swing.text.JTextComponent
 import javax.swing.text.View
 import kotlin.math.ceil
 
-/** Measures at the intended wrap width without repeatedly changing the live view's layout during painting. */
-internal class WrappedTextMeasurement(private val component: JTextComponent, private val wrapWidth: Int) {
+/**
+ * Measures at the intended wrap width without repeatedly changing the live view's layout during painting. A null wrap width
+ * measures the text unwrapped, on as few lines as its own line breaks allow.
+ */
+internal class WrappedTextMeasurement(private val component: JTextComponent, private val wrapWidth: Int?) {
     private var measuredSize: Dimension? = null
     private val listener = object : DocumentListener {
         override fun insertUpdate(event: DocumentEvent) { measuredSize = null }
@@ -38,8 +41,10 @@ internal class WrappedTextMeasurement(private val component: JTextComponent, pri
         val root = component.ui?.getRootView(component) ?: return null
         // Painting uses the allocated width, which can differ from wrapWidth. Remeasuring on every preferred-size
         // query makes the view alternate between the two widths and schedule another layout/repaint indefinitely.
-        root.setSize((wrapWidth - insets.left - insets.right).coerceAtLeast(1).toFloat(), Int.MAX_VALUE.toFloat())
-        val measured = Dimension(wrapWidth, ceil(root.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() + insets.top + insets.bottom)
+        // Unwrapped text keeps a pixel of slack so rounding never pushes its last word onto a second line.
+        val width = wrapWidth ?: (ceil(root.getPreferredSpan(View.X_AXIS).toDouble()).toInt() + insets.left + insets.right + 1)
+        root.setSize((width - insets.left - insets.right).coerceAtLeast(1).toFloat(), Int.MAX_VALUE.toFloat())
+        val measured = Dimension(width, ceil(root.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() + insets.top + insets.bottom)
         measuredSize = measured
         return Dimension(measured)
     }
