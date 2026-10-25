@@ -361,7 +361,7 @@ internal fun installWordTracing(
         })
     }
     fun contextMenu(point: Point?): JPopupMenu? {
-        val menu = entryMenu?.invoke() ?: JPopupMenu()
+        val menu = entryMenu?.invoke() ?: summaryEntryMenu(area)?.invoke() ?: JPopupMenu()
         if (menu.componentCount > 0) menu.addSeparator()
         if (score != null) menu.add(JMenuItem("Score").apply {
             name = "score-summary"
@@ -458,6 +458,24 @@ internal fun installWordTracing(
 }
 
 private val SELECTION_MENU = Any()
+private val SUMMARY_ENTRY_MENU = Any()
+
+@Suppress("UNCHECKED_CAST")
+private fun summaryEntryMenu(area: JComponent): (() -> JPopupMenu)? =
+    area.getClientProperty(SUMMARY_ENTRY_MENU) as? (() -> JPopupMenu)
+
+/** Gives [component] and everything in it the entry's [menu]; a traced summary puts it above its own word actions. */
+internal fun installSummaryEntryMenu(component: JComponent, menu: () -> JPopupMenu) {
+    fun install(part: java.awt.Component) {
+        if (part is JComponent) {
+            part.putClientProperty(SUMMARY_ENTRY_MENU, menu)
+            if (part !is JTextComponent || part.getClientProperty(SELECTION_MENU) == null)
+                part.componentPopupMenu = menu()
+        }
+        if (part is java.awt.Container) part.components.forEach(::install)
+    }
+    install(component)
+}
 
 /**
  * The context menu for a summary: search the current word, its whole scored query, selected text, or a continuation query,
@@ -1043,7 +1061,26 @@ internal class ChangeSummaryActions(
     /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
     val explain: ((SummaryNode) -> Unit)? = null,
     val review: SummaryReviewPresentation? = null,
+    val resummarize: ((SummaryNode, Boolean) -> Unit)? = null,
+    val resummaryEnabled: Boolean = true,
 ) {
+    fun addResummaryItems(menu: JPopupMenu, node: SummaryNode) {
+        val run = resummarize ?: return
+        if (node.files.isEmpty() || node.isTopicBranch) return
+        for ((label, recursive) in listOf("Resummarize" to false, "Resummarize all" to true)) {
+            menu.add(JMenuItem(label).apply {
+                name = "summary-action:$label"
+                isEnabled = resummaryEnabled
+                addActionListener { run(node, recursive) }
+            })
+        }
+    }
+
+    fun installResummaryMenu(component: JComponent, node: SummaryNode) {
+        if (resummarize == null) return
+        installSummaryEntryMenu(component) { JPopupMenu().also { addResummaryItems(it, node) } }
+    }
+
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
         val file = (node.file as? ReviewFile)?.takeIf { it.fullFileText != null } ?: return null
         return openWholeFile?.let { open -> { open(file) } }
@@ -1188,6 +1225,7 @@ internal class ChangeSummariesPanel(
                 listOfNotNull(summaryText.takeIf { summary == null || !state.traced(node) }))
                 .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            actions.installResummaryMenu(this, node)
         }
     }
 

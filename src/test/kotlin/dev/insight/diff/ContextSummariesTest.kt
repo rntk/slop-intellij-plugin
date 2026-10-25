@@ -68,6 +68,103 @@ class ContextSummariesTest : BasePlatformTestCase() {
         assertEquals(2, canvas.tabs.tabCount)
     }
 
+    fun testEntryActionsSelectScopeAndPassInstructionsInEveryLayout() {
+        for (mode in ChangeSummariesMode.entries) {
+            val launcher = ContextLauncher()
+            val canvas = canvas(launcher)
+            try {
+                canvas.summariesView.mode = mode
+                if (mode == ChangeSummariesMode.EXPLORER) canvas.summariesView.browse(tree.root.identity, tree)
+                canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true))
+                canvas.requestResummaryInstructions = { node, recursive ->
+                    assertEquals(app.identity, node.identity)
+                    assertFalse(recursive)
+                    "Focus on failures\nPreserve qualifications"
+                }
+                val name = if (mode == ChangeSummariesMode.SPLIT) "summary-tree:${app.identity}"
+                    else if (mode == ChangeSummariesMode.HIERARCHY || mode == ChangeSummariesMode.DOCUMENT) "node:${app.identity}"
+                    else "summary:${app.identity}"
+                val entry = named(canvas, 0, name) as javax.swing.JComponent
+                entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Resummarize" }.doClick()
+                assertEquals(setOf(app.id), launcher.request.nodeIds)
+                assertEquals("Focus on failures\nPreserve qualifications", launcher.request.instructions)
+                assertTrue(launcher.request.regenerate)
+                assertEquals(original.text(app.children.first()), launcher.start.text(app.children.first()))
+                launcher.finish()
+                assertEquals(2, versions(canvas, 0).itemCount)
+            } finally { canvas.dispose() }
+        }
+    }
+
+    fun testResummarizeAllIncludesFoldedDescendantsAndCanBeCancelled() {
+        val launcher = ContextLauncher()
+        val canvas = canvas(launcher)
+        try {
+            canvas.summariesView.toggle(app.identity)
+            canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true))
+            canvas.requestResummaryInstructions = { _, _ -> null }
+            val entry = named(canvas, 0, "summary:${app.identity}") as javax.swing.JComponent
+            fun all() = entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Resummarize all" }.doClick()
+            all()
+            assertEquals(1, versions(canvas, 0).itemCount)
+            canvas.requestResummaryInstructions = { node, recursive ->
+                assertEquals(app.identity, node.identity)
+                assertTrue(recursive)
+                ""
+            }
+            all()
+            assertEquals(setOf(app.id) + app.children, launcher.request.nodeIds)
+            assertEquals(original.text(tree.root.id), launcher.start.text(tree.root.id))
+            launcher.request.nodeIds.forEach { assertNull(launcher.start.text(it)) }
+        } finally { canvas.dispose() }
+    }
+
+    fun testTopicHierarchyEntriesFillAndResummarizeOneTopic() {
+        val topics = ChangeTopics(files, mapOf("app/a.kt" to "Storage > Wallet", "app/b.kt" to "Storage > Wallet",
+            "docs/c.kt" to "UI", "docs/d.kt" to "UI"))
+        val topicTree = buildTopicSummaryTree(topics)
+        val storage = topicTree.nodes.single { it.identity == "topic:storage" }
+        val wallet = topicTree.nodes.single { it.identity == "topic:storage > wallet" }
+        val launcher = ContextLauncher()
+        val saved = mutableListOf<Pair<ChangeSummaries, Set<Int>>>()
+        val canvas = NoteCanvas({}, {}, contextSummaries = launcher, saveTopicSummaries = { summaries, ids -> saved += summaries to ids })
+        try {
+            canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
+            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true))
+            fun item(entry: String, label: String) = (named(canvas, 0, entry) as javax.swing.JComponent).componentPopupMenu
+                .components.filterIsInstance<JMenuItem>().single { it.text == label }
+            // File summaries are shared with the Summaries card, so files only fill.
+            assertEquals(listOf("Fill summaries"), (named(canvas, 0, "summary:app/a.kt") as javax.swing.JComponent).componentPopupMenu
+                .components.filterIsInstance<JMenuItem>().map { it.text })
+            item("topic:1:storage > wallet", "Fill summaries").doClick()
+            assertEquals(setOf(wallet.id) + wallet.children, launcher.request.nodeIds)
+            assertFalse(launcher.request.regenerate)
+            assertTrue(canvas.topicSummariesRunning)
+            assertFalse(item("topic:0:ui", "Fill summaries").isEnabled)
+            launcher.finish()
+            assertFalse(canvas.topicSummariesRunning)
+            assertEquals(launcher.request.nodeIds, saved.last().second)
+            assertEquals("Context Storage > Wallet/", saved.last().first.text(wallet.id))
+            assertNull(saved.last().first.text(storage.id))
+
+            val complete = ChangeSummaries(topicTree).summarize(topicTree.nodes.associate { it.id to "Original ${it.identity}" })
+            canvas.updateTopics(TopicsCard(topics, ChangeSummaries(tree), canRun = true, topicSummaries = complete))
+            assertFalse(item("topic:0:storage", "Fill summaries").isEnabled)
+            canvas.requestResummaryInstructions = { node, recursive ->
+                assertEquals(storage.identity, node.identity)
+                assertTrue(recursive)
+                "Focus on balances"
+            }
+            item("topic:0:storage", "Resummarize all").doClick()
+            assertEquals(setOf(storage.id, wallet.id), launcher.request.nodeIds)
+            assertEquals("Focus on balances", launcher.request.instructions)
+            assertTrue(launcher.request.regenerate)
+            assertNull(launcher.start.text(wallet.id))
+            assertEquals(complete.text(wallet.children.first()), launcher.start.text(wallet.children.first()))
+            assertEquals("Resummarize all · Storage…", (named(canvas, 0, "topic-summary-status") as javax.swing.JLabel).text)
+        } finally { canvas.dispose() }
+    }
+
     fun testContextVersionsKeepOriginalSwitchPerTabAndDeleteAcrossTabs() {
         val launcher = ContextLauncher()
         val canvas = canvas(launcher)

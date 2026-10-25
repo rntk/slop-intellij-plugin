@@ -328,7 +328,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "resummarize-with-context" }.doClick()
             PlatformTestUtil.waitWithEventsDispatching("The contextual version should finish", {
                 descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
-                    .any { it.name == "summary-version-status" && it.text == "3 of 3 related summaries rewritten" }
+                    .any { it.name == "summary-version-status" && it.text == "3 of 3 summaries rewritten" }
             }, 10)
             assertSame(original, tab.state.summaries)
             assertEquals(2, model.requests.size)
@@ -343,7 +343,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(2, selector().itemCount)
             selector().selectedIndex = 1
             assertTrue(descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
-                .any { it.name == "summary-version-status" && it.text == "3 of 3 related summaries rewritten" })
+                .any { it.name == "summary-version-status" && it.text == "3 of 3 summaries rewritten" })
         } finally { Disposer.dispose(tab) }
     }
 

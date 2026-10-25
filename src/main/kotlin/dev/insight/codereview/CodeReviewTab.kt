@@ -153,6 +153,7 @@ internal class CodeReviewTab(
             ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
         },
         deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
+        saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         vocabulary = ReviewVocabulary.CODE,
         openNode = { node -> openFile(node.path, node.lines?.first) },
         showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
@@ -378,7 +379,8 @@ internal class CodeReviewTab(
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
 
-    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
+    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
+        state.snapshot.files.isNotEmpty()
 
     private fun summarize() { if (canSummarize) session.send("/summaries") }
 

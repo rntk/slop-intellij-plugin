@@ -32,6 +32,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -211,7 +212,14 @@ internal class ChangeTopicActions(
     val openNode: (SummaryNode) -> Unit = { openFile(it.path) },
     val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
     val review: SummaryReviewPresentation? = null,
-)
+    /** Summary actions for the entry with this reading identity, such as filling or regenerating its summaries; null hides them. */
+    val entryMenu: ((String) -> JPopupMenu)? = null,
+) {
+    fun installEntryMenu(component: JComponent, identity: String) {
+        val menu = entryMenu ?: return
+        installSummaryEntryMenu(component) { menu(identity) }
+    }
+}
 
 /**
  * A review read as one document: every file's diff or source down the middle, its summary in the left margin and the

@@ -87,6 +87,7 @@ internal class ChangeTopicHierarchyPanel(
             val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, emptyMap())
             readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
             summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
+            actions.installEntryMenu(note, identity)
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
@@ -94,6 +95,7 @@ internal class ChangeTopicHierarchyPanel(
             childY = placeEntries(outline.children(node), column + 1, childY, node.path.first())
             maxOf(childY - gap - y, component.preferredSize.height)
         }
+        actions.installEntryMenu(component, identity)
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[identity] = component
         return height
@@ -112,6 +114,8 @@ internal class ChangeTopicHierarchyPanel(
         val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, emptyMap())
         readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
         if (summary != null) installWordTracing(note, identity, summary, state, actions.trace)
+        actions.installEntryMenu(leaf, identity)
+        actions.installEntryMenu(note, identity)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[identity] = leaf

@@ -169,7 +169,7 @@ internal class ReviewContextSummaryLauncher(
             val result = try {
                 // Capture the review's evidence on the EDT, before starting background work.
                 val summarizer = create()
-                Result.success(withBackgroundProgress(project, "Resummarizing with context", cancellable = true) {
+                Result.success(withBackgroundProgress(project, if (request.regenerate) "Resummarizing" else "Filling summaries", cancellable = true) {
                     withContext(Dispatchers.IO) {
                         reportRawProgress { reporter ->
                             var current = start
@@ -178,10 +178,11 @@ internal class ReviewContextSummaryLauncher(
                                 withContext(Dispatchers.EDT) { updated(current) }
                                 current
                             }, onProgress = { count, total ->
-                                reporter.text("Resummarizing related summaries…")
+                                reporter.text(if (request.regenerate) "Resummarizing summaries…" else "Filling missing summaries…")
                                 reporter.details("$count of $total summaries")
                                 reporter.fraction(if (total > 0) count.toDouble() / total else null)
-                            }, nodeIds = request.nodeIds, queryContext = request.query)
+                            }, nodeIds = request.nodeIds, queryContext = request.query,
+                                instructions = request.instructions, reuseSingleChildren = !request.regenerate)
                         }
                     }
                 })

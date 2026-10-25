@@ -4,6 +4,8 @@ Summaries provide a hierarchical guide to a review scope, from an overall view d
 
 The same summary process describes both the folder hierarchy and an existing topic hierarchy; topic classification happens separately.
 
+File and summary context menus can regenerate one entry or its entire subtree, with optional custom instructions. Results open as a separate summary version for comparison. In the topic hierarchy, entries can likewise fill their missing summaries or regenerate their topics at any level, without waiting for the whole hierarchy; those results are saved in place.
+
 The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly. Hovering or selecting words in a summary highlights where they recur in the summaries below it and in the folders above it.
 
 Readers can mark files or directories as reviewed. Their summaries dim, and related words in higher summaries dim only when every contributing item is reviewed. Review marks follow the underlying evidence; cached semantic links let repeated toggles reuse earlier judgments.

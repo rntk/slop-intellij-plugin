@@ -178,6 +178,35 @@ class ChangeSummaryTest {
         assertEquals("+1 -1", first["nodes"].asJsonArray.single { it.asJsonObject["location"].asString == "c.kt" }.asJsonObject["lines"].asString)
     }
 
+    @Test fun targetedRegenerationSendsFullInstructionsEvenToSingleChildBranches() = runBlocking {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("elsewhere/b.kt")))
+        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val app = tree.byLocation("app/")
+        val instructions = "Focus on failure handling.\n" + "Keep evidence grounded. ".repeat(30)
+        val model = Model()
+        val request = resummaryRequest(original, app, recursive = true, instructions)
+        var saved = original.without(request.nodeIds)
+        val run = ChangeSummarizer(model::complete, null).run(saved, "", save = { entries ->
+            saved.summarize(entries, reuseSingleChildren = false).also { saved = it }
+        }, nodeIds = request.nodeIds, instructions = request.instructions, reuseSingleChildren = false)
+        assertEquals(2, model.requests.size)
+        assertTrue(model.requests.all { it.messages.first().content.contains(instructions.trim()) })
+        assertEquals("directory app/", run.summaries.text(app.id))
+        assertEquals(original.text(tree.root.id), run.summaries.text(tree.root.id))
+        assertEquals(original.text(tree.byLocation("elsewhere/b.kt").id), run.summaries.text(tree.byLocation("elsewhere/b.kt").id))
+    }
+
+    @Test fun singleNodeRegenerationIncludesMissingDependenciesOnly() {
+        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("other/c.kt")))
+        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val app = tree.byLocation("app/")
+        val a = tree.byLocation("app/a.kt")
+        val partial = original.without(setOf(a.id))
+        assertEquals(setOf(app.id, a.id), resummaryRequest(partial, app, false, "").nodeIds)
+        val leaf = resummaryRequest(original, a, true, "")
+        assertEquals(setOf(a.id), leaf.nodeIds)
+    }
+
     @Test fun `command detection and focus`() {
         assertTrue(isSummariesRequest("/summaries"))
         assertTrue(isSummariesRequest(" Summaries "))

@@ -75,6 +75,7 @@ internal class DiffReviewTab(
             ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
         },
         deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
+        saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
         openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
         openWholeFile = { file ->
@@ -272,7 +273,8 @@ internal class DiffReviewTab(
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
 
-    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
+    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
+        state.snapshot.files.isNotEmpty()
 
     private fun summarize() { if (canSummarize) session.send("/summaries") }
 

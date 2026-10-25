@@ -74,6 +74,8 @@ internal class NoteCanvas(
     private val reviewed: ReviewedFiles = ReviewedFiles(),
     private val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
     private val reviewSummaries: SummaryReviewLauncher? = null,
+    /** Saves what a fill or resummarization of part of the topic hierarchy has written; null hides those entry actions. */
+    private val saveTopicSummaries: ((ChangeSummaries, Set<Int>) -> Unit)? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
@@ -92,6 +94,10 @@ internal class NoteCanvas(
     private var topics: TopicsCard? = null
     internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
+    /** A fill or resummarization of part of the topic hierarchy; one at a time, saved into the review as it goes. */
+    private var topicSummaryJob: Job? = null
+    private var topicSummaryStatus: String? = null
+    internal val topicSummariesRunning: Boolean get() = topicSummaryJob != null
     private var summaries: SummariesCard? = null
     private val summaryVersions = mutableListOf<ContextSummaryVersion>()
     private var summaryVersionCount = 0
@@ -825,7 +831,7 @@ internal class NoteCanvas(
                 if (hierarchy) add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
-                    isEnabled = content.canRun && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
+                    isEnabled = content.canRun && !topicSummariesRunning && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
                     toolTipText = "Fill missing summaries for every topic and subtopic, including folded topics"
                     addActionListener { fillTopicSummaries() }
                 })
@@ -846,12 +852,16 @@ internal class NoteCanvas(
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
                 trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode,
-                review = topicsReview.presentation(content.reading, ::toggleReviewed))
+                review = topicsReview.presentation(content.reading, ::toggleReviewed),
+                entryMenu = topicEntryMenu(content))
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
                 traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
                 reviewStatus(topicsReview)?.let(::add)
+                topicSummaryStatus?.let { status ->
+                    add(JLabel(status).apply { name = "topic-summary-status"; foreground = UIUtil.getContextHelpForeground(); toolTipText = status })
+                }
                 if (shown.files.isEmpty() && outline.files.isNotEmpty()) add(JLabel("No files match the search.").apply {
                     name = "topics-no-matches"
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
@@ -1055,6 +1065,8 @@ internal class NoteCanvas(
             follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
             explain = explainNode,
+            resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { contextSummaries != null },
+            resummaryEnabled = content.canRun && summaryVersions.none { it.running },
             review = tab.review.presentation(content.summaries, ::toggleReviewed),
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
@@ -1209,8 +1221,8 @@ internal class NoteCanvas(
             })
             version(tab)?.let { selected ->
                 val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
-                add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} related summaries"
-                    else "$count of ${selected.request.nodeIds.size} related summaries rewritten").apply {
+                add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} summaries"
+                    else "$count of ${selected.request.nodeIds.size} summaries rewritten").apply {
                     name = "summary-version-status"
                     foreground = UIUtil.getContextHelpForeground()
                     toolTipText = text
@@ -1258,10 +1270,83 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
         }
 
-    private fun startContextSummaries(tab: SummariesTab) {
+    internal var requestResummaryInstructions: (SummaryNode, Boolean) -> String? = { node, recursive ->
+        ResummaryDialog(this, node, recursive).let { if (it.showAndGet()) it.instructions else null }
+    }
+
+    private fun resummarize(tab: SummariesTab, node: SummaryNode, recursive: Boolean) {
+        if (contextSummaries == null || summaries?.canRun != true || summaryVersions.any { it.running }) return
+        val current = reading(tab) ?: return
+        val instructions = requestResummaryInstructions(node, recursive) ?: return
+        startContextSummaries(tab, resummaryRequest(current, node, recursive, instructions))
+    }
+
+    /**
+     * Fill or regenerate one topic, file or level of the topic hierarchy without waiting for the whole hierarchy. Regeneration
+     * rewrites topics only: file summaries are shared with the Summaries card, where Resummarize opens them as a version.
+     */
+    private fun topicEntryMenu(content: TopicsCard): ((String) -> JPopupMenu)? {
+        if (contextSummaries == null || saveTopicSummaries == null) return null
+        val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
+        val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
+        return { identity ->
+            JPopupMenu().apply {
+                val node = nodes[identity] ?: return@apply
+                val enabled = content.canRun && !topicSummariesRunning
+                fun item(label: String, enabled: Boolean, tooltip: String, action: () -> Unit) = add(JMenuItem(label).apply {
+                    name = "topic-summary-action:$label"
+                    isEnabled = enabled
+                    toolTipText = tooltip
+                    addActionListener { action() }
+                })
+                item("Fill summaries", enabled && fillSummaryRequest(seeded, node).nodeIds.isNotEmpty(),
+                    "Write the missing summaries of this entry and everything beneath it") { summarizeTopic(identity, null) }
+                if (node.isTopicBranch) {
+                    item("Resummarize", enabled, "Regenerate this topic's summary from the summaries beneath it") { summarizeTopic(identity, false) }
+                    item("Resummarize all", enabled, "Regenerate this topic and every sub-topic beneath it") { summarizeTopic(identity, true) }
+                }
+            }
+        }
+    }
+
+    /** Fills the missing summaries beneath [identity] when [recursive] is null, else regenerates it, saving into the review. */
+    private fun summarizeTopic(identity: String, recursive: Boolean?) {
+        val launcher = contextSummaries ?: return
+        val save = saveTopicSummaries ?: return
+        val content = topics ?: return
+        if (!content.canRun || topicSummariesRunning) return
+        val seeded = seedTopicSummaries(content.topicSummaries, content.summaries)
+        val node = seeded.tree.nodes.firstOrNull { it.identity == identity } ?: return
+        val request = if (recursive == null) fillSummaryRequest(seeded, node) else {
+            val instructions = requestResummaryInstructions(node, recursive) ?: return
+            resummaryRequest(seeded, node, recursive, instructions) { it.isTopicBranch }
+        }
+        // The dialog is modal; the topics may have changed or another run started meanwhile.
+        if (request.nodeIds.isEmpty() || topics !== content || topicSummariesRunning) return
+        val start = if (request.regenerate) seeded.without(request.nodeIds) else seeded
+        var latest = start
+        var finished = false
+        topicSummaryStatus = "${request.label}…"
+        val job = launcher.launch(start, request, updated = { latest = it; save(it, request.nodeIds) }) { result ->
+            finished = true
+            topicSummaryJob = null
+            topicSummaryStatus = result.fold({ run ->
+                run.error ?: "Some summaries could not be written. Run ${request.label} again to retry."
+                    .takeIf { request.nodeIds.any { run.summaries.text(it) == null } }
+            }, { it.message ?: "Summarizing stopped." })
+            // Saving also lets the review render its cards without the finished run.
+            save(result.getOrNull()?.summaries ?: latest, request.nodeIds)
+            refreshTopics()
+        }
+        if (!finished) topicSummaryJob = job
+        save(start, request.nodeIds)
+        refreshTopics()
+    }
+
+    private fun startContextSummaries(tab: SummariesTab, explicit: ContextSummaryRequest? = null) {
         val launcher = contextSummaries ?: return
         val current = reading(tab) ?: return
-        val request = contextSummaryRequest(tab) ?: return
+        val request = explicit ?: contextSummaryRequest(tab) ?: return
         if (summaryVersions.any { it.running }) return
         val version = ContextSummaryVersion(++summaryVersionCount, request, current.without(request.nodeIds))
         summaryVersions += version
@@ -1280,7 +1365,7 @@ internal class NoteCanvas(
                 if (version in summaryVersions && version.running) {
                     version.running = false
                     version.error = result.fold({ run ->
-                        run.error ?: "Some related summaries could not be rewritten. Resummarize with context to try again."
+                        run.error ?: "Some summaries could not be rewritten. Run resummarization again to retry."
                             .takeIf { request.nodeIds.any { run.summaries.text(it) == null } }
                     }, { it.message ?: "Resummarizing stopped." })
                     summaryTabs().forEach { refreshSummaries(it) }
@@ -1771,6 +1856,7 @@ internal class NoteCanvas(
     private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
     override fun dispose() {
         summaryVersions.forEach { it.job?.cancel() }
+        topicSummaryJob?.cancel()
         summaryTabs().forEach { it.trace.stop(); it.review.stop() }
         topicsTrace.stop()
         topicsReview.stop()

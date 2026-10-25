@@ -152,6 +152,9 @@ class ChangeSummarizer internal constructor(
         nodeIds: Set<Int>? = null,
         /** Adds query context without changing the normal summary instructions or the explicit /summaries focus. */
         queryContext: String = "",
+        /** Optional instructions for this regeneration, preserved in full including paragraph breaks. */
+        instructions: String = "",
+        reuseSingleChildren: Boolean = true,
     ): ChangeSummaryRun {
         var current = start
         val tries = HashMap<Int, Int>()
@@ -165,16 +168,18 @@ class ChangeSummarizer internal constructor(
             Include query-relevant details only when essential to understanding the main behavior; keep the
             summary brief and do not invent a connection.
         """.trimIndent()
-        val leafSystem = evidence.leafSystem(start.tree, focus) + context
-        val branchSystem = evidence.branchSystem(focus) + context
-        val topicSystem = evidence.branchSystem("") + "\n\n" + TOPIC_SUMMARY_GUIDANCE + summaryFocusLine(focus) + context
+        val custom = instructions.trim().takeIf { it.isNotEmpty() }
+            ?.let { "\n\nUser instructions for this summary generation:\n$it" }.orEmpty()
+        val leafSystem = evidence.leafSystem(start.tree, focus) + context + custom
+        val branchSystem = evidence.branchSystem(focus) + context + custom
+        val topicSystem = evidence.branchSystem("") + "\n\n" + TOPIC_SUMMARY_GUIDANCE + summaryFocusLine(focus) + context + custom
         suspend fun progress() = onProgress(
             nodeIds?.count { current.text(it) != null } ?: current.count, nodeIds?.size ?: current.total)
         progress()
         while (true) {
             val ready = current.ready().filter { (nodeIds == null || it in nodeIds) && (tries[it] ?: 0) < options.attempts }.sorted()
             if (ready.isEmpty()) break
-            val (reused, asked) = ready.map { current.tree[it] }.partition { it.children.size == 1 }
+            val (reused, asked) = ready.map { current.tree[it] }.partition { reuseSingleChildren && it.children.size == 1 }
             if (reused.isNotEmpty()) {
                 val texts = reused.associate { it.id to current.text(it.children.single())!! }
                 mutex.withLock {

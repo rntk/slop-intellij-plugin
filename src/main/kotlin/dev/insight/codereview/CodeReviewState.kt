@@ -17,6 +17,7 @@ import dev.insight.diff.SummaryNode
 import dev.insight.diff.buildSummaryTree
 import dev.insight.diff.buildTopicSummaryTree
 import dev.insight.diff.seedTopicSummaries
+import dev.insight.diff.targetedEntries
 
 /** The summary tree of code files: folders and files, with the parts of large files beneath them. */
 internal fun codeSummaryTree(files: List<CodeFile>): ChangeSummaryTree =
@@ -204,6 +205,12 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             }
         }
         persist()
+        return topicSummaries
+    }
+
+    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the code changed. */
+    fun replaceTopicSummaries(updated: ChangeSummaries, ids: Set<Int>): ChangeSummaries {
+        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
         return topicSummaries
     }
 

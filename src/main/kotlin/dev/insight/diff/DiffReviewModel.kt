@@ -272,6 +272,12 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return topicSummaries
     }
 
+    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the diff changed. */
+    fun replaceTopicSummaries(updated: ChangeSummaries, ids: Set<Int>): ChangeSummaries {
+        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
+        return topicSummaries
+    }
+
     fun clearSummaries() { summaries = ChangeSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }

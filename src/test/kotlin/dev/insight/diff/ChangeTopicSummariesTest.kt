@@ -71,6 +71,74 @@ class ChangeTopicSummariesTest {
         assertEquals(before, requests)
     }
 
+    @Test fun `one topic fills and resummarizes without the rest of the hierarchy`() = runBlocking {
+        val state = DiffReviewState()
+        state.update(ReviewSnapshot(listOf(file("a.kt"), file("b.kt"), file("c.kt"), file("d.kt")), emptyList()))
+        state.assignTopic(state.revision, "a.kt", "Storage > Wallet")
+        state.assignTopic(state.revision, "b.kt", "Storage > Wallet")
+        state.assignTopic(state.revision, "c.kt", "Storage > Ledger")
+        state.assignTopic(state.revision, "d.kt", "UI > Checkout")
+        val sharedA = state.summaries.tree.nodes.single { it.path == "a.kt" && it.kind == SummaryKind.FILE }
+        state.summarize(state.revision, mapOf(sharedA.id to "Existing summary"))
+        val tree = state.topicSummaries.tree
+        fun node(identity: String) = tree.nodes.single { it.identity == identity }
+        val storage = node("topic:storage")
+        val wallet = node("topic:storage > wallet")
+        val ledger = node("topic:storage > ledger")
+        val systems = mutableListOf<String>()
+        val summarizer = ChangeSummarizer({ request ->
+            systems += request.messages.first().content
+            val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
+            Completion("{\"summaries\":[${nodes.joinToString { "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated ${systems.size}\"}" }}]}")
+        }, null)
+        suspend fun run(start: ChangeSummaries, request: ContextSummaryRequest) {
+            var current = start
+            summarizer.run(start, "", save = { entries ->
+                current = current.summarize(entries, reuseSingleChildren = false)
+                state.replaceTopicSummaries(current, request.nodeIds)
+                current
+            }, nodeIds = request.nodeIds, instructions = request.instructions, reuseSingleChildren = !request.regenerate)
+        }
+
+        val seeded = seedTopicSummaries(state.topicSummaries, state.summaries)
+        val fill = fillSummaryRequest(seeded, wallet)
+        assertEquals(setOf(wallet.id, node("file:b.kt").id), fill.nodeIds)
+        run(seeded, fill)
+        assertNotNull(state.topicSummaries.text(wallet.id))
+        // The seeded file summary the topic was written from is saved with it; the rest of the hierarchy waits.
+        assertEquals("Existing summary", state.topicSummaries.text(node("file:a.kt").id))
+        assertNull(state.topicSummaries.text(storage.id))
+        assertNull(state.topicSummaries.text(node("file:c.kt").id))
+        assertNull(state.topicSummaries.text(node("file:d.kt").id))
+        assertNotNull(state.summaries.text(state.summaries.tree.nodes.single { it.path == "b.kt" && it.kind == SummaryKind.FILE }.id))
+
+        // A higher level fills only what is still missing beneath it.
+        val partial = seedTopicSummaries(state.topicSummaries, state.summaries)
+        val level = fillSummaryRequest(partial, storage)
+        assertEquals(setOf(storage.id, ledger.id, node("file:c.kt").id), level.nodeIds)
+        run(partial, level)
+        assertNotNull(state.topicSummaries.text(storage.id))
+        assertNull(state.topicSummaries.text(node("file:d.kt").id))
+
+        val filled = seedTopicSummaries(state.topicSummaries, state.summaries)
+        val files = tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.id to filled.text(it.id) }
+        val request = resummaryRequest(filled, storage, recursive = true, "Focus on balances") { it.isTopicBranch }
+        assertEquals(setOf(storage.id, wallet.id, ledger.id), request.nodeIds)
+        val before = systems.size
+        run(filled.without(request.nodeIds), request)
+        assertTrue(systems.drop(before).all { it.contains("Focus on balances") })
+        assertEquals("Generated ${systems.size}", state.topicSummaries.text(storage.id))
+        assertNotEquals(filled.text(wallet.id), state.topicSummaries.text(wallet.id))
+        files.forEach { (id, text) -> assertEquals(text, state.topicSummaries.text(id)) }
+
+        // A run that finishes after the topics changed saves nothing.
+        val stale = state.topicSummaries
+        state.assignTopic(state.revision, "d.kt", "Storage > Wallet")
+        val reclassified = state.topicSummaries
+        state.replaceTopicSummaries(ChangeSummaries(stale.tree, mapOf(0 to "Late")), setOf(0))
+        assertSame(reclassified, state.topicSummaries)
+    }
+
     @Test fun `topic metadata survives identity changes and large topic sets`() = runBlocking {
         val files = (1..10).flatMap { topic -> (1..10).map { file("T$topic/F$it.kt") } }
         val topics = ChangeTopics(files, files.associate { it.path to it.path.substringBefore('/') })

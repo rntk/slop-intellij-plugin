@@ -307,6 +307,7 @@ internal class ChangeSummarySplitPanel(
         actions.wholeFileAction(node)?.let { item("Open file", action = it) }
         actions.directoryAction(node)?.let { item("Open diff", action = it) }
         actions.explainAction(node)?.let { item("Explain", card.canRun, it) }
+        actions.addResummaryItems(this, node)
         val review = actions.review ?: return@apply
         review.menuItem(node)?.let { reviewed ->
             addSeparator()
