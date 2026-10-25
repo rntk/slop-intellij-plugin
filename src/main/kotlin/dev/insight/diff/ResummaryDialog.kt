@@ -10,8 +10,14 @@ import java.awt.Component
 import javax.swing.JComponent
 import javax.swing.JPanel
 
-/** Collects optional instructions before creating a regenerated summary version. */
-internal class ResummaryDialog(parent: Component, node: SummaryNode, recursive: Boolean) : DialogWrapper(parent, false) {
+internal enum class ResummaryDestination(val confirmation: String) {
+    VERSION("The result opens as a new summary version."),
+    TOPICS("The result replaces the selected topic summaries in this review."),
+}
+
+/** Collects optional instructions and explains where regenerated summaries are saved. */
+internal class ResummaryDialog(parent: Component, node: SummaryNode, recursive: Boolean,
+                               destination: ResummaryDestination) : DialogWrapper(parent, false) {
     private val text = JBTextArea(6, 60).apply {
         name = "resummary-instructions"
         lineWrap = true
@@ -20,8 +26,11 @@ internal class ResummaryDialog(parent: Component, node: SummaryNode, recursive: 
     }
     val instructions: String get() = text.text.trim()
 
+    private val confirmation = destination.confirmation
     private val heading = node.entryLabel
-    private val description = if (recursive) "Regenerate this entry and every entry beneath it."
+    private val description = if (recursive && destination == ResummaryDestination.TOPICS)
+        "Regenerate this topic and every subtopic beneath it, keeping existing file summaries."
+        else if (recursive) "Regenerate this entry and every entry beneath it."
         else "Regenerate this entry using existing child summaries where available."
 
     init {
@@ -33,7 +42,7 @@ internal class ResummaryDialog(parent: Component, node: SummaryNode, recursive: 
     override fun createCenterPanel(): JComponent = JPanel(VerticalLayout(JBUI.scale(8))).apply {
         add(JBLabel(heading))
         add(JBLabel(description))
-        add(JBLabel("The result opens as a new summary version."))
+        add(JBLabel(confirmation))
         add(JBLabel("Custom instructions (optional):"))
         add(JBScrollPane(text))
     }

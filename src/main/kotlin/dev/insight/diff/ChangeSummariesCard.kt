@@ -1068,6 +1068,7 @@ internal class ChangeSummaryActions(
         val run = resummarize ?: return
         if (node.files.isEmpty() || node.isTopicBranch) return
         for ((label, recursive) in listOf("Resummarize" to false, "Resummarize all" to true)) {
+            if (recursive && node.children.isEmpty()) continue
             menu.add(JMenuItem(label).apply {
                 name = "summary-action:$label"
                 isEnabled = resummaryEnabled
