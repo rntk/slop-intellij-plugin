@@ -77,7 +77,7 @@ internal fun topicReadingSummaries(topics: ChangeSummaries, shared: ChangeSummar
         val node = tree[old]
         val id = nodes.size
         nodes += node.copy(id = id, parent = parent, children = emptyList())
-        val text = if (node.kind == SummaryKind.FILE) fileTexts[node.path] ?: topics.text(old) else topics.text(old) ?: byFiles[node.files.toSet()]
+        val text = if (node.kind == SummaryKind.FILE) fileTexts[node.path] ?: topics.text(old) else topics.text(old) ?: byFiles[node.files.toSet()]?.first
         text?.let { texts[id] = it }
         val children = shown(old).map { visit(it, id) }
         nodes[id] = nodes[id].copy(children = children)
@@ -93,15 +93,22 @@ internal fun topicReadingSummaries(topics: ChangeSummaries, shared: ChangeSummar
  */
 internal fun seedTopicSummaries(topics: ChangeSummaries, shared: ChangeSummaries): ChangeSummaries {
     val byFiles = summariesByFiles(shared)
-    val parts = shared.tree.nodes.filter { it.kind == SummaryKind.CHUNK }.mapNotNull { node -> shared.text(node.id)?.let { node.key to it } }.toMap()
+    val parts = shared.tree.nodes.filter { it.kind == SummaryKind.CHUNK }.mapNotNull { node ->
+        shared.text(node.id)?.let { node.key to (it to (node.id in shared.cachedIds)) }
+    }.toMap()
+    val cached = hashSetOf<Int>()
     val texts = topics.tree.nodes.mapNotNull { node ->
         val seed = if (node.kind == SummaryKind.CHUNK) parts[node.key] else byFiles[node.files.toSet()]
-        (topics.text(node.id) ?: seed)?.let { node.id to it }
+        val existing = topics.text(node.id)?.let { it to (node.id in topics.cachedIds) }
+        (existing ?: seed)?.let { (text, fromCache) ->
+            if (fromCache) cached += node.id
+            node.id to text
+        }
     }.toMap()
-    return ChangeSummaries(topics.tree, texts)
+    return ChangeSummaries(topics.tree, texts, cached)
 }
 
 /** Summaries by the exact set of files beneath their node, deepest last; parts of files are left out. */
-private fun summariesByFiles(summaries: ChangeSummaries): Map<Set<String>, String> = summaries.tree.nodes
+private fun summariesByFiles(summaries: ChangeSummaries): Map<Set<String>, Pair<String, Boolean>> = summaries.tree.nodes
     .filter { it.kind != SummaryKind.CHUNK }
-    .mapNotNull { node -> summaries.text(node.id)?.let { node.files.toSet() to it } }.toMap()
+    .mapNotNull { node -> summaries.text(node.id)?.let { node.files.toSet() to (it to (node.id in summaries.cachedIds)) } }.toMap()

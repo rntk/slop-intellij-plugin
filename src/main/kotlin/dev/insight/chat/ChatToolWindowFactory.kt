@@ -149,10 +149,23 @@ class ChatPanel(
         val lastReply = messages.indexOfLast { it.role == ChatMessage.ASSISTANT }
         messages.forEachIndexed { index, message ->
             if (message.role == ChatMessage.TOOL) {
-                // Tool calls are compact progress lines rather than full messages.
-                transcript.add(JBLabel("Tool · ${message.text}", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER).apply {
-                    border = JBUI.Borders.empty(2, 8)
+                transcript.add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
+                    border = JBUI.Borders.empty(4, 8)
                     alignmentX = LEFT_ALIGNMENT
+                    add(JBLabel("Tool · ${message.text}", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER).apply {
+                        toolTipText = message.toolCall?.let { "${it.name}(${it.arguments})" }
+                    }, BorderLayout.NORTH)
+                    message.toolCall?.let { event ->
+                        add(JBScrollPane(JBTextArea(event.result).apply {
+                            isEditable = false
+                            lineWrap = true
+                            wrapStyleWord = true
+                            columns = 24
+                            rows = event.result.lineSequence().count().coerceIn(1, 6)
+                            caretPosition = 0
+                        }), BorderLayout.CENTER)
+                    }
+                    maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
                 })
                 return@forEachIndexed
             }

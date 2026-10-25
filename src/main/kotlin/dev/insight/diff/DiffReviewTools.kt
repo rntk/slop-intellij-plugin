@@ -172,7 +172,7 @@ internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "
     a historical after-side is not the working tree. Use the corresponding side's line numbers.
     Use before for removed code and include the side when citing a diff location. Symbol discovery is available
     only where current project source matches the snapshot after-side; otherwise use snapshot source locations.
-""".trimIndent()
+""".trimIndent() + "\n\n" + dev.insight.chat.projectContextPrompt
 
 /** Expands `/description [focus]` for the current turn only, so other questions keep a general prompt. */
 internal fun descriptionRequest(text: String): String {

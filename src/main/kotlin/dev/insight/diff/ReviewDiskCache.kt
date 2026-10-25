@@ -110,7 +110,9 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         }
         if (restored.isEmpty()) return current
         thisLogger().debug("Restored ${restored.size} of ${current.tree.summarizable.size} $name from the review cache")
-        return ChangeSummaries(current.tree, current.tree.nodes.mapNotNull { node -> current.text(node.id)?.let { node.id to it } }.toMap() + restored)
+        return ChangeSummaries(current.tree,
+            current.tree.nodes.mapNotNull { node -> current.text(node.id)?.let { node.id to it } }.toMap() + restored,
+            current.cachedIds + restored.keys)
     }
 
     fun restoreReviewed(current: ReviewedFiles, sources: List<ReviewSource>) {

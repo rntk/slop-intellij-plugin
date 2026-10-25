@@ -265,8 +265,12 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             .mapNotNull { node -> topicSummaries.text(node.id)?.let { node.path to it } }.toMap()
         val shared = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE && summaries.text(it.id) == null }
             .mapNotNull { node -> files[node.path]?.let { node.id to it } }.toMap()
+        val cachedPaths = topicSummaries.tree.nodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
+            .mapTo(hashSetOf()) { it.path }
+        val cached = summaries.tree.nodes.filter { it.path in cachedPaths }.mapTo(hashSetOf()) { it.id }
         shared.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
-            summaries = summaries.summarize(batch.associate { it.key to it.value })
+            val entries = batch.associate { it.key to it.value }
+            summaries = summaries.share(entries, cached.intersect(entries.keys))
         }
         persist()
         return topicSummaries

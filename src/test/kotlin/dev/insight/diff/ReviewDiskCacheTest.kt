@@ -26,6 +26,53 @@ class ReviewDiskCacheTest {
         while (!current().complete) save(current().ready().associateWith { "Generated summary $it" })
     }
 
+    @Test fun `focused code chat keeps the chosen version over cached summaries until generated in this tab`() {
+        val snapshot = snapshot().let { it.copy(files = it.files + CodeFile("b.kt", "/repo/b.kt", "fun b() = 2")) }
+        val original = code(snapshot)
+        fill({ original.summaries }) { original.summarize(original.revision, it) }
+        val chosen = original.summaries.summarize(mapOf(0 to "Chosen version"))
+        val focus = chatFocus(chosen.tree.root, chosen)
+        val chat = code(snapshot)
+        fun current() = focus.current(snapshot.byPath.keys, chat.summaries, chat.topicSummaries)
+        assertEquals("Chosen version", current().context.single().text)
+        val file = chat.summaries.tree.nodes.first { it.kind == SummaryKind.FILE }
+        chat.summarize(chat.revision, mapOf(file.id to "New file summary"))
+        assertEquals("Chosen version", current().context.single().text)
+        // Writing even the same text as the cache is a deliberate replacement of the chosen version.
+        val cachedRoot = original.summaries.text(0)!!
+        chat.summarize(chat.revision, mapOf(0 to cachedRoot))
+        assertEquals(cachedRoot, current().context.single().text)
+        chat.update(snapshot.copy(files = snapshot.files + CodeFile("c.kt", "/repo/c.kt", "fun c() = 3")))
+        val fileFocus = chatFocus(chosen.tree[file.id], chosen)
+        assertEquals("New file summary", fileFocus.current(chat.snapshot.byPath.keys, chat.summaries, chat.topicSummaries).context.last().text)
+    }
+
+    @Test fun `focused diff chat keeps chosen topic and file summaries over restored and seeded text`() {
+        val files = listOf("a.kt", "b.kt").map { ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash") }
+        val snapshot = ReviewSnapshot(files, emptyList())
+        fun load() = DiffReviewState(cache = cache()).apply { update(snapshot) }
+        val original = load()
+        fill({ original.summaries }) { original.summarize(original.revision, it) }
+        files.forEach { original.assignTopic(original.revision, it.path, "Application > Values") }
+        val reading = topicReadingSummaries(original.topicSummaries, original.summaries)
+        val chosen = reading.summarize(reading.tree.nodes.associate { it.id to "Chosen ${it.identity}" }, reuseSingleChildren = false)
+        val node = chosen.tree.nodes.first { it.kind == SummaryKind.FILE }
+        val focus = chatFocus(node, chosen)
+        val chat = load()
+        fun current() = focus.current(files.mapTo(hashSetOf()) { it.path }, chat.summaries, chat.topicSummaries)
+        assertEquals(focus.context, current().context)
+        chat.startTopicSummaries(chat.revision)
+        assertEquals(focus.context, current().context)
+        val restored = load()
+        assertEquals(focus.context, focus.current(files.mapTo(hashSetOf()) { it.path }, restored.summaries, restored.topicSummaries).context)
+        val file = chat.summaries.tree.nodes.single { it.path == node.path }
+        chat.summarize(chat.revision, mapOf(file.id to "New file summary"))
+        assertEquals(focus.context.dropLast(1).map { it.text } + "New file summary", current().context.map { it.text })
+        val topic = chat.topicSummaries.tree.nodes.single { it.identity == "topic:application > values" }
+        chat.summarizeTopics(chat.revision, mapOf(topic.id to "New topic summary"))
+        assertEquals(listOf("New topic summary", "New file summary"), current().context.map { it.text })
+    }
+
     @Test fun `code summaries topics and filled hierarchy survive fresh cache and state instances`() {
         val state = code()
         fill({ state.summaries }) { state.summarize(state.revision, it) }

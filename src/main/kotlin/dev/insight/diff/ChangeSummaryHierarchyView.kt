@@ -64,7 +64,7 @@ internal class ChangeSummaryHierarchyPanel(
             select = { actions.select(node.identity) },
             review = actions.review?.control(node, summaryFont()),
             explain = actions.explainAction(node), explainEnabled = card.canRun)
-        actions.installResummaryMenu(component, node)
+        actions.installEntryMenu(component, node)
         val height = if (collapsed) {
             rowsPlaced++
             val summary = summaries.text(node.id)
@@ -72,7 +72,7 @@ internal class ChangeSummaryHierarchyPanel(
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
             actions.review?.decorate(note, node)
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.score, actions.follow) { actions.toggle(node.identity) } }
-            actions.installResummaryMenu(note, node)
+            actions.installEntryMenu(note, node)
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
             val gap = scaled(ROW_GAP)
@@ -111,8 +111,8 @@ internal class ChangeSummaryHierarchyPanel(
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
         actions.review?.decorate(note, node)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, score = actions.score, follow = actions.follow)
-        actions.installResummaryMenu(leaf, node)
-        actions.installResummaryMenu(note, node)
+        actions.installEntryMenu(leaf, node)
+        actions.installEntryMenu(note, node)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
         add(leaf.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[node.identity] = leaf
@@ -227,7 +227,7 @@ internal class ChangeSummaryDocumentPanel(
                 name?.startsWith("summary:") == true -> nodesByPath[name.removePrefix("summary:")]
                 else -> null
             }
-            if (node != null && component is JComponent) actions.installResummaryMenu(component, node)
+            if (node != null && component is JComponent) actions.installEntryMenu(component, node)
             else if (component is java.awt.Container) component.components.forEach(::install)
         }
         components.forEach(::install)

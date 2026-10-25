@@ -43,7 +43,9 @@ import com.intellij.ui.tabs.TabsListener
 import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import dev.insight.diff.ChatFocus
 import dev.insight.diff.ReviewSidePages
+import dev.insight.diff.chatFocusTabName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -148,6 +150,7 @@ internal class CodeReviewPanel(
     private var disposed = false
     private var readyToOpenCanvas = startupReady
     private var selectingFromCanvas = false
+    private var chatActivations = 0
     private var refreshJob: Job? = null
     /** The applied folder; null until one is valid. */
     internal var scope: CodeScope? = null
@@ -296,6 +299,17 @@ internal class CodeReviewPanel(
             override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) selectedFile()?.let { openFile(it.path, null) } }
         })
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
+            object : DumbAwareAction("To Chat", "Chat about the selection in a new tab, with its summaries and source in context", AllIcons.Toolwindows.ToolWindowMessages) {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) { e.presentation.isEnabled = refreshJob?.isActive != true && selectedEntries().isNotEmpty() }
+                override fun actionPerformed(e: AnActionEvent) {
+                    val tab = selectedTab() ?: return
+                    tab.focusOn(selectedEntries())?.let { openChat(it, tab.state.scopePaths) } ?: run {
+                        status.text = "The selection is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+                        status.toolTipText = status.text
+                    }
+                }
+            },
             object : DumbAwareAction("Open in File View", "Read the file block by block with the topics of the code its calls reach", AllIcons.Actions.Preview) {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
                 override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = canViewSelectedFile() }
@@ -331,7 +345,8 @@ internal class CodeReviewPanel(
         project.messageBus.connect(this).apply {
             subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
                 override fun toolWindowShown(toolWindow: ToolWindow) {
-                    if (toolWindow.id == CODE_REVIEW_TOOL_WINDOW && readyToOpenCanvas && !disposed) openCanvas()
+                    if (toolWindow.id == CODE_REVIEW_TOOL_WINDOW && readyToOpenCanvas && !disposed &&
+                        !selectingFromCanvas && chatActivations == 0) openCanvas()
                 }
             })
             // Edits are picked up when saved: the file changes on disk under the scope.
@@ -487,10 +502,32 @@ internal class CodeReviewPanel(
         }
     }
 
-    private fun addTab(paths: Set<String>? = null) {
+    /**
+     * Opens a new tab with the scope [paths] whose chat is focused on [focus], and shows its chat. The canvas stays
+     * where it is, so To Chat from a summary does not replace the view it was chosen from.
+     */
+    private fun openChat(focus: ChatFocus, paths: Set<String>?) {
+        if (disposed) return
+        selectingFromCanvas = true
+        try { addTab(paths, focus) } finally { selectingFromCanvas = false }
+        ToolWindowManager.getInstance(project).getToolWindow(CODE_REVIEW_TOOL_WINDOW)?.let { window ->
+            // Activation may show the window asynchronously, after the tab-selection guard has been released.
+            chatActivations++
+            try { window.activate { chatActivations-- } }
+            catch (e: Exception) { chatActivations--; throw e }
+        }
+        pages.selectChat()
+    }
+
+    private fun addTab(paths: Set<String>? = null, focus: ChatFocus? = null) {
         val number = nextTab++
-        val name = if (number == 1) "Whole scope" else if (paths == null) "Review $number" else "Selection $number"
-        val tab = CodeReviewTab(project, paths, ::selectedPaths, ::openFile)
+        val name = when {
+            focus != null -> chatFocusTabName(focus)
+            number == 1 -> "Whole scope"
+            paths == null -> "Review $number"
+            else -> "Selection $number"
+        }
+        val tab = CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = { openChat(it, paths) })
         Disposer.register(this, tab)
         reviewTabs += tab
         snapshot?.let { tab.update(it) }

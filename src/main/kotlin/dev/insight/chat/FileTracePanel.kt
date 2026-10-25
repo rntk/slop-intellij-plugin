@@ -68,7 +68,7 @@ internal class FileTracePanel(
         }, BorderLayout.NORTH)
         add(JBScrollPane(table), BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
-        status.toolTipText = "Percentage of snapshot content characters sent to the model in successful requests. Overlapping reads count once."
+        status.toolTipText = "Percentage of content sent to the model in successful requests. Project means current project content; other versions are review snapshots. Presentation calls alone do not count as model reads. Overlapping reads count once."
         val links = RangeCells()
         table.columnModel.getColumn(3).apply { cellRenderer = links; cellEditor = links }
         table.rowSorter.addRowSorterListener { updateRowHeights() }

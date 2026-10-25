@@ -1063,8 +1063,15 @@ internal class ChangeSummaryActions(
     val review: SummaryReviewPresentation? = null,
     val resummarize: ((SummaryNode, Boolean) -> Unit)? = null,
     val resummaryEnabled: Boolean = true,
+    /** Open a new review tab whose chat is focused on an entry; null hides To Chat. */
+    val toChat: ((SummaryNode) -> Unit)? = null,
 ) {
-    fun addResummaryItems(menu: JPopupMenu, node: SummaryNode) {
+    fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
+        if (toChat != null && node.files.isNotEmpty()) menu.add(JMenuItem("To Chat").apply {
+            name = "summary-action:To Chat"
+            toolTipText = "Chat about this entry in a new tab, with its summaries and evidence in context"
+            addActionListener { toChat(node) }
+        })
         val run = resummarize ?: return
         if (node.files.isEmpty() || node.isTopicBranch) return
         for ((label, recursive) in listOf("Resummarize" to false, "Resummarize all" to true)) {
@@ -1077,9 +1084,9 @@ internal class ChangeSummaryActions(
         }
     }
 
-    fun installResummaryMenu(component: JComponent, node: SummaryNode) {
-        if (resummarize == null) return
-        installSummaryEntryMenu(component) { JPopupMenu().also { addResummaryItems(it, node) } }
+    fun installEntryMenu(component: JComponent, node: SummaryNode) {
+        if (resummarize == null && toChat == null) return
+        installSummaryEntryMenu(component) { JPopupMenu().also { addEntryItems(it, node) } }
     }
 
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {
@@ -1226,7 +1233,7 @@ internal class ChangeSummariesPanel(
                 listOfNotNull(summaryText.takeIf { summary == null || !state.traced(node) }))
                 .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            actions.installResummaryMenu(this, node)
+            actions.installEntryMenu(this, node)
         }
     }
 

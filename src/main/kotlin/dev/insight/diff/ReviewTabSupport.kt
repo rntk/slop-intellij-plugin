@@ -227,6 +227,9 @@ internal class ReviewSidePages(main: JComponent) : JTabbedPane() {
         chatHost.repaint()
     }
 
+    /** Switches to the Chat page, which focuses its input. */
+    fun selectChat() { selectedIndex = CHAT }
+
     private companion object {
         const val CHAT = 1
     }

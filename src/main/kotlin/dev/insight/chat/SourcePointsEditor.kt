@@ -32,9 +32,9 @@ internal data class SourcePointView(val point: SourcePoint, val text: String)
 internal fun sourcePointView(point: SourcePoint, source: String): SourcePointView {
     val text = StringUtil.convertLineSeparators(source)
     val count = text.count { it == '\n' } + 1
-    if (point.line < 1 || point.endLine < point.line || point.endLine > count)
+    if (point.line < 1 || point.endLine < point.line || point.line > count)
         throw ToolInputException("${point.path} has $count lines; use a range within the file.")
-    return SourcePointView(point, text)
+    return SourcePointView(point.copy(endLine = minOf(point.endLine, count)), text)
 }
 
 /** One conversation's source locations. All access is on the EDT; closing the view retains its locations. */
@@ -51,9 +51,10 @@ internal class SourcePoints(private val project: Project, title: String) : Dispo
         points += view
         listeners.toList().forEach { it() }
         FileEditorManager.getInstance(project).openFile(file, false)
-        return "Showing ${point.path}:${point.line}" +
-            (if (point.endLine == point.line) "" else "-${point.endLine}") +
-            (point.side?.let { " ($it)" } ?: "") + " in side-by-side column ${points.size}."
+        val shown = view.point
+        return "Showing ${shown.path}:${shown.line}" +
+            (if (shown.endLine == shown.line) "" else "-${shown.endLine}") +
+            (shown.side?.let { " ($it)" } ?: "") + " in side-by-side column ${points.size}."
     }
 
     fun clear() {

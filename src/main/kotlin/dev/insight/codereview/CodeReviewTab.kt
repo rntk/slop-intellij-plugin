@@ -21,13 +21,19 @@ import dev.insight.chat.ChatMessage
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
 import dev.insight.chat.ChatSettings
+import dev.insight.chat.ChatTool
 import dev.insight.chat.LlmChatBackend
+import dev.insight.chat.projectContextTools
 import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.TraceFile
 import dev.insight.chat.tracedFileCompletion
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.diff.ChangeSummaries
+import dev.insight.diff.ChatFocus
+import dev.insight.diff.chatFocus
+import dev.insight.diff.chatFocusPrompt
+import dev.insight.diff.current
 import dev.insight.diff.ExplainDialog
 import dev.insight.diff.ExplainResults
 import dev.insight.diff.ExplainTarget
@@ -102,6 +108,10 @@ internal class CodeReviewTab(
     private val selectedPaths: () -> List<String>,
     private val openFile: (path: String, line: Int?) -> Unit,
     private val complete: (suspend (CompletionRequest) -> Completion)? = null,
+    /** Pinned to every turn of this tab's chat; see [ChatFocus]. */
+    val focus: ChatFocus? = null,
+    /** Opens a new tab whose chat is focused on a summary entry. */
+    private val toChat: (ChatFocus) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = CodeReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
@@ -164,6 +174,7 @@ internal class CodeReviewTab(
         showFileLines = { path, lines -> showSourceBlock(path, lines) },
         removeFileView = { closeFileView() },
         explainNode = { node -> explain(node) },
+        chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
     )
 
     /** The file shown in File view, its structure once analyzed or why it could not be, and the analysis in progress. */
@@ -186,7 +197,9 @@ internal class CodeReviewTab(
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
     private val explanations = ExplainResults()
-    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
+    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
+        "Ask about ${focus.label}. Its summaries and source are in this chat's context; other project files are read when a " +
+            "question needs them." else
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility. " +
             "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
@@ -199,10 +212,14 @@ internal class CodeReviewTab(
 
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-                val (context, scopeName) = withContext(Dispatchers.EDT) { captureContext() to promptScope() }
+                val (context, scopeName, turnFocus) = withContext(Dispatchers.EDT) {
+                    Triple(captureContext(), promptScope(),
+                        focus?.current(state.snapshot.byPath.keys, state.summaries, state.topicSummaries))
+                }
                 val question = messages.lastOrNull()?.text.orEmpty()
+                val rawComplete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
                 val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
-                    this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete)
+                    rawComplete)
                 if (isTopicsRequest(question)) {
                     val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                     if (!confirm(requests, "topics")) return cancelledReply(requests)
@@ -257,10 +274,14 @@ internal class CodeReviewTab(
                 val request = if (explain == null) messages else messages.dropLast(1) + messages.last().copy(text = explainRequest(explain,
                     diff = false, (chart as? ExplainChartResult.Ready)?.chart?.functions, (chart as? ExplainChartResult.Unavailable)?.reason))
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                return LlmChatBackend(complete, codeReviewTools(context) + chartTools,
-                    codeReviewPrompt(scopeName) + if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt(),
-                    maxContextChars = 160_000, maxToolRounds = 100, context = { context.overview() },
-                    contextLabel = "Current code scope", evictionTarget = 0.7)
+                return LlmChatBackend(rawComplete,
+                    chatTools(context) + chartTools,
+                    codeReviewPrompt(scopeName) + (if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt()) +
+                        focusPrompt(context.snapshot, turnFocus),
+                    maxContextChars = 160_000, maxToolRounds = 100,
+                    context = if (turnFocus == null) { { context.overview() } }
+                        else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
+                    contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)
                     .reply(request, onToolCall)
             }
         }
@@ -515,6 +536,28 @@ internal class CodeReviewTab(
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
     private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
 
+    /** The focus of a To Chat on the files and folders [entries] of this tab's scope; null when they reach no file. */
+    fun focusOn(entries: List<String>): ChatFocus? = chatFocus(entries, state.snapshot.files.map { it.path }, state.summaries)
+
+    /** The pinned focus for a turn on [snapshot], numbered like read_code; empty without a focus. */
+    private fun focusPrompt(snapshot: CodeSnapshot, focus: ChatFocus?): String {
+        focus ?: return ""
+        return "\n\n" + chatFocusPrompt(focus, "code", READ_CODE_TOOL) { path, lines ->
+            snapshot.byPath[path]?.let { file -> numberedLines(file, lines ?: 1..file.lineCount) }
+        }
+    }
+
+    /**
+     * The per-turn overview of a focused chat: only the focused files, with their notes and source blocks. Their source and
+     * summaries are already pinned by [focusPrompt]; the rest of the scope is left to the tools.
+     */
+    private fun focusOverview(snapshot: CodeSnapshot, focus: ChatFocus): String {
+        val paths = focus.files.toSet()
+        return codeOverview(snapshot.copy(files = snapshot.files.filter { it.path in paths }), state.scopePaths,
+            selectedPaths().filter { it in paths }, state.notes.filter { note -> note.paths.any { it in paths } },
+            state.sources.filter { it.range.path in paths }, summaries = null)
+    }
+
     private fun promptScope(): String {
         val scope = state.snapshot.scope
         val name = if (scope.entry) "the entry file ${scope.path} and the project files it depends on (imports, calls and references, " +
@@ -529,6 +572,7 @@ internal class CodeReviewTab(
         val paths = state.scopePaths
         val files = "${snapshot.files.size} ${if (snapshot.files.size == 1) "file" else "files"}"
         scopeLabel.text = if (paths == null) "Scope: ${snapshot.scope.displayName} · $files" else "Scope: ${paths.size} selected · $files"
+        focus?.let { scopeLabel.text += " · Focus: ${it.label}" }
         if (pendingSnapshot != null) scopeLabel.text += " · update waits for the run"
         scopeLabel.toolTipText = buildString {
             append(snapshot.scope.absolutePath.ifEmpty { snapshot.scope.displayName })
@@ -548,6 +592,10 @@ internal class CodeReviewTab(
         canvas.highlight(selectedPaths().toSet())
     }
 
+    /** Snapshot tools stay scoped; current project files remain readable for supporting context. */
+    internal fun chatTools(context: CodeReviewContext): List<ChatTool> =
+        codeReviewTools(context) + projectContextTools(project)
+
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two snapshots. */
     internal fun captureContext(): CodeReviewContext {
         if (disposed) throw ToolInputException("This review tab is closed")
@@ -560,7 +608,8 @@ internal class CodeReviewTab(
             if (disposed) throw ToolInputException("This review tab is closed")
             live.check(capturedRevision)
         }
-        fun file(path: String) = captured.byPath[path] ?: throw ToolInputException("$path is not a file in this review's scope.")
+        fun file(path: String) = captured.byPath[path] ?: throw ToolInputException(
+            "$path has no source in this snapshot. Use read_file or point_to_code for current project context.")
         fun symbols() = DiffSymbols(project, captured.files.map { SymbolFile(it.path, it.absolutePath, it.text) },
             stale = { path -> "$path changed since the code snapshot. Wait for the refresh, then retry or use a file note without symbol." },
             missing = { path -> "$path is not a file in this review's scope." },
@@ -569,7 +618,9 @@ internal class CodeReviewTab(
             override suspend fun pointToCode(point: dev.insight.chat.SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 if (point.side != null) throw ToolInputException("Code review has no diff sides")
-                sourcePoints.show(point, file(point.path).text)
+                val sourceFile = captured.byPath[point.path]
+                if (sourceFile == null) dev.insight.chat.showProjectSource(project, sourcePoints, point)
+                else sourcePoints.show(point, sourceFile.text)
             }
 
             override val snapshot: CodeSnapshot get() = captured
@@ -761,3 +812,11 @@ internal fun sourceBlockRange(file: CodeFile, lines: IntRange?): DiffSourceRange
 internal fun findSourceFile(project: Project, path: String, absolutePath: String?): VirtualFile? =
     absolutePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }?.takeIf { it.isValid && !it.isDirectory }
         ?: codeScopeRoots(project).firstNotNullOfOrNull { it.findFileByRelativePath(path) }?.takeIf { it.isValid && !it.isDirectory }
+
+/** The 1-based [range] of [file], each line prefixed with its number so the model can cite path:line. */
+internal fun numberedLines(file: CodeFile, range: IntRange): String {
+    if (file.lineCount == 0) return ""
+    val first = range.first.coerceIn(1, file.lineCount)
+    return file.lines(first..range.last.coerceIn(first, file.lineCount)).lineSequence()
+        .withIndex().joinToString("\n") { (i, line) -> "${first + i}: $line" }
+}

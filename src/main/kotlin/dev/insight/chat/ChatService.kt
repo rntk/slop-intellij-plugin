@@ -71,7 +71,7 @@ open class ChatSession(
                         createBackend().reply(request) { event ->
                             withContext(Dispatchers.EDT) {
                                 fileTrace.tool(event)
-                                history += ChatMessage(ChatMessage.TOOL, describe(event))
+                                history += ChatMessage(ChatMessage.TOOL, describe(event), toolCall = event)
                                 notifyViews()
                             }
                         }

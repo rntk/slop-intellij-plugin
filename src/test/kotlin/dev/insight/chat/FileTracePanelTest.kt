@@ -8,6 +8,7 @@ import com.intellij.ui.components.labels.LinkLabel
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmMessage
+import dev.insight.llm.LlmToolCall
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -151,6 +152,52 @@ class FileTracePanelTest : BasePlatformTestCase() {
             assertEquals(0, table.rowCount)
             assertEquals(0, turns.itemCount)
             assertTrue(session.fileTraces.isEmpty())
+        } finally {
+            panel.dispose()
+            session.discard()
+            scope.cancel()
+        }
+    }
+
+    fun `test project tool output is visible in chat and read ranges appear in Files`() {
+        myFixture.addFileToProject("flows/AGENTS.md", "Keep it brief.\nUse a couple of links.")
+        val scope = CoroutineScope(SupervisorJob())
+        val session = object : ChatSession(project, scope) {
+            override fun createBackend(): ChatBackend {
+                var round = 0
+                return LlmChatBackend({
+                    when (round++) {
+                        0 -> Completion("", toolCalls = listOf(LlmToolCall("read", "read_file", JsonObject().apply {
+                            addProperty("path", "flows/AGENTS.md")
+                            addProperty("end_line", 200)
+                        })))
+                        1 -> Completion("", toolCalls = listOf(LlmToolCall("missing", "read_file", JsonObject().apply {
+                            addProperty("path", "missing.md")
+                        })))
+                        else -> Completion("Done")
+                    }
+                }, projectContextTools(project), projectChatSystemPrompt())
+            }
+        }
+        val panel = ChatPanel(project, session, showDashboard = false, showFileTrace = true)
+        try {
+            session.send("Check the rules")
+            PlatformTestUtil.waitWithEventsDispatching("Tool loop should finish", { !session.busy }, 10)
+            val toolMessages = session.messages.filter { it.role == ChatMessage.TOOL }
+            assertEquals(2, toolMessages.size)
+            assertTrue(controls(panel).filterIsInstance<JTextArea>().any { it.text == toolMessages[0].toolCall!!.result })
+            assertTrue(controls(panel).filterIsInstance<JTextArea>().any { it.text == toolMessages[1].toolCall!!.result })
+            assertTrue(toolMessages[1].toolCall!!.failed)
+            assertTrue(toolMessages[0].toolCall!!.result.contains("Keep it brief."))
+            controls(panel).filterIsInstance<JTabbedPane>().single().selectedIndex = 1
+            val table = controls(panel).filterIsInstance<JTable>().single()
+            val row = (0 until table.rowCount).single { table.getValueAt(it, 0) == "flows/AGENTS.md" }
+            assertEquals("Project", table.getValueAt(row, 1))
+            assertEquals("100.0%", table.getValueAt(row, 2))
+            assertEquals("1–2", table.getValueAt(row, 3))
+            val missing = (0 until table.rowCount).single { table.getValueAt(it, 0) == "missing.md" }
+            assertEquals("Unknown", table.getValueAt(missing, 2))
+            assertEquals(3, session.fileTraces.single().snapshot().requests.size)
         } finally {
             panel.dispose()
             session.discard()

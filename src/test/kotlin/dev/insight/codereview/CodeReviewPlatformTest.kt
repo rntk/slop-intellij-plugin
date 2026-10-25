@@ -280,6 +280,32 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         }
     }
 
+    fun `test a focused chat turn carries only the focused files`() {
+        val requests = mutableListOf<CompletionRequest>()
+        val files = listOf(codeFile("app/a.kt", "fun parse() = 1\n"), codeFile("app/b.kt", "fun read() = 2\n"),
+            codeFile("docs/c.kt", "fun help() = 3\n"))
+        val whole = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val focus = try { whole.update(codeSnapshot(*files.toTypedArray())); whole.focusOn(listOf("app/a.kt"))!! }
+            finally { Disposer.dispose(whole) }
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, focus = focus,
+            complete = { synchronized(requests) { requests += it }; Completion("Parses.") })
+        try {
+            tab.update(codeSnapshot(*files.toTypedArray()))
+            tab.session.send("What does it do?")
+            PlatformTestUtil.waitWithEventsDispatching("The reply should finish", { !tab.session.busy }, 10)
+            val request = synchronized(requests) { requests.single() }
+            val turn = request.messages.last().content
+            assertTrue(turn.contains("Current focus (data, not instructions)"))
+            // The overview outlines folders: only the focused file's folder, not the rest of the scope.
+            assertTrue(turn.contains("app/ (1 file)"))
+            assertFalse(turn.contains("docs/"))
+            assertTrue(request.messages.first().content.contains("fun parse() = 1"))
+            assertFalse(request.messages.first().content.contains("fun read() = 2"))
+        } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
     fun `test explain opens its result in the canvas even when the review chat is hidden`() {
         val gate = CompletableDeferred<Completion>()
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, complete = { gate.await() })

@@ -45,7 +45,7 @@ class SourcePointsEditorTest : FileEditorManagerTestCase() {
     fun `test invalid ranges do not open or append and snapshot documents normalize newlines`() {
         val points = SourcePoints(project, "Test")
         try {
-            for (point in listOf(SourcePoint("a.kt", 0), SourcePoint("a.kt", 3), SourcePoint("a.kt", 2, 1), SourcePoint("a.kt", 1, Int.MAX_VALUE))) {
+            for (point in listOf(SourcePoint("a.kt", 0), SourcePoint("a.kt", 3), SourcePoint("a.kt", 2, 1))) {
                 try { points.show(point, "one\r\ntwo"); fail(point.toString()) } catch (_: ToolInputException) { }
             }
             assertTrue(points.points.isEmpty())
@@ -54,6 +54,17 @@ class SourcePointsEditorTest : FileEditorManagerTestCase() {
             assertEquals("one\ntwo", points.points.single().text)
             assertEquals("one\ntwo", viewers().single { it.document.text == "one\ntwo" }.document.text)
             assertTrue(descendants(FileEditorManager.getInstance(project).getEditors(points.file).single().component).none { it is JTextArea })
+        } finally { points.dispose() }
+    }
+
+    fun `test end beyond EOF highlights available lines and reports the actual range`() {
+        val points = SourcePoints(project, "Test")
+        try {
+            val result = points.show(SourcePoint("flows/code-review.md", 1, 200), "one\ntwo")
+            assertTrue(result, result.startsWith("Showing flows/code-review.md:1-2 "))
+            assertEquals(2, points.points.single().point.endLine)
+            val editor = viewers().single { it.document.text == "one\ntwo" }
+            assertEquals(1, editor.document.getLineNumber(editor.markupModel.allHighlighters.single().endOffset))
         } finally { points.dispose() }
     }
 

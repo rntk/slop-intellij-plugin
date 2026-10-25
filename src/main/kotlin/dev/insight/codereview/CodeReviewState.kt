@@ -197,7 +197,12 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
                 else -> {}
             }
         }
-        summaries = shareInto(summaries) { node ->
+        val cachedKeys = topicTree.nodes.filter { it.id in topicSummaries.cachedIds }.mapTo(hashSetOf()) { it.key }
+        val cachedFiles = topicTree.nodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
+            .mapTo(hashSetOf()) { it.path }
+        summaries = shareInto(summaries, cached = { node ->
+            if (node.kind == SummaryKind.FILE) node.path in cachedFiles else node.key in cachedKeys
+        }) { node ->
             when (node.kind) {
                 SummaryKind.FILE -> files[node.path]
                 SummaryKind.CHUNK -> parts[node.key]
@@ -226,7 +231,8 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
  * Adds the [shared] texts to the missing nodes of [target]. A node with children is added only when all of them are
  * summarized or added too, so the bottom-up rule holds; batches go children first.
  */
-internal fun shareInto(target: ChangeSummaries, shared: (SummaryNode) -> String?): ChangeSummaries {
+internal fun shareInto(target: ChangeSummaries, cached: (SummaryNode) -> Boolean = { false },
+                       shared: (SummaryNode) -> String?): ChangeSummaries {
     val tree = target.tree
     val added = LinkedHashMap<Int, String>()
     // Pre-order: walking backwards visits children before their parents.
@@ -237,7 +243,8 @@ internal fun shareInto(target: ChangeSummaries, shared: (SummaryNode) -> String?
     }
     var result = target
     added.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
-        result = result.summarize(batch.associate { it.key to it.value })
+        val entries = batch.associate { it.key to it.value }
+        result = result.share(entries, entries.keys.filterTo(hashSetOf()) { cached(tree[it]) })
     }
     return result
 }

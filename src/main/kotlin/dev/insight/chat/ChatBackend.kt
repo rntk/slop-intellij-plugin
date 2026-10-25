@@ -4,7 +4,8 @@ package dev.insight.chat
  * [USER] and [ASSISTANT] messages are conversation; [TOOL] events and [NOTICE]s are shown but never sent to a model.
  * [revision] and [storyId] are the chart graph revision and active story ID an assistant reply's references belong to.
  */
-data class ChatMessage(val role: String, val text: String, val revision: Int? = null, val storyId: Int? = null) {
+data class ChatMessage(val role: String, val text: String, val revision: Int? = null, val storyId: Int? = null,
+    val toolCall: ToolCallEvent? = null) {
     companion object {
         const val USER = "user"
         const val ASSISTANT = "assistant"

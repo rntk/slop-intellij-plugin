@@ -149,4 +149,54 @@ class FileTraceTest {
         val document = TraceDocument(TraceKey("a.kt", "Source"), "a".repeat(10_000))
         assertEquals(">99.9% (9999/10000)", traceCoverage(document, listOf(0..9998)))
     }
+
+    @Test fun `project reads count only delivered characters and never snapshot content at the same path`() = runBlocking {
+        val trace = FileTrace("Compare")
+        trace.register(listOf(TraceFile("a.kt", source = "old\ntext", project = "first\n  needle  \nlast")))
+        trace.complete(request("a.kt (lines 1-3 of 3)\n1| first\n2|   needle  \n3| la\n[Truncated]"), ok)
+        val key = TraceKey("a.kt", "Project")
+        val doc = trace.snapshot().documents.getValue(key)
+        assertEquals(setOf(key), evidence(trace).keys)
+        assertEquals("1–2; partial: 3", traceLines(doc, evidence(trace).getValue(key)))
+        trace.complete(request("a.kt:2: needle"), ok)
+        assertEquals(listOf(8..13), evidence(trace).getValue(key))
+        trace.complete(request("a.kt:1: invented"), ok)
+        assertTrue(evidence(trace).isEmpty())
+    }
+
+    @Test fun `focused source and diffs pinned in system prompts are measured without counting summaries`() = runBlocking {
+        val trace = FileTrace("Focus")
+        val patch = "@@ -1 +1 @@\n-old\n+new\n"
+        trace.register(listOf(TraceFile("a.kt", patch = patch, before = "old", after = "new"),
+            TraceFile("b.kt", source = "first\nsecond\nthird")))
+        trace.complete(CompletionRequest(listOf(LlmMessage.system(
+            "Summaries: third\nCurrent diff of the focus:\n--- a.kt ---\n${patch.trimEnd()}\n\n" +
+                "Current source of the focus:\n--- b.kt ---\n2: second\n"))), ok)
+        val data = evidence(trace)
+        assertEquals(setOf(TraceKey("a.kt", "Diff"), TraceKey("a.kt", "Before"), TraceKey("a.kt", "After"), TraceKey("b.kt", "Source")), data.keys)
+        assertEquals(listOf(6..11), data.getValue(TraceKey("b.kt", "Source")))
+    }
+
+    @Test fun `project edits during a turn preserve earlier read documents and their coordinates`() = runBlocking {
+        val trace = FileTrace("Follow edits")
+        trace.register(listOf(TraceFile("a.kt", project = "long original content")))
+        trace.complete(request("a.kt (lines 1-1 of 1)\n1| long original content"), ok)
+        trace.register(listOf(TraceFile("a.kt", project = "new")))
+        trace.complete(request("a.kt (lines 1-1 of 1)\n1| new"), ok)
+        val data = trace.snapshot()
+        val original = data.documents.getValue(TraceKey("a.kt", "Project"))
+        assertEquals("100.0% (21/21)", traceCoverage(original, data.requests[0].evidence.getValue(original.key)))
+        val edited = data.documents.getValue(TraceKey("a.kt", "Project 2"))
+        assertEquals("new", edited.text)
+        assertEquals(setOf(edited.key), data.requests[1].evidence.keys)
+    }
+
+    @Test fun `source that resembles a project search result still parses as snapshot JSON`() = runBlocking {
+        val trace = FileTrace("Read diagnostic")
+        val text = "error.kt:12: some diagnostic"
+        trace.register(listOf(TraceFile("a.kt", source = text)))
+        val data = JsonObject().apply { addProperty("path", "a.kt"); addProperty("code", text) }
+        trace.complete(request(data.toString()), ok)
+        assertEquals(listOf(0..text.lastIndex), evidence(trace).getValue(TraceKey("a.kt", "Source")))
+    }
 }

@@ -30,6 +30,10 @@ internal class DiffReviewTab(
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     showDiff: (String) -> Unit,
+    /** Pinned to every turn of this tab's chat; see [ChatFocus]. */
+    val focus: ChatFocus? = null,
+    /** Opens a new tab whose chat is focused on a summary entry. */
+    private val toChat: (ChatFocus) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     val state = DiffReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
@@ -89,6 +93,7 @@ internal class DiffReviewTab(
         removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
         removeSemantic = { state.hideSemantic(); renderCanvas() },
         explainNode = { node -> explain(node) },
+        chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -113,7 +118,9 @@ internal class DiffReviewTab(
     }
     private val scopeLabel = JLabel()
     private val explanations = ExplainResults()
-    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome =
+    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
+        "Ask about ${focus.label}. Its summaries and diff are in this chat's context; other project files are read when a " +
+            "question needs them." else
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, type /description for brief notes on each file, " +
             "/flows to map the change from an overview down to the code, or /summaries to read it from the whole change down to each file. Use /topics to read every diff as one document grouped by topic. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
@@ -126,7 +133,11 @@ internal class DiffReviewTab(
 
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-                val (context, files) = withContext(Dispatchers.EDT) { captureContext() to state.snapshot.files }
+                val (context, snapshot, turnFocus) = withContext(Dispatchers.EDT) {
+                    Triple(captureContext(), state.snapshot,
+                        focus?.current(state.snapshot.files.mapTo(hashSetOf()) { it.path }, state.summaries, state.topicSummaries))
+                }
+                val files = snapshot.files
                 val total = files.size
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val client = ChatSettings.getInstance().createClient()
@@ -183,10 +194,14 @@ internal class DiffReviewTab(
                     else -> null
                 }
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                val reply = LlmChatBackend(complete, diffChatTools(context, flows) + chartTools,
-                    diffReviewPrompt() + if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt(),
-                    maxContextChars = 160_000, maxToolRounds = 100, context = { context.state(0, INLINE_PATCH_CHARS) },
-                    contextLabel = "Current diff snapshot", evictionTarget = 0.7, followUp = coverage)
+                val reply = LlmChatBackend(client::complete,
+                    chatTools(context, flows) + chartTools,
+                    diffReviewPrompt() + (if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt()) + focusPrompt(files, turnFocus),
+                    maxContextChars = 160_000, maxToolRounds = 100,
+                    context = if (turnFocus == null) { { context.state(0, INLINE_PATCH_CHARS) } }
+                        else { { withContext(Dispatchers.EDT) { focusState(snapshot, turnFocus) } } },
+                    contextLabel = if (turnFocus == null) "Current diff snapshot" else "Current focus snapshot",
+                    evictionTarget = 0.7, followUp = coverage)
                     .reply(request, onToolCall)
                 if (flows) {
                     val missing = context.flowsUncovered() ?: return reply
@@ -369,6 +384,32 @@ internal class DiffReviewTab(
     /** The topics document shows the file summaries too, so it follows every summary and chat update. */
     private fun summariesChanged() { canvas.updateSummaries(summariesCard()); canvas.updateTopics(topicsCard()) }
 
+    /** The focus of a To Chat on the files and folders [entries] of this tab's changes; null when they reach no file. */
+    fun focusOn(entries: List<String>): ChatFocus? = chatFocus(entries, state.snapshot.files.map { it.path }, state.summaries)
+
+    /**
+     * The pinned focus for a turn on [files]: each file's patch; empty without a focus. A patch is not split by line, so a
+     * focus on part of a file pins the whole file's diff and says so.
+     */
+    private fun focusPrompt(files: List<ReviewFile>, focus: ChatFocus?): String {
+        focus ?: return ""
+        val byPath = files.associateBy { it.path }
+        val whole = focus.lines?.takeIf { focus.files.isNotEmpty() }?.let {
+            "\n\nThe file's diff covers the whole file; the focus is lines ${it.first}-${it.last} of it."
+        }
+        return "\n\n" + chatFocusPrompt(focus, "change", "read_diff_files") { path, _ -> byPath[path]?.patch } + whole.orEmpty()
+    }
+
+    /**
+     * The per-turn state of a focused chat: only the focused files, with their notes and source blocks. Their patches are
+     * already pinned by [focusPrompt], so none are repeated; the rest of the diff is left to the tools.
+     */
+    private fun focusState(snapshot: ReviewSnapshot, focus: ChatFocus): String {
+        val paths = focus.files.toSet()
+        return diffStateResult(snapshot.copy(files = snapshot.files.filter { it.path in paths }), state.scopePaths,
+            selectedPaths().filter { it in paths }, state.notes, 0, 0, state.sources.filter { it.range.path in paths })
+    }
+
     private fun updateControls() {
         describe.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
         flowsButton.isEnabled = describe.isEnabled
@@ -381,6 +422,7 @@ internal class DiffReviewTab(
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
         scopeLabel.text += " · ${state.snapshot.comparison.summary}"
+        focus?.let { scopeLabel.text += " · Focus: ${it.label}" }
         scopeLabel.toolTipText = state.snapshot.comparison.summary + "\n" + state.snapshot.comparison.request.repository.orEmpty() + "\n" +
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
@@ -394,6 +436,10 @@ internal class DiffReviewTab(
         canvas.highlight(selectedPaths().toSet())
     }
 
+    /** Snapshot tools stay scoped; current project files remain readable for supporting context. */
+    internal fun chatTools(context: DiffReviewContext, flows: Boolean = false): List<ChatTool> =
+        diffChatTools(context, flows) + projectContextTools(project)
+
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
         if (disposed) throw ToolInputException("This review tab is closed")
@@ -406,11 +452,13 @@ internal class DiffReviewTab(
             if (disposed) throw ToolInputException("This review tab is closed")
             live.check(capturedRevision)
         }
-        fun file(path: String) = snapshot.files.firstOrNull { it.path == path } ?: throw ToolInputException("$path is not a file included in this diff")
+        fun file(path: String) = snapshot.files.firstOrNull { it.path == path } ?: throw ToolInputException(
+            "$path has no diff in this snapshot. Use read_file or point_to_code for current project context.")
         return object : DiffReviewContext {
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
-                val sourceFile = file(point.path)
+                val sourceFile = snapshot.files.firstOrNull { it.path == point.path }
+                    ?: return@withContext dev.insight.chat.showProjectSource(project, sourcePoints, point)
                 val source = when (point.side) {
                     "before" -> sourceFile.before
                     "after" -> sourceFile.after

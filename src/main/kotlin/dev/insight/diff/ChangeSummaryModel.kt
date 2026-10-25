@@ -159,13 +159,19 @@ internal fun addChunkNodes(
 }
 
 /** The tree of one snapshot revision with the summaries written so far. Immutable: every change returns a new value. */
-class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, String> = emptyMap()) {
+class ChangeSummaries(
+    val tree: ChangeSummaryTree,
+    private val texts: Map<Int, String> = emptyMap(),
+    /** Text restored from disk, rather than written in this tab. Never persisted. */
+    internal val cachedIds: Set<Int> = emptySet(),
+) {
     fun text(id: Int): String? = texts[id]
+    internal fun generatedText(id: Int): String? = text(id).takeUnless { id in cachedIds }
     val count: Int get() = texts.size
     val total: Int get() = tree.summarizable.size
     val complete: Boolean get() = missing().isEmpty()
     /** Starts a separate version, retaining the text outside the requested nodes. */
-    fun without(ids: Set<Int>): ChangeSummaries = ChangeSummaries(tree, texts.filterKeys { it !in ids })
+    fun without(ids: Set<Int>): ChangeSummaries = ChangeSummaries(tree, texts.filterKeys { it !in ids }, cachedIds - ids)
     fun missing(): List<Int> = tree.summarizable.filter { it.id !in texts }.map { it.id }
     /** Missing nodes whose children are all summarized: leaves (files and parts), then the rest from the deepest, which can be written now. */
     fun ready(): List<Int> = tree.summarizable
@@ -176,10 +182,14 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
     /** Keeps the summaries whose node, with everything beneath it, is unchanged in [next]. */
     fun retainedIn(next: ChangeSummaryTree): ChangeSummaries {
         val byKey = texts.mapKeys { (id, _) -> tree[id].key }
+        val cachedKeys = cachedIds.map { tree[it].key }.toSet()
         val kept = next.nodes.mapNotNull { node -> byKey[node.key]?.let { node.id to it } }.toMap(LinkedHashMap())
-        for (node in next.nodes.asReversed()) if (node.id !in kept && node.children.size == 1)
-            kept[node.children.single()]?.let { kept[node.id] = it }
-        return ChangeSummaries(next, kept)
+        val cached = next.nodes.filter { it.id in kept && it.key in cachedKeys }.mapTo(hashSetOf()) { it.id }
+        for (node in next.nodes.asReversed()) if (node.id !in kept && node.children.size == 1) {
+            val child = node.children.single()
+            kept[child]?.let { kept[node.id] = it; if (child in cached) cached += node.id }
+        }
+        return ChangeSummaries(next, kept, cached)
     }
 
     /**
@@ -188,11 +198,18 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
      */
     fun summarize(entries: Map<Int, String>): ChangeSummaries = summarize(entries, reuseSingleChildren = true)
 
-    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ChangeSummaries {
+    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ChangeSummaries =
+        write(entries, reuseSingleChildren, emptySet())
+
+    /** Copies shared summaries without treating cached text as newly generated. */
+    internal fun share(entries: Map<Int, String>, cached: Set<Int>): ChangeSummaries = write(entries, true, cached)
+
+    private fun write(entries: Map<Int, String>, reuseSingleChildren: Boolean, cached: Set<Int>): ChangeSummaries {
         if (tree.summarizable.isEmpty()) throw ToolInputException("There are no files to summarize.")
         if (entries.isEmpty()) throw ToolInputException("Add at least one summary.")
         if (entries.size > MAX_PER_CALL) throw ToolInputException("Add at most $MAX_PER_CALL summaries per call.")
         val next = texts.toMutableMap()
+        val nextCached = (cachedIds - entries.keys + cached).toMutableSet()
         for ((id, text) in entries) {
             if (id !in tree.nodes.indices) throw ToolInputException("Node $id is not in the summary tree.")
             val trimmed = text.trim()
@@ -204,9 +221,14 @@ class ChangeSummaries(val tree: ChangeSummaryTree, private val texts: Map<Int, S
             if (waiting.isNotEmpty()) throw ToolInputException("Node $id: summarize its children first (ids ${waiting.joinToString()}), " +
                 "then write its summary from theirs. Nothing was saved.")
         }
-        for (node in tree.nodes.asReversed()) if (reuseSingleChildren && node.id !in entries && node.children.size == 1)
-            next[node.children.single()]?.let { next[node.id] = it }
-        return ChangeSummaries(tree, next)
+        for (node in tree.nodes.asReversed()) if (reuseSingleChildren && node.id !in entries && node.children.size == 1) {
+            val child = node.children.single()
+            next[child]?.let {
+                next[node.id] = it
+                if (child in nextCached) nextCached += node.id else nextCached -= node.id
+            }
+        }
+        return ChangeSummaries(tree, next, nextCached)
     }
 
     companion object {

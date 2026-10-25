@@ -23,7 +23,7 @@ internal class FileTraceNavigator(private val project: Project) {
         // Swing link callbacks can run on the EDT without implicit read access.
         WriteIntentReadAction.run {
             val text = StringUtil.convertLineSeparators(document.text)
-            val live = if (document.key.kind in setOf("Source", "After")) {
+            val live = if (document.key.kind in setOf("Source", "After") || document.key.kind.startsWith("Project")) {
                 findSourceFile(project, document.key.path, document.key.path)?.takeIf {
                     FileDocumentManager.getInstance().getDocument(it)?.text == text
                 }

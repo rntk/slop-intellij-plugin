@@ -71,6 +71,8 @@ internal class NoteCanvas(
     private val removeSemantic: () -> Unit = {},
     /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
     private val explainNode: ((SummaryNode) -> Unit)? = null,
+    /** Open a chat on an entry with its displayed hierarchy and summary version; null hides To Chat. */
+    private val chatNode: ((SummaryNode, ChangeSummaries) -> Unit)? = null,
     private val reviewed: ReviewedFiles = ReviewedFiles(),
     private val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
     private val reviewSummaries: SummaryReviewLauncher? = null,
@@ -1066,6 +1068,7 @@ internal class NoteCanvas(
             follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
             explain = explainNode,
+            toChat = chatNode?.let { chat -> { node -> chat(node, content.summaries) } },
             resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { contextSummaries != null },
             resummaryEnabled = content.canRun && !summaryGenerationRunning,
             review = tab.review.presentation(content.summaries, ::toggleReviewed),
@@ -1288,7 +1291,8 @@ internal class NoteCanvas(
      * rewrites topics only: file summaries are shared with the Summaries card, where Resummarize opens them as a version.
      */
     private fun topicEntryMenu(content: TopicsCard): ((String) -> JPopupMenu)? {
-        if (contextSummaries == null || saveTopicSummaries == null) return null
+        val canSummarize = contextSummaries != null && saveTopicSummaries != null
+        if (!canSummarize && chatNode == null) return null
         val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
         val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
         return { identity ->
@@ -1301,6 +1305,12 @@ internal class NoteCanvas(
                     toolTipText = tooltip
                     addActionListener { action() }
                 })
+                chatNode?.let { chat ->
+                    if (node.files.isNotEmpty()) item("To Chat", true, "Chat about this entry in a new tab") {
+                        chat(node, content.reading)
+                    }
+                }
+                if (!canSummarize) return@apply
                 item("Fill summaries", enabled && fillSummaryRequest(seeded, node).nodeIds.isNotEmpty(),
                     "Write the missing summaries of this entry and everything beneath it") { summarizeTopic(identity, null) }
                 if (node.isTopicBranch) {

@@ -18,6 +18,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.llm.LlmTool
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import java.nio.file.FileSystems
 import java.nio.file.Path
@@ -34,16 +35,40 @@ fun projectTools(project: Project): List<ChatTool> = projectTools(project, Sourc
 
 internal fun projectTools(project: Project, sourcePoints: SourcePoints): List<ChatTool> {
     val files = ProjectFiles(project)
-    return listOf(ListFilesTool(files), ReadFileTool(files), SearchTextTool(files), OpenFileTool(files), sourcePointTool { point ->
-        val text = readAction {
-            val file = files.resolve(point.path)
-            if (file.isDirectory) throw ToolInputException("${point.path} is a directory; use list_files.")
-            files.text(file) ?: throw ToolInputException("${point.path} is binary or too large to read.")
-        }
-        if (ApplicationManager.getApplication().isDispatchThread) sourcePoints.show(point, text)
-        else withContext(Dispatchers.EDT) { sourcePoints.show(point, text) }
+    return projectContextTools(project) + listOf(OpenFileTool(files), sourcePointTool { point ->
+        showProjectSource(project, sourcePoints, point)
     })
 }
+
+/** Shared by project chat and review chats when a location is outside the captured snapshot. */
+internal suspend fun showProjectSource(project: Project, sourcePoints: SourcePoints, point: SourcePoint): String {
+    if (point.side == "before") throw ToolInputException(
+        "${point.path} has no before-side in this snapshot. Omit side to show current project content.")
+    val files = ProjectFiles(project)
+    val (path, text) = readAction {
+        val file = files.resolve(point.path)
+        if (file.isDirectory) throw ToolInputException("${point.path} is a directory; use list_files.")
+        files.display(file) to (files.text(file) ?: throw ToolInputException("${point.path} is binary or too large to read."))
+    }
+    currentCoroutineContext()[FileTraceContext]?.trace?.register(listOf(TraceFile(path, project = text)))
+    val location = point.copy(path = path, side = null)
+    val result = withContext(Dispatchers.EDT) { sourcePoints.show(location, text) }
+    return "$result Current project content (including unsaved edits)."
+}
+
+/** Current project content for extra context, independent of a review's snapshot or selected scope. */
+internal fun projectContextTools(project: Project): List<ChatTool> {
+    val files = ProjectFiles(project)
+    return listOf(ListFilesTool(files), ReadFileTool(files), SearchTextTool(files))
+}
+
+internal val projectContextPrompt = """
+    The review scope is a starting focus, not a boundary for exploration. Read any relevant project content file with read_file.
+    Use list_files and search_text to locate that context. Paths are relative to the project, not the review scope.
+    point_to_code shows snapshot source for included files and current project content for other project files.
+    These tools return current project content, including unsaved edits; it may differ from the captured snapshot.
+    Distinguish current project context from snapshot evidence, and use snapshot tools to verify claims about the review.
+""".trimIndent()
 
 internal class ProjectFiles(val project: Project) {
     val index: ProjectFileIndex get() = ProjectFileIndex.getInstance(project)
@@ -158,18 +183,20 @@ private class ReadFileTool(private val files: ProjectFiles) : ProjectTool(
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")
+        val trace = currentCoroutineContext()[FileTraceContext]?.trace
         val start = arguments.int("start_line") ?: 1
         val end = arguments.int("end_line") ?: (start + 79)
         if (start < 1 || end < start) throw ToolInputException("start_line must be at least 1 and not after end_line")
         return readAction {
             val file = files.resolve(path)
             if (file.isDirectory) throw ToolInputException("'$path' is a directory; use list_files.")
-            val text = FileDocumentManager.getInstance().getDocument(file)?.takeUnless { file.fileType.isBinary }?.text
+            val text = files.text(file)
                 ?: throw ToolInputException("'$path' is binary or too large to read.")
             val lines = text.lines()
             if (start > lines.size) throw ToolInputException("'$path' has only ${lines.size} lines.")
             val last = minOf(end, lines.size, start + MAX_LINES - 1)
             val width = last.toString().length
+            trace?.register(listOf(TraceFile(files.display(file), project = text)))
             "${files.display(file)} (lines $start-$last of ${lines.size})\n" +
                 (start..last).joinToString("\n") { "${it.toString().padStart(width)}| ${lines[it - 1]}" }
         }
@@ -193,6 +220,7 @@ private class SearchTextTool(private val files: ProjectFiles) : ProjectTool(
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val query = arguments.string("query") ?: throw ToolInputException("query is required")
+        val trace = currentCoroutineContext()[FileTraceContext]?.trace
         val limit = (arguments.int("max_results") ?: 50).coerceIn(1, 200)
         val matcher = arguments.glob()
         val matches: (String) -> Boolean = if (arguments.boolean("regex") == true) {
@@ -210,11 +238,13 @@ private class SearchTextTool(private val files: ProjectFiles) : ProjectTool(
             var more = false
             search@ for (file in files.contentFiles(directory(files, arguments.string("directory")), matcher)) {
                 ProgressManager.checkCanceled()
-                val lines = files.text(file)?.lines() ?: continue
+                val text = files.text(file) ?: continue
+                val lines = text.lines()
                 for ((index, line) in lines.withIndex()) {
                     ProgressManager.checkCanceled()
                     if (!matches(line)) continue
                     if (found.size == limit) { more = true; break@search }
+                    trace?.register(listOf(TraceFile(files.display(file), project = text)))
                     found += "${files.display(file)}:${index + 1}: ${line.trim().take(200)}"
                 }
             }

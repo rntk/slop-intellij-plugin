@@ -121,6 +121,30 @@ class ContextSummariesTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testTopicFileChatKeepsItsDisplayedAncestry() {
+        val topics = ChangeTopics(files, files.associate { it.path to "Storage > Wallet" })
+        val topicTree = buildTopicSummaryTree(topics)
+        val topicSummaries = ChangeSummaries(topicTree).summarize(
+            topicTree.nodes.associate { it.id to "Topic ${it.identity}" }, reuseSingleChildren = false)
+        var focus: ChatFocus? = null
+        var origin: ChangeSummaries? = null
+        val card = TopicsCard(topics, original, canRun = false, topicSummaries = topicSummaries)
+        val canvas = NoteCanvas({}, {}, chatNode = { node, summaries ->
+            origin = summaries
+            focus = chatFocus(node, summaries)
+        })
+        try {
+            canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
+            canvas.showNotes(emptyList(), topics = card)
+            val entry = named(canvas, 0, "summary:app/a.kt") as JTextComponent
+            selectionMenu(entry)!!.components.filterIsInstance<JMenuItem>().single { it.text == "To Chat" }.doClick()
+            assertSame(card.reading, origin)
+            assertEquals(listOf("app/a.kt"), focus!!.files)
+            assertEquals(listOf("Topic topic-root", "Topic topic:storage", "Topic topic:storage > wallet",
+                original.text(tree.nodes.single { it.path == "app/a.kt" }.id)), focus!!.context.map { it.text })
+        } finally { canvas.dispose() }
+    }
+
     fun testTopicHierarchyEntriesFillAndResummarizeOneTopic() {
         val topics = ChangeTopics(files, mapOf("app/a.kt" to "Storage > Wallet", "app/b.kt" to "Storage > Wallet",
             "docs/c.kt" to "UI", "docs/d.kt" to "UI"))
@@ -205,7 +229,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
         val actions = ChangeSummaryActions({}, {}, {}, {}, resummarize = { _, _ -> })
         for (node in tree.nodes) {
             val menu = javax.swing.JPopupMenu()
-            actions.addResummaryItems(menu, node)
+            actions.addEntryItems(menu, node)
             assertEquals(if (node.children.isEmpty()) listOf("Resummarize") else listOf("Resummarize", "Resummarize all"),
                 menu.components.filterIsInstance<JMenuItem>().map { it.text })
         }

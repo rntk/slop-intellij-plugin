@@ -131,7 +131,7 @@ internal fun explainRequest(target: ExplainTarget, diff: Boolean, chart: String?
         "Reply in plain text under the headings What, How and Why. Refer to functions by name; [[node:…]] references are not shown here."
 }
 
-private const val MAX_LISTED_FILES = 40
+internal const val MAX_LISTED_FILES = 40
 
 /** Asks what the explanation should focus on before an /explain turn starts. */
 internal class ExplainDialog(project: Project, private val heading: String, private val summary: String?) :

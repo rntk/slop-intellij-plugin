@@ -18,10 +18,13 @@ private val clippedLine = Regex("… \\[\\d+ more characters]$")
 private val numberedLine = Regex("^\\s*(\\d+)\\| (.*)$")
 private val changedLine = Regex("^([ +\\-])\\s*(\\d+) (.*)$")
 private val hunkHeader = Regex("^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@.*")
+private val projectReadHeader = Regex("^(.+) \\(lines \\d+-\\d+ of \\d+\\)$")
+private val projectSearchLine = Regex("^(.+?):(\\d+): (.*)$")
+private val focusedSourceLine = Regex("^(\\d+): (.*)$")
 
-/** Immutable evidence from the same snapshot used by the review backend. */
+/** Immutable review evidence or current project content captured when a tool reads it. */
 internal data class TraceFile(val path: String, val source: String? = null, val patch: String? = null,
-    val before: String? = null, val after: String? = null)
+    val before: String? = null, val after: String? = null, val project: String? = null)
 
 internal data class TraceKey(val path: String, val kind: String)
 internal data class TraceDocument(val key: TraceKey, val text: String) {
@@ -43,9 +46,13 @@ internal class FileTrace(val question: String, private val changed: suspend () -
     private val reads = linkedMapOf<String, MutableList<String>>()
 
     @Synchronized fun register(files: List<TraceFile>) {
-        for (file in files) for ((kind, text) in listOf("Source" to file.source, "Diff" to file.patch, "Before" to file.before, "After" to file.after)) {
+        for (file in files) for ((kind, text) in listOf("Source" to file.source, "Diff" to file.patch, "Before" to file.before, "After" to file.after, "Project" to file.project)) {
             if (text != null) {
-                val key = TraceKey(file.path, kind)
+                val versions = if (kind == "Project") documents.values.filter {
+                    it.key.path == file.path && it.key.kind.startsWith("Project")
+                } else emptyList()
+                val key = versions.firstOrNull { it.text == text }?.key
+                    ?: TraceKey(file.path, if (versions.isEmpty()) kind else "Project ${versions.size + 1}")
                 // Retain the immutable snapshot string instead of copying every file for every turn.
                 documents[key] = TraceDocument(key, text)
             }
@@ -62,7 +69,9 @@ internal class FileTrace(val question: String, private val changed: suspend () -
 
     @Synchronized fun tool(event: ToolCallEvent) {
         val call = "${event.name}(${event.arguments})"
-        for (path in readPaths(event.name, event.arguments)) {
+        val paths = readPaths(event.name, event.arguments) + if (!event.failed && event.name == "search_text")
+            event.result.lineSequence().mapNotNull { projectSearchLine.matchEntire(it)?.groupValues?.get(1) }.toList() else emptyList()
+        for (path in paths.distinct()) {
             val entries = reads.getOrPut(path) { mutableListOf() }
             val pending = entries.indexOf("$call — requested (no result yet)")
             val result = call + if (event.failed) " — ${event.result}" else " — returned (coverage counts only subsequent accepted requests)"
@@ -71,6 +80,8 @@ internal class FileTrace(val question: String, private val changed: suspend () -
     }
 
     private fun readPaths(name: String, arguments: JsonObject): List<String> {
+        if (name in setOf("read_file", "point_to_code", "show_diff_source", "show_code_source"))
+            return listOfNotNull(arguments.string("path"))
         val field = when (name) { "read_code" -> "ranges"; "read_diff_files" -> "paths"; else -> return emptyList() }
         val array = arguments.get(field)?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
         return array.mapNotNull {
@@ -126,6 +137,10 @@ internal class FileTrace(val question: String, private val changed: suspend () -
             }
             add(key, document.starts[number - 1] + offset, content)
         }
+        fun projectLine(path: String, number: Int, shown: String, trimmed: Boolean = false) {
+            for (key in documents.keys) if (key.path == path && key.kind.startsWith("Project"))
+                line(key, number, shown, trimmed)
+        }
         fun visit(value: JsonElement) {
             if (value.isJsonArray) { value.asJsonArray.forEach(::visit); return }
             if (!value.isJsonObject) return
@@ -157,8 +172,53 @@ internal class FileTrace(val question: String, private val changed: suspend () -
             for ((name, child) in obj.entrySet()) if (name in setOf("files", "ranges", "matches", "nodes")) visit(child)
         }
         for (message in request.messages) {
+            // Focused review chats pin their evidence in the system prompt, outside the JSON overview.
+            // Only inspect the explicit evidence section and verify every character against its snapshot.
+            if (message.role == LlmRole.SYSTEM) {
+                for ((marker, kind) in listOf("Current diff of the focus:\n" to "Diff", "Current source of the focus:\n" to "Source")) {
+                    if (!message.content.contains(marker)) continue
+                    val section = message.content.substringAfter(marker)
+                    for ((key, document) in documents) {
+                        if (key.kind != kind) continue
+                        val delimiter = "--- ${key.path} ---\n"
+                        if (!section.contains(delimiter)) continue
+                        val excerpt = section.substringAfter(delimiter)
+                        if (kind == "Diff") {
+                            val patch = document.text.trimEnd()
+                            if (excerpt.startsWith(patch)) add(key, 0, patch)
+                        } else {
+                            for (row in excerpt.lineSequence()) {
+                                val match = focusedSourceLine.matchEntire(row) ?: break
+                                line(key, match.groupValues[1].toIntOrNull() ?: 0, match.groupValues[2])
+                            }
+                        }
+                    }
+                }
+                continue
+            }
             if (message.role !in setOf(LlmRole.USER, LlmRole.TOOL)) continue
             val content = message.content
+            // Project tools return human-readable text, whereas snapshot tools return JSON.
+            // Match against the exact current-project text captured by the tool, never snapshot source.
+            if (message.role == LlmRole.TOOL) {
+                val rows = content.lineSequence().toList()
+                val path = rows.firstOrNull()?.let { projectReadHeader.matchEntire(it)?.groupValues?.get(1) }
+                if (path != null) {
+                    for (row in rows.drop(1)) numberedLine.matchEntire(row)?.let { match ->
+                        projectLine(path, match.groupValues[1].toIntOrNull() ?: 0, match.groupValues[2])
+                    }
+                    continue
+                }
+                var search = false
+                for (row in rows) projectSearchLine.matchEntire(row)?.let { match ->
+                    val path = match.groupValues[1]
+                    if (documents.keys.any { it.path == path && it.kind.startsWith("Project") }) {
+                        search = true
+                        projectLine(path, match.groupValues[2].toIntOrNull() ?: 0, match.groupValues[3], trimmed = true)
+                    }
+                }
+                if (search) continue
+            }
             val data = when {
                 message.role == LlmRole.TOOL -> content
                 content.trimStart().startsWith('{') -> content
