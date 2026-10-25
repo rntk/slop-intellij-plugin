@@ -85,7 +85,9 @@ internal fun codeOverview(
         val tree = summaries.tree
         val entries = mutableListOf<Map<String, Any>>()
         result["summaries"] = mapOf("summarized" to summaries.count, "nodes" to summaries.total, "top" to entries)
-        val top = listOf(tree.root) + tree.root.children.map(tree::get).flatMap { child ->
+        // A chain of single folders below the root repeats the root's summary; the entries below it are the real top level.
+        val head = generateSequence(tree.root) { node -> node.children.singleOrNull()?.let(tree::get)?.takeIf { it.kind == SummaryKind.DIRECTORY } }.last()
+        val top = listOf(tree.root) + head.children.map(tree::get).flatMap { child ->
             // Groups only split a folder; their entries are the real top level.
             if (child.kind == SummaryKind.GROUP) child.children.map(tree::get) else listOf(child)
         }

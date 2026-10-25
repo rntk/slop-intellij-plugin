@@ -130,7 +130,7 @@ class CodeResultsTest {
         assertEquals(4, overview["skipped"].asJsonObject["ignored files and folders"].asInt)
         assertTrue(overview["folders"].asString.contains("app/ (2 files)"))
         val top = overview["summaries"].asJsonObject.getAsJsonArray("top").map { it.asJsonObject["location"].asString }
-        assertEquals(listOf("src/", "src/app/", "src/lib/Big.kt"), top)
+        assertEquals(listOf("./", "src/app/", "src/lib/"), top)
         assertEquals("src/app/A.kt", overview.getAsJsonArray("selected_paths").single().asString)
         assertEquals("About A", overview.getAsJsonArray("notes").single().asJsonObject["text_excerpt"].asString)
     }
@@ -156,8 +156,7 @@ class CodeResultsTest {
         assertEquals("src/b/deep/Big.kt", big["under"].asString)
         assertEquals("file", bigNodes.first()["kind"].asString)
         assertTrue(bigNodes.drop(1).all { it["kind"].asString == "chunk" && it.has("lines") })
-        // A folder inside a merged chain pages the smallest node that holds its files.
-        assertEquals(json(codeSummariesJson(summaries, 0, "src/b/deep"))["under"].asString, "src/b/deep/Big.kt")
+        assertEquals("src/b/deep/", json(codeSummariesJson(summaries, 0, "src/b/deep"))["under"].asString)
         rejected("No summary node covers src/c") { codeSummariesJson(summaries, 0, "src/c") }
     }
 

@@ -10,7 +10,7 @@ import dev.insight.llm.LlmTool
 /** Reads the summary tree in chat. Code writes it on /summaries (see [ChangeSummarizer]); the model never pages or tracks it. */
 fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(object : ChatTool {
     override val definition = LlmTool("get_change_summaries", "Page through the summary tree of the change, written on /summaries: the root, " +
-        "folders (single-entry chains merged), groups that split folders with more than ${ChangeSummaryTree.MAX_CHILDREN} entries, and files, " +
+        "folders, groups that split folders with more than ${ChangeSummaryTree.MAX_CHILDREN} entries, and files, " +
         "each with its summary where one exists. If next_offset is present, call again with it.",
         JsonParser.parseString("""{"type":"object","properties":{"offset":{"type":"integer","minimum":0,""" +
             """"description":"First node of the page; use next_offset."}},"required":[],"additionalProperties":false}""").asJsonObject)

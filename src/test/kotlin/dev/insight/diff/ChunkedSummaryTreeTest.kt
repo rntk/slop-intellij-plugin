@@ -34,7 +34,7 @@ class ChunkedSummaryTreeTest {
         val files = listOf(Source("a/x.kt"), Source("b/c/d/y.kt"), Source("b/c/d/z.kt", "2"))
         val tree = buildSummaryTree(files)
         assertEquals("All changes", tree.root.label)
-        assertEquals(listOf("b/c/d", "a/x.kt"), tree.labels(tree.root))
+        assertEquals(listOf("a", "b"), tree.labels(tree.root))
         assertTrue(tree.nodes.none { it.kind == SummaryKind.CHUNK })
         // A file without parts keeps exactly the key it always had, so diff summaries are retained as before.
         tree.nodes.filter { it.kind == SummaryKind.FILE }.forEach { node ->
@@ -42,13 +42,15 @@ class ChunkedSummaryTreeTest {
             assertTrue(node.children.isEmpty())
         }
         val folder = tree.byIdentity("directory:b/c/d")
-        assertEquals(reviewFingerprint("directory", "b/c/d", "b/c/d", *folder.children.map { tree[it].key }.toTypedArray()), folder.key)
+        assertEquals(reviewFingerprint("directory", "b/c/d", "d", *folder.children.map { tree[it].key }.toTypedArray()), folder.key)
         assertEquals(reviewFingerprint("root", "", "All changes", *tree.root.children.map { tree[it].key }.toTypedArray()), tree.root.key)
         assertEquals(tree.nodes.map { it.key }, buildSummaryTree(files, chunks = { emptyList() }).nodes.map { it.key })
 
         assertEquals("Whole scope", buildSummaryTree(files, rootLabel = "Whole scope").root.label)
-        // A root that absorbed a folder is named after it, whatever the label.
-        assertEquals("src/", buildSummaryTree(listOf(Source("src/a.kt"), Source("src/b.kt")), rootLabel = "Whole scope").root.label)
+        // A single top folder stays a folder beneath the root.
+        val single = buildSummaryTree(listOf(Source("src/a.kt"), Source("src/b.kt")), rootLabel = "Whole scope")
+        assertEquals("Whole scope", single.root.label)
+        assertEquals(listOf("src"), single.labels(single.root))
 
         val renamed = ReviewFile("new.kt", "/repo/new.kt", "old.kt", "renamed", "", "1")
         assertEquals(listOf("renamed", "renamed from old.kt"), renamed.facts)
@@ -128,7 +130,7 @@ class ChunkedSummaryTreeTest {
         val chunkLeaves = tree.nodes.filter { it.kind == SummaryKind.CHUNK && it.children.isEmpty() }.map { it.id }
         val a = tree.byIdentity("file:src/a.kt").id
         val x = tree.byIdentity("file:lib/x.kt").id
-        assertEquals(chunkLeaves + a + x, summaries.ready())
+        assertEquals(chunkLeaves + x + a, summaries.ready())
         summaries = summaries.summarize(summaries.ready().associateWith { "Leaf." })
         val groups = tree.byIdentity("file:src/big.kt").children
         assertEquals(groups, summaries.ready())

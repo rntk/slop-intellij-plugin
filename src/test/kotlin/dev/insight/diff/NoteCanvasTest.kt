@@ -660,14 +660,19 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val walletFile = named("file:src/wallet/Wallet.kt")
             val auth = named("file:src/auth/Auth.kt")
             val readme = named("file:docs/README.md")
+            val docs = named("node:directory:docs")
             assertTrue(root.x < src.x && src.x < wallet.x && wallet.x < ledger.x)
-            assertEquals(wallet.x, auth.x)
-            assertEquals(src.x, readme.x)
-            // Every folder spans exactly the rows beneath it.
-            assertEquals(ledger.y, root.y)
-            assertEquals(bottom(readme), bottom(root))
-            assertEquals(ledger.y, src.y)
-            assertEquals(bottom(auth), bottom(src))
+            assertEquals(src.x, docs.x)
+            assertEquals(wallet.x, named("node:directory:src/auth").x)
+            assertEquals(ledger.x, auth.x)
+            assertEquals(wallet.x, readme.x)
+            // Every folder spans exactly the rows beneath it; folders come first, then alphabetical.
+            assertEquals(readme.y, root.y)
+            assertEquals(bottom(walletFile), bottom(root))
+            assertEquals(readme.y, docs.y)
+            assertEquals(bottom(readme), bottom(docs))
+            assertEquals(auth.y, src.y)
+            assertEquals(bottom(walletFile), bottom(src))
             assertEquals(ledger.y, wallet.y)
             assertEquals(bottom(walletFile), bottom(wallet))
             // Summaries start right of their file, level with it.
@@ -685,7 +690,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("Summary of directory:src/wallet.", note("directory:src/wallet"))
             assertFalse("directory:src/wallet" in canvas.summariesView.expanded)
             click(descendants(panel()).single { it.name == "toggle:directory:src" })
-            assertEquals("No summary yet · wallet/, auth/Auth.kt", note("directory:src"))
+            assertEquals("No summary yet · auth/, wallet/", note("directory:src"))
             assertEquals(named("node:directory:src").y, named("summary:directory:src").y)
 
             // Picking a level waits for an action; folding level 1 closes the root.
@@ -693,7 +698,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             level().selectedItem = 1
             fold("fold"); layoutTree(canvas)
             assertEquals(listOf("node:root", "summary:root"), names().sorted())
-            assertEquals("No summary yet · src/, docs/README.md", note("root"))
+            assertEquals("No summary yet · docs/, src/", note("root"))
             assertEquals(1, level().selectedItem)
             level().selectedItem = 3
             assertEquals(listOf("node:root", "summary:root"), names().sorted())
@@ -709,7 +714,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = true))
             assertEquals(bounds, canvas.components.single().bounds)
             assertEquals("directory:src", canvas.summariesView.selected)
-            descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth/Auth.kt" }.doClick()
+            descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
             assertEquals(listOf("src/auth/Auth.kt"), opened)
             // Back in the outline, metadata is already in the header without opening extra rows.
             toggleButton("Outline").doClick(); layoutTree(canvas)
@@ -780,7 +785,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
             fun named(name: String) = panel.components.single { it.name == name }
             // Tree order: subfolders before files, then alphabetical.
-            assertEquals(listOf("src/wallet/Ledger.kt", "src/wallet/Wallet.kt", "src/auth/Auth.kt", "docs/README.md"), panel.files.map { it.path })
+            assertEquals(listOf("docs/README.md", "src/auth/Auth.kt", "src/wallet/Ledger.kt", "src/wallet/Wallet.kt"), panel.files.map { it.path })
             val sections = panel.files.map { named("file:${it.path}") }
             val root = named("node:root")
             val src = named("node:directory:src")
@@ -788,10 +793,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
             // Each folder card spans the diffs of its files, with the root outermost and deepest folder next to the diffs.
             assertEquals(sections[0].y, root.y)
             assertEquals(sections[3].y + sections[3].height, root.y + root.height)
-            assertEquals(sections[0].y, src.y)
-            assertEquals(sections[2].y + sections[2].height, src.y + src.height)
-            assertEquals(sections[0].y, wallet.y)
-            assertEquals(sections[1].y + sections[1].height, wallet.y + wallet.height)
+            assertEquals(sections[1].y, src.y)
+            assertEquals(sections[3].y + sections[3].height, src.y + src.height)
+            assertEquals(sections[2].y, wallet.y)
+            assertEquals(sections[3].y + sections[3].height, wallet.y + wallet.height)
             assertTrue("Rail sits right of the document", wallet.x >= sections[0].x + sections[0].width)
             assertTrue(root.x > src.x && src.x > wallet.x)
             // Summaries start level with their file's diff, left of it, and follow sticky scrolling.
@@ -819,7 +824,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(src.y, srcSummary.y)
             assertTrue(srcSummary.height >= src.height)
             assertTrue(descendants(srcSummary).filterIsInstance<JLabel>().any { it.text == "Folder summary · 3 files" })
-            assertTrue(panel.files.take(3).none { named("summary:${it.path}").isVisible })
+            assertTrue(panel.files.drop(1).none { named("summary:${it.path}").isVisible })
             assertTrue(named("summary:docs/README.md").isVisible)
             val more = summaries.summarize(mapOf(id("file:docs/README.md") to "Documents the setup."))
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = false))
@@ -1689,11 +1694,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testSummaryContextMenuScoresOnlyThatSummary() = ChangeSummariesMode.entries.forEach { mode ->
-        val tree = buildSummaryTree(listOf("ui/Canvas.kt", "ui/Paint.kt").map { path ->
+        val tree = buildSummaryTree(listOf("Canvas.kt", "Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         })
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val file = tree.nodes.single { it.path == "ui/Paint.kt" }
+        val file = tree.nodes.single { it.path == "Paint.kt" }
         val launcher = FakeTraceLauncher()
         val canvas = NoteCanvas({}, {}, traceSummaries = launcher)
             .apply {
@@ -2221,8 +2226,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             assertEquals(listOf("Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
             assertTrue(descendants(canvas).none { it.name == "summaries-show-names" })
-            assertEquals("ui/ · All changes · 2 files", header("root").text)
-            assertTrue(header("root").toolTipText.contains("/repo/ui/"))
+            assertEquals("./ · All changes · 2 files", header("root").text)
+            assertTrue(header("root").toolTipText.contains("/repo/"))
             val fileHeader = header("file:ui/canvas/Canvas.kt")
             assertEquals("Canvas.kt", fileHeader.text)
             assertTrue(fileHeader.toolTipText.contains("modified file"))

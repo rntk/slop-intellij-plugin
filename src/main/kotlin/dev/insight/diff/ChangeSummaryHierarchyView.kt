@@ -126,7 +126,7 @@ internal class ChangeSummaryHierarchyPanel(
             if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else ""
     }
 
-    /** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
+    /** A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. */
     private fun title(node: SummaryNode): String = summaryNodeTitle(node)
 
     private fun icon(node: SummaryNode): Icon = summaryNodeIcon(node)
@@ -266,7 +266,7 @@ internal class ChangeSummaryDocumentPanel(
     }
 }
 
-/** A file name or merged chain, a folder chain with a trailing slash, a group's range, a part's lines, or the root's folder. */
+/** A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. */
 internal fun summaryNodeTitle(node: SummaryNode): String = when (node.kind) {
     SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
     SummaryKind.DIRECTORY -> "${node.label}/"

@@ -692,7 +692,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(descendants(panel).filterIsInstance<ChangeSummariesPanel>().isEmpty())
 
             val nodes = tab.state.summaries.tree.nodes
-            assertEquals(listOf("./", "src/app/", "src/app/a.kt", "src/app/b.kt", "docs/guide.md"), nodes.map { it.location })
+            assertEquals(listOf("./", "docs/", "docs/guide.md", "src/", "src/app/", "src/app/a.kt", "src/app/b.kt"), nodes.map { it.location })
             tab.state.summarize(tab.state.revision, nodes.associate { it.id to "Summary of ${it.location} & more" })
             val open = descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }
             val manager = FileEditorManager.getInstance(project)

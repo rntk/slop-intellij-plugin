@@ -250,7 +250,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertNull(tab.pendingSnapshot)
             assertEquals(edited.files, tab.state.snapshot.files)
             assertTrue("A held update must not stop the run", tab.session.messages.none { it.text == "Stopped." })
-            assertTrue(tab.session.messages.last { it.role == ChatMessage.ASSISTANT }.text.contains("[3 summaries · 2 requests]"))
+            assertTrue(tab.session.messages.last { it.role == ChatMessage.ASSISTANT }.text.contains("[4 summaries · 2 requests]"))
             // The unchanged file keeps its summary; the edited one and the folder above it are missing again.
             val tree = tab.state.summaries.tree
             assertNotNull(tab.state.summaries.text(tree.nodes.single { it.kind == SummaryKind.FILE && it.path == "src/a.kt" }.id))

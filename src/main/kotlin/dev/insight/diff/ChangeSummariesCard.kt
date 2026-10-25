@@ -1191,7 +1191,7 @@ internal class ChangeSummariesPanel(
         }
     }
 
-    /** A file name, a merged folder chain, a group's range, or the root's folder. */
+    /** A file or folder name, a group's range, or the root's label. */
     private fun displayName(node: SummaryNode): String = when (node.kind) {
         SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.CHUNK -> node.label
         SummaryKind.DIRECTORY -> "${node.label}/"

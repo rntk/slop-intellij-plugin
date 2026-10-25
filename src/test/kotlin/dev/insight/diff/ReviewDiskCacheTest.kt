@@ -157,7 +157,7 @@ class ReviewDiskCacheTest {
 
         val changed = load(listOf(file("app/a.kt", "2")) + files.drop(1))
         assertEquals(unaffected(state.summaries), changed.summaries.texts())
-        assertEquals(setOf("file:app/b.kt", "file:lib/c.kt"), changed.summaries.texts().keys)
+        assertEquals(setOf("file:app/b.kt", "directory:lib", "file:lib/c.kt"), changed.summaries.texts().keys)
         assertEquals(mapOf("app/b.kt" to "Core > Auth", "lib/c.kt" to "Docs > Guide"), changed.topics.labels)
         assertEquals(unaffected(state.topicSummaries), changed.topicSummaries.texts())
         assertTrue("topic:docs > guide" in changed.topicSummaries.texts())

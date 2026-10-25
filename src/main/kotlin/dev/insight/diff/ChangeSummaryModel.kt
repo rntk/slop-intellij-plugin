@@ -10,7 +10,7 @@ data class SummaryNode(
     val kind: SummaryKind,
     /** A file/directory path, or topic ancestry for [isTopicBranch]; empty for the repository or topic root. */
     val path: String,
-    /** Name relative to the parent: a file name, a merged folder chain such as `main/kotlin`, a group's first and last entry, or a part's lines. */
+    /** Name relative to the parent: a file or folder name, a group's first and last entry, or a part's lines. */
     val label: String,
     val parent: Int?,
     val children: List<Int>,
@@ -54,9 +54,9 @@ class ChangeSummaryTree(val nodes: List<SummaryNode>) {
 }
 
 /**
- * Builds the tree bottom-up from paths. A folder with a single entry adds no level of meaning, so it merges with that
- * entry (`main/kotlin`, or `docs/README.md`); the root absorbs a single top folder. Folders list subfolders before files.
- * A file with [chunks] gets its parts beneath it, so a large file is summarized from its parts.
+ * Builds the tree bottom-up from paths. Every path segment is its own folder, even one with a single entry, so each label
+ * is a plain file or folder name. Folders list subfolders before files. A file with [chunks] gets its parts beneath it,
+ * so a large file is summarized from its parts.
  */
 internal fun buildSummaryTree(
     files: List<ReviewSource>,
@@ -80,20 +80,9 @@ internal fun buildSummaryTree(
         }
         folder.files += file
     }
-    fun entries(folder: Folder): List<Proto> = folder.folders.map { (name, child) ->
-        val children = entries(child)
-        val only = children.singleOrNull()
-        if (only == null) Proto(SummaryKind.DIRECTORY, child.path, name, children)
-        else Proto(only.kind, only.path, "$name/${only.label}", only.children, only.file)
-    }.plus(folder.files.map { Proto(SummaryKind.FILE, it.path, it.path.substringAfterLast('/'), emptyList(), it) })
-        // A folder merged into its only file sorts with the files.
-        .sortedWith(compareBy<Proto>({ it.kind == SummaryKind.FILE }, { it.label }))
-    var rootPath = ""
-    var rootChildren = entries(top)
-    while (rootChildren.size == 1 && rootChildren[0].kind == SummaryKind.DIRECTORY) {
-        rootPath = rootChildren[0].path
-        rootChildren = rootChildren[0].children
-    }
+    fun entries(folder: Folder): List<Proto> =
+        folder.folders.map { (name, child) -> Proto(SummaryKind.DIRECTORY, child.path, name, entries(child)) } +
+            folder.files.map { Proto(SummaryKind.FILE, it.path, it.path.substringAfterLast('/'), emptyList(), it) }.sortedBy { it.label }
     fun grouped(path: String, children: List<Proto>): List<Proto> = balancedGroups(children, maxChildren) { members ->
         Proto(SummaryKind.GROUP, path, "${members.first().label} … ${members.last().label}", members)
     }
@@ -116,7 +105,7 @@ internal fun buildSummaryTree(
         return nodes[id].copy(children = children.map { it.id }, files = fileList, key = key, identity = identity, file = file)
             .also { nodes[id] = it }
     }
-    add(Proto(SummaryKind.ROOT, rootPath, if (rootPath.isEmpty()) rootLabel else "$rootPath/", grouped(rootPath, rootChildren)), null)
+    add(Proto(SummaryKind.ROOT, "", rootLabel, grouped("", entries(top))), null)
     return ChangeSummaryTree(nodes)
 }
 

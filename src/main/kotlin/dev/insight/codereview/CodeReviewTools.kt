@@ -165,7 +165,7 @@ fun codeReviewTools(context: CodeReviewContext): List<ChatTool> {
             }
             context.addNotes(parsed)
         },
-        tool("get_code_summaries", "Page through the summary tree written on /summaries: the whole scope, folders (single-entry chains merged), " +
+        tool("get_code_summaries", "Page through the summary tree written on /summaries: the whole scope, folders, " +
             "groups that split large folders, files, and the parts of large files by line range, each with its summary where one exists. " +
             "Pass path (a folder or file) to read only its subtree. If next_offset is present, call again with it and the same path.",
             """"path":{"type":"string","minLength":1,"description":"Project-relative folder or file whose subtree to read. Omit for the whole tree."},$offset""",

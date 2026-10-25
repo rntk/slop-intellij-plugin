@@ -26,7 +26,7 @@ class ExplainCommandTest {
         val target = typedExplainTarget("/explain src/app/ why is the store separate?", summaries, paths)
         assertEquals("src/app/", target.label)
         assertEquals(listOf("src/app/Cache.kt", "src/app/Store.kt"), target.files)
-        assertEquals(listOf("Summary of root.", "Summary of directory:src/app."), target.context.map { it.text })
+        assertEquals(listOf("Summary of root.", "Summary of directory:src.", "Summary of directory:src/app."), target.context.map { it.text })
         assertEquals("why is the store separate?", target.instructions)
         assertNull(target.lines)
     }
@@ -62,16 +62,16 @@ class ExplainCommandTest {
 
     @Test fun `the context chains the summaries from the root down to the entry`() {
         val node = tree.nodes.single { it.location == "src/app/Store.kt" }
-        assertEquals(listOf("All changes", "src/app/", "src/app/Store.kt"), summaries.chainTo(node).map { it.label })
-        assertEquals(listOf("Summary of root.", "Summary of directory:src/app.", "Summary of file:src/app/Store.kt."),
+        assertEquals(listOf("All changes", "src/", "src/app/", "src/app/Store.kt"), summaries.chainTo(node).map { it.label })
+        assertEquals(listOf("Summary of root.", "Summary of directory:src.", "Summary of directory:src/app.", "Summary of file:src/app/Store.kt."),
             summaries.chainTo(node).map { it.text })
         // Missing levels are skipped, and a level that repeats the one below adds nothing.
         val folder = tree.nodes.single { it.location == "src/app/" }
         val partial = ChangeSummaries(tree).summarize(tree.nodes.filter { it.id != tree.root.id }
             .associate { it.id to if (it.id == folder.id) "Same." else "Summary of ${it.identity}." }, reuseSingleChildren = false)
-        assertEquals(listOf("src/app/", "src/app/Store.kt"), partial.chainTo(node).map { it.label })
+        assertEquals(listOf("src/", "src/app/", "src/app/Store.kt"), partial.chainTo(node).map { it.label })
         val repeated = summaries.summarize(mapOf(node.id to "Same.", folder.id to "Same."), reuseSingleChildren = false)
-        assertEquals(listOf("All changes", "src/app/Store.kt"), repeated.chainTo(node).map { it.label })
+        assertEquals(listOf("All changes", "src/", "src/app/Store.kt"), repeated.chainTo(node).map { it.label })
         assertEquals(emptyList<SummaryLevel>(), ChangeSummaries(tree).chainTo(node))
     }
 

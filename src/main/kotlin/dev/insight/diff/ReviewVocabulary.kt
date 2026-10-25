@@ -56,7 +56,7 @@ internal data class ReviewVocabulary(
             summariesTooltip = "The tree comes from the changed paths. Each summary is the assistant's interpretation, written from the files up to the root.",
             summariesOutlineTooltip = "Indented summaries from the whole change down to each file",
             summarizeTooltip = "Summarize the files, then the folders above them, up to the whole change (/summaries)",
-            summariesFooter = "The tree comes from the changed paths; single-entry folders are merged and large folders split into groups. " +
+            summariesFooter = "The tree comes from the changed paths; each folder is its own level and large folders split into groups. " +
                 "Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Change topics",
             topicsTooltip = "Every changed diff in one document, ordered by topic. File boundaries, order and alignment come from code; " +
@@ -89,7 +89,7 @@ internal data class ReviewVocabulary(
             summariesTooltip = "The tree comes from the folders in scope. Each summary is the assistant's interpretation, written from the code up to the root.",
             summariesOutlineTooltip = "Indented summaries from the whole scope down to each file",
             summarizeTooltip = "Summarize the files, then the folders above them, up to the whole scope (/summaries)",
-            summariesFooter = "The tree comes from the folders in scope; single-entry folders are merged, large folders split into groups " +
+            summariesFooter = "The tree comes from the folders in scope; each folder is its own level, large folders split into groups " +
                 "and large files into parts. Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Code topics",
             topicsTooltip = "Every source file in one document, ordered by topic, with file summaries and topic cards. " +

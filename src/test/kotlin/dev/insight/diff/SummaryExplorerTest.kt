@@ -30,7 +30,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
             clickRow("root", MouseEvent.BUTTON3)
             assertEquals(listOf("summary:root"), rows())
             clickRow("root")
-            assertEquals(listOf("summary:directory:src", "summary:file:docs/readme.md"), rows())
+            assertEquals(listOf("summary:directory:docs", "summary:directory:src"), rows())
             clickRow("directory:src")
             assertEquals(listOf("summary:directory:src/nested", "summary:file:src/a.kt"), rows())
             clickRow("file:src/a.kt", MouseEvent.BUTTON2)
@@ -49,7 +49,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
             back()
             assertEquals(listOf("summary:directory:src/nested", "summary:file:src/a.kt"), rows())
             (named("summary-explorer-crumb:root") as ActionLink).doClick()
-            assertEquals(listOf("summary:directory:src", "summary:file:docs/readme.md"), rows())
+            assertEquals(listOf("summary:directory:docs", "summary:directory:src"), rows())
             back()
             assertEquals(listOf("summary:root"), rows())
             assertFalse((named("summary-explorer-back") as JButton).isEnabled)
@@ -74,7 +74,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         state.fuzzy = "readme"
         state.updateExplorer(summaries)
         assertEquals(listOf("root"), state.explorerBreadcrumbs(tree).map { it.identity })
-        assertEquals(listOf("file:docs/readme.md"), state.explorerEntries(summaries).map { it.identity })
+        assertEquals(listOf("directory:docs"), state.explorerEntries(summaries).map { it.identity })
         state.fuzzy = "no-such-summary"
         state.updateExplorer(summaries)
         assertTrue(state.explorerEntries(summaries).isEmpty())

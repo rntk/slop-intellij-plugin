@@ -28,7 +28,7 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
             val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, markReviewed = state::setReviewed).apply {
                 setSize(1600, 900)
                 summariesView.mode = mode
-                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse("root", tree)
+                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse("directory:docs", tree)
             }
             try {
                 canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))

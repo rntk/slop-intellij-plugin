@@ -150,7 +150,8 @@ class CodeReviewStateTest {
         val tree = state.summaries.tree
         val shared = tree.nodes.filter { it.kind == SummaryKind.FILE || it.kind == SummaryKind.CHUNK }
         assertTrue(shared.all { state.summaries.text(it.id) != null })
-        assertTrue(tree.nodes.filter { it.kind != SummaryKind.FILE && it.kind != SummaryKind.CHUNK }.none { state.summaries.text(it.id) != null })
+        // A folder holding a single file reuses its summary; the others wait for their own.
+        assertTrue(tree.nodes.filter { it.kind != SummaryKind.FILE && it.kind != SummaryKind.CHUNK && it.children.size > 1 }.none { state.summaries.text(it.id) != null })
         assertEquals("file ${a.path}", state.text(a.path))
 
         // The other way: summaries written first seed the topic tree, parts by key.

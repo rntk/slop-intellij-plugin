@@ -21,7 +21,7 @@ class ChangeSummaryTest {
     private fun ChangeSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
     private fun ChangeSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
 
-    @Test fun `tree merges single entry folders lists folders first and the root absorbs a single top folder`() {
+    @Test fun `tree keeps every path segment as its own folder and lists folders first`() {
         val tree = buildSummaryTree(listOf(
             file("src/main/kotlin/app/b.kt"), file("src/main/kotlin/app/a.kt"),
             file("src/main/kotlin/app/ui/View.kt"), file("src/main/kotlin/app/ui/Model.kt"),
@@ -29,35 +29,45 @@ class ChangeSummaryTest {
         ))
         val root = tree.root
         assertEquals(SummaryKind.ROOT, root.kind)
-        assertEquals("src/main/kotlin/app", root.path)
-        assertEquals("src/main/kotlin/app/", root.location)
-        // docs/guide holds one file, so the file takes the folder's place under a merged label.
-        assertEquals(listOf("ui", "a.kt", "b.kt", "docs/guide/README.md"), tree.labels(root))
-        val readme = tree[root.children[3]]
+        assertEquals("", root.path)
+        assertEquals("All changes", root.label)
+        // A folder with a single entry is still a folder: no merged chains, no root absorbing a top folder.
+        assertEquals(listOf("src"), tree.labels(root))
+        assertEquals(listOf("main"), tree.labels(tree.byLocation("src/")))
+        assertEquals(listOf("kotlin"), tree.labels(tree.byLocation("src/main/")))
+        val app = tree.byLocation("src/main/kotlin/app/")
+        assertEquals(listOf("docs", "ui", "a.kt", "b.kt"), tree.labels(app))
+        assertEquals(listOf("guide"), tree.labels(tree.byLocation("src/main/kotlin/app/docs/")))
+        val readme = tree.byLocation("src/main/kotlin/app/docs/guide/README.md")
         assertEquals(SummaryKind.FILE, readme.kind)
-        assertEquals("src/main/kotlin/app/docs/guide/README.md", readme.location)
+        assertEquals("README.md", readme.label)
         val ui = tree.byLocation("src/main/kotlin/app/ui/")
         assertEquals(SummaryKind.DIRECTORY, ui.kind)
         assertEquals(listOf("Model.kt", "View.kt"), tree.labels(ui))
         assertEquals(listOf("src/main/kotlin/app/ui/Model.kt", "src/main/kotlin/app/ui/View.kt"), ui.files)
         assertEquals(5, root.files.size)
+        // Every label is a single name.
+        assertTrue(tree.nodes.filter { it.kind != SummaryKind.ROOT }.all { '/' !in it.label })
         // Pre-order: every parent precedes its children.
         tree.nodes.forEach { node -> node.parent?.let { assertTrue(it < node.id) }; assertEquals(node.id, tree.nodes.indexOf(node)) }
     }
 
-    @Test fun `merged chains inside the tree keep their full label and path`() {
+    @Test fun `single entry folder chains inside the tree stay separate folders`() {
         val tree = buildSummaryTree(listOf(file("a/x.kt"), file("b/c/d/y.kt"), file("b/c/d/z.kt")))
         assertEquals("", tree.root.path)
         assertEquals("All changes", tree.root.label)
-        assertEquals(listOf("b/c/d", "a/x.kt"), tree.labels(tree.root))
-        assertEquals("b/c/d/", tree[tree.root.children[0]].location)
+        assertEquals(listOf("a", "b"), tree.labels(tree.root))
+        assertEquals(listOf("x.kt"), tree.labels(tree.byLocation("a/")))
+        assertEquals(listOf("c"), tree.labels(tree.byLocation("b/")))
+        assertEquals(listOf("d"), tree.labels(tree.byLocation("b/c/")))
+        assertEquals(listOf("y.kt", "z.kt"), tree.labels(tree.byLocation("b/c/d/")))
     }
 
     @Test fun `large folders split into groups recursively so no node condenses more than the limit`() {
         val tree = buildSummaryTree((1..20).map { file("src/F${it.toString().padStart(2, '0')}.kt") })
-        assertEquals("src", tree.root.path)
-        assertEquals(listOf(7, 7, 6), tree.root.children.map { tree[it].children.size })
-        val first = tree[tree.root.children[0]]
+        val src = tree.byLocation("src/")
+        assertEquals(listOf(7, 7, 6), src.children.map { tree[it].children.size })
+        val first = tree[src.children[0]]
         assertEquals(SummaryKind.GROUP, first.kind)
         assertEquals("F01.kt … F07.kt", first.label)
         assertEquals("src/ · F01.kt … F07.kt", first.location)
@@ -234,13 +244,15 @@ class ChangeSummaryTest {
         assertEquals(listOf(setOf(tree.byLocation("src/app/a.kt").id)), batches)
         assertEquals("file src/app/a.kt", result.summaries.text(tree.byLocation("src/app/a.kt").id))
         assertEquals("file src/app/a.kt", result.summaries.text(tree.root.id))
-        assertEquals("file src/app/a.kt\n\n[2 summaries · 1 request]", summariesReply(result))
+        assertEquals("file src/app/a.kt\n\n[4 summaries · 1 request]", summariesReply(result))
 
         // When a snapshot shrinks to one already-summarized file, the parent reuses its summary with zero requests.
         val two = buildSummaryTree(listOf(file("src/app/a.kt"), file("src/app/b.kt")))
         val retained = ChangeSummaries(two).summarize(mapOf(
             two.byLocation("src/app/a.kt").id to "Summary A.",
             two.byLocation("src/app/b.kt").id to "Summary B.",
+            two.byLocation("src/app/").id to "Combined.",
+            two.byLocation("src/").id to "Combined.",
             two.root.id to "Combined.",
         )).retainedIn(tree)
         assertTrue(retained.complete)
@@ -318,8 +330,8 @@ class ChangeSummaryTest {
     }
 
     @Test fun `progress includes retained summaries and advances after each concurrent batch is saved`() = runBlocking {
-        val tree = buildSummaryTree((1..5).map { file("app/f$it.kt") })
-        var saved = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("app/f1.kt").id to "Kept."))
+        val tree = buildSummaryTree((1..5).map { file("f$it.kt") })
+        var saved = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("f1.kt").id to "Kept."))
         val progress = mutableListOf<Pair<Int, Int>>()
         val result = ChangeSummarizer(Model()::complete, null, ChangeSummaryOptions(filesPerRequest = 1)).run(
             saved, "", { saved.summarize(it).also { next -> saved = next } },
@@ -346,13 +358,13 @@ class ChangeSummaryTest {
     }
 
     @Test fun `missing nodes exhaust their attempts even when a wave has no answers`() {
-        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
+        val tree = buildSummaryTree(listOf(file("a.kt"), file("b.kt")))
         // The model never answers for b.kt, so the root can never be written.
-        val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "app/b.kt" }
+        val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "b.kt" }
             .map { mapOf("id" to it["id"].asInt, "summary" to "Summary.") })) }
         val (result, _) = run(model, ChangeSummaries(tree))
         assertEquals(5, result.requests)
-        assertEquals(listOf(tree.root.id, tree.byLocation("app/b.kt").id), result.summaries.missing().sorted())
+        assertEquals(listOf(tree.root.id, tree.byLocation("b.kt").id), result.summaries.missing().sorted())
         assertTrue(summariesReply(result).startsWith("Summarized 1 of 3 tree nodes with 5 requests."))
 
         val broken = Model { "not json" }
