@@ -43,6 +43,7 @@ import com.intellij.ui.tabs.TabsListener
 import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import dev.insight.diff.ReviewSidePages
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -62,7 +63,6 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JSplitPane
 import javax.swing.JTree
 import javax.swing.KeyStroke
 import javax.swing.SwingConstants
@@ -197,6 +197,9 @@ internal class CodeReviewPanel(
         addActionListener { viewSelectedFile() }
     }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
+    /** Scope controls, files and review tab controls; the selected review tab's chat has its own page. */
+    private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
+    private val pages = ReviewSidePages(main)
 
     init {
         border = JBUI.Borders.empty(6)
@@ -227,11 +230,12 @@ internal class CodeReviewPanel(
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, filesPanel, reviewPanel).apply {
-            resizeWeight = 0.4; setDividerLocation(JBUI.scale(300))
-        }, BorderLayout.CENTER)
+        main.add(filesPanel, BorderLayout.CENTER)
+        main.add(reviewPanel, BorderLayout.SOUTH)
+        add(pages, BorderLayout.CENTER)
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
+                showSelectedChat()
                 (newSelection?.component as? CodeReviewTab)?.let {
                     it.highlight(selectedPaths().toSet())
                     if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
@@ -255,6 +259,7 @@ internal class CodeReviewPanel(
                     null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
                 info.setText(renamed)
                 info.setTooltipText("$renamed · Double-click to rename")
+                showSelectedChat()
                 (info.component as CodeReviewTab).canvasFile.let { file ->
                     file.renameReview(renamed)
                     FileEditorManager.getInstance(project).updateFilePresentation(file)
@@ -506,6 +511,7 @@ internal class CodeReviewPanel(
         }), "Insight.CodeReviewTabs")
         tabs.addTab(info)
         tabs.select(info, false)
+        showSelectedChat()
     }
 
     private fun closeTab(info: TabInfo) {
@@ -514,9 +520,12 @@ internal class CodeReviewPanel(
         Disposer.dispose(tab)
         tabs.removeTab(info)
         if (reviewTabs.isEmpty()) addTab()
+        showSelectedChat()
     }
 
     private fun selectedTab(): CodeReviewTab? = tabs.selectedInfo?.component as? CodeReviewTab
+
+    private fun showSelectedChat() { pages.showChat(selectedTab()?.chat, tabs.selectedInfo?.text.orEmpty()) }
 
     fun openCanvas(focus: Boolean = false) { selectedTab()?.openCanvas(focus) }
 

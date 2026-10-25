@@ -12,9 +12,15 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
+import com.intellij.util.ui.JBUI
+import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSettings
 import java.awt.BorderLayout
 import java.time.Duration
+import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.JTabbedPane
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -187,5 +193,40 @@ internal class ReviewContextSummaryLauncher(
             }
             done(result)
         }
+    }
+}
+
+/**
+ * A review tool window's two pages: Main holds the scope, files and review tab controls, and Chat gives the selected review
+ * tab's chat the full height. A Swing chat has one parent, so it moves here whenever its review tab is selected.
+ */
+internal class ReviewSidePages(main: JComponent) : JTabbedPane() {
+    private val chatTitle = JLabel().apply { border = JBUI.Borders.empty(4, 12, 0, 12) }
+    private val chatHost = JPanel(BorderLayout())
+    private var chat: ChatPanel? = null
+
+    init {
+        addTab("Main", main)
+        addTab("Chat", JPanel(BorderLayout()).apply {
+            add(chatTitle, BorderLayout.NORTH)
+            add(chatHost, BorderLayout.CENTER)
+        })
+        setToolTipTextAt(CHAT, "The selected review tab's conversation")
+        addChangeListener { if (selectedIndex == CHAT) chat?.input?.requestFocusInWindow() }
+    }
+
+    /** Shows [chat], the conversation of the review tab named [name]; null leaves the page empty. */
+    fun showChat(chat: ChatPanel?, name: String) {
+        chatTitle.text = if (chat == null) "" else "Review tab: $name"
+        if (this.chat === chat) return
+        this.chat = chat
+        chatHost.removeAll()
+        chat?.let { chatHost.add(it, BorderLayout.CENTER) }
+        chatHost.revalidate()
+        chatHost.repaint()
+    }
+
+    private companion object {
+        const val CHAT = 1
     }
 }

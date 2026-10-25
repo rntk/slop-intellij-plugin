@@ -198,7 +198,8 @@ internal class DiffReviewTab(
             }
         }
     }
-    private val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
+    /** Shown by the panel's Chat page, so it is not part of this tab's controls. */
+    internal val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
 
     init {
         minimumSize = Dimension(300, 200)
@@ -229,7 +230,6 @@ internal class DiffReviewTab(
                 }, BorderLayout.SOUTH)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
-        add(chat, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, sourcePoints)

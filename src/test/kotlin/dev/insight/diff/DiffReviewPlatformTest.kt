@@ -20,7 +20,6 @@ import java.awt.Container
 import java.awt.BorderLayout
 import javax.swing.JButton
 import javax.swing.JLabel
-import javax.swing.JSplitPane
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.tabs.JBTabs
@@ -87,7 +86,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(listOf(source.before, source.after), view.source.points.map { it.text })
             assertEquals(listOf("before", "after"), view.source.points.map { it.point.side })
             assertEquals("Removed behavior", view.source.points.first().point.comment)
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
+            descendants(tab.chat).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
             assertTrue(tab.session.messages.isEmpty())
             assertFalse(manager.isFileOpen(view))
             assertTrue(view.source.points.isEmpty())
@@ -118,7 +117,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 tab.captureContext().showSource(DiffSourceRange(file.path, 1, 1))
             }
             val sourceEditor = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
-            val chat = descendants(tab).filterIsInstance<ChatPanel>().single()
+            val chat = tab.chat
             chat.input.text = "Keep this draft"
             tab.canvas.tabs.selectedIndex = 0
             val bounds = tab.canvas.components.map { it.bounds }
@@ -603,16 +602,21 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
-            val split = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as JSplitPane
-            assertEquals(JSplitPane.VERTICAL_SPLIT, split.orientation)
-            assertTrue(descendants(split.topComponent as Container).any { it is JTree })
-            assertFalse(descendants(split.topComponent as Container).any { it is ChatPanel })
-            val tabs = descendants(split.bottomComponent as Container).filterIsInstance<JBTabs>().single()
+            val pages = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as ReviewSidePages
+            assertEquals(listOf("Main", "Chat"), (0 until pages.tabCount).map(pages::getTitleAt))
+            val main = pages.getComponentAt(0) as Container
+            val chatPage = pages.getComponentAt(1) as Container
+            assertTrue(descendants(main).any { it is JTree })
+            assertFalse(descendants(main).any { it is ChatPanel })
+            val tabs = descendants(main).filterIsInstance<JBTabs>().single()
             assertFalse(tabs.presentation.isHideTabs)
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            val firstChat = descendants(first).filterIsInstance<ChatPanel>().single()
+            assertTrue(descendants(first).any { it is JButton && it.text == "Summaries" })
+            assertFalse(descendants(first).any { it is ChatPanel })
+            val firstChat = first.chat
+            assertSame(firstChat, descendants(chatPage).filterIsInstance<ChatPanel>().single())
             firstChat.input.text = "First topic draft"
             val snapshot = ReviewSnapshot(listOf(file("src/a.kt"), file("src/b.kt")), emptyList())
             first.update(snapshot)
@@ -625,15 +629,17 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertNotSame(first, second)
             assertNotSame(first.session, second.session)
             assertTrue(second.state.notes.isEmpty())
-            val secondChat = descendants(second).filterIsInstance<ChatPanel>().single()
+            val secondChat = second.chat
+            assertSame(secondChat, descendants(chatPage).filterIsInstance<ChatPanel>().single())
             assertEquals("", secondChat.input.text)
             secondChat.input.text = "Second topic draft"
             second.update(snapshot)
             second.state.addNote(second.state.revision, listOf("src/a.kt"), "Different note")
             PlatformTestUtil.waitForCallback(tabs.select(tabs.tabs.single { it.component === first }, false))
+            assertSame(firstChat, descendants(chatPage).filterIsInstance<ChatPanel>().single())
             assertEquals("First topic draft", firstChat.input.text)
             assertEquals("First note", first.state.notes.single().text)
-            descendants(first).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
+            descendants(first.chat).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
             descendants(first).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertTrue(first.session.messages.isEmpty())
             assertTrue(first.state.notes.isEmpty())

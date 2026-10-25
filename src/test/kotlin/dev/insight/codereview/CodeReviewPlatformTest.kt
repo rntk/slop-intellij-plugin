@@ -57,7 +57,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val view = manager.openFiles.filterIsInstance<dev.insight.chat.SourcePointsFile>().single()
             assertEquals(source.text, view.source.points.single().text)
             assertEquals("Writes to stdout", view.source.points.single().point.comment)
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
+            descendants(tab.chat).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
             assertTrue(tab.session.messages.isEmpty())
             assertFalse(manager.isFileOpen(view))
             assertTrue(view.source.points.isEmpty())

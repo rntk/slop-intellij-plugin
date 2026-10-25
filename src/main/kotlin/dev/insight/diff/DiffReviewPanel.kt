@@ -118,6 +118,9 @@ internal class DiffReviewPanel(
         addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { addTab(it) } }
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
+    /** Source controls, files and review tab controls; the selected review tab's chat has its own page. */
+    private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
+    private val pages = ReviewSidePages(main)
 
     init {
         border = JBUI.Borders.empty(6)
@@ -153,11 +156,12 @@ internal class DiffReviewPanel(
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, filesPanel, reviewPanel).apply {
-            resizeWeight = 0.4; setDividerLocation(JBUI.scale(300))
-        }, BorderLayout.CENTER)
+        main.add(filesPanel, BorderLayout.CENTER)
+        main.add(reviewPanel, BorderLayout.SOUTH)
+        add(pages, BorderLayout.CENTER)
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
+                showSelectedChat()
                 (newSelection?.component as? DiffReviewTab)?.let {
                     it.highlight(selectedPaths().toSet())
                     if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
@@ -181,6 +185,7 @@ internal class DiffReviewPanel(
                     null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
                 info.setText(renamed)
                 info.setTooltipText("$renamed · Double-click to rename")
+                showSelectedChat()
                 (info.component as DiffReviewTab).canvasFile.let { file ->
                     file.renameReview(renamed)
                     FileEditorManager.getInstance(project).updateFilePresentation(file)
@@ -366,6 +371,7 @@ internal class DiffReviewPanel(
         }), "Insight.DiffReviewTabs")
         tabs.addTab(info)
         tabs.select(info, false)
+        showSelectedChat()
     }
 
     private fun closeTab(info: TabInfo) {
@@ -374,9 +380,12 @@ internal class DiffReviewPanel(
         Disposer.dispose(tab)
         tabs.removeTab(info)
         if (reviewTabs.isEmpty()) addTab()
+        showSelectedChat()
     }
 
     private fun selectedTab(): DiffReviewTab? = tabs.selectedInfo?.component as? DiffReviewTab
+
+    private fun showSelectedChat() { pages.showChat(selectedTab()?.chat, tabs.selectedInfo?.text.orEmpty()) }
 
     fun openCanvas(focus: Boolean = false) { selectedTab()?.openCanvas(focus) }
 
