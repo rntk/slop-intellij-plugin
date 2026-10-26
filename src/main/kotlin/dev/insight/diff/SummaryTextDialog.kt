@@ -29,6 +29,7 @@ internal class SummaryTextDialog(
     baseFont: Font,
     state: ChangeSummariesViewState,
     actions: ChangeSummaryActions,
+    tree: ChangeSummaryTree? = null,
     entryMenu: (() -> JPopupMenu)? = null,
 ) : DialogWrapper(parent, false) {
     private val text = object : JTextPane() {
@@ -66,7 +67,7 @@ internal class SummaryTextDialog(
     }
 
     init {
-        title = "Summary · ${summaryNodeTitle(node)}"
+        title = "Summary · ${summaryNodeTitle(node, tree)}"
         setCancelButtonText("Close")
         init()
     }

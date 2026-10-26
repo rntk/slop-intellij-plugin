@@ -47,6 +47,30 @@ class ChangeSummaryTree(val nodes: List<SummaryNode>) {
     /** Nodes that need a summary; an empty diff has none, not even the root. */
     val summarizable: List<SummaryNode> get() = if (root.files.isEmpty()) emptyList() else nodes
 
+    /**
+     * A folder whose only entry is another folder repeats that folder's summary. Views merge such a chain into one entry: the
+     * last folder, labeled with the joined names. Only the display merges; the tree and its summaries keep every folder.
+     */
+    fun isMerged(id: Int): Boolean {
+        val node = nodes[id]
+        val child = node.children.singleOrNull()?.let(nodes::get) ?: return false
+        return node.kind == SummaryKind.DIRECTORY && child.kind == SummaryKind.DIRECTORY && !node.isTopicBranch && !child.isTopicBranch
+    }
+
+    /** The entry [id] shows as: the last folder of its merged chain, else the node itself. */
+    fun shown(id: Int): SummaryNode = generateSequence(nodes[id]) { node -> if (isMerged(node.id)) nodes[node.children.single()] else null }.last()
+
+    fun shownChildren(node: SummaryNode): List<SummaryNode> = node.children.map(::shown)
+
+    fun shownParent(node: SummaryNode): SummaryNode? = generateSequence(node.parent) { nodes[it].parent }.firstOrNull { !isMerged(it) }?.let(nodes::get)
+
+    /** The depth among shown entries, which merged folders do not add to. */
+    fun shownDepth(id: Int): Int = generateSequence(nodes[id].parent) { nodes[it].parent }.count { !isMerged(it) }
+
+    /** The node's label, prefixed by the folders merged into it: `src/main/kotlin` for `kotlin`. */
+    fun shownLabel(node: SummaryNode): String =
+        generateSequence(node) { it.parent?.takeIf(::isMerged)?.let(nodes::get) }.toList().asReversed().joinToString("/") { it.label }
+
     companion object {
         /** Folders and groups with more entries are split into groups, recursively, so every summary condenses a few. */
         const val MAX_CHILDREN = 8

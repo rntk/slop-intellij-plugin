@@ -173,7 +173,7 @@ internal class ChangeSummarySplitPanel(
     private fun addNode(node: SummaryNode, depth: Int) {
         pairs += row(node, depth)
         if (node.children.isEmpty() || !state.isOpen(node, summaries)) return
-        val children = node.children.map(tree::get).filter { state.shows(it, summaries) }
+        val children = tree.shownChildren(node).filter { state.shows(it, summaries) }
         for (child in children) addNode(child, depth + 1)
     }
 
@@ -193,7 +193,7 @@ internal class ChangeSummarySplitPanel(
         val activateLater = Timer(clickDelay) { activate() }.apply { isRepeats = false }
         val left = SplitRow("summary-tree:${node.identity}", selected, mark).apply {
             border = EmptyBorder(scaled(4), scaled(4) + depth * scaled(INDENT), scaled(4), scaled(6))
-            toolTipText = "${node.location} · Level ${tree.depth(node.id) + 1}" + (match?.let { " · " + matchLabel(it, trace!!) } ?: "")
+            toolTipText = "${node.location} · Level ${tree.shownDepth(node.id) + 1}" + (match?.let { " · " + matchLabel(it, trace!!) } ?: "")
             add(JLabel(if (!branch) "" else if (open) "▾" else "▸").apply {
                 font = font(JBFont.label())
                 foreground = help
@@ -211,7 +211,7 @@ internal class ChangeSummarySplitPanel(
                     })
                 }
             }, BorderLayout.WEST)
-            add(JLabel(summaryNodeTitle(node), summaryNodeIcon(node), JLabel.LEADING).apply {
+            add(JLabel(summaryNodeTitle(node, tree), summaryNodeIcon(node), JLabel.LEADING).apply {
                 name = "summary-name:${node.identity}"
                 font = font(if (branch) JBFont.label().asBold() else JBFont.label())
                 iconTextGap = scaled(4)
@@ -247,7 +247,7 @@ internal class ChangeSummarySplitPanel(
         val summary = summaries.text(node.id)
         val read = Timer(clickDelay) {
             if (summary != null) SummaryTextDialog(summaryRows, node, summary,
-                font(JBFont.label()).forSummaryText(), state, actions) { menu(node) }.show()
+                font(JBFont.label()).forSummaryText(), state, actions, tree) { menu(node) }.show()
         }.apply { isRepeats = false }
         fun summaryClick(clicks: Int) {
             read.stop()

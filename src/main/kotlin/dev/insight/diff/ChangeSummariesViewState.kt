@@ -54,8 +54,8 @@ internal class ChangeSummariesViewState(
     }
 
     fun browse(identity: String?, tree: ChangeSummaryTree) {
-        val node = tree.nodes.firstOrNull { it.identity == identity }
-        explorerPath = node?.let { generateSequence(it) { current -> current.parent?.let(tree::get) }
+        val node = tree.nodes.firstOrNull { it.identity == identity }?.let { tree.shown(it.id) }
+        explorerPath = node?.let { generateSequence(it) { current -> tree.shownParent(current) }
             .toList().asReversed().map { it.identity } }.orEmpty()
     }
 
@@ -64,7 +64,7 @@ internal class ChangeSummariesViewState(
     fun explorerEntries(summaries: ChangeSummaries): List<SummaryNode> {
         val tree = summaries.tree
         val current = explorerBreadcrumbs(tree).lastOrNull { shows(it, summaries) }
-        return (current?.children?.map(tree::get) ?: listOf(tree.root)).filter { shows(it, summaries) }
+        return (current?.let(tree::shownChildren) ?: listOf(tree.root)).filter { shows(it, summaries) }
     }
 
     /** A filter that removes the current folder returns to its closest visible ancestor. */
@@ -131,8 +131,11 @@ internal class ChangeSummariesViewState(
             val kept = hashSetOf<String>()
             for (node in tree.nodes) {
                 if (searched != null && node.identity !in searched || !fuzzyMatches(query, searchableText(node, summaries))) continue
-                kept += node.identity
-                generateSequence(node.parent) { tree[it].parent }.forEach { above += tree[it].identity }
+                // A merged ancestor can have its own summary; its match belongs to the displayed folder.
+                val entry = tree.shown(node.id)
+                if (searched != null && entry.identity !in searched) continue
+                kept += entry.identity
+                generateSequence(tree.shownParent(entry)) { tree.shownParent(it) }.forEach { above += it.identity }
             }
             opened = above
             kept + above
@@ -161,13 +164,14 @@ internal class ChangeSummariesViewState(
         val small = tree.nodes.size <= SMALL_TREE
         val level = level
         for (node in tree.nodes) if (seen.add(node.identity) && isFolderBranch(node)) {
-            if (if (level != null) tree.depth(node.id) < level else small || node.kind == SummaryKind.ROOT)
+            if (if (level != null) tree.shownDepth(node.id) < level else small || node.kind == SummaryKind.ROOT)
                 expanded += node.identity
             else if (level != null) folded += node.identity
         }
         if (tree.nodes.none { it.identity == selected }) selected = null
         val identities = tree.nodes.mapTo(hashSetOf()) { it.identity }
-        explorerPath = explorerPath.takeWhile { it in identities }
+        // Refreshes can merge away the current folder or introduce newly visible parents.
+        browse(explorerPath.takeWhile { it in identities }.lastOrNull(), tree)
     }
 
     fun toggle(identity: String) {
@@ -180,8 +184,8 @@ internal class ChangeSummariesViewState(
     /** Level n opens the folders above depth n and folds the rest; [branchLevels] opens every folder down to the files. */
     fun selectLevel(level: Int, tree: ChangeSummaryTree) {
         this.level = level
-        for (node in tree.nodes) if (isFolderBranch(node)) {
-            if (tree.depth(node.id) < level) {
+        for (node in levelBranches(tree)) {
+            if (tree.shownDepth(node.id) < level) {
                 expanded += node.identity
                 folded -= node.identity
             } else {
@@ -193,7 +197,7 @@ internal class ChangeSummariesViewState(
 
     /** Folds the selected 1-based level and everything deeper, keeping shallower folders as they are. */
     fun foldLevel(level: Int, tree: ChangeSummaryTree) {
-        for (node in tree.nodes) if (isFolderBranch(node) && tree.depth(node.id) >= level - 1) {
+        for (node in levelBranches(tree)) if (tree.shownDepth(node.id) >= level - 1) {
             expanded -= node.identity
             folded += node.identity
         }
@@ -202,8 +206,8 @@ internal class ChangeSummariesViewState(
 
     /** The level the current folding matches, if any; folding by hand can leave it between levels. */
     fun shownLevel(tree: ChangeSummaryTree): Int? {
-        val branches = tree.nodes.filter(::isFolderBranch)
-        return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.depth(it.id) < level) } }
+        val branches = levelBranches(tree)
+        return (0..branchLevels(tree)).firstOrNull { level -> branches.all { (it.identity in expanded) == (tree.shownDepth(it.id) < level) } }
     }
 
     /** Document mode keeps every file visible and limits the rail to the picked levels. */
@@ -216,13 +220,13 @@ internal class ChangeSummariesViewState(
         val filter = shown.takeIf { filterFor?.summaries?.tree === tree }
         val explorerEntries = if (mode == ChangeSummariesMode.EXPLORER) {
             val current = explorerBreadcrumbs(tree).lastOrNull { filter == null || it.identity in filter }
-            current?.children?.toSet() ?: setOf(tree.root.id)
+            current?.let { tree.shownChildren(it).mapTo(hashSetOf(), SummaryNode::id) } ?: setOf(tree.root.id)
         } else emptySet()
         return { node ->
-            (filter == null || node.identity in filter) && if (mode == ChangeSummariesMode.EXPLORER) node.id in explorerEntries
+            !tree.isMerged(node.id) && (filter == null || node.identity in filter) && if (mode == ChangeSummariesMode.EXPLORER) node.id in explorerEntries
             else if (mode == ChangeSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
-                isFolderBranch(node) && tree.depth(node.id) < railDepth(tree)
-            else generateSequence(node.parent) { tree[it].parent }.all { tree[it].identity in expanded || tree[it].identity in opened && tree[it].identity !in folded }
+                isFolderBranch(node) && tree.shownDepth(node.id) < railDepth(tree)
+            else generateSequence(node.parent) { tree[it].parent }.filterNot(tree::isMerged).all { tree[it].identity in expanded || tree[it].identity in opened && tree[it].identity !in folded }
         }
     }
 
@@ -234,7 +238,7 @@ internal class ChangeSummariesViewState(
      */
     override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
         if (mode == ChangeSummariesMode.EXPLORER) trace.best?.let { best ->
-            tree.nodes.firstOrNull { it.identity == best.identity }?.let { browse(it.parent?.let(tree::get)?.identity, tree) }
+            tree.nodes.firstOrNull { it.identity == best.identity }?.let { browse(tree.shownParent(it)?.identity, tree) }
         }
         val path = tracePath(tree, trace)
         path?.let {
@@ -292,7 +296,11 @@ internal class ChangeSummariesViewState(
 
         /** Columns of folders, groups and the root; an empty diff has none. */
         fun branchLevels(tree: ChangeSummaryTree): Int =
-            tree.nodes.filter(::isFolderBranch).maxOfOrNull { tree.depth(it.id) + 1 } ?: 0
+            levelBranches(tree).maxOfOrNull { tree.shownDepth(it.id) + 1 } ?: 0
+
+        /** The branches that levels fold and unfold; a merged folder shows as the folder it holds. */
+        private fun levelBranches(tree: ChangeSummaryTree): List<SummaryNode> =
+            tree.nodes.filter { isFolderBranch(it) && !tree.isMerged(it.id) }
     }
 }
 

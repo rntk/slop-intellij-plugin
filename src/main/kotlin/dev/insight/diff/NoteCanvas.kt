@@ -1031,7 +1031,7 @@ internal class NoteCanvas(
                 crumb("Overview", null, path.isEmpty())
                 path.forEachIndexed { index, node ->
                     add(JLabel("›").apply { foreground = UIUtil.getContextHelpForeground() })
-                    crumb(node.label, node.identity, index == path.lastIndex)
+                    crumb(tree.shownLabel(node), node.identity, index == path.lastIndex)
                 }
             }
             add(JBScrollPane(crumbs).apply {

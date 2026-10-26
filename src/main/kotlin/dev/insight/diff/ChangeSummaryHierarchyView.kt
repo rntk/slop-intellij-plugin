@@ -50,7 +50,7 @@ internal class ChangeSummaryHierarchyPanel(
 
     private fun branch(node: SummaryNode, column: Int, y: Int, family: String?): Int {
         // A branch whose entries are all hidden by a search reads as folded, with its own summary beside it.
-        val children = node.children.map(tree::get).filter { state.shows(it, summaries) }
+        val children = tree.shownChildren(node).filter { state.shows(it, summaries) }
         val collapsed = !state.isOpen(node, summaries) || children.isEmpty()
         val toggle = toggle("toggle:${node.identity}", collapsed, "Show subfolders and files", "Fold subfolders and files") {
             actions.toggle(node.identity)
@@ -125,13 +125,13 @@ internal class ChangeSummaryHierarchyPanel(
 
     /** A folded folder without a summary yet lists the entries it hides. */
     private fun folded(node: SummaryNode): String {
-        val names = node.children.map { title(tree[it]) }
+        val names = tree.shownChildren(node).map(::title)
         return missing() + " · " + names.take(FOLDED_NAMES).joinToString(", ") +
             if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else ""
     }
 
     /** A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. */
-    private fun title(node: SummaryNode): String = summaryNodeTitle(node)
+    private fun title(node: SummaryNode): String = summaryNodeTitle(node, tree)
 
     private fun icon(node: SummaryNode): Icon = summaryNodeIcon(node)
 }
@@ -175,10 +175,10 @@ internal class ChangeSummaryDocumentPanel(
                 items += RailItem(
                     key = node.identity,
                     name = "node:${node.identity}",
-                    title = summaryNodeTitle(node),
+                    title = summaryNodeTitle(node, tree),
                     family = family,
                     level = level,
-                    levelLabel = "Level ${tree.depth(node.id) + 1}",
+                    levelLabel = "Level ${tree.shownDepth(node.id) + 1}",
                     first = first,
                     last = last,
                     tooltip = node.location,
@@ -193,7 +193,7 @@ internal class ChangeSummaryDocumentPanel(
                 )
             }
             // Each top-level folder keeps one hue down its columns; the root stays neutral.
-            for (child in node.children.map(tree::get)) collect(child, level + 1, family ?: child.identity)
+            for (child in tree.shownChildren(node)) collect(child, level + 1, family ?: child.identity)
         }
         if (files.isNotEmpty()) collect(tree.root, 0, null)
         // Source reviews give every complete file a path card, including files summarized in parts.
@@ -202,10 +202,10 @@ internal class ChangeSummaryDocumentPanel(
                 key = node.identity,
                 name = "node:${node.identity}",
                 title = node.path,
-                family = generateSequence(node) { it.parent?.let(tree::get)?.takeUnless { parent -> parent.kind == SummaryKind.ROOT } }
+                family = generateSequence(node) { tree.shownParent(it)?.takeUnless { parent -> parent.kind == SummaryKind.ROOT } }
                     .last().identity,
                 level = folderDepth,
-                levelLabel = "Level ${tree.depth(node.id) + 1}",
+                levelLabel = "Level ${tree.shownDepth(node.id) + 1}",
                 first = index,
                 last = index,
                 tooltip = node.path,
@@ -284,10 +284,13 @@ internal class ChangeSummaryDocumentPanel(
     }
 }
 
-/** A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. */
-internal fun summaryNodeTitle(node: SummaryNode): String = when (node.kind) {
+/**
+ * A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. With [tree], a folder
+ * also names the folders merged into it.
+ */
+internal fun summaryNodeTitle(node: SummaryNode, tree: ChangeSummaryTree? = null): String = when (node.kind) {
     SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
-    SummaryKind.DIRECTORY -> "${node.label}/"
+    SummaryKind.DIRECTORY -> "${tree?.shownLabel(node) ?: node.label}/"
 }
 
 internal fun summaryNodeIcon(node: SummaryNode): Icon = when (node.kind) {

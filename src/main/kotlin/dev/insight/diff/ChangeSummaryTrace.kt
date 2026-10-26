@@ -421,12 +421,15 @@ class SummaryTracer(
         ),
     )
 
-    /** Summaries up to [levels] levels below [id]. A parent with a single child repeats its summary, so that child adds no level. */
+    /**
+     * Summaries up to [levels] levels below [id]. A parent with a single child repeats its summary, so that child adds no level.
+     * A chain of merged folders counts as the folder the views show for it.
+     */
     internal fun candidates(summaries: ChangeSummaries, id: Int): List<Pair<SummaryNode, Int>> {
         val tree = summaries.tree
         val found = mutableListOf<Pair<SummaryNode, Int>>()
         fun visit(parent: SummaryNode, depth: Int) {
-            for (child in parent.children.map(tree::get)) {
+            for (child in tree.shownChildren(parent)) {
                 val text = summaries.text(child.id)
                 val repeats = parent.children.size == 1 && text == summaries.text(parent.id)
                 val level = if (repeats) depth else depth + 1

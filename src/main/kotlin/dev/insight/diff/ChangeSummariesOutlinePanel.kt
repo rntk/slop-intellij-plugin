@@ -73,7 +73,7 @@ internal class ChangeSummariesPanel(
         rows++
         add(row(node, depth))
         if (!state.isOpen(node, summaries)) return
-        val children = node.children.map(tree::get).filter { state.shows(it, summaries) }
+        val children = tree.shownChildren(node).filter { state.shows(it, summaries) }
         for ((index, child) in children.withIndex()) {
             if (rows >= HierarchyColumnsPanel.MAX_ROWS) {
                 skipped += children.size - index
@@ -160,7 +160,7 @@ internal class ChangeSummariesPanel(
     /** A file or folder name, a group's range, or the root's label. */
     private fun displayName(node: SummaryNode): String = when (node.kind) {
         SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.CHUNK -> node.label
-        SummaryKind.DIRECTORY -> "${node.label}/"
+        SummaryKind.DIRECTORY -> "${tree.shownLabel(node)}/"
         SummaryKind.ROOT -> node.location
     }
 
@@ -183,7 +183,7 @@ internal class ChangeSummariesPanel(
             .filter { it != displayName(node) }).joinToString(" · ")
         val heading = when (node.kind) {
             SummaryKind.FILE -> node.path.substringAfterLast('/')
-            SummaryKind.DIRECTORY -> "${node.path.substringAfterLast('/')}/ · folder · $count"
+            SummaryKind.DIRECTORY -> "${tree.shownLabel(node)}/ · folder · $count"
             SummaryKind.ROOT -> "${node.path.substringAfterLast('/').ifEmpty { "." }}/ · ${vocabulary.rootName} · $count"
             SummaryKind.GROUP -> "${node.label} · ${node.children.size} entries · $count"
             SummaryKind.CHUNK -> title
@@ -195,7 +195,7 @@ internal class ChangeSummariesPanel(
         val links = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
             isOpaque = false
             actions.review?.control(node, font(JBFont.small()))?.let(::add)
-            add(label("Level ${tree.depth(node.id) + 1}", font(JBFont.small()), help).apply {
+            add(label("Level ${tree.shownDepth(node.id) + 1}", font(JBFont.small()), help).apply {
                 name = "summary-level-label:${node.identity}"
             })
             matches[node.identity]?.let { match ->
