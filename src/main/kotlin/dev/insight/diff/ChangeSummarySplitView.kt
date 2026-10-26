@@ -5,6 +5,9 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component

@@ -1,8 +1,8 @@
 package dev.insight.codereview
 
-import dev.insight.diff.ReviewSource
-import dev.insight.diff.SourceChunk
-import dev.insight.diff.reviewFingerprint
+import dev.insight.review.ReviewSource
+import dev.insight.review.SourceChunk
+import dev.insight.review.reviewFingerprint
 import java.util.Locale
 
 /**

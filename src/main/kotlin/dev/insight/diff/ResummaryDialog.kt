@@ -6,6 +6,8 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBUI
+import dev.insight.review.SummaryNode
+import dev.insight.review.entryLabel
 import java.awt.Component
 import javax.swing.JComponent
 import javax.swing.JPanel

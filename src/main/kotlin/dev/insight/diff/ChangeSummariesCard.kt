@@ -1,12 +1,16 @@
 package dev.insight.diff
 
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import java.awt.Font
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
-internal data class SummariesCard(val summaries: ChangeSummaries, val running: Boolean, val canRun: Boolean)
+internal data class SummariesCard(val summaries: ReviewSummaries, val running: Boolean, val canRun: Boolean)
 
 /** Summary prose is slightly larger than the surrounding labels, at every zoom level. */
 internal fun Font.forSummaryText(): Font = deriveFont(size2D * 1.15f)

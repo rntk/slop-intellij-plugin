@@ -2,6 +2,18 @@ package dev.insight.diff
 
 import com.google.gson.JsonParser
 import dev.insight.llm.Completion
+import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryOptions
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.fillSummaryRequest
+import dev.insight.review.resummaryRequest
+import dev.insight.review.seedTopicSummaries
+import dev.insight.review.topicReadingSummaries
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -12,13 +24,13 @@ class ChangeTopicSummariesTest {
 
     @Test fun `every topic prefix survives grouping and tree remains bounded and preorder`() {
         val files = (1..70).map { file("F$it.kt") }
-        val topics = ChangeTopics(files, files.associate { it.path to "Storage > Wallet" })
+        val topics = ReviewTopics(files, files.associate { it.path to "Storage > Wallet" })
         val tree = buildTopicSummaryTree(topics)
         assertEquals(setOf("topic:storage", "topic:storage > wallet"),
             tree.nodes.filter { it.kind == SummaryKind.DIRECTORY }.map { it.identity }.toSet())
         assertEquals(files.size, tree.nodes.count { it.kind == SummaryKind.FILE })
         tree.nodes.forEach { node ->
-            assertTrue(node.children.size <= ChangeSummaryTree.MAX_CHILDREN)
+            assertTrue(node.children.size <= ReviewSummaryTree.MAX_CHILDREN)
             node.parent?.let { assertTrue(it < node.id); assertTrue(node.id in tree[it].children) }
         }
     }
@@ -34,7 +46,7 @@ class ChangeTopicSummariesTest {
         var requests = 0
         var topicRequests = 0
         var fileRequests = 0
-        val summarizer = ChangeSummarizer({ request ->
+        val summarizer = diffSummarizer({ request ->
             requests++
             val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
             val system = request.messages.first().content
@@ -86,12 +98,12 @@ class ChangeTopicSummariesTest {
         val wallet = node("topic:storage > wallet")
         val ledger = node("topic:storage > ledger")
         val systems = mutableListOf<String>()
-        val summarizer = ChangeSummarizer({ request ->
+        val summarizer = diffSummarizer({ request ->
             systems += request.messages.first().content
             val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
             Completion("{\"summaries\":[${nodes.joinToString { "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated ${systems.size}\"}" }}]}")
         }, null)
-        suspend fun run(start: ChangeSummaries, request: ContextSummaryRequest) {
+        suspend fun run(start: ReviewSummaries, request: ContextSummaryRequest) {
             var current = start
             summarizer.run(start, "", save = { entries ->
                 current = current.summarize(entries, reuseSingleChildren = false)
@@ -135,20 +147,20 @@ class ChangeTopicSummariesTest {
         val stale = state.topicSummaries
         state.assignTopic(state.revision, "d.kt", "Storage > Wallet")
         val reclassified = state.topicSummaries
-        state.replaceTopicSummaries(ChangeSummaries(stale.tree, mapOf(0 to "Late")), setOf(0))
+        state.replaceTopicSummaries(ReviewSummaries(stale.tree, mapOf(0 to "Late")), setOf(0))
         assertSame(reclassified, state.topicSummaries)
     }
 
     @Test fun `topic metadata survives identity changes and large topic sets`() = runBlocking {
         val files = (1..10).flatMap { topic -> (1..10).map { file("T$topic/F$it.kt") } }
-        val topics = ChangeTopics(files, files.associate { it.path to it.path.substringBefore('/') })
+        val topics = ReviewTopics(files, files.associate { it.path to it.path.substringBefore('/') })
         // UI identities may change without changing the meaning of requests.
-        val tree = ChangeSummaryTree(buildTopicSummaryTree(topics).nodes.map { it.copy(identity = "ui-node-${it.id}") })
+        val tree = ReviewSummaryTree(buildTopicSummaryTree(topics).nodes.map { it.copy(identity = "ui-node-${it.id}") })
         assertTrue(tree.nodes.filter { it.kind == SummaryKind.FILE }.none { it.isTopicBranch })
         assertTrue(tree.nodes.filter { it.kind != SummaryKind.FILE }.all { it.isTopicBranch })
-        var current = ChangeSummaries(tree)
+        var current = ReviewSummaries(tree)
         val seen = mutableSetOf<Pair<String, String>>()
-        val summarizer = ChangeSummarizer({ request ->
+        val summarizer = diffSummarizer({ request ->
             val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
             val system = request.messages.first().content
             val guidance = system.indexOf("This request describes an existing topic hierarchy.")
@@ -174,7 +186,7 @@ class ChangeTopicSummariesTest {
             Completion("{\"summaries\":[" + nodes.joinToString {
                 "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated summary\"}"
             } + "]}")
-        }, null, ChangeSummaryOptions(concurrency = 1))
+        }, null, ReviewSummaryOptions(concurrency = 1))
         val run = summarizer.run(current, "reliability", { current = current.summarize(it); current }, queryContext = "persistence")
         assertTrue(run.summaries.complete)
         assertTrue("root" to "" in seen)
@@ -185,9 +197,9 @@ class ChangeTopicSummariesTest {
 
     @Test fun `changed membership invalidates affected topics while unrelated summaries survive`() {
         val files = listOf(file("a.kt"), file("b.kt"), file("c.kt"))
-        val topics = ChangeTopics(files, mapOf("a.kt" to "Storage > Wallet", "b.kt" to "Storage > Wallet", "c.kt" to "UI > Checkout"))
+        val topics = ReviewTopics(files, mapOf("a.kt" to "Storage > Wallet", "b.kt" to "Storage > Wallet", "c.kt" to "UI > Checkout"))
         val tree = buildTopicSummaryTree(topics)
-        val complete = ChangeSummaries(tree, tree.nodes.associate { it.id to it.identity })
+        val complete = ReviewSummaries(tree, tree.nodes.associate { it.id to it.identity })
         val next = complete.retainedIn(buildTopicSummaryTree(topics.assign("a.kt", "Storage > Account")))
         assertNull(next.text(next.tree.nodes.single { it.identity == "topic:storage" }.id))
         assertEquals("topic:ui", next.text(next.tree.nodes.single { it.identity == "topic:ui" }.id))
@@ -199,11 +211,11 @@ class ChangeTopicSummariesTest {
 
     @Test fun `reading tree drops groups and reads shared file summaries and exact file set summaries`() {
         val files = (1..10).map { file("F$it.kt") }
-        val topics = ChangeTopics(files, files.associate { it.path to "Storage > Wallet" })
-        val grouped = ChangeSummaries(buildTopicSummaryTree(topics))
+        val topics = ReviewTopics(files, files.associate { it.path to "Storage > Wallet" })
+        val grouped = ReviewSummaries(buildTopicSummaryTree(topics))
         assertTrue(grouped.tree.nodes.any { it.kind == SummaryKind.GROUP })
         val sharedTree = buildSummaryTree(files)
-        val shared = ChangeSummaries(sharedTree).summarize(sharedTree.nodes.associate {
+        val shared = ReviewSummaries(sharedTree).summarize(sharedTree.nodes.associate {
             it.id to if (it.kind == SummaryKind.FILE) "Shared ${it.path}." else "Every wallet file in ${it.label}."
         })
         val reading = topicReadingSummaries(grouped, shared)

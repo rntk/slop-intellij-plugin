@@ -1,11 +1,11 @@
 package dev.insight.codereview
 
 import com.google.gson.JsonParser
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeTopicGenerator
-import dev.insight.diff.ChangeTopics
-import dev.insight.diff.SummaryKind
 import dev.insight.llm.Completion
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopicGenerator
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -15,10 +15,10 @@ class CodeTopicsTest {
     private val small = codeFile("src/app/Main.kt", "fun main() = run()\n")
     private val big = codeFile("src/lib/Big.kt", largeSource())
     private val snapshot = codeSnapshot(small, big)
-    private val topics = ChangeTopics(snapshot.files)
+    private val topics = ReviewTopics(snapshot.files)
 
     @Test fun `without summaries a file shows a bounded excerpt with cut fields`() {
-        val evidence = codeTopicEvidence(snapshot) { ChangeSummaries(codeSummaryTree(snapshot.files)) }
+        val evidence = codeTopicEvidence(snapshot) { ReviewSummaries(codeSummaryTree(snapshot.files)) }
         val whole = evidence(small, topics)
         assertEquals(mapOf("path" to small.path, "lines" to 1, "excerpt" to "fun main() = run()"), whole.fields)
         assertFalse(whole.cut)
@@ -34,7 +34,7 @@ class CodeTopicsTest {
     }
 
     @Test fun `written summaries replace most of the excerpt`() {
-        var summaries = ChangeSummaries(codeSummaryTree(snapshot.files))
+        var summaries = ReviewSummaries(codeSummaryTree(snapshot.files))
         val evidence = codeTopicEvidence(snapshot) { summaries }
         // Only the parts are written: they describe the file.
         val parts = summaries.tree.nodes.filter { it.kind == SummaryKind.CHUNK && it.children.isEmpty() }
@@ -59,11 +59,11 @@ class CodeTopicsTest {
     @Test fun `the generator classifies every file four at a time with the code prompt`() = runBlocking {
         val files = (1..24).map { codeFile("src/f$it/F$it.kt", "class F$it\n") }
         val snapshot = codeSnapshot(*files.toTypedArray())
-        var current = ChangeTopics(snapshot.files)
+        var current = ReviewTopics(snapshot.files)
         var inFlight = 0
         var peak = 0
         val systems = mutableSetOf<String>()
-        val generator = ChangeTopicGenerator({ request ->
+        val generator = ReviewTopicGenerator({ request ->
             synchronized(systems) { inFlight++; peak = maxOf(peak, inFlight); systems += request.messages.first().content }
             val input = JsonParser.parseString(request.messages.last().content).asJsonObject
             assertEquals(listOf("focus", "existing_topics", "path"), input.keySet().take(3))
@@ -72,7 +72,7 @@ class CodeTopicsTest {
             synchronized(systems) { inFlight-- }
             Completion("""{"topic":"Core>${input["path"].asString.substringAfterLast('/').substringBefore('.')}"}""")
         }, null, system = CODE_TOPIC_SYSTEM,
-            evidence = codeTopicEvidence(snapshot) { ChangeSummaries(codeSummaryTree(snapshot.files)) },
+            evidence = codeTopicEvidence(snapshot) { ReviewSummaries(codeSummaryTree(snapshot.files)) },
             concurrency = CODE_TOPIC_CONCURRENCY)
         val run = generator.run(current, "", { path, label -> current.assign(path, label).also { current = it } })
         assertTrue(run.topics.complete)

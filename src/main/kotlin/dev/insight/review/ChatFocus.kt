@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 /**
  * What a focused review chat is about: files, folders or a summary entry chosen with To Chat. Its summaries and evidence
@@ -12,21 +12,21 @@ internal data class ChatFocus(
     /** Summaries from the whole scope down to the focus. */
     val context: List<SummaryLevel> = emptyList(),
     /** The chosen summary version, used only while its evidence is unchanged and the tab has no newer text. */
-    val summarySource: ChangeSummaries? = null,
+    val summarySource: ReviewSummaries? = null,
     val summaryIdentity: String? = null,
     val unavailableFiles: List<String> = emptyList(),
     val summaryUnavailable: Boolean = false,
 )
 
 /** The focus of the summary entry [node], with the summaries from the root of [summaries] down to it. */
-internal fun chatFocus(node: SummaryNode, summaries: ChangeSummaries): ChatFocus =
+internal fun chatFocus(node: SummaryNode, summaries: ReviewSummaries): ChatFocus =
     ChatFocus(node.location, node.files, node.lines, summaries.chainTo(node), summaries, node.identity)
 
 /**
  * The focus of the files and folders [entries] among the [paths] in scope; a path that is not a file is a folder. A single
  * entry carries the summaries down to its entry in [summaries]. Null when the entries reach no file.
  */
-internal fun chatFocus(entries: List<String>, paths: List<String>, summaries: ChangeSummaries): ChatFocus? {
+internal fun chatFocus(entries: List<String>, paths: List<String>, summaries: ReviewSummaries): ChatFocus? {
     val known = paths.toSet()
     val files = entries.flatMap { entry ->
         if (entry in known) listOf(entry) else paths.filter { entry.isEmpty() || it.startsWith("$entry/") }
@@ -43,7 +43,7 @@ internal fun chatFocus(entries: List<String>, paths: List<String>, summaries: Ch
 }
 
 /** Resolves the pinned selection against the same scope and summary versions captured for this turn. */
-internal fun ChatFocus.current(paths: Set<String>, summaries: ChangeSummaries, topicSummaries: ChangeSummaries): ChatFocus {
+internal fun ChatFocus.current(paths: Set<String>, summaries: ReviewSummaries, topicSummaries: ReviewSummaries): ChatFocus {
     val source = summarySource
     val topic = source?.tree?.root?.isTopicBranch == true
     val current = if (topic) topicSummaries else summaries
@@ -52,7 +52,7 @@ internal fun ChatFocus.current(paths: Set<String>, summaries: ChangeSummaries, t
     val retained = source?.retainedIn(current.tree)
     val shared = if (topic) summaries.tree.nodes.associate { it.identity to summaries.text(it.id) } else emptyMap()
     val generatedShared = if (topic) summaries.tree.nodes.associate { it.identity to summaries.generatedText(it.id) } else emptyMap()
-    val merged = ChangeSummaries(current.tree, current.tree.nodes.mapNotNull { level ->
+    val merged = ReviewSummaries(current.tree, current.tree.nodes.mapNotNull { level ->
         (generatedShared[level.identity] ?: current.generatedText(level.id) ?: retained?.text(level.id)
             ?: shared[level.identity] ?: current.text(level.id))?.let { level.id to it }
     }.toMap())

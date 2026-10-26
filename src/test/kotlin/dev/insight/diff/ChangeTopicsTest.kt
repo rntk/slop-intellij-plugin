@@ -7,6 +7,16 @@ import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmProtocolException
 import dev.insight.llm.LlmRole
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopicGenerator
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import dev.insight.review.TopicEntry
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.isTopicsRequest
+import dev.insight.review.normalizeTopic
+import dev.insight.review.reviewJson
+import dev.insight.review.topicOutline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -17,9 +27,9 @@ class ChangeTopicsTest {
 
     @Test fun `reasoning truncation raises the budget without nested retries or resetting it`() = runBlocking {
         for (protocolError in listOf(false, true)) {
-            var topics = ChangeTopics(listOf(file("a"), file("b")))
+            var topics = ReviewTopics(listOf(file("a"), file("b")))
             val budgets = mutableListOf<Int?>()
-            val run = ChangeTopicGenerator({ request ->
+            val run = diffTopicGenerator({ request ->
                 budgets += request.maxTokens
                 if (budgets.size == 1) {
                     if (protocolError) throw LlmProtocolException("LLM response was truncated at the output-token limit")
@@ -33,9 +43,9 @@ class ChangeTopicsTest {
     }
 
     @Test fun `topic vocabulary has a serialized size bound even with escaped long labels`() {
-        var topics = ChangeTopics((1..100).map { file("$it") })
+        var topics = ReviewTopics((1..100).map { file("$it") })
         for (file in topics.files) topics = topics.assign(file.path, "${file.path}${"\"".repeat(50)}>" + "x".repeat(60))
-        val vocabulary = ChangeTopicGenerator.topicVocabulary(topics)
+        val vocabulary = ReviewTopicGenerator.topicVocabulary(topics)
         assertTrue(vocabulary.isNotEmpty())
         assertTrue(vocabulary.size < 100)
         assertTrue(reviewJson.toJson(vocabulary).length <= 8000)
@@ -45,22 +55,22 @@ class ChangeTopicsTest {
     @Test fun `context overflow is not retried as output truncation`() = runBlocking {
         var requests = 0
         try {
-            ChangeTopicGenerator({ requests++; throw LlmApiException(400, "context_length_exceeded", null) }, null)
-                .run(ChangeTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
+            diffTopicGenerator({ requests++; throw LlmApiException(400, "context_length_exceeded", null) }, null)
+                .run(ReviewTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
             fail("Context overflow swallowed")
         } catch (_: LlmApiException) { }
         assertEquals(1, requests)
     }
 
     @Test fun `large patch reads evict older tool rounds while preserving current evidence`() = runBlocking {
-        var topics = ChangeTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
+        var topics = ReviewTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
         var calls = 0
         val reader = object : dev.insight.chat.ChatTool {
             override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch",
                 JsonParser.parseString("""{"type":"object"}""").asJsonObject)
             override suspend fun call(arguments: com.google.gson.JsonObject) = "y".repeat(12_000)
         }
-        val run = ChangeTopicGenerator({ request ->
+        val run = diffTopicGenerator({ request ->
             calls++
             assertTrue(dev.insight.llm.LlmJson.encode(request, "", true).length <= 48_000)
             if (calls <= 8) Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read$calls", "read_diff_files",
@@ -80,17 +90,17 @@ class ChangeTopicsTest {
         assertEquals("Storage > User > Wallet", normalizeTopic(" Storage > User  > Wallet "))
         listOf("", "Storage", "Storage>>Wallet", "a>b>c>d>e>f", "Storage>Wallet:Update", "a>${"b".repeat(61)}")
             .forEach { assertNull(it, normalizeTopic(it)) }
-        val topics = ChangeTopics(listOf(file("b"), file("a")))
+        val topics = ReviewTopics(listOf(file("b"), file("a")))
             .assign("a", "Storage>User>Wallet").assign("b", "storage>user>wallet")
         assertEquals(mapOf("Storage > User > Wallet" to listOf("a", "b")), topics.groups)
         assertTrue(topics.complete)
     }
 
     @Test fun `code visits every missing file in sorted order retries invalid labels and supplies vocabulary`() = runBlocking {
-        var topics = ChangeTopics(listOf(file("c"), file("b"), file("a")))
+        var topics = ReviewTopics(listOf(file("c"), file("b"), file("a")))
         val visited = mutableListOf<String>()
         val progress = mutableListOf<Int>()
-        val generator = ChangeTopicGenerator({ request ->
+        val generator = diffTopicGenerator({ request ->
             val input = JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content).asJsonObject
             assertEquals(listOf("focus", "existing_topics", "path"), input.keySet().take(3))
             visited += input["path"].asString
@@ -111,9 +121,9 @@ class ChangeTopicsTest {
     }
 
     @Test fun `exhausted file does not prevent later files from receiving topics`() = runBlocking {
-        var topics = ChangeTopics(listOf(file("a"), file("b")))
+        var topics = ReviewTopics(listOf(file("a"), file("b")))
         var count = 0
-        val run = ChangeTopicGenerator({
+        val run = diffTopicGenerator({
             count++
             Completion(if (count <= 5) """{"topic":3}""" else """{"topic":"Security>User>Auth"}""")
         }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
@@ -143,21 +153,21 @@ class ChangeTopicsTest {
 
     @Test fun `stale save and cancellation abort without retries or subsequent files`() = runBlocking {
         var requests = 0
-        val generator = ChangeTopicGenerator({ requests++; Completion("""{"topic":"Storage>User>Wallet"}""") }, null)
+        val generator = diffTopicGenerator({ requests++; Completion("""{"topic":"Storage>User>Wallet"}""") }, null)
         try {
-            generator.run(ChangeTopics(listOf(file("a"), file("b"))), "", { _, _ -> throw ToolInputException("stale") })
+            generator.run(ReviewTopics(listOf(file("a"), file("b"))), "", { _, _ -> throw ToolInputException("stale") })
             fail("Stale save swallowed")
         } catch (_: ToolInputException) { }
         assertEquals(1, requests)
         try {
-            ChangeTopicGenerator({ throw CancellationException("stopped") }, null)
-                .run(ChangeTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
+            diffTopicGenerator({ throw CancellationException("stopped") }, null)
+                .run(ReviewTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
             fail("Cancellation swallowed")
         } catch (_: CancellationException) { }
     }
 
     @Test fun `outline orders files by topic levels so every node spans a contiguous run`() {
-        val topics = ChangeTopics(listOf("e", "d", "c", "b", "a", "z").map { file(it) })
+        val topics = ReviewTopics(listOf("e", "d", "c", "b", "a", "z").map { file(it) })
             .assign("a", "UI>Checkout>Payment Form")
             .assign("b", "Storage>User>Wallet")
             .assign("c", "storage>User")
@@ -175,14 +185,14 @@ class ChangeTopicsTest {
         assertEquals(listOf("storage > User 0-2", "Storage-Legacy > Import 3-3", "UI > Checkout 4-4"), nodes(1))
         // "storage>User" has no third level, so the leaf column has a gap beside its file.
         assertEquals(listOf("Storage > User > Auth 1-1", "Storage > User > Wallet 2-2", "UI > Checkout > Payment Form 4-4"), nodes(2))
-        val empty = topicOutline(ChangeTopics(listOf(file("a"))))
+        val empty = topicOutline(ReviewTopics(listOf(file("a"))))
         assertEquals(0, empty.depth)
         assertEquals(0..0, empty.pending)
         assertTrue(empty.nodes.isEmpty())
     }
 
     @Test fun `outline children nest topics and files that end at each level`() {
-        val topics = ChangeTopics(listOf("a", "b", "c", "z").map { file(it) })
+        val topics = ReviewTopics(listOf("a", "b", "c", "z").map { file(it) })
             .assign("a", "Storage>User>Wallet")
             .assign("b", "Storage>User")
             .assign("c", "UI>Checkout")
@@ -201,7 +211,7 @@ class ChangeTopicsTest {
     }
 
     @Test fun `chosen level folds topics that appear later and toggles survive updates`() {
-        var topics = ChangeTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User>Wallet")
+        var topics = ReviewTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User>Wallet")
         val state = ChangeTopicsViewState()
         var outline = topicOutline(topics)
         state.update(outline)
@@ -219,10 +229,10 @@ class ChangeTopicsTest {
     }
 
     @Test fun `topic and summary filters hide unmatched files and the topics left empty`() {
-        val topics = ChangeTopics(listOf("a", "b", "c", "d").map { file(it) })
+        val topics = ReviewTopics(listOf("a", "b", "c", "d").map { file(it) })
             .assign("a", "Storage>User>Wallet").assign("b", "Storage>Cache").assign("c", "UI>Checkout")
         val tree = buildSummaryTree(topics.files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
             .associate { it.id to "Summary of ${it.path}: " + if (it.path == "c" || it.path == "d") "renders the payment form" else "persists records" })
         val card = TopicsCard(topics, summaries, canRun = false)
         val state = ChangeTopicsViewState()
@@ -240,8 +250,8 @@ class ChangeTopicsTest {
     }
 
     @Test fun `summary filter opens folded topics until folded by hand`() {
-        val topics = ChangeTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User").assign("b", "UI>Checkout")
-        val card = TopicsCard(topics, ChangeSummaries(buildSummaryTree(topics.files)), canRun = false)
+        val topics = ReviewTopics(listOf(file("a"), file("b"))).assign("a", "Storage>User").assign("b", "UI>Checkout")
+        val card = TopicsCard(topics, ReviewSummaries(buildSummaryTree(topics.files)), canRun = false)
         val state = ChangeTopicsViewState()
         state.selectLevel(0, state.fullOutline(card))
         assertTrue(state.outline(card).nodes.all(state::isCollapsed))
@@ -260,14 +270,14 @@ class ChangeTopicsTest {
     }
     @Test fun longPatchesExposeBoundedInlineEvidenceAndReader() = runBlocking {
         val source = file("large.kt").copy(patch = "x".repeat(100))
-        var topics = ChangeTopics(listOf(source))
+        var topics = ReviewTopics(listOf(source))
         var calls = 0
         var reads = 0
         val reader = object : dev.insight.chat.ChatTool {
             override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
             override suspend fun call(arguments: com.google.gson.JsonObject): String { reads++; return source.patch.drop(10) }
         }
-        val run = ChangeTopicGenerator({ request ->
+        val run = diffTopicGenerator({ request ->
             calls++
             assertEquals(4096, request.maxTokens)
             if (calls == 1) {

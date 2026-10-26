@@ -2,6 +2,13 @@ package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SourceChunk
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
@@ -15,9 +22,9 @@ class SummaryExplorerTest : BasePlatformTestCase() {
 
     fun testPagesKeepSummariesAndNavigateWithSingleClicksBackAndBreadcrumbs() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.EXPLORER }
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.EXPLORER }
         fun named(name: String) = descendants(canvas).single { it.name == name }
         fun rows() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("summary:") }
         fun clickRow(identity: String, button: Int = MouseEvent.BUTTON1) = click(named("summary:$identity"), button)
@@ -58,8 +65,8 @@ class SummaryExplorerTest : BasePlatformTestCase() {
 
     fun testFiltersAndSearchResultsChooseAPageAndScoreOnlyItsSummaries() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-        val state = ChangeSummariesViewState().apply { mode = ChangeSummariesMode.EXPLORER; visibleOnly = true; update(tree) }
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val state = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.EXPLORER; visibleOnly = true; update(tree) }
         val nested = tree.nodes.single { it.identity == "directory:src/nested" }
         val target = tree.nodes.single { it.path == "src/nested/b.kt" }
         fun visible() = state.pending(summaries).map { tree[it.first].identity }.toSet()
@@ -100,10 +107,10 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         val changed = buildSummaryTree(listOf(file("src/a.kt"), file("src/d.kt"), file("docs/readme.md")))
         state.update(changed)
         assertEquals("directory:src", state.explorerBreadcrumbs(changed).last().identity)
-        assertEquals(listOf("file:src/a.kt", "file:src/d.kt"), state.explorerEntries(ChangeSummaries(changed)).map { it.identity })
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.EXPLORER }
+        assertEquals(listOf("file:src/a.kt", "file:src/d.kt"), state.explorerEntries(ReviewSummaries(changed)).map { it.identity })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.EXPLORER }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(buildSummaryTree(emptyList())), false, false)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(buildSummaryTree(emptyList())), false, false)))
             assertTrue(descendants(canvas).none { it.name?.startsWith("summary:") == true })
             assertFalse((descendants(canvas).single { it.name == "summary-explorer-back" } as JButton).isEnabled)
         } finally { canvas.dispose() }
@@ -115,10 +122,10 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         })
         val opened = mutableListOf<SummaryNode>()
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it }))
-            .apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.EXPLORER; summariesView.browse("root", tree) }
+            .apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.EXPLORER; summariesView.browse("root", tree) }
         fun named(name: String) = descendants(canvas).single { it.name == name }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, false)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), false, false)))
             click(named("summary:file:big.kt"))
             assertEquals(SummaryKind.FILE, opened.single().kind)
             descendants(canvas).filterIsInstance<ActionLink>().single { it.text == "Browse parts" }.doClick()

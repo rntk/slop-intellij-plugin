@@ -2,16 +2,19 @@ package dev.insight.diff
 
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.reviewJson
 
 /** Reserve file metadata and pagination before adding optional context, budgeting escaped JSON. */
 internal fun diffStateResult(
     snapshot: ReviewSnapshot,
     scopePaths: Set<String>?,
     selected: List<String>,
-    notes: List<DiffNote>,
+    notes: List<ReviewNote>,
     offset: Int,
     patchBudget: Int,
-    sources: List<DiffSourceBlock> = emptyList(),
+    sources: List<ReviewSourceBlock> = emptyList(),
 ): String {
     if (offset < 0 || offset > snapshot.files.size) throw ToolInputException("Offset is outside the file list")
     val selectedSet = selected.toHashSet()
@@ -19,7 +22,7 @@ internal fun diffStateResult(
     val files = mutableListOf<MutableMap<String, Any>>()
     val selectedPaths = mutableListOf<String>()
     val excerpts = mutableListOf<Map<String, Any>>()
-    var pageNotes = emptyList<DiffNote>()
+    var pageNotes = emptyList<ReviewNote>()
     fun updatePageNotes() {
         val paths = files.mapTo(hashSetOf()) { it.getValue("path") }
         pageNotes = notes.filter { note -> note.paths.any { it in paths } }

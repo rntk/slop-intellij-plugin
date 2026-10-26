@@ -10,6 +10,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.CanvasTabKey
 import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension

@@ -1,6 +1,9 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.buildSummaryTree
 import java.awt.BorderLayout
 import java.awt.Container
 import java.awt.Font
@@ -23,17 +26,17 @@ class SummaryTextLayoutTest : BasePlatformTestCase() {
             val tree = buildSummaryTree(listOf("src/a.kt", "src/b.kt", "docs/readme.md").map { path ->
                 ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
             })
-            val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate {
+            val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate {
                 it.id to "Summary words for ${it.label} that wrap onto several lines. ".repeat(10)
             })
-            for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) for (cloud in listOf(false, true)) {
+            for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) for (cloud in listOf(false, true)) {
                 val canvas = NoteCanvas({}, {}).apply {
                     setSize(1200, 700)
                     summariesView.mode = mode
                     summariesView.tagsCloud = cloud
                     summariesView.update(tree)
-                    if (mode == ChangeSummariesMode.HIERARCHY) summariesView.selectLevel(0, tree)
-                    if (mode == ChangeSummariesMode.DOCUMENT) summariesView.selected = tree.root.identity
+                    if (mode == ReviewSummariesMode.HIERARCHY) summariesView.selectLevel(0, tree)
+                    if (mode == ReviewSummariesMode.DOCUMENT) summariesView.selected = tree.root.identity
                 }
                 val image = BufferedImage(canvas.width, canvas.height, BufferedImage.TYPE_INT_ARGB)
                 val graphics = image.createGraphics()

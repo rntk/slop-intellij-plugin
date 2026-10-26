@@ -43,18 +43,10 @@ import com.intellij.ui.tabs.TabsListener
 import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
-import dev.insight.diff.ChatFocus
 import dev.insight.diff.ReviewSidePages
-import dev.insight.diff.chatFocusTabName
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
+import dev.insight.review.ChatFocus
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.chatFocusTabName
 import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -73,6 +65,15 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 
 internal const val CODE_REVIEW_TOOL_WINDOW = "Code Review"
 
@@ -398,7 +399,7 @@ internal class CodeReviewPanel(
 
     private fun affects(root: String, event: VFileEvent): Boolean {
         val path = event.path
-        if ("/${dev.insight.diff.ReviewDiskCache.DIRECTORY}/" in "$path/") return false
+        if ("/${dev.insight.review.ReviewDiskCache.DIRECTORY}/" in "$path/") return false
         watchedFiles?.let { watched -> return affectsDependencies(watched, event) }
         if (path != root && !path.startsWith("$root/")) return false
         if ("/.idea/" in "${path.removePrefix(root)}/") return false
@@ -418,7 +419,7 @@ internal class CodeReviewPanel(
      * a reference that resolved to nothing before.
      */
     private fun affectsDependencies(watched: Set<String>, event: VFileEvent): Boolean {
-        if ("/${dev.insight.diff.ReviewDiskCache.DIRECTORY}/" in "${event.path}/") return false
+        if ("/${dev.insight.review.ReviewDiskCache.DIRECTORY}/" in "${event.path}/") return false
         if (event.path in watched) return true
         if (event !is VFileCreateEvent && event !is VFileMoveEvent && event !is VFileCopyEvent) return false
         if ("/.idea/" in event.path) return false

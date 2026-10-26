@@ -11,6 +11,18 @@ import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmRole
 import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmToolCall
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewSummaryOptions
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.relatedSummaryNodes
+import dev.insight.review.resummaryRequest
+import dev.insight.review.reviewJson
+import dev.insight.review.summariesFocus
+import dev.insight.review.summariesReply
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -18,8 +30,8 @@ import org.junit.Test
 class ChangeSummaryTest {
     private fun file(path: String, version: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", version)
 
-    private fun ChangeSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
-    private fun ChangeSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
+    private fun ReviewSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
+    private fun ReviewSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
 
     @Test fun `tree keeps every path segment as its own folder and lists folders first`() {
         val tree = buildSummaryTree(listOf(
@@ -87,7 +99,7 @@ class ChangeSummaryTest {
         val docs = tree.byLocation("docs/").id
         val (a, b) = tree[app].children
         val (c, d) = tree[docs].children
-        var summaries = ChangeSummaries(tree)
+        var summaries = ReviewSummaries(tree)
         assertEquals(7, summaries.total)
         assertEquals(listOf(a, b, c, d), summaries.ready())
         rejected { summaries.summarize(mapOf(app to "Adds the app.")) }
@@ -109,7 +121,7 @@ class ChangeSummaryTest {
         assertTrue(summaries.complete)
         assertTrue(summaries.ready().isEmpty())
 
-        val empty = ChangeSummaries(buildSummaryTree(emptyList()))
+        val empty = ReviewSummaries(buildSummaryTree(emptyList()))
         assertEquals(0, empty.total)
         assertTrue(empty.complete)
         rejected { empty.summarize(mapOf(0 to "Nothing.")) }
@@ -120,7 +132,7 @@ class ChangeSummaryTest {
         val deep = tree.byLocation("a/deep/").id
         val a = tree.byLocation("a/").id
         val files = tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.id to "File ${it.label}." }
-        val summaries = ChangeSummaries(tree).summarize(files)
+        val summaries = ReviewSummaries(tree).summarize(files)
         assertEquals(listOf(deep), summaries.ready())
         assertEquals(listOf(a), summaries.summarize(mapOf(deep to "Deep.")).ready())
     }
@@ -159,7 +171,7 @@ class ChangeSummaryTest {
 
     @Test fun `pages fit the tool limit`() {
         val tree = buildSummaryTree((1..600).map { file("module${it % 7}/src/pkg${it % 13}/File$it.kt") })
-        val summaries = ChangeSummaries(tree)
+        val summaries = ReviewSummaries(tree)
         var offset: Int? = 0
         val seen = mutableListOf<Int>()
         while (offset != null) {
@@ -173,20 +185,20 @@ class ChangeSummaryTest {
         rejected { changeSummariesJson(summaries, tree.nodes.size + 1) }
 
         val small = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("c.kt")))
-        val first = JsonParser.parseString(changeSummariesJson(ChangeSummaries(small), 0)).asJsonObject
+        val first = JsonParser.parseString(changeSummariesJson(ReviewSummaries(small), 0)).asJsonObject
         assertEquals(5, first["totals"].asJsonObject["missing"].asInt)
         assertEquals("+1 -1", first["nodes"].asJsonArray.single { it.asJsonObject["location"].asString == "c.kt" }.asJsonObject["lines"].asString)
     }
 
     @Test fun targetedRegenerationSendsFullInstructionsEvenToSingleChildBranches() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("elsewhere/b.kt")))
-        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
         val app = tree.byLocation("app/")
         val instructions = "Focus on failure handling.\n" + "Keep evidence grounded. ".repeat(30)
         val model = Model()
         val request = resummaryRequest(original, app, recursive = true, instructions)
         var saved = original.without(request.nodeIds)
-        val run = ChangeSummarizer(model::complete, null).run(saved, "", save = { entries ->
+        val run = diffSummarizer(model::complete, null).run(saved, "", save = { entries ->
             saved.summarize(entries, reuseSingleChildren = false).also { saved = it }
         }, nodeIds = request.nodeIds, instructions = request.instructions, reuseSingleChildren = false)
         assertEquals(2, model.requests.size)
@@ -198,7 +210,7 @@ class ChangeSummaryTest {
 
     @Test fun singleNodeRegenerationIncludesMissingDependenciesOnly() {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("other/c.kt")))
-        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
         val app = tree.byLocation("app/")
         val a = tree.byLocation("app/a.kt")
         val partial = original.without(setOf(a.id))
@@ -232,10 +244,10 @@ class ChangeSummaryTest {
         }
     }
 
-    private fun run(model: Model, summaries: ChangeSummaries, read: ChatTool? = null, options: ChangeSummaryOptions = ChangeSummaryOptions()) = runBlocking {
+    private fun run(model: Model, summaries: ReviewSummaries, read: ChatTool? = null, options: ReviewSummaryOptions = ReviewSummaryOptions()) = runBlocking {
         var saved = summaries
         val batches = mutableListOf<Set<Int>>()
-        ChangeSummarizer(model::complete, read, options).run(saved, "", { entries ->
+        diffSummarizer(model::complete, read, options).run(saved, "", { entries ->
             batches += entries.keys
             saved.summarize(entries).also { saved = it }
         }) to batches
@@ -244,7 +256,7 @@ class ChangeSummaryTest {
     @Test fun `code walks the tree bottom up in batched waves without tools`() {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md"), file("docs/d.md")))
         val model = Model()
-        val (result, batches) = run(model, ChangeSummaries(tree))
+        val (result, batches) = run(model, ReviewSummaries(tree))
         assertTrue(result.summaries.complete)
         assertNull(result.error)
         // Files share one request, both folders the next, the root the last.
@@ -267,7 +279,7 @@ class ChangeSummaryTest {
     @Test fun `parent with a single child reuses its summary without generating a new one`() {
         val tree = buildSummaryTree(listOf(file("src/app/a.kt")))
         val model = Model()
-        val (result, batches) = run(model, ChangeSummaries(tree))
+        val (result, batches) = run(model, ReviewSummaries(tree))
         assertTrue(result.summaries.complete)
         assertEquals(1, result.requests)
         assertEquals(listOf(setOf(tree.byLocation("src/app/a.kt").id)), batches)
@@ -277,7 +289,7 @@ class ChangeSummaryTest {
 
         // When a snapshot shrinks to one already-summarized file, the parent reuses its summary with zero requests.
         val two = buildSummaryTree(listOf(file("src/app/a.kt"), file("src/app/b.kt")))
-        val retained = ChangeSummaries(two).summarize(mapOf(
+        val retained = ReviewSummaries(two).summarize(mapOf(
             two.byLocation("src/app/a.kt").id to "Summary A.",
             two.byLocation("src/app/b.kt").id to "Summary B.",
             two.byLocation("src/app/").id to "Combined.",
@@ -287,7 +299,7 @@ class ChangeSummaryTest {
         assertTrue(retained.complete)
         assertEquals("Summary A.", retained.text(tree.root.id))
 
-        val unpropagated = ChangeSummaries(tree, mapOf(tree.byLocation("src/app/a.kt").id to "Pre-existing."))
+        val unpropagated = ReviewSummaries(tree, mapOf(tree.byLocation("src/app/a.kt").id to "Pre-existing."))
         val (reusedRun, _) = run(model, unpropagated)
         assertTrue(reusedRun.summaries.complete)
         assertEquals(0, reusedRun.requests)
@@ -296,7 +308,7 @@ class ChangeSummaryTest {
 
     @Test fun `retained summaries are not requested again`() {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md")))
-        val start = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("app/b.kt").id to "Kept.", tree.byLocation("docs/c.md").id to "Kept too."))
+        val start = ReviewSummaries(tree).summarize(mapOf(tree.byLocation("app/b.kt").id to "Kept.", tree.byLocation("docs/c.md").id to "Kept too."))
         val model = Model()
         val (result, _) = run(model, start)
         assertTrue(result.summaries.complete)
@@ -306,7 +318,7 @@ class ChangeSummaryTest {
 
     @Test fun `context rewrite requests only related subtrees and preserves the original and navigation summaries`() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md"), file("docs/d.md")))
-        val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+        val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
         val app = tree.byLocation("app/")
         val related = relatedSummaryNodes(tree, listOf(app.identity))
         val ids = tree.nodes.filter { it.identity in related }.mapTo(hashSetOf()) { it.id }
@@ -314,7 +326,7 @@ class ChangeSummaryTest {
         var version = original.without(ids)
         val model = Model()
         val progress = mutableListOf<Pair<Int, Int>>()
-        val run = ChangeSummarizer(model::complete, null).run(version, "", {
+        val run = diffSummarizer(model::complete, null).run(version, "", {
             version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
         }, onProgress = { count, total -> progress += count to total }, nodeIds = ids, queryContext = "How does parsing work?")
         assertEquals(2, run.requests)
@@ -324,7 +336,7 @@ class ChangeSummaryTest {
             if (node.id !in ids) assertEquals(original.text(node.id), version.text(node.id))
         }
         assertEquals(listOf(0 to 3, 2 to 3, 3 to 3), progress)
-        val evidence = DiffSummaryEvidence(ChangeSummaryOptions())
+        val evidence = DiffSummaryEvidence(ReviewSummaryOptions())
         assertTrue(model.requests[0].messages.first().content.startsWith(evidence.leafSystem(tree, "")))
         assertTrue(model.requests[1].messages.first().content.startsWith(evidence.branchSystem("")))
         assertTrue(model.requests.all { it.messages.first().content.contains("The reader is exploring this query: How does parsing work?") })
@@ -334,9 +346,9 @@ class ChangeSummaryTest {
     @Test fun `context rewrite does not fill unrelated missing summaries`() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md")))
         val id = tree.byLocation("app/a.kt").id
-        var version = ChangeSummaries(tree)
+        var version = ReviewSummaries(tree)
         val model = Model()
-        val run = ChangeSummarizer(model::complete, null).run(version, "", {
+        val run = diffSummarizer(model::complete, null).run(version, "", {
             version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
         }, nodeIds = setOf(id), queryContext = "parsing")
         assertEquals(1, run.requests)
@@ -347,10 +359,10 @@ class ChangeSummaryTest {
 
     @Test fun `rewriting an only child does not replace its navigation parent`() = runBlocking {
         val tree = buildSummaryTree(listOf(file("a.kt")))
-        val original = ChangeSummaries(tree).summarize(mapOf(tree.nodes.last().id to "Original."))
+        val original = ReviewSummaries(tree).summarize(mapOf(tree.nodes.last().id to "Original."))
         val ids = setOf(tree.nodes.last().id)
         var version = original.without(ids)
-        ChangeSummarizer(Model()::complete, null).run(version, "", {
+        diffSummarizer(Model()::complete, null).run(version, "", {
             version.summarize(it, reuseSingleChildren = false).also { next -> version = next }
         }, nodeIds = ids, queryContext = "parsing")
         assertEquals("Original.", version.text(tree.root.id))
@@ -360,9 +372,9 @@ class ChangeSummaryTest {
 
     @Test fun `progress includes retained summaries and advances after each concurrent batch is saved`() = runBlocking {
         val tree = buildSummaryTree((1..5).map { file("f$it.kt") })
-        var saved = ChangeSummaries(tree).summarize(mapOf(tree.byLocation("f1.kt").id to "Kept."))
+        var saved = ReviewSummaries(tree).summarize(mapOf(tree.byLocation("f1.kt").id to "Kept."))
         val progress = mutableListOf<Pair<Int, Int>>()
-        val result = ChangeSummarizer(Model()::complete, null, ChangeSummaryOptions(filesPerRequest = 1)).run(
+        val result = diffSummarizer(Model()::complete, null, ReviewSummaryOptions(filesPerRequest = 1)).run(
             saved, "", { saved.summarize(it).also { next -> saved = next } },
             onProgress = { done, total ->
                 assertEquals(saved.count, done)
@@ -376,9 +388,9 @@ class ChangeSummaryTest {
     @Test fun `incomplete runs do not report full progress`() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
         val model = Model { """{"summaries":[{"id":1,"summary":"Only one answer."}]}""" }
-        var saved = ChangeSummaries(tree)
+        var saved = ReviewSummaries(tree)
         val progress = mutableListOf<Int>()
-        val result = ChangeSummarizer(model::complete, null, ChangeSummaryOptions(attempts = 1)).run(
+        val result = diffSummarizer(model::complete, null, ReviewSummaryOptions(attempts = 1)).run(
             saved, "", { saved.summarize(it).also { next -> saved = next } },
             onProgress = { done, _ -> progress += done },
         )
@@ -391,13 +403,13 @@ class ChangeSummaryTest {
         // The model never answers for b.kt, so the root can never be written.
         val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "b.kt" }
             .map { mapOf("id" to it["id"].asInt, "summary" to "Summary.") })) }
-        val (result, _) = run(model, ChangeSummaries(tree))
+        val (result, _) = run(model, ReviewSummaries(tree))
         assertEquals(5, result.requests)
         assertEquals(listOf(tree.root.id, tree.byLocation("b.kt").id), result.summaries.missing().sorted())
         assertTrue(summariesReply(result).startsWith("Summarized 1 of 3 tree nodes with 5 requests."))
 
         val broken = Model { "not json" }
-        val (failed, _) = run(broken, ChangeSummaries(tree))
+        val (failed, _) = run(broken, ReviewSummaries(tree))
         assertEquals(0, failed.summaries.count)
         // Each of five waves gets four attempts to produce parseable JSON.
         assertEquals(20, failed.requests)
@@ -408,7 +420,7 @@ class ChangeSummaryTest {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
         var calls = 0
         val model = Model { if (calls++ < 3) "{}" else null }
-        val (result, _) = run(model, ChangeSummaries(tree))
+        val (result, _) = run(model, ReviewSummaries(tree))
         assertTrue(result.summaries.complete)
         assertNull(result.error)
     }
@@ -417,9 +429,9 @@ class ChangeSummaryTest {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
         var calls = 0
         val model = Model { if (calls++ == 0) null else throw LlmApiException(401, "{}", null) }
-        var saved = ChangeSummaries(tree)
+        var saved = ReviewSummaries(tree)
         try {
-            runBlocking { ChangeSummarizer(model::complete, null).run(saved, "", { saved.summarize(it).also { next -> saved = next } }) }
+            runBlocking { diffSummarizer(model::complete, null).run(saved, "", { saved.summarize(it).also { next -> saved = next } }) }
             fail("Expected the server error")
         } catch (_: LlmApiException) { }
         assertEquals(2, saved.count)
@@ -440,9 +452,9 @@ class ChangeSummaryTest {
                 Completion("", toolCalls = listOf(LlmToolCall("r1", "read_diff_files", JsonParser.parseString("""{"paths":["app/big.kt"]}""").asJsonObject)))
             } else model.complete(request)
         }
-        var saved = ChangeSummaries(tree)
+        var saved = ReviewSummaries(tree)
         val result = runBlocking {
-            ChangeSummarizer(tooling, read, ChangeSummaryOptions(patchChars = 100, filesPerRequest = 3))
+            diffSummarizer(tooling, read, ReviewSummaryOptions(patchChars = 100, filesPerRequest = 3))
                 .run(saved, "", { saved.summarize(it).also { next -> saved = next } })
         }
         assertTrue(result.summaries.complete)
@@ -460,9 +472,9 @@ class ChangeSummaryTest {
 
         // Focus is appended after the overview so the instructions and overview prefix stay cacheable across focus changes.
         val focused = Model()
-        var focusedSaved = ChangeSummaries(tree)
+        var focusedSaved = ReviewSummaries(tree)
         runBlocking {
-            ChangeSummarizer(focused::complete, null)
+            diffSummarizer(focused::complete, null)
                 .run(focusedSaved, "security", { focusedSaved.summarize(it).also { next -> focusedSaved = next } })
         }
         val baseSystem = fileRequests.first().messages.first().content
@@ -474,12 +486,12 @@ class ChangeSummaryTest {
     @Test fun `decoding drops unknown duplicate and empty entries and preserves long summaries`() {
         val answer = JsonParser.parseString("""{"summaries":[{"id":1,"summary":"One."},{"id":2,"summary":"a"},{"id":2,"summary":"b"},""" +
             """{"id":3,"summary":" "},{"id":9,"summary":"Unknown."},{"id":4,"summary":"${"x".repeat(500)}"}]}""").asJsonObject
-        val decoded = ChangeSummarizer.decode(answer, 4)
+        val decoded = ReviewSummarizer.decode(answer, 4)
         assertEquals(setOf(1, 4), decoded.keys)
         assertEquals("x".repeat(500), decoded.getValue(4))
         val tree = buildSummaryTree(listOf(file("app/a.kt")))
         val fileId = tree.byLocation("app/a.kt").id
-        val saved = ChangeSummaries(tree).summarize(mapOf(fileId to decoded.getValue(4)))
+        val saved = ReviewSummaries(tree).summarize(mapOf(fileId to decoded.getValue(4)))
         assertEquals(decoded.getValue(4), saved.text(fileId))
     }
 

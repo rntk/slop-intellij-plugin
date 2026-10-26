@@ -1,5 +1,11 @@
 package dev.insight.diff
 
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.TopicEntry
+import dev.insight.review.TopicNode
+import dev.insight.review.topicReadingSummaries
+
 /**
  * The topic hierarchy read left to right, like the article hierarchy: broad topics in the first column, each card as tall as
  * the rows beneath it, and the changed files as leaves with their summary beside them. A folded topic takes a single row and

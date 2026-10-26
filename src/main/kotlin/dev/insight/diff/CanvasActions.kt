@@ -1,9 +1,15 @@
 package dev.insight.diff
 
+import dev.insight.review.ContextSummaryLauncher
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSymbol
+import dev.insight.review.SummaryNode
+
 /** Source and file navigation supplied by the review hosting the canvas. */
 internal data class SourceCanvasActions(
-    val openSymbol: (DiffSymbol) -> Unit = {},
-    val removeSource: (DiffSourceRange) -> Unit = {},
+    val openSymbol: (ReviewSymbol) -> Unit = {},
+    val removeSource: (ReviewSourceRange) -> Unit = {},
     val showDiffCard: (String) -> Unit = {},
     val removeDiff: (String) -> Unit = {},
     /** Open a file at a line; null falls back to the canvas file opener. */
@@ -32,7 +38,7 @@ internal data class SummaryCanvasActions(
     /** Ask the review chat to explain an entry; null hides Explain. */
     val explainNode: ((SummaryNode) -> Unit)? = null,
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */
-    val chatNode: ((SummaryNode, ChangeSummaries) -> Unit)? = null,
+    val chatNode: ((SummaryNode, ReviewSummaries) -> Unit)? = null,
     val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
     val reviewSummaries: SummaryReviewLauncher? = null,
 )
@@ -43,7 +49,7 @@ internal data class TopicCanvasActions(
     val fillTopicSummaries: () -> Unit = {},
     val removeTopics: () -> Unit = {},
     /** Persist topic fills and resummarizations as they arrive; null hides those entry actions. */
-    val saveTopicSummaries: ((ChangeSummaries, Set<Int>) -> Unit)? = null,
+    val saveTopicSummaries: ((ReviewSummaries, Set<Int>) -> Unit)? = null,
 )
 
 /** Metric card removal supplied by the review hosting the canvas. */

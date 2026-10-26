@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import dev.insight.chat.ToolInputException
 
@@ -40,7 +40,7 @@ data class SummaryNode(
 data class SourceChunk(val index: Int, val lines: IntRange, val hash: String)
 
 /** Pre-order: the root is node 0 and parents precede their children. */
-class ChangeSummaryTree(val nodes: List<SummaryNode>) {
+class ReviewSummaryTree(val nodes: List<SummaryNode>) {
     val root: SummaryNode get() = nodes[0]
     operator fun get(id: Int): SummaryNode = nodes[id]
     fun depth(id: Int): Int = generateSequence(nodes[id].parent) { nodes[it].parent }.count()
@@ -91,10 +91,10 @@ class ChangeSummaryTree(val nodes: List<SummaryNode>) {
  */
 internal fun buildSummaryTree(
     files: List<ReviewSource>,
-    maxChildren: Int = ChangeSummaryTree.MAX_CHILDREN,
+    maxChildren: Int = ReviewSummaryTree.MAX_CHILDREN,
     rootLabel: String = "All changes",
     chunks: (ReviewSource) -> List<SourceChunk> = { emptyList() },
-): ChangeSummaryTree {
+): ReviewSummaryTree {
     require(maxChildren >= 2) { "Groups need at least two entries" }
     class Folder(val path: String) {
         val folders = sortedMapOf<String, Folder>()
@@ -137,7 +137,7 @@ internal fun buildSummaryTree(
             .also { nodes[id] = it }
     }
     add(Proto(SummaryKind.ROOT, "", rootLabel, grouped("", entries(top))), null)
-    return ChangeSummaryTree(nodes)
+    return ReviewSummaryTree(nodes)
 }
 
 /** Splits [level] into at most [maxChildren] contiguous, evenly sized groups, recursively; a group of one stays itself. */
@@ -167,7 +167,7 @@ internal fun addChunkNodes(
     file: ReviewSource,
     chunks: List<SourceChunk>,
     parent: Int,
-    maxChildren: Int = ChangeSummaryTree.MAX_CHILDREN,
+    maxChildren: Int = ReviewSummaryTree.MAX_CHILDREN,
 ): List<Int> {
     class Part(val first: SourceChunk, val last: SourceChunk, val members: List<Part> = emptyList())
     fun add(part: Part, parent: Int): Int {
@@ -190,8 +190,8 @@ internal fun addChunkNodes(
 }
 
 /** The tree of one snapshot revision with the summaries written so far. Immutable: every change returns a new value. */
-class ChangeSummaries(
-    val tree: ChangeSummaryTree,
+class ReviewSummaries(
+    val tree: ReviewSummaryTree,
     private val texts: Map<Int, String> = emptyMap(),
     /** Text restored from disk, rather than written in this tab. Never persisted. */
     internal val cachedIds: Set<Int> = emptySet(),
@@ -202,7 +202,7 @@ class ChangeSummaries(
     val total: Int get() = tree.summarizable.size
     val complete: Boolean get() = missing().isEmpty()
     /** Starts a separate version, retaining the text outside the requested nodes. */
-    fun without(ids: Set<Int>): ChangeSummaries = ChangeSummaries(tree, texts.filterKeys { it !in ids }, cachedIds - ids)
+    fun without(ids: Set<Int>): ReviewSummaries = ReviewSummaries(tree, texts.filterKeys { it !in ids }, cachedIds - ids)
     fun missing(): List<Int> = tree.summarizable.filter { it.id !in texts }.map { it.id }
     /** Missing nodes whose children are all summarized: leaves (files and parts), then the rest from the deepest, which can be written now. */
     fun ready(): List<Int> = tree.summarizable
@@ -211,7 +211,7 @@ class ChangeSummaries(
         .map { it.id }
 
     /** Keeps the summaries whose node, with everything beneath it, is unchanged in [next]. */
-    fun retainedIn(next: ChangeSummaryTree): ChangeSummaries {
+    fun retainedIn(next: ReviewSummaryTree): ReviewSummaries {
         val byKey = texts.mapKeys { (id, _) -> tree[id].key }
         val cachedKeys = cachedIds.map { tree[it].key }.toSet()
         val kept = next.nodes.mapNotNull { node -> byKey[node.key]?.let { node.id to it } }.toMap(LinkedHashMap())
@@ -220,22 +220,22 @@ class ChangeSummaries(
             val child = node.children.single()
             kept[child]?.let { kept[node.id] = it; if (child in cached) cached += node.id }
         }
-        return ChangeSummaries(next, kept, cached)
+        return ReviewSummaries(next, kept, cached)
     }
 
     /**
      * Validates the whole batch before anything changes. A folder, group or the root needs every child summarized, before or in
      * the same batch, so summaries are written from the bottom up. A parent with a single child reuses that child's summary.
      */
-    fun summarize(entries: Map<Int, String>): ChangeSummaries = summarize(entries, reuseSingleChildren = true)
+    fun summarize(entries: Map<Int, String>): ReviewSummaries = summarize(entries, reuseSingleChildren = true)
 
-    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ChangeSummaries =
+    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ReviewSummaries =
         write(entries, reuseSingleChildren, emptySet())
 
     /** Copies shared summaries without treating cached text as newly generated. */
-    internal fun share(entries: Map<Int, String>, cached: Set<Int>): ChangeSummaries = write(entries, true, cached)
+    internal fun share(entries: Map<Int, String>, cached: Set<Int>): ReviewSummaries = write(entries, true, cached)
 
-    private fun write(entries: Map<Int, String>, reuseSingleChildren: Boolean, cached: Set<Int>): ChangeSummaries {
+    private fun write(entries: Map<Int, String>, reuseSingleChildren: Boolean, cached: Set<Int>): ReviewSummaries {
         if (tree.summarizable.isEmpty()) throw ToolInputException("There are no files to summarize.")
         if (entries.isEmpty()) throw ToolInputException("Add at least one summary.")
         if (entries.size > MAX_PER_CALL) throw ToolInputException("Add at most $MAX_PER_CALL summaries per call.")
@@ -259,7 +259,7 @@ class ChangeSummaries(
                 if (child in nextCached) nextCached += node.id else nextCached -= node.id
             }
         }
-        return ChangeSummaries(tree, next, nextCached)
+        return ReviewSummaries(tree, next, nextCached)
     }
 
     companion object {

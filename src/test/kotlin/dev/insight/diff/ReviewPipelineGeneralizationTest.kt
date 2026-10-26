@@ -9,6 +9,23 @@ import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmRole
 import dev.insight.llm.LlmTool
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryOptions
+import dev.insight.review.ReviewSummaryRun
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SourceChunk
+import dev.insight.review.SummaryEvidence
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.TopicEvidence
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.reviewJson
+import dev.insight.review.seedTopicSummaries
+import dev.insight.review.summariesReply
+import dev.insight.review.topicReadingSummaries
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -29,7 +46,7 @@ class ReviewPipelineGeneralizationTest {
     private fun chunkedTree(maxChildren: Int = 3) =
         buildSummaryTree(files, maxChildren, rootLabel = "Whole scope", chunks = { if (it.path == big.path) parts(5) else emptyList() })
 
-    private fun ChangeSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
+    private fun ReviewSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
 
     /** Evidence that shows each leaf's lines as fake code; [sizes] overrides a leaf's inline size. */
     private class FakeEvidence(val sizes: Map<String, Int> = emptyMap()) : SummaryEvidence {
@@ -39,7 +56,7 @@ class ReviewPipelineGeneralizationTest {
             described += node.location
             item.addProperty("code", "code of ${node.location}".take(limit))
         }
-        override fun leafSystem(tree: ChangeSummaryTree, focus: String) = "LEAF ${tree.root.label} $focus"
+        override fun leafSystem(tree: ReviewSummaryTree, focus: String) = "LEAF ${tree.root.label} $focus"
         override fun branchSystem(focus: String) = "BRANCH $focus"
     }
 
@@ -69,9 +86,9 @@ class ReviewPipelineGeneralizationTest {
 
         val model = Model()
         val evidence = FakeEvidence()
-        var saved = ChangeSummaries(tree)
+        var saved = ReviewSummaries(tree)
         val batches = mutableListOf<Set<Int>>()
-        val run = ChangeSummarizer(model::complete, null, ChangeSummaryOptions(filesPerRequest = 20, concurrency = 1), evidence)
+        val run = diffSummarizer(model::complete, null, ReviewSummaryOptions(filesPerRequest = 20, concurrency = 1), evidence)
             .run(saved, "focus", { entries -> batches += entries.keys; saved.summarize(entries).also { saved = it } })
         assertTrue(run.summaries.complete)
         assertNull(run.error)
@@ -114,9 +131,9 @@ class ReviewPipelineGeneralizationTest {
             override val definition = LlmTool("read_code", "Read code.", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
             override suspend fun call(arguments: JsonObject): String = "{}"
         }
-        var saved = ChangeSummaries(tree)
+        var saved = ReviewSummaries(tree)
         val evidence = FakeEvidence(mapOf("lib/big.kt:11-20" to 500))
-        ChangeSummarizer(model::complete, read, ChangeSummaryOptions(patchChars = 100, filesPerRequest = 20, concurrency = 1), evidence)
+        diffSummarizer(model::complete, read, ReviewSummaryOptions(patchChars = 100, filesPerRequest = 20, concurrency = 1), evidence)
             .run(saved, "", { saved.summarize(it).also { next -> saved = next } })
         val leafRequests = model.requests.take(2)
         assertEquals(listOf(8, 1), leafRequests.map { model.nodes(it).size })
@@ -126,12 +143,12 @@ class ReviewPipelineGeneralizationTest {
     }
 
     @Test fun `summaries reply and tool pages describe sources and parts`() {
-        val empty = ChangeSummaryRun(ChangeSummaries(buildSummaryTree(emptyList())), 0, null)
+        val empty = ReviewSummaryRun(ReviewSummaries(buildSummaryTree(emptyList())), 0, null)
         assertEquals("There are no changed files to summarize.", summariesReply(empty))
         assertEquals("There are no files in scope.", summariesReply(empty, "There are no files in scope."))
 
         val tree = chunkedTree()
-        val page = JsonParser.parseString(changeSummariesJson(ChangeSummaries(tree), 0)).asJsonObject["nodes"].asJsonArray.map { it.asJsonObject }
+        val page = JsonParser.parseString(changeSummariesJson(ReviewSummaries(tree), 0)).asJsonObject["nodes"].asJsonArray.map { it.asJsonObject }
         fun at(location: String) = page.single { it["location"].asString == location }
         val file = at("lib/big.kt")
         assertEquals(listOf("40 lines"), file["facts"].asJsonArray.map { it.asString })
@@ -159,12 +176,12 @@ class ReviewPipelineGeneralizationTest {
 
     @Test fun `concurrent topics save every file once with counted requests and abort on stale saves and server errors`() = runBlocking {
         val sources = (1..30).map { Source("src/F${it.toString().padStart(2, '0')}.kt") }
-        var topics = ChangeTopics(sources)
+        var topics = ReviewTopics(sources)
         var inFlight = 0
         var peak = 0
         val users = mutableListOf<JsonObject>()
         val systems = mutableSetOf<String>()
-        val generator = ChangeTopicGenerator({ request ->
+        val generator = diffTopicGenerator({ request ->
             inFlight++; peak = maxOf(peak, inFlight)
             users += JsonParser.parseString(request.messages.last().content).asJsonObject
             systems += request.messages.first().content
@@ -184,30 +201,30 @@ class ReviewPipelineGeneralizationTest {
         assertEquals((0..30).toList(), progress)
         assertTrue("Requests ran one at a time", peak in 2..4)
         assertEquals(setOf("CUSTOM"), systems)
-        assertEquals(listOf("path", "code", "existing_topics", "focus"), users.first().keySet().toList())
+        assertEquals(setOf("path", "code", "existing_topics", "focus"), users.first().keySet())
 
         var requests = 0
         try {
-            ChangeTopicGenerator({ requests++; delay(5); Completion("""{"topic":"Core>Files"}""") }, null,
+            diffTopicGenerator({ requests++; delay(5); Completion("""{"topic":"Core>Files"}""") }, null,
                 evidence = { source, _ -> TopicEvidence(mapOf("path" to source.path), false) }, concurrency = 4)
-                .run(ChangeTopics(sources), "", { _, _ -> throw ToolInputException("stale") })
+                .run(ReviewTopics(sources), "", { _, _ -> throw ToolInputException("stale") })
             fail("Stale save swallowed")
         } catch (_: ToolInputException) { }
         assertTrue(requests < sources.size)
 
         try {
-            ChangeTopicGenerator({ throw LlmApiException(401, "{}", null) }, null,
+            diffTopicGenerator({ throw LlmApiException(401, "{}", null) }, null,
                 evidence = { source, _ -> TopicEvidence(mapOf("path" to source.path), false) }, concurrency = 4)
-                .run(ChangeTopics(sources), "", { _, _ -> error("Must not save") })
+                .run(ReviewTopics(sources), "", { _, _ -> error("Must not save") })
             fail("Server error swallowed")
         } catch (_: LlmApiException) { }
     }
 
     @Test fun `sequential topics keep sorted order and offer each request the vocabulary saved before it`() = runBlocking {
-        var topics = ChangeTopics(listOf(Source("c"), Source("a"), Source("b")))
+        var topics = ReviewTopics(listOf(Source("c"), Source("a"), Source("b")))
         val visited = mutableListOf<String>()
         val vocabularies = mutableListOf<Int>()
-        val run = ChangeTopicGenerator({ request ->
+        val run = diffTopicGenerator({ request ->
             val input = JsonParser.parseString(request.messages.last().content).asJsonObject
             visited += input["path"].asString
             vocabularies += input["existing_topics"].asJsonArray.size()
@@ -221,25 +238,25 @@ class ReviewPipelineGeneralizationTest {
 
     @Test fun `topic bookkeeping stays fast on ten thousand files`() {
         val sources = (1..10_000).map { Source("src/m${it % 50}/F$it.kt") }
-        val labeled = ChangeTopics(sources, sources.associate { it.path to "Core > M${it.path.length % 7}" })
+        val labeled = ReviewTopics(sources, sources.associate { it.path to "Core > M${it.path.length % 7}" })
         val started = System.nanoTime()
         val retained = labeled.retainedIn(sources.map { if (it.path.endsWith("7.kt")) it.copy(fingerprint = "2") else it })
         assertEquals(9_000, retained.labels.size)
         assertSame(retained.groups, retained.groups)
-        var topics = ChangeTopics(sources)
+        var topics = ReviewTopics(sources)
         for (source in sources.take(1_000)) topics = topics.assign(source.path, "Core > Part ${source.path.length}")
         assertEquals(1_000, topics.labels.size)
         val seconds = (System.nanoTime() - started) / 1e9
         assertTrue("Took $seconds s", seconds < 2)
         // Lazy values stay out of equality.
-        assertEquals(ChangeTopics(sources, labeled.labels), labeled)
+        assertEquals(ReviewTopics(sources, labeled.labels), labeled)
     }
 
     // Topic summaries
 
-    private fun topicTrees(): Pair<ChangeSummaryTree, ChangeSummaryTree> {
+    private fun topicTrees(): Pair<ReviewSummaryTree, ReviewSummaryTree> {
         val chunks: (ReviewSource) -> List<SourceChunk> = { if (it.path == big.path) parts(12) else emptyList() }
-        val topics = ChangeTopics(files, mapOf(big.path to "Core > Big", "lib/a.kt" to "Core > Small", "lib/b.kt" to "Core > Small",
+        val topics = ReviewTopics(files, mapOf(big.path to "Core > Big", "lib/a.kt" to "Core > Small", "lib/b.kt" to "Core > Small",
             "other/c.kt" to "UI > Other", "other/d.kt" to "UI > Other"))
         return buildSummaryTree(files, chunks = chunks) to buildTopicSummaryTree(topics, chunks)
     }
@@ -248,28 +265,28 @@ class ReviewPipelineGeneralizationTest {
         val (sharedTree, topicTree) = topicTrees()
         assertTrue(topicTree.nodes.count { it.kind == SummaryKind.CHUNK } > 12)
         // Only the parts are summarized: nothing may stand in for the file or the topic that holds only it.
-        val partsOnly = ChangeSummaries(sharedTree, sharedTree.nodes.filter { it.kind == SummaryKind.CHUNK }.associate { it.id to "part ${it.identity}" })
-        val seeded = seedTopicSummaries(ChangeSummaries(topicTree), partsOnly)
+        val partsOnly = ReviewSummaries(sharedTree, sharedTree.nodes.filter { it.kind == SummaryKind.CHUNK }.associate { it.id to "part ${it.identity}" })
+        val seeded = seedTopicSummaries(ReviewSummaries(topicTree), partsOnly)
         topicTree.nodes.forEach { node ->
             val text = seeded.text(node.id)
             if (node.kind == SummaryKind.CHUNK) assertEquals("part ${node.identity}", text) else assertNull(node.identity, text)
         }
 
-        val all = ChangeSummaries(sharedTree, sharedTree.nodes.associate { it.id to "shared ${it.identity}" })
-        val full = seedTopicSummaries(ChangeSummaries(topicTree), all)
+        val all = ReviewSummaries(sharedTree, sharedTree.nodes.associate { it.id to "shared ${it.identity}" })
+        val full = seedTopicSummaries(ReviewSummaries(topicTree), all)
         val file = topicTree.nodes.single { it.kind == SummaryKind.FILE && it.path == big.path }
         assertEquals("shared file:lib/big.kt", full.text(file.id))
         assertEquals("shared file:lib/big.kt", full.text(topicTree.nodes.single { it.identity == "topic:core > big" }.id))
         topicTree.nodes.filter { it.kind == SummaryKind.CHUNK }.forEach { assertEquals("shared ${it.identity}", full.text(it.id)) }
         // A saved topic summary is never overwritten.
-        val own = ChangeSummaries(topicTree, mapOf(file.id to "own"))
+        val own = ReviewSummaries(topicTree, mapOf(file.id to "own"))
         assertEquals("own", seedTopicSummaries(own, all).text(file.id))
     }
 
     @Test fun `reading tree drops parts so files are leaves and topics never read a part summary`() {
         val (sharedTree, topicTree) = topicTrees()
-        val partsOnly = ChangeSummaries(sharedTree, sharedTree.nodes.filter { it.kind == SummaryKind.CHUNK }.associate { it.id to "part ${it.identity}" })
-        val reading = topicReadingSummaries(ChangeSummaries(topicTree), partsOnly)
+        val partsOnly = ReviewSummaries(sharedTree, sharedTree.nodes.filter { it.kind == SummaryKind.CHUNK }.associate { it.id to "part ${it.identity}" })
+        val reading = topicReadingSummaries(ReviewSummaries(topicTree), partsOnly)
         val tree = reading.tree
         assertTrue(tree.nodes.none { it.kind == SummaryKind.CHUNK || it.kind == SummaryKind.GROUP })
         tree.nodes.forEachIndexed { index, node ->
@@ -280,8 +297,8 @@ class ReviewPipelineGeneralizationTest {
         assertEquals(files.size, tree.nodes.count { it.kind == SummaryKind.FILE })
         assertTrue(tree.nodes.all { reading.text(it.id) == null })
 
-        val all = ChangeSummaries(sharedTree, sharedTree.nodes.associate { it.id to "shared ${it.identity}" })
-        val read = topicReadingSummaries(ChangeSummaries(topicTree), all)
+        val all = ReviewSummaries(sharedTree, sharedTree.nodes.associate { it.id to "shared ${it.identity}" })
+        val read = topicReadingSummaries(ReviewSummaries(topicTree), all)
         assertEquals("shared file:lib/big.kt", read.text(read.tree.nodes.single { it.identity == "topic:core > big" }.id))
         assertTrue(read.tree.nodes.none { read.text(it.id)?.startsWith("shared chunk") == true })
     }

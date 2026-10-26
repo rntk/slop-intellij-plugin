@@ -1,6 +1,9 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import javax.swing.JLabel
@@ -9,11 +12,11 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
     private val files get() = listOf("src/main/kotlin/dev/insight/a.kt", "src/main/kotlin/dev/insight/b.kt", "README.md").map(::file)
 
-    private fun summaries(): ChangeSummaries {
+    private fun summaries(): ReviewSummaries {
         val tree = buildSummaryTree(files)
         val leaves = tree.nodes.filter { it.children.isEmpty() }.associate { it.id to "Summary of ${it.identity}." }
         val insight = tree.nodes.single { it.path == "src/main/kotlin/dev/insight" }
-        return ChangeSummaries(tree).summarize(leaves).summarize(mapOf(insight.id to "Insight folder."))
+        return ReviewSummaries(tree).summarize(leaves).summarize(mapOf(insight.id to "Insight folder."))
             .summarize(mapOf(tree.root.id to "Everything."))
     }
 
@@ -92,17 +95,17 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         val state = ChangeSummariesViewState().apply { update(initial); browse("directory:src", initial) }
         state.update(merged)
         assertEquals(listOf("root", "directory:src/nested"), state.explorerBreadcrumbs(merged).map { it.identity })
-        assertEquals(listOf("file:src/nested/b.kt"), state.explorerEntries(ChangeSummaries(merged)).map { it.identity })
+        assertEquals(listOf("file:src/nested/b.kt"), state.explorerEntries(ReviewSummaries(merged)).map { it.identity })
 
         state.explorerBack()
         assertEquals(listOf("root"), state.explorerBreadcrumbs(merged).map { it.identity })
-        assertEquals(listOf("directory:src/nested"), state.explorerEntries(ChangeSummaries(merged)).map { it.identity })
+        assertEquals(listOf("directory:src/nested"), state.explorerEntries(ReviewSummaries(merged)).map { it.identity })
 
         state.browse("directory:src/nested", merged)
         state.update(initial)
         assertEquals(listOf("root", "directory:src", "directory:src/nested"), state.explorerBreadcrumbs(initial).map { it.identity })
         state.explorerBack()
-        assertEquals(listOf("directory:src/nested", "file:src/a.kt"), state.explorerEntries(ChangeSummaries(initial)).map { it.identity })
+        assertEquals(listOf("directory:src/nested", "file:src/a.kt"), state.explorerEntries(ReviewSummaries(initial)).map { it.identity })
 
         state.browse("directory:src/nested", initial)
         state.update(merged)

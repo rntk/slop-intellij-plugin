@@ -1,10 +1,10 @@
 package dev.insight.codereview
 
 import dev.insight.chat.ToolInputException
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffSourceRange
-import dev.insight.diff.SummaryKind
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryKind
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -29,7 +29,7 @@ class CodeReviewStateTest {
         val state = state(a, b)
         assertEquals(1, state.revision)
         assertFalse(big.chunks.isEmpty())
-        assertRejected("The files changed") { state.addNotes(0, listOf(DiffNote(listOf(a.path), "note"))) }
+        assertRejected("The files changed") { state.addNotes(0, listOf(ReviewNote(listOf(a.path), "note"))) }
         assertRejected("The files changed") { state.summarize(0, mapOf(1 to "x")) }
         state.refreshing = true
         assertRejected("The code is refreshing") { state.check(1) }
@@ -45,27 +45,27 @@ class CodeReviewStateTest {
     @Test fun `notes are validated against the scope and kept below the limit`() {
         val state = state(a, b, paths = setOf("src/app"))
         assertEquals(listOf(a.path, b.path), state.snapshot.files.map { it.path })
-        assertRejected("not a file in this review's scope") { state.addNotes(1, listOf(DiffNote(listOf(c.path), "x"))) }
-        assertRejected("Note 2: Use a note of 1–2000") { state.addNotes(1, listOf(DiffNote(listOf(a.path), "ok"), DiffNote(listOf(b.path), " "))) }
+        assertRejected("not a file in this review's scope") { state.addNotes(1, listOf(ReviewNote(listOf(c.path), "x"))) }
+        assertRejected("Note 2: Use a note of 1–2000") { state.addNotes(1, listOf(ReviewNote(listOf(a.path), "ok"), ReviewNote(listOf(b.path), " "))) }
         assertTrue("A rejected batch adds nothing", state.notes.isEmpty())
-        val added = state.addNotes(1, listOf(DiffNote(listOf(b.path, a.path, a.path), " both ", "a")))
+        val added = state.addNotes(1, listOf(ReviewNote(listOf(b.path, a.path, a.path), " both ", "a")))
         assertEquals(listOf(a.path, b.path), added.single().paths)
         assertEquals("both", added.single().text)
         state.removeNote(listOf(b.path, a.path), "a")
         assertTrue(state.notes.isEmpty())
-        val many = (1..200).map { DiffNote(listOf(a.path), "n$it", "s$it") }
+        val many = (1..200).map { ReviewNote(listOf(a.path), "n$it", "s$it") }
         many.chunked(20).forEach { state.addNotes(1, it) }
-        assertRejected("200-note limit") { state.addNotes(1, listOf(DiffNote(listOf(b.path), "one more"))) }
+        assertRejected("200-note limit") { state.addNotes(1, listOf(ReviewNote(listOf(b.path), "one more"))) }
     }
 
     @Test fun `notes and sources are dropped only for files whose content changed or vanished`() {
         val state = state(a, b, c)
-        state.addNotes(1, listOf(DiffNote(listOf(a.path), "a"), DiffNote(listOf(b.path), "b"), DiffNote(listOf(a.path, c.path), "ac"),
-            DiffNote(listOf(c.path), "c")))
-        val block = state.showSource(1, DiffSourceRange(a.path, 1, 2, "after"))
+        state.addNotes(1, listOf(ReviewNote(listOf(a.path), "a"), ReviewNote(listOf(b.path), "b"), ReviewNote(listOf(a.path, c.path), "ac"),
+            ReviewNote(listOf(c.path), "c")))
+        val block = state.showSource(1, ReviewSourceRange(a.path, 1, 2, "after"))
         assertEquals("current", block.range.side)
         assertEquals("fun a() = 1\nfun a2() = 2", block.text)
-        state.showSource(1, DiffSourceRange(b.path, 1, 1))
+        state.showSource(1, ReviewSourceRange(b.path, 1, 1))
         state.update(codeSnapshot(codeFile(a.path, "fun a() = 10\n"), b))
         assertEquals(2, state.revision)
         assertEquals(listOf("b"), state.notes.map { it.text })
@@ -176,6 +176,6 @@ class CodeReviewStateTest {
         state.fill()
         state.clearSummaries()
         assertEquals(0, state.summaries.count)
-        assertTrue(ChangeSummaries(state.summaries.tree).total > 0)
+        assertTrue(ReviewSummaries(state.summaries.tree).total > 0)
     }
 }

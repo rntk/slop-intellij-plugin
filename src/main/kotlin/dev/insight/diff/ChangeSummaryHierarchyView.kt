@@ -2,6 +2,11 @@ package dev.insight.diff
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.text.JTextComponent
@@ -279,7 +284,7 @@ internal class ChangeSummaryDocumentPanel(
         files.indexOfFirst { "file:${it.path}" == state.selected }.takeIf { it >= 0 }?.let { it..it }
 
     companion object {
-        fun railDepth(tree: ChangeSummaryTree, state: ChangeSummariesViewState): Int = state.railDepth(tree) +
+        fun railDepth(tree: ReviewSummaryTree, state: ChangeSummariesViewState): Int = state.railDepth(tree) +
             if (tree.nodes.any { it.kind == SummaryKind.FILE && it.file !is ReviewFile }) 1 else 0
     }
 }
@@ -288,7 +293,7 @@ internal class ChangeSummaryDocumentPanel(
  * A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. With [tree], a folder
  * also names the folders merged into it.
  */
-internal fun summaryNodeTitle(node: SummaryNode, tree: ChangeSummaryTree? = null): String = when (node.kind) {
+internal fun summaryNodeTitle(node: SummaryNode, tree: ReviewSummaryTree? = null): String = when (node.kind) {
     SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
     SummaryKind.DIRECTORY -> "${tree?.shownLabel(node) ?: node.label}/"
 }

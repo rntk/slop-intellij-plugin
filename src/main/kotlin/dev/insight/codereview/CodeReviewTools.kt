@@ -4,14 +4,14 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolInputException
 import dev.insight.chat.SourcePoint
+import dev.insight.chat.ToolInputException
 import dev.insight.chat.sourcePointTool
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeTopics
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffSourceRange
 import dev.insight.llm.LlmTool
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
 
 /** One reply's view of a code review tab. The captured revision is checked by the context, never echoed by the model. */
 interface CodeReviewContext {
@@ -26,19 +26,19 @@ interface CodeReviewContext {
     suspend fun search(query: String, regex: Boolean, directory: String, glob: String?, offset: Int): String
     suspend fun symbols(paths: List<String>, query: String, offset: Int): String =
         throw ToolInputException("Symbol discovery is unavailable")
-    suspend fun showSource(range: DiffSourceRange): String = throw ToolInputException("Source blocks are unavailable")
-    suspend fun addNotes(notes: List<DiffNote>): String
+    suspend fun showSource(range: ReviewSourceRange): String = throw ToolInputException("Source blocks are unavailable")
+    suspend fun addNotes(notes: List<ReviewNote>): String
     /** One page of the summary tree, or of the subtree at [path]. */
     suspend fun summaries(offset: Int, path: String?): String
 
     /** Starts a /summaries run, restarting a complete tree, and shows it on the canvas. Not a model tool. */
-    suspend fun startSummaries(): ChangeSummaries = throw ToolInputException("Code summaries are unavailable")
+    suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
     /** Saves summaries written by the summarizer. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, String>): ChangeSummaries = throw ToolInputException("Code summaries are unavailable")
-    suspend fun startTopics(): ChangeTopics = throw ToolInputException("Code topics are unavailable")
-    suspend fun assignTopic(path: String, label: String): ChangeTopics = throw ToolInputException("Code topics are unavailable")
-    suspend fun startTopicSummaries(): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, String>): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
+    suspend fun startTopics(): ReviewTopics = throw ToolInputException("Code topics are unavailable")
+    suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Code topics are unavailable")
+    suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
 }
 
 internal const val READ_CODE_TOOL = "read_code"
@@ -137,7 +137,7 @@ fun codeReviewTools(context: CodeReviewContext): List<ChatTool> {
             val end = integer(it, "end_line", 0)
             if (start < 1 || end < start || end.toLong() - start >= CODE_SOURCE_LINES)
                 throw ToolInputException("Use an inclusive range of 1–$CODE_SOURCE_LINES lines, starting at line 1 or later.")
-            context.showSource(DiffSourceRange(string(it, "path"), start, end, CODE_SOURCE_SIDE))
+            context.showSource(ReviewSourceRange(string(it, "path"), start, end, CODE_SOURCE_SIDE))
         },
         tool("add_code_notes", "Show 1–$MAX_CODE_NOTES_PER_CALL notes on the canvas next to the chat, to explain or illustrate an answer. Each note " +
             "is attached to one file or a group of related files. Optionally attach a symbol (function, class, property or other declaration) " +
@@ -161,7 +161,7 @@ fun codeReviewTools(context: CodeReviewContext): List<ChatTool> {
                 if (text.length > 2000) throw ToolInputException("${prefix}text is too long")
                 val symbol = if (note.has("symbol")) string(note, "symbol", prefix).trim() else null
                 if (symbol != null && symbol.length > 500) throw ToolInputException("${prefix}symbol is too long")
-                DiffNote(paths(note["paths"], 30, prefix), text, symbol)
+                ReviewNote(paths(note["paths"], 30, prefix), text, symbol)
             }
             context.addNotes(parsed)
         },

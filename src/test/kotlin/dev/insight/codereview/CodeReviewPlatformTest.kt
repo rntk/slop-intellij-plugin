@@ -10,16 +10,22 @@ import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
 import dev.insight.chat.ChatMessage
 import dev.insight.diff.CanvasState
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeSummarizer
-import dev.insight.diff.ChangeTopics
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffReviewCanvasFile
-import dev.insight.diff.DiffReviewEditorProvider
-import dev.insight.diff.DiffSourceRange
-import dev.insight.diff.SummaryKind
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
+import dev.insight.review.ReviewCanvasEditorProvider
+import dev.insight.review.ReviewCanvasFile
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import java.awt.Container
+import java.util.concurrent.atomic.AtomicInteger
+import javax.swing.JButton
+import javax.swing.JRootPane
+import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.TreePath
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,12 +35,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert
 import org.junit.Test
-import java.awt.Container
-import java.util.concurrent.atomic.AtomicInteger
-import javax.swing.JButton
-import javax.swing.JRootPane
-import javax.swing.tree.DefaultMutableTreeNode
-import javax.swing.tree.TreePath
 
 class CodeReviewPlatformTest : FileEditorManagerTestCase() {
     fun `test chat points stay in the code scope and omit diff and flow tools`() {
@@ -84,8 +84,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val file = codeFile("src/a.kt", "val a = 1\nval b = 2\n")
             tab.update(codeSnapshot(file))
             runWithEvents {
-                tab.captureContext().addNotes(listOf(DiffNote(listOf(file.path), "Keep this card")))
-                tab.captureContext().showSource(DiffSourceRange(file.path, 1, 2))
+                tab.captureContext().addNotes(listOf(ReviewNote(listOf(file.path), "Keep this card")))
+                tab.captureContext().showSource(ReviewSourceRange(file.path, 1, 2))
             }
             tab.openCanvas()
             tab.openCanvas()
@@ -102,7 +102,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(manager.isFileOpen(tab.canvasFile))
             Disposer.dispose(tab)
             assertFalse(manager.isFileOpen(tab.canvasFile))
-            assertFalse(DiffReviewEditorProvider().accept(project, tab.canvasFile))
+            assertFalse(ReviewCanvasEditorProvider().accept(project, tab.canvasFile))
         } finally { Disposer.dispose(tab) }
     }
 
@@ -163,7 +163,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(listOf("review/sub/b.kt"), selection.state.snapshot.files.map { it.path })
             assertTrue(manager.isFileOpen(selection.canvasFile))
         } finally { Disposer.dispose(panel) }
-        assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
+        assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
     }
 
     fun `test View opens the selected file in File view with the files its calls reach`() {
@@ -399,10 +399,10 @@ class CodeReviewEstimateTest {
         val tree = codeSummaryTree(snapshot.files)
         val evidence = CodeSummaryEvidence(snapshot)
         val options = CODE_SUMMARY_OPTIONS.copy(concurrency = 1)
-        val estimate = estimateSummaryRequests(ChangeSummaries(tree), options, evidence::size)
+        val estimate = estimateSummaryRequests(ReviewSummaries(tree), options, evidence::size)
         val model = SummaryModel()
-        var saved = ChangeSummaries(tree)
-        val run = ChangeSummarizer(model::complete, null, options, evidence).run(saved, "", { saved.summarize(it).also { s -> saved = s } })
+        var saved = ReviewSummaries(tree)
+        val run = ReviewSummarizer(model::complete, null, options, evidence).run(saved, "", { saved.summarize(it).also { s -> saved = s } })
         Assert.assertTrue(run.summaries.complete)
         Assert.assertEquals(run.requests, estimate)
     }
@@ -410,18 +410,18 @@ class CodeReviewEstimateTest {
     @Test fun `the estimate counts only missing work and restarts complete trees`() {
         val tree = codeSummaryTree(snapshot.files)
         val evidence = CodeSummaryEvidence(snapshot)
-        val full = estimateSummaryRequests(ChangeSummaries(tree), CODE_SUMMARY_OPTIONS, evidence::size)
-        val complete = fillAll(ChangeSummaries(tree))
+        val full = estimateSummaryRequests(ReviewSummaries(tree), CODE_SUMMARY_OPTIONS, evidence::size)
+        val complete = fillAll(ReviewSummaries(tree))
         Assert.assertEquals(full, estimateSummaryRequests(complete, CODE_SUMMARY_OPTIONS, evidence::size))
         Assert.assertEquals(0, estimateSummaryRequests(complete, CODE_SUMMARY_OPTIONS, evidence::size, restartComplete = false))
         // Only the root is missing: one branch request.
-        val rootless = ChangeSummaries(tree, tree.nodes.filter { it.id != tree.root.id }.associate { it.id to "x" })
+        val rootless = ReviewSummaries(tree, tree.nodes.filter { it.id != tree.root.id }.associate { it.id to "x" })
         Assert.assertEquals(1, estimateSummaryRequests(rootless, CODE_SUMMARY_OPTIONS, evidence::size))
-        Assert.assertEquals(0, estimateSummaryRequests(ChangeSummaries(codeSummaryTree(emptyList())), CODE_SUMMARY_OPTIONS, evidence::size))
+        Assert.assertEquals(0, estimateSummaryRequests(ReviewSummaries(codeSummaryTree(emptyList())), CODE_SUMMARY_OPTIONS, evidence::size))
     }
 
     @Test fun `topic estimates count missing files or every file of a complete result`() {
-        val topics = ChangeTopics(files)
+        val topics = ReviewTopics(files)
         Assert.assertEquals(files.size, estimateTopicRequests(topics))
         val partial = topics.assign(files[0].path, "Code>Steps").assign(files[1].path, "Code>Steps")
         Assert.assertEquals(files.size - 2, estimateTopicRequests(partial))
@@ -431,7 +431,7 @@ class CodeReviewEstimateTest {
 
     @Test fun `source blocks show a part or the head of a file within the limits`() {
         val part = big.chunks[1].lines
-        Assert.assertEquals(DiffSourceRange(big.path, part.first, minOf(part.last, part.first + 199), CODE_SOURCE_SIDE), sourceBlockRange(big, part))
+        Assert.assertEquals(ReviewSourceRange(big.path, part.first, minOf(part.last, part.first + 199), CODE_SOURCE_SIDE), sourceBlockRange(big, part))
         val head = sourceBlockRange(big, null)!!
         Assert.assertEquals(1, head.startLine)
         Assert.assertTrue(head.endLine <= 200 && big.lines(1..head.endLine).length <= CODE_SOURCE_CHARS)

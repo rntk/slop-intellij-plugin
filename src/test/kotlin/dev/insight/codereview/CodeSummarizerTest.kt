@@ -1,10 +1,10 @@
 package dev.insight.codereview
 
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeSummarizer
-import dev.insight.diff.SummaryKind
-import dev.insight.diff.SummaryNode
-import dev.insight.diff.summariesReply
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.summariesReply
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -24,8 +24,8 @@ class CodeSummarizerTest {
         assertTrue("The large file needs part groups", tree.nodes.any { it.kind == SummaryKind.CHUNK && it.children.isNotEmpty() })
         val model = SummaryModel()
         val order = mutableListOf<Set<Int>>()
-        var saved = ChangeSummaries(tree)
-        val run = ChangeSummarizer(model::complete, null, CODE_SUMMARY_OPTIONS.copy(concurrency = 1), CodeSummaryEvidence(snapshot))
+        var saved = ReviewSummaries(tree)
+        val run = ReviewSummarizer(model::complete, null, CODE_SUMMARY_OPTIONS.copy(concurrency = 1), CodeSummaryEvidence(snapshot))
             .run(saved, "", { entries -> order += entries.keys; saved.summarize(entries).also { saved = it } })
         assertTrue(run.summaries.complete)
         assertNull(run.error)
@@ -107,7 +107,7 @@ class CodeSummarizerTest {
         val tree = codeSummaryTree(large.files)
         val started = System.nanoTime()
         val system = CodeSummaryEvidence(large).leafSystem(tree, "")
-        val overview = codeOverview(large, null, files.take(500).map { it.path }, emptyList(), emptyList(), ChangeSummaries(tree))
+        val overview = codeOverview(large, null, files.take(500).map { it.path }, emptyList(), emptyList(), ReviewSummaries(tree))
         assertTrue("Took ${(System.nanoTime() - started) / 1_000_000} ms", System.nanoTime() - started < 5_000_000_000)
         assertTrue(system.length < 5_500)
         assertTrue(system.contains("module0/ (500 files)"))
@@ -121,8 +121,8 @@ class CodeSummarizerTest {
         val file = CodeFile("src/data.txt", "/p/data.txt", line)
         val snapshot = codeSnapshot(file, small[0])
         val model = SummaryModel()
-        var saved = ChangeSummaries(codeSummaryTree(snapshot.files))
-        ChangeSummarizer(model::complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
+        var saved = ReviewSummaries(codeSummaryTree(snapshot.files))
+        ReviewSummarizer(model::complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
             .run(saved, "", { entries -> saved.summarize(entries).also { saved = it } })
         val item = model.requests.map(model::nodes).single { nodes -> nodes.any { it["location"].asString == file.path } }.single()
         assertEquals(12_000, item["code_cut_at"].asInt)

@@ -1,5 +1,8 @@
 package dev.insight.diff
 
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 import javax.swing.event.PopupMenuEvent

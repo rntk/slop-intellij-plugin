@@ -3,6 +3,10 @@ package dev.insight.diff
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import dev.insight.codereview.CodeFile
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
@@ -15,14 +19,14 @@ class FileStructureViewTest : BasePlatformTestCase() {
         val mail = CodeFile("Mail.kt", "/repo/Mail.kt", "fun send() {}\n")
         val files = listOf(entry, orders, mail)
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }.associate {
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }.associate {
             it.id to when (it.path) {
                 entry.path -> "Coordinates the application."
                 orders.path -> "Places an order."
                 else -> "Sends a message."
             }
         })
-        val topics = ChangeTopics(files).assign(entry.path, "App>Entry").assign(orders.path, "Sales>Orders").assign(mail.path, "Messaging>Mail")
+        val topics = ReviewTopics(files).assign(entry.path, "App>Entry").assign(orders.path, "Sales>Orders").assign(mail.path, "Messaging>Mail")
         val structure = FileStructure(entry.path, entry.fingerprint, listOf(FileBlock(1..6, "run()", listOf(orders.path, mail.path), mapOf(
             2 to listOf(orders.path), 3 to listOf(mail.path), 5 to listOf(orders.path, mail.path),
         ))))
@@ -82,10 +86,10 @@ class FileStructureViewTest : BasePlatformTestCase() {
         val entry = CodeFile("Entry.kt", "/repo/Entry.kt", "work()\n")
         val pending = CodeFile("Pending.kt", "/repo/Pending.kt", "fun work() {}\n")
         val files = listOf(entry, pending)
-        val summaries = ChangeSummaries(buildSummaryTree(files))
+        val summaries = ReviewSummaries(buildSummaryTree(files))
         val structure = FileStructure(entry.path, entry.fingerprint, listOf(FileBlock(1..1, null,
             listOf(pending.path, "Outside.kt"), mapOf(1 to listOf(pending.path, "Outside.kt")))))
-        val card = FileViewCard(entry, structure, null, ChangeTopics(files), summaries, true)
+        val card = FileViewCard(entry, structure, null, ReviewTopics(files), summaries, true)
         assertEquals(1, card.missingTopics)
         assertEquals(1, card.missingSummaries)
         val panel = FileStructurePanel(card, structure, 1500, 1.0, FileStructureActions({ _, _ -> }, { _, _ -> }))

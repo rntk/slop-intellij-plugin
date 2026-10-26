@@ -13,6 +13,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vcs.CodeSmellDetector
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
+import dev.insight.review.ReviewSource
 import java.awt.Dimension
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ActionEvent

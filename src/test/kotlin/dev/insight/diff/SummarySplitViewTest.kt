@@ -1,9 +1,14 @@
 package dev.insight.diff
 
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import com.intellij.testFramework.PlatformTestUtil
-import com.intellij.ui.UiInterceptors
 import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.UiInterceptors
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
@@ -13,9 +18,9 @@ import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
-import javax.swing.SwingUtilities
 import javax.swing.JTextPane
 import javax.swing.ScrollPaneConstants
+import javax.swing.SwingUtilities
 import javax.swing.event.PopupMenuEvent
 
 class SummarySplitViewTest : BasePlatformTestCase() {
@@ -25,8 +30,8 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     fun testSoftWrapExpandsAlignedRowsAndCanBeTurnedOff() {
         val tree = buildSummaryTree(files)
         val long = "A summary whose words continue on the next line. ".repeat(20)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Short summary." })
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Short summary." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
         fun checkbox() = named("summaries-soft-wrap") as JCheckBox
         fun area() = descendants(named("summary:file:src/a.kt")).filterIsInstance<WrappedSummaryText>().single()
@@ -92,10 +97,10 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     fun testSoftWrapRemeasuresOnResizeAndKeepsScrolledRowsAlignedWithTagsCloud() {
         val tree = buildSummaryTree((1..24).map { file("src/longFileName$it.kt") })
         val long = "Important summary words. ".repeat(12) + "LongIdentifier".repeat(30)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to long })
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to long })
         val canvas = NoteCanvas({}, {}).apply {
             setSize(1600, 900)
-            summariesView.mode = ChangeSummariesMode.SPLIT
+            summariesView.mode = ReviewSummariesMode.SPLIT
             summariesView.softWrap = true
             summariesView.tagsCloud = true
             summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
@@ -143,8 +148,8 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     fun testTreeAndOneLineSummariesShareRowsHoverAndFolding() {
         val tree = buildSummaryTree(files)
         val long = "A long summary that stays on one line however wide it gets, never wrapping. ".repeat(12).trim()
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Summary of ${it.identity}." })
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Summary of ${it.identity}." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
         fun treeRows() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("summary-tree:") }.map { it.removePrefix("summary-tree:") }
         fun summaryRows() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("summary:") }.map { it.removePrefix("summary:") }
@@ -225,8 +230,8 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     fun testSummariesWithLineBreaksStayOnOneLine() {
         val tree = buildSummaryTree(files)
         val text = "First sentence.\r\nSecond sentence.\u2028Third sentence.\u2029Last sentence on the same line."
-        val summaries = ChangeSummaries(tree, mapOf(tree.root.id to text))
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val summaries = ReviewSummaries(tree, mapOf(tree.root.id to text))
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
@@ -238,10 +243,10 @@ class SummarySplitViewTest : BasePlatformTestCase() {
 
     fun testBothPanelsKeepRowsAlignedWhileScrollingAndResizingWithTagsCloud() {
         val tree = buildSummaryTree((1..80).map { file("src/${"longFileName".repeat(8)}$it.kt") })
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary words. ".repeat(40) })
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary words. ".repeat(40) })
         val canvas = NoteCanvas({}, {}).apply {
             setSize(1600, 900)
-            summariesView.mode = ChangeSummariesMode.SPLIT
+            summariesView.mode = ReviewSummariesMode.SPLIT
             summariesView.tagsCloud = true
             summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
         }
@@ -285,10 +290,10 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val tree = buildSummaryTree((1..HierarchyColumnsPanel.MAX_ROWS + 1).map { file("file$it.kt") },
             maxChildren = HierarchyColumnsPanel.MAX_ROWS + 1)
         val state = ChangeSummariesViewState().apply {
-            mode = ChangeSummariesMode.SPLIT
+            mode = ReviewSummariesMode.SPLIT
             selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
         }
-        val split = ChangeSummarySplitPanel(SummariesCard(ChangeSummaries(tree), false, true), state, 1.0,
+        val split = ChangeSummarySplitPanel(SummariesCard(ReviewSummaries(tree), false, true), state, 1.0,
             ChangeSummaryActions({}, {}, {}, {}))
         assertEquals(tree.nodes.size, split.summariesColumn.componentCount)
         assertTrue(split.summariesColumn.components.any { it.name == "summary:${tree.nodes.last().identity}" })
@@ -298,9 +303,9 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val node = tree.nodes.single { it.identity == "directory:src" }
         val reviewed = ReviewedFiles().apply { restore(files) }
-        val canvas = NoteCanvas({}, {}, reviewed = reviewed).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val canvas = NoteCanvas({}, {}, reviewed = reviewed).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, true)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), false, true)))
             val row = descendants(canvas).single { it.name == "summary-tree:${node.identity}" } as JComponent
             val menu = row.componentPopupMenu
             fun item() = menu.components.filterIsInstance<JMenuItem>().single { it.name == "reviewed-menu:${node.identity}" }
@@ -325,8 +330,8 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val original = "A readable summary with words that should wrap naturally. ".repeat(20) +
             "\n\n- First detail\n- Second detail\n" + "LongIdentifier".repeat(40)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to original })
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to original })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         var dialogs = 0
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
@@ -369,12 +374,12 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             val opened = mutableListOf<String>()
             val whole = mutableListOf<String>()
             val folders = mutableListOf<List<ReviewFile>>()
-            val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+            val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
             val canvas = NoteCanvas({}, {}, vocabulary = vocabulary,
                 summaryActions = SummaryCanvasActions(openNode = { opened += it.identity },
                     openWholeFile = { whole += it.path },
                     openDirectoryDiff = if (vocabulary == ReviewVocabulary.DIFF) ({ folders += it }) else null))
-                .apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+                .apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
             var dialogOpened = false
             val interception = Disposer.newDisposable()
             UiInterceptors.registerPossible(interception,
@@ -413,10 +418,10 @@ class SummarySplitViewTest : BasePlatformTestCase() {
     fun testTreeKeepsItsFullHeightWhenSummariesScrollToTheBottom() {
         for (wrap in listOf(false, true)) {
             val tree = buildSummaryTree((1..80).map { file("src/pkg${it % 7}/longFileName$it.kt") })
-            val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Important summary words. ".repeat(12) })
+            val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Important summary words. ".repeat(12) })
             val canvas = NoteCanvas({}, {}).apply {
                 setSize(1600, 900)
-                summariesView.mode = ChangeSummariesMode.SPLIT
+                summariesView.mode = ReviewSummariesMode.SPLIT
                 summariesView.softWrap = wrap
                 summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
             }
@@ -444,8 +449,8 @@ class SummarySplitViewTest : BasePlatformTestCase() {
 
     fun testOpenFolderWithOneFileLeavesItsSummaryToTheFile() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
         fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
         fun text(identity: String) = descendants(named("summary:$identity")).filterIsInstance<WrappedSummaryText>().singleOrNull()?.text
         fun show() {

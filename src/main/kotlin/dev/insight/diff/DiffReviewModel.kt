@@ -2,7 +2,23 @@ package dev.insight.diff
 
 import dev.insight.callgraph.LineChange
 import dev.insight.chat.ToolInputException
-import java.security.MessageDigest
+import dev.insight.review.ReviewCacheSession
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewNoteKey
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.diffCardKey
+import dev.insight.review.seedTopicSummaries
+import dev.insight.review.targetedEntries
 
 /** Immutable review evidence, independent of PSI, graph construction and the Git plugin. */
 data class ReviewFile(
@@ -18,7 +34,7 @@ data class ReviewFile(
     val afterLabel: String = "Working tree",
 ) : ReviewSource {
     override val facts: List<String> get() = listOfNotNull(status, previousPath?.let { "renamed from $it" })
-    internal val diffKey get() = diffNoteKey(path)
+    internal val diffKey get() = diffCardKey(path)
     // Swing tree renderers call toString before applying their custom label.
     override fun toString(): String = path.substringAfterLast('/')
 }
@@ -29,36 +45,6 @@ data class ReviewSnapshot(
     val untracked: List<UntrackedFile>,
     val comparison: ReviewComparison = ReviewComparison(),
 )
-data class DiffNote(
-    val paths: List<String>,
-    val text: String,
-    val symbol: String? = null,
-    val evidence: DiffSymbolEvidence? = null,
-) {
-    internal val key get() = DiffNoteKey(paths, symbol)
-}
-
-/** One tab of the [NoteCanvas]: a fixed view, a summary search, or a note, source or diff by its [DiffNoteKey]. */
-internal sealed interface CanvasTabKey {
-    data object Explanation : CanvasTabKey
-    data object Topics : CanvasTabKey
-    data object Words : CanvasTabKey
-    data object DiffOverview : CanvasTabKey
-    data object Semantic : CanvasTabKey
-    data object Summaries : CanvasTabKey
-    data object FileView : CanvasTabKey
-    data object SymbolFlow : CanvasTabKey
-    data class SummarySearch(val id: Int) : CanvasTabKey
-}
-
-internal data class DiffNoteKey(
-    val paths: List<String>,
-    val symbol: String?,
-    val source: DiffSourceRange? = null,
-    val diff: String? = null,
-) : CanvasTabKey
-internal fun diffNoteKey(path: String) = DiffNoteKey(listOf(path), null, diff = path)
-
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
 class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
     private val disk = ReviewCacheSession(cache, "diff", paths)
@@ -75,22 +61,22 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     var refreshing = true
     var snapshot = ReviewSnapshot(emptyList(), emptyList())
         private set
-    private val cards = linkedMapOf<DiffNoteKey, DiffNote>()
-    val notes: List<DiffNote> get() = cards.values.toList()
-    private val sourceCards = linkedMapOf<DiffSourceRange, DiffSourceBlock>()
-    val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
+    private val cards = linkedMapOf<ReviewNoteKey, ReviewNote>()
+    val notes: List<ReviewNote> get() = cards.values.toList()
+    private val sourceCards = linkedMapOf<ReviewSourceRange, ReviewSourceBlock>()
+    val sources: List<ReviewSourceBlock> get() = sourceCards.values.toList()
     private val diffCards = linkedMapOf<String, ReviewFile>()
     val diffs: List<ReviewFile> get() = diffCards.values.toList()
     /** The summary tree of this revision. Summaries of unchanged subtrees survive snapshot changes; a new request discards all. */
-    var summaries = ChangeSummaries(buildSummaryTree(emptyList()))
+    var summaries = ReviewSummaries(buildSummaryTree(emptyList()))
         private set
     /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
     var summariesVisible = false
         private set
 
-    var topics = ChangeTopics(emptyList())
+    var topics = ReviewTopics(emptyList())
         private set
-    var topicSummaries = ChangeSummaries(buildTopicSummaryTree(topics))
+    var topicSummaries = ReviewSummaries(buildTopicSummaryTree(topics))
         private set
     var topicsVisible = false
         private set
@@ -129,10 +115,10 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
     fun hideSemantic() { semanticVisible = false }
 
-    fun startTopics(): ChangeTopics {
+    fun startTopics(): ReviewTopics {
         if (topics.complete) {
-            topics = ChangeTopics(snapshot.files)
-            topicSummaries = ChangeSummaries(buildTopicSummaryTree(topics))
+            topics = ReviewTopics(snapshot.files)
+            topicSummaries = ReviewSummaries(buildTopicSummaryTree(topics))
             disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
             persist()
         }
@@ -141,7 +127,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
     fun showTopics() { topicsVisible = true }
     fun hideTopics() { topicsVisible = false }
-    fun assignTopic(expected: Int, path: String, label: String): ChangeTopics {
+    fun assignTopic(expected: Int, path: String, label: String): ReviewTopics {
         check(expected)
         return topics.assign(path, label).also {
             topics = it
@@ -169,10 +155,10 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
             val tree = buildSummaryTree(next.files)
-            summaries = if (requestChanged) ChangeSummaries(tree) else summaries.retainedIn(tree)
-            topics = if (requestChanged) ChangeTopics(next.files) else topics.retainedIn(next.files)
+            summaries = if (requestChanged) ReviewSummaries(tree) else summaries.retainedIn(tree)
+            topics = if (requestChanged) ReviewTopics(next.files) else topics.retainedIn(next.files)
             val topicTree = buildTopicSummaryTree(topics)
-            topicSummaries = if (requestChanged) ChangeSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
+            topicSummaries = if (requestChanged) ReviewSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
             // Saved entries are keyed by content, so the request alone picks the slot; changed files simply miss their keys.
             disk.load(next.comparison.request)
             if (requestChanged) reviewed.restore(next.files, emptySet())
@@ -191,11 +177,11 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         if (expected != revision) throw ToolInputException("The diff changed. Start a new request to review the current snapshot.")
     }
 
-    fun addNote(expected: Int, paths: List<String>, text: String): DiffNote =
-        addNotes(expected, listOf(DiffNote(paths, text))).single()
+    fun addNote(expected: Int, paths: List<String>, text: String): ReviewNote =
+        addNotes(expected, listOf(ReviewNote(paths, text))).single()
 
     /** Validates every note before adding any, so a rejected batch leaves the canvas unchanged. */
-    fun addNotes(expected: Int, notes: List<DiffNote>): List<DiffNote> {
+    fun addNotes(expected: Int, notes: List<ReviewNote>): List<ReviewNote> {
         check(expected)
         if (notes.isEmpty()) throw ToolInputException("Add at least one note.")
         val known = snapshot.files.mapTo(hashSetOf()) { it.path }
@@ -214,8 +200,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return added
     }
 
-    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(DiffNoteKey(paths.distinct().sorted(), symbol)) }
-    fun showSource(expected: Int, range: DiffSourceRange): DiffSourceBlock {
+    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(ReviewNoteKey(paths.distinct().sorted(), symbol)) }
+    fun showSource(expected: Int, range: ReviewSourceRange): ReviewSourceBlock {
         check(expected)
         val block = resolveSourceBlock(snapshot, range)
         if (range !in sourceCards && sourceCards.size >= 30)
@@ -224,7 +210,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return block
     }
 
-    fun removeSource(range: DiffSourceRange) { sourceCards.remove(range) }
+    fun removeSource(range: ReviewSourceRange) { sourceCards.remove(range) }
     fun showDiff(path: String): ReviewFile? {
         val file = snapshot.files.firstOrNull { it.path == path } ?: return null
         diffCards[path] = file
@@ -237,19 +223,19 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
     }
 
-    fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+    fun summarize(expected: Int, entries: Map<Int, String>): ReviewSummaries {
         check(expected)
         return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
-    fun startTopicSummaries(expected: Int): ChangeSummaries {
+    fun startTopicSummaries(expected: Int): ReviewSummaries {
         check(expected)
         topicSummaries = seedTopicSummaries(topicSummaries, summaries)
         persist()
         return topicSummaries
     }
 
-    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries {
         check(expected)
         topicSummaries = topicSummaries.summarize(entries)
         // File summaries are shared with the ordinary Summaries view.
@@ -260,7 +246,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         val cachedPaths = topicSummaries.tree.nodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
             .mapTo(hashSetOf()) { it.path }
         val cached = summaries.tree.nodes.filter { it.path in cachedPaths }.mapTo(hashSetOf()) { it.id }
-        shared.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
+        shared.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
             val entries = batch.associate { it.key to it.value }
             summaries = summaries.share(entries, cached.intersect(entries.keys))
         }
@@ -269,20 +255,14 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the diff changed. */
-    fun replaceTopicSummaries(updated: ChangeSummaries, ids: Set<Int>): ChangeSummaries {
+    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
         if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
         return topicSummaries
     }
 
-    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
+    fun clearSummaries() { summaries = ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }
-}
-
-internal fun reviewFingerprint(vararg values: String): String {
-    val hash = MessageDigest.getInstance("SHA-256")
-    values.forEach { hash.update(it.toByteArray(Charsets.UTF_8)); hash.update(0.toByte()) }
-    return hash.digest().joinToString("") { "%02x".format(it) }
 }
 
 /** Unified evidence with three context lines; deleted lines retain their old-side line numbers. */

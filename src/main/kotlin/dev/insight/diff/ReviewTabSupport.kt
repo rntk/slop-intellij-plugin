@@ -15,6 +15,12 @@ import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSettings
+import dev.insight.review.ContextSummaryLauncher
+import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewSummaryRun
 import java.awt.BorderLayout
 import java.time.Duration
 import javax.swing.JComponent
@@ -33,27 +39,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/**
- * Opens a review's canvas in the IDE editor area. Splits that are not under the editor's center are left alone, and the canvas
- * is closed in them, since a Swing canvas has one parent.
- */
-internal fun openReviewCanvas(project: Project, file: DiffReviewCanvasFile, focus: Boolean) {
-    val manager = FileEditorManagerEx.getInstanceEx(project)
-    for (window in manager.windows) {
-        val center = (window.owner.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
-        if (center == null) {
-            window.owner.add(window.tabbedPane.component, BorderLayout.CENTER)
-            window.owner.validate()
-        } else if (!SwingUtilities.isDescendingFrom(window.tabbedPane.component, center)) {
-            if (window.isFileOpen(file)) window.closeFile(file)
-            manager.windows.firstOrNull {
-                it.owner === window.owner && SwingUtilities.isDescendingFrom(it.tabbedPane.component, center)
-            }?.setAsCurrentWindow(false)
-        }
-    }
-    manager.openFile(file, focus).filterIsInstance<DiffReviewEditor>().firstOrNull()?.attachCanvas()
-}
 
 /** Opens [file] with [lines] centered and highlighted like search results, until Escape or an edit. */
 internal fun openHighlightedLines(project: Project, file: VirtualFile, lines: List<Int>) {
@@ -87,7 +72,7 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
             cache = ReviewDiskCache.forProject(project))
     }
 
-    override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+    override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
                           scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job =
         launchSummaryTask<Unit>("Scoring summary words", done) {
             // Four workers bound the number of words in flight; each word's question batches run in parallel.
@@ -103,10 +88,10 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
             }
         }
 
-    override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job =
+    override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job =
         launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
 
-    override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
+    override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
         launchSummaryTask("Searching related lines", done) { summaryTracer.searchLines(summaries, id, context) }
 
     private fun <T> launchSummaryTask(title: String, done: (Result<T>) -> Unit, task: suspend () -> T): Job = scope.launch {
@@ -133,7 +118,7 @@ internal class ReviewSummaryLinkLauncher(private val project: Project, private v
             ReviewDiskCache.forProject(project))
     }
 
-    override fun launch(summaries: ChangeSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job = scope.launch {
+    override fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job = scope.launch {
         val result = try {
             Result.success(withBackgroundProgress(project, "Linking reviewed summaries", cancellable = true) {
                 withContext(Dispatchers.IO) {
@@ -160,10 +145,10 @@ internal class ReviewSummaryLinkLauncher(private val project: Project, private v
 internal class ReviewContextSummaryLauncher(
     private val project: Project,
     private val scope: CoroutineScope,
-    private val create: suspend () -> ChangeSummarizer,
+    private val create: suspend () -> ReviewSummarizer,
 ) : ContextSummaryLauncher {
-    override fun launch(start: ChangeSummaries, request: ContextSummaryRequest,
-                        updated: (ChangeSummaries) -> Unit, done: (Result<ChangeSummaryRun>) -> Unit): Job {
+    override fun launch(start: ReviewSummaries, request: ContextSummaryRequest,
+                        updated: (ReviewSummaries) -> Unit, done: (Result<ReviewSummaryRun>) -> Unit): Job {
         return scope.launch {
             val result = try {
                 // Capture the review's evidence on the EDT, before starting background work.

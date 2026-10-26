@@ -4,17 +4,19 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vcs.ProjectLevelVcsManager
+import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.vcs.changes.BinaryContentRevision
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ContentRevision
-import com.intellij.openapi.vcs.VcsException
-import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.callgraph.DiffService
-import kotlinx.coroutines.ensureActive
-import java.nio.file.Path
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.reviewFingerprint
 import java.io.IOException
+import java.nio.file.Path
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /** Runs on IO. Inclusion of untracked files is review-local and never changes the VCS index. */
 internal class DiffReviewLoader(private val project: Project) {

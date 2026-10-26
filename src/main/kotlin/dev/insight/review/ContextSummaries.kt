@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import kotlinx.coroutines.Job
 
@@ -11,7 +11,7 @@ internal data class ContextSummaryRequest(
 )
 
 /** A single entry uses existing child summaries, generating missing dependencies when necessary. */
-internal fun resummaryRequest(summaries: ChangeSummaries, node: SummaryNode, recursive: Boolean,
+internal fun resummaryRequest(summaries: ReviewSummaries, node: SummaryNode, recursive: Boolean,
                              instructions: String,
                              /** The descendants a recursive run regenerates; the others are written only when missing. */
                              regenerates: (SummaryNode) -> Boolean = { true }): ContextSummaryRequest {
@@ -30,7 +30,7 @@ internal fun resummaryRequest(summaries: ChangeSummaries, node: SummaryNode, rec
 }
 
 /** Every missing summary beneath and including [node], so one topic can be filled without the rest of the hierarchy. */
-internal fun fillSummaryRequest(summaries: ChangeSummaries, node: SummaryNode): ContextSummaryRequest {
+internal fun fillSummaryRequest(summaries: ReviewSummaries, node: SummaryNode): ContextSummaryRequest {
     val ids = linkedSetOf<Int>()
     fun visit(id: Int) {
         if (summaries.text(id) == null) ids += id
@@ -46,7 +46,7 @@ internal fun fillSummaryRequest(summaries: ChangeSummaries, node: SummaryNode): 
  * parents, in batches the summary model accepts, and an entry whose children cannot all be saved waits. Empty once the tree beneath the run changed,
  * as a reclassification or refresh replaces it.
  */
-internal fun targetedEntries(current: ChangeSummaries, updated: ChangeSummaries, ids: Set<Int>): List<Map<Int, String>> {
+internal fun targetedEntries(current: ReviewSummaries, updated: ReviewSummaries, ids: Set<Int>): List<Map<Int, String>> {
     val tree = current.tree
     if (updated.tree.root.key != tree.root.key || updated.tree.nodes.size != tree.nodes.size) return emptyList()
     val scope = ids.toMutableSet()
@@ -62,7 +62,7 @@ internal fun targetedEntries(current: ChangeSummaries, updated: ChangeSummaries,
         if (node.children.any { current.text(it) == null && it !in saved }) continue
         if (old == null || node.id in ids && text != old) { entries += node.id to text; saved += node.id }
     }
-    return entries.chunked(ChangeSummaries.MAX_PER_CALL) { it.toMap() }
+    return entries.chunked(ReviewSummaries.MAX_PER_CALL) { it.toMap() }
 }
 
 /** A topic reads as its topic path; files and folders as their location. */
@@ -70,7 +70,7 @@ internal val SummaryNode.entryLabel: String
     get() = if (isTopicBranch) path.ifEmpty { label } else location
 
 /** Matches and their descendants, without the ancestors used to reach them. */
-internal fun relatedSummaryNodes(tree: ChangeSummaryTree, identities: List<String>): Set<String> {
+internal fun relatedSummaryNodes(tree: ReviewSummaryTree, identities: List<String>): Set<String> {
     val related = identities.toHashSet()
     for (node in tree.nodes) if (node.identity in related) node.children.forEach { related += tree[it].identity }
     return related
@@ -78,12 +78,12 @@ internal fun relatedSummaryNodes(tree: ChangeSummaryTree, identities: List<Strin
 
 /** Publishes immutable summary snapshots and completion on the EDT. */
 internal fun interface ContextSummaryLauncher {
-    fun launch(start: ChangeSummaries, request: ContextSummaryRequest,
-               updated: (ChangeSummaries) -> Unit, done: (Result<ChangeSummaryRun>) -> Unit): Job
+    fun launch(start: ReviewSummaries, request: ContextSummaryRequest,
+               updated: (ReviewSummaries) -> Unit, done: (Result<ReviewSummaryRun>) -> Unit): Job
 }
 
 /** A generated version belongs to the review; tabs choose which one they read independently. */
-internal class ContextSummaryVersion(val id: Int, var request: ContextSummaryRequest, var summaries: ChangeSummaries) {
+internal class ContextSummaryVersion(val id: Int, var request: ContextSummaryRequest, var summaries: ReviewSummaries) {
     val related = request.nodeIds.mapTo(hashSetOf()) { summaries.tree[it].identity }
     var job: Job? = null
     var running = true

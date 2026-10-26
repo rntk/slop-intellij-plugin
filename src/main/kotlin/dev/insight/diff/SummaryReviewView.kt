@@ -4,7 +4,10 @@ import com.intellij.openapi.util.Key
 import com.intellij.ui.ClientProperty
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.UIUtil
-import kotlinx.coroutines.Job
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.JComponent
@@ -15,9 +18,10 @@ import javax.swing.text.JTextComponent
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
 import javax.swing.text.StyledDocument
+import kotlinx.coroutines.Job
 
 internal interface SummaryReviewLauncher {
-    fun launch(summaries: ChangeSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job
+    fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job
 }
 
 /** One displayed summary version; stale requests cannot change a newer mark or summary. */
@@ -26,7 +30,7 @@ internal class SummaryReviewSession(
     private val launcher: SummaryReviewLauncher?,
     private val changed: () -> Unit,
 ) {
-    private var content: ChangeSummaries? = null
+    private var content: ReviewSummaries? = null
     private var revision = -1
     private var generation = 0
     private var job: Job? = null
@@ -36,13 +40,13 @@ internal class SummaryReviewSession(
     var running = false
         private set
 
-    fun presentation(summaries: ChangeSummaries, toggle: (SummaryNode, Boolean) -> Unit): SummaryReviewPresentation {
+    fun presentation(summaries: ReviewSummaries, toggle: (SummaryNode, Boolean) -> Unit): SummaryReviewPresentation {
         sync(summaries)
         return SummaryReviewPresentation(summaries, reviewed, { if (content === summaries) dimming else emptyMap() }, toggle)
     }
 
     /** Follows the current marks for [summaries], relinking when they changed; live presentations read the result. */
-    fun sync(summaries: ChangeSummaries) {
+    fun sync(summaries: ReviewSummaries) {
         if (content === summaries && revision == reviewed.revision) return
         job?.cancel()
         val requestGeneration = ++generation
@@ -80,12 +84,12 @@ internal fun installReviewPresentationUpdate(component: JComponent, update: () -
 
 /** Applies foreground attributes without changing the prose, word sizes, selection or trace offsets. */
 internal class SummaryReviewPresentation(
-    summaries: ChangeSummaries,
+    summaries: ReviewSummaries,
     private val reviewed: ReviewedFiles,
     private val dimming: () -> ReviewDimming,
     private val toggle: (SummaryNode, Boolean) -> Unit,
 ) {
-    constructor(summaries: ChangeSummaries, reviewed: ReviewedFiles, dimming: ReviewDimming, toggle: (SummaryNode, Boolean) -> Unit) :
+    constructor(summaries: ReviewSummaries, reviewed: ReviewedFiles, dimming: ReviewDimming, toggle: (SummaryNode, Boolean) -> Unit) :
         this(summaries, reviewed, { dimming }, toggle)
 
     private val nodes = summaries.tree.nodes.associateBy { it.identity }

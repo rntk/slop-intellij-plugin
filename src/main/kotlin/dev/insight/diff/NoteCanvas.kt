@@ -2,8 +2,8 @@ package dev.insight.diff
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
@@ -19,25 +19,46 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.CanvasTabKey
+import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.ContextSummaryVersion
+import dev.insight.review.ExplainResult
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewNoteKey
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.TopicOutline
+import dev.insight.review.diffCardKey
+import dev.insight.review.explanationCard
+import dev.insight.review.fillSummaryRequest
+import dev.insight.review.resummaryRequest
+import dev.insight.review.seedTopicSummaries
 import java.awt.BorderLayout
-import java.awt.Cursor
 import java.awt.Component
 import java.awt.Container
+import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.event.MouseWheelEvent
-import kotlinx.coroutines.Job
-import kotlin.math.pow
-import kotlin.math.roundToInt
 import javax.swing.*
 import javax.swing.event.DocumentEvent
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 
 /** Review artifacts, each in its own normally scrollable tab. */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
-    private val remove: (DiffNote) -> Unit,
+    private val remove: (ReviewNote) -> Unit,
     private val project: Project? = null,
     private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
     private val reviewed: ReviewedFiles = ReviewedFiles(),
@@ -57,8 +78,8 @@ internal class NoteCanvas(
     private val stickyTargets = mutableMapOf<CanvasTabKey, JComponent>()
 
     private var state = CanvasState()
-    private val notes: List<DiffNote> get() = state.notes
-    private val sources: List<DiffSourceBlock> get() = state.sources
+    private val notes: List<ReviewNote> get() = state.notes
+    private val sources: List<ReviewSourceBlock> get() = state.sources
     private val diffs: List<ReviewFile> get() = state.diffs
     private val topics: TopicsCard? get() = state.topics
     internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
@@ -125,9 +146,9 @@ internal class NoteCanvas(
     private fun summaryTabs() = listOf(mainSummaries) + searchTabs
     private fun summaryTab(key: CanvasTabKey) = summaryTabs().firstOrNull { it.key == key }
     private fun version(tab: SummariesTab) = summaryVersions.firstOrNull { it.id == tab.version }
-    private fun reading(tab: SummariesTab): ChangeSummaries? = version(tab)?.summaries ?: summaries?.summaries
+    private fun reading(tab: SummariesTab): ReviewSummaries? = version(tab)?.summaries ?: summaries?.summaries
 
-    private fun retainSummaryVersions(tree: ChangeSummaryTree) {
+    private fun retainSummaryVersions(tree: ReviewSummaryTree) {
         summaryVersions.forEach { version ->
             if (version.summaries.tree !== tree) {
                 if (version.running && version.summaries.tree.nodes.map { it.key } != tree.nodes.map { it.key }) {
@@ -170,7 +191,7 @@ internal class NoteCanvas(
         updateReview(CanvasTabKey.Topics, topicsReview, topics?.reading)
     }
 
-    private fun updateReview(key: CanvasTabKey, session: SummaryReviewSession, content: ChangeSummaries?) {
+    private fun updateReview(key: CanvasTabKey, session: SummaryReviewSession, content: ReviewSummaries?) {
         if (key !in cards) return
         content?.let(session::sync)
         restyleReview(key)
@@ -181,8 +202,8 @@ internal class NoteCanvas(
         descendantsOf(card).forEach { (it as? JComponent)?.let(::updateReviewPresentation) }
     }
 
-    private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
-    private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
+    private val editors = mutableMapOf<ReviewNoteKey, DiffSourceEditor>()
+    private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
     private var focused: CanvasTabKey? = null
     private val zoom = 1.0
@@ -256,17 +277,17 @@ internal class NoteCanvas(
 
     fun highlight(paths: Set<String>) {
         highlighted = paths
-        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || (key as? DiffNoteKey)?.paths.orEmpty().any { it in paths }) }
+        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || (key as? ReviewNoteKey)?.paths.orEmpty().any { it in paths }) }
         repaint()
     }
 
     /** Selects the note tab. */
-    internal fun focusNote(note: DiffNote) {
+    internal fun focusNote(note: ReviewNote) {
         focusCard(note.key)
     }
 
     internal fun focusDiff(path: String) {
-        focusCard(diffNoteKey(path))
+        focusCard(diffCardKey(path))
     }
 
     internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
@@ -277,7 +298,7 @@ internal class NoteCanvas(
     internal fun focusExplanation() { focusCard(CanvasTabKey.Explanation) }
 
     /** Selects the source tab. */
-    internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
+    internal fun focusSource(range: ReviewSourceRange) { focusCard(ReviewSourceBlock(range, "").key) }
 
     internal fun focusFileView() { focusCard(CanvasTabKey.FileView) }
 
@@ -294,7 +315,7 @@ internal class NoteCanvas(
 
     private fun tabTooltip(key: CanvasTabKey): String = summaryTab(key)?.takeIf { it.search }?.let { tab ->
         (listOf("Summaries") + searchPath(tab).map { "“$it”" }).joinToString(" › ")
-    } ?: (key as? DiffNoteKey)?.paths.orEmpty().joinToString(", ").ifEmpty { tabTitle(key) }
+    } ?: (key as? ReviewNoteKey)?.paths.orEmpty().joinToString(", ").ifEmpty { tabTitle(key) }
 
     /** A search tab's queries: the finished searches, or the first query while it is still searched. */
     private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty {
@@ -313,7 +334,7 @@ internal class NoteCanvas(
         CanvasTabKey.Semantic -> "Semantic changes"
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
-        is DiffNoteKey -> {
+        is ReviewNoteKey -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
             val source = sources.firstOrNull { it.key == key }
             when {
@@ -656,11 +677,11 @@ internal class NoteCanvas(
         val key = tab.key
         val tree = content.summaries.tree
         summariesView.update(tree)
-        val hierarchy = summariesView.mode == ChangeSummariesMode.HIERARCHY
-        val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
-        val explorer = summariesView.mode == ChangeSummariesMode.EXPLORER
-        val splitMode = summariesView.mode == ChangeSummariesMode.SPLIT
-        val diffMode = summariesView.mode == ChangeSummariesMode.DIFF
+        val hierarchy = summariesView.mode == ReviewSummariesMode.HIERARCHY
+        val document = summariesView.mode == ReviewSummariesMode.DOCUMENT
+        val explorer = summariesView.mode == ReviewSummariesMode.EXPLORER
+        val splitMode = summariesView.mode == ReviewSummariesMode.SPLIT
+        val diffMode = summariesView.mode == ReviewSummariesMode.DIFF
         if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
@@ -698,25 +719,25 @@ internal class NoteCanvas(
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
                 val group = ButtonGroup()
-                ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }.forEach { mode ->
+                ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }.forEach { mode ->
                     add(JToggleButton(when (mode) {
-                        ChangeSummariesMode.OUTLINE -> "Outline"
-                        ChangeSummariesMode.HIERARCHY -> "Hierarchy"
-                        ChangeSummariesMode.DOCUMENT -> "Document"
-                        ChangeSummariesMode.EXPLORER -> "Explorer"
-                        ChangeSummariesMode.SPLIT -> "Split"
-                        ChangeSummariesMode.DIFF -> "Diff"
+                        ReviewSummariesMode.OUTLINE -> "Outline"
+                        ReviewSummariesMode.HIERARCHY -> "Hierarchy"
+                        ReviewSummariesMode.DOCUMENT -> "Document"
+                        ReviewSummariesMode.EXPLORER -> "Explorer"
+                        ReviewSummariesMode.SPLIT -> "Split"
+                        ReviewSummariesMode.DIFF -> "Diff"
                     }, summariesView.mode == mode).apply {
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
                         cursor = Cursor.getDefaultCursor()
                         toolTipText = when (mode) {
-                            ChangeSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
-                            ChangeSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
-                            ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
-                            ChangeSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
-                            ChangeSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
-                            ChangeSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
+                            ReviewSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
+                            ReviewSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
+                            ReviewSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
+                            ReviewSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
+                            ReviewSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
+                            ReviewSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
@@ -941,7 +962,7 @@ internal class NoteCanvas(
         }
 
     /** Page navigation stays above the scrolling summaries, independently of search breadcrumbs. */
-    private fun summaryExplorerNavigation(tab: SummariesTab, tree: ChangeSummaryTree): JComponent =
+    private fun summaryExplorerNavigation(tab: SummariesTab, tree: ReviewSummaryTree): JComponent =
         JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "summary-explorer-navigation"
             isOpaque = false
@@ -1195,7 +1216,7 @@ internal class NoteCanvas(
         row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height))
     }
 
-    private fun scoreButton(name: String, state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession) =
+    private fun scoreButton(name: String, state: SummaryTraceState, summaries: ReviewSummaries, session: SummaryTraceSession) =
         JButton("Score").apply {
             this.name = name
             font = scaledFont(JBFont.small())
@@ -1225,7 +1246,7 @@ internal class NoteCanvas(
      * became of a search's matches.
      */
     private fun traceStatusLines(
-        state: SummaryTraceState, summaries: ChangeSummaries, session: SummaryTraceSession, width: Int, selection: Boolean = false,
+        state: SummaryTraceState, summaries: ReviewSummaries, session: SummaryTraceSession, width: Int, selection: Boolean = false,
         where: String = "highlighted in the view.",
     ): List<JComponent> {
         if (!session.available) return emptyList()
@@ -1261,7 +1282,7 @@ internal class NoteCanvas(
     }
 
     /** Pick a 1-based folder level, then fold from it or unfold through it. */
-    private fun summaryLevels(tab: SummariesTab, tree: ChangeSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
+    private fun summaryLevels(tab: SummariesTab, tree: ReviewSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
         isOpaque = false
         val summariesView = tab.view
         val selector = JComboBox((1..levels).toList().toTypedArray()).apply {
@@ -1365,7 +1386,7 @@ internal class NoteCanvas(
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
             CanvasTabKey.SymbolFlow -> flowCard(changeFlow(notes))
             CanvasTabKey.Explanation -> null
-            is DiffNoteKey -> notes.firstOrNull { it.key == key }?.let(::card)
+            is ReviewNoteKey -> notes.firstOrNull { it.key == key }?.let(::card)
                 ?: sources.firstOrNull { it.key == key }?.let(::sourceCard)
                 ?: diffs.firstOrNull { it.diffKey == key }?.let(::diffCard)
         } ?: return
@@ -1398,7 +1419,7 @@ internal class NoteCanvas(
         return card
     }
 
-    private fun sourceCard(block: DiffSourceBlock): JPanel {
+    private fun sourceCard(block: ReviewSourceBlock): JPanel {
         val range = block.range
         val width = cardWidth(640)
         val header = JPanel(BorderLayout()).apply {
@@ -1425,7 +1446,7 @@ internal class NoteCanvas(
         return card
     }
 
-    private fun card(note: DiffNote): JPanel {
+    private fun card(note: ReviewNote): JPanel {
         val width = cardWidth(CARD_WIDTH)
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {

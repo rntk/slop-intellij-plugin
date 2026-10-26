@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI

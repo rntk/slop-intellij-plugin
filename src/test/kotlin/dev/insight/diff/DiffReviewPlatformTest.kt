@@ -2,40 +2,44 @@ package dev.insight.diff
 
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vcs.changes.Change
+import com.intellij.openapi.vcs.changes.ContentRevision
+import com.intellij.openapi.vcs.history.VcsRevisionNumber
+import com.intellij.testFramework.ExtensionTestUtil
 import com.intellij.testFramework.FileEditorManagerTestCase
-import dev.insight.callgraph.DiffService
-import dev.insight.chat.ChatMessage
-import dev.insight.chat.ChatPanel
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.ToolChatRunner
-import dev.insight.llm.Completion
-import dev.insight.llm.LlmMessage
-import dev.insight.llm.LlmRole
-import dev.insight.llm.LlmToolCall
-import kotlinx.coroutines.*
-import java.awt.Container
-import java.awt.BorderLayout
-import javax.swing.JButton
-import javax.swing.JLabel
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.tabs.TabInfo
 import com.intellij.ui.tabs.impl.TabLabel
-import javax.swing.JTree
+import com.intellij.vcsUtil.VcsUtil
+import dev.insight.callgraph.DiffService
+import dev.insight.chat.ChatMessage
+import dev.insight.chat.ChatPanel
+import dev.insight.chat.ToolChatRunner
+import dev.insight.chat.ToolInputException
+import dev.insight.llm.Completion
+import dev.insight.llm.LlmMessage
+import dev.insight.llm.LlmRole
+import dev.insight.llm.LlmToolCall
+import dev.insight.review.ReviewCanvasEditorProvider
+import dev.insight.review.ReviewCanvasFile
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import java.awt.BorderLayout
+import java.awt.Container
+import javax.swing.JButton
+import javax.swing.JComboBox
+import javax.swing.JLabel
 import javax.swing.JRootPane
+import javax.swing.JTree
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
-import javax.swing.JComboBox
-import com.intellij.testFramework.ExtensionTestUtil
-import com.intellij.openapi.vcs.changes.Change
-import com.intellij.openapi.vcs.changes.ContentRevision
-import com.intellij.openapi.vcs.history.VcsRevisionNumber
-import com.intellij.vcsUtil.VcsUtil
+import kotlinx.coroutines.*
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     fun testWordChartsOpenAndCloseIndependently() {
@@ -112,8 +116,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val file = file("src/a.kt").copy(after = "val a = 1\n")
             tab.update(ReviewSnapshot(listOf(file), emptyList()))
             runWithEvents {
-                tab.captureContext().addNotes(listOf(DiffNote(listOf(file.path), "Keep this card")))
-                tab.captureContext().showSource(DiffSourceRange(file.path, 1, 1))
+                tab.captureContext().addNotes(listOf(ReviewNote(listOf(file.path), "Keep this card")))
+                tab.captureContext().showSource(ReviewSourceRange(file.path, 1, 1))
             }
             val sourceEditor = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
             val chat = tab.chat
@@ -146,7 +150,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertFalse(manager.isFileOpen(tab.canvasFile))
             assertTrue(sourceEditor.isDisposed)
             assertFalse(editor.isValid)
-            assertFalse(DiffReviewEditorProvider().accept(project, tab.canvasFile))
+            assertFalse(ReviewCanvasEditorProvider().accept(project, tab.canvasFile))
         } finally { Disposer.dispose(tab) }
     }
 
@@ -174,7 +178,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(first.isDisposed)
             assertTrue(manager.isFileOpen(second.canvasFile))
         } finally { Disposer.dispose(panel) }
-        assertTrue(manager.openFiles.none { it is DiffReviewCanvasFile })
+        assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
     }
 
     fun `test startup waits for editor restoration and open canvas heals detached windows and reopens closed tabs`() {
@@ -350,9 +354,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                     val context = tab.captureContext()
                     val data = JsonParser.parseString(context.state(0)).asJsonObject
                     assertEquals(mode.name, data["comparison"].asJsonObject["request"].asJsonObject["mode"].asString)
-                    context.showSource(DiffSourceRange(file.path, 1, 1))
+                    context.showSource(ReviewSourceRange(file.path, 1, 1))
                     assertEquals(file.after!!.trimEnd(), tab.state.sources.single().text)
-                    context.addNotes(listOf(DiffNote(listOf(file.path), "Snapshot note")))
+                    context.addNotes(listOf(ReviewNote(listOf(file.path), "Snapshot note")))
                     assertEquals(1, tab.state.notes.size)
                     tab.update(snapshot.copy(comparison = snapshot.comparison.copy(baseRevision = "another-base")))
                     assertEquals(1, tab.state.notes.size)
@@ -395,7 +399,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 file("src/b.kt").copy(after = "outside")), emptyList())
             tab.update(snapshot)
             val context = tab.captureContext()
-            val range = DiffSourceRange("src/a.kt", 2, 2)
+            val range = ReviewSourceRange("src/a.kt", 2, 2)
             runWithEvents {
                 context.showSource(range)
                 val viewer = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
@@ -423,7 +427,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             tab.update(snapshot)
             val context = tab.captureContext()
             runWithEvents {
-                context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Explains A.")))
+                context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Explains A.")))
                 val showButton = descendants(tab.canvas).filterIsInstance<InplaceButton>()
                     .single { it.toolTipText == "Show diff in tab" }
                 showButton.doClick()
@@ -450,7 +454,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val tab = DiffReviewTab(project, null, { selected }, {})
         try {
             tab.update(ReviewSnapshot(files, emptyList()))
-            val notes = (0..19).map { index -> DiffNote(
+            val notes = (0..19).map { index -> ReviewNote(
                 listOf(files.first().path) + files.drop(index + 1).take(29).map { it.path },
                 "\"\\\t\u0001".repeat(40),
             ) }
@@ -497,7 +501,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(all.state.refreshing)
             runWithEvents {
                 context.read(listOf("src/a.kt"), 0)
-                context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Still valid during refresh")))
+                context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Still valid during refresh")))
                 val revision = scoped.state.revision
                 scoped.update(initial.copy(files = initial.files + file("new.kt")))
                 assertEquals(revision, scoped.state.revision)
@@ -745,14 +749,14 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 assertEquals(listOf("src/a.kt"), data["selected_paths"].asJsonArray.map { it.asString })
                 assertEquals(listOf("src/a.kt"), data["files"].asJsonArray.map { it.asJsonObject["path"].asString })
                 rejected { context.read(listOf("src/b.kt"), 0) }
-                rejected { context.addNotes(listOf(DiffNote(listOf("src/a.kt", "src/b.kt"), "Out of scope"))) }
-                context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Scoped note")))
+                rejected { context.addNotes(listOf(ReviewNote(listOf("src/a.kt", "src/b.kt"), "Out of scope"))) }
+                context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Scoped note")))
                 assertTrue(other.state.notes.isEmpty())
                 Disposer.dispose(tab)
                 rejected { context.state(0) }
                 rejected { context.read(listOf("src/a.kt"), 0) }
-                rejected { context.addNotes(listOf(DiffNote(listOf("src/a.kt"), "Closed tab"))) }
-                otherContext.addNotes(listOf(DiffNote(listOf("src/b.kt"), "Still open")))
+                rejected { context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Closed tab"))) }
+                otherContext.addNotes(listOf(ReviewNote(listOf("src/b.kt"), "Still open")))
                 assertEquals("Still open", other.state.notes.single().text)
             }
         } finally {
@@ -786,7 +790,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 assertEquals(big.substring(6000), rest["patch"].asString)
                 assertFalse(rest.has("next_offset"))
 
-                val added = context.addNotes(listOf(DiffNote(listOf("src/a.kt", "src/b.kt"), "Changes both.")))
+                val added = context.addNotes(listOf(ReviewNote(listOf("src/a.kt", "src/b.kt"), "Changes both.")))
                 assertEquals("Added 1 note.", added)
             }
         } finally { Disposer.dispose(tab) }

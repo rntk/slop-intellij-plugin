@@ -6,11 +6,17 @@ import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
 import dev.insight.llm.LlmTool
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.reviewJson
 
-/** Reads the summary tree in chat. Code writes it on /summaries (see [ChangeSummarizer]); the model never pages or tracks it. */
+/** Reads the summary tree in chat. Code writes it on /summaries (see [ReviewSummarizer]); the model never pages or tracks it. */
 fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(object : ChatTool {
     override val definition = LlmTool("get_change_summaries", "Page through the summary tree of the change, written on /summaries: the root, " +
-        "folders, groups that split folders with more than ${ChangeSummaryTree.MAX_CHILDREN} entries, and files, " +
+        "folders, groups that split folders with more than ${ReviewSummaryTree.MAX_CHILDREN} entries, and files, " +
         "each with its summary where one exists. If next_offset is present, call again with it.",
         JsonParser.parseString("""{"type":"object","properties":{"offset":{"type":"integer","minimum":0,""" +
             """"description":"First node of the page; use next_offset."}},"required":[],"additionalProperties":false}""").asJsonObject)
@@ -24,7 +30,7 @@ private fun offset(args: JsonObject): Int {
         ?: throw ToolInputException("offset must be a nonnegative integer")
 }
 
-private fun nodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<String, Any> = buildMap {
+private fun nodeJson(summaries: ReviewSummaries, node: SummaryNode): Map<String, Any> = buildMap {
     put("id", node.id); put("kind", node.kind.id); put("location", node.location)
     node.parent?.let { put("parent", it) }
     when (val file = node.file) {
@@ -44,7 +50,7 @@ private fun nodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<String,
 }
 
 /** One size-bounded page of the tree in pre-order. */
-internal fun changeSummariesJson(summaries: ChangeSummaries, offset: Int): String {
+internal fun changeSummariesJson(summaries: ReviewSummaries, offset: Int): String {
     val tree = summaries.tree
     if (offset < 0 || offset > tree.nodes.size) throw ToolInputException("Offset is outside the node list")
     val nodes = mutableListOf<Map<String, Any>>()

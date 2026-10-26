@@ -1,7 +1,7 @@
 package dev.insight.diff
 
-import com.intellij.icons.AllIcons
 import com.intellij.diff.DiffManager
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -19,20 +19,20 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.vcs.changes.ChangeListListener
-import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.vcs.VcsMappingListener
+import com.intellij.openapi.vcs.changes.ChangeListListener
+import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.ui.PopupHandler
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.ui.InplaceButton
+import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.tabs.JBTabsFactory
@@ -41,7 +41,8 @@ import com.intellij.ui.tabs.TabsListener
 import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
-import kotlinx.coroutines.*
+import dev.insight.review.ChatFocus
+import dev.insight.review.chatFocusTabName
 import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -50,6 +51,7 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
+import kotlinx.coroutines.*
 
 class DiffReviewToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {

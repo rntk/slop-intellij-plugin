@@ -3,13 +3,13 @@ package dev.insight.codereview
 import dev.insight.chat.CancellableSearchInput
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffSourceBlock
-import dev.insight.diff.DiffSourceRange
-import dev.insight.diff.SummaryKind
-import dev.insight.diff.SummaryNode
-import dev.insight.diff.reviewJson
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.reviewJson
 import java.nio.file.FileSystems
 import java.nio.file.InvalidPathException
 import java.nio.file.PathMatcher
@@ -42,9 +42,9 @@ internal fun codeOverview(
     snapshot: CodeSnapshot,
     scopePaths: Set<String>?,
     selected: List<String>,
-    notes: List<DiffNote>,
-    sources: List<DiffSourceBlock>,
-    summaries: ChangeSummaries?,
+    notes: List<ReviewNote>,
+    sources: List<ReviewSourceBlock>,
+    summaries: ReviewSummaries?,
     budget: Int = CODE_OVERVIEW_CHARS,
 ): String {
     val result = linkedMapOf<String, Any>()
@@ -298,7 +298,7 @@ private fun regexFind(pattern: Pattern, line: String, query: String, checkCancel
  * One size-bounded page of the summary tree in pre-order, or of the subtree under [under]: a node's location, a file or folder
  * path. A path that names no node (inside a merged folder chain) pages the smallest node that holds all of its files.
  */
-internal fun codeSummariesJson(summaries: ChangeSummaries, offset: Int, under: String?): String {
+internal fun codeSummariesJson(summaries: ReviewSummaries, offset: Int, under: String?): String {
     val tree = summaries.tree
     val top = under?.trim()?.takeIf { it.isNotEmpty() && it != "." && it != "./" }?.let { subtreeRoot(summaries, it) } ?: tree.root
     val ids = mutableListOf<Int>()
@@ -324,7 +324,7 @@ internal fun codeSummariesJson(summaries: ChangeSummaries, offset: Int, under: S
     return text()
 }
 
-private fun subtreeRoot(summaries: ChangeSummaries, under: String): SummaryNode {
+private fun subtreeRoot(summaries: ReviewSummaries, under: String): SummaryNode {
     val tree = summaries.tree
     tree.nodes.firstOrNull { it.location == under }?.let { return it }
     val path = under.trimEnd('/')
@@ -337,7 +337,7 @@ private fun subtreeRoot(summaries: ChangeSummaries, under: String): SummaryNode 
     }
 }
 
-private fun summaryNodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<String, Any> = buildMap {
+private fun summaryNodeJson(summaries: ReviewSummaries, node: SummaryNode): Map<String, Any> = buildMap {
     put("id", node.id); put("kind", node.kind.id); put("location", node.location)
     node.parent?.let { put("parent", it) }
     if (node.kind == SummaryKind.FILE) node.file?.facts?.takeIf { it.isNotEmpty() }?.let { put("facts", it) }
@@ -350,14 +350,14 @@ private fun summaryNodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<
 }
 
 /** The exact current lines of a file in scope, as a canvas source block: at most 200 lines and 20000 characters. */
-internal fun resolveCodeSource(snapshot: CodeSnapshot, range: DiffSourceRange): DiffSourceBlock {
+internal fun resolveCodeSource(snapshot: CodeSnapshot, range: ReviewSourceRange): ReviewSourceBlock {
     val file = snapshot.byPath[range.path] ?: throw ToolInputException("${range.path} is not a file in this review's scope.")
     if (range.startLine < 1 || range.endLine < range.startLine || range.endLine.toLong() - range.startLine >= CODE_SOURCE_LINES)
         throw ToolInputException("Use an inclusive range of 1–$CODE_SOURCE_LINES lines, starting at line 1 or later.")
     if (range.endLine > file.lineCount) throw ToolInputException("Range exceeds the ${file.lineCount} lines of ${range.path}.")
     val text = file.lines(range.startLine..range.endLine)
     if (text.length > CODE_SOURCE_CHARS) throw ToolInputException("Source block exceeds $CODE_SOURCE_CHARS characters. Select fewer lines.")
-    return DiffSourceBlock(range.copy(side = CODE_SOURCE_SIDE), text)
+    return ReviewSourceBlock(range.copy(side = CODE_SOURCE_SIDE), text)
 }
 
 /** The side of every code review source block: the file as it is in the snapshot. */

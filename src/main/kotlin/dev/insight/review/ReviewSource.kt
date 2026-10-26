@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 /** A file under review: a changed file of a diff, or a source file in scope. Summary trees and topics see only this. */
 interface ReviewSource {

@@ -49,7 +49,7 @@
                                  bundle="messages.InsightBundle" key="configurable.insight.chat.display.name"
                                  instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
-        <fileEditorProvider implementation="dev.insight.diff.DiffReviewEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.review.ReviewCanvasEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>

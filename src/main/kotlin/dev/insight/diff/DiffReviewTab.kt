@@ -2,11 +2,11 @@ package dev.insight.diff
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
-import com.intellij.openapi.application.WriteIntentReadAction
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -15,7 +15,37 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.*
-import kotlinx.coroutines.*
+import dev.insight.review.ChatFocus
+import dev.insight.review.ExplainDialog
+import dev.insight.review.ExplainResults
+import dev.insight.review.ExplainTarget
+import dev.insight.review.ReviewCanvasFile
+import dev.insight.review.ReviewCanvasOwner
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryNode
+import dev.insight.review.TOPIC_SUMMARIES_MISSING
+import dev.insight.review.chatFocus
+import dev.insight.review.chatFocusPrompt
+import dev.insight.review.current
+import dev.insight.review.explainChartFor
+import dev.insight.review.explainChartPrompt
+import dev.insight.review.explainCommand
+import dev.insight.review.explainRequest
+import dev.insight.review.explainTarget
+import dev.insight.review.isExplainRequest
+import dev.insight.review.isTopicsRequest
+import dev.insight.review.openReviewCanvas
+import dev.insight.review.reviewJson
+import dev.insight.review.summariesFocus
+import dev.insight.review.summariesReply
+import dev.insight.review.textOf
+import dev.insight.review.topicsReply
+import dev.insight.review.typedExplainTarget
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
@@ -23,6 +53,7 @@ import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.*
 
 /** Owns one conversation and canvas. File selection never changes this tab's scope. */
 internal class DiffReviewTab(
@@ -75,7 +106,7 @@ internal class DiffReviewTab(
                 val files = state.snapshot.files
                 val client = ChatSettings.getInstance().createClient()
                 val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
-                ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
@@ -103,7 +134,7 @@ internal class DiffReviewTab(
         ),
     )
 
-    val canvasFile = DiffReviewCanvasFile(this)
+    val canvasFile = ReviewCanvasFile(this)
     private val summariesButton = JButton("Summaries").apply {
         toolTipText = "Read the change as summaries, from the whole change down to each file (/summaries)"
     }
@@ -147,7 +178,7 @@ internal class DiffReviewTab(
                 if (isTopicsRequest(question)) {
                     val run = reportRawProgress { reporter ->
                         reporter.text("Classifying changed files…")
-                        ChangeTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                        diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
                                 onProgress = { done, total ->
                                     reporter.details("$done of $total files classified")
@@ -161,7 +192,7 @@ internal class DiffReviewTab(
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = reportRawProgress { reporter ->
                         reporter.text("Summarizing the change…")
-                        ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                        diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
                                 if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
                                 onProgress = { done, total ->
@@ -460,7 +491,7 @@ internal class DiffReviewTab(
             override suspend fun symbols(paths: List<String>, query: String, offset: Int): String {
                 withContext(Dispatchers.EDT) { current(); paths.forEach(::file) }
                 val (result, stamp) = withContext(Dispatchers.Default) { readAction {
-                    DiffSymbols(project, snapshot).find(paths, query, offset) to PsiModificationTracker.getInstance(project).modificationCount
+                    diffSymbols(project, snapshot).find(paths, query, offset) to PsiModificationTracker.getInstance(project).modificationCount
                 } }
                 withContext(Dispatchers.EDT) {
                     current()
@@ -470,17 +501,17 @@ internal class DiffReviewTab(
                 return result
             }
 
-            override suspend fun showSource(range: DiffSourceRange): String = withContext(Dispatchers.EDT) {
+            override suspend fun showSource(range: ReviewSourceRange): String = withContext(Dispatchers.EDT) {
                 current()
                 val block = live.showSource(capturedRevision, range)
                 renderCanvas()
                 reviewJson.toJson(mapOf("shown" to block.range, "characters" to block.text.length))
             }
 
-            override suspend fun addNotes(notes: List<DiffNote>): String {
+            override suspend fun addNotes(notes: List<ReviewNote>): String {
                 withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
                 val (resolved, stamp) = withContext(Dispatchers.Default) { readAction {
-                    DiffSymbols(project, snapshot).resolve(notes) to PsiModificationTracker.getInstance(project).modificationCount
+                    diffSymbols(project, snapshot).resolve(notes) to PsiModificationTracker.getInstance(project).modificationCount
                 } }
                 return withContext(Dispatchers.EDT) {
                     current()
@@ -493,27 +524,27 @@ internal class DiffReviewTab(
                 }
             }
 
-            override suspend fun startTopicSummaries(): ChangeSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun startTopicSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.startTopicSummaries(capturedRevision).also { summariesChanged() }
             }
 
-            override suspend fun summarizeTopics(entries: Map<Int, String>): ChangeSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarizeTopics(capturedRevision, entries).also { summariesChanged() }
             }
 
-            override suspend fun startTopics(): ChangeTopics = withContext(Dispatchers.EDT) {
+            override suspend fun startTopics(): ReviewTopics = withContext(Dispatchers.EDT) {
                 current()
                 live.startTopics().also { canvas.updateTopics(topicsCard()) }
             }
 
-            override suspend fun assignTopic(path: String, label: String): ChangeTopics = withContext(Dispatchers.EDT) {
+            override suspend fun assignTopic(path: String, label: String): ReviewTopics = withContext(Dispatchers.EDT) {
                 current()
                 live.assignTopic(capturedRevision, path, label).also { canvas.updateTopics(topicsCard()) }
             }
 
-            override suspend fun startSummaries(): ChangeSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun startSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 // An incomplete tree is continued, so an edit only re-summarizes the changed files and the folders above them.
                 if (live.summaries.complete) live.clearSummaries()
@@ -527,7 +558,7 @@ internal class DiffReviewTab(
                 changeSummariesJson(live.summaries, offset)
             }
 
-            override suspend fun summarize(entries: Map<Int, String>): ChangeSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarize(capturedRevision, entries).also { summariesChanged() }
             }

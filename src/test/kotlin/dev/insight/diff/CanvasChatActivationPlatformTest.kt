@@ -10,6 +10,7 @@ import com.intellij.toolWindow.ToolWindowHeadlessManagerImpl
 import com.intellij.ui.tabs.JBTabs
 import dev.insight.codereview.CodeReviewPanel
 import dev.insight.codereview.CodeReviewTab
+import dev.insight.review.ChatFocus
 import java.awt.Container
 import javax.swing.JPanel
 import javax.swing.JRootPane

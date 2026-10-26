@@ -1,5 +1,15 @@
 package dev.insight.diff
 
+import dev.insight.review.ExplainTarget
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryLevel
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.chainTo
+import dev.insight.review.explainCommand
+import dev.insight.review.explainRequest
+import dev.insight.review.isExplainRequest
+import dev.insight.review.textOf
+import dev.insight.review.typedExplainTarget
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -7,7 +17,7 @@ class ExplainCommandTest {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
     private val paths = listOf("src/app/Cache.kt", "src/app/Store.kt", "docs/README.md")
     private val tree = buildSummaryTree(paths.map(::file))
-    private val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+    private val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
 
     @Test fun `only the explain command is an explain request`() {
         assertTrue(isExplainRequest("/explain"))
@@ -57,7 +67,7 @@ class ExplainCommandTest {
         val node = tree.nodes.single { it.location == "src/app/Store.kt" }
         assertEquals("Summary of file:src/app/Store.kt.", summaries.textOf(node))
         // A version of the tree that is not summarized yet has no text for the entry.
-        assertNull(ChangeSummaries(tree).textOf(node))
+        assertNull(ReviewSummaries(tree).textOf(node))
     }
 
     @Test fun `the context chains the summaries from the root down to the entry`() {
@@ -67,12 +77,12 @@ class ExplainCommandTest {
             summaries.chainTo(node).map { it.text })
         // Missing levels are skipped, and a level that repeats the one below adds nothing.
         val folder = tree.nodes.single { it.location == "src/app/" }
-        val partial = ChangeSummaries(tree).summarize(tree.nodes.filter { it.id != tree.root.id }
+        val partial = ReviewSummaries(tree).summarize(tree.nodes.filter { it.id != tree.root.id }
             .associate { it.id to if (it.id == folder.id) "Same." else "Summary of ${it.identity}." }, reuseSingleChildren = false)
         assertEquals(listOf("src/", "src/app/", "src/app/Store.kt"), partial.chainTo(node).map { it.label })
         val repeated = summaries.summarize(mapOf(node.id to "Same.", folder.id to "Same."), reuseSingleChildren = false)
         assertEquals(listOf("All changes", "src/", "src/app/Store.kt"), repeated.chainTo(node).map { it.label })
-        assertEquals(emptyList<SummaryLevel>(), ChangeSummaries(tree).chainTo(node))
+        assertEquals(emptyList<SummaryLevel>(), ReviewSummaries(tree).chainTo(node))
     }
 
     @Test fun `the request asks what, how and why, with the context chain and the user's instructions first`() {

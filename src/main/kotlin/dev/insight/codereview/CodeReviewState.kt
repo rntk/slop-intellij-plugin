@@ -1,30 +1,30 @@
 package dev.insight.codereview
 
 import dev.insight.chat.ToolInputException
-import dev.insight.diff.ReviewDiskCache
-import dev.insight.diff.ReviewCacheSession
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeSummaryTree
-import dev.insight.diff.ChangeTopics
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffNoteKey
-import dev.insight.diff.DiffSourceBlock
-import dev.insight.diff.DiffSourceRange
-import dev.insight.diff.ReviewSource
-import dev.insight.diff.ReviewVocabulary
-import dev.insight.diff.ReviewedFiles
-import dev.insight.diff.SummaryKind
-import dev.insight.diff.SummaryNode
-import dev.insight.diff.buildSummaryTree
-import dev.insight.diff.buildTopicSummaryTree
-import dev.insight.diff.seedTopicSummaries
-import dev.insight.diff.targetedEntries
+import dev.insight.review.ReviewCacheSession
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewNoteKey
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.seedTopicSummaries
+import dev.insight.review.targetedEntries
 
 /** The summary tree of code files: folders and files, with the parts of large files beneath them. */
-internal fun codeSummaryTree(files: List<CodeFile>): ChangeSummaryTree =
+internal fun codeSummaryTree(files: List<CodeFile>): ReviewSummaryTree =
     buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName, chunks = ::codeChunks)
 
-internal fun codeTopicSummaryTree(topics: ChangeTopics): ChangeSummaryTree = buildTopicSummaryTree(topics, chunks = ::codeChunks)
+internal fun codeTopicSummaryTree(topics: ReviewTopics): ReviewSummaryTree = buildTopicSummaryTree(topics, chunks = ::codeChunks)
 
 private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orEmpty()
 
@@ -48,19 +48,19 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     var refreshing = true
     var snapshot = CodeSnapshot.empty()
         private set
-    private val cards = linkedMapOf<DiffNoteKey, DiffNote>()
-    val notes: List<DiffNote> get() = cards.values.toList()
-    private val sourceCards = linkedMapOf<DiffSourceRange, DiffSourceBlock>()
-    val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
+    private val cards = linkedMapOf<ReviewNoteKey, ReviewNote>()
+    val notes: List<ReviewNote> get() = cards.values.toList()
+    private val sourceCards = linkedMapOf<ReviewSourceRange, ReviewSourceBlock>()
+    val sources: List<ReviewSourceBlock> get() = sourceCards.values.toList()
 
-    var summaries = ChangeSummaries(codeSummaryTree(emptyList()))
+    var summaries = ReviewSummaries(codeSummaryTree(emptyList()))
         private set
     /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
     var summariesVisible = false
         private set
-    var topics = ChangeTopics(emptyList())
+    var topics = ReviewTopics(emptyList())
         private set
-    var topicSummaries = ChangeSummaries(codeTopicSummaryTree(topics))
+    var topicSummaries = ReviewSummaries(codeTopicSummaryTree(topics))
         private set
     var topicsVisible = false
         private set
@@ -102,7 +102,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     /** Validates every note before adding any, so a rejected batch leaves the canvas unchanged. */
-    fun addNotes(expected: Int, notes: List<DiffNote>): List<DiffNote> {
+    fun addNotes(expected: Int, notes: List<ReviewNote>): List<ReviewNote> {
         check(expected)
         if (notes.isEmpty()) throw ToolInputException("Add at least one note.")
         val known = snapshot.byPath
@@ -120,9 +120,9 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return added
     }
 
-    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(DiffNoteKey(paths.distinct().sorted(), symbol)) }
+    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(ReviewNoteKey(paths.distinct().sorted(), symbol)) }
 
-    fun showSource(expected: Int, range: DiffSourceRange): DiffSourceBlock {
+    fun showSource(expected: Int, range: ReviewSourceRange): ReviewSourceBlock {
         check(expected)
         val block = resolveCodeSource(snapshot, range)
         if (block.range !in sourceCards && sourceCards.size >= MAX_SOURCES)
@@ -131,31 +131,31 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return block
     }
 
-    fun removeSource(range: DiffSourceRange) { sourceCards.remove(range) }
+    fun removeSource(range: ReviewSourceRange) { sourceCards.remove(range) }
     fun clearNotes() { cards.clear(); sourceCards.clear(); summariesVisible = false; topicsVisible = false }
 
     /** Starts /summaries: an incomplete tree is continued, a complete one is written again. */
-    fun startSummaries(expected: Int): ChangeSummaries {
+    fun startSummaries(expected: Int): ReviewSummaries {
         check(expected)
         if (summaries.complete) clearSummaries()
         summariesVisible = true
         return summaries
     }
 
-    fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+    fun summarize(expected: Int, entries: Map<Int, String>): ReviewSummaries {
         check(expected)
         return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
-    fun clearSummaries() { summaries = ChangeSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
+    fun clearSummaries() { summaries = ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }
 
     /** Starts /topics: an incomplete result is continued, a complete one is generated again. */
-    fun startTopics(): ChangeTopics {
+    fun startTopics(): ReviewTopics {
         if (topics.complete) {
-            topics = ChangeTopics(snapshot.files)
-            topicSummaries = ChangeSummaries(codeTopicSummaryTree(topics))
+            topics = ReviewTopics(snapshot.files)
+            topicSummaries = ReviewSummaries(codeTopicSummaryTree(topics))
             disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
             persist()
         }
@@ -166,7 +166,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showTopics() { topicsVisible = true }
     fun hideTopics() { topicsVisible = false }
 
-    fun assignTopic(expected: Int, path: String, label: String): ChangeTopics {
+    fun assignTopic(expected: Int, path: String, label: String): ReviewTopics {
         check(expected)
         return topics.assign(path, label).also {
             topics = it
@@ -176,7 +176,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     /** Seeds the topic tree with the summaries of the same files and parts before the missing ones are written. */
-    fun startTopicSummaries(expected: Int): ChangeSummaries {
+    fun startTopicSummaries(expected: Int): ReviewSummaries {
         check(expected)
         topicSummaries = seedTopicSummaries(topicSummaries, summaries)
         persist()
@@ -184,7 +184,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     /** Saves topic summaries and shares the file and part summaries among them with the ordinary Summaries tree. */
-    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ChangeSummaries {
+    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries {
         check(expected)
         topicSummaries = topicSummaries.summarize(entries)
         val topicTree = topicSummaries.tree
@@ -215,7 +215,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the code changed. */
-    fun replaceTopicSummaries(updated: ChangeSummaries, ids: Set<Int>): ChangeSummaries {
+    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
         if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
         return topicSummaries
     }
@@ -231,8 +231,8 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
  * Adds the [shared] texts to the missing nodes of [target]. A node with children is added only when all of them are
  * summarized or added too, so the bottom-up rule holds; batches go children first.
  */
-internal fun shareInto(target: ChangeSummaries, cached: (SummaryNode) -> Boolean = { false },
-                       shared: (SummaryNode) -> String?): ChangeSummaries {
+internal fun shareInto(target: ReviewSummaries, cached: (SummaryNode) -> Boolean = { false },
+                       shared: (SummaryNode) -> String?): ReviewSummaries {
     val tree = target.tree
     val added = LinkedHashMap<Int, String>()
     // Pre-order: walking backwards visits children before their parents.
@@ -242,7 +242,7 @@ internal fun shareInto(target: ChangeSummaries, cached: (SummaryNode) -> Boolean
         if (node.children.all { target.text(it) != null || it in added }) added[node.id] = text
     }
     var result = target
-    added.entries.chunked(ChangeSummaries.MAX_PER_CALL).forEach { batch ->
+    added.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
         val entries = batch.associate { it.key to it.value }
         result = result.share(entries, entries.keys.filterTo(hashSetOf()) { cached(tree[it]) })
     }

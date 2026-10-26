@@ -10,6 +10,10 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 
@@ -20,34 +24,34 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     fun testAllSummaryLayoutsOpenWholeFilesAndDirectoryChangesWithinTheTreeScope() {
         val files = listOf(file("src/a.kt"), file("src/nested/b.kt"), file("docs/readme.md"))
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree)
+        val summaries = ReviewSummaries(tree)
         val folder = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == "src" }
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
             val opened = mutableListOf<ReviewFile>()
             val directories = mutableListOf<List<ReviewFile>>()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { opened += it }, openDirectoryDiff = { directories += it }))
                 .apply {
                     setSize(1600, 900); summariesView.mode = mode
-                    if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(folder.identity, tree)
+                    if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(folder.identity, tree)
                 }
             try {
                 canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
                 fun named(name: String) = descendants(canvas).single { it.name == name } as Container
                 val fileHeader = named(when (mode) {
-                    ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:file:src/a.kt"
-                    ChangeSummariesMode.SPLIT -> "summary-tree:file:src/a.kt"
+                    ReviewSummariesMode.OUTLINE, ReviewSummariesMode.EXPLORER -> "summary-header:file:src/a.kt"
+                    ReviewSummariesMode.SPLIT -> "summary-tree:file:src/a.kt"
                     else -> "file:src/a.kt"
                 })
                 actions(fileHeader).single { it.text == "Open file" }.doClick()
                 assertEquals(listOf(files[0]), opened)
-                if (mode == ChangeSummariesMode.EXPLORER)
+                if (mode == ReviewSummariesMode.EXPLORER)
                     (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
                 val folderHeader = named(when (mode) {
-                    ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:${folder.identity}"
-                    ChangeSummariesMode.SPLIT -> "summary-tree:${folder.identity}"
+                    ReviewSummariesMode.OUTLINE, ReviewSummariesMode.EXPLORER -> "summary-header:${folder.identity}"
+                    ReviewSummariesMode.SPLIT -> "summary-tree:${folder.identity}"
                     else -> "node:${folder.identity}"
                 })
-                actions(folderHeader).single { it.text == if (mode == ChangeSummariesMode.SPLIT) "Open diff" else "View diff" }.doClick()
+                actions(folderHeader).single { it.text == if (mode == ReviewSummariesMode.SPLIT) "Open diff" else "View diff" }.doClick()
                 assertEquals(folder.files, directories.single().map { it.path })
                 assertEquals(setOf("src/a.kt", "src/nested/b.kt"), directories.single().map { it.path }.toSet())
                 assertSame(files[0], directories.single().single { it.path == "src/a.kt" })
@@ -58,13 +62,13 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     fun testUnreadableFilesKeepDiffNavigationWithoutOfferingWholeSource() {
         val unavailable = file("src/binary.bin", before = null, after = null)
         val tree = buildSummaryTree(listOf(unavailable))
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { fail("No full text") }, openDirectoryDiff = {}))
                 .apply { setSize(1600, 900); summariesView.mode = mode }
             try {
-                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, false)))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), false, false)))
                 assertTrue(actions(canvas).none { it.text == "Open file" })
-                assertTrue(actions(canvas).any { it.text == if (mode == ChangeSummariesMode.SPLIT) "Open diff" else "View diff" })
+                assertTrue(actions(canvas).any { it.text == if (mode == ReviewSummariesMode.SPLIT) "Open diff" else "View diff" })
             } finally { canvas.dispose() }
         }
     }

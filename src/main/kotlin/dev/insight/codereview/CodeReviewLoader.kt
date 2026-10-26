@@ -14,11 +14,12 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import dev.insight.review.ReviewDiskCache
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import java.io.IOException
-import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * Loads the text files under a scope directory, or an entry file and the project files it depends on: project content only (excluded folders are skipped by the index, VCS- and
@@ -89,7 +90,7 @@ internal class CodeReviewLoader(private val project: Project) {
         val types = FileTypeRegistry.getInstance()
         val roots = readAction { codeScopeRoots(project) }
         fun ignored(file: VirtualFile) = types.isFileIgnored(file) || changes.isIgnoredFile(file) ||
-            file.isDirectory && file.name in setOf(PROJECT_STORE_FOLDER, dev.insight.diff.ReviewDiskCache.DIRECTORY)
+            file.isDirectory && file.name in setOf(PROJECT_STORE_FOLDER, dev.insight.review.ReviewDiskCache.DIRECTORY)
         fun excluded(file: VirtualFile) = !exclusions.isEmpty && exclusions.matches(relativePath(roots, file), file.isDirectory)
         // A project root that is not content itself still holds content roots.
         val starts = readAction {
@@ -217,7 +218,7 @@ internal fun codeScope(project: Project, file: VirtualFile): CodeScope {
     val path = codeScopeRoots(project).firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) }
     require(path != null) { "${file.presentableUrl} is not in the project." }
     val name = path.ifEmpty { "The project root" }
-    require(dev.insight.diff.ReviewDiskCache.DIRECTORY !in path.split('/')) { "$name contains generated review cache data." }
+    require(dev.insight.review.ReviewDiskCache.DIRECTORY !in path.split('/')) { "$name contains generated review cache data." }
     require(!index.isExcluded(file)) { "$name is excluded from the project." }
     if (!file.isDirectory) {
         require(index.isInContent(file)) { "$name is not part of the project's content." }

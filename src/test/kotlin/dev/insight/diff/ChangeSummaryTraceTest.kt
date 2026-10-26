@@ -7,6 +7,12 @@ import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
 import dev.insight.decisions.DecisionUsage
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -191,7 +197,7 @@ class ChangeSummaryTraceTest {
         SummaryNode(id, kind, path, path.substringAfterLast('/'), parent, children, emptyList(), "key:$id", "${kind.id}:$path")
 
     @Test fun `candidates reach two levels below, skip repeated single children and unsummarized nodes`() {
-        val tree = ChangeSummaryTree(listOf(
+        val tree = ReviewSummaryTree(listOf(
             node(0, SummaryKind.ROOT, "", null, listOf(1)),
             node(1, SummaryKind.DIRECTORY, "a", 0, listOf(2, 3)),
             node(2, SummaryKind.FILE, "a/f.kt", 1, emptyList()),
@@ -202,22 +208,22 @@ class ChangeSummaryTraceTest {
             node(7, SummaryKind.FILE, "a/b/i.kt", 3, emptyList()),
         ))
         // Node 1 repeats the root's summary; node 7 has none yet.
-        val summaries = ChangeSummaries(tree, mapOf(0 to "root", 1 to "root", 2 to "f", 3 to "b", 4 to "g", 5 to "c", 6 to "h"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to "root", 1 to "root", 2 to "f", 3 to "b", 4 to "g", 5 to "c", 6 to "h"))
         val tracer = SummaryTracer({ error("No request expected") })
         assertEquals(listOf(2 to 1, 3 to 1, 4 to 2, 5 to 2), tracer.candidates(summaries, 0).map { (node, level) -> node.id to level })
         assertEquals(listOf(4 to 1, 5 to 1, 6 to 2), tracer.candidates(summaries, 3).map { (node, level) -> node.id to level })
         assertTrue(tracer.candidates(summaries, 6).isEmpty())
         // A single child with its own summary is a level of its own.
-        val distinct = ChangeSummaries(tree, mapOf(0 to "root", 1 to "a", 2 to "f", 3 to "b", 4 to "g"))
+        val distinct = ReviewSummaries(tree, mapOf(0 to "root", 1 to "a", 2 to "f", 3 to "b", 4 to "g"))
         assertEquals(listOf(1 to 1, 2 to 2, 3 to 2), tracer.candidates(distinct, 0).map { (node, level) -> node.id to level })
         assertEquals(listOf(1 to 1, 2 to 2, 3 to 2, 4 to 3), SummaryTracer({ error("unused") }, levels = 3)
             .candidates(distinct, 0).map { (node, level) -> node.id to level })
     }
 
-    private fun viewsTree(): ChangeSummaries {
+    private fun viewsTree(): ReviewSummaries {
         val tree = buildSummaryTree(listOf(file("views/hierarchy.kt"), file("views/canvas.kt"), file("other.kt")))
         fun id(location: String) = tree.nodes.single { it.location == location }.id
-        return ChangeSummaries(tree, mapOf(
+        return ReviewSummaries(tree, mapOf(
             id("./") to example,
             id("views/") to "Removes the canvas and hierarchy views.",
             id("views/hierarchy.kt") to "Deletes the hierarchy view.",
@@ -233,7 +239,7 @@ class ChangeSummaryTraceTest {
         else -> 0.2
     }
 
-    private suspend fun SummaryTracer.trace(summaries: ChangeSummaries, id: Int, word: Int) =
+    private suspend fun SummaryTracer.trace(summaries: ReviewSummaries, id: Int, word: Int) =
         search(summaries, id, score(summaries, id, word))
 
     @Test fun `scoring publishes context without searching and search reuses the scored query`() = runBlocking {
@@ -360,7 +366,7 @@ class ChangeSummaryTraceTest {
 
         val canvas = summaries.tree.nodes.single { it.location == "views/canvas.kt" }.id
         val texts = summaries.tree.nodes.associate { it.id to summaries.text(it.id)!! } + (canvas to "Deletes the canvas view and its tests.")
-        tracer.trace(ChangeSummaries(summaries.tree, texts), 0, 3)
+        tracer.trace(ReviewSummaries(summaries.tree, texts), 0, 3)
         assertTrue(fake.contextRequests().isEmpty())
         assertEquals(listOf("views/canvas.kt"), fake.askedLocations())
     }
@@ -425,7 +431,7 @@ class ChangeSummaryTraceTest {
         val tree = buildSummaryTree(listOf(Source("ui/Paint.kt", text)))
         val node = tree.nodes.single { it.kind == SummaryKind.FILE }
         val summary = "Paints the canvas border and repaints the CANVAS border."
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
         val fake = FakeDecisions { _, instructions ->
             when {
                 instructions.has("candidate_lines") -> if ("drawBorder" in instructions["candidate_lines"].asString) 0.9 else 0.1
@@ -455,7 +461,7 @@ class ChangeSummaryTraceTest {
     @Test fun `a file search without a related block opens nothing`() = runBlocking {
         val tree = buildSummaryTree(listOf(Source("a.kt", "val a = 1\n")))
         val node = tree.nodes.single { it.kind == SummaryKind.FILE }
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Sets the value." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Sets the value." })
         val tracer = SummaryTracer(FakeDecisions { _, _ -> 0.1 }.evaluate)
         val trace = tracer.searchLines(summaries, node.id, tracer.score(summaries, node.id, 2))
         assertEquals(1, trace.blocks.size)

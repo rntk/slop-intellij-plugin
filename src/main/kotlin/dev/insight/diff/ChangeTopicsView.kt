@@ -13,6 +13,19 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.TopicNode
+import dev.insight.review.TopicOutline
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.explainLink
+import dev.insight.review.topicOutline
+import dev.insight.review.topicReadingSummaries
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
@@ -41,13 +54,13 @@ import kotlin.math.roundToInt
 
 /** What the canvas shows for a tab's topics: the labels so far, the summaries beside each file, and whether a turn can run. */
 internal data class TopicsCard(
-    val topics: ChangeTopics,
-    val summaries: ChangeSummaries,
+    val topics: ReviewTopics,
+    val summaries: ReviewSummaries,
     val canRun: Boolean,
-    val topicSummaries: ChangeSummaries = ChangeSummaries(buildTopicSummaryTree(topics)),
+    val topicSummaries: ReviewSummaries = ReviewSummaries(buildTopicSummaryTree(topics)),
 ) {
     /** What the hierarchy shows and traces; built once per card. */
-    val reading: ChangeSummaries by lazy { topicReadingSummaries(topicSummaries, summaries) }
+    val reading: ReviewSummaries by lazy { topicReadingSummaries(topicSummaries, summaries) }
 }
 
 /** The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary. */
@@ -115,7 +128,7 @@ internal class ChangeTopicsViewState(
                         (summaryQuery.isEmpty() || fuzzyMatches(summaryQuery, listOfNotNull(file.path, texts[file.path]).joinToString(" ")))
                 }
                 val paths = kept.mapTo(hashSetOf()) { it.path }
-                topicOutline(ChangeTopics(kept, card.topics.labels.filterKeys { it in paths }))
+                topicOutline(ReviewTopics(kept, card.topics.labels.filterKeys { it in paths }))
             }
             shownFiles = shown?.takeIf { it !== outline }?.files?.mapTo(hashSetOf()) { it.path }
             shownTopics = shown?.takeIf { it !== outline }?.nodes?.mapTo(hashSetOf()) { it.identity }
@@ -159,7 +172,7 @@ internal class ChangeTopicsViewState(
     fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)
 
     /** Documents keep every file visible; hierarchies hide nodes under folded topics. [tree] is the reading tree. */
-    override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean = { node ->
+    override fun visibility(tree: ReviewSummaryTree): (SummaryNode) -> Boolean = { node ->
         filtered(node) && if (mode == ChangeTopicsMode.DOCUMENT) node.kind == SummaryKind.FILE || tree.depth(node.id) - 1 <= (level ?: Int.MAX_VALUE)
         else generateSequence(node.parent) { tree[it].parent }.map(tree::get)
             .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in folds }
@@ -176,7 +189,7 @@ internal class ChangeTopicsViewState(
      * Opens the topics down to the matches and folds related topics with no related entry beneath, so their summary shows.
      * [tree] is the reading tree: its topics are `topic:` identities one level below the hidden root.
      */
-    override fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace) {
+    override fun showTrace(tree: ReviewSummaryTree, trace: SummaryTrace) {
         fun keys(identities: Set<String>) = tree.nodes.filter { it.identity in identities && it.identity.startsWith(TOPIC) }
             .map { "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" }
         tracePath(tree, trace)?.let { path ->

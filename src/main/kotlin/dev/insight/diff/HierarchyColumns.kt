@@ -11,6 +11,9 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.explainLink
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
@@ -25,11 +28,11 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
-import javax.swing.text.JTextComponent
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
 import javax.swing.border.MatteBorder
+import javax.swing.text.JTextComponent
 import kotlin.math.roundToInt
 
 /**

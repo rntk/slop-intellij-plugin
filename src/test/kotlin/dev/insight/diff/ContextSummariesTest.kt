@@ -1,6 +1,16 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.review.ChatFocus
+import dev.insight.review.ContextSummaryLauncher
+import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewSummaryRun
+import dev.insight.review.ReviewTopics
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.chatFocus
 import java.awt.Component
 import java.awt.Container
 import javax.swing.JButton
@@ -15,36 +25,36 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
     private val tree = buildSummaryTree(files)
     private val app = tree.nodes.single { it.location == "app/" }
-    private val original = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+    private val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
 
     private class ContextLauncher : ContextSummaryLauncher {
-        lateinit var start: ChangeSummaries
+        lateinit var start: ReviewSummaries
         lateinit var request: ContextSummaryRequest
-        lateinit var updated: (ChangeSummaries) -> Unit
-        lateinit var done: (Result<ChangeSummaryRun>) -> Unit
+        lateinit var updated: (ReviewSummaries) -> Unit
+        lateinit var done: (Result<ReviewSummaryRun>) -> Unit
         lateinit var job: Job
-        override fun launch(start: ChangeSummaries, request: ContextSummaryRequest,
-                            updated: (ChangeSummaries) -> Unit, done: (Result<ChangeSummaryRun>) -> Unit): Job {
+        override fun launch(start: ReviewSummaries, request: ContextSummaryRequest,
+                            updated: (ReviewSummaries) -> Unit, done: (Result<ReviewSummaryRun>) -> Unit): Job {
             this.start = start; this.request = request; this.updated = updated; this.done = done
             return Job().also { job = it }
         }
         fun finish() {
             val rewritten = start.summarize(request.nodeIds.associateWith { "Context ${start.tree[it].location}" }, reuseSingleChildren = false)
             updated(rewritten)
-            done(Result.success(ChangeSummaryRun(rewritten, 2, null)))
+            done(Result.success(ReviewSummaryRun(rewritten, 2, null)))
         }
     }
 
     private fun canvas(launcher: ContextLauncher): NoteCanvas {
         val tracer = object : SummaryTraceLauncher {
-            override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+            override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
                                   scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job = Job()
-            override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+            override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
                 done(Result.success(SummaryTrace(context.identity, context.summary, context.word, context.context, context.query,
                     listOf(SummaryMatch(app.id, app.identity, 0.9, 1)), 2)))
                 return Job()
             }
-            override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job = Job()
+            override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job = Job()
         }
         return NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = tracer, contextSummaries = launcher)).apply {
             showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, running = false, canRun = true)))
@@ -69,12 +79,12 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
 
     fun testEntryActionsSelectScopeAndPassInstructionsInEveryLayout() {
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
             val launcher = ContextLauncher()
             val canvas = canvas(launcher)
             try {
                 canvas.summariesView.mode = mode
-                if (mode == ChangeSummariesMode.EXPLORER) canvas.summariesView.browse(tree.root.identity, tree)
+                if (mode == ReviewSummariesMode.EXPLORER) canvas.summariesView.browse(tree.root.identity, tree)
                 canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
                 canvas.requestResummaryInstructions = { node, recursive, destination ->
                     assertEquals(ResummaryDestination.VERSION, destination)
@@ -82,8 +92,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
                     assertFalse(recursive)
                     "Focus on failures\nPreserve qualifications"
                 }
-                val name = if (mode == ChangeSummariesMode.SPLIT) "summary-tree:${app.identity}"
-                    else if (mode == ChangeSummariesMode.HIERARCHY || mode == ChangeSummariesMode.DOCUMENT) "node:${app.identity}"
+                val name = if (mode == ReviewSummariesMode.SPLIT) "summary-tree:${app.identity}"
+                    else if (mode == ReviewSummariesMode.HIERARCHY || mode == ReviewSummariesMode.DOCUMENT) "node:${app.identity}"
                     else "summary:${app.identity}"
                 val entry = named(canvas, 0, name) as javax.swing.JComponent
                 entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Resummarize" }.doClick()
@@ -122,12 +132,12 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
 
     fun testTopicFileChatKeepsItsDisplayedAncestry() {
-        val topics = ChangeTopics(files, files.associate { it.path to "Storage > Wallet" })
+        val topics = ReviewTopics(files, files.associate { it.path to "Storage > Wallet" })
         val topicTree = buildTopicSummaryTree(topics)
-        val topicSummaries = ChangeSummaries(topicTree).summarize(
+        val topicSummaries = ReviewSummaries(topicTree).summarize(
             topicTree.nodes.associate { it.id to "Topic ${it.identity}" }, reuseSingleChildren = false)
         var focus: ChatFocus? = null
-        var origin: ChangeSummaries? = null
+        var origin: ReviewSummaries? = null
         val card = TopicsCard(topics, original, canRun = false, topicSummaries = topicSummaries)
         val canvas = NoteCanvas({}, {},
             summaryActions = SummaryCanvasActions(chatNode = { node, summaries ->
@@ -147,17 +157,17 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
 
     fun testTopicHierarchyEntriesFillAndResummarizeOneTopic() {
-        val topics = ChangeTopics(files, mapOf("app/a.kt" to "Storage > Wallet", "app/b.kt" to "Storage > Wallet",
+        val topics = ReviewTopics(files, mapOf("app/a.kt" to "Storage > Wallet", "app/b.kt" to "Storage > Wallet",
             "docs/c.kt" to "UI", "docs/d.kt" to "UI"))
         val topicTree = buildTopicSummaryTree(topics)
         val storage = topicTree.nodes.single { it.identity == "topic:storage" }
         val wallet = topicTree.nodes.single { it.identity == "topic:storage > wallet" }
         val launcher = ContextLauncher()
-        val saved = mutableListOf<Pair<ChangeSummaries, Set<Int>>>()
+        val saved = mutableListOf<Pair<ReviewSummaries, Set<Int>>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { summaries, ids -> saved += summaries to ids }))
         try {
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
-            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true)))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(tree), canRun = true)))
             fun item(entry: String, label: String) = (named(canvas, 0, entry) as javax.swing.JComponent).componentPopupMenu
                 .components.filterIsInstance<JMenuItem>().single { it.text == label }
             // File summaries are shared with the Summaries card, so files only fill.
@@ -174,8 +184,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
             assertEquals("Context Storage > Wallet/", saved.last().first.text(wallet.id))
             assertNull(saved.last().first.text(storage.id))
 
-            val complete = ChangeSummaries(topicTree).summarize(topicTree.nodes.associate { it.id to "Original ${it.identity}" })
-            canvas.updateTopics(TopicsCard(topics, ChangeSummaries(tree), canRun = true, topicSummaries = complete))
+            val complete = ReviewSummaries(topicTree).summarize(topicTree.nodes.associate { it.id to "Original ${it.identity}" })
+            canvas.updateTopics(TopicsCard(topics, ReviewSummaries(tree), canRun = true, topicSummaries = complete))
             assertFalse(item("topic:0:storage", "Fill summaries").isEnabled)
             canvas.requestResummaryInstructions = { node, recursive, destination ->
                 assertEquals(ResummaryDestination.TOPICS, destination)
@@ -196,11 +206,11 @@ class ContextSummariesTest : BasePlatformTestCase() {
     fun testTopicAndVersionRunsExcludeEachOtherIncludingStaleMenus() {
         val launcher = ContextLauncher()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { _, _ -> }))
-        val topics = ChangeTopics(files, files.associate { it.path to "Storage" })
+        val topics = ReviewTopics(files, files.associate { it.path to "Storage" })
         try {
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true),
-                topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true)))
+                topics = TopicsCard(topics, ReviewSummaries(tree), canRun = true)))
             fun item(name: String, label: String): JMenuItem {
                 val entry = descendants(canvas).single { it.name == name } as javax.swing.JComponent
                 return entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == label }

@@ -5,6 +5,7 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewNote
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -15,19 +16,19 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 
 /** One step of the change flow; [repeat] marks a symbol drawn above, so shared callees and cycles still read as a tree. */
-internal data class ChangeFlowRow(val note: DiffNote, val depth: Int, val parent: Int?, val repeat: Boolean)
+internal data class ChangeFlowRow(val note: ReviewNote, val depth: Int, val parent: Int?, val repeat: Boolean)
 
 /**
  * Symbol notes joined by verified calls between them: the model chooses the steps, the call graph supplies every edge.
  * Notes that neither call nor are called by another symbol note stay out of the flow.
  */
-internal data class ChangeFlow(val rows: List<ChangeFlowRow>, val edges: List<Pair<DiffNote, DiffNote>>, val omitted: Int, val unlinked: Int) {
+internal data class ChangeFlow(val rows: List<ChangeFlowRow>, val edges: List<Pair<ReviewNote, ReviewNote>>, val omitted: Int, val unlinked: Int) {
     fun summary(): String = if (edges.isEmpty()) "" else "Change flow (verified calls between symbol notes): " +
         edges.take(20).joinToString("; ") { (from, to) -> "${from.evidence!!.symbol.qualifiedName} → ${to.evidence!!.symbol.qualifiedName}" } +
         if (edges.size > 20) "; …" else "."
 }
 
-internal fun changeFlow(notes: List<DiffNote>): ChangeFlow {
+internal fun changeFlow(notes: List<ReviewNote>): ChangeFlow {
     val nodes = notes.filter { it.evidence != null }.distinctBy { it.evidence!!.symbol.selector }
     val bySelector = nodes.associateBy { it.evidence!!.symbol.selector }
     // Callees keep the order in which the caller's source calls them.
@@ -38,8 +39,8 @@ internal fun changeFlow(notes: List<DiffNote>): ChangeFlow {
     val called = edges.mapTo(mutableSetOf()) { it.second }
     val linked = nodes.filter { it in called || callees.getValue(it).isNotEmpty() }
     val rows = mutableListOf<ChangeFlowRow>()
-    val drawn = mutableSetOf<DiffNote>()
-    fun visit(note: DiffNote, depth: Int, parent: Int?) {
+    val drawn = mutableSetOf<ReviewNote>()
+    fun visit(note: ReviewNote, depth: Int, parent: Int?) {
         if (rows.size >= MAX_FLOW_ROWS) return
         val repeat = note in drawn
         rows += ChangeFlowRow(note, depth, parent, repeat)
@@ -62,7 +63,7 @@ internal class ChangeFlowDiagram(
     flow: ChangeFlow,
     width: Int,
     private val zoom: Double,
-    focus: (DiffNote) -> Unit,
+    focus: (ReviewNote) -> Unit,
 ) : JPanel(null) {
     private fun scaled(n: Int) = zoomScaled(n, zoom)
     private fun font(base: java.awt.Font) = base.zoomed(zoom)

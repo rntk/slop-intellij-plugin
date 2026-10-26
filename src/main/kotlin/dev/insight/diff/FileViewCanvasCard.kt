@@ -9,6 +9,7 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewVocabulary
 import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension

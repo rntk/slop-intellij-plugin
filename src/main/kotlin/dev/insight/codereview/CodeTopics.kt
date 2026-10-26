@@ -1,13 +1,14 @@
 package dev.insight.codereview
 
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.ChangeSummaryTree
-import dev.insight.diff.ChangeTopics
-import dev.insight.diff.ReviewSource
-import dev.insight.diff.SummaryKind
-import dev.insight.diff.SummaryNode
-import dev.insight.diff.TopicEvidence
 import dev.insight.enrichment.CODE_AS_DATA
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopicGenerator
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.TopicEvidence
 
 /** Files are classified four at a time; each request sees the topics saved when it started. */
 internal const val CODE_TOPIC_CONCURRENCY = 4
@@ -23,9 +24,9 @@ internal const val CODE_TOPIC_PARTS_CHARS = 3_000
  * excerpt that was cut with no summary beside it counts as cut evidence, so the read tool is offered only then.
  * [summaries] is read at each request, so summaries written meanwhile are used.
  */
-internal fun codeTopicEvidence(snapshot: CodeSnapshot, summaries: () -> ChangeSummaries): (ReviewSource, ChangeTopics) -> TopicEvidence {
+internal fun codeTopicEvidence(snapshot: CodeSnapshot, summaries: () -> ReviewSummaries): (ReviewSource, ReviewTopics) -> TopicEvidence {
     // The file and part nodes of the latest tree, indexed once per tree rather than once per file.
-    var indexed: ChangeSummaryTree? = null
+    var indexed: ReviewSummaryTree? = null
     var files: Map<String, SummaryNode> = emptyMap()
     var parts: Map<String, List<SummaryNode>> = emptyMap()
     val lock = Any()
@@ -58,7 +59,7 @@ internal fun codeTopicEvidence(snapshot: CodeSnapshot, summaries: () -> ChangeSu
 }
 
 /** "a-b: summary" for each written part, in line order, within [CODE_TOPIC_PARTS_CHARS]; null when none is written. */
-private fun partSummaries(summaries: ChangeSummaries, parts: List<SummaryNode>): List<String>? {
+private fun partSummaries(summaries: ReviewSummaries, parts: List<SummaryNode>): List<String>? {
     val lines = mutableListOf<String>()
     var chars = 0
     for (part in parts.sortedBy { it.lines?.first ?: 0 }) {
@@ -85,7 +86,7 @@ private fun excerpt(file: CodeFile, chars: Int): Excerpt {
     return Excerpt(shown, shown.count { it == '\n' } + 2)
 }
 
-/** [dev.insight.diff.ChangeTopicGenerator.SYSTEM] for source files instead of diffs. */
+/** [dev.insight.review.ReviewTopicGenerator.SYSTEM] for source files instead of diffs. */
 internal val CODE_TOPIC_SYSTEM = """
     $CODE_AS_DATA
     Return exactly one hierarchical code topic for the supplied source file.

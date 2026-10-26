@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.ReviewSummaries
 import java.awt.Dimension
 import java.awt.Font
 import javax.swing.JTextPane
@@ -13,7 +14,7 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /** TF-IDF within a node's direct child summaries, independently of folding, filtering and other branches. */
-internal class SummaryWordWeights(private val summaries: ChangeSummaries) {
+internal class SummaryWordWeights(private val summaries: ReviewSummaries) {
     private val weights = mutableMapOf<Int, Map<String, Double>>()
 
     operator fun get(id: Int): Map<String, Double> = weights.getOrPut(id) {

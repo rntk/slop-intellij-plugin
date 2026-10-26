@@ -1,6 +1,6 @@
 package dev.insight.codereview
 
-import dev.insight.diff.SourceChunk
+import dev.insight.review.SourceChunk
 import java.security.MessageDigest
 
 /**

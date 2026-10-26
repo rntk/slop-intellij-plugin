@@ -1,23 +1,39 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.review.ExplainResult
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewSymbol
+import dev.insight.review.ReviewSymbolEvidence
+import dev.insight.review.ReviewSymbolLinks
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.resummaryRequest
+import dev.insight.review.topicOutline
 import java.awt.Component
 import java.awt.Container
 import java.awt.Point
 import java.awt.event.MouseEvent
-import javax.swing.JLabel
 import javax.swing.JComponent
+import javax.swing.JLabel
 import kotlinx.coroutines.Job
 
 class NoteCanvasTest : BasePlatformTestCase() {
-    private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
+    private val note = ReviewNote(listOf("src/a.kt"), "A short explanation.")
 
     fun testPartialCardUpdatesPreserveMetricsAndTheirScopeInputs() {
         val files = listOf("src/a.kt", "other/b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-oldWord\n+newWord\n", "1")
         }
-        val summaries = ChangeSummaries(buildSummaryTree(files))
-        val topics = ChangeTopics(files).assign(files.first().path, "Product>Feature")
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        val topics = ReviewTopics(files).assign(files.first().path, "Product>Feature")
         val summaryCard = SummariesCard(summaries, running = false, canRun = false)
         val topicCard = TopicsCard(topics, summaries, canRun = false)
         val fileCard = FileViewCard(files.first(), null, null, topics, summaries, canRun = false)
@@ -74,11 +90,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testOpeningAndClosingSummarySearchTabsPreservesMetricCards() {
         val file = ReviewFile("src/a.kt", "/repo/src/a.kt", null, "modified", "@@ -1 +1 @@\n-oldWord\n+newWord\n", "1")
         val tree = buildSummaryTree(listOf(file))
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Updates important behavior." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Updates important behavior." })
         val words = wordChanges(listOf(file))
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply {
             setSize(1600, 900)
-            summariesView.mode = ChangeSummariesMode.OUTLINE
+            summariesView.mode = ReviewSummariesMode.OUTLINE
         }
         try {
             canvas.showNotes(CanvasState(summaries = SummariesCard(summaries, false, true),
@@ -106,13 +122,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
+    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
         })
         val summary = "Token cache and new; Token."
         val leafSummary = "token TOKEN token cache " + "and ".repeat(50)
-        val summaries = ChangeSummaries(tree, mapOf(0 to summary,
+        val summaries = ReviewSummaries(tree, mapOf(0 to summary,
             tree.root.children[0] to leafSummary, tree.root.children[1] to "Token and"))
         val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = mode }
         fun area(): WrappedSummaryText = descendants(canvas).filterIsInstance<WrappedSummaryText>().single { it.text == summary }
@@ -121,12 +137,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            if (mode == ChangeSummariesMode.HIERARCHY) {
+            if (mode == ReviewSummariesMode.HIERARCHY) {
                 val toggle = descendants(canvas).single { it.name == "toggle:root" }
                 toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 layoutTree(canvas)
             }
-            if (mode == ChangeSummariesMode.DOCUMENT) {
+            if (mode == ReviewSummariesMode.DOCUMENT) {
                 val rail = descendants(canvas).single { it.name == "node:root" }
                 rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 layoutTree(canvas)
@@ -153,11 +169,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertWordFitsOnOneLine(area(), "Token")
             assertWordFitsOnOneLine(area(), "cache")
             // A leaf has no child summaries to support larger words.
-            if (mode != ChangeSummariesMode.HIERARCHY) {
-                if (mode == ChangeSummariesMode.EXPLORER) clickSummary(canvas)
+            if (mode != ReviewSummariesMode.HIERARCHY) {
+                if (mode == ReviewSummariesMode.EXPLORER) clickSummary(canvas)
                 val leaf = descendants(canvas).filterIsInstance<WrappedSummaryText>().first { it.text == leafSummary }
                 assertEquals(leaf.font.size, leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(0).attributes).size)
-                if (mode == ChangeSummariesMode.EXPLORER)
+                if (mode == ReviewSummariesMode.EXPLORER)
                     (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
             }
             assertTrue(canvas.summariesView.fork().tagsCloud)
@@ -175,7 +191,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testTabsKeepSelectionAcrossUpdatesAndFocusSelectsTheRequestedBlock() {
-        val other = DiffNote(listOf("src/b.kt"), "Other note")
+        val other = ReviewNote(listOf("src/b.kt"), "Other note")
         val canvas = canvas()
         try {
             canvas.showNotes(CanvasState(listOf(note, other)))
@@ -232,10 +248,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testDocumentZoomChangesGeometryAndKeepsCardTextReadable() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
-        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
+        val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>Feature")
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false)))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             layoutTree(canvas)
             fun document() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             fun title() = descendants(document()).filterIsInstance<javax.swing.text.JTextComponent>().first { it.text == "Feature" }
@@ -267,9 +283,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val files = listOf("src/wallet.kt", "src/cart.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
-        val topics = ChangeTopics(files).assign(files[0].path, "Storage>Wallet").assign(files[1].path, "UI>Checkout")
+        val topics = ReviewTopics(files).assign(files[0].path, "Storage>Wallet").assign(files[1].path, "UI>Checkout")
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
             .associate { it.id to if (it.path == files[0].path) "Persists balances" else "Renders the basket" })
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
@@ -296,10 +312,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testDocumentZoomReachesTenPercentWithButtonsAndWheel() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
-        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
+        val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>Feature")
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false)))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
             fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text
             repeat(14) { button("document-zoom-out").doClick() }
@@ -323,10 +339,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val files = listOf("src/feature/one.kt", "src/feature/two.kt", "docs/readme.md").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
-        val topics = ChangeTopics(files).assign(files[0].path, "Product>Feature>One")
+        val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature>One")
             .assign(files[1].path, "Product>Feature>Two")
-        val summaries = ChangeSummaries(buildSummaryTree(files))
-        val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ReviewSummariesMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false),
                 summaries = SummariesCard(summaries, running = false, canRun = false)))
@@ -366,9 +382,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val longWord = label.repeat(3)
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
-        val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>$label")
+        val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>$label")
         val tree = buildSummaryTree(listOf(file))
-        val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == file.path }.id to longWord))
+        val summaries = ReviewSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == file.path }.id to longWord))
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))
@@ -403,9 +419,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         val folderNode = tree.nodes.single { it.kind == SummaryKind.DIRECTORY }
-        val summaries = ChangeSummaries(tree).summarize(
+        val summaries = ReviewSummaries(tree).summarize(
             tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.id to sentence } + (folderNode.id to sentence))
-        val canvas = canvas().apply { setSize(1200, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
+        val canvas = canvas().apply { setSize(1200, 700); summariesView.mode = ReviewSummariesMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             fun document() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
@@ -443,12 +459,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
             ReviewFile(path, "/repo/$path", null, "modified",
                 "@@ -1,2 +1,${2 + index * 6} @@\n ctx\n-old\n" + "+new\n".repeat(1 + index * 6), "1")
         }
-        val topics = ChangeTopics(files)
+        val topics = ReviewTopics(files)
             .assign("src/wallet.kt", "Storage>User>Wallet")
             .assign("src/auth.kt", "Storage>User>Auth")
             .assign("ui/form.kt", "UI>Checkout")
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
+        val summaries = ReviewSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         try {
@@ -541,10 +557,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val path = "src/file$index.kt"
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n" + "+line\n".repeat(30), "1")
         }
-        val topics = files.fold(ChangeTopics(files)) { result, file -> result.assign(file.path, "Storage>User") }
+        val topics = files.fold(ReviewTopics(files)) { result, file -> result.assign(file.path, "Storage>User") }
         val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(files)), canRun = false)))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), canRun = false)))
             layoutTree(canvas)
             val document = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             val documentScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, document) as javax.swing.JScrollPane
@@ -592,7 +608,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
             descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
@@ -616,12 +632,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt", "docs/new.md").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
-        val topics = ChangeTopics(files)
+        val topics = ReviewTopics(files)
             .assign("src/wallet.kt", "Storage>User>Wallet")
             .assign("src/auth.kt", "Storage>User>Auth")
             .assign("ui/form.kt", "UI>Checkout")
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
+        val summaries = ReviewSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
@@ -722,7 +738,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         fun id(identity: String) = tree.nodes.single { it.identity == identity }.id
         val written = listOf("file:src/wallet/Ledger.kt", "file:src/wallet/Wallet.kt", "file:src/auth/Auth.kt", "file:docs/README.md", "directory:src/wallet")
-        val summaries = ChangeSummaries(tree).summarize(written.associate { id(it) to "Summary of $it." })
+        val summaries = ReviewSummaries(tree).summarize(written.associate { id(it) to "Summary of $it." })
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -744,7 +760,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
             toggleButton("Hierarchy").doClick(); layoutTree(canvas)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel })
-            assertEquals(ChangeSummariesMode.HIERARCHY, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
 
             // The root folder in the first column, then its folders; each file is a leaf one column right of its folder.
             val root = named("node:root")
@@ -832,8 +848,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun selector() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
         fun action(name: String) = (descendants(canvas).single { it.name == "summary-$name" } as javax.swing.JButton).doClick()
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false)))
-            for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.filter { it != ChangeSummariesMode.EXPLORER }) {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
+            for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) {
                 (descendants(canvas).single { it.name == "summaries-mode:${mode.name.lowercase()}" } as javax.swing.JToggleButton).doClick()
                 val before = canvas.summariesView.expanded.toSet()
                 selector().selectedItem = 4
@@ -844,10 +860,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 for (node in tree.nodes.filter(::isFolderBranch)) {
                     assertEquals(node.identity, tree.depth(node.id) < 4, node.identity in canvas.summariesView.expanded)
                 }
-                if (mode == ChangeSummariesMode.SPLIT) assertTrue(descendants(canvas).filterIsInstance<JComponent>()
+                if (mode == ReviewSummariesMode.SPLIT) assertTrue(descendants(canvas).filterIsInstance<JComponent>()
                     .any { it.name?.startsWith("summary-tree:") == true && it.toolTipText.orEmpty().contains("Level 4") })
                 else assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "Level 4" })
-                if (mode == ChangeSummariesMode.OUTLINE) {
+                if (mode == ReviewSummariesMode.OUTLINE) {
                     assertEquals("Level 1", (descendants(canvas).single { it.name == "summary-level-label:root" } as JLabel).text)
                 }
                 action("fold")
@@ -866,7 +882,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         fun id(identity: String) = tree.nodes.single { it.identity == identity }.id
-        val summaries = ChangeSummaries(tree).summarize(mapOf(id("file:src/auth/Auth.kt") to "Adds token refresh."))
+        val summaries = ReviewSummaries(tree).summarize(mapOf(id("file:src/auth/Auth.kt") to "Adds token refresh."))
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
@@ -874,7 +890,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             toggleButton("Document").doClick(); layoutTree(canvas)
-            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel || it is ChangeSummaryHierarchyPanel })
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
             fun named(name: String) = panel.components.single { it.name == name }
@@ -942,8 +958,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({ opened += it }, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }))
             .apply { setSize(1400, 900) }
         try {
-            val sources = paths.map { DiffSourceBlock(DiffSourceRange(it, 1, 1), "val a = 1") }
-            canvas.showNotes(CanvasState(paths.map { DiffNote(listOf(it), "Explanation.") }, sources))
+            val sources = paths.map { ReviewSourceBlock(ReviewSourceRange(it, 1, 1), "val a = 1") }
+            canvas.showNotes(CanvasState(paths.map { ReviewNote(listOf(it), "Explanation.") }, sources))
             run {
                 layoutTree(canvas)
                 val buttons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
@@ -997,7 +1013,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testSourceCardsUseNativeViewersAndReleaseOnlyRemovedEditors() {
-        val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 8, 9), "val x = 1\n  println(x)")
+        val source = ReviewSourceBlock(ReviewSourceRange("src/a.kt", 8, 9), "val x = 1\n  println(x)")
         val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1000, 700) }
         try {
             canvas.showNotes(CanvasState(listOf(note), listOf(source)))
@@ -1029,7 +1045,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }, removeDiff = { removed += it }))
             .apply { setSize(1400, 900) }
         try {
-            val source = DiffSourceBlock(DiffSourceRange("src/b.kt", 1, 1), "val b = 3")
+            val source = ReviewSourceBlock(ReviewSourceRange("src/b.kt", 1, 1), "val b = 3")
             canvas.showNotes(CanvasState(listOf(note), listOf(source)))
             val diffButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
                 .filter { it.toolTipText == "Show diff in tab" }
@@ -1063,8 +1079,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testSymbolNotesHaveSeparateTabsAndDiagramBounds() {
-        val symbol = DiffSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
-        val evidence = DiffSymbolEvidence(symbol, listOf(DiffSymbolLinks("Calls", (1..3).map {
+        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        val evidence = ReviewSymbolEvidence(symbol, listOf(ReviewSymbolLinks("Calls", (1..3).map {
             symbol.copy(name = "callee$it", qualifiedName = "Store.callee$it", offset = 10 + it)
         }, 20)))
         val semantic = note.copy(symbol = symbol.selector, evidence = evidence)
@@ -1083,14 +1099,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testDiagramBoundsMixedRelationshipsAndDistinguishesOwners() {
-        val symbol = DiffSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
         fun neighbors(owner: String) = (1..3).map {
             symbol.copy(qualifiedName = "$owner$it.save", offset = 10 + it)
         }
-        val diagram = DiffSymbolDiagram(DiffSymbolEvidence(symbol, listOf(
-            DiffSymbolLinks("Callers in this file", neighbors("Caller"), 5, incoming = true),
-            DiffSymbolLinks("Calls", neighbors("Target"), 4),
-            DiffSymbolLinks("References", neighbors("Other"), 3),
+        val diagram = DiffSymbolDiagram(ReviewSymbolEvidence(symbol, listOf(
+            ReviewSymbolLinks("Callers in this file", neighbors("Caller"), 5, incoming = true),
+            ReviewSymbolLinks("Calls", neighbors("Target"), 4),
+            ReviewSymbolLinks("References", neighbors("Other"), 3),
         )), 360, 1.0, {})
         val links = descendants(diagram).filterIsInstance<com.intellij.ui.components.ActionLink>()
         assertEquals(7, links.size) // Root plus six neighbors across all relationship groups.
@@ -1106,9 +1122,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testChangeFlowCardDrawsCallTreeWithRepeatsAndFocusesNotes() {
-        val base = DiffSymbol("src/a.kt", "/src/a.kt", "a", "A.a", dev.insight.callgraph.SymbolKind.FUNCTION, 1, 0)
-        fun step(name: String, vararg calls: String) = DiffNote(listOf("src/a.kt"), "$name does work. More detail.", "s:$name",
-            DiffSymbolEvidence(base.copy(name = name, qualifiedName = "A.$name", offset = name.hashCode()), emptyList(),
+        val base = ReviewSymbol("src/a.kt", "/src/a.kt", "a", "A.a", dev.insight.callgraph.SymbolKind.FUNCTION, 1, 0)
+        fun step(name: String, vararg calls: String) = ReviewNote(listOf("src/a.kt"), "$name does work. More detail.", "s:$name",
+            ReviewSymbolEvidence(base.copy(name = name, qualifiedName = "A.$name", offset = name.hashCode()), emptyList(),
                 calls.map { "src/a.kt#A.$it:1@${it.hashCode()}" }.toSet()))
         // a → b → c → a is a cycle, a → c shares c, and d is unrelated.
         val notes = listOf(step("a", "b", "c", "external"), step("b", "c", "b"), step("c", "a"), step("d"))
@@ -1144,7 +1160,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         val root = "Deleted views: canvas, hierarchy, summaries."
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
             node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label.substringBefore('/')} view."
         })
         val hierarchy = tree.nodes.single { it.path == "ui/hierarchy/Hierarchy.kt" }
@@ -1157,7 +1173,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val searchJobs = mutableListOf<Job>()
         val scoreJobs = mutableListOf<Job>()
         val launcher = object : SummaryTraceLauncher {
-            override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+            override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
                                   scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
                 traced += words
                 saveContext = scored
@@ -1171,13 +1187,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 return Job().also { scoreJobs += it }
             }
 
-            override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+            override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
                 searched += context
                 finishSearch = done
                 return Job().also { searchJobs += it }
             }
 
-            override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
+            override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
                 error("Only file summaries search lines")
         }
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
@@ -1302,7 +1318,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val searchedLines = mutableListOf<SummaryContext>()
         var finishLines: ((Result<LineTrace>) -> Unit)? = null
 
-        override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+        override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
                               scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
             scoredWords += words
             for ((id, word) in words) {
@@ -1315,13 +1331,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             return Job()
         }
 
-        override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+        override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
             searched += context
             finishSearch = done
             return Job().also { searchJobs += it }
         }
 
-        override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
+        override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
             searchedLines += context
             finishLines = done
             return Job().also { searchJobs += it }
@@ -1353,7 +1369,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         val root = "Deleted views: canvas, hierarchy."
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
             node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label} view."
         })
         fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
@@ -1374,7 +1390,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             return selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == name }
         }
         try {
-            canvas.summariesView.mode = ChangeSummariesMode.OUTLINE
+            canvas.summariesView.mode = ReviewSummariesMode.OUTLINE
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             val everything = shown(0)
@@ -1467,14 +1483,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(listOf("ui/Canvas.kt", "ui/Unrelated.kt", "docs/Readme.md").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
         })
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Updates ${it.label}." })
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Updates ${it.label}." })
         val folder = tree.nodes.single { it.path == "ui" }
         val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
         val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
         for (searchTab in listOf(false, true)) {
             val launcher = FakeTraceLauncher()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
-                setSize(1600, 900); summariesView.mode = ChangeSummariesMode.EXPLORER
+                setSize(1600, 900); summariesView.mode = ReviewSummariesMode.EXPLORER
             }
             fun page() = canvas.tabs.selectedComponent as Container
             fun named(name: String) = descendants(page()).single { it.name == name }
@@ -1513,21 +1529,21 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         val root = "Updates canvas and documentation."
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
             node.id to if (node.kind == SummaryKind.ROOT) root else "Updates ${node.label}."
         })
         val folder = tree.nodes.single { it.path == "ui" }
         val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
         val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.filter { it != ChangeSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
             val launcher = FakeTraceLauncher()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
                 setSize(1600, 900)
                 summariesView.apply {
                     this.mode = mode
                     update(tree)
-                    if (mode == ChangeSummariesMode.HIERARCHY) selectLevel(0, tree)
-                    if (mode == ChangeSummariesMode.DOCUMENT) selected = tree.root.identity
+                    if (mode == ReviewSummariesMode.HIERARCHY) selectLevel(0, tree)
+                    if (mode == ReviewSummariesMode.DOCUMENT) selected = tree.root.identity
                 }
             }
             try {
@@ -1550,7 +1566,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 assertEquals("$mode hides rejected summaries only in search tabs", !searchTab, summaries.text(rejected.id) in texts)
                 val badges = descendants(page).filterIsInstance<JLabel>()
                 fun matchTexts(identity: String): List<String> {
-                    val components = if (mode == ChangeSummariesMode.HIERARCHY) {
+                    val components = if (mode == ReviewSummariesMode.HIERARCHY) {
                         val card = descendants(page).single { it.name == if (identity.startsWith("file:")) identity else "node:$identity" } as Container
                         descendants(card).filter { it.name == "match" }
                     } else descendants(page).filter { it.name == "match:$identity" }
@@ -1608,7 +1624,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testCancelSearchCancelsPendingResultsAndLineNavigation() {
         val file = ReviewFile("ui/Canvas.kt", "/repo/ui/Canvas.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         val tree = buildSummaryTree(listOf(file))
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
         val leaf = tree.nodes.single { it.path == file.path }
         for (node in listOf(tree.root, leaf)) {
             val launcher = FakeTraceLauncher()
@@ -1649,7 +1665,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
     fun testCancelSearchClearsTextFilterWithoutTraceLauncher() {
         val file = ReviewFile("Canvas.kt", "/repo/Canvas.kt", null, "modified", "-old\n+new\n", "1")
-        val summaries = ChangeSummaries(buildSummaryTree(listOf(file)))
+        val summaries = ReviewSummaries(buildSummaryTree(listOf(file)))
         val canvas = NoteCanvas({}, {})
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
@@ -1667,7 +1683,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
         })
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Deletes ${it.label}." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Deletes ${it.label}." })
         val state = ChangeSummariesViewState(filtering = true)
         val context = selectionContext(tree.root.identity, summaries.text(tree.root.id)!!, 0, 7)!!
         val trace = SummaryTrace(context.identity, context.summary, context.word, context.context, context.query,
@@ -1696,7 +1712,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val tree = buildSummaryTree(files)
         val root = "Deleted views: canvas, hierarchy."
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { node ->
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
             node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes ${node.label}."
         })
         fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
@@ -1787,21 +1803,21 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    fun testSummaryContextMenuScoresOnlyThatSummary() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
+    fun testSummaryContextMenuScoresOnlyThatSummary() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
         val tree = buildSummaryTree(listOf("Canvas.kt", "Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         })
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
         val file = tree.nodes.single { it.path == "Paint.kt" }
         val launcher = FakeTraceLauncher()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
-                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
+                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
             }
         fun area(node: SummaryNode): javax.swing.text.JTextComponent {
             val name = when {
-                mode != ChangeSummariesMode.DOCUMENT -> "summary:${node.identity}"
+                mode != ReviewSummariesMode.DOCUMENT -> "summary:${node.identity}"
                 node.kind == SummaryKind.FILE -> "summary:${node.path}"
                 else -> "card-summary:${node.identity}"
             }
@@ -1833,20 +1849,20 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(launcher.searched.isEmpty())
             assertTrue(launcher.searchedLines.isEmpty())
 
-            if (mode == ChangeSummariesMode.HIERARCHY) {
+            if (mode == ReviewSummariesMode.HIERARCHY) {
                 descendants(canvas).single { it.name == "toggle:root" }.let { toggle ->
                     toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 }
                 layoutTree(canvas)
             }
-            if (mode == ChangeSummariesMode.DOCUMENT) {
+            if (mode == ReviewSummariesMode.DOCUMENT) {
                 descendants(canvas).single { it.name == "node:root" }.let { rail ->
                     rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 }
                 layoutTree(canvas)
             }
             launcher.scoredWords.clear()
-            if (mode == ChangeSummariesMode.EXPLORER)
+            if (mode == ReviewSummariesMode.EXPLORER)
                 (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
             scoreItem(area(tree.root)).doClick()
             assertEquals("Scoring a parent must not score its descendants", expected(tree.root), launcher.scoredWords)
@@ -1854,23 +1870,23 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
+    fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
         val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
-                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
+                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
             }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
         fun area(): javax.swing.text.JTextComponent {
-            val component = named("summary:${if (mode == ChangeSummariesMode.DOCUMENT) file.path else file.identity}").single()
+            val component = named("summary:${if (mode == ReviewSummariesMode.DOCUMENT) file.path else file.identity}").single()
             return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         fun status() = (named("trace-status").single() as JLabel).text
@@ -1878,7 +1894,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             // Document files remain visible even when their folders are folded in the other modes.
-            if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
+            if (mode == ReviewSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             (named("summaries-score").single() as javax.swing.JButton).doClick()
             layoutTree(canvas)
             assertTrue("File summaries are scored", launcher.scoredWords.any { (id, _) -> id == file.id })
@@ -2033,23 +2049,23 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertFalse(state.echo!!.reaches(sibling.identity))
     }
 
-    fun testSelectedSummaryTextSearchesWithoutScoring() =ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
+    fun testSelectedSummaryTextSearchesWithoutScoring() =ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
         val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode
-                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
+                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
             }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
         fun area(identity: String, path: String): javax.swing.text.JTextComponent {
-            val component = named("summary:${if (mode == ChangeSummariesMode.DOCUMENT) path else identity}").single()
+            val component = named("summary:${if (mode == ReviewSummariesMode.DOCUMENT) path else identity}").single()
             return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         fun fileArea() = area(file.identity, file.path)
@@ -2064,7 +2080,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
+            if (mode == ReviewSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
             assertEquals("The caret word can be searched without scoring", listOf("score-summary", "search-word"),
                 selectionMenu(fileArea())!!.components.mapNotNull { it.name }.filter { it == "score-summary" || it.startsWith("search-") })
@@ -2089,7 +2105,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(status(), status().contains("Best match at Paint.kt:1 · 80%"))
 
             // A summary with summaries below searches them instead.
-            if (mode == ChangeSummariesMode.OUTLINE) {
+            if (mode == ReviewSummariesMode.OUTLINE) {
                 search(area("root", tree.root.path), "Paints")
                 assertEquals("Paints", launcher.searched.single().query)
                 assertTrue(status(), status().contains("Searching the summaries"))
@@ -2103,8 +2119,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testTopicFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeTopicsMode.entries.forEach { mode ->
         val source = ReviewFile("ui/Paint.kt", "/repo/ui/Paint.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         val tree = buildSummaryTree(listOf(source))
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val card = TopicsCard(ChangeTopics(listOf(source)).assign(source.path, "UI>Painting"), summaries, canRun = true)
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
+        val card = TopicsCard(ReviewTopics(listOf(source)).assign(source.path, "UI>Painting"), summaries, canRun = true)
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
@@ -2147,15 +2163,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
-        val topics = ChangeTopics(files)
+        val topics = ReviewTopics(files)
             .assign("src/wallet.kt", "Storage>User>Wallet")
             .assign("src/auth.kt", "Storage>User>Auth")
             .assign("ui/form.kt", "UI>Checkout")
         val topicTree = buildTopicSummaryTree(topics)
-        val topicSummaries = ChangeSummaries(topicTree).summarize(topicTree.nodes.associate { node ->
+        val topicSummaries = ReviewSummaries(topicTree).summarize(topicTree.nodes.associate { node ->
             node.id to if (node.identity == "topic:storage") "Adds user wallets and token auth." else "Changes ${node.label}."
         })
-        val shared = ChangeSummaries(buildSummaryTree(files))
+        val shared = ReviewSummaries(buildSummaryTree(files))
         val launcher = FakeTraceLauncher()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
@@ -2224,27 +2240,27 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } }
         val tree = buildSummaryTree(files)
         val summary = ("Handles important requests. " + "Additional explanation of the behavior. ".repeat(24)).trim()
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
         val target = tree.nodes.single { it.path == "pkg/folder13" }
         val words = SummaryWord.split(summary)
         val word = words.single { it.text == "important" }
         val nextWord = words.first { it.text == "Additional" }
         val query = "A long hover query that must never wrap into extra status rows. ".repeat(30)
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply { setSize(1000, 700) }
             canvas.summariesView.apply {
                 this.mode = mode
                 update(tree)
                 selectLevel(99, tree)
-                if (mode == ChangeSummariesMode.HIERARCHY) toggle(target.identity)
-                if (mode == ChangeSummariesMode.DOCUMENT) selected = target.identity
-                if (mode == ChangeSummariesMode.EXPLORER) browse(tree[target.parent!!].identity, tree)
+                if (mode == ReviewSummariesMode.HIERARCHY) toggle(target.identity)
+                if (mode == ReviewSummariesMode.DOCUMENT) selected = target.identity
+                if (mode == ReviewSummariesMode.EXPLORER) browse(tree[target.parent!!].identity, tree)
                 scored[target.identity to word.index] = SummaryContext(target.identity, summary, word, listOf(word), query)
                 scored[target.identity to nextWord.index] = SummaryContext(target.identity, summary, nextWord, listOf(nextWord), "Another query")
             }
             fun area(): javax.swing.text.JTextComponent {
                 val row = descendants(canvas).single {
-                    it.name == if (mode == ChangeSummariesMode.DOCUMENT) "card-summary:${target.identity}" else "summary:${target.identity}"
+                    it.name == if (mode == ReviewSummariesMode.DOCUMENT) "card-summary:${target.identity}" else "summary:${target.identity}"
                 }
                 return if (row is javax.swing.text.JTextComponent) row else descendants(row as Container).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == summary }
             }
@@ -2305,7 +2321,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun texts(identity: String) = descendants(descendants(canvas).single { it.name == "summary:$identity" } as Container)
@@ -2345,12 +2361,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
+    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
         val explained = mutableListOf<String>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(explainNode = { explained += it.identity })).apply { setSize(1600, 900) }
         // The split view keeps entry actions in each tree row's context menu.
@@ -2366,7 +2382,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             links().forEach { it.doClick() }
             assertTrue(mode.name, explained.isNotEmpty())
             assertTrue(mode.name, explained.all { identity -> tree.nodes.any { it.identity == identity } })
-            if (mode != ChangeSummariesMode.EXPLORER) assertTrue(mode.name, "file:ui/canvas/Canvas.kt" in explained)
+            if (mode != ReviewSummariesMode.EXPLORER) assertTrue(mode.name, "file:ui/canvas/Canvas.kt" in explained)
             canvas.updateSummaries(SummariesCard(summaries, running = true, canRun = false))
             layoutTree(canvas)
             assertTrue(mode.name, links().none { it.isEnabled })

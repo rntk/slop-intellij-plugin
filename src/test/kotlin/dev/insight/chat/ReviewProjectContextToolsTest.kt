@@ -10,15 +10,15 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.codereview.CodeReviewTab
 import dev.insight.codereview.codeFile
-import dev.insight.codereview.codeSnapshot
 import dev.insight.codereview.codeReviewPrompt
-import dev.insight.diff.ChatFocus
+import dev.insight.codereview.codeSnapshot
 import dev.insight.diff.DiffReviewTab
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
 import dev.insight.diff.diffReviewPrompt
 import dev.insight.llm.Completion
 import dev.insight.llm.LlmToolCall
+import dev.insight.review.ChatFocus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

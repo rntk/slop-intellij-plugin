@@ -3,6 +3,10 @@ package dev.insight.diff
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBScrollPane
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.Point
@@ -19,10 +23,10 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
     }
 
     fun testNativeDiffSelectionAndDisposalAcrossRebuildsAndModes() {
-        val summaries = ChangeSummaries(buildSummaryTree(files))
+        val summaries = ReviewSummaries(buildSummaryTree(files))
         val canvas = NoteCanvas({}, {}, project = project).apply {
             setSize(1600, 900)
-            summariesView.mode = ChangeSummariesMode.DIFF
+            summariesView.mode = ReviewSummariesMode.DIFF
             summariesView.selected = "file:src/Alpha.kt"
         }
         fun viewer() = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
@@ -64,8 +68,8 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
     }
 
     fun testFilteringUsesOnlyMatchingFilesAndEmptyResultsReleaseTheViewer() {
-        val summaries = ChangeSummaries(buildSummaryTree(files))
-        val canvas = NoteCanvas({}, {}, project = project).apply { summariesView.mode = ChangeSummariesMode.DIFF }
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        val canvas = NoteCanvas({}, {}, project = project).apply { summariesView.mode = ReviewSummariesMode.DIFF }
         val content = CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
         try {
             canvas.summariesView.fuzzy = "Beta.kt"
@@ -83,8 +87,8 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
 
     fun testContextMenusKeepSummaryActionsWithoutReplacingNativeEditorMenus() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree)
-        val state = ChangeSummariesViewState().apply { mode = ChangeSummariesMode.DIFF; update(tree); selected = "file:src/Alpha.kt" }
+        val summaries = ReviewSummaries(tree)
+        val state = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.DIFF; update(tree); selected = "file:src/Alpha.kt" }
         val calls = mutableListOf<Pair<String, String>>()
         val marks = ReviewedFiles().apply { restore(files) }
         val review = SummaryReviewPresentation(summaries, marks, emptyMap()) { node, value -> marks.set(node.files, value) }
@@ -148,10 +152,10 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
     fun testRootAndDirectoriesStackEveryMatchingDiffAndBuildDistantOnesWhenScrolledTo() {
         val many = files + (1..6).map { ReviewFile("lib/Gen$it.kt", "/repo/lib/Gen$it.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "lib/Gen$it.kt", "old\n", "new\n") }
-        val summaries = ChangeSummaries(buildSummaryTree(many))
+        val summaries = ReviewSummaries(buildSummaryTree(many))
         val canvas = NoteCanvas({}, {}, project = project).apply {
             setSize(1600, 900)
-            summariesView.mode = ChangeSummariesMode.DIFF
+            summariesView.mode = ReviewSummariesMode.DIFF
             summariesView.selected = "file:src/Alpha.kt"
         }
         fun viewers() = descendants(canvas).filterIsInstance<DiffFileEditor>()

@@ -5,6 +5,8 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewSymbol
+import dev.insight.review.ReviewSymbolEvidence
 import java.awt.BasicStroke
 import java.awt.Dimension
 import java.awt.Graphics
@@ -15,10 +17,10 @@ import javax.swing.JPanel
 
 /** A bounded one-hop tree, with one shared trunk instead of crossing graph edges. */
 internal class DiffSymbolDiagram(
-    evidence: DiffSymbolEvidence,
+    evidence: ReviewSymbolEvidence,
     width: Int,
     private val zoom: Double,
-    open: (DiffSymbol) -> Unit,
+    open: (ReviewSymbol) -> Unit,
 ) : JPanel(null) {
     private fun scaled(n: Int) = zoomScaled(n, zoom)
     private val row = scaled(28)
@@ -28,7 +30,7 @@ internal class DiffSymbolDiagram(
 
     init {
         isOpaque = false
-        fun node(symbol: DiffSymbol, prefix: String, y: Int, root: Boolean = false) {
+        fun node(symbol: ReviewSymbol, prefix: String, y: Int, root: Boolean = false) {
             val x = if (root) 0 else indent
             add(JPanel(java.awt.BorderLayout()).apply {
                 isOpaque = true

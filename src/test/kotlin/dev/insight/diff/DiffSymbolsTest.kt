@@ -7,11 +7,12 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory
-import com.intellij.testFramework.PsiTestUtil
-import dev.insight.chat.ToolInputException
 import dev.insight.chat.ToolChatRunner
+import dev.insight.chat.ToolInputException
+import dev.insight.review.ReviewNote
 import kotlinx.coroutines.*
 
 class DiffSymbolsTest : BasePlatformTestCase() {
@@ -42,14 +43,14 @@ class DiffSymbolsTest : BasePlatformTestCase() {
     fun testSelectorsDisambiguateOverloadsAndLinksAreStaticAndDeduplicated() {
         val snapshot = snapshot()
         ApplicationManager.getApplication().runReadAction {
-            val symbols = DiffSymbols(project, snapshot)
+            val symbols = diffSymbols(project, snapshot)
             val result = symbols.find(listOf("Sample.java"), "save", 0)
             val found = JsonParser.parseString(result).asJsonObject["symbols"].asJsonArray.filter { it.asJsonObject["kind"].asString == "function" }
             assertEquals(result, 2, found.size)
             assertTrue(result.length <= ToolChatRunner.DEFAULT_MAX_TOOL_RESULT_CHARS)
-            rejected { symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "ambiguous", "save"))) }
+            rejected { symbols.resolve(listOf(ReviewNote(listOf("Sample.java"), "ambiguous", "save"))) }
             val selector = found.first().asJsonObject["symbol"].asString
-            val note = symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "Saves", selector))).single()
+            val note = symbols.resolve(listOf(ReviewNote(listOf("Sample.java"), "Saves", selector))).single()
             val evidence = note.evidence!!
             assertEquals(selector, note.symbol)
             assertEquals("save", evidence.symbol.name)
@@ -58,22 +59,22 @@ class DiffSymbolsTest : BasePlatformTestCase() {
             assertTrue(evidence.links.single { it.label == "References" }.symbols.any { it.name == "value" })
             assertFalse(evidence.links.single { it.label == "References" }.symbols.any { it.name == "helper" })
             val grouped = snapshot.copy(files = snapshot.files + ReviewFile("old.java", "/deleted/old.java", null, "deleted", "", "old", "old", ""))
-            val noteWithDeletion = DiffSymbols(project, grouped).resolve(listOf(DiffNote(listOf("Sample.java", "old.java"), "Moves helper", "helper"))).single()
+            val noteWithDeletion = diffSymbols(project, grouped).resolve(listOf(ReviewNote(listOf("Sample.java", "old.java"), "Moves helper", "helper"))).single()
             assertEquals("helper", noteWithDeletion.evidence!!.symbol.name)
-            rejected { symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "Invented", "imaginary"))) }
+            rejected { symbols.resolve(listOf(ReviewNote(listOf("Sample.java"), "Invented", "imaginary"))) }
         }
     }
 
     fun testChangeFlowJoinsSymbolNotesOnlyThroughResolvedCalls() {
         val snapshot = snapshot()
         ApplicationManager.getApplication().runReadAction {
-            val symbols = DiffSymbols(project, snapshot)
+            val symbols = diffSymbols(project, snapshot)
             val save = JsonParser.parseString(symbols.find(listOf("Sample.java"), "save", 0)).asJsonObject["symbols"].asJsonArray
                 .first { it.asJsonObject["kind"].asString == "function" }.asJsonObject["symbol"].asString
             val paths = listOf("Sample.java")
             // The model lists steps out of order; the drawn order comes from the calls.
-            val notes = symbols.resolve(listOf(DiffNote(paths, "Helps", "helper"), DiffNote(paths, "Starts", "entry"),
-                DiffNote(paths, "Saves", save), DiffNote(paths, "Stores", "Sample.value")))
+            val notes = symbols.resolve(listOf(ReviewNote(paths, "Helps", "helper"), ReviewNote(paths, "Starts", "entry"),
+                ReviewNote(paths, "Saves", save), ReviewNote(paths, "Stores", "Sample.value")))
             val flow = changeFlow(notes)
             assertEquals(listOf("entry" to 0, "save" to 1, "helper" to 2), flow.rows.map { it.note.evidence!!.symbol.name to it.depth })
             assertEquals(listOf(null, 0, 1), flow.rows.map { it.parent })
@@ -90,13 +91,13 @@ class DiffSymbolsTest : BasePlatformTestCase() {
         assertTrue("Expected supported declarations", dev.insight.callgraph.ProjectGraphAnalyzer.declarations(file).size > 1)
         val snapshot = ReviewSnapshot(listOf(ReviewFile("Same.java", file.virtualFile.path, null, "added", "", "1", "", file.text)), emptyList())
         ApplicationManager.getApplication().runReadAction {
-            val index = DiffSymbols(project, snapshot)
+            val index = diffSymbols(project, snapshot)
             val result = index.find(listOf("Same.java"), "go", 0)
             val found = JsonParser.parseString(result).asJsonObject["symbols"].asJsonArray.filter { it.asJsonObject["kind"].asString == "function" }
             val selectors = found.map { it.asJsonObject["symbol"].asString }
             assertEquals(result, 2, selectors.toSet().size)
-            selectors.forEach { index.resolve(listOf(DiffNote(listOf("Same.java"), "Go", it))) }
-            val notes = index.resolve(listOf(DiffNote(listOf("Same.java"), "Class", "Same"), DiffNote(listOf("Same.java"), "Field", "Same.field")))
+            selectors.forEach { index.resolve(listOf(ReviewNote(listOf("Same.java"), "Go", it))) }
+            val notes = index.resolve(listOf(ReviewNote(listOf("Same.java"), "Class", "Same"), ReviewNote(listOf("Same.java"), "Field", "Same.field")))
             assertTrue(notes[0].evidence!!.links.single { it.label == "Contains" }.symbols.any { it.name == "field" })
             assertEquals("field", notes[1].evidence!!.symbol.name)
         }
@@ -112,14 +113,14 @@ class DiffSymbolsTest : BasePlatformTestCase() {
             PsiDocumentManager.getInstance(project).commitDocument(document)
         }
         ApplicationManager.getApplication().runReadAction {
-            rejected { DiffSymbols(project, snapshot).resolve(listOf(DiffNote(listOf("Sample.java"), "Old", "helper"))) }
+            rejected { diffSymbols(project, snapshot).resolve(listOf(ReviewNote(listOf("Sample.java"), "Old", "helper"))) }
             val deleted = snapshot.copy(files = snapshot.files.map { it.copy(status = "deleted", after = "") })
-            rejected { DiffSymbols(project, deleted).resolve(listOf(DiffNote(listOf("Sample.java"), "Deleted", "helper"))) }
-            assertNull(DiffSymbols(project, deleted).resolve(listOf(DiffNote(listOf("Sample.java"), "File note"))).single().evidence)
-            val unavailable = JsonParser.parseString(DiffSymbols(project, deleted).find(listOf("Sample.java"), "", 0)).asJsonObject
+            rejected { diffSymbols(project, deleted).resolve(listOf(ReviewNote(listOf("Sample.java"), "Deleted", "helper"))) }
+            assertNull(diffSymbols(project, deleted).resolve(listOf(ReviewNote(listOf("Sample.java"), "File note"))).single().evidence)
+            val unavailable = JsonParser.parseString(diffSymbols(project, deleted).find(listOf("Sample.java"), "", 0)).asJsonObject
             assertTrue(unavailable["symbols"].asJsonArray.isEmpty)
             assertTrue(unavailable["unavailable"].asJsonObject.has("Sample.java"))
-            rejected { DiffSymbols(project, snapshot).resolve(listOf(DiffNote(listOf("missing.java"), "Missing", "helper"))) }
+            rejected { diffSymbols(project, snapshot).resolve(listOf(ReviewNote(listOf("missing.java"), "Missing", "helper"))) }
         }
     }
 
@@ -131,16 +132,16 @@ class DiffSymbolsTest : BasePlatformTestCase() {
                     files = snapshot.files.map { it.copy(after = "// historical source\n" + it.after) },
                     comparison = ReviewComparison(ReviewDiffRequest(mode, "/repo", "main", "topic"), "base", "target")
                 )
-                val symbols = DiffSymbols(project, historical)
+                val symbols = diffSymbols(project, historical)
                 val found = JsonParser.parseString(symbols.find(listOf("Sample.java"), "", 0)).asJsonObject
                 assertTrue(found["symbols"].asJsonArray.isEmpty)
                 val expected = "Current source for Sample.java does not match the reviewed target revision. Use a file note without symbol."
                 assertEquals(expected, found["unavailable"].asJsonObject["Sample.java"].asString)
                 try {
-                    symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "Old", "helper")))
+                    symbols.resolve(listOf(ReviewNote(listOf("Sample.java"), "Old", "helper")))
                     fail("Historical source mismatches must reject symbol notes")
                 } catch (e: ToolInputException) { assertEquals(expected, e.message) }
-                assertNull(symbols.resolve(listOf(DiffNote(listOf("Sample.java"), "File note"))).single().evidence)
+                assertNull(symbols.resolve(listOf(ReviewNote(listOf("Sample.java"), "File note"))).single().evidence)
             }
         }
     }
@@ -155,13 +156,13 @@ class DiffSymbolsTest : BasePlatformTestCase() {
                 val found = JsonParser.parseString(context.symbols(listOf("Sample.java"), "helper", 0)).asJsonObject
                 val selector = found["symbols"].asJsonArray.first().asJsonObject["symbol"].asString
                 try {
-                    context.addNotes(listOf(DiffNote(listOf("Sample.java"), "Valid", "entry"), DiffNote(listOf("Sample.java"), "Missing", "invented")))
+                    context.addNotes(listOf(ReviewNote(listOf("Sample.java"), "Valid", "entry"), ReviewNote(listOf("Sample.java"), "Missing", "invented")))
                     fail("A missing symbol must reject the whole batch")
                 } catch (_: ToolInputException) { }
                 assertTrue(tab.state.notes.isEmpty())
-                context.addNotes(listOf(DiffNote(listOf("Sample.java"), "First", "helper")))
-                context.addNotes(listOf(DiffNote(listOf("Sample.java"), "Updated", selector)))
-                context.addNotes(listOf(DiffNote(listOf("Sample.java"), "File note")))
+                context.addNotes(listOf(ReviewNote(listOf("Sample.java"), "First", "helper")))
+                context.addNotes(listOf(ReviewNote(listOf("Sample.java"), "Updated", selector)))
+                context.addNotes(listOf(ReviewNote(listOf("Sample.java"), "File note")))
                 assertEquals(2, tab.state.notes.size)
                 assertEquals("Updated", tab.state.notes.first().text)
                 assertEquals(selector, tab.state.notes.first().symbol)
@@ -180,7 +181,7 @@ class DiffSymbolsTest : BasePlatformTestCase() {
             ReviewFile(it.name, it.virtualFile.path, null, "added", "", "1", "", it.text)
         }, emptyList())
         ApplicationManager.getApplication().runReadAction {
-            val index = DiffSymbols(project, snapshot)
+            val index = diffSymbols(project, snapshot)
             val first = JsonParser.parseString(index.find(listOf("Many.java"), "", 0)).asJsonObject
             val next = first["next_offset"].asInt
             val second = JsonParser.parseString(index.find(listOf("Many.java"), "", next)).asJsonObject
@@ -188,7 +189,7 @@ class DiffSymbolsTest : BasePlatformTestCase() {
             assertEquals(41, all.size)
             assertEquals(41, all.map { it.asJsonObject["symbol"].asString }.toSet().size)
             assertFalse(second.has("next_offset"))
-            rejected { index.resolve(listOf(DiffNote(listOf("notes.txt"), "Invented", "invented"))) }
+            rejected { index.resolve(listOf(ReviewNote(listOf("notes.txt"), "Invented", "invented"))) }
         }
     }
 

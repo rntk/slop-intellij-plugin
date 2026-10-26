@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import com.intellij.icons.AllIcons
 import javax.swing.Icon
@@ -35,7 +35,7 @@ internal data class ReviewVocabulary(
     /** What a file node's details say after its name: "modified file · renamed from x" | "420 lines · 3 parts". */
     val describeFile: (ReviewSource?) -> String,
     /** The initial summaries view; source reviews start with the complete files as a document. */
-    val summariesMode: ChangeSummariesMode,
+    val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
     /** Score only the nodes currently shown, as a huge tree has too many words to score at once. */
@@ -67,10 +67,10 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show diff in tab",
             showOnCanvasIcon = AllIcons.Actions.Diff,
             describeFile = { file ->
-                val review = file as? ReviewFile
-                "${review?.status ?: "changed"} file" + (review?.previousPath?.let { " · renamed from $it" } ?: "")
+                val facts = file?.facts.orEmpty()
+                "${facts.firstOrNull() ?: "changed"} file" + facts.drop(1).joinToString("") { " · $it" }
             },
-            summariesMode = ChangeSummariesMode.OUTLINE,
+            summariesMode = ReviewSummariesMode.OUTLINE,
             foldLargeTopics = false,
             scoreVisibleOnly = false,
         )
@@ -100,7 +100,7 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
-            summariesMode = ChangeSummariesMode.DOCUMENT,
+            summariesMode = ReviewSummariesMode.DOCUMENT,
             foldLargeTopics = true,
             scoreVisibleOnly = true,
         )

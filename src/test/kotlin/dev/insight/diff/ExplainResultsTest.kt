@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.ChatMessage
+import dev.insight.review.ExplainResults
 import org.junit.Assert.*
 import org.junit.Test
 

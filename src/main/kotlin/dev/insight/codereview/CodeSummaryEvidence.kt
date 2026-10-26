@@ -1,19 +1,19 @@
 package dev.insight.codereview
 
 import com.google.gson.JsonObject
-import dev.insight.diff.ChangeSummaryOptions
-import dev.insight.diff.ChangeSummaryTree
-import dev.insight.diff.SUMMARY_WRITING_GUIDANCE
-import dev.insight.diff.SummaryEvidence
-import dev.insight.diff.SummaryNode
-import dev.insight.diff.summaryFocusLine
 import dev.insight.enrichment.CODE_AS_DATA
+import dev.insight.review.ReviewSummaryOptions
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SUMMARY_WRITING_GUIDANCE
+import dev.insight.review.SummaryEvidence
+import dev.insight.review.SummaryNode
+import dev.insight.review.summaryFocusLine
 
 /**
  * Code summaries batch up to 8 small files (or parts) per request. A part holds at most [ChunkOptions.maxChars] characters
  * and a whole file at most [ChunkOptions.singleChars], so no evidence is cut and no request needs a tool.
  */
-internal val CODE_SUMMARY_OPTIONS = ChangeSummaryOptions(
+internal val CODE_SUMMARY_OPTIONS = ReviewSummaryOptions(
     patchChars = 12_000,
     batchChars = 32_000,
     filesPerRequest = 8,
@@ -27,7 +27,7 @@ internal val CODE_SUMMARY_OPTIONS = ChangeSummaryOptions(
  */
 internal class CodeSummaryEvidence(
     private val snapshot: CodeSnapshot,
-    private val options: ChangeSummaryOptions = CODE_SUMMARY_OPTIONS,
+    private val options: ReviewSummaryOptions = CODE_SUMMARY_OPTIONS,
 ) : SummaryEvidence {
     override fun size(node: SummaryNode): Int {
         val file = node.file as? CodeFile ?: return 0
@@ -58,7 +58,7 @@ internal class CodeSummaryEvidence(
         }
     }
 
-    override fun leafSystem(tree: ChangeSummaryTree, focus: String): String {
+    override fun leafSystem(tree: ReviewSummaryTree, focus: String): String {
         val outline = folderOutline(tree.root.files, commonFolder(tree.root.files), options.overviewChars)
         return "${systemPrefix()}\n" + """
             Every node in "nodes" is a source file (kind "file") or one part of a large file (kind "chunk": lines start_line to

@@ -3,9 +3,9 @@ package dev.insight.codereview
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.chat.ToolInputException
-import dev.insight.diff.ChangeSummaries
-import dev.insight.diff.DiffNote
-import dev.insight.diff.DiffSourceRange
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -107,9 +107,9 @@ class CodeResultsTest {
         json(codeSearchResult(snapshot, "needle", false, "", null, 0))
         json(codeReadResult(snapshot, files.take(10).map { CodeRange(it.path) }))
         val tree = codeSummaryTree(snapshot.files)
-        json(codeSummariesJson(fillAll(ChangeSummaries(tree)), 0, null))
-        val notes = (1..50).map { DiffNote(listOf(files[it].path), "n".repeat(2000)) }
-        val overview = codeOverview(snapshot, null, files.map { it.path }, notes, emptyList(), fillAll(ChangeSummaries(tree)))
+        json(codeSummariesJson(fillAll(ReviewSummaries(tree)), 0, null))
+        val notes = (1..50).map { ReviewNote(listOf(files[it].path), "n".repeat(2000)) }
+        val overview = codeOverview(snapshot, null, files.map { it.path }, notes, emptyList(), fillAll(ReviewSummaries(tree)))
         assertTrue(overview.length <= CODE_OVERVIEW_CHARS)
         JsonParser.parseString(overview)
     }
@@ -119,9 +119,9 @@ class CodeResultsTest {
         val snapshot = CodeSnapshot(CodeScope("src", "/project/src"), files,
             listOf(SkippedFile("src/logo.png", SkipReason.BINARY), SkippedFile("src/x.min.js", SkipReason.MINIFIED),
                 SkippedFile("src/y.png", SkipReason.BINARY)), ignoredCount = 4)
-        val summaries = fillAll(ChangeSummaries(codeSummaryTree(files)))
+        val summaries = fillAll(ReviewSummaries(codeSummaryTree(files)))
         val overview = json(codeOverview(snapshot, setOf("src/app"), listOf("src/app/A.kt"),
-            listOf(DiffNote(listOf("src/app/A.kt"), "About A")), emptyList(), summaries))
+            listOf(ReviewNote(listOf("src/app/A.kt"), "About A")), emptyList(), summaries))
         assertEquals("src", overview["scope"].asString)
         assertEquals("fixed selection of 1 paths", overview["tab"].asString)
         assertEquals(3, overview["totals"].asJsonObject["files"].asInt)
@@ -138,7 +138,7 @@ class CodeResultsTest {
     @Test fun `summaries page a subtree by folder or file path`() {
         val files = (1..40).map { codeFile("src/a/F$it.kt", "a$it\n") } + (1..40).map { codeFile("src/b/G$it.kt", "b$it\n") } +
             codeFile("src/b/deep/Big.kt", largeSource())
-        val summaries = fillAll(ChangeSummaries(codeSummaryTree(files)))
+        val summaries = fillAll(ReviewSummaries(codeSummaryTree(files)))
         val whole = json(codeSummariesJson(summaries, 0, null))
         assertEquals(summaries.tree.nodes.size, whole["totals"].asJsonObject["nodes"].asInt)
 
@@ -162,14 +162,14 @@ class CodeResultsTest {
 
     @Test fun `source blocks show exact current lines within the limits`() {
         val snapshot = codeSnapshot(numbered, wide)
-        val block = resolveCodeSource(snapshot, DiffSourceRange(numbered.path, 3, 4))
+        val block = resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 3, 4))
         assertEquals("current", block.range.side)
         assertEquals("line 3\nline 4", block.text)
-        rejected("not a file in this review's scope") { resolveCodeSource(snapshot, DiffSourceRange("x.kt", 1, 1)) }
-        rejected("1–200 lines") { resolveCodeSource(snapshot, DiffSourceRange(numbered.path, 1, 200 + 1)) }
-        rejected("1–200 lines") { resolveCodeSource(snapshot, DiffSourceRange(numbered.path, 0, 3)) }
-        rejected("exceeds the 1000 lines") { resolveCodeSource(snapshot, DiffSourceRange(numbered.path, 950, 1001)) }
-        rejected("exceeds 20000 characters") { resolveCodeSource(snapshot, DiffSourceRange(wide.path, 1, 200)) }
+        rejected("not a file in this review's scope") { resolveCodeSource(snapshot, ReviewSourceRange("x.kt", 1, 1)) }
+        rejected("1–200 lines") { resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 1, 200 + 1)) }
+        rejected("1–200 lines") { resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 0, 3)) }
+        rejected("exceeds the 1000 lines") { resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 950, 1001)) }
+        rejected("exceeds 20000 characters") { resolveCodeSource(snapshot, ReviewSourceRange(wide.path, 1, 200)) }
     }
 
     @Test fun `tools validate arguments before calling the context`() = runBlocking {
@@ -182,8 +182,8 @@ class CodeResultsTest {
             override suspend fun read(ranges: List<CodeRange>) = "read $ranges".also { calls += it }
             override suspend fun search(query: String, regex: Boolean, directory: String, glob: String?, offset: Int) =
                 "search $query $regex $directory $glob $offset".also { calls += it }
-            override suspend fun showSource(range: DiffSourceRange) = "source $range".also { calls += it }
-            override suspend fun addNotes(notes: List<DiffNote>) = "notes $notes".also { calls += it }
+            override suspend fun showSource(range: ReviewSourceRange) = "source $range".also { calls += it }
+            override suspend fun addNotes(notes: List<ReviewNote>) = "notes $notes".also { calls += it }
             override suspend fun summaries(offset: Int, path: String?) = "summaries $offset $path".also { calls += it }
         }
         val tools = codeReviewTools(context).associateBy { it.definition.name }
@@ -197,7 +197,7 @@ class CodeResultsTest {
         call("get_code_summaries", """{"path":"src"}""")
         assertEquals(listOf("files  null 0", "read [CodeRange(path=src/Lines.kt, startLine=3, endLine=null), " +
             "CodeRange(path=src/Lines.kt, startLine=1, endLine=null)]", "search x true  *.kt 50",
-            "source DiffSourceRange(path=src/Lines.kt, startLine=1, endLine=2, side=current)", "summaries 0 src"), calls)
+            "source ReviewSourceRange(path=src/Lines.kt, startLine=1, endLine=2, side=current)", "summaries 0 src"), calls)
         for ((name, args) in listOf(
             "read_code" to """{"ranges":[]}""",
             "read_code" to """{"ranges":[{"path":"a","start_line":5,"end_line":4}]}""",

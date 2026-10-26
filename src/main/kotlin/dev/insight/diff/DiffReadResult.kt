@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
+import dev.insight.review.reviewJson
 
 /** Budget the complete wire response, including escaped patches and pagination for deferred files. */
 internal fun diffReadResult(files: List<ReviewFile>, offset: Int): String {

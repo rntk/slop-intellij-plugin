@@ -1,16 +1,28 @@
 package dev.insight.diff
 
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.components.ActionLink
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.codereview.CodeFile
+import dev.insight.review.ReviewCanvasFile
+import dev.insight.review.ReviewCanvasOwner
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SourceChunk
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.topicOutline
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
-import javax.swing.text.JTextComponent
-import javax.swing.JToggleButton
 import javax.swing.JComponent
+import javax.swing.JToggleButton
 import javax.swing.RepaintManager
+import javax.swing.text.JTextComponent
 
 /** The canvas serves a code base as well as a diff: other words, parts of large files, and a canvas owned by another tab. */
 class ReviewVocabularyTest : BasePlatformTestCase() {
@@ -41,8 +53,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
 
     fun testCodeTopicsDefaultToACompleteSourceDocumentAndSpeakOfSourceFiles() {
         val files = listOf(Source("src/wallet.kt"), Source("src/auth.kt"), Source("src/pending.kt"))
-        val topics = ChangeTopics(files).assign("src/wallet.kt", "Storage>Wallet").assign("src/auth.kt", "Storage>Auth")
-        val summaries = ChangeSummaries(buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName))
+        val topics = ReviewTopics(files).assign("src/wallet.kt", "Storage>Wallet").assign("src/auth.kt", "Storage>Auth")
+        val summaries = ReviewSummaries(buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName))
         val opened = mutableListOf<String>()
         val shown = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}, vocabulary = ReviewVocabulary.CODE, sourceActions = SourceCanvasActions(showDiffCard = { shown += it })).apply { setSize(1600, 900) }
@@ -80,8 +92,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val opened = mutableListOf<SummaryNode>()
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true)))
-            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
+            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -100,14 +112,14 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             CodeFile("docs/empty.txt", "/repo/docs/empty.txt", ""))
         val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName, chunks = { (it as CodeFile).chunks })
         val bigNode = tree.nodes.single { it.identity == "file:src/Big.kt" }
-        val summaries = ChangeSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { "Explains the complete file." })
+        val summaries = ReviewSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { "Explains the complete file." })
         val opened = mutableListOf<SummaryNode>()
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
-            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
             assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
             assertTrue(descendants(canvas).none { it is PatchView })
@@ -158,7 +170,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
     fun testIdleSourceDocumentLayoutAndPaintingDoNotKeepInvalidatingText() {
         val files = listOf(CodeFile("src/main/kotlin/example/Document.kt", "/repo/Document.kt", "val answer = 42\n".repeat(620)))
         val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "A summary that wraps across several lines. ".repeat(8) })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "A summary that wraps across several lines. ".repeat(8) })
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
         val previous = RepaintManager.currentManager(canvas)
         val invalidated = mutableListOf<String>()
@@ -170,7 +182,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, false),
-                topics = TopicsCard(ChangeTopics(files).assign(files.single().path, "Example>Document"), summaries, false)))
+                topics = TopicsCard(ReviewTopics(files).assign(files.single().path, "Example>Document"), summaries, false)))
             layoutTree(canvas)
             val texts = descendants(canvas).filterIsInstance<WrappedText>()
             fun paintText() = texts.forEach { text ->
@@ -200,8 +212,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun names() = panel().components.mapNotNull { it.name }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true)))
-            assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
+            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.
@@ -272,7 +284,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             Source((1..depth).joinToString("/") { "dir$it" } + "/file$depth.kt")
         }
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree)
+        val summaries = ReviewSummaries(tree)
         val state = ChangeSummariesViewState().apply { update(tree); fuzzy = "file6"; selectedLevel = 4 }
         val deep = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && tree.depth(it.id) == 4 }
         assertTrue(state.isOpen(deep, summaries))
@@ -299,7 +311,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             override fun canvasSelected() {}
         }
         try {
-            val file = DiffReviewCanvasFile(owner)
+            val file = ReviewCanvasFile(owner)
             assertEquals("Code Review", file.name)
             file.renameReview("src")
             assertEquals("Code Review: src", file.name)
@@ -309,7 +321,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
 
     fun testLargeTopicOutlinesStartAtTheFirstLevelOnlyWhenAsked() {
         val files = List(250) { Source("src/f$it.kt") }
-        var topics = ChangeTopics(files)
+        var topics = ReviewTopics(files)
         files.forEachIndexed { index, file -> topics = topics.assign(file.path, "Area${index % 5}>Part${index % 10}") }
         val outline = topicOutline(topics)
         val deep = outline.nodes.first { it.level == 1 }
@@ -325,7 +337,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         assertNull(plain.level)
         assertFalse(plain.isCollapsed(deep))
 
-        val small = topicOutline(ChangeTopics(files.take(20)).assign(files[0].path, "A>B"))
+        val small = topicOutline(ReviewTopics(files.take(20)).assign(files[0].path, "A>B"))
         val smallState = ChangeTopicsViewState(foldLargeOutline = true)
         smallState.update(small)
         assertNull(smallState.level)
@@ -334,7 +346,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
     fun testScoringOnlyVisibleNodesIsCachedPerSummariesAndCacheSize() {
         val files = listOf(Source("a/x.kt"), Source("a/y.kt"), Source("b/z.kt"), Source("b/w.kt"))
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Handles ${it.identity.length} careful requests." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Handles ${it.identity.length} careful requests." })
         val state = ChangeSummariesViewState()
         state.update(tree)
         val all = state.pending(summaries)
@@ -359,14 +371,14 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val state = ChangeSummariesViewState()
         state.update(tree)
         state.selectLevel(99, tree)
-        val panel = ChangeSummariesPanel(SummariesCard(ChangeSummaries(tree), running = false, canRun = true), state, 900, 1.0, ChangeSummaryActions({}, {}, {}, {}))
+        val panel = ChangeSummariesPanel(SummariesCard(ReviewSummaries(tree), running = false, canRun = true), state, 900, 1.0, ChangeSummaryActions({}, {}, {}, {}))
         val rows = panel.components.count { it.name?.startsWith("summary:") == true }
         assertEquals(HierarchyColumnsPanel.MAX_ROWS, rows)
         assertEquals(1, panel.components.count { it.name?.startsWith("more") == true })
         val note = descendants(panel).filterIsInstance<JTextComponent>().single { it.name?.startsWith("more") == true }
         assertTrue(note.text, note.text.endsWith("more — fold or pick a level"))
 
-        val small = ChangeSummariesPanel(SummariesCard(ChangeSummaries(buildSummaryTree(files.take(10))), false, true), ChangeSummariesViewState(),
+        val small = ChangeSummariesPanel(SummariesCard(ReviewSummaries(buildSummaryTree(files.take(10))), false, true), ChangeSummariesViewState(),
             900, 1.0, ChangeSummaryActions({}, {}, {}, {}))
         assertTrue(small.components.none { it.name?.startsWith("more") == true })
     }

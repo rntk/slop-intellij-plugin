@@ -4,6 +4,8 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.ScreenUtil
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SummaryNode
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.Font
@@ -11,12 +13,12 @@ import java.awt.Point
 import javax.swing.Action
 import javax.swing.JComponent
 import javax.swing.JPopupMenu
-import javax.swing.ScrollPaneConstants
 import javax.swing.JTextPane
-import javax.swing.text.SimpleAttributeSet
-import javax.swing.text.StyleConstants
+import javax.swing.ScrollPaneConstants
 import javax.swing.text.AbstractDocument
 import javax.swing.text.LabelView
+import javax.swing.text.SimpleAttributeSet
+import javax.swing.text.StyleConstants
 import javax.swing.text.StyledEditorKit
 import javax.swing.text.ViewFactory
 
@@ -28,7 +30,7 @@ internal class SummaryTextDialog(
     baseFont: Font,
     state: ChangeSummariesViewState,
     actions: ChangeSummaryActions,
-    tree: ChangeSummaryTree? = null,
+    tree: ReviewSummaryTree? = null,
     entryMenu: (() -> JPopupMenu)? = null,
 ) : DialogWrapper(parent, false) {
     private val text = object : JTextPane() {

@@ -1,6 +1,6 @@
 package dev.insight.codereview
 
-import dev.insight.diff.SourceChunk
+import dev.insight.review.SourceChunk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

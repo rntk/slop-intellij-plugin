@@ -3,6 +3,10 @@ package dev.insight.diff
 import com.intellij.openapi.util.Key
 import com.intellij.ui.ClientProperty
 import com.intellij.ui.JBColor
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Point
@@ -14,8 +18,8 @@ import javax.swing.JPopupMenu
 import javax.swing.SwingUtilities
 import javax.swing.text.DefaultHighlighter
 import javax.swing.text.JTextComponent
-import kotlinx.coroutines.Job
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 
 /**
  * Word contexts and the current trace of one card's summaries. Complete word contexts are retained without LRU eviction so
@@ -39,7 +43,7 @@ internal abstract class SummaryTraceState(
     var echo: SummaryEcho? = null
         private set
     /** Set by the session that owns this state: the current tree, and how to repaint highlights in place. */
-    var echoTree: () -> ChangeSummaryTree? = { null }
+    var echoTree: () -> ReviewSummaryTree? = { null }
     var echoChanged: () -> Unit = {}
 
     /** Echoes the meaningful [words] of [identity]'s summary in its descendants and ancestors; repaints only when they change. */
@@ -79,18 +83,18 @@ internal abstract class SummaryTraceState(
 
     /** Score only the nodes on screen: a huge tree has far too many words to score at once. */
     var visibleOnly = false
-    private var pendingFor: ChangeSummaries? = null
+    private var pendingFor: ReviewSummaries? = null
     private var pendingScored = -1
     private var pendingAll = emptyList<Pair<Int, Int>>()
 
     /** The nodes whose summaries are on screen, or null where every node counts. */
-    protected open fun visibility(tree: ChangeSummaryTree): ((SummaryNode) -> Boolean)? = null
+    protected open fun visibility(tree: ReviewSummaryTree): ((SummaryNode) -> Boolean)? = null
 
     /**
      * The words still to score, as node id and word index. Only nodes [visible] count when given, else those on screen when
      * [visibleOnly]. Finding the words of every summary is the costly part, so it is kept for the same summaries and cache size.
      */
-    fun pending(summaries: ChangeSummaries, visible: ((SummaryNode) -> Boolean)? = null): List<Pair<Int, Int>> {
+    fun pending(summaries: ReviewSummaries, visible: ((SummaryNode) -> Boolean)? = null): List<Pair<Int, Int>> {
         if (pendingFor !== summaries || pendingScored != scored.size) {
             pendingAll = summaries.tree.nodes
                 .filter { traced(it) }
@@ -104,18 +108,18 @@ internal abstract class SummaryTraceState(
     }
 
     /** Only this summary's missing words, independent of folding and visibility. */
-    fun pending(summaries: ChangeSummaries, identity: String): List<Pair<Int, Int>> =
+    fun pending(summaries: ReviewSummaries, identity: String): List<Pair<Int, Int>> =
         summaries.tree.nodes.firstOrNull { it.identity == identity && traced(it) }
             ?.let { pendingWords(summaries, it) }.orEmpty()
 
-    private fun pendingWords(summaries: ChangeSummaries, node: SummaryNode): List<Pair<Int, Int>> {
+    private fun pendingWords(summaries: ReviewSummaries, node: SummaryNode): List<Pair<Int, Int>> {
         val summary = summaries.text(node.id) ?: return emptyList()
         return SummaryWord.split(summary).filter { it.meaningful && cached(node.identity, summary, it.index) == null }
             .map { node.id to it.index }
     }
 
     /** A trace stays only while the traced summary is unchanged; matches whose node is gone are dropped. */
-    fun retain(summaries: ChangeSummaries) {
+    fun retain(summaries: ReviewSummaries) {
         pendingFor = null
         val nodes = summaries.tree.nodes.associateBy { it.identity }
         scored.entries.removeIf { (_, context) ->
@@ -129,7 +133,7 @@ internal abstract class SummaryTraceState(
     }
 
     /** Opens the levels between the traced summary and its related ones, so every match is visible, and selects the best. */
-    abstract fun showTrace(tree: ChangeSummaryTree, trace: SummaryTrace)
+    abstract fun showTrace(tree: ReviewSummaryTree, trace: SummaryTrace)
 
     /** Clears the current word context and result decorations. */
     open fun clearTrace() { tracing = null; echo = null }
@@ -152,7 +156,7 @@ internal data class SummaryEcho(
  */
 internal class TracePath(val traced: String, val path: Set<String>, val open: Set<String>, val fold: Set<String>)
 
-internal fun tracePath(tree: ChangeSummaryTree, trace: SummaryTrace): TracePath? {
+internal fun tracePath(tree: ReviewSummaryTree, trace: SummaryTrace): TracePath? {
     val byIdentity = tree.nodes.associateBy { it.identity }
     val traced = byIdentity[trace.identity] ?: return null
     val path = linkedSetOf(traced.identity)
@@ -174,7 +178,7 @@ internal fun tracePath(tree: ChangeSummaryTree, trace: SummaryTrace): TracePath?
 internal enum class TraceMark { TRACED, PATH, RELATED, BEST }
 
 /** The marks of [trace] by node identity. */
-internal fun traceMarks(tree: ChangeSummaryTree, trace: SummaryTrace?): Map<String, TraceMark> {
+internal fun traceMarks(tree: ReviewSummaryTree, trace: SummaryTrace?): Map<String, TraceMark> {
     val path = trace?.let { tracePath(tree, it) } ?: return emptyMap()
     val related = trace.related.map { it.identity }.toSet()
     return path.path.associateWith { identity ->
@@ -203,7 +207,7 @@ internal object TraceStyle {
 }
 
 /** What scoring has done, or what to do next, in the status area; [selection] mentions searching selected text. */
-internal fun scoringStatus(state: SummaryTraceState, summaries: ChangeSummaries, selection: Boolean = false): String = when {
+internal fun scoringStatus(state: SummaryTraceState, summaries: ReviewSummaries, selection: Boolean = false): String = when {
     state.scoring -> "Scoring words… ${state.scored.size} cached · ${state.pending(summaries).size} remaining"
     state.scoringError != null -> "Scoring failed: ${state.scoringError}. Click Score to continue."
     state.scored.isEmpty() -> "Click Score to precalculate word contexts for " + scoredSummaries(state) +
@@ -489,11 +493,11 @@ internal data class SummaryTracing(
 
 /** Runs each stage off the EDT and reports back on it; newer words cancel the returned job. */
 internal interface SummaryTraceLauncher {
-    fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
+    fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job
-    fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job
+    fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job
     /** Searches the lines of a file or part, whose summary has no summaries below it. */
-    fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job
+    fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job
 }
 
 /**
@@ -505,7 +509,7 @@ internal interface SummaryTraceLauncher {
 internal class SummaryTraceSession(
     private val launcher: SummaryTraceLauncher?,
     private val state: SummaryTraceState,
-    private val content: () -> ChangeSummaries?,
+    private val content: () -> ReviewSummaries?,
     private val openLines: (SummaryNode, LineTrace) -> Unit = { _, _ -> },
     private val update: (() -> Unit)? = null,
     private val refresh: () -> Unit,
@@ -513,7 +517,7 @@ internal class SummaryTraceSession(
     private var traceJob: Job? = null
     private var scoreJob: Job? = null
     private var scoreToken: Any? = null
-    private var scoringSummaries: ChangeSummaries? = null
+    private var scoringSummaries: ReviewSummaries? = null
 
     val available: Boolean get() = launcher != null
 
@@ -626,7 +630,7 @@ internal class SummaryTraceSession(
     }
 
     /** Summary updates cancel an active scoring run; a trace stays while its summary is unchanged. */
-    fun retain(content: ChangeSummaries) {
+    fun retain(content: ReviewSummaries) {
         scoringSummaries?.let { if (!sameSummaries(it, content)) stopScoring() }
         val before = state.tracing
         state.retain(content)
@@ -660,6 +664,6 @@ internal class SummaryTraceSession(
     }
 
     /** Equal trees and texts: a rebuilt but unchanged value keeps a scoring run going. */
-    private fun sameSummaries(a: ChangeSummaries, b: ChangeSummaries): Boolean = a === b ||
+    private fun sameSummaries(a: ReviewSummaries, b: ReviewSummaries): Boolean = a === b ||
         a.tree.nodes.size == b.tree.nodes.size && a.tree.nodes.indices.all { a.tree[it].identity == b.tree[it].identity && a.text(it) == b.text(it) }
 }

@@ -3,12 +3,18 @@ package dev.insight.diff
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.ui.UIUtil
-import kotlinx.coroutines.Job
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.text.StyleConstants
+import kotlinx.coroutines.Job
 
 class SummaryReviewViewTest : BasePlatformTestCase() {
     private val files = listOf("src/a.kt", "src/b.kt", "docs/readme.md").map {
@@ -19,16 +25,16 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
     }
 
     fun testReviewControlsDimFilesInEverySummaryModeAndCanUnmark() {
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
             val state = DiffReviewState().apply { update(ReviewSnapshot(files, emptyList())) }
             val tree = state.summaries.tree
             val node = tree.nodes.single { it.path == "docs/readme.md" }
             val texts = tree.nodes.associate { it.id to "Summary for ${it.path.ifEmpty { "root" }}" }
-            val summaries = ChangeSummaries(tree, texts)
+            val summaries = ReviewSummaries(tree, texts)
             val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, summaryActions = SummaryCanvasActions(markReviewed = state::setReviewed)).apply {
                 setSize(1600, 900)
                 summariesView.mode = mode
-                if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse("directory:docs", tree)
+                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse("directory:docs", tree)
             }
             try {
                 canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
@@ -53,7 +59,7 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
     fun testDimmingUsesOccurrencesAndPreservesTextWordSizesAndSelection() {
         val tree = buildSummaryTree(files)
         val text = "Add cache; add retries."
-        val summaries = ChangeSummaries(tree, mapOf(0 to text))
+        val summaries = ReviewSummaries(tree, mapOf(0 to text))
         val marks = ReviewedFiles().apply { restore(files) }
         val review = SummaryReviewPresentation(summaries, marks, mapOf(0 to setOf(0, 1))) { _, _ -> }
         val area = WrappedSummaryText(text, 500, Font(Font.DIALOG, Font.PLAIN, 14), mapOf("cache" to 1.0))
@@ -70,8 +76,8 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
 
     fun testTopicViewsShareReviewMarksAndDimFileSummaries() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary ${it.path}" })
-        var topics = ChangeTopics(files)
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary ${it.path}" })
+        var topics = ReviewTopics(files)
         files.forEach { topics = topics.assign(it.path, "Application > Behavior") }
         val card = TopicsCard(topics, summaries, true)
         val reading = card.reading
@@ -91,12 +97,12 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
 
     fun testLateLinkResultsCannotOverrideUnmarkedFilesOrNewSummaryVersions() {
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, mapOf(0 to "Caching and retries"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to "Caching and retries"))
         val reviewed = ReviewedFiles().apply { restore(files); set(listOf(files[0].path), true) }
         val callbacks = mutableListOf<(Result<ReviewDimming>) -> Unit>()
         val jobs = mutableListOf<Job>()
         val launcher = object : SummaryReviewLauncher {
-            override fun launch(summaries: ChangeSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job {
+            override fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job {
                 callbacks += done
                 return Job().also { jobs += it }
             }
@@ -115,7 +121,7 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
             reviewed.set(listOf(files[0].path), true)
             session.presentation(summaries) { _, _ -> }
             PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            val newer = ChangeSummaries(tree, mapOf(0 to "Different words"))
+            val newer = ReviewSummaries(tree, mapOf(0 to "Different words"))
             session.presentation(newer) { _, _ -> }
             PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
             callbacks[1](Result.success(mapOf(0 to setOf(0))))

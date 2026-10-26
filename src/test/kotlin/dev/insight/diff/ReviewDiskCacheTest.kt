@@ -9,12 +9,21 @@ import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
 import dev.insight.decisions.DecisionUsage
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.chatFocus
+import dev.insight.review.current
+import dev.insight.review.topicReadingSummaries
+import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.nio.file.Files
 
 class ReviewDiskCacheTest {
     @get:Rule val temp = TemporaryFolder()
@@ -22,7 +31,7 @@ class ReviewDiskCacheTest {
     private fun cache() = ReviewDiskCache(directory)
     private fun snapshot(text: String = "fun a() = 1") = CodeSnapshot(CodeScope("", "/repo"), listOf(CodeFile("a.kt", "/repo/a.kt", text)))
     private fun code(snapshot: CodeSnapshot = snapshot()) = CodeReviewState(cache = cache()).apply { update(snapshot) }
-    private fun fill(current: () -> ChangeSummaries, save: (Map<Int, String>) -> Unit) {
+    private fun fill(current: () -> ReviewSummaries, save: (Map<Int, String>) -> Unit) {
         while (!current().complete) save(current().ready().associateWith { "Generated summary $it" })
     }
 
@@ -163,7 +172,7 @@ class ReviewDiskCacheTest {
     @Test fun `scores survive tracer restart and changed summary text requires new judgments`() = runBlocking {
         val files = listOf("a.kt", "b.kt").map { ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash") }
         val tree = buildSummaryTree(files)
-        var summaries = ChangeSummaries(tree)
+        var summaries = ReviewSummaries(tree)
         fill({ summaries }) { summaries = summaries.summarize(it.mapValues { "Adds account token validation" }) }
         var requests = 0
         val evaluate: suspend (DecisionRequest) -> DecisionResponse = { request ->
@@ -196,9 +205,9 @@ class ReviewDiskCacheTest {
         state.assignTopic(state.revision, "lib/c.kt", "Docs > Guide")
         state.startTopicSummaries(state.revision)
         fill({ state.topicSummaries }) { state.summarizeTopics(state.revision, it) }
-        fun ChangeSummaries.texts() = tree.nodes.mapNotNull { node -> text(node.id)?.let { node.identity to it } }.toMap()
+        fun ReviewSummaries.texts() = tree.nodes.mapNotNull { node -> text(node.id)?.let { node.identity to it } }.toMap()
         // Exactly the nodes without the changed file beneath them keep their saved text: never a folder, topic or root above it.
-        fun unaffected(summaries: ChangeSummaries) = summaries.texts().filterKeys { identity ->
+        fun unaffected(summaries: ReviewSummaries) = summaries.texts().filterKeys { identity ->
             "app/a.kt" !in summaries.tree.nodes.single { it.identity == identity }.files
         }
 

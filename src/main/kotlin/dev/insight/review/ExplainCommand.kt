@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
@@ -42,13 +42,13 @@ internal fun explainCommand(location: String, instructions: String): String =
     ("/explain $location" + if (instructions.isBlank()) "" else "\n" + instructions.trim()).trim()
 
 /** The summary of [node] in [summaries], found by identity: the card may show another version of the tree. */
-internal fun ChangeSummaries.textOf(node: SummaryNode): String? = tree.nodes.firstOrNull { it.identity == node.identity }?.let { text(it.id) }
+internal fun ReviewSummaries.textOf(node: SummaryNode): String? = tree.nodes.firstOrNull { it.identity == node.identity }?.let { text(it.id) }
 
 /**
  * The summaries from the root down to [node], found by identity, so the model sees the purpose of the whole before the part.
  * Levels without a summary are left out, and so is a level that repeats the one below (a single child's summary reused).
  */
-internal fun ChangeSummaries.chainTo(node: SummaryNode): List<SummaryLevel> {
+internal fun ReviewSummaries.chainTo(node: SummaryNode): List<SummaryLevel> {
     val entry = tree.nodes.firstOrNull { it.identity == node.identity } ?: return emptyList()
     val levels = generateSequence(entry) { it.parent?.let(tree::get) }.toList().asReversed()
         .mapNotNull { level -> text(level.id)?.let { SummaryLevel(levelLabel(level), it) } }
@@ -63,14 +63,14 @@ private fun levelLabel(node: SummaryNode): String = when {
 }
 
 /** The target of an Explain link: the summary entry [node], with what [dialog] asked. */
-internal fun explainTarget(node: SummaryNode, summaries: ChangeSummaries, dialog: ExplainDialog): ExplainTarget =
+internal fun explainTarget(node: SummaryNode, summaries: ReviewSummaries, dialog: ExplainDialog): ExplainTarget =
     ExplainTarget(node.location, node.files, node.lines, summaries.chainTo(node), dialog.diagrams, dialog.instructions)
 
 /**
  * A typed `/explain [path[:first-last]] [instructions]` among the [paths] in scope. `.` or no path explains the whole scope;
  * a first word that names no file or folder in scope is part of the instructions.
  */
-internal fun typedExplainTarget(text: String, summaries: ChangeSummaries, paths: List<String>): ExplainTarget {
+internal fun typedExplainTarget(text: String, summaries: ReviewSummaries, paths: List<String>): ExplainTarget {
     val rest = text.trim().drop("/explain".length).trim()
     val token = rest.split(Regex("\\s+"), limit = 2).first()
     val range = Regex("""^(.+):(\d+)-(\d+)$""").matchEntire(token)
@@ -85,7 +85,7 @@ internal fun typedExplainTarget(text: String, summaries: ChangeSummaries, paths:
         instructions = rest.drop(token.length).trim())
 }
 
-private fun ChangeSummaries.rootChain(): List<SummaryLevel> = if (tree.nodes.isEmpty()) emptyList() else chainTo(tree.root)
+private fun ReviewSummaries.rootChain(): List<SummaryLevel> = if (tree.nodes.isEmpty()) emptyList() else chainTo(tree.root)
 
 /**
  * Expands an /explain command for its turn only: the transcript keeps the command as typed. [diff] chooses

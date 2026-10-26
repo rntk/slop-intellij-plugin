@@ -1,5 +1,15 @@
 package dev.insight.diff
 
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SummaryLevel
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.chatFocus
+import dev.insight.review.chatFocusPrompt
+import dev.insight.review.chatFocusTabName
+import dev.insight.review.current
+import dev.insight.review.topicReadingSummaries
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -7,7 +17,7 @@ class ChatFocusTest {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
     private val paths = listOf("src/app/Cache.kt", "src/app/Store.kt", "docs/README.md")
     private val tree = buildSummaryTree(paths.map(::file))
-    private val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+    private val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
 
     @Test fun `a folder focuses on the files beneath it with the summaries down to it`() {
         val focus = chatFocus(listOf("src/app"), paths, summaries)!!
@@ -23,7 +33,7 @@ class ChatFocusTest {
         assertEquals("Summary of file:docs/README.md.", focus.context.last().text)
         assertNull(chatFocus(listOf("lib"), paths, summaries))
         // Without summaries the focus still has its files.
-        assertEquals(emptyList<SummaryLevel>(), chatFocus(listOf("docs/README.md"), paths, ChangeSummaries(tree))!!.context)
+        assertEquals(emptyList<SummaryLevel>(), chatFocus(listOf("docs/README.md"), paths, ReviewSummaries(tree))!!.context)
     }
 
     @Test fun `several entries focus on all their files`() {
@@ -60,25 +70,25 @@ class ChatFocusTest {
     @Test fun `a turn uses regenerated summaries instead of the text captured by To Chat`() {
         val focus = chatFocus(listOf("src/app"), paths, summaries)!!
         val regenerated = summaries.summarize(tree.nodes.associate { it.id to "New ${it.identity}" })
-        val current = focus.current(paths.toSet(), regenerated, ChangeSummaries(tree))
+        val current = focus.current(paths.toSet(), regenerated, ReviewSummaries(tree))
         assertEquals(listOf("New root", "New directory:src", "New directory:src/app"), current.context.map { it.text })
-        assertEquals(focus.context, focus.current(paths.toSet(), ChangeSummaries(tree), ChangeSummaries(tree)).context)
+        assertEquals(focus.context, focus.current(paths.toSet(), ReviewSummaries(tree), ReviewSummaries(tree)).context)
     }
 
     @Test fun `changed evidence drops captured summaries but keeps unchanged levels`() {
         val focus = chatFocus(listOf("src/app"), paths, summaries)!!
         val changed = buildSummaryTree(paths.map { file(it).copy(fingerprint = if (it == "docs/README.md") "2" else "1") })
-        val current = focus.current(paths.toSet(), ChangeSummaries(changed), ChangeSummaries(tree))
+        val current = focus.current(paths.toSet(), ReviewSummaries(changed), ReviewSummaries(tree))
         assertEquals(listOf("Summary of directory:src.", "Summary of directory:src/app."), current.context.map { it.text })
         val changedFocus = buildSummaryTree(paths.map { file(it).copy(fingerprint = "2") })
-        assertTrue(focus.current(paths.toSet(), ChangeSummaries(changedFocus), ChangeSummaries(tree)).context.isEmpty())
+        assertTrue(focus.current(paths.toSet(), ReviewSummaries(changedFocus), ReviewSummaries(tree)).context.isEmpty())
     }
 
     @Test fun `files that left scope are reported separately from readable files over budget`() {
         val focus = chatFocus(listOf("src/app"), paths, summaries)!!
         val livePaths = setOf("src/app/Store.kt", "docs/README.md", "src/app/Renamed.kt")
-        val live = ChangeSummaries(buildSummaryTree(livePaths.map(::file)))
-        val current = focus.current(livePaths, live, ChangeSummaries(tree))
+        val live = ReviewSummaries(buildSummaryTree(livePaths.map(::file)))
+        val current = focus.current(livePaths, live, ReviewSummaries(tree))
         val built = mutableListOf<String>()
         val prompt = chatFocusPrompt(current, "change", "read_diff_files", maxChars = 1) { path, _ ->
             built += path
@@ -94,8 +104,8 @@ class ChatFocusTest {
 
     @Test fun `a removed focus explicitly says that none of its files remain in scope`() {
         val focus = chatFocus(listOf("src/app/Cache.kt"), paths, summaries)!!
-        val live = ChangeSummaries(buildSummaryTree(listOf(file("docs/README.md"))))
-        val current = focus.current(setOf("docs/README.md"), live, ChangeSummaries(tree))
+        val live = ReviewSummaries(buildSummaryTree(listOf(file("docs/README.md"))))
+        val current = focus.current(setOf("docs/README.md"), live, ReviewSummaries(tree))
         val prompt = chatFocusPrompt(current, "code", "read_code") { _, _ -> fail("Removed files must not be rendered"); null }
         assertTrue(prompt, "The focus no longer has files in this tab's current scope." in prompt)
         assertTrue(prompt, "The focused summary entry no longer exists" in prompt)
@@ -114,9 +124,9 @@ class ChatFocusTest {
     }
 
     @Test fun `a topic file keeps live topic ancestry and uses the shared file summary`() {
-        val topics = ChangeTopics(paths.map(::file), paths.associateWith { "Storage > Wallet" })
+        val topics = ReviewTopics(paths.map(::file), paths.associateWith { "Storage > Wallet" })
         val topicTree = buildTopicSummaryTree(topics)
-        val topicSummaries = ChangeSummaries(topicTree).summarize(
+        val topicSummaries = ReviewSummaries(topicTree).summarize(
             topicTree.nodes.associate { it.id to "Topic ${it.identity}" }, reuseSingleChildren = false)
         val reading = topicReadingSummaries(topicSummaries, summaries)
         val focus = chatFocus(reading.tree.nodes.single { it.path == "src/app/Cache.kt" }, reading)

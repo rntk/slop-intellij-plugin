@@ -7,39 +7,12 @@ import dev.insight.decisions.DecisionJson
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.reviewFingerprint
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-
-/** Review marks describe evidence, so changed source or patches automatically become unreviewed. */
-class ReviewedFiles {
-    private var files: Map<String, ReviewSource> = emptyMap()
-    private val marks = mutableSetOf<String>()
-    val keys: Set<String> get() = marks.toSet()
-    var revision: Int = 0
-        private set
-
-    internal fun restore(sources: List<ReviewSource>, saved: Set<String> = keys) {
-        files = sources.associateBy { it.path }
-        marks.clear()
-        marks.addAll(saved.intersect(sources.map(::key).toSet()))
-        revision++
-    }
-
-    fun isReviewed(node: SummaryNode): Boolean = node.files.isNotEmpty() &&
-        node.files.all { path -> files[path]?.let { key(it) in marks } == true }
-
-    /** Returns every targeted evidence key, including marks already in the requested local state. */
-    fun set(paths: List<String>, reviewed: Boolean): List<String> {
-        val targeted = paths.mapNotNull(files::get).map(::key)
-        targeted.forEach { if (reviewed) marks.add(it) else marks.remove(it) }
-        revision++
-        return targeted
-    }
-
-    companion object {
-        internal fun key(file: ReviewSource): String = reviewFingerprint("reviewed", file.path, file.fingerprint)
-    }
-}
 
 /** Word indices refer to occurrences in the original prose, never to a global set of spellings. */
 internal typealias ReviewDimming = Map<Int, Set<Int>>
@@ -58,7 +31,7 @@ internal class SummaryReviewLinker(
 
     /** [onProgress] reports how many partially reviewed summaries have been judged, out of all that need it. */
     suspend fun dimming(
-        summaries: ChangeSummaries,
+        summaries: ReviewSummaries,
         reviewed: Set<String>,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): ReviewDimming = lock.withLock {

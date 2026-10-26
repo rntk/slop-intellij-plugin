@@ -8,6 +8,11 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.Font
@@ -47,8 +52,8 @@ internal data class FileViewCard(
     val file: ReviewSource,
     val structure: FileStructure?,
     val error: String?,
-    val topics: ChangeTopics,
-    val summaries: ChangeSummaries,
+    val topics: ReviewTopics,
+    val summaries: ReviewSummaries,
     val canRun: Boolean,
 ) {
     /** The scope's files reached by any block, without a topic or a summary yet. */

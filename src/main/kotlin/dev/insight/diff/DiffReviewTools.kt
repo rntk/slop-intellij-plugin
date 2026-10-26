@@ -1,14 +1,18 @@
 package dev.insight.diff
 
-import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolInputException
 import dev.insight.chat.SourcePoint
+import dev.insight.chat.ToolInputException
 import dev.insight.chat.sourcePointTool
 import dev.insight.llm.LlmTool
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewTopics
 
 /** One reply's view of a tab. The captured revision is checked by the context, never echoed by the model. */
 interface DiffReviewContext {
@@ -16,23 +20,23 @@ interface DiffReviewContext {
     /** One size-bounded page; [patchBudget] inlines whole patches that also fit the serialized result. */
     suspend fun state(offset: Int, patchBudget: Int = 0): String
     suspend fun read(paths: List<String>, offset: Int): String
-    suspend fun addNotes(notes: List<DiffNote>): String
-    suspend fun showSource(range: DiffSourceRange): String =
+    suspend fun addNotes(notes: List<ReviewNote>): String
+    suspend fun showSource(range: ReviewSourceRange): String =
         throw ToolInputException("Source blocks are unavailable")
     suspend fun symbols(paths: List<String>, query: String, offset: Int): String =
         throw ToolInputException("Symbol discovery is unavailable")
 
-    suspend fun startTopicSummaries(): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, String>): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
 
-    suspend fun startTopics(): ChangeTopics = throw ToolInputException("Change topics are unavailable")
-    suspend fun assignTopic(path: String, label: String): ChangeTopics = throw ToolInputException("Change topics are unavailable")
+    suspend fun startTopics(): ReviewTopics = throw ToolInputException("Change topics are unavailable")
+    suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Change topics are unavailable")
 
     /** Starts a /summaries turn, restarting a complete tree, and shows it on the canvas. Not a model tool. */
-    suspend fun startSummaries(): ChangeSummaries = throw ToolInputException("Change summaries are unavailable")
+    suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
     suspend fun summaries(offset: Int): String = throw ToolInputException("Change summaries are unavailable")
-    /** Saves summaries written by [ChangeSummarizer] and returns the tree with them. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, String>): ChangeSummaries = throw ToolInputException("Change summaries are unavailable")
+    /** Saves summaries written by [ReviewSummarizer] and returns the tree with them. Not a model tool. */
+    suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
 }
 
 fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
@@ -99,7 +103,7 @@ fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
                 throw ToolInputException("Use an inclusive range of 1–200 lines, starting at line 1 or later.")
             val side = if (it.has("side")) string(it, "side") else "after"
             if (side !in setOf("before", "after")) throw ToolInputException("side must be before or after")
-            context.showSource(DiffSourceRange(string(it, "path"), start, end, side))
+            context.showSource(ReviewSourceRange(string(it, "path"), start, end, side))
         },
         tool("add_diff_notes", "Show 1–$MAX_NOTES_PER_CALL notes on the canvas next to the chat, to explain or illustrate an answer. Each note is attached to " +
             "one file or a group of related files. Optionally attach a symbol (function, class, property or other declaration) from those files. " +
@@ -122,7 +126,7 @@ fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
                 if (text.length > 2000) throw ToolInputException("${prefix}text is too long")
                 val symbol = if (note.has("symbol")) string(note, "symbol", prefix).trim() else null
                 if (symbol != null && symbol.length > 500) throw ToolInputException("${prefix}symbol is too long")
-                DiffNote(paths(note["paths"], 30, prefix), text, symbol)
+                ReviewNote(paths(note["paths"], 30, prefix), text, symbol)
             }
             context.addNotes(parsed)
         },
@@ -135,9 +139,6 @@ internal fun diffChatTools(context: DiffReviewContext): List<ChatTool> =
 internal const val DIFF_PAGE_SIZE = 50
 internal const val MAX_READ_PATHS = 10
 internal const val MAX_NOTES_PER_CALL = 20
-
-/** Patches stay readable: the default Gson escapes `<`, `>`, `=`, `&` and `'` as < etc. */
-internal val reviewJson = GsonBuilder().disableHtmlEscaping().create()
 
 internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "\n\n" + """
     You help a developer understand the changes under review using the available snapshot tools.

@@ -8,13 +8,14 @@ import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.JBUI
+import dev.insight.review.ReviewSourceBlock
 import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JPanel
 import kotlin.math.roundToInt
 
 /** A private snapshot document: native selection, highlighting and scrolling, with no writes to project files. */
-internal class DiffSourceEditor(val block: DiffSourceBlock, project: Project?) : JPanel(BorderLayout()), Disposable {
+internal class DiffSourceEditor(val block: ReviewSourceBlock, project: Project?) : JPanel(BorderLayout()), Disposable {
     internal val editor = EditorFactory.getInstance().createViewer(
         EditorFactory.getInstance().createDocument(block.text), project,
     ) as EditorEx

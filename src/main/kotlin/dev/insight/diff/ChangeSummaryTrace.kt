@@ -9,6 +9,10 @@ import dev.insight.decisions.DecisionJson
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryNode
+import dev.insight.review.reviewFingerprint
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -131,7 +135,7 @@ class SummaryTracer(
     private val scoreWrites = Mutex()
 
     /** Scores only this summary's words; candidate enumeration and ranking are deferred to [search]. */
-    suspend fun score(summaries: ChangeSummaries, id: Int, wordIndex: Int): SummaryContext {
+    suspend fun score(summaries: ReviewSummaries, id: Int, wordIndex: Int): SummaryContext {
         val node = summaries.tree[id]
         val summary = requireNotNull(summaries.text(id)) { "Node $id has no summary" }
         val words = SummaryWord.split(summary)
@@ -142,7 +146,7 @@ class SummaryTracer(
     }
 
     /** Uses the already scored context after the reader chooses Search from a scored word's context menu. */
-    suspend fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext): SummaryTrace {
+    suspend fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext): SummaryTrace {
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
         val query = deduplicatedQuery(context.query)
@@ -159,7 +163,7 @@ class SummaryTracer(
      * A match above another already leads to it, and the rest are unrelated.
      */
     internal suspend fun trails(
-        summaries: ChangeSummaries,
+        summaries: ReviewSummaries,
         query: String,
         focus: String,
         node: SummaryNode,
@@ -209,7 +213,7 @@ class SummaryTracer(
      * diff's changed lines, gets a Noul for the query; then each candidate line of the best block gets one, so the reader is
      * shown the lines that do it rather than the whole block. Only the first [maxBlocks] blocks are searched.
      */
-    suspend fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext): LineTrace {
+    suspend fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext): LineTrace {
         val node = summaries.tree[id]
         require(node.identity == context.identity && summaries.text(id) == context.summary) { "The scored summary has changed" }
         val query = deduplicatedQuery(context.query)
@@ -425,7 +429,7 @@ class SummaryTracer(
      * Summaries up to [levels] levels below [id]. A parent with a single child repeats its summary, so that child adds no level.
      * A chain of merged folders counts as the folder the views show for it.
      */
-    internal fun candidates(summaries: ChangeSummaries, id: Int): List<Pair<SummaryNode, Int>> {
+    internal fun candidates(summaries: ReviewSummaries, id: Int): List<Pair<SummaryNode, Int>> {
         val tree = summaries.tree
         val found = mutableListOf<Pair<SummaryNode, Int>>()
         fun visit(parent: SummaryNode, depth: Int) {

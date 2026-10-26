@@ -9,6 +9,10 @@ import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
 import dev.insight.decisions.DecisionUsage
+import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewedFiles
+import dev.insight.review.buildSummaryTree
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Rule
@@ -36,7 +40,7 @@ class SummaryReviewTest {
         val files = listOf(file("a.kt"), file("b.kt"))
         val tree = buildSummaryTree(files)
         val text = "Add caching and retries."
-        val summaries = ChangeSummaries(tree, mapOf(0 to text, tree.root.children[0] to "Add caching", tree.root.children[1] to "Add retries"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to text, tree.root.children[0] to "Add caching", tree.root.children[1] to "Add retries"))
         val fake = Decisions { request, question ->
             val child = request.state.asJsonObject["child_summary"].asString
             if (question.contains("(Add)") || question.contains("(caching)") && child.contains("caching") ||
@@ -85,7 +89,7 @@ class SummaryReviewTest {
                     question.contains("(retries)") && child.contains("Retries")) 0.9 else 0.1
             }
         }
-        val summaries = ChangeSummaries(tree, texts)
+        val summaries = ReviewSummaries(tree, texts)
         val dim = SummaryReviewLinker(fake.evaluate).dimming(summaries, setOf(ReviewedFiles.key(files[0])))
         assertEquals(listOf("Caching"), words(texts.getValue(app.id), dim[app.id]))
         assertEquals(listOf("Performance"), words(texts.getValue(0), dim[0]))
@@ -97,14 +101,14 @@ class SummaryReviewTest {
         val tree = buildSummaryTree(files)
         val a = tree.root.children[0]
         val b = tree.root.children[1]
-        val summaries = ChangeSummaries(tree, mapOf(0 to "Caching", a to "Cache", b to "Retries"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to "Caching", a to "Cache", b to "Retries"))
         val marked = setOf(ReviewedFiles.key(files[0]))
         for (uncertain in listOf(0.0, 0.5)) {
             val fake = Decisions { _, _ -> uncertain }
             assertTrue(SummaryReviewLinker(fake.evaluate).dimming(summaries, marked)[0].isNullOrEmpty())
         }
         val noCalls = SummaryReviewLinker({ error("Incomplete evidence must remain bright") })
-        assertTrue(noCalls.dimming(ChangeSummaries(tree, mapOf(0 to "Caching", a to "Cache")), marked)[0].isNullOrEmpty())
+        assertTrue(noCalls.dimming(ReviewSummaries(tree, mapOf(0 to "Caching", a to "Cache")), marked)[0].isNullOrEmpty())
     }
 
     @Test fun `changed text invalidates cached links and repeated word occurrences have distinct questions`() = runBlocking {
@@ -112,7 +116,7 @@ class SummaryReviewTest {
         val tree = buildSummaryTree(files)
         val fake = Decisions { _, question -> if (question.contains("parent word 1")) 0.9 else 0.1 }
         val linker = SummaryReviewLinker(fake.evaluate, disk())
-        val summaries = ChangeSummaries(tree, mapOf(0 to "Add caching; add retries", tree.root.children[0] to "Cache", tree.root.children[1] to "Retry"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to "Add caching; add retries", tree.root.children[0] to "Cache", tree.root.children[1] to "Retry"))
         linker.dimming(summaries, setOf(ReviewedFiles.key(files[0])))
         val questions = fake.requests.flatMap { it.questions.values }.map { it.instructions.asString }
         assertTrue(questions.any { it.contains("parent word 1 (Add)") })
@@ -125,7 +129,7 @@ class SummaryReviewTest {
     @Test fun `failed or malformed decisions are errors and never cached as negative links`() = runBlocking {
         val files = listOf(file("a.kt"), file("b.kt"))
         val tree = buildSummaryTree(files)
-        val summaries = ChangeSummaries(tree, mapOf(0 to "Caching", tree.root.children[0] to "Cache", tree.root.children[1] to "Retry"))
+        val summaries = ReviewSummaries(tree, mapOf(0 to "Caching", tree.root.children[0] to "Cache", tree.root.children[1] to "Retry"))
         val marked = setOf(ReviewedFiles.key(files[0]))
         val linker = SummaryReviewLinker({ DecisionResponse("test", emptyMap(), DecisionUsage(0, 0)) }, disk())
         try { linker.dimming(summaries, marked); fail("Missing judgments must fail") } catch (_: IllegalArgumentException) { }

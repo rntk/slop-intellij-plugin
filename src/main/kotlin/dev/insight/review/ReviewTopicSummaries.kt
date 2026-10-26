@@ -1,7 +1,7 @@
-package dev.insight.diff
+package dev.insight.review
 
 /** A summary tree with every topic prefix preserved, independent of the hierarchy's folded state. Files with [chunks] get their parts beneath them. */
-internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) -> List<SourceChunk> = { emptyList() }): ChangeSummaryTree {
+internal fun buildTopicSummaryTree(topics: ReviewTopics, chunks: (ReviewSource) -> List<SourceChunk> = { emptyList() }): ReviewSummaryTree {
     val outline = topicOutline(topics)
     val nodes = mutableListOf<SummaryNode>()
     fun add(kind: SummaryKind, path: String, label: String, identity: String, parent: Int?,
@@ -10,8 +10,8 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) 
         nodes += SummaryNode(id, kind, path, label, parent, emptyList(), emptyList(), "", identity, file, isTopicBranch = kind != SummaryKind.FILE)
         var children = entries()
         // Keep large topics bounded just like large directories in /summaries.
-        while (children.size > ChangeSummaryTree.MAX_CHILDREN) {
-            children = children.chunked(ChangeSummaryTree.MAX_CHILDREN).map { members ->
+        while (children.size > ReviewSummaryTree.MAX_CHILDREN) {
+            children = children.chunked(ReviewSummaryTree.MAX_CHILDREN).map { members ->
                 val group = nodes.size
                 val files = members.flatMap { nodes[it].files }
                 nodes += SummaryNode(group, SummaryKind.GROUP, path, "${nodes[members.first()].label} … ${nodes[members.last()].label}",
@@ -48,7 +48,7 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) 
     fun visit(id: Int) { order += id; nodes[id].children.forEach(::visit) }
     visit(0)
     val ids = order.withIndex().associate { it.value to it.index }
-    return ChangeSummaryTree(order.map { old ->
+    return ReviewSummaryTree(order.map { old ->
         nodes[old].copy(id = ids.getValue(old), parent = nodes[old].parent?.let(ids::getValue),
             children = nodes[old].children.map(ids::getValue))
     })
@@ -60,7 +60,7 @@ internal fun buildTopicSummaryTree(topics: ChangeTopics, chunks: (ReviewSource) 
  * shows files, and tracing must not match a part. Files read their shared summary; topics read their own, else the summary
  * of exactly their files.
  */
-internal fun topicReadingSummaries(topics: ChangeSummaries, shared: ChangeSummaries): ChangeSummaries {
+internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummaries): ReviewSummaries {
     val tree = topics.tree
     val fileTexts = shared.tree.nodes.filter { it.kind == SummaryKind.FILE }.mapNotNull { node -> shared.text(node.id)?.let { node.path to it } }.toMap()
     val byFiles = summariesByFiles(shared)
@@ -84,14 +84,14 @@ internal fun topicReadingSummaries(topics: ChangeSummaries, shared: ChangeSummar
         return id
     }
     visit(0, null)
-    return ChangeSummaries(ChangeSummaryTree(nodes), texts)
+    return ReviewSummaries(ReviewSummaryTree(nodes), texts)
 }
 
 /**
  * Existing exact-file-set summaries are valid evidence too; never overwrite a saved topic summary. A part of a large file
  * covers only some of its file, so parts never stand for a file set; a part takes the shared summary of the same part.
  */
-internal fun seedTopicSummaries(topics: ChangeSummaries, shared: ChangeSummaries): ChangeSummaries {
+internal fun seedTopicSummaries(topics: ReviewSummaries, shared: ReviewSummaries): ReviewSummaries {
     val byFiles = summariesByFiles(shared)
     val parts = shared.tree.nodes.filter { it.kind == SummaryKind.CHUNK }.mapNotNull { node ->
         shared.text(node.id)?.let { node.key to (it to (node.id in shared.cachedIds)) }
@@ -105,10 +105,10 @@ internal fun seedTopicSummaries(topics: ChangeSummaries, shared: ChangeSummaries
             node.id to text
         }
     }.toMap()
-    return ChangeSummaries(topics.tree, texts, cached)
+    return ReviewSummaries(topics.tree, texts, cached)
 }
 
 /** Summaries by the exact set of files beneath their node, deepest last; parts of files are left out. */
-private fun summariesByFiles(summaries: ChangeSummaries): Map<Set<String>, Pair<String, Boolean>> = summaries.tree.nodes
+private fun summariesByFiles(summaries: ReviewSummaries): Map<Set<String>, Pair<String, Boolean>> = summaries.tree.nodes
     .filter { it.kind != SummaryKind.CHUNK }
     .mapNotNull { node -> summaries.text(node.id)?.let { node.files.toSet() to (it to (node.id in summaries.cachedIds)) } }.toMap()

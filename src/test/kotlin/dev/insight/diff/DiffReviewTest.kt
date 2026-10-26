@@ -7,6 +7,9 @@ import dev.insight.chat.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmToolCall
+import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewSourceRange
+import dev.insight.review.reviewJson
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -27,7 +30,7 @@ class DiffReviewTest {
         val path = "src/a.kt"
         state.update(state.snapshot.copy(files = state.snapshot.files.map { it.copy(before = "old\n", after = "new\n") }))
         state.addNote(state.revision, listOf(path), "Local evidence")
-        state.showSource(state.revision, DiffSourceRange(path, 1, 1))
+        state.showSource(state.revision, ReviewSourceRange(path, 1, 1))
         state.showDiff(path)
         val previous = state.revision
         val comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "main", "topic"), "a".repeat(40), "b".repeat(40))
@@ -38,7 +41,7 @@ class DiffReviewTest {
         assertTrue(state.diffs.isEmpty())
         rejected { state.check(previous) }
         state.addNote(state.revision, listOf(path), "Historical evidence")
-        state.showSource(state.revision, DiffSourceRange(path, 1, 1))
+        state.showSource(state.revision, ReviewSourceRange(path, 1, 1))
         state.showDiff(path)
         val current = state.revision
         state.update(state.snapshot)
@@ -68,7 +71,7 @@ class DiffReviewTest {
                 state.update(initial)
                 state.snapshot.files.forEach { file ->
                     state.addNote(state.revision, listOf(file.path), "Note for ${file.path}")
-                    state.showSource(state.revision, DiffSourceRange(file.path, 1, 1))
+                    state.showSource(state.revision, ReviewSourceRange(file.path, 1, 1))
                     state.showDiff(file.path)
                 }
                 if (state.scopePaths == null) state.addNote(state.revision, listOf("a.kt", "b.kt"), "Group note")
@@ -157,7 +160,7 @@ class DiffReviewTest {
     @Test fun `inline patches account for JSON escaping and leave deferred patches readable`() {
         val files = listOf(file("escaped").copy(patch = "\u0001".repeat(3000)), file("small"), file("empty").copy(patch = ""))
         val snapshot = ReviewSnapshot(files, emptyList())
-        val note = DiffNote(files.map { it.path }, "Quotes \" and tabs\t")
+        val note = ReviewNote(files.map { it.path }, "Quotes \" and tabs\t")
         val response = diffStateResult(snapshot, null, emptyList(), listOf(note), 0, 24_000)
         assertTrue(response.length <= ToolChatRunner.DEFAULT_MAX_TOOL_RESULT_CHARS)
         val json = JsonParser.parseString(response).asJsonObject
@@ -362,18 +365,18 @@ class DiffReviewTest {
 
     @Test fun `note batches are validated before any note is added`() {
         val state = state()
-        rejected { state.addNotes(state.revision, listOf(DiffNote(listOf("src/a.kt"), "Fine"), DiffNote(listOf("missing"), "Bad"))) }
+        rejected { state.addNotes(state.revision, listOf(ReviewNote(listOf("src/a.kt"), "Fine"), ReviewNote(listOf("missing"), "Bad"))) }
         assertTrue(state.notes.isEmpty())
-        state.addNotes(state.revision, listOf(DiffNote(listOf("src/a.kt"), "Fine"), DiffNote(listOf("src/b.kt"), "Also fine")))
+        state.addNotes(state.revision, listOf(ReviewNote(listOf("src/a.kt"), "Fine"), ReviewNote(listOf("src/b.kt"), "Also fine")))
         assertEquals(listOf("Fine", "Also fine"), state.notes.map { it.text })
     }
 
     @Test fun `file and symbol notes coexist replace and remove independently`() {
         val state = state()
         val paths = listOf("src/a.kt")
-        state.addNotes(state.revision, listOf(DiffNote(paths, "File"), DiffNote(paths, "First", "first"), DiffNote(paths, "Second", "second")))
+        state.addNotes(state.revision, listOf(ReviewNote(paths, "File"), ReviewNote(paths, "First", "first"), ReviewNote(paths, "Second", "second")))
         assertEquals(3, state.notes.size)
-        state.addNotes(state.revision, listOf(DiffNote(paths, "Updated", "first")))
+        state.addNotes(state.revision, listOf(ReviewNote(paths, "Updated", "first")))
         assertEquals(listOf("File", "Updated", "Second"), state.notes.map { it.text })
         state.removeNote(paths, "first")
         assertEquals(listOf(null, "second"), state.notes.map { it.symbol })
@@ -396,7 +399,7 @@ class DiffReviewTest {
             reads += paths
             return reviewJson.toJson(mapOf("files" to paths.map { path -> mapOf("path" to path, "patch" to state.snapshot.files.single { it.path == path }.patch) }))
         }
-        override suspend fun addNotes(notes: List<DiffNote>): String { state.addNotes(state.revision, notes); return "Added" }
+        override suspend fun addNotes(notes: List<ReviewNote>): String { state.addNotes(state.revision, notes); return "Added" }
     }
 
     private fun call(name: String, args: String) = Completion("", toolCalls = listOf(LlmToolCall(name, name, JsonParser.parseString(args).asJsonObject)))

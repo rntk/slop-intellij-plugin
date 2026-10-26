@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -112,7 +112,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     }
 
     /** Fills nodes without text from saved entries with the same key. A parent is restored only with all its children. */
-    fun restoreSummaries(name: String, current: ChangeSummaries): ChangeSummaries {
+    fun restoreSummaries(name: String, current: ReviewSummaries): ReviewSummaries {
         val saved = saved(name) ?: return current
         val restored = current.tree.summarizable.filter { current.text(it.id) == null && it.key.isNotEmpty() }
             .mapNotNull { node -> saved[node.key]?.let { node.id to it } }.toMap(HashMap())
@@ -122,7 +122,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         }
         if (restored.isEmpty()) return current
         thisLogger().debug("Restored ${restored.size} of ${current.tree.summarizable.size} $name from the review cache")
-        return ChangeSummaries(current.tree,
+        return ReviewSummaries(current.tree,
             current.tree.nodes.mapNotNull { node -> current.text(node.id)?.let { node.id to it } }.toMap() + restored,
             current.cachedIds + restored.keys)
     }
@@ -140,7 +140,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         }
     }
 
-    fun restoreTopics(current: ChangeTopics): ChangeTopics {
+    fun restoreTopics(current: ReviewTopics): ReviewTopics {
         val saved = saved(ReviewDiskCache.TOPICS) ?: return current
         var restored = current
         for (file in current.files) {
@@ -157,9 +157,9 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         disk.results(slot) { results -> names.forEach { results[it]?.clear() } }
     }
 
-    fun save(summaries: ChangeSummaries, topics: ChangeTopics, filled: ChangeSummaries) {
+    fun save(summaries: ReviewSummaries, topics: ReviewTopics, filled: ReviewSummaries) {
         if (disk == null || slot.isEmpty()) return
-        fun texts(value: ChangeSummaries) = value.tree.nodes.mapNotNull { node -> value.text(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it } }
+        fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.text(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it } }
         disk.results(slot, save = true) { results ->
             merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
             merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })

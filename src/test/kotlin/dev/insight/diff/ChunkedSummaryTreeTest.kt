@@ -1,6 +1,16 @@
 package dev.insight.diff
 
 import dev.insight.chat.ToolInputException
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
+import dev.insight.review.SourceChunk
+import dev.insight.review.SummaryKind
+import dev.insight.review.SummaryNode
+import dev.insight.review.buildSummaryTree
+import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.reviewFingerprint
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -14,10 +24,10 @@ class ChunkedSummaryTreeTest {
     private fun parts(count: Int, hash: (Int) -> String = { "h$it" }) =
         List(count) { SourceChunk(it, (it * 10 + 1)..(it * 10 + 10), hash(it)) }
 
-    private fun ChangeSummaryTree.byIdentity(identity: String) = nodes.single { it.identity == identity }
-    private fun ChangeSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
+    private fun ReviewSummaryTree.byIdentity(identity: String) = nodes.single { it.identity == identity }
+    private fun ReviewSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
 
-    private fun assertPreOrder(tree: ChangeSummaryTree) {
+    private fun assertPreOrder(tree: ReviewSummaryTree) {
         tree.nodes.forEachIndexed { index, node ->
             assertEquals(index, node.id)
             node.parent?.let { assertTrue(it < node.id); assertTrue(node.id in tree[it].children) }
@@ -105,14 +115,14 @@ class ChunkedSummaryTreeTest {
         assertEquals((0 until 100).map { "chunk:big.kt:$it" }, leaves.map { it.identity })
     }
 
-    private fun scope(hash: (Int) -> String = { "h$it" }, fingerprint: String = "1"): ChangeSummaryTree {
+    private fun scope(hash: (Int) -> String = { "h$it" }, fingerprint: String = "1"): ReviewSummaryTree {
         val big = Source("src/big.kt", fingerprint)
         return buildSummaryTree(listOf(big, Source("src/a.kt"), Source("lib/x.kt")), chunks = { if (it.path == big.path) parts(20, hash) else emptyList() })
     }
 
     @Test fun `changing one part keeps the other parts and unchanged groups`() {
         val tree = scope()
-        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "About ${it.identity}." })
+        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "About ${it.identity}." })
         assertTrue(summaries.complete)
 
         val next = scope(hash = { if (it == 10) "changed" else "h$it" }, fingerprint = "2")
@@ -126,7 +136,7 @@ class ChunkedSummaryTreeTest {
 
     @Test fun `ready lists parts and files first, then groups, the file and its folders`() {
         val tree = scope()
-        var summaries = ChangeSummaries(tree)
+        var summaries = ReviewSummaries(tree)
         val chunkLeaves = tree.nodes.filter { it.kind == SummaryKind.CHUNK && it.children.isEmpty() }.map { it.id }
         val a = tree.byIdentity("file:src/a.kt").id
         val x = tree.byIdentity("file:lib/x.kt").id
@@ -144,21 +154,21 @@ class ChunkedSummaryTreeTest {
 
     @Test fun `a file is summarized only after its parts`() {
         val tree = scope()
-        val summaries = ChangeSummaries(tree)
+        val summaries = ReviewSummaries(tree)
         val big = tree.byIdentity("file:src/big.kt")
         rejected { summaries.summarize(mapOf(big.id to "The whole file.")) }
         val group = tree[big.children[0]]
         rejected { summaries.summarize(mapOf(group.id to "Lines 1–70.")) }
         val written = summaries.summarize((group.children + group.id).associateWith { "Part." })
         assertEquals("Part.", written.text(group.id))
-        assertEquals(0, ChangeSummaries(buildSummaryTree(emptyList())).total)
-        val message = try { ChangeSummaries(buildSummaryTree(emptyList())).summarize(mapOf(0 to "x")); null } catch (e: ToolInputException) { e.message }
+        assertEquals(0, ReviewSummaries(buildSummaryTree(emptyList())).total)
+        val message = try { ReviewSummaries(buildSummaryTree(emptyList())).summarize(mapOf(0 to "x")); null } catch (e: ToolInputException) { e.message }
         assertEquals("There are no files to summarize.", message)
     }
 
     @Test fun `topic trees hold parts beneath their files`() {
         val big = Source("src/big.kt")
-        val topics = ChangeTopics(listOf(big, Source("src/a.kt")), mapOf("src/big.kt" to "Core > Engine", "src/a.kt" to "Core > Engine"))
+        val topics = ReviewTopics(listOf(big, Source("src/a.kt")), mapOf("src/big.kt" to "Core > Engine", "src/a.kt" to "Core > Engine"))
         val tree = buildTopicSummaryTree(topics) { if (it == big) parts(10) else emptyList() }
         assertPreOrder(tree)
         val file = tree.byIdentity("file:src/big.kt")

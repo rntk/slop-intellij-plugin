@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.review.SummaryNode
+
 /** The side of a diff a line opens on; a source file has only [AFTER]. */
 enum class LineSide { BEFORE, AFTER }
 
