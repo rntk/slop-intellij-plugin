@@ -9,7 +9,6 @@ import com.intellij.openapi.editor.ScrollType
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.ex.EditorEx
-import com.intellij.openapi.editor.ex.EditorPopupHandler
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
@@ -42,6 +41,7 @@ import java.awt.event.ComponentEvent
 import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import java.beans.PropertyChangeListener
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 
 class SourceCallChainFile(val result: CallGraphResult, val chain: SourceCallChain, val rootName: String) :
@@ -62,7 +62,7 @@ private class SourceCallChainEditor(project: Project, private val file: SourceCa
     private val panel = SourceCallChainPanel(project, file)
     override fun getComponent(): JComponent = panel
     override fun getPreferredFocusedComponent(): JComponent = panel.choice
-    override fun getName() = "Side by side"
+    override fun getName() = "Side by Side"
     override fun getFile(): VirtualFile = file
     override fun setState(state: FileEditorState) = Unit
     override fun isModified() = false
@@ -88,7 +88,7 @@ internal class SourceCallChainPanel(private val project: Project, private val fi
     private var calledBy = emptyMap<Int, List<CallGraphEdge>>()
     /** The first column of the selected symbol itself; its callers are to the left. */
     private val start = chain.nodes.indexOfFirst { chain.depths[it] == 0 }.coerceAtLeast(0)
-    val choice = JComboBox<String>()
+    val choice = ComboBox<String>()
     /** True while the function picker is refilled, so it does not navigate. */
     private var syncing = false
     private val summary = JLabel()
@@ -390,11 +390,11 @@ internal class SourceCallChainPanel(private val project: Project, private val fi
 
         /** Right-click offers the symbol's callers and calls, here or in a new tab; Ctrl/Cmd+click shows it next to this column. */
         private fun installSymbolActions(viewer: EditorEx) {
-            viewer.installPopupHandler(EditorPopupHandler { event ->
+            viewer.installPopupHandler { event ->
                 val mouse = event.mouseEvent
                 symbolMenu(symbolAt(viewer.document, event.offset), id).show(mouse.component, mouse.x, mouse.y)
                 true
-            })
+            }
             viewer.addEditorMouseListener(object : EditorMouseListener {
                 override fun mouseClicked(event: EditorMouseEvent) {
                     val mouse = event.mouseEvent

@@ -8,7 +8,6 @@ import javax.swing.text.LabelView
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
 import javax.swing.text.StyledEditorKit
-import javax.swing.text.View
 import javax.swing.text.ViewFactory
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -53,7 +52,7 @@ internal class WrappedSummaryText(
                 val standard = super.getViewFactory()
                 return ViewFactory { element ->
                     if (element.name == AbstractDocument.ContentElementName) object : LabelView(element) {
-                        override fun getMinimumSpan(axis: Int): Float = if (axis == View.X_AXIS) 0f else super.getMinimumSpan(axis)
+                        override fun getMinimumSpan(axis: Int): Float = if (axis == X_AXIS) 0f else super.getMinimumSpan(axis)
                     } else standard.create(element)
                 }
             }

@@ -223,7 +223,7 @@ class ChangeSummaryTest {
         fun nodes(request: CompletionRequest): List<JsonObject> =
             JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content.substringBefore("\n\n")).asJsonObject["nodes"]
                 .asJsonArray.map { it.asJsonObject }
-        suspend fun complete(request: CompletionRequest): Completion {
+        fun complete(request: CompletionRequest): Completion {
             requests += request
             val nodes = nodes(request)
             return Completion(answer(nodes) ?: reviewJson.toJson(mapOf("summaries" to nodes.map {
@@ -401,7 +401,7 @@ class ChangeSummaryTest {
         assertEquals(0, failed.summaries.count)
         // Each of five waves gets four attempts to produce parseable JSON.
         assertEquals(20, failed.requests)
-        assertTrue(failed.error!!, failed.error!!.contains("No JSON object"))
+        assertTrue(failed.error!!, failed.error.contains("No JSON object"))
     }
 
     @Test fun `an entirely empty wave recovers without a manual restart`() {

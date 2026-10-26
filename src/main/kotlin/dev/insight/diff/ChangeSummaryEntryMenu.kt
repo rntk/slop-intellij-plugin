@@ -43,7 +43,7 @@ internal fun summaryEntryMenu(
     addPopupMenuListener(object : PopupMenuListener {
         override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {
             fold?.let { it.text = foldLabel(); it.name = "$actionPrefix:${it.text}" }
-            if (reviewed != null) actions.review?.refresh(reviewed, node)
+            if (reviewed != null) actions.review.refresh(reviewed, node)
         }
         override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {}
         override fun popupMenuCanceled(e: PopupMenuEvent) {}

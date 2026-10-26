@@ -205,7 +205,7 @@ internal class SourcePointsEditor(private val project: Project, private val file
 
     override fun getComponent(): JComponent = scroll
     override fun getPreferredFocusedComponent(): JComponent = scroll
-    override fun getName() = "Source locations"
+    override fun getName() = "Source Locations"
     override fun getFile(): VirtualFile = file
     override fun setState(state: FileEditorState) = Unit
     override fun isModified() = false

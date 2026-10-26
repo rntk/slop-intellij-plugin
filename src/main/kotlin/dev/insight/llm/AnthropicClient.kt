@@ -147,7 +147,7 @@ internal object AnthropicJson {
                     continue
                 }
                 message.role == LlmRole.USER && openToolResults != null -> {
-                    if (message.content.isNotEmpty()) openToolResults!!.add(textBlock(message.content))
+                    if (message.content.isNotEmpty()) openToolResults.add(textBlock(message.content))
                 }
                 message.role == LlmRole.ASSISTANT && (message.toolCalls.isNotEmpty() || message.thinkingBlocks.isNotEmpty()) ->
                     output.add(JsonObject().apply {

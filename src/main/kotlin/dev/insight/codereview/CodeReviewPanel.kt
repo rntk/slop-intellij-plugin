@@ -62,7 +62,6 @@ import java.util.Locale
 import javax.swing.AbstractAction
 import javax.swing.DefaultListModel
 import javax.swing.JButton
-import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTree
@@ -334,7 +333,7 @@ internal class CodeReviewPanel(
                 }
             },
         ), "Insight.CodeReviewFiles")
-        tree.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "openFile")
+        tree.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "openFile")
         tree.actionMap.put("openFile", object : AbstractAction() {
             override fun actionPerformed(e: java.awt.event.ActionEvent?) {
                 selectedFile()?.let { openFile(it.path, null) } ?: tree.selectionPath?.let {
@@ -541,7 +540,7 @@ internal class CodeReviewPanel(
             }
         }
         info.setTabLabelActions(DefaultActionGroup(object : DumbAwareAction(
-            "Close tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
+            "Close Tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
         ) {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun actionPerformed(e: AnActionEvent) { closeTab(info) }

@@ -187,7 +187,7 @@ internal class ChangeFlowBuilder(private val project: Project, private val snaps
             outside(lines.after, afterDeclarations), outside(lines.before, beforeDeclarations), described.take(20))
     }
 
-    private fun parse(path: String, type: LanguageFileType, text: String): PsiFile? =
+    private fun parse(path: String, type: LanguageFileType, text: String): PsiFile =
         PsiFileFactory.getInstance(project).createFileFromText(path.substringAfterLast('/'), type, text)
 
     private fun header(element: PsiElement): String =

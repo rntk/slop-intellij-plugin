@@ -18,7 +18,6 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
-import javax.swing.border.EmptyBorder
 import kotlin.math.roundToInt
 
 /** Expansion survives re-rendering; keys are only meaningful for the graph they were made for. */
@@ -488,7 +487,7 @@ internal class ChangeFlowsPanel(
     }
 
     /** Pixel insets: values here are already scaled for the screen and the canvas zoom, unlike JBUI's self-scaling borders. */
-    private fun pad(top: Int = 0, left: Int = 0, bottom: Int = 0, right: Int = 0) = EmptyBorder(top, left, bottom, right)
+    private fun pad(top: Int = 0, left: Int = 0, bottom: Int = 0, right: Int = 0) = pixelBorder(top, left, bottom, right)
 
     private fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
     private fun monospace() = Font(Font.MONOSPACED, Font.PLAIN, (JBFont.small().size2D * zoom).roundToInt().coerceAtLeast(6))

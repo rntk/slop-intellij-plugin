@@ -40,7 +40,7 @@ internal class SummaryModel {
         JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content).asJsonObject["nodes"]
             .asJsonArray.map { it.asJsonObject }
 
-    suspend fun complete(request: CompletionRequest): Completion {
+    fun complete(request: CompletionRequest): Completion {
         synchronized(requests) { requests += request }
         return Completion(reviewJson.toJson(mapOf("summaries" to nodes(request).map {
             mapOf("id" to it["id"].asInt, "summary" to "${it["kind"].asString} ${it["location"].asString}")

@@ -99,7 +99,7 @@ internal class CodeExclusions(val patterns: List<String>, private val base: Stri
             val name = '/' !in body
             val regex = try {
                 Regex(globRegex(body.removePrefix("/")), if (SystemInfo.isFileSystemCaseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE))
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 throw IllegalArgumentException("$pattern is not a valid exclude pattern.")
             }
             return Pattern(regex, name, folderOnly)

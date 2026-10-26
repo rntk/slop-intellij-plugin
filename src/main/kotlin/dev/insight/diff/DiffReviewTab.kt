@@ -36,7 +36,7 @@ internal class DiffReviewTab(
     private val toChat: (ChatFocus) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    val state = DiffReviewState(paths, dev.insight.diff.ReviewDiskCache.forProject(project))
+    val state = DiffReviewState(paths, ReviewDiskCache.forProject(project))
     private var disposed = false
     private val sourcePoints = SourcePoints(project, "Diff chat")
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
@@ -465,7 +465,7 @@ internal class DiffReviewTab(
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 val sourceFile = snapshot.files.firstOrNull { it.path == point.path }
-                    ?: return@withContext dev.insight.chat.showProjectSource(project, sourcePoints, point)
+                    ?: return@withContext showProjectSource(project, sourcePoints, point)
                 val source = when (point.side) {
                     "before" -> sourceFile.before
                     "after" -> sourceFile.after

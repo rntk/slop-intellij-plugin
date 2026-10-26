@@ -31,6 +31,7 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.pom.Navigatable
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.SearchTextField
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.google.gson.Gson
@@ -45,6 +46,7 @@ import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.event.ActionEvent
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 
@@ -86,7 +88,7 @@ internal class FlowChartPanel(
     private val stepsRead = hashSetOf<Int>()
     /** A symbol sent to the flow chart from the editor, waiting for a finished graph build; see [addToChart]. */
     private var pendingChart: SmartPsiElementPointer<PsiElement>? = null
-    private val colorBy = JComboBox(ColorBy.entries.toTypedArray()).apply { selectedItem = ColorBy.DOMAIN }
+    private val colorBy = ComboBox(ColorBy.entries.toTypedArray()).apply { selectedItem = ColorBy.DOMAIN }
     private val flowChoice = flowChoiceControl()
     private val addFlowButton = JButton("Add flow")
     private val previousStep = JButton("◀").apply { toolTipText = "Previous chart step" }
@@ -471,9 +473,9 @@ internal class FlowChartPanel(
             "omitted" to (nodes.size - functions.size)))
     }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
-    private val chatTabs = JTabbedPane().apply { addTab("Chart", chatPanel) }
-    private lateinit var chatSection: CollapsibleControls.Section
-    private lateinit var searchSection: CollapsibleControls.Section
+    private val chatTabs = JBTabbedPane().apply { addTab("Chart", chatPanel) }
+    private var chatSection: CollapsibleControls.Section
+    private var searchSection: CollapsibleControls.Section
     private val scopedChats = mutableMapOf<ChatPanel, CoroutineScope>()
 
     /** Every invocation gets an independent history and a fixed source anchor. */

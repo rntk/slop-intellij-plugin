@@ -6,7 +6,7 @@ import com.google.gson.JsonObject
 
 /**
  * Human-readable JSON of an [Enrichment], keyed by symbol rather than graph id, for inspection and for
- * experimenting with visualizations outside the IDE. Probabilities are rounded; concerns below [concernFloor] are left out.
+ * experimenting with visualizations outside the IDE. Probabilities are rounded; concerns below `concernFloor` are left out.
  */
 object EnrichmentReport {
     fun toJson(input: EnrichmentInput, enrichment: Enrichment, concernFloor: Double = 0.5): String {

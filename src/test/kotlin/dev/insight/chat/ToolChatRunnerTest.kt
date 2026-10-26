@@ -36,7 +36,7 @@ class ToolChatRunnerTest {
     private class FakeModel(vararg script: Completion) {
         private val remaining = ArrayDeque(script.toList())
         val requests = mutableListOf<CompletionRequest>()
-        suspend fun complete(request: CompletionRequest): Completion {
+        fun complete(request: CompletionRequest): Completion {
             requests += request
             return remaining.removeFirst()
         }

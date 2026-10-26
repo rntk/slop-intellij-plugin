@@ -22,7 +22,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         fun node(path: String) = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == path }
         val insight = node("src/main/kotlin/dev/insight")
         // The tree keeps every folder; only the display merges them.
-        assertEquals(listOf("src", "src/main", "src/main/kotlin", "src/main/kotlin/dev").map { tree.isMerged(node(it).id) }, listOf(true, true, true, true))
+        assertEquals(listOf(true, true, true, true), listOf("src", "src/main", "src/main/kotlin", "src/main/kotlin/dev").map { tree.isMerged(node(it).id) })
         assertFalse(tree.isMerged(insight.id))
         assertEquals(insight, tree.shown(node("src").id))
         assertEquals(listOf("directory:src/main/kotlin/dev/insight", "file:README.md"), tree.shownChildren(tree.root).map { it.identity })

@@ -98,7 +98,7 @@ class RequestLimiterTest {
         val limiter = RequestLimiter(1)
         assertThrows(IllegalArgumentException::class.java) { limiter.resize(-1) }
         try {
-            limiter.withPermit { throw IOException("failed") }
+            limiter.withPermit<Unit> { throw IOException("failed") }
             fail("Expected IOException")
         } catch (_: IOException) {
             assertEquals("available", limiter.withPermit { "available" })

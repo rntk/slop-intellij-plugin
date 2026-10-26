@@ -169,7 +169,7 @@ class SemanticMetricsTest : BasePlatformTestCase() {
         assertEquals("Content unavailable (binary, unreadable or too large)", changes.files.first { it.path == "image.png" }.skipped)
         assertEquals("Not analyzed: over the 1 MB size limit", changes.files.first { it.path == "big.java" }.skipped)
 
-        assertEquals(shop.after!![Metric.CYCLOMATIC]!! + 2, changes.after[Metric.CYCLOMATIC])
+        assertEquals(shop.after[Metric.CYCLOMATIC]!! + 2, changes.after[Metric.CYCLOMATIC])
         assertEquals(3, changes.after[Metric.MAX_PARAMETERS])
         assertEquals(listOf("Shop.java", "Added.java"), changes.filesChanging(Metric.BRANCHES).map { it.path })
     }

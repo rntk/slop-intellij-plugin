@@ -55,7 +55,7 @@ object ProjectGraphAnalyzer {
                 var context: PsiElement? = element
                 var relation: RelationKind? = null
                 while (context != null && context !== file && relation == null) {
-                    relation = supports.firstNotNullOfOrNull { it.relationKind(context!!) }
+                    relation = supports.firstNotNullOfOrNull { it.relationKind(context) }
                     context = context.parent
                 }
                 val from = if (relation == RelationKind.IMPORT) file else owner(element)

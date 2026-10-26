@@ -267,6 +267,6 @@ class ChatContextWindowTest {
         val backend = LlmChatBackend({ sent = it; Completion("Answer") }, emptyList(), "System", maxHistoryChars = 0)
         backend.reply(listOf(ChatMessage(ChatMessage.USER, "Old"), ChatMessage(ChatMessage.ASSISTANT, "Answer"), ChatMessage(ChatMessage.USER, "Current")))
         assertEquals(2, sent!!.messages.size)
-        assertTrue(sent!!.messages.last().content.contains("1 earlier conversation turns"))
+        assertTrue(sent.messages.last().content.contains("1 earlier conversation turns"))
     }
 }

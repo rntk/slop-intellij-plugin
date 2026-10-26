@@ -29,7 +29,6 @@ import javax.swing.text.JTextComponent
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
-import javax.swing.border.EmptyBorder
 import javax.swing.border.MatteBorder
 import kotlin.math.roundToInt
 
@@ -98,7 +97,7 @@ internal abstract class HierarchyColumnsPanel(
         val note = (if (written && weights != null) WrappedSummaryText(value, width - scaled(NOTE_INSET), summaryFont(), weights)
             else text(value, width - scaled(NOTE_INSET), if (written) summaryFont() else italic(JBFont.small()), if (written) null else help)).apply {
             this.name = name
-            border = EmptyBorder(inset, scaled(NOTE_INSET), inset, 0)
+            border = pixelBorder(inset, scaled(NOTE_INSET), inset, 0)
             toolTipText = if (written) "Summary · LLM interpretation" else null
             matchBackground(mark)?.let { isOpaque = true; background = it }
             if (mark != null) installTraceDecorationReset(this) { isOpaque = false; repaint() }
@@ -295,7 +294,7 @@ internal abstract class HierarchyColumnsPanel(
                 else -> JBColor.border()
             }),
             MatteBorder(0, scaled(RAIL_ACCENT), 0, 0, family?.let(ChangeTopicsPanel::accent) ?: JBColor.border()),
-            EmptyBorder(scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line),
+            pixelBorder(scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line, scaled(CARD_PAD) + 2 - line),
         )
     }
 

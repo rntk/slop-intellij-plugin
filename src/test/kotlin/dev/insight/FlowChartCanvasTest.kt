@@ -111,7 +111,7 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         canvas.contextMenuAt(centre(box.bounds))!!.components.filterIsInstance<JMenuItem>()
             .single { it.text == "Expand subflow" }.doClick()
         assertNotNull(canvas.chart!!.step(1))
-        assertEquals(sites, target.region!!.sites)
+        assertEquals(sites, target.region.sites)
     }
 
     fun `test decision and branch connectors retain owner instead of a nearby callee`() {

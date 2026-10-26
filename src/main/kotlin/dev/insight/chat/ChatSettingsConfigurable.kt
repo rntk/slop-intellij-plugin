@@ -25,7 +25,7 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
         apiKeys.clear()
         val state = settings.state
         return panel {
-            group("API concurrency") {
+            group("API Concurrency") {
                 row("Max concurrent LLM requests:") {
                     intTextField(1..Int.MAX_VALUE)
                         .bindIntText({ state.maxConcurrentLlmRequests }, { state.maxConcurrentLlmRequests = it })

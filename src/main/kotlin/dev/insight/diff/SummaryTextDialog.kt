@@ -18,7 +18,6 @@ import javax.swing.text.StyleConstants
 import javax.swing.text.AbstractDocument
 import javax.swing.text.LabelView
 import javax.swing.text.StyledEditorKit
-import javax.swing.text.View
 import javax.swing.text.ViewFactory
 
 /** A compact reader that keeps the original paragraphs instead of the split view's flattened line. */
@@ -43,7 +42,7 @@ internal class SummaryTextDialog(
                 return ViewFactory { element ->
                     if (element.name == AbstractDocument.ContentElementName) object : LabelView(element) {
                         // Let a long path or identifier break across lines instead of extending beyond the viewport.
-                        override fun getMinimumSpan(axis: Int): Float = if (axis == View.X_AXIS) 0f else super.getMinimumSpan(axis)
+                        override fun getMinimumSpan(axis: Int): Float = if (axis == X_AXIS) 0f else super.getMinimumSpan(axis)
                     } else standard.create(element)
                 }
             }

@@ -110,7 +110,7 @@ internal fun chartProjectMap(graph: CallGraph, revision: Int, offset: Int, data:
                 "functions" to members.size, "files" to members.mapNotNull { it.filePath }.distinct().size,
                 "entry_points" to if (entries == null) null else entryAreas[label] ?: 0,
                 "effects" to if (!effectsKnown) null else listOf("storage", "network").associateWith { effect ->
-                    members.count { effect in data.effects!!.invoke(it.id).orEmpty() } },
+                    members.count { effect in data.effects.invoke(it.id).orEmpty() } },
                 "hubs" to hubs.map { (id, fanIn) -> linkedMapOf("node_id" to id, "name" to name(id), "in_area_callers" to fanIn) +
                     (data.summary?.let { mapOf("summary" to it(id)?.take(120)) } ?: emptyMap()) })
         })

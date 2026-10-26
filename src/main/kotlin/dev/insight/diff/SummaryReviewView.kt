@@ -80,7 +80,7 @@ internal fun installReviewPresentationUpdate(component: JComponent, update: () -
 
 /** Applies foreground attributes without changing the prose, word sizes, selection or trace offsets. */
 internal class SummaryReviewPresentation(
-    private val summaries: ChangeSummaries,
+    summaries: ChangeSummaries,
     private val reviewed: ReviewedFiles,
     private val dimming: () -> ReviewDimming,
     private val toggle: (SummaryNode, Boolean) -> Unit,

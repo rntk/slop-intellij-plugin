@@ -24,7 +24,6 @@ data class CanvasTopic(
 ) {
     val name: String get() = path.substringAfterLast('>')
     val level: Int get() = path.split('>').size
-    val lineNumbers: List<Int> get() = ranges.flatMap { (it.start..it.end).map { index -> index + 1 } }
 }
 data class CanvasData(val document: CanvasDocument, val topics: List<CanvasTopic>, val failures: Int = 0)
 

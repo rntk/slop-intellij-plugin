@@ -1,6 +1,7 @@
 package dev.insight.chat
 
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -23,7 +24,7 @@ class SourcePointsEditorTest : FileEditorManagerTestCase() {
             assertTrue(editors.all { it.isViewer && it.settings.isLineNumbersShown })
             assertEquals(listOf(1, 2), editors.map { it.markupModel.allHighlighters.single().let { mark ->
                 assertEquals(HighlighterTargetArea.LINES_IN_RANGE, mark.targetArea)
-                assertNotNull(mark.textAttributes?.backgroundColor)
+                assertNotNull(mark.getTextAttributes(EditorColorsManager.getInstance().globalScheme)?.backgroundColor)
                 it.document.getLineNumber(mark.endOffset)
             } })
             assertEquals(listOf("First comment", "Second comment"), descendants(fileEditor.component).filterIsInstance<JTextArea>().map { it.text })

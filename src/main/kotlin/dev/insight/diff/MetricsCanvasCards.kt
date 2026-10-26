@@ -50,7 +50,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
 
     /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
     fun wordsCard(all: WordChanges, overview: Boolean = false): JPanel {
-        val width = cardWidth(WORDS_WIDTH)
+        val width = scaled(WORDS_WIDTH)
         val scopes = wordScopes(wordFiles)
         wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
         val words = if (wordScope.path.isEmpty()) all
@@ -97,7 +97,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
      * or a cloud of the constructs added and removed. The mode and the plotted metric survive rebuilds.
      */
     fun semanticCard(result: SemanticResult): JPanel {
-        val width = cardWidth(WORDS_WIDTH)
+        val width = scaled(WORDS_WIDTH)
         val changes = (result as? SemanticResult.Ready)?.changes
         val skipped = changes?.files?.filter { it.skipped != null }.orEmpty()
         val header = JPanel(BorderLayout()).apply {
@@ -221,8 +221,6 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
         actions.refresh(CanvasTabKey.Words)
         actions.refresh(CanvasTabKey.DiffOverview)
     }
-
-    private fun cardWidth(default: Int) = scaled(default)
 
     private fun scrollBody(body: JComponent, width: Int, maxHeight: Int) = JBScrollPane(body).apply {
         border = null; isOpaque = false; viewport.isOpaque = false

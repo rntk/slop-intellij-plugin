@@ -169,17 +169,17 @@ class ApiRequestLimitsTest {
         override fun authenticator() = Optional.empty<Authenticator>()
         override fun version() = Version.HTTP_1_1
         override fun executor() = Optional.empty<Executor>()
-        override fun <T : Any?> send(request: HttpRequest, handler: HttpResponse.BodyHandler<T>): HttpResponse<T> =
+        override fun <T> send(request: HttpRequest, handler: HttpResponse.BodyHandler<T>): HttpResponse<T> =
             error("Only async requests are supported")
 
         @Suppress("UNCHECKED_CAST")
-        override fun <T : Any?> sendAsync(request: HttpRequest, handler: HttpResponse.BodyHandler<T>): CompletableFuture<HttpResponse<T>> {
+        override fun <T> sendAsync(request: HttpRequest, handler: HttpResponse.BodyHandler<T>): CompletableFuture<HttpResponse<T>> {
             val future = CompletableFuture<HttpResponse<String>>()
             check(sent.trySend(Pending(request, future)).isSuccess)
             return future as CompletableFuture<HttpResponse<T>>
         }
 
-        override fun <T : Any?> sendAsync(request: HttpRequest, handler: HttpResponse.BodyHandler<T>,
+        override fun <T> sendAsync(request: HttpRequest, handler: HttpResponse.BodyHandler<T>,
             push: HttpResponse.PushPromiseHandler<T>): CompletableFuture<HttpResponse<T>> = sendAsync(request, handler)
     }
 }

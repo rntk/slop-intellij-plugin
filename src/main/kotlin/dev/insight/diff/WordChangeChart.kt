@@ -236,11 +236,12 @@ internal class WordChangeChart(
         /** For words on both sides: red when mostly removed, grey in the middle, green when mostly added. */
         fun color(side: Double): Color = if (side < 0.5) mix(REMOVED, SHARED, side * 2) else mix(SHARED, ADDED, side * 2 - 1)
 
-        fun mix(from: Color, to: Color, t: Double): Color = Color(
-            (from.red + (to.red - from.red) * t).roundToInt(),
-            (from.green + (to.green - from.green) * t).roundToInt(),
-            (from.blue + (to.blue - from.blue) * t).roundToInt(),
-        )
+        fun mix(from: Color, to: Color, t: Double): Color {
+            val red = (from.red + (to.red - from.red) * t).roundToInt()
+            val green = (from.green + (to.green - from.green) * t).roundToInt()
+            val blue = (from.blue + (to.blue - from.blue) * t).roundToInt()
+            return JBColor(Color(red, green, blue), Color(red, green, blue))
+        }
 
         fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     }

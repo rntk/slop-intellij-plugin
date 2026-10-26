@@ -12,14 +12,14 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.GridLayout
 import javax.swing.JButton
-import javax.swing.JComboBox
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 import javax.swing.ListSelectionModel
 
 class DashboardPanel(project: Project) : JPanel(BorderLayout(0, JBUI.scale(20))) {
-    val range = JComboBox(arrayOf("Last 7 days", "Last 14 days"))
+    val range = ComboBox(arrayOf("Last 7 days", "Last 14 days"))
     init {
         border = JBUI.Borders.empty(24)
         add(JPanel(BorderLayout(0, 8)).apply {

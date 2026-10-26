@@ -22,11 +22,11 @@ private fun sites(project: Project, caller: String): List<String> {
     }
 }
 
-/** Constructs of the first frame of [callees]' sites, in order. */
-private fun constructs(project: Project, caller: String): List<Int?> {
+/** Constructs of the first frame of `callees`' sites, in order. */
+private fun constructs(project: Project): List<Int?> {
     val result = ProjectGraphAnalyzer.build(project)
     val functions = result.graph.nodes.filter { it.kind == SymbolKind.FUNCTION }
-    val id = functions.single { it.name.substringBefore('(') == caller }.id
+    val id = functions.single { it.name.substringBefore('(') == "run" }.id
     return CallSiteAnalyzer.collect(result, listOf(id), functions.map { it.id }).getValue(id).map { it.frames.firstOrNull()?.construct }
 }
 
@@ -58,7 +58,7 @@ class CallSitesTest : LightJavaCodeInsightFixtureTestCase() {
             "a: ERROR RuntimeException ex",
             "k: BRANCH ok ?ok",
         ), sites(project, "run"))
-        val chain = constructs(project, "run").subList(1, 4)
+        val chain = constructs(project).subList(1, 4)
         assertEquals("else-if branches share one construct", 1, chain.toSet().size)
     }
 
@@ -226,7 +226,7 @@ class PythonCallSitesTest : BasePlatformTestCase() {
             "g: ERROR ValueError as err",
             "h: BRANCH kind ?kind",
         ), sites(project, "run"))
-        assertEquals(1, constructs(project, "run").subList(1, 4).toSet().size)
+        assertEquals(1, constructs(project).subList(1, 4).toSet().size)
     }
 
     fun `test Python guard clauses of a request router end their branches`() {

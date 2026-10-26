@@ -4,7 +4,6 @@ import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import dev.insight.ui.accent
 import java.awt.BasicStroke
-import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D

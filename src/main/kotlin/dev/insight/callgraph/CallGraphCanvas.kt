@@ -2,6 +2,7 @@ package dev.insight.callgraph
 
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.ui.ColorUtil
+import com.intellij.ui.Gray
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -30,7 +31,6 @@ import java.awt.geom.RoundRectangle2D
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.AbstractAction
-import javax.swing.JComponent
 import javax.swing.JViewport
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -55,7 +55,7 @@ private const val MIN_STRIPE_ALPHA = 0.35
 
 private val errorColor = JBColor(Color(200, 40, 40), Color(235, 95, 95))
 private val matchFill = JBColor(Color(255, 236, 150), Color(98, 86, 40))
-private val stepText = JBColor(Color.WHITE, Color(30, 30, 30))
+private val stepText = JBColor(Color.WHITE, Gray._30)
 
 /** Theme-aware Java2D rendering of a [CallGraph]: callers on the left, callees on the right. */
 class CallGraphCanvas(
@@ -108,7 +108,6 @@ class CallGraphCanvas(
             position.y.coerceIn(0, max(0, size.height - view.extentSize.height)))
     }
 
-    fun highlightFile(path: String?) = highlight(graph?.highlightFile(path) ?: FileGraphHighlight(emptySet(), emptySet()))
 
     fun highlight(value: FileGraphHighlight) {
         highlight = value
@@ -216,7 +215,7 @@ class CallGraphCanvas(
             zoomAt(zoom * 1.15.pow(-event.preciseWheelRotation), event.point)
             event.consume()
         }
-        getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "open")
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "open")
         actionMap.put("open", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) { selected?.let(onOpen) }
         })
@@ -224,7 +223,7 @@ class CallGraphCanvas(
             "UP" to Point(0, -1), "DOWN" to Point(0, 1))) {
             for (fast in listOf(false, true)) {
                 val stroke = if (fast) "shift $key" else key
-                getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
+                getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
                 actionMap.put(stroke, object : AbstractAction() {
                     override fun actionPerformed(e: ActionEvent?) {
                         val position = viewport?.viewPosition ?: return

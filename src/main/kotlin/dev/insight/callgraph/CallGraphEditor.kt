@@ -35,7 +35,7 @@ import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.beans.PropertyChangeListener
 import javax.swing.JButton
-import javax.swing.JComboBox
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -96,8 +96,8 @@ private class CallGraphEditor(project: Project, private val file: CallGraphFile)
 
 private class CallGraphPanel(private val project: Project, private var root: SmartPsiElementPointer<PsiElement>) :
     JPanel(BorderLayout(0, JBUI.scale(12))) {
-    val direction = JComboBox(CallDirection.entries.toTypedArray())
-    private val depth = JComboBox(arrayOf(1, 2, 3, 4, 5)).apply { selectedItem = 2 }
+    val direction = ComboBox(CallDirection.entries.toTypedArray())
+    private val depth = ComboBox(arrayOf(1, 2, 3, 4, 5)).apply { selectedItem = 2 }
     private val libraries = JBCheckBox("Library calls")
     private val refresh = JButton("Refresh")
     private val focus = JButton("Focus selected").apply { isEnabled = false }

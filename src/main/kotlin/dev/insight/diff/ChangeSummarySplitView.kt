@@ -32,7 +32,6 @@ import javax.swing.Scrollable
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.ViewportLayout
-import javax.swing.border.EmptyBorder
 import kotlin.math.roundToInt
 
 /**
@@ -150,7 +149,7 @@ internal class ChangeSummarySplitPanel(
         summaryScroll.viewport.addChangeListener { synchronize(summaryScroll, treeScroll) }
         treeScroll.viewport.addChangeListener { synchronize(summaryScroll, treeScroll) }
         SwingUtilities.invokeLater { treeScroll.horizontalScrollBar.value = treeScrollX }
-        return object : JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScroll, summaryScroll) {
+        return object : JSplitPane(HORIZONTAL_SPLIT, treeScroll, summaryScroll) {
             override fun getPreferredSize(): Dimension = Dimension(width, summaryScroll.preferredSize.height)
         }.apply {
             name = "summary-split-panels"
@@ -189,7 +188,7 @@ internal class ChangeSummarySplitPanel(
         val clickDelay = (Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int) ?: 500
         val activateLater = Timer(clickDelay) { activate() }.apply { isRepeats = false }
         val left = SplitRow("summary-tree:${node.identity}", selected, mark).apply {
-            border = EmptyBorder(scaled(4), scaled(4) + depth * scaled(INDENT), scaled(4), scaled(6))
+            border = pixelBorder(scaled(4), scaled(4) + depth * scaled(INDENT), scaled(4), scaled(6))
             toolTipText = "${node.location} · Level ${tree.shownDepth(node.id) + 1}" + (match?.let { " · " + matchLabel(it, trace!!) } ?: "")
             add(JLabel(if (!branch) "" else if (open) "▾" else "▸").apply {
                 font = font(JBFont.label())
@@ -212,7 +211,7 @@ internal class ChangeSummarySplitPanel(
                 name = "summary-name:${node.identity}"
                 font = font(if (branch) JBFont.label().asBold() else JBFont.label())
                 iconTextGap = scaled(4)
-                border = EmptyBorder(0, 0, 0, scaled(12))
+                border = pixelBorder(0, 0, 0, scaled(12))
             }, BorderLayout.CENTER)
             val badge = match?.let {
                 val label = if (node.identity == best) "● Best match" else "● Related"
@@ -220,7 +219,7 @@ internal class ChangeSummarySplitPanel(
                     name = "match:${node.identity}"
                     font = font(JBFont.small())
                     foreground = TraceStyle.MATCH_TEXT
-                    border = EmptyBorder(0, 0, 0, scaled(6))
+                    border = pixelBorder(0, 0, 0, scaled(6))
                     installTraceDecorationReset(this) { preferredSize = preferredSize; text = ""; name = null }
                 }
             }
@@ -273,7 +272,7 @@ internal class ChangeSummarySplitPanel(
             }
         val right = SplitRow("summary:${node.identity}", selected, mark).apply {
             layout = GridBagLayout()
-            border = EmptyBorder(scaled(4), scaled(8), scaled(4), scaled(12))
+            border = pixelBorder(scaled(4), scaled(8), scaled(4), scaled(12))
             add(text, GridBagConstraints().apply {
                 anchor = GridBagConstraints.NORTHWEST
                 weightx = 1.0
@@ -297,7 +296,7 @@ internal class ChangeSummarySplitPanel(
 
     private fun message(text: String, name: String = "no-matches") {
         val left = SplitRow(name, false, null).apply {
-            border = EmptyBorder(scaled(4), scaled(4), scaled(4), scaled(6))
+            border = pixelBorder(scaled(4), scaled(4), scaled(4), scaled(6))
             add(JLabel(text).apply { font = font(JBFont.label()).let { it.deriveFont(it.style or Font.ITALIC) }; foreground = help })
         }
         pairs += left to SplitRow("$name:summary", false, null)

@@ -32,7 +32,7 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
         myFixture.addFileToProject("scope/min.txt", "var a=1;".repeat(1_000))
         // The JavaScript plugin reports minified scripts as generated sources.
         myFixture.addFileToProject("scope/app.min.js", "var a=1;".repeat(1_000))
-        binary("scope/logo.png")
+        binary()
 
         val scope = scope("scope")
         assertEquals("scope", scope.path)
@@ -229,8 +229,8 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
 
     private fun scope(path: String): CodeScope = ReadAction.compute<CodeScope, Throwable> { codeScope(project, path) }
 
-    private fun binary(path: String) {
-        val file = myFixture.tempDirFixture.createFile(path)
+    private fun binary() {
+        val file = myFixture.tempDirFixture.createFile("scope/logo.png")
         WriteAction.runAndWait<Throwable> {
             file.setBinaryContent(byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0, 1, 2, 3))
         }

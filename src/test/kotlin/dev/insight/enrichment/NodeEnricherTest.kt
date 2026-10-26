@@ -104,9 +104,9 @@ class NodeEnricherTest {
         NodeEnricher({ state = it.state.asJsonObject; EnricherFakes.answer(it) }, maxNeighbours = 5)
             .enrich(EnrichmentInput("demo", g, input().facts), listOf(4), emptyList())
         assertEquals(listOf("Foo.c10", "Foo.c11", "Foo.c12", "Foo.c13", "Foo.c14"), state!!["callers"].asJsonArray.map { it.asString })
-        assertEquals("Config", state!!["symbol"].asJsonObject["name"].asString)
-        assertFalse(state!!["symbol"].asJsonObject.has("container"))
-        assertFalse(state!!.has("callees"))
+        assertEquals("Config", state["symbol"].asJsonObject["name"].asString)
+        assertFalse(state["symbol"].asJsonObject.has("container"))
+        assertFalse(state.has("callees"))
     }
 
     @Test fun `cache is reused until content, neighbours or domains change`() = runBlocking {

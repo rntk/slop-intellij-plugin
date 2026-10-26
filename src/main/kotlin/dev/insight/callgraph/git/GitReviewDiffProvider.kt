@@ -52,7 +52,7 @@ class GitReviewDiffProvider : ReviewDiffProvider {
         } else base
         val comparison = ReviewComparison(request, before, target)
         val changes = (if (request.mode.usesWorkingTree)
-            GitChangeUtils.getDiffWithWorkingDir(project, root, before, null, false, true).orEmpty()
+            GitChangeUtils.getDiffWithWorkingDir(project, root, before, null, false, true)
         else GitChangeUtils.getDiff(project, root, before, target, null)).toMutableList()
         if (request.mode.usesWorkingTree) {
             // Git sees disk content. A tracked file changed only in an unsaved editor must also be reviewed.

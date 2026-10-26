@@ -82,7 +82,7 @@ fun parseJsonObjectLeniently(text: String): JsonObject? {
     if (start < 0 || end <= start) return null
     return try {
         JsonParser.parseString(stripped.substring(start, end + 1)).takeIf { it.isJsonObject }?.asJsonObject
-    } catch (e: RuntimeException) {
+    } catch (_: RuntimeException) {
         null
     }
 }
@@ -115,7 +115,7 @@ internal suspend fun cachedJson(
         completeJson(counted, system, user, schema, maxTokens).also { cache.putText(key, it.toString()) }
     } catch (e: CancellationException) {
         throw e
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }

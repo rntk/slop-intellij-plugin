@@ -39,7 +39,7 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
         const table = { m() { leaf() }, p: () => leaf() }
     """.trimIndent()
 
-    private fun setUp(extension: String): PsiFile {
+    private fun configureFile(extension: String): PsiFile {
         myFixture.addFileToProject("lib.$extension", library)
         return myFixture.configureByText("main.$extension", main)
     }
@@ -57,7 +57,7 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
     private fun labels(elements: List<PsiElement>) = elements.map(::label).toSet()
 
     private fun checkCallees(extension: String) {
-        val file = setUp(extension)
+        val file = configureFile(extension)
         // this.m(), obj.m() on a typed local, constructors (explicit and implicit), anonymous callbacks and function expressions.
         assertEquals(setOf("Service.init", "Box.constructor", "Box.get", "arrow", "leaf"),
             labels(CallGraphAnalyzer.callees(function(file, "Service.run"), false)))
@@ -70,7 +70,7 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
     }
 
     private fun checkCallers(extension: String) {
-        val file = setUp(extension)
+        val file = configureFile(extension)
         val lib = myFixture.findFileInTempDir("lib.$extension").let { psiManager.findFile(it)!! }
         // The import specifier is not a call site; the callback and function expression belong to run.
         assertEquals(setOf("Service.init", "Service.run", "m", "p", "arrow", "Box.get"),
@@ -84,7 +84,7 @@ class JavaScriptCallGraphTest : BasePlatformTestCase() {
     }
 
     private fun checkProjectGraph(extension: String) {
-        setUp(extension)
+        configureFile(extension)
         val graph = ProjectGraphAnalyzer.build(project).graph
         fun node(name: String, kind: SymbolKind) = graph.nodes.single { it.name.startsWith(name) && it.kind == kind }
         val mainFile = graph.nodes.single { it.kind == SymbolKind.FILE && it.name == "main.$extension" }

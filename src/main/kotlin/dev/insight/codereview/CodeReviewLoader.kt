@@ -18,7 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * Loads the text files under a scope directory, or an entry file and the project files it depends on: project content only (excluded folders are skipped by the index, VCS- and
@@ -40,7 +40,7 @@ internal class CodeReviewLoader(private val project: Project) {
             var totalChars = 0L
             var overLimit = 0
             for ((index, entry) in found.files.withIndex()) {
-                coroutineContext.ensureActive()
+                currentCoroutineContext().ensureActive()
                 val (path, file) = entry
                 progress("Reading $path", index, found.files.size)
                 val loaded = if (files.size >= limits.maxFiles) null else when (val result = read(path, file, reusable[path], limits)) {
@@ -100,7 +100,7 @@ internal class CodeReviewLoader(private val project: Project) {
         var ignoredCount = 0
         var excludedCount = 0
         for (start in starts) {
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             if (start != directory && readAction { excluded(start) }) { excludedCount++; continue }
             val (direct, folders, prunedTop) = readAction {
                 val direct = mutableListOf<VirtualFile>()
@@ -120,7 +120,7 @@ internal class CodeReviewLoader(private val project: Project) {
             files += direct
             ignoredCount += prunedTop
             for (folder in folders) {
-                coroutineContext.ensureActive()
+                currentCoroutineContext().ensureActive()
                 val (part, pruned, left) = readAction {
                     val part = mutableListOf<VirtualFile>()
                     var pruned = 0

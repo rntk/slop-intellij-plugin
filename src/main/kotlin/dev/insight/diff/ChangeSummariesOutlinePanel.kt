@@ -19,7 +19,6 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
-import javax.swing.border.EmptyBorder
 import kotlin.math.roundToInt
 
 /**
@@ -166,7 +165,7 @@ internal class ChangeSummariesPanel(
 
     /** Headers use local names; full paths and metadata remain available in the tooltip. */
     private fun header(node: SummaryNode, width: Int): JPanel {
-        val count = plural(node.files.size, "file")
+        val count = pluralFiles(node.files.size)
         val title = when (node.kind) {
             SummaryKind.FILE -> "${displayName(node)} · ${vocabulary.describeFile(node.file)}"
             SummaryKind.CHUNK -> "${displayName(node)} of ${node.path.substringAfterLast('/')}" + (partOf(node)?.let { " · $it" } ?: "")
@@ -264,7 +263,7 @@ internal class ChangeSummariesPanel(
     }
 
     /** Pixel insets: values here are already scaled for the screen and the canvas zoom, unlike JBUI's self-scaling borders. */
-    private fun pad(top: Int = 0, left: Int = 0, bottom: Int = 0, right: Int = 0) = EmptyBorder(top, left, bottom, right)
+    private fun pad(top: Int = 0, left: Int = 0, bottom: Int = 0, right: Int = 0) = pixelBorder(top, left, bottom, right)
 
     private fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
 
@@ -279,7 +278,7 @@ internal class ChangeSummariesPanel(
         color?.let { foreground = it }
     }
 
-    private fun plural(count: Int, word: String) = "$count $word${if (count == 1) "" else "s"}"
+    private fun pluralFiles(count: Int) = "$count file${if (count == 1) "" else "s"}"
 
     companion object {
         const val INDENT = 20

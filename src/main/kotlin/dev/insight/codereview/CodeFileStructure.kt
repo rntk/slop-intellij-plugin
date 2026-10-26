@@ -30,7 +30,7 @@ import dev.insight.diff.FileStructure
  * cross that boundary. Interface methods in the viewed file also follow their project implementations. Run in a smart read
  * action.
  */
-internal class CodeFileStructureBuilder(private val project: Project, private val snapshot: CodeSnapshot) {
+internal class CodeFileStructureBuilder(private val project: Project, snapshot: CodeSnapshot) {
     private val supports = CallGraphLanguageSupport.EP_NAME.extensionList
     private val index = ProjectFileIndex.getInstance(project)
     private val roots = codeScopeRoots(project)

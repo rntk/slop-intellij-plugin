@@ -25,7 +25,6 @@ import java.awt.event.MouseEvent
 import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import javax.swing.AbstractAction
-import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JMenuItem
@@ -259,7 +258,7 @@ class FlowChartCanvas(
             }
         }
         fun key(stroke: String, action: () -> Unit) {
-            getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
+            getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
             actionMap.put(stroke, object : AbstractAction() {
                 override fun actionPerformed(e: ActionEvent?) = action()
             })
@@ -274,7 +273,7 @@ class FlowChartCanvas(
         key("BACK_SPACE") { selectedNode?.let(::removeColumn) }
         // Disabled without a story, so the scroll pane keeps Page Up/Down then.
         for ((stroke, delta) in listOf("PAGE_DOWN" to 1, "alt RIGHT" to 1, "PAGE_UP" to -1, "alt LEFT" to -1)) {
-            getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), "story $stroke")
+            getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), "story $stroke")
             actionMap.put("story $stroke", object : AbstractAction() {
                 override fun actionPerformed(e: ActionEvent?) { stepStory(delta) }
                 override fun isEnabled() = story != null
@@ -361,14 +360,6 @@ class FlowChartCanvas(
     /** Shows what each of [nodes] calls, wherever its step is. */
     fun openCalls(nodes: Set<Int>) {
         if (!board.openCalls.containsAll(nodes)) update(board.copy(openCalls = board.openCalls + nodes))
-    }
-
-    fun collapseCalls(nodes: Set<Int>) {
-        if (board.openCalls.any { it in nodes }) update(board.copy(openCalls = board.openCalls - nodes))
-    }
-
-    fun collapseCallers(nodes: Set<Int>) {
-        if (board.openCallers.any { it in nodes }) update(board.copy(openCallers = board.openCallers - nodes))
     }
 
     /** Takes the column of [node] off the chart; what is open elsewhere stays open. */
@@ -822,8 +813,8 @@ class FlowChartCanvas(
             // Cards stacked in one column are joined on their right edges with a bulge, so the arrow is not hidden.
             val stacked = kotlin.math.abs(from.centerX - to.centerX) < from.width / 2.0
             val down = to.centerY >= from.centerY
-            val (x1, y1) = if (stacked) from.maxX.toDouble() to from.centerY else from.centerX to if (down) from.maxY.toDouble() else from.minY.toDouble()
-            val (x2, y2) = if (stacked) to.maxX.toDouble() to to.centerY else to.centerX to if (down) to.minY.toDouble() else to.maxY.toDouble()
+            val (x1, y1) = if (stacked) from.maxX to from.centerY else from.centerX to if (down) from.maxY else from.minY
+            val (x2, y2) = if (stacked) to.maxX to to.centerY else to.centerX to if (down) to.minY else to.maxY
             val bulge = JBUI.scale(48) + kotlin.math.abs(y2 - y1) / 8
             val path = Path2D.Double().apply {
                 moveTo(x1, y1)

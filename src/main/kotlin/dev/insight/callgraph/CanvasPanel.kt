@@ -11,13 +11,13 @@ import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.insight.enrichment.CanvasLine
-import dev.insight.enrichment.EnrichmentProgress
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 
 /** Independent reading state, sharing the application graph and its configured LLM service. */
@@ -45,7 +45,7 @@ internal class CanvasPanel(
     private val enrichAction = PanelCommand("Enrich") { enrich() }
     internal val readingView = CanvasReadingView(::navigate)
     private val mode = JCheckBox("Summary mode")
-    private val depth = JComboBox(arrayOf(1, 2, 3, 4, 5, 6)).apply { selectedItem = 3 }
+    private val depth = ComboBox(arrayOf(1, 2, 3, 4, 5, 6)).apply { selectedItem = 3 }
 
     init {
         border = JBUI.Borders.empty(8)
@@ -153,7 +153,7 @@ internal class CanvasPanel(
                     reportRawProgress { reporter ->
                         reporter.text("Grouping source into topics…")
                         enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
-                            progress = EnrichmentProgress { phase, done, total ->
+                            progress = { phase, done, total ->
                                 reporter.text(phase)
                                 reporter.details("$done / $total")
                                 reporter.fraction(if (total > 0) done.toDouble() / total else null)

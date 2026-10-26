@@ -142,7 +142,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             assertSame(card.reading, origin)
             assertEquals(listOf("app/a.kt"), focus!!.files)
             assertEquals(listOf("Topic topic-root", "Topic topic:storage", "Topic topic:storage > wallet",
-                original.text(tree.nodes.single { it.path == "app/a.kt" }.id)), focus!!.context.map { it.text })
+                original.text(tree.nodes.single { it.path == "app/a.kt" }.id)), focus.context.map { it.text })
         } finally { canvas.dispose() }
     }
 

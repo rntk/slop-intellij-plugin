@@ -59,7 +59,7 @@ internal class ChatFilePicker(project: Project, private val input: JBTextArea) :
     private var disposed = false
     private val inputListener = createInputListener()
     private val escape = KeyStroke.getKeyStroke("ESCAPE")
-    private val originalEscape = input.getInputMap(JComponent.WHEN_FOCUSED).get(escape)
+    private val originalEscape = input.getInputMap(WHEN_FOCUSED).get(escape)
 
     init {
         isVisible = false
@@ -77,7 +77,7 @@ internal class ChatFilePicker(project: Project, private val input: JBTextArea) :
             override fun textChanged(e: DocumentEvent) { if (isVisible) updateResults() }
         })
         input.document.addDocumentListener(inputListener)
-        bind(this, "ESCAPE", "closeFiles", JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT) { close() }
+        bind(this, "ESCAPE", "closeFiles", WHEN_ANCESTOR_OF_FOCUSED_COMPONENT) { close() }
         listOf(query, results).forEach { component ->
             bind(component, "ESCAPE", "closeFiles") { close() }
             bind(component, "ENTER", "insertFile") { insertSelected() }
@@ -187,13 +187,13 @@ internal class ChatFilePicker(project: Project, private val input: JBTextArea) :
     }
 
     private fun restoreEscape() {
-        val map = input.getInputMap(JComponent.WHEN_FOCUSED)
+        val map = input.getInputMap(WHEN_FOCUSED)
         if (map.get(escape) != "closeFiles") return
         if (originalEscape == null) map.remove(escape) else map.put(escape, originalEscape)
         input.actionMap.remove("closeFiles")
     }
 
-    private fun bind(component: JComponent, key: String, name: String, condition: Int = JComponent.WHEN_FOCUSED, action: () -> Unit) {
+    private fun bind(component: JComponent, key: String, name: String, condition: Int = WHEN_FOCUSED, action: () -> Unit) {
         component.getInputMap(condition).put(KeyStroke.getKeyStroke(key), name)
         component.actionMap.put(name, object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) = action()

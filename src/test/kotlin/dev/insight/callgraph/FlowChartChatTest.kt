@@ -3,7 +3,6 @@ package dev.insight.callgraph
 import com.google.gson.JsonParser
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.chat.ToolInputException
-import org.junit.Assert.assertThrows
 
 class FlowChartChatTest : BasePlatformTestCase() {
     private val graph = CallGraph(

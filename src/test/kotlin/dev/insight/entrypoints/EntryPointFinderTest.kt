@@ -45,7 +45,7 @@ class EntryPointFinderTest {
     private class FakeModel(vararg script: Completion) {
         val remaining = ArrayDeque(script.toList())
         val requests = mutableListOf<CompletionRequest>()
-        suspend fun complete(request: CompletionRequest): Completion { requests += request; return remaining.removeFirst() }
+        fun complete(request: CompletionRequest): Completion { requests += request; return remaining.removeFirst() }
     }
 
     private fun read(vararg paths: String) = Completion("", toolCalls = paths.mapIndexed { i, p ->

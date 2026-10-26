@@ -1,6 +1,7 @@
 package dev.insight
 
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.psi.SmartPointerManager
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
@@ -36,7 +37,7 @@ class SourceCallChainEditorTest : LightJavaCodeInsightFixtureTestCase() {
                 assertTrue(viewer.isViewer)
                 assertSame(document, viewer.document)
                 assertTrue(viewer.settings.isLineNumbersShown)
-                assertTrue(viewer.markupModel.allHighlighters.any { it.textAttributes?.backgroundColor != null })
+                assertTrue(viewer.markupModel.allHighlighters.any { it.getTextAttributes(EditorColorsManager.getInstance().globalScheme)?.backgroundColor != null })
                 assertTrue(viewer.highlighter.createIterator(0).tokenType != null)
             }
             fun buttons(component: Container): List<JButton> = component.components.flatMap {

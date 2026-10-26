@@ -12,7 +12,7 @@ import com.intellij.psi.PsiManager
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.ProjectGraphAnalyzer
 import kotlinx.coroutines.ensureActive
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * The project files an entry file depends on, transitively: everything its imports, calls, type uses, inheritance and other
@@ -41,7 +41,7 @@ internal class CodeDependencyWalker(private val project: Project) {
         val left = HashSet<String>()
         val queue = ArrayDeque(listOf(entry))
         while (queue.isNotEmpty()) {
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             val file = queue.removeFirst()
             val targets = smartReadAction(project) {
                 if (!file.isValid || file.fileType.isBinary || GeneratedSourcesFilter.isGeneratedSourceByAnyFilter(file, project))

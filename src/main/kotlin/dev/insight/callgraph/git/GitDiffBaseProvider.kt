@@ -13,7 +13,7 @@ class GitDiffBaseProvider : DiffBaseProvider {
         if (repositories.isEmpty()) return null
         // Unlike getDiffWithWorkingTree, this throws VcsException for an unknown revision, so the panel can report it.
         return repositories.flatMap { repository ->
-            GitChangeUtils.getDiffWithWorkingDir(project, repository.root, ref, null, false, true).orEmpty()
+            GitChangeUtils.getDiffWithWorkingDir(project, repository.root, ref, null, false, true)
         }
     }
 }

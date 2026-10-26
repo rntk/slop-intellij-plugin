@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import com.intellij.ui.Gray
+import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -32,8 +34,8 @@ import kotlin.math.sqrt
 internal class SemanticComplexityChart(
     internal val changes: SemanticChanges,
     internal val metric: Metric,
-    private val chartWidth: Int,
-    private val chartHeight: Int,
+    chartWidth: Int,
+    chartHeight: Int,
     private val open: (DeclarationMetrics) -> Unit,
 ) : JComponent() {
     /** [before] is 0 for an added function and [after] 0 for a removed one; [center] is the point's pixel, after jitter. */
@@ -120,7 +122,7 @@ internal class SemanticComplexityChart(
                 val label = tick.toString()
                 g2.drawString(label, x(tick) - metrics.stringWidth(label) / 2, plot.maxY.toInt() + metrics.height)
                 g2.drawString(label, plot.x - JBUI.scale(6) - metrics.stringWidth(label), y(tick) + metrics.ascent / 2)
-                g2.color = Color(128, 128, 128, 40)
+                g2.color = ColorUtil.withAlpha(Gray._128, 40 / 255.0)
                 g2.drawLine(x(tick), plot.y, x(tick), plot.maxY.toInt())
                 g2.drawLine(plot.x, y(tick), plot.maxX.toInt(), y(tick))
                 g2.color = UIUtil.getContextHelpForeground()
@@ -147,7 +149,7 @@ internal class SemanticComplexityChart(
             intArrayOf(p.center.y - r, p.center.y, p.center.y + r, p.center.y), 4,
         ) else java.awt.geom.Ellipse2D.Double((p.center.x - r).toDouble(), (p.center.y - r).toDouble(), 2.0 * r, 2.0 * r)
         if (!p.added && !p.removed) {
-            g2.color = Color(color.red, color.green, color.blue, 150)
+            g2.color = ColorUtil.withAlpha(color, 150 / 255.0)
             g2.fill(shape)
         }
         g2.color = color

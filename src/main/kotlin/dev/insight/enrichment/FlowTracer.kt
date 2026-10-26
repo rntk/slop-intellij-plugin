@@ -210,7 +210,7 @@ internal fun walkFlow(
     val members = linkedSetOf(entry)
     val flowEdges = linkedSetOf<CallGraphEdge>()
     var frontier = listOf(entry)
-    for (depth in 1..options.maxDepth) {
+    repeat(options.maxDepth) {
         val next = mutableListOf<Int>()
         for (caller in frontier) for (edge in calls[caller].orEmpty()) {
             if (!follows(edge)) continue
@@ -221,7 +221,6 @@ internal fun walkFlow(
             }
             flowEdges += edge
         }
-        if (next.isEmpty()) break
         frontier = next
     }
     return members.toList() to flowEdges

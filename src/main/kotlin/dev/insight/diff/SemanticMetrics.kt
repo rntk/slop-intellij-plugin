@@ -68,7 +68,7 @@ internal class SemanticMetrics(private val project: Project) {
         return FileMetrics(file.path, file.status, old?.vector.orEmpty(), new?.vector.orEmpty(), declarations)
     }
 
-    private fun parse(path: String, type: LanguageFileType, text: String): PsiFile? =
+    private fun parse(path: String, type: LanguageFileType, text: String): PsiFile =
         PsiFileFactory.getInstance(project).createFileFromText(path.substringAfterLast('/'), type, text)
 
     /** One parsed side: its declarations and the vectors counted in a single walk. */
@@ -211,7 +211,7 @@ internal class SemanticMetrics(private val project: Project) {
                     scope.add(Metric.BRANCHES); scope.decisions++; scope.cognitive++
                 }
                 "!!" -> scope.add(Metric.NULL_ASSERTIONS)
-                "as" -> if (ancestors(element, 2).any { words(it).containsAll(listOf("Binary", "Type")) }) scope.add(Metric.NULL_ASSERTIONS)
+                "as" -> if (ancestors(element).any { words(it).containsAll(listOf("Binary", "Type")) }) scope.add(Metric.NULL_ASSERTIONS)
                 "else" -> elseKeyword(element)
                 "elif" -> if ("If" in words(parent)) { scope.add(Metric.BRANCHES); scope.decisions++; scope.cognitive++ }
                 else -> if (text[0].isDigit() || text[0] == '.') number(element, text)
@@ -220,7 +220,7 @@ internal class SemanticMetrics(private val project: Project) {
 
         private fun number(element: PsiElement, text: String) {
             if (!NUMBER.matches(text) || ZERO_OR_ONE.matches(text.lowercase().replace("_", ""))) return
-            if (ancestors(element, 2).any { words(it).any { word -> word == "String" || word == "Template" || word == "Doc" } }) return
+            if (ancestors(element).any { words(it).any { word -> word == "String" || word == "Template" || word == "Doc" } }) return
             scope.add(Metric.NUMBER_LITERALS)
         }
 
@@ -328,7 +328,7 @@ internal class SemanticMetrics(private val project: Project) {
 
         private fun parameter(element: PsiElement, words: Set<String>) {
             if (words.none { it == "Parameter" || it == "Param" } || words.any { it == "Type" || it == "Star" || it == "Slash" }) return
-            val owners = ancestors(element, 2).map(::words).toList()
+            val owners = ancestors(element).map(::words).toList()
             if (owners.none { it.any { word -> word == "Parameter" || word == "Parameters" } } || owners.any { "Catch" in it || "Except" in it }) return
             scope.add(Metric.PARAMETERS)
             if (scope.function && scope.lambdas == 0) scope.parameters++
@@ -344,7 +344,7 @@ internal class SemanticMetrics(private val project: Project) {
             val local = targetFile == null || targetFile === file || targetFile.originalFile === file
             if (!local && safely { CallGraphAnalyzer.isInProject(project, target) } != true) scope.add(Metric.EXTERNAL_CALLS)
             val pkg = if (local) directory else
-                safely { targetFile!!.containingDirectory?.virtualFile?.path ?: targetFile.virtualFile?.parent?.path }
+                safely { targetFile.containingDirectory?.virtualFile?.path ?: targetFile.virtualFile?.parent?.path }
             pkg?.let(scope.packages::add)
         }
 
@@ -449,7 +449,7 @@ internal class SemanticMetrics(private val project: Project) {
         private fun meaningful(start: PsiElement?, forward: Boolean): PsiElement? =
             generateSequence(start) { if (forward) it.nextSibling else it.prevSibling }.firstOrNull { it !is PsiWhiteSpace && it !is PsiComment }
 
-        private fun ancestors(element: PsiElement, count: Int) = generateSequence(element.parent) { it.parent }.take(count)
+        private fun ancestors(element: PsiElement) = generateSequence(element.parent) { it.parent }.take(2)
     }
 
     private inline fun <T> safely(block: () -> T): T? = try {
@@ -488,6 +488,6 @@ internal class SemanticMetrics(private val project: Project) {
         private val NUMBER = Regex("(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\\d[\\d_]*(\\.\\d[\\d_]*)?([eE][+-]?\\d+)?|\\.\\d+([eE][+-]?\\d+)?)[a-zA-Z]{0,3}")
         private val ZERO_OR_ONE = Regex("(0x|0b|0o)?0*1?(\\.0*)?[lfdu]*")
         private val CONSTANT_NAME = Regex("[A-Z][A-Z0-9_]*")
-        private val DOCSTRING = Regex("^[rRbBuUfF]{0,2}(\"|')")
+        private val DOCSTRING = Regex("^[rRbBuUfF]{0,2}[\"']")
     }
 }

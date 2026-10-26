@@ -20,7 +20,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         override val text: String get() = "val answer = 42\n"
     }
 
-    private fun parts(count: Int) = List(count) { SourceChunk(it, (it * 10 + 1)..(it * 10 + 10), "h$it") }
+    private fun parts() = List(3) { SourceChunk(it, (it * 10 + 1)..(it * 10 + 10), "h$it") }
 
     private fun descendants(component: Container): List<Component> = component.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
@@ -191,7 +191,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
     fun testChunkedFileIsABranchAndItsChunkLeavesOpenTheirNode() {
         val big = Source("src/Big.kt", listOf("30 lines", "3 parts"))
         val tree = buildSummaryTree(listOf(big, Source("src/Small.kt")), rootLabel = "Whole scope",
-            chunks = { if (it == big) parts(3) else emptyList() })
+            chunks = { if (it == big) parts() else emptyList() })
         val chunk = tree.nodes.single { it.identity == "chunk:src/Big.kt:1" }
         val opened = mutableListOf<SummaryNode>()
         val shown = mutableListOf<SummaryNode>()
@@ -213,7 +213,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
 
             click(canvas, panel().named("toggle:file:src/Big.kt"))
             assertEquals(3, names().count { it.startsWith("chunk:src/Big.kt:") })
-            val leaf = panel().components.single { it.name == "chunk:src/Big.kt:1" } as javax.swing.JComponent
+            val leaf = panel().components.single { it.name == "chunk:src/Big.kt:1" } as JComponent
             val link = descendants(leaf).filterIsInstance<ActionLink>().single()
             assertEquals("Lines 11–20", link.text)
             assertEquals("src/Big.kt:11-20", leaf.toolTipText)
@@ -240,7 +240,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
     fun testLevelsAndFilesOpenOnlyFolderBranchesNotChunkedFiles() {
         val big = Source("a/Big.kt")
         val files = listOf(big, Source("a/Other.kt"), Source("b/Small.kt"), Source("b/Other2.kt"))
-        val chunked = buildSummaryTree(files, chunks = { if (it == big) parts(3) else emptyList() })
+        val chunked = buildSummaryTree(files, chunks = { if (it == big) parts() else emptyList() })
         val plain = buildSummaryTree(files)
         val file = chunked.nodes.single { it.identity == "file:a/Big.kt" }
         assertTrue(file.children.isNotEmpty())
@@ -325,7 +325,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         assertNull(plain.level)
         assertFalse(plain.isCollapsed(deep))
 
-        val small = topicOutline(ChangeTopics(files.take(20)).also { topics = it }.assign(files[0].path, "A>B"))
+        val small = topicOutline(ChangeTopics(files.take(20)).assign(files[0].path, "A>B"))
         val smallState = ChangeTopicsViewState(foldLargeOutline = true)
         smallState.update(small)
         assertNull(smallState.level)

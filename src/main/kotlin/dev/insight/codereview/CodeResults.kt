@@ -426,7 +426,7 @@ private fun inDirectory(path: String, folder: String) = folder.isEmpty() || path
 private fun globMatcher(glob: String?): PathMatcher? = glob?.takeIf { it.isNotBlank() }?.let {
     try {
         FileSystems.getDefault().getPathMatcher("glob:$it")
-    } catch (e: IllegalArgumentException) {
+    } catch (_: IllegalArgumentException) {
         throw ToolInputException("glob is not a valid pattern: $it")
     }
 }

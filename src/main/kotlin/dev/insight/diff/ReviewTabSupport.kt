@@ -89,7 +89,7 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
 
     override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
                           scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job =
-        launchSummaryTask("Scoring summary words", done) {
+        launchSummaryTask<Unit>("Scoring summary words", done) {
             // Four workers bound the number of words in flight; each word's question batches run in parallel.
             coroutineScope {
                 words.chunked(((words.size + 3) / 4).coerceAtLeast(1)).map { chunk ->
@@ -101,7 +101,6 @@ internal class ReviewTraceLauncher(private val project: Project, private val sco
                     }
                 }.awaitAll()
             }
-            Unit
         }
 
     override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job =

@@ -14,6 +14,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -43,14 +44,14 @@ internal class NoteCanvas(
     private val sourceActions: SourceCanvasActions = SourceCanvasActions(),
     private val summaryActions: SummaryCanvasActions = SummaryCanvasActions(),
     private val topicActions: TopicCanvasActions = TopicCanvasActions(),
-    private val metricActions: MetricCardActions = MetricCardActions(),
+    metricActions: MetricCardActions = MetricCardActions(),
 ) : JPanel(BorderLayout()), Disposable {
     private val openFileAt: (String, Int?) -> Unit = sourceActions.openFileAt ?: { path, _ -> open(path) }
     private val showFileLines: (String, IntRange) -> Unit = sourceActions.showFileLines ?: { path, _ -> sourceActions.showDiffCard(path) }
     private val openSummaryNode: (SummaryNode) -> Unit = summaryActions.openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = summaryActions.showNode ?: { node -> sourceActions.showDiffCard(node.path) }
     private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = summaryActions.openLines ?: { node, _ -> openSummaryNode(node) }
-    internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
+    internal val tabs = JBTabbedPane().apply { tabLayoutPolicy = JBTabbedPane.SCROLL_TAB_LAYOUT }
     private val pages = mutableMapOf<CanvasTabKey, JScrollPane>()
     private val cards = mutableMapOf<CanvasTabKey, JPanel>()
     private val stickyTargets = mutableMapOf<CanvasTabKey, JComponent>()
@@ -122,7 +123,6 @@ internal class NoteCanvas(
     }
 
     private val mainSummaries = SummariesTab(CanvasTabKey.Summaries, summariesView)
-    private val summariesTrace get() = mainSummaries.trace
     private val searchTabs = mutableListOf<SummariesTab>()
     private var searchTabCount = 0
     private fun summaryTabs() = listOf(mainSummaries) + searchTabs
@@ -871,7 +871,7 @@ internal class NoteCanvas(
                 if (split != null) add(JLabel(summariesStatus(content, vocabulary.noFiles) +
                     " · Click a summary to read it. Double-click to ${if (vocabulary == ReviewVocabulary.DIFF) "open the diff" else "open the file"}. Drag the divider to resize.").apply {
                     font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                    border = JBUI.Borders.empty(6, PADDING, 6, PADDING)
+                    border = JBUI.Borders.empty(6, PADDING)
                 })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
@@ -1028,7 +1028,7 @@ internal class NoteCanvas(
         JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "summary-explorer-navigation"
             isOpaque = false
-            border = JBUI.Borders.empty(6, PADDING, 6, PADDING)
+            border = JBUI.Borders.empty(6, PADDING)
             val path = tab.view.explorerBreadcrumbs(tree)
             fun refresh() { tab.scroll = 0; refreshSummaries(tab) }
             add(JButton("Back", AllIcons.Actions.Back).apply {

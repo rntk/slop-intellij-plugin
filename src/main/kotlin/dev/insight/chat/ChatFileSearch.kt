@@ -13,7 +13,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.PriorityQueue
-import kotlin.coroutines.coroutineContext
 
 /** One path snapshot shared by all chat panes; content edits do not invalidate file names. */
 @Service(Service.Level.PROJECT)

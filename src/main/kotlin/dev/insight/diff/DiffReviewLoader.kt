@@ -14,7 +14,7 @@ import dev.insight.callgraph.DiffService
 import kotlinx.coroutines.ensureActive
 import java.nio.file.Path
 import java.io.IOException
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.currentCoroutineContext
 
 /** Runs on IO. Inclusion of untracked files is review-local and never changes the VCS index. */
 internal class DiffReviewLoader(private val project: Project) {
@@ -33,7 +33,7 @@ internal class DiffReviewLoader(private val project: Project) {
                 (selected.repository == null || ProjectLevelVcsManager.getInstance(project).getVcsRootFor(it)?.path == selected.repository) }
         }.distinctBy { it.path }
         val files = changes.mapNotNull { change ->
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             val before = change.beforeRevision
             val after = change.afterRevision
             if ((after ?: before)?.file?.isDirectory == true) return@mapNotNull null
@@ -49,7 +49,7 @@ internal class DiffReviewLoader(private val project: Project) {
                     if (selected.mode.usesWorkingTree) ":${diskVersion(virtual)}" else "", comparison)
         }.toMutableList()
         for (virtual in untracked.filter { it.path in includedUntracked }) {
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             files += file(virtual.path, null, "untracked", "", workingText(virtual) { StringUtil.convertLineSeparators(String(virtual.contentsToByteArray(), virtual.charset)) },
                 diskVersion(virtual), comparison)
         }
@@ -88,7 +88,7 @@ internal class DiffReviewLoader(private val project: Project) {
 
     private fun file(path: String, previous: String?, status: String, before: String?, after: String?, unavailableVersion: String, comparison: ReviewComparison): ReviewFile {
         val readable = before != null && after != null && before.length <= MAX_TEXT && after.length <= MAX_TEXT
-        val patch = if (readable) reviewPatch(before!!, after!!, DiffService.lineChanges(before, after))
+        val patch = if (readable) reviewPatch(before, after, DiffService.lineChanges(before, after))
             else "[Diff content unavailable: binary, unreadable, or over the text size limit ($MAX_TEXT bytes/characters per side).]"
         val relativePath = relative(path)
         val previousPath = previous?.let(::relative)

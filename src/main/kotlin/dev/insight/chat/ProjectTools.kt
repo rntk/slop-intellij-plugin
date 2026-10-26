@@ -141,7 +141,7 @@ private abstract class ProjectTool(name: String, description: String, parameters
     protected fun JsonObject.glob(): PathMatcher? = string("glob")?.let {
         try {
             FileSystems.getDefault().getPathMatcher("glob:$it")
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             throw ToolInputException("glob is not a valid pattern: $it")
         }
     }

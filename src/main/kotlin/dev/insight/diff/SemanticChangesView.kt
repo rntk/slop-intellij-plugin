@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import com.intellij.ui.Gray
+import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -149,7 +151,7 @@ internal class SemanticMetricsTable(
                 val y = rowHeight * (i + 1)
                 val metric = row.metric
                 if (metric == null) {
-                    g2.color = Color(128, 128, 128, 28)
+                    g2.color = ColorUtil.withAlpha(Gray._128, 28 / 255.0)
                     g2.fillRect(0, y, width, rowHeight)
                     g2.color = UIUtil.getLabelForeground()
                     g2.font = label.deriveFont(java.awt.Font.BOLD)
@@ -157,7 +159,7 @@ internal class SemanticMetricsTable(
                     return@forEachIndexed
                 }
                 if (i == hovered) {
-                    g2.color = Color(128, 128, 128, 40)
+                    g2.color = ColorUtil.withAlpha(Gray._128, 40 / 255.0)
                     g2.fillRect(0, y, width, rowHeight)
                 }
                 g2.color = UIUtil.getLabelForeground()

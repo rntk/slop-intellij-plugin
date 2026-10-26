@@ -4,7 +4,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.labels.LinkLabel
-import com.intellij.ui.components.labels.LinkListener
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
@@ -12,7 +11,7 @@ import java.awt.Component
 import java.awt.GridLayout
 import java.awt.event.MouseEvent
 import javax.swing.AbstractCellEditor
-import javax.swing.JComboBox
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTable
@@ -34,7 +33,7 @@ internal class FileTracePanel(
     private var traces = emptyList<FileTrace>()
     private var rows = emptyList<Row>()
     private var updating = false
-    private val turns = JComboBox<String>()
+    private val turns = ComboBox<String>()
     private val status = JBLabel()
     private val model = object : DefaultTableModel(arrayOf("File", "Version", "Read", "Lines read"), 0) {
         override fun isCellEditable(row: Int, column: Int) = column == 3 && rows[row].lines.isNotEmpty()
@@ -149,7 +148,7 @@ internal class FileTracePanel(
                 background = if (selected) table.selectionBackground else table.background
                 if (row.lines.isEmpty()) add(JLabel("None").apply { foreground = if (selected) table.selectionForeground else table.foreground })
                 row.lines.forEach { range ->
-                    add(LinkLabel(range.label, null, LinkListener<TraceLineRange> { _, clicked ->
+                    add(LinkLabel(range.label, null, { _, clicked ->
                         cancelCellEditing()
                         openRange(row.document, clicked.lines)
                     }, range).apply {

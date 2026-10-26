@@ -21,7 +21,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.currentCoroutineContext
 
 /** One hierarchical subject per changed file. File boundaries and coverage belong to code. */
 data class ChangeTopics(val files: List<ReviewSource>, val labels: Map<String, String> = emptyMap()) {
@@ -76,7 +76,7 @@ class TopicOutline(val files: List<ReviewSource>, val nodes: List<TopicNode>, va
      */
     fun children(parent: TopicNode?): List<TopicEntry> {
         val level = parent?.let { it.level + 1 } ?: 0
-        val range = parent?.let { it.first..it.last } ?: 0 until labeled
+        val range = parent?.let { it.first..it.last } ?: (0 until labeled)
         val entries = mutableListOf<TopicEntry>()
         var index = range.first
         while (index <= range.last) {
@@ -202,8 +202,8 @@ class ChangeTopicGenerator internal constructor(
         // The output allowance includes reasoning, even though the final label is tiny.
         // Keep the raised budget across retries instead of restarting at the original limit.
         var outputBudget = 4096
-        for (attempt in 1..attempts) {
-            coroutineContext.ensureActive()
+        repeat(attempts) {
+            currentCoroutineContext().ensureActive()
             val topic = try {
                 val shown = evidence(file, seen)
                 val user = reviewJson.toJson(mapOf(

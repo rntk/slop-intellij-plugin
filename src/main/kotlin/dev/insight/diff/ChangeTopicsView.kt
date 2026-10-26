@@ -33,11 +33,9 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
-import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.border.Border
-import javax.swing.border.EmptyBorder
 import javax.swing.border.MatteBorder
 import kotlin.math.roundToInt
 
@@ -67,9 +65,8 @@ private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, v
 internal class ChangeTopicsViewState(
     /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
     private val foldLargeOutline: Boolean = false,
-    mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
+    var mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
 ) : SummaryTraceState(traceRoot = false, traceLeaves = true) {
-    var mode = mode
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
@@ -515,7 +512,7 @@ internal abstract class DocumentColumnsPanel(
     /** A source file's full path, or a diff's file name, followed by its snapshot facts. */
     private fun fileHeader(file: ReviewSource): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
         background = UIUtil.getPanelBackground()
-        border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), EmptyBorder(scaled(4), scaled(8), scaled(4), scaled(4)))
+        border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), pixelBorder(scaled(4), scaled(8), scaled(4), scaled(4)))
         toolTipText = file.path
         val name = file.path.substringAfterLast('/')
         add(JPanel().apply {
@@ -623,16 +620,15 @@ internal abstract class DocumentColumnsPanel(
     /** A left rule beside the summary; both states keep the same insets so the text never shifts. */
     private fun noteBorder(active: Boolean): Border? = JBUI.Borders.compound(
         MatteBorder(0, cardScaled(2), 0, 0, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
-        EmptyBorder(cardScaled(2), cardScaled(NOTE_INSET), cardScaled(2), 0),
+        pixelBorder(cardScaled(2), cardScaled(NOTE_INSET), cardScaled(2), 0),
     )
 
     private fun railBorder(item: RailItem, active: Boolean): Border? = JBUI.Borders.compound(
         MatteBorder(1, 1, 1, 1, if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
         MatteBorder(0, cardScaled(RAIL_ACCENT), 0, 0, item.family?.let(::accent) ?: JBColor.border()),
-        EmptyBorder(cardScaled(6), cardScaled(8), cardScaled(6), cardScaled(6)),
+        pixelBorder(cardScaled(6), cardScaled(8), cardScaled(6), cardScaled(6)),
     )
 
-    private fun italic(base: Font) = font(base).deriveFont(font(base).style or Font.ITALIC)
 
     protected fun text(value: String, width: Int, font: Font, color: Color?): JComponent = WrappedText(value, width).apply {
         isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true; border = null
@@ -742,8 +738,6 @@ internal class ChangeTopicsPanel(
     override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }
 
     companion object {
-        fun railWidth(depth: Int, zoom: Double) = DocumentColumnsPanel.railWidth(depth, zoom)
-        fun defaultWidth(depth: Int) = DocumentColumnsPanel.defaultWidth(depth)
         fun defaultWidth(depth: Int, zoom: Double) = DocumentColumnsPanel.defaultWidth(depth, zoom)
         internal fun accent(topLevel: String): Color = DocumentColumnsPanel.accent(topLevel)
     }
@@ -753,7 +747,7 @@ internal class ChangeTopicsPanel(
  * A unified patch painted as editor-styled lines with old and new line numbers. It paints only the visible rows, so a long
  * document of many files stays cheap; very long patches stop at [MAX_LINES] and link to the full diff.
  */
-internal class PatchView(patch: String, private val viewWidth: Int, zoom: Double) : JComponent() {
+internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JComponent() {
     private enum class Kind { CONTEXT, ADDED, REMOVED, HUNK, NOTE }
     private class Line(val text: String, val kind: Kind, val old: Int?, val new: Int?)
 

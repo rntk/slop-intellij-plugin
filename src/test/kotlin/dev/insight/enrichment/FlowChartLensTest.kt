@@ -54,7 +54,7 @@ class FlowChartLensTest {
         assertTrue(card.entryPoint)
         assertTrue(lens.compactCard(1).entryPoint)
         assertTrue(card.tooltip!!.contains("Load event (Handler)"))
-        assertTrue(card.tooltip!!.contains("Invoked by the host"))
+        assertTrue(card.tooltip.contains("Invoked by the host"))
         assertFalse(FlowChartLens(null, graph).card(1).entryPoint)
     }
 
@@ -136,7 +136,7 @@ class FlowChartLensTest {
         assertEquals("Handle request", card.title)
         assertEquals("▶ entry point · Service.handle · LLM summary", card.meta)
         assertTrue(card.details!!.startsWith("core · "))
-        assertTrue(card.details!!.endsWith("network · storage via calls"))
+        assertTrue(card.details.endsWith("network · storage via calls"))
         assertEquals("handle", lens.card(0).title.substringAfter('.'))
         val stale = base.input.facts.getValue(0).copy(sourceHash = "edited")
         assertTrue("summary predates source edits" in lens.compactCard(0, stale).meta!!)

@@ -26,7 +26,7 @@ class LlmJsonOutputTest {
         assertEquals(1, result["a"].asInt)
         val request = requests.single()
         assertEquals("json_schema", request.responseFormat!!["type"].asString)
-        assertEquals(schema, request.responseFormat!!.getAsJsonObject("json_schema")["schema"])
+        assertEquals(schema, request.responseFormat.getAsJsonObject("json_schema")["schema"])
         assertEquals(listOf("sys", "user"), request.messages.map { it.content })
         assertEquals(1000, request.maxTokens)
     }

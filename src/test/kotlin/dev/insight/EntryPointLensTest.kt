@@ -45,7 +45,7 @@ class EntryPointLensTest {
         assertEquals(old.step, start.step)
         assertEquals(base.spotlight, result.spotlight)
         assertTrue(start.tooltip!!.startsWith("Enrichment\n"))
-        assertTrue(start.tooltip!!.contains("src/App.kt:20"))
+        assertTrue(start.tooltip.contains("src/App.kt:20"))
         assertTrue(EntryPointLens.decorate(base, graph, listOf(entry()), "/p") { null } === base)
     }
 

@@ -154,7 +154,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertWordFitsOnOneLine(area(), "cache")
             // A leaf has no child summaries to support larger words.
             if (mode != ChangeSummariesMode.HIERARCHY) {
-                if (mode == ChangeSummariesMode.EXPLORER) clickSummary(canvas, "root")
+                if (mode == ChangeSummariesMode.EXPLORER) clickSummary(canvas)
                 val leaf = descendants(canvas).filterIsInstance<WrappedSummaryText>().first { it.text == leafSummary }
                 assertEquals(leaf.font.size, leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(0).attributes).size)
                 if (mode == ChangeSummariesMode.EXPLORER)
@@ -385,7 +385,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(summaryText.getFontMetrics(summaryText.font).stringWidth(longWord) <= summaryText.width)
             assertWordFitsOnOneLine(title, label)
             assertWordFitsOnOneLine(summaryText, longWord)
-            assertTrue(rail.height >= (rail as javax.swing.JComponent).preferredSize.height)
+            assertTrue(rail.height >= (rail as JComponent).preferredSize.height)
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
             val selectedSummary = panel.components.single { it.name?.startsWith("card-summary:") == true } as Container
@@ -492,7 +492,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 descendants(sections[1] as Container).filterIsInstance<PatchView>().single().describe().take(4))
 
             // Selecting a topic outlines its files and survives summary updates.
-            val auth = named("topic:2:storage > user > auth") as javax.swing.JComponent
+            val auth = named("topic:2:storage > user > auth") as JComponent
             auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertTrue(canvas.topicsView.isSelected(panel.outline.nodes.single { it.identity == "storage > user > auth" }))
             // The selected topic's summary replaces its files' notes in the margin, level with its card.
@@ -503,7 +503,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(named("summary:src/wallet.kt").isVisible)
             assertTrue(descendants(authSummary).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Adds token refresh." })
             // Hovering another card shows its summary instead; leaving it brings the selection's back.
-            val storage = named("topic:0:storage") as javax.swing.JComponent
+            val storage = named("topic:0:storage") as JComponent
             storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             val storageSummary = named("card-summary:0:storage") as Container
             assertEquals(storage.y, storageSummary.y)
@@ -1157,27 +1157,27 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val searchJobs = mutableListOf<Job>()
         val scoreJobs = mutableListOf<Job>()
         val launcher = object : SummaryTraceLauncher {
-            override fun prescore(content: ChangeSummaries, words: List<Pair<Int, Int>>,
+            override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
                                   scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
                 traced += words
                 saveContext = scored
                 finishScoring = done
                 for ((id, word) in words) {
-                    val text = content.text(id)!!
+                    val text = summaries.text(id)!!
                     val split = SummaryWord.split(text)
                     val context = (listOf(split[0], split[1], split[word])).distinctBy { it.index }.sortedBy { it.index }
-                    scored(SummaryContext(content.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
+                    scored(SummaryContext(summaries.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
                 }
                 return Job().also { scoreJobs += it }
             }
 
-            override fun search(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+            override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
                 searched += context
                 finishSearch = done
                 return Job().also { searchJobs += it }
             }
 
-            override fun searchLines(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
+            override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
                 error("Only file summaries search lines")
         }
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
@@ -1272,7 +1272,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(2, searched.size)
             hoverWord("hierarchy")
             assertTrue(searchJobs.last().isCancelled)
-            finishSearch!!(Result.success(result))
+            finishSearch(Result.success(result))
             assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
             assertNull(canvas.summariesView.tracing!!.trace)
 
@@ -1286,7 +1286,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.updateSummaries(SummariesCard(summaries, running = false, canRun = true))
             assertTrue(scoreJobs.last().isCancelled)
             saveContext!!(oldContext)
-            finishScoring!!(Result.success(Unit))
+            finishScoring(Result.success(Unit))
             assertTrue("Cancelled scoring must ignore late results", canvas.summariesView.scored.values.none { it.identity == "root" })
         } finally {
             canvas.dispose()
@@ -1302,26 +1302,26 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val searchedLines = mutableListOf<SummaryContext>()
         var finishLines: ((Result<LineTrace>) -> Unit)? = null
 
-        override fun prescore(content: ChangeSummaries, words: List<Pair<Int, Int>>,
+        override fun prescore(summaries: ChangeSummaries, words: List<Pair<Int, Int>>,
                               scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
             scoredWords += words
             for ((id, word) in words) {
-                val text = content.text(id)!!
+                val text = summaries.text(id)!!
                 val split = SummaryWord.split(text)
                 val context = listOf(split[0], split[1], split[word]).distinctBy { it.index }.sortedBy { it.index }
-                scored(SummaryContext(content.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
+                scored(SummaryContext(summaries.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
             }
             done(Result.success(Unit))
             return Job()
         }
 
-        override fun search(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
+        override fun search(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
             searched += context
             finishSearch = done
             return Job().also { searchJobs += it }
         }
 
-        override fun searchLines(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
+        override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
             searchedLines += context
             finishLines = done
             return Job().also { searchJobs += it }
@@ -1980,7 +1980,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun hover(text: String) {
             val word = SummaryWord.split(summary).single { it.text == text }
             val box = area.modelToView2D(word.start + 1)
-            val event = java.awt.event.MouseEvent(area, java.awt.event.MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
+            val event = MouseEvent(area, MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
             area.mouseMotionListeners.forEach { it.mouseMoved(event) }
         }
 
@@ -2022,7 +2022,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         areas += middle
         val childWord = SummaryWord.split(childSummary).single { it.text == "border" }
         val box = below.modelToView2D(childWord.start + 1)
-        val event = java.awt.event.MouseEvent(below, java.awt.event.MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
+        val event = MouseEvent(below, MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
         below.mouseMotionListeners.forEach { it.mouseMoved(event) }
         assertEquals(listOf("border"), echoedAbove())
         assertEquals(1, middle.highlighter.highlights.count {
@@ -2422,8 +2422,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(CanvasState(listOf(note))) }
-    private fun clickSummary(canvas: NoteCanvas, identity: String) {
-        val row = descendants(canvas).single { it.name == "summary:$identity" }
+    private fun clickSummary(canvas: NoteCanvas) {
+        val row = descendants(canvas).single { it.name == "summary:root" }
         row.dispatchEvent(MouseEvent(row, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
         layoutTree(canvas)
     }

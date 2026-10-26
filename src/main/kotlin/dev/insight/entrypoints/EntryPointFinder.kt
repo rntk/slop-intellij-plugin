@@ -78,9 +78,9 @@ class EntryPointFinder(
             if (unchanged && run.searches.all { search ->
                 if (searchTool == null) false else try {
                     digest(searchTool.call(search.arguments.deepCopy())) == search.resultHash
-                } catch (e: ToolInputException) {
+                } catch (_: ToolInputException) {
                     false
-                } catch (e: IOException) {
+                } catch (_: IOException) {
                     false
                 }
             }) {

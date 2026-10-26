@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import com.intellij.ui.ColorUtil
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -36,7 +37,7 @@ internal class DiffLineChart(private val counts: ChangedLineCounts) {
                 val number = "$sign$count"
                 g2.drawString(number, bounds.width - pad - metrics.stringWidth(number), y + metrics.ascent)
                 val top = y + metrics.height + pad
-                g2.color = Color(color.red, color.green, color.blue, 25)
+                g2.color = ColorUtil.withAlpha(color, 25 / 255.0)
                 g2.fillRect(pad, top, barWidth, barHeight)
                 g2.color = color
                 g2.fillRect(pad, top, (barWidth * count.toDouble() / max).roundToInt(), barHeight)

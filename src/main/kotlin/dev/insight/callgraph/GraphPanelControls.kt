@@ -5,17 +5,17 @@ import dev.insight.enrichment.Flow
 import java.awt.Component
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JList
-import javax.swing.JComboBox
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.JComponent
 import kotlin.math.round
 
 /** Each panel owns its zoom selection while using the same presets and canvas synchronization. */
 internal fun zoomControl(getZoom: () -> Double, setZoom: (Double) -> Unit, canvas: JComponent) =
-    JComboBox(arrayOf("25%", "50%", "75%", "100%", "150%")).apply {
+    ComboBox(arrayOf("25%", "50%", "75%", "100%", "150%")).apply {
         selectedItem = "${round(getZoom() * 100).toInt()}%"
         var updating = false
         addActionListener {
-            if (!updating) setZoom(selectedItem.toString().removeSuffix("%").toDouble() / 100)
+            if (!updating) setZoom(selectedItem?.toString().orEmpty().removeSuffix("%").toDouble() / 100)
         }
         canvas.addPropertyChangeListener("zoom") { event ->
             updating = true
@@ -29,7 +29,7 @@ internal class FlowChoice(val flow: Flow?) {
 }
 
 /** Both panels use the same flow names, descriptions and bounded selector width. */
-internal fun flowChoiceControl() = object : JComboBox<FlowChoice>() {
+internal fun flowChoiceControl() = object : ComboBox<FlowChoice>() {
     override fun getPreferredSize() = super.getPreferredSize().also {
         it.width = it.width.coerceIn(JBUI.scale(120), JBUI.scale(280))
     }

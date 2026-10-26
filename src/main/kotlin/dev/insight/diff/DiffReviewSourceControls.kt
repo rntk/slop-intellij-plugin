@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -14,10 +15,10 @@ internal class DiffReviewSourceControls(
     onRefresh: () -> Unit = {},
     onApply: (ReviewDiffRequest) -> Unit,
 ) : JPanel(GridBagLayout()) {
-    private val mode: JComboBox<ReviewDiffMode> = JComboBox(ReviewDiffMode.entries.toTypedArray()).apply { name = "diffMode" }
-    private val repository = JComboBox<ReviewRepository>().apply { name = "diffRepository" }
-    private val base = JComboBox(arrayOf("HEAD", "HEAD^")).apply { isEditable = true; name = "diffBase" }
-    private val target = JComboBox(arrayOf("HEAD", "HEAD^")).apply { isEditable = true; name = "diffTarget" }
+    private val mode: ComboBox<ReviewDiffMode> = ComboBox(ReviewDiffMode.entries.toTypedArray()).apply { name = "diffMode" }
+    private val repository = ComboBox<ReviewRepository>().apply { name = "diffRepository" }
+    private val base = ComboBox(arrayOf("HEAD", "HEAD^")).apply { isEditable = true; name = "diffBase" }
+    private val target = ComboBox(arrayOf("HEAD", "HEAD^")).apply { isEditable = true; name = "diffTarget" }
     private val help = JLabel().apply { foreground = UIUtil.getContextHelpForeground() }
     private var repositoryError: String? = null
     private val repositoryLabel = JLabel("Repository")

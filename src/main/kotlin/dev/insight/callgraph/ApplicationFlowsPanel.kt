@@ -20,6 +20,7 @@ import dev.insight.ui.PanelCommand
 import kotlinx.coroutines.*
 import java.awt.*
 import java.awt.event.MouseWheelEvent
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 import kotlin.math.pow
 
@@ -53,7 +54,7 @@ internal class ApplicationFlowsPanel(
         toolTipText = "Search project functions by name or path and choose where flow splitting starts"
     }
     private val discoveredButton = JButton("Use discovered entrypoints").apply { isEnabled = false }
-    private lateinit var controlsSection: CollapsibleControls.Section
+    private var controlsSection: CollapsibleControls.Section
 
     private fun selectedEntries(): List<EntryPoint> = manualEntry?.let(::listOf) ?: entryPoints.entryPoints.value
 
@@ -87,7 +88,7 @@ internal class ApplicationFlowsPanel(
             return
         }
         JBPopupFactory.getInstance().createPopupChooserBuilder(choices)
-            .setTitle("Choose a function as entrypoint")
+            .setTitle("Choose a Function as Entrypoint")
             .setNamerForFiltering { it.toString() }
             .setMovable(true)
             .setResizable(true)
@@ -98,11 +99,11 @@ internal class ApplicationFlowsPanel(
     private val splitAction = PanelCommand("Split flows", "Split selected entrypoints into logical flows with the LLM") {
         if (job?.isActive == true) job?.cancel() else splitFlows()
     }
-    private val entryChoice = JComboBox<EntryChoice>().apply {
+    private val entryChoice = ComboBox<EntryChoice>().apply {
         toolTipText = "Show the flows of one entrypoint, or of all of them"
         isEnabled = false
     }
-    private val zoomChoice = JComboBox(arrayOf("50%", "75%", "100%", "125%")).apply {
+    private val zoomChoice = ComboBox(arrayOf("50%", "75%", "100%", "125%")).apply {
         selectedItem = "100%"
         toolTipText = "Zoom of every flow graph · Ctrl/Cmd + wheel zooms one graph"
     }
@@ -134,7 +135,7 @@ internal class ApplicationFlowsPanel(
         discoveredButton.addActionListener { setManualEntry(null) }
         entryChoice.addActionListener { showFlows() }
         zoomChoice.addActionListener {
-            val zoom = zoomChoice.selectedItem.toString().removeSuffix("%").toDouble() / 100
+            val zoom = zoomChoice.selectedItem?.toString().orEmpty().removeSuffix("%").toDouble() / 100
             for (canvas in canvases) canvas.zoom = zoom
             list.revalidate()
         }
@@ -270,7 +271,7 @@ internal class ApplicationFlowsPanel(
         border = JBUI.Borders.empty(4, 0)
         add(JLabel("▶ ${entry.title}").apply { font = font.deriveFont(Font.BOLD, font.size2D + 2f) }, BorderLayout.NORTH)
         add(wrapped("${entry.kind} · ${entry.path}:${entry.line} · $flows ${if (flows == 1) "flow" else "flows"}" +
-            entry.description.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(), muted = true), BorderLayout.CENTER)
+            entry.description.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()), BorderLayout.CENTER)
     }
 
     private fun flowCard(current: Split, flow: ApplicationFlow, number: Int, of: Int, starts: Set<Int>): JComponent {
@@ -280,7 +281,7 @@ internal class ApplicationFlowsPanel(
             onOpen = { id -> navigate(current, drawn.sources[id]) }, popup = { id -> menu(current, drawn, id) })
         canvases += canvas
         canvas.show(drawn.graph)
-        canvas.zoom = zoomChoice.selectedItem.toString().removeSuffix("%").toDouble() / 100
+        canvas.zoom = zoomChoice.selectedItem?.toString().orEmpty().removeSuffix("%").toDouble() / 100
         canvas.decorate(GraphDecorations(nodes = drawn.sources.withIndex().filter { it.value in starts }.associate { (id, source) ->
             id to NodeDecoration(entryPoint = true, tooltip = if (source == flow.root) "Start of ${flow.entry.title}"
                 else "Separate entrypoint: its calls are drawn with its own flows")
@@ -318,7 +319,7 @@ internal class ApplicationFlowsPanel(
                     "${flow.nodes.size} functions",
                     "partial: analysis or size limit reached".takeIf { flow.limited },
                     flow.description.takeIf { it.isNotBlank() },
-                ).joinToString(" · "), muted = true), BorderLayout.CENTER)
+                ).joinToString(" · ")), BorderLayout.CENTER)
             }, BorderLayout.NORTH)
             add(view, BorderLayout.CENTER)
         }
@@ -384,13 +385,13 @@ internal class ApplicationFlowsPanel(
             (if (stale.isNotEmpty()) " · out of date: ${stale.joinToString(" and ")}; click Split flows to update" else "")
     }
 
-    private fun note(text: String) = wrapped(text, muted = true).apply {
+    private fun note(text: String) = wrapped(text).apply {
         alignmentX = LEFT_ALIGNMENT
         border = JBUI.Borders.empty(8, 0)
     }
 
     /** A label that wraps to the list width. */
-    private fun wrapped(text: String, muted: Boolean) = object : JLabel("<html>${StringUtil.escapeXmlEntities(text)}</html>") {
+    private fun wrapped(text: String) = object : JLabel("<html>${StringUtil.escapeXmlEntities(text)}</html>") {
         override fun getPreferredSize(): Dimension {
             val width = (scroll.viewport.width - JBUI.scale(40)).coerceAtLeast(JBUI.scale(200))
             val view = getClientProperty("html") as? javax.swing.text.View ?: return super.getPreferredSize()
@@ -400,7 +401,7 @@ internal class ApplicationFlowsPanel(
         override fun getMaximumSize() = Dimension(Int.MAX_VALUE, preferredSize.height)
     }.apply {
         alignmentX = LEFT_ALIGNMENT
-        if (muted) foreground = UIUtil.getContextHelpForeground()
+        foreground = UIUtil.getContextHelpForeground()
     }
 
     override fun dispose() { disposed = true; job?.cancel(); entryPointJob?.cancel() }

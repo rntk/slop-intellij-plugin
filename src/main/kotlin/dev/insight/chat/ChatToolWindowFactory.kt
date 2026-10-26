@@ -28,7 +28,6 @@ import java.awt.event.ActionEvent
 import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.JButton
-import javax.swing.JComponent
 import javax.swing.JEditorPane
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -123,8 +122,8 @@ class ChatPanel(
         stop.addActionListener { service.stop() }
         clear.addActionListener { service.clear() }
         undoChart.addActionListener { service.restoreChart() }
-        input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ctrl ENTER"), "send")
-        input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("meta ENTER"), "send")
+        input.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ctrl ENTER"), "send")
+        input.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("meta ENTER"), "send")
         input.actionMap.put("send", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) = submit()
         })

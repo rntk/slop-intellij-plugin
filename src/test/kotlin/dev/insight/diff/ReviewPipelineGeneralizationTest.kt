@@ -49,7 +49,7 @@ class ReviewPipelineGeneralizationTest {
         fun nodes(request: CompletionRequest): List<JsonObject> =
             JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content.substringBefore("\n\n")).asJsonObject["nodes"]
                 .asJsonArray.map { it.asJsonObject }
-        suspend fun complete(request: CompletionRequest): Completion {
+        fun complete(request: CompletionRequest): Completion {
             requests += request
             val nodes = nodes(request)
             return Completion(reviewJson.toJson(mapOf("summaries" to nodes.map {

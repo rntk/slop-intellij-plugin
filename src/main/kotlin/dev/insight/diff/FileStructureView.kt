@@ -16,7 +16,6 @@ import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.border.EmptyBorder
 import javax.swing.border.MatteBorder
 
 /**
@@ -141,7 +140,7 @@ internal class FileStructurePanel(
         val block = (file as BlockSource).block
         return JPanel(BorderLayout(scaled(6), 0)).apply {
             background = UIUtil.getPanelBackground()
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), EmptyBorder(scaled(4), scaled(8), scaled(4), scaled(4)))
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), pixelBorder(scaled(4), scaled(8), scaled(4), scaled(4)))
             add(JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
                 isOpaque = false
@@ -175,7 +174,7 @@ internal class FileStructurePanel(
 
     override fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(cardScaled(6))).apply {
         background = UIUtil.getListBackground()
-        border = EmptyBorder(cardScaled(4), cardScaled(NOTE_INSET), cardScaled(4), cardScaled(2))
+        border = pixelBorder(cardScaled(4), cardScaled(NOTE_INSET), cardScaled(4), cardScaled(2))
         val inner = width - cardScaled(NOTE_INSET) - cardScaled(2)
         for ((topic, paths) in summaryPaths[item.key].orEmpty().groupBy { topic(card, it) }) {
             add(topicSummary(topic, paths, inner))
@@ -198,7 +197,7 @@ internal class FileStructurePanel(
         border = JBUI.Borders.compound(
             MatteBorder(1, 1, 1, 1, JBColor.border()),
             MatteBorder(0, cardScaled(RAIL_ACCENT), 0, 0, if (labeled) accent(topic.substringBefore(" > ")) else JBColor.border()),
-            EmptyBorder(cardScaled(4), cardScaled(6), cardScaled(4), cardScaled(4)),
+            pixelBorder(cardScaled(4), cardScaled(6), cardScaled(4), cardScaled(4)),
         )
         val inner = width - cardScaled(RAIL_ACCENT) - cardScaled(10) - 2
         add(text(topicTitle(topic), inner,

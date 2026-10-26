@@ -150,7 +150,7 @@ internal class ChangeFlowMap(
                 border = null
                 font = font(JBFont.small()).let { if (note == null) it else it.deriveFont(it.style or Font.ITALIC) }
                 foreground = help
-                text = abbreviated(summary, textWidth, 3, getFontMetrics(font))
+                text = abbreviated(summary, textWidth, getFontMetrics(font))
                 toolTipText = summary
                 accessibleContext.accessibleDescription = summary
             }, scaled(48))
@@ -250,7 +250,8 @@ internal class ChangeFlowMap(
         private val ACCENT: Color = JBColor(Color(0xC45D3E), Color(0xE59072))
 
         /** Wrap at word boundaries, with an ellipsis instead of silently clipping the interpretation. */
-        private fun abbreviated(text: String, width: Int, maxLines: Int, metrics: java.awt.FontMetrics): String {
+        private fun abbreviated(text: String, width: Int, metrics: java.awt.FontMetrics): String {
+            val maxLines = 3
             val words = text.trim().split(Regex("\\s+"))
             val lines = mutableListOf<String>()
             var line = ""

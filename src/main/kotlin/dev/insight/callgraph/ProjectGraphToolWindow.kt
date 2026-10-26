@@ -38,7 +38,6 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.pom.Navigatable
@@ -58,6 +57,7 @@ import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.GridLayout
 import java.awt.event.ActionEvent
+import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 
@@ -184,7 +184,7 @@ class OpenSideBySideAction : GraphSymbolAction() {
 class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = ProjectGraphPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel, "Application graph", false)
+        val content = ContentFactory.getInstance().createContent(panel, "Application Graph", false)
         content.setDisposer(panel)
         val chart = FlowChartPanel(project,
             activateChart = { toolWindow.contentManager.contents.firstOrNull { it.component is FlowChartPanel }?.let { toolWindow.contentManager.setSelectedContent(it) } },
@@ -228,12 +228,12 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     /** Expanded groups by [GraphHierarchy.key], so they survive rebuilds after edits; null until the first build. */
     private var expandedKeys: Set<String>? = null
     private var view: DetailGraph? = null
-    private val detail = JComboBox(GraphDetail.entries.toTypedArray()).apply { selectedItem = GraphDetail.OVERVIEW }
-    private val viewChoice = JComboBox(GraphView.entries.toTypedArray()).apply {
+    private val detail = ComboBox(GraphDetail.entries.toTypedArray()).apply { selectedItem = GraphDetail.OVERVIEW }
+    private val viewChoice = ComboBox(GraphView.entries.toTypedArray()).apply {
         selectedItem = GraphView.GRAPH
         toolTipText = "Graph: free layered layout · Sections: titled columns grouped by file, folder or enrichment judgment"
     }
-    private val sectionBy = JComboBox(SectionBy.entries.toTypedArray()).apply {
+    private val sectionBy = ComboBox(SectionBy.entries.toTypedArray()).apply {
         selectedItem = SectionBy.FILE
         isEnabled = false
         renderer = object : DefaultListCellRenderer() {
@@ -263,16 +263,16 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     private var options = LensOptions()
     /** Suppresses [lensChanged] while the controls are updated programmatically. */
     private var updatingLens = false
-    private val colorBy = JComboBox(ColorBy.entries.toTypedArray()).apply { selectedItem = options.colorBy }
+    private val colorBy = ComboBox(ColorBy.entries.toTypedArray()).apply { selectedItem = options.colorBy }
     private val hideTests = JCheckBox("Hide tests")
     private val hideUtilities = JCheckBox("Hide utilities")
-    private val edgeFilter = JComboBox(EdgeFilter.entries.toTypedArray()).apply { selectedItem = options.edges }
+    private val edgeFilter = ComboBox(EdgeFilter.entries.toTypedArray()).apply { selectedItem = options.edges }
     private val flowChoice = flowChoiceControl()
     private val previousStep = JButton("◀")
     private val nextStep = JButton("▶")
 
     private val search = SearchTextField(false).apply { textEditor.columns = 24 }
-    private val searchMode = JComboBox(SearchMode.entries.toTypedArray()).apply {
+    private val searchMode = ComboBox(SearchMode.entries.toTypedArray()).apply {
         selectedItem = SearchMode.HIGHLIGHT
         toolTipText = "Highlight: mark matches in the graph · Filter: show only the matching nodes"
     }
@@ -292,7 +292,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     /** The last change set mapped onto the graph; ignored by [render] once the graph is rebuilt. */
     private var diff: DiffResult? = null
     private var diffJob: Job? = null
-    private val changesMode = JComboBox(ChangesMode.entries.toTypedArray()).apply {
+    private val changesMode = ComboBox(ChangesMode.entries.toTypedArray()).apply {
         selectedItem = ChangesMode.OFF
         toolTipText = "Highlight: emphasize changed symbols and their callers and callees · Changed only: show just those"
     }
@@ -302,7 +302,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             else "Comparing with another revision needs the Git plugin; local changes are compared with HEAD."
         isEnabled = DiffBaseProvider.available
     }
-    private val changesHops = JComboBox(arrayOf("1", "2", "3", "All")).apply {
+    private val changesHops = ComboBox(arrayOf("1", "2", "3", "All")).apply {
         selectedItem = "All"
         toolTipText = "Caller and callee hops kept around changed symbols"
     }
@@ -319,8 +319,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         } finally { updatingLens = false }
         lensChanged()
     }.apply { isEnabled = false }
-    private lateinit var searchSection: CollapsibleControls.Section
-    private lateinit var changesSection: CollapsibleControls.Section
+    private var searchSection: CollapsibleControls.Section
+    private var changesSection: CollapsibleControls.Section
     /** Suppresses [changesModeChanged] while the mode is switched programmatically. */
     private var updatingChanges = false
     /** Recomputes after the IDE's change list updates, for example after a commit or an external edit. */
@@ -520,7 +520,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         val active = buildList {
             if (hideTests.isSelected) add("tests hidden")
             if (hideUtilities.isSelected) add("utilities hidden")
-            if (edgeFilter.selectedItem != EdgeFilter.ALL) add(edgeFilter.selectedItem.toString())
+            if (edgeFilter.selectedItem != EdgeFilter.ALL) add(edgeFilter.selectedItem?.toString().orEmpty())
             if (flow != null) add("Flow: ${flowChoice.selectedItem}")
         }
         val summary = active.joinToString(" · ")

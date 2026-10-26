@@ -205,7 +205,7 @@ class FunctionSummarizer(
             decode(completeJson(complete, SYSTEM, user, SCHEMA, maxTokens = 200 + 120 * batch.size, temperature = 0.0), batch.size)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }

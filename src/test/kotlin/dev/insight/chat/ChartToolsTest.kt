@@ -202,9 +202,9 @@ class ChartToolsTest {
         backend.reply(history)
         context.revision = 2
         backend.reply(history + ChatMessage(ChatMessage.ASSISTANT, "Answer") + ChatMessage(ChatMessage.USER, "Now?"))
-        assertTrue(requests[0].messages.last().content.orEmpty().contains("revision=1"))
-        assertTrue(requests[1].messages.last().content.orEmpty().contains("revision=2"))
-        assertFalse(requests[1].messages.dropLast(1).any { it.content.orEmpty().contains("revision=1") })
+        assertTrue(requests[0].messages.last().content.contains("revision=1"))
+        assertTrue(requests[1].messages.last().content.contains("revision=2"))
+        assertFalse(requests[1].messages.dropLast(1).any { it.content.contains("revision=1") })
         assertEquals("Explain selection", history.single().text)
     }
 

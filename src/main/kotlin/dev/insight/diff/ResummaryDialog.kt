@@ -34,7 +34,7 @@ internal class ResummaryDialog(parent: Component, node: SummaryNode, recursive: 
         else "Regenerate this entry using existing child summaries where available."
 
     init {
-        title = if (recursive) "Resummarize all" else "Resummarize"
+        title = if (recursive) "Resummarize All" else "Resummarize"
         setOKButtonText(title)
         init()
     }

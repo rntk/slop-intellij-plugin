@@ -1,10 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.icons.AllIcons
-import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
-import com.intellij.diff.requests.SimpleDiffRequest
-import com.intellij.diff.util.DiffUserDataKeys
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -227,7 +224,7 @@ internal class DiffReviewPanel(
                 }
             },
         ), "Insight.DiffReviewFiles")
-        tree.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "showDiff")
+        tree.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "showDiff")
         tree.actionMap.put("showDiff", object : AbstractAction() {
             override fun actionPerformed(e: java.awt.event.ActionEvent?) {
                 selectedFile()?.let { showDiff(it.path) } ?: tree.selectionPath?.let {
@@ -401,7 +398,7 @@ internal class DiffReviewPanel(
             }
         }
         info.setTabLabelActions(DefaultActionGroup(object : DumbAwareAction(
-            "Close tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
+            "Close Tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
         ) {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun actionPerformed(e: AnActionEvent) { closeTab(info) }

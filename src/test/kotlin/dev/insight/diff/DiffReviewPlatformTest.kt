@@ -229,8 +229,10 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val visible = orphaned.javaClass.declaredConstructors.single().apply { isAccessible = true }
                 .newInstance(splitters, scope) as com.intellij.openapi.fileEditor.impl.EditorWindow
             splitters.add(visible.tabbedPane.component, BorderLayout.CENTER)
-            splitters.javaClass.getDeclaredField("windows").apply { isAccessible = true }
-                .let { (it.get(splitters) as MutableCollection<Any>).add(visible) }
+            @Suppress("UNCHECKED_CAST")
+            val windows = splitters.javaClass.getDeclaredField("windows").apply { isAccessible = true }
+                .get(splitters) as MutableCollection<Any>
+            windows.add(visible)
             assertTrue(orphaned.isFileOpen(first.canvasFile))
             assertFalse(visible.isFileOpen(first.canvasFile))
             openCanvasButton.doClick()
@@ -817,7 +819,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         header.updateTabActions()
         val buttons = descendants(header).filterIsInstance<InplaceButton>()
         assertEquals("Expected a close control in ${header.javaClass.name}: ${descendants(header).map { it.javaClass.simpleName }}", 1, buttons.size)
-        return buttons.single().also { assertEquals("Close tab", it.toolTipText) }
+        return buttons.single().also { assertEquals("Close Tab", it.toolTipText) }
     }
 
     private fun file(path: String) = ReviewFile(path, "/project/$path", null, "modified", "-old\n+new\n", "1")

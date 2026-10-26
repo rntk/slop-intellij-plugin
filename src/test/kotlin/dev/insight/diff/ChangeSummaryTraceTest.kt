@@ -39,7 +39,7 @@ class ChangeSummaryTraceTest {
     }
 
     private val example = "deleted views: canvas, hierarchy, summaries"
-    private fun word(state: JsonObject, instructions: JsonObject) = instructions["candidate_word"]?.asJsonObject?.get("word")?.asString
+    private fun word(instructions: JsonObject) = instructions["candidate_word"]?.asJsonObject?.get("word")?.asString
     private fun location(instructions: JsonObject) = instructions["candidate"]?.asJsonObject?.get("location")?.asString
 
     @Test fun `split keeps identifiers whole excludes punctuation and records offsets`() {
@@ -66,7 +66,7 @@ class ChangeSummaryTraceTest {
     }
 
     @Test fun `context keeps the pointed word and its own phrase but not its siblings`() = runBlocking {
-        val fake = FakeDecisions { state, instructions -> if (word(state, instructions) in setOf("deleted", "views")) 0.9 else 0.1 }
+        val fake = FakeDecisions { _, instructions -> if (word(instructions) in setOf("deleted", "views")) 0.9 else 0.1 }
         val tracer = SummaryTracer(fake.evaluate)
         val words = SummaryWord.split(example)
         val context = tracer.context(example, words, words[3])
@@ -92,7 +92,7 @@ class ChangeSummaryTraceTest {
         val summary = "Introduces custom instruction handling across UI, core pipeline, background orchestrator, and runtime contracts, " +
             "adding UI controls, normalization, caching, and payload updates, with comprehensive tests."
         val wanted = setOf("Introduces", "custom", "instruction", "handling", "across", "adding", "UI", "controls")
-        val fake = FakeDecisions { state, instructions -> if (word(state, instructions) in wanted) 0.9 else 0.1 }
+        val fake = FakeDecisions { _, instructions -> if (word(instructions) in wanted) 0.9 else 0.1 }
         val words = SummaryWord.split(summary)
         val pointed = words.first { it.text == "UI" }
         val context = SummaryTracer(fake.evaluate).context(summary, words, pointed)
@@ -135,7 +135,7 @@ class ChangeSummaryTraceTest {
     @Test fun `context questions are chunked into parallel requests`() = runBlocking {
         val bothStarted = CompletableDeferred<Unit>()
         val requests = mutableListOf<DecisionRequest>()
-        val fake = FakeDecisions { state, instructions -> if (word(state, instructions) == "views") 0.9 else 0.1 }
+        val fake = FakeDecisions { _, instructions -> if (word(instructions) == "views") 0.9 else 0.1 }
         val tracer = SummaryTracer({ request ->
             requests += request
             // A sequential caller would never start the second request, and this would time out.
@@ -226,8 +226,8 @@ class ChangeSummaryTraceTest {
         ))
     }
 
-    private fun matchAnswer(state: JsonObject, instructions: JsonObject): Double = when (location(instructions)) {
-        null -> if (word(state, instructions) in setOf("deleted", "views")) 0.9 else 0.1
+    private fun matchAnswer(instructions: JsonObject): Double = when (location(instructions)) {
+        null -> if (word(instructions) in setOf("deleted", "views")) 0.9 else 0.1
         "views/hierarchy.kt", "views/" -> 0.9
         "views/canvas.kt" -> 0.6
         else -> 0.2
@@ -238,7 +238,7 @@ class ChangeSummaryTraceTest {
 
     @Test fun `scoring publishes context without searching and search reuses the scored query`() = runBlocking {
         val summaries = viewsTree()
-        val fake = FakeDecisions(::matchAnswer)
+        val fake = FakeDecisions { _, instructions -> matchAnswer(instructions) }
         val tracer = SummaryTracer(fake.evaluate)
         val context = tracer.score(summaries, 0, 3)
         assertEquals("deleted views: hierarchy", context.query)
@@ -255,7 +255,7 @@ class ChangeSummaryTraceTest {
 
     @Test fun `trace ranks summaries below by probability, deeper first on ties`() = runBlocking {
         val summaries = viewsTree()
-        val fake = FakeDecisions(::matchAnswer)
+        val fake = FakeDecisions { _, instructions -> matchAnswer(instructions) }
         val trace = SummaryTracer(fake.evaluate).trace(summaries, 0, 3)
         assertEquals("root", trace.identity)
         assertEquals("hierarchy", trace.word.text)
@@ -303,8 +303,8 @@ class ChangeSummaryTraceTest {
     @Test fun `search marks the words that carry the query on in related summaries with nothing related below`() = runBlocking {
         val summaries = viewsTree()
         val fake = FakeDecisions { state, instructions ->
-            if (!state.has("trail_rules")) matchAnswer(state, instructions)
-            else when (word(state, instructions)) { "hierarchy" -> 0.95; "Deletes" -> 0.9; "view" -> 0.7; else -> 0.1 }
+            if (!state.has("trail_rules")) matchAnswer(instructions)
+            else when (word(instructions)) { "hierarchy" -> 0.95; "Deletes" -> 0.9; "view" -> 0.7; else -> 0.1 }
         }
         val tracer = SummaryTracer(fake.evaluate)
         val trace = tracer.trace(summaries, 0, 3)
@@ -332,7 +332,7 @@ class ChangeSummaryTraceTest {
     }
 
     @Test fun `a related summary with no word that carries the query on has nothing to follow`() = runBlocking {
-        val fake = FakeDecisions { state, instructions -> if (state.has("trail_rules")) 0.1 else matchAnswer(state, instructions) }
+        val fake = FakeDecisions { state, instructions -> if (state.has("trail_rules")) 0.1 else matchAnswer(instructions) }
         val trace = SummaryTracer(fake.evaluate).trace(viewsTree(), 0, 3)
         assertTrue(trace.related.isNotEmpty())
         assertTrue(trace.matches.all { it.next == null })
@@ -347,7 +347,7 @@ class ChangeSummaryTraceTest {
 
     @Test fun `tracing again asks only about candidates whose summary changed`() = runBlocking {
         val summaries = viewsTree()
-        val fake = FakeDecisions(::matchAnswer)
+        val fake = FakeDecisions { _, instructions -> matchAnswer(instructions) }
         val tracer = SummaryTracer(fake.evaluate)
         tracer.trace(summaries, 0, 3)
         assertEquals(1, fake.contextRequests().size)
@@ -426,7 +426,7 @@ class ChangeSummaryTraceTest {
         val node = tree.nodes.single { it.kind == SummaryKind.FILE }
         val summary = "Paints the canvas border and repaints the CANVAS border."
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
-        val fake = FakeDecisions { state, instructions ->
+        val fake = FakeDecisions { _, instructions ->
             when {
                 instructions.has("candidate_lines") -> if ("drawBorder" in instructions["candidate_lines"].asString) 0.9 else 0.1
                 instructions.has("candidate_line") -> if ("drawBorder" in instructions["candidate_line"].asString) 0.8 else 0.2

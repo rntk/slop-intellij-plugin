@@ -98,7 +98,7 @@ internal class EntryPointsPanel(
                     val result = withBackgroundProgress(project, "Finding entry points with ${api.label}") {
                         reportRawProgress { reporter ->
                             val running = currentCoroutineContext()[Job]
-                            service.find(graph(), EntryPointProgress { message ->
+                            service.find(graph(), { message ->
                                 reporter.text(message)
                                 SwingUtilities.invokeLater {
                                     if (!disposed && running?.isActive == true) status.text = message
