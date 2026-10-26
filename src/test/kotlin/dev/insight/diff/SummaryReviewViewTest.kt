@@ -19,7 +19,7 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
     }
 
     fun testReviewControlsDimFilesInEverySummaryModeAndCanUnmark() {
-        for (mode in ChangeSummariesMode.entries) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
             val state = DiffReviewState().apply { update(ReviewSnapshot(files, emptyList())) }
             val tree = state.summaries.tree
             val node = tree.nodes.single { it.path == "docs/readme.md" }

@@ -23,7 +23,6 @@ import java.awt.event.MouseWheelEvent
 import javax.swing.AbstractButton
 import javax.swing.JComponent
 import javax.swing.JLabel
-import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JScrollPane
@@ -34,8 +33,6 @@ import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.ViewportLayout
 import javax.swing.border.EmptyBorder
-import javax.swing.event.PopupMenuEvent
-import javax.swing.event.PopupMenuListener
 import kotlin.math.roundToInt
 
 /**
@@ -294,35 +291,9 @@ internal class ChangeSummarySplitPanel(
     }
 
     /** Entry actions are available from either half of the row. */
-    private fun menu(node: SummaryNode): JPopupMenu = JPopupMenu().apply {
-        fun item(text: String, enabled: Boolean = true, action: () -> Unit) = add(JMenuItem(text).apply {
-            name = "summary-split-action:$text"
-            isEnabled = enabled
-            addActionListener { action() }
-        })
-        if (node.children.isNotEmpty()) item(if (state.isOpen(node, summaries)) "Fold" else "Unfold") { actions.toggle(node.identity) }
-        if (node.kind == SummaryKind.FILE || node.kind == SummaryKind.CHUNK) {
-            item(if (vocabulary == ReviewVocabulary.DIFF) "Open diff" else "Open file") { actions.openNode(node) }
-            val show = actions.showNode
-            val showText = vocabulary.showOnCanvas
-            if (show != null && showText != null) item(showText) { show(node) }
-        }
-        actions.wholeFileAction(node)?.let { item("Open file", action = it) }
-        actions.directoryAction(node)?.let { item("Open diff", action = it) }
-        actions.explainAction(node)?.let { item("Explain", card.canRun, it) }
-        actions.addEntryItems(this, node)
-        val review = actions.review ?: return@apply
-        review.menuItem(node)?.let { reviewed ->
-            addSeparator()
-            add(reviewed)
-            // The menu outlives toggles made with the row's checkbox, so its label follows the state when it opens.
-            addPopupMenuListener(object : PopupMenuListener {
-                override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) = review.refresh(reviewed, node)
-                override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {}
-                override fun popupMenuCanceled(e: PopupMenuEvent) {}
-            })
-        }
-    }
+    private fun menu(node: SummaryNode): JPopupMenu = summaryEntryMenu(
+        node, card, state, actions, vocabulary, "summary-split-action",
+    )
 
     private fun message(text: String, name: String = "no-matches") {
         val left = SplitRow(name, false, null).apply {

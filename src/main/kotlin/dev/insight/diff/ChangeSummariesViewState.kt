@@ -11,8 +11,9 @@ internal fun isFolderBranch(node: SummaryNode): Boolean =
  * The outline reads the tree top-down as indented summaries; the hierarchy reads the folders left to right; the document reads
  * every file in tree order with its summary and the folder rail, as topics do. Explorer shows one page of siblings at a time.
  * Split keeps a foldable file tree on the left and each entry's optionally wrapped summary beside its row.
+ * Diff shows the selected file in the IDE’s native diff viewer beside the file tree.
  */
-internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT }
+internal enum class ChangeSummariesMode { OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, DIFF }
 
 /** One search of a search tab: the summary searched, its query, and the nodes still shown after it. */
 internal data class SearchCrumb(

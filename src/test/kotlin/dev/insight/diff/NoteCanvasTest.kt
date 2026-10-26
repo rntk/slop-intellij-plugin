@@ -106,7 +106,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ChangeSummariesMode.entries.forEach { mode ->
+    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
         })
@@ -833,7 +833,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun action(name: String) = (descendants(canvas).single { it.name == "summary-$name" } as javax.swing.JButton).doClick()
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false)))
-            for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.EXPLORER }) {
+            for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.filter { it != ChangeSummariesMode.EXPLORER }) {
                 (descendants(canvas).single { it.name == "summaries-mode:${mode.name.lowercase()}" } as javax.swing.JToggleButton).doClick()
                 val before = canvas.summariesView.expanded.toSet()
                 selector().selectedItem = 4
@@ -1519,7 +1519,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val folder = tree.nodes.single { it.path == "ui" }
         val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
         val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
-        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.filter { it != ChangeSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
             val launcher = FakeTraceLauncher()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
                 setSize(1600, 900)
@@ -1787,7 +1787,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    fun testSummaryContextMenuScoresOnlyThatSummary() = ChangeSummariesMode.entries.forEach { mode ->
+    fun testSummaryContextMenuScoresOnlyThatSummary() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
         val tree = buildSummaryTree(listOf("Canvas.kt", "Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         })
@@ -1854,7 +1854,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeSummariesMode.entries.forEach { mode ->
+    fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
@@ -2033,7 +2033,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertFalse(state.echo!!.reaches(sibling.identity))
     }
 
-    fun testSelectedSummaryTextSearchesWithoutScoring() =ChangeSummariesMode.entries.forEach { mode ->
+    fun testSelectedSummaryTextSearchesWithoutScoring() =ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
@@ -2230,7 +2230,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val word = words.single { it.text == "important" }
         val nextWord = words.first { it.text == "Additional" }
         val query = "A long hover query that must never wrap into extra status rows. ".repeat(30)
-        for (mode in ChangeSummariesMode.entries) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply { setSize(1000, 700) }
             canvas.summariesView.apply {
                 this.mode = mode
@@ -2345,7 +2345,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
     }
 
-    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ChangeSummariesMode.entries.forEach { mode ->
+    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }.forEach { mode ->
         val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }

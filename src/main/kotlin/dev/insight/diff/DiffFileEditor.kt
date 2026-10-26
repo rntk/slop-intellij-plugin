@@ -118,7 +118,6 @@ internal class DiffFileEditor(val file: ReviewFile, project: Project?) : JPanel(
     internal val editors: List<EditorEx>
         get() = UIUtil.findComponentsOfType(panel.component, EditorComponentImpl::class.java).map { it.editor }.distinct()
     private val baseFontSize = editors.firstOrNull()?.colorsScheme?.editorFontSize ?: JBUI.Fonts.label().size
-    private val lineCount = maxOf(lines(file.before), lines(file.after), lines(file.patch), 1)
     private var zoom = 1.0
     internal var isDisposed = false
         private set
@@ -134,12 +133,7 @@ internal class DiffFileEditor(val file: ReviewFile, project: Project?) : JPanel(
     fun resizeFor(width: Int, zoom: Double) {
         this.zoom = zoom
         applyZoom()
-        val lineHeight = editors.firstOrNull { !it.isDisposed }?.lineHeight ?: (JBUI.scale(20) * zoom).roundToInt()
-        val height = (lineHeight * lineCount + (JBUI.scale(64) * zoom).roundToInt()).coerceIn(
-            (JBUI.scale(180) * zoom).roundToInt(),
-            (JBUI.scale(420) * zoom).roundToInt(),
-        )
-        preferredSize = Dimension(width, height)
+        preferredSize = Dimension(width, heightFor(file, zoom, editors.firstOrNull { !it.isDisposed }?.lineHeight))
     }
 
     private fun applyZoom() {
@@ -153,8 +147,17 @@ internal class DiffFileEditor(val file: ReviewFile, project: Project?) : JPanel(
         Disposer.dispose(panel)
     }
 
-    private companion object {
-        fun lines(text: String?): Int =
+    companion object {
+        /** The height [resizeFor] gives [file]'s viewer; without a [lineHeight] it estimates one, for placeholders. */
+        internal fun heightFor(file: ReviewFile, zoom: Double, lineHeight: Int? = null): Int {
+            val lineCount = maxOf(lines(file.before), lines(file.after), lines(file.patch), 1)
+            return ((lineHeight ?: (JBUI.scale(20) * zoom).roundToInt()) * lineCount + (JBUI.scale(64) * zoom).roundToInt()).coerceIn(
+                (JBUI.scale(180) * zoom).roundToInt(),
+                (JBUI.scale(420) * zoom).roundToInt(),
+            )
+        }
+
+        private fun lines(text: String?): Int =
             if (text.isNullOrEmpty()) 0 else text.lineSequence().toList().let { if (it.last().isEmpty()) it.size - 1 else it.size }
     }
 }

@@ -69,7 +69,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
 
     fun testEntryActionsSelectScopeAndPassInstructionsInEveryLayout() {
-        for (mode in ChangeSummariesMode.entries) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
             val launcher = ContextLauncher()
             val canvas = canvas(launcher)
             try {

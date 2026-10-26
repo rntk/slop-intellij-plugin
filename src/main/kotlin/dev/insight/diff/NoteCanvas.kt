@@ -102,6 +102,7 @@ internal class NoteCanvas(
         var scrollX = 0
         var treeScrollX = 0
         var treeWidth: Int? = null
+        var diffPanel: ChangeSummaryDiffPanel? = null
         var version: Int? = null
         val trace = SummaryTraceSession(summaryActions.traceSummaries, view, { reading(this) }, openSummaryLines,
             update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
@@ -197,6 +198,7 @@ internal class NoteCanvas(
     }
 
     fun showNotes(state: CanvasState) {
+        summaryTabs().forEach { it.diffPanel?.let(Disposer::dispose); it.diffPanel = null }
         if (state.topics == null) topicsScroll = 0
         fileViewCardBuilder.update(state.fileView)
         if (state.flows?.graph !== flows?.graph) flowsScroll = 0
@@ -727,6 +729,8 @@ internal class NoteCanvas(
      * card with only the summaries its searches found related, and its queries as breadcrumbs.
      */
     private fun summariesCard(tab: SummariesTab, original: SummariesCard): JPanel {
+        tab.diffPanel?.let(Disposer::dispose)
+        tab.diffPanel = null
         val version = version(tab)
         val content = original.copy(summaries = reading(tab) ?: original.summaries,
             running = version?.running ?: original.running)
@@ -739,6 +743,7 @@ internal class NoteCanvas(
         val document = summariesView.mode == ChangeSummariesMode.DOCUMENT
         val explorer = summariesView.mode == ChangeSummariesMode.EXPLORER
         val splitMode = summariesView.mode == ChangeSummariesMode.SPLIT
+        val diffMode = summariesView.mode == ChangeSummariesMode.DIFF
         if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
@@ -776,13 +781,14 @@ internal class NoteCanvas(
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
                 val group = ButtonGroup()
-                ChangeSummariesMode.entries.forEach { mode ->
+                ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }.forEach { mode ->
                     add(JToggleButton(when (mode) {
                         ChangeSummariesMode.OUTLINE -> "Outline"
                         ChangeSummariesMode.HIERARCHY -> "Hierarchy"
                         ChangeSummariesMode.DOCUMENT -> "Document"
                         ChangeSummariesMode.EXPLORER -> "Explorer"
                         ChangeSummariesMode.SPLIT -> "Split"
+                        ChangeSummariesMode.DIFF -> "Diff"
                     }, summariesView.mode == mode).apply {
                         name = "summaries-mode:${mode.name.lowercase()}"
                         font = scaledFont(JBFont.small())
@@ -793,6 +799,7 @@ internal class NoteCanvas(
                             ChangeSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
                             ChangeSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
                             ChangeSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
+                            ChangeSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
                         }
                         group.add(this)
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
@@ -844,28 +851,7 @@ internal class NoteCanvas(
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, actions, vocabulary) else null
-        val body = if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(when {
-                hierarchy -> JPanel(VerticalLayout(scaled(8))).apply {
-                    isOpaque = false
-                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
-                }
-                document -> JPanel(VerticalLayout(scaled(8))).apply {
-                    isOpaque = false
-                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
-                }
-                else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary,
-                    browse = if (explorer) { identity ->
-                        summariesView.browse(identity, tree)
-                        tab.scroll = 0
-                        refreshSummaries(tab)
-                    } else null)
-            }, BorderLayout.CENTER)
-        }
+        val diff = if (diffMode) ChangeSummaryDiffPanel(content, summariesView, zoom, actions, project).also { tab.diffPanel = it } else null
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         card.add(JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -889,6 +875,32 @@ internal class NoteCanvas(
                 where = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
             reviewStatus(tab.review)?.let(::add)
         }, BorderLayout.SOUTH)
+        if (diff != null) {
+            card.add(diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it }, BorderLayout.CENTER)
+            return card
+        }
+        val body = if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(when {
+                hierarchy -> JPanel(VerticalLayout(scaled(8))).apply {
+                    isOpaque = false
+                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
+                }
+                document -> JPanel(VerticalLayout(scaled(8))).apply {
+                    isOpaque = false
+                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
+                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
+                }
+                else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary,
+                    browse = if (explorer) { identity ->
+                        summariesView.browse(identity, tree)
+                        tab.scroll = 0
+                        refreshSummaries(tab)
+                    } else null)
+            }, BorderLayout.CENTER)
+        }
         val maxBody = scaled(if (document) MAX_TOPICS_HEIGHT else MAX_SUMMARIES_HEIGHT)
         val bodyScroll = object : JBScrollPane(body) {
             override fun getPreferredSize(): Dimension = if (split != null && summariesView.softWrap)
@@ -1236,6 +1248,8 @@ internal class NoteCanvas(
     }
 
     private fun closeSearchTab(tab: SummariesTab) {
+        tab.diffPanel?.let(Disposer::dispose)
+        tab.diffPanel = null
         tab.trace.stop()
         tab.review.stop()
         searchTabs -= tab
@@ -1575,6 +1589,7 @@ internal class NoteCanvas(
     private fun scaled(value: Int) = zoomScaled(value, zoom)
     private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)
     override fun dispose() {
+        summaryTabs().forEach { it.diffPanel?.let(Disposer::dispose); it.diffPanel = null }
         summaryVersions.forEach { it.job?.cancel() }
         topicSummaryJob?.cancel()
         summaryTabs().forEach { it.trace.stop(); it.review.stop() }

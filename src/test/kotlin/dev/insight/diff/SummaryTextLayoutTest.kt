@@ -26,7 +26,7 @@ class SummaryTextLayoutTest : BasePlatformTestCase() {
             val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate {
                 it.id to "Summary words for ${it.label} that wrap onto several lines. ".repeat(10)
             })
-            for (mode in ChangeSummariesMode.entries) for (cloud in listOf(false, true)) {
+            for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) for (cloud in listOf(false, true)) {
                 val canvas = NoteCanvas({}, {}).apply {
                     setSize(1200, 700)
                     summariesView.mode = mode

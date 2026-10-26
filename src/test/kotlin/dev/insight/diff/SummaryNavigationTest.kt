@@ -22,7 +22,7 @@ class SummaryNavigationTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val summaries = ChangeSummaries(tree)
         val folder = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == "src" }
-        for (mode in ChangeSummariesMode.entries) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
             val opened = mutableListOf<ReviewFile>()
             val directories = mutableListOf<List<ReviewFile>>()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { opened += it }, openDirectoryDiff = { directories += it }))
@@ -58,7 +58,7 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     fun testUnreadableFilesKeepDiffNavigationWithoutOfferingWholeSource() {
         val unavailable = file("src/binary.bin", before = null, after = null)
         val tree = buildSummaryTree(listOf(unavailable))
-        for (mode in ChangeSummariesMode.entries) {
+        for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.DIFF }) {
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { fail("No full text") }, openDirectoryDiff = {}))
                 .apply { setSize(1600, 900); summariesView.mode = mode }
             try {
