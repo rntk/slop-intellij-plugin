@@ -14,8 +14,15 @@ fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(obje
         "each with its summary where one exists. If next_offset is present, call again with it.",
         JsonParser.parseString("""{"type":"object","properties":{"offset":{"type":"integer","minimum":0,""" +
             """"description":"First node of the page; use next_offset."}},"required":[],"additionalProperties":false}""").asJsonObject)
-    override suspend fun call(arguments: JsonObject): String = context.summaries(FlowArgs.integer(arguments, "offset", 0))
+    override suspend fun call(arguments: JsonObject): String = context.summaries(offset(arguments))
 })
+
+/** Strict decoding: a missing offset starts the tree; anything but a nonnegative integer is rejected. */
+private fun offset(args: JsonObject): Int {
+    val value = args["offset"] ?: return 0
+    return value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber && it.asString.matches(Regex("0|[1-9][0-9]{0,8}")) }?.asString?.toInt()
+        ?: throw ToolInputException("offset must be a nonnegative integer")
+}
 
 private fun nodeJson(summaries: ChangeSummaries, node: SummaryNode): Map<String, Any> = buildMap {
     put("id", node.id); put("kind", node.kind.id); put("location", node.location)

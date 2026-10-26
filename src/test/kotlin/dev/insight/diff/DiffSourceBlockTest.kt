@@ -31,7 +31,6 @@ class DiffSourceBlockTest {
         state.showSource(state.revision, range)
         state.showSource(state.revision, range)
         assertEquals(1, state.sources.size)
-        assertEquals(listOf(file.path), state.uncovered())
         state.addNote(state.revision, listOf(file.path), "Explanation")
         state.showSource(state.revision, range.copy(side = "before"))
         assertEquals(2, state.sources.size)
@@ -55,7 +54,6 @@ class DiffSourceBlockTest {
             override suspend fun state(offset: Int, patchBudget: Int) = ""
             override suspend fun read(paths: List<String>, offset: Int) = ""
             override suspend fun addNotes(notes: List<DiffNote>) = ""
-            override suspend fun uncovered() = emptyList<String>()
             override suspend fun showSource(range: DiffSourceRange): String { seen += range; return "shown" }
         }
         val tool = diffReviewTools(context).single { it.definition.name == "show_diff_source" }

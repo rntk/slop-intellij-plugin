@@ -73,7 +73,7 @@ internal class SemanticMetrics(private val project: Project) {
 
     /** One parsed side: its declarations and the vectors counted in a single walk. */
     private inner class Side(file: PsiFile, directory: String) {
-        private val found = ChangeFlowBuilder.declarations(file)
+        private val found = sideDeclarations(file)
             .filter { it.second.kind == SymbolKind.FUNCTION || it.second.kind == SymbolKind.CLASS }
         private val elements = IdentityHashMap<SideDeclaration, PsiElement>().apply { found.forEach { put(it.second, it.first) } }
         private val counter = Counter(file, directory, found.mapTo(java.util.Collections.newSetFromMap(IdentityHashMap())) { it.first })
@@ -124,7 +124,7 @@ internal class SemanticMetrics(private val project: Project) {
     private class Frame(val element: PsiElement, val scope: Boolean, val nest: Boolean, val control: Boolean, val lambda: Boolean)
 
     private inner class Counter(private val file: PsiFile, private val directory: String, private val declared: Set<PsiElement>) {
-        private val index = ChangeFlowBuilder.LineIndex(file.text)
+        private val index = LineIndex(file.text)
         private val language = file.language.id
         private val scopes = ArrayDeque<Scope>()
         private val all = mutableListOf<Scope>()

@@ -6,7 +6,6 @@ internal data class SourceCanvasActions(
     val removeSource: (DiffSourceRange) -> Unit = {},
     val showDiffCard: (String) -> Unit = {},
     val removeDiff: (String) -> Unit = {},
-    val removeFlows: () -> Unit = {},
     /** Open a file at a line; null falls back to the canvas file opener. */
     val openFileAt: ((String, Int?) -> Unit)? = null,
     /** Put file lines on the canvas; null falls back to showing the file by path. */

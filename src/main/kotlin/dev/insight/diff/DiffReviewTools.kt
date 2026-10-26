@@ -21,16 +21,6 @@ interface DiffReviewContext {
         throw ToolInputException("Source blocks are unavailable")
     suspend fun symbols(paths: List<String>, query: String, offset: Int): String =
         throw ToolInputException("Symbol discovery is unavailable")
-    /** Files in scope without a note; empty once the captured evidence is stale. */
-    suspend fun uncovered(): List<String>
-
-    /** Builds the change-flow graph from source, shows it on the canvas and returns its first page. Not a model tool. */
-    suspend fun buildFlows(): String = throw ToolInputException("Change flows are unavailable")
-    suspend fun flows(offset: Int): String = throw ToolInputException("Change flows are unavailable")
-    suspend fun readFlowNodes(ids: List<Int>): String = throw ToolInputException("Change flows are unavailable")
-    suspend fun annotateFlows(update: FlowAnnotationUpdate): String = throw ToolInputException("Change flows are unavailable")
-    /** Null when there is no current graph, as after the snapshot changed. */
-    suspend fun flowsUncovered(): FlowCoverage? = null
 
     suspend fun startTopicSummaries(): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
     suspend fun summarizeTopics(entries: Map<Int, String>): ChangeSummaries = throw ToolInputException("Topic summaries are unavailable")
@@ -139,11 +129,8 @@ fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
     )
 }
 
-/** Flow authoring belongs only to an explicit /flows turn, never to ordinary review chat. */
-internal fun diffChatTools(context: DiffReviewContext, flows: Boolean = false): List<ChatTool> =
-    diffReviewTools(context) + changeSummaryTools(context) + changeFlowTools(context).filter {
-        flows || it.definition.name != "annotate_change_flows"
-    }
+internal fun diffChatTools(context: DiffReviewContext): List<ChatTool> =
+    diffReviewTools(context) + changeSummaryTools(context)
 
 internal const val DIFF_PAGE_SIZE = 50
 internal const val MAX_READ_PATHS = 10
@@ -152,20 +139,10 @@ internal const val MAX_NOTES_PER_CALL = 20
 /** Patches stay readable: the default Gson escapes `<`, `>`, `=`, `&` and `'` as < etc. */
 internal val reviewJson = GsonBuilder().disableHtmlEscaping().create()
 
-internal fun isDescriptionRequest(text: String): Boolean =
-    text.trim().lowercase().let { it == "description" || it == "/description" || it.startsWith("/description ") }
-
-/** Sent back when a description reply leaves files without a note. */
-internal fun coverageNote(uncovered: List<String>, total: Int): String {
-    val listed = uncovered.take(30).joinToString(", ") + if (uncovered.size > 30) " and ${uncovered.size - 30} more" else ""
-    return "Coverage check: ${uncovered.size} of $total files still have no note: $listed. " +
-        "Read them and add notes. If a file cannot be described, say which and why in your reply."
-}
-
 internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "\n\n" + """
     You help a developer understand the changes under review using the available snapshot tools.
-    Use existing summaries and change flows to navigate, then verify claims against snapshot source.
-    /summaries, /topics and /flows generate the corresponding views; flow annotation is available only for /flows.
+    Use existing summaries to navigate, then verify claims against snapshot source.
+    /summaries and /topics generate the corresponding views.
     /explain explains a file, folder or part in depth: how it works and why, with canvas notes and diagrams.
 
     The comparison identifies the repository and revisions. Before and after refer to those snapshot sides;
@@ -173,15 +150,3 @@ internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "
     Use before for removed code and include the side when citing a diff location. Symbol discovery is available
     only where current project source matches the snapshot after-side; otherwise use snapshot source locations.
 """.trimIndent() + "\n\n" + dev.insight.chat.projectContextPrompt
-
-/** Expands `/description [focus]` for the current turn only, so other questions keep a general prompt. */
-internal fun descriptionRequest(text: String): String {
-    val focus = text.trim().substringAfter(" ", "").trim()
-    return "Describe all changes as notes on the canvas: one note per file, or per group of files that make one change, " +
-        "such as code and its test. Read each file before describing it. " +
-        "For changes centered on a declaration, attach its symbol so the canvas shows its verified relationships. " +
-        "Use separate symbol notes when distinct changed declarations need separate explanations; keep file-wide notes for broader changes. " +
-        "Keep each explanation focused on one change and avoid repeating the same context across cards. " +
-        "Then reply with one short summary line." +
-        if (focus.isEmpty()) "" else "\nFocus: $focus"
-}

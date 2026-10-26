@@ -42,7 +42,6 @@ data class DiffNote(
 internal sealed interface CanvasTabKey {
     data object Explanation : CanvasTabKey
     data object Topics : CanvasTabKey
-    data object Flows : CanvasTabKey
     data object Words : CanvasTabKey
     data object DiffOverview : CanvasTabKey
     data object Semantic : CanvasTabKey
@@ -82,9 +81,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
     private val diffCards = linkedMapOf<String, ReviewFile>()
     val diffs: List<ReviewFile> get() = diffCards.values.toList()
-    /** The change-flow graph of this revision with its interpretations; any change to the snapshot discards it. */
-    var flows: ChangeFlows? = null
-        private set
     /** The summary tree of this revision. Summaries of unchanged subtrees survive snapshot changes; a new request discards all. */
     var summaries = ChangeSummaries(buildSummaryTree(emptyList()))
         private set
@@ -172,8 +168,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
                 requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
             }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
-            // Clusters and callers span files, so the graph cannot keep the unchanged part of a changed snapshot.
-            flows = null
             val tree = buildSummaryTree(next.files)
             summaries = if (requestChanged) ChangeSummaries(tree) else summaries.retainedIn(tree)
             topics = if (requestChanged) ChangeTopics(next.files) else topics.retainedIn(next.files)
@@ -220,8 +214,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return added
     }
 
-    fun uncovered(): List<String> = snapshot.files.map { it.path }.filter { path -> cards.keys.none { path in it.paths } }
-
     fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(DiffNoteKey(paths.distinct().sorted(), symbol)) }
     fun showSource(expected: Int, range: DiffSourceRange): DiffSourceBlock {
         check(expected)
@@ -241,23 +233,9 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
 
     fun removeDiff(path: String) { diffCards.remove(path) }
     fun clearNotes() {
-        cards.clear(); sourceCards.clear(); diffCards.clear(); flows = null
+        cards.clear(); sourceCards.clear(); diffCards.clear()
         summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
     }
-
-    fun setFlows(expected: Int, graph: ChangeGraph): ChangeFlows {
-        check(expected)
-        return ChangeFlows(graph).also { flows = it }
-    }
-
-    /** Validates the batch against the current graph; a rejected batch leaves every interpretation unchanged. */
-    fun annotateFlows(expected: Int, update: FlowAnnotationUpdate): ChangeFlows {
-        check(expected)
-        val current = flows ?: throw ToolInputException("There is no change-flow graph. Ask the user to run /flows.")
-        return current.annotate(update).also { flows = it }
-    }
-
-    fun removeFlows() { flows = null }
 
     fun summarize(expected: Int, entries: Map<Int, String>): ChangeSummaries {
         check(expected)

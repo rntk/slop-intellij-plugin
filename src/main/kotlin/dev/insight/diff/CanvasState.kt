@@ -5,7 +5,6 @@ internal data class CanvasState(
     val notes: List<DiffNote> = emptyList(),
     val sources: List<DiffSourceBlock> = emptyList(),
     val diffs: List<ReviewFile> = emptyList(),
-    val flows: ChangeFlows? = null,
     val summaries: SummariesCard? = null,
     val topics: TopicsCard? = null,
     val fileView: FileViewCard? = null,

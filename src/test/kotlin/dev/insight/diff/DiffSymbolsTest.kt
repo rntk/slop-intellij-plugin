@@ -166,7 +166,6 @@ class DiffSymbolsTest : BasePlatformTestCase() {
                 assertEquals("Updated", tab.state.notes.first().text)
                 assertEquals(selector, tab.state.notes.first().symbol)
                 assertNotNull(tab.state.notes.first().evidence)
-                assertTrue(context.uncovered().isEmpty())
                 tab.update(snapshot.copy(files = snapshot.files.map { it.copy(fingerprint = "changed") }))
                 assertTrue(tab.state.notes.isEmpty())
                 try { context.symbols(listOf("Sample.java"), "helper", 0); fail("Stale turn") } catch (_: ToolInputException) { }

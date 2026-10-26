@@ -88,7 +88,7 @@ internal fun typedExplainTarget(text: String, summaries: ChangeSummaries, paths:
 private fun ChangeSummaries.rootChain(): List<SummaryLevel> = if (tree.nodes.isEmpty()) emptyList() else chainTo(tree.root)
 
 /**
- * Expands an /explain command for its turn only, like /description: the transcript keeps the command as typed. [diff] chooses
+ * Expands an /explain command for its turn only: the transcript keeps the command as typed. [diff] chooses
  * the diff or code review tools; [chart] lists the explained functions on the Flow Chart, or is null when no chart is available.
  */
 internal fun explainRequest(target: ExplainTarget, diff: Boolean, chart: String?, chartNotice: String?): String {

@@ -71,8 +71,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val tools = diffChatTools(context)
             val names = tools.map { it.definition.name }.toSet()
             assertEquals(setOf("point_to_code", "get_current_diff", "read_diff_files", "find_diff_symbols", "show_diff_source",
-                "add_diff_notes", "get_change_summaries", "get_change_flows", "read_change_nodes"), names)
-            assertEquals(names + changeFlowTools(context).map { it.definition.name }, diffChatTools(context, flows = true).map { it.definition.name }.toSet())
+                "add_diff_notes", "get_change_summaries"), names)
             val point = tools.single { it.definition.name == "point_to_code" }
             runWithEvents {
                 point.call(JsonParser.parseString("""{"path":"${source.path}","line":2,"side":"before","comment":"Removed behavior"}""").asJsonObject)
@@ -401,7 +400,6 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 context.showSource(range)
                 val viewer = descendants(tab.canvas).filterIsInstance<DiffSourceEditor>().single().editor
                 assertEquals("println(a)", viewer.document.text)
-                assertEquals(listOf("src/a.kt"), context.uncovered())
                 val data = JsonParser.parseString(context.state(0)).asJsonObject
                 assertEquals(1, data["source_blocks_count"].asInt)
                 rejected { context.showSource(range.copy(path = "src/b.kt")) }
@@ -589,7 +587,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val buttons = descendants(panel).filterIsInstance<JButton>()
-            assertFalse(buttons.single { it.text == "Description" }.isEnabled)
+            assertFalse(buttons.single { it.text == "Topics" }.isEnabled)
             assertTrue(buttons.any { it.text == "Send" })
             assertTrue(buttons.any { it.text == "LLM settings" })
             assertFalse(buttons.any { it.text == "Open dashboard" })
@@ -789,8 +787,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 assertFalse(rest.has("next_offset"))
 
                 val added = context.addNotes(listOf(DiffNote(listOf("src/a.kt", "src/b.kt"), "Changes both.")))
-                assertTrue(added, added.contains("1 files still have no note: src/c.kt"))
-                assertEquals(listOf("src/c.kt"), context.uncovered())
+                assertEquals("Added 1 note.", added)
             }
         } finally { Disposer.dispose(tab) }
     }

@@ -60,9 +60,6 @@ internal class NoteCanvas(
     private val notes: List<DiffNote> get() = state.notes
     private val sources: List<DiffSourceBlock> get() = state.sources
     private val diffs: List<ReviewFile> get() = state.diffs
-    private val flows: ChangeFlows? get() = state.flows
-    internal val flowsView = ChangeFlowsViewState()
-    private var flowsScroll = 0
     private val topics: TopicsCard? get() = state.topics
     internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
@@ -201,13 +198,11 @@ internal class NoteCanvas(
         summaryTabs().forEach { it.diffPanel?.let(Disposer::dispose); it.diffPanel = null }
         if (state.topics == null) topicsScroll = 0
         fileViewCardBuilder.update(state.fileView)
-        if (state.flows?.graph !== flows?.graph) flowsScroll = 0
         this.state = state
         metricsCards.update(state.wordFiles, state.semantic)
         val summaries = state.summaries
         if (topics == null) topicsReview.stop()
         topics?.let { topicsTrace.retain(it.reading) } ?: topicsTrace.stop()
-        flowsView.reset(flows)
         if (summaries == null) {
             summaryTabs().forEach { it.trace.stop(); it.review.stop() }
             searchTabs.clear()
@@ -231,7 +226,7 @@ internal class NoteCanvas(
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
         val built = listOfNotNull(explanation?.let { CanvasTabKey.Explanation to explanationCard(it) },
-            topics?.let { CanvasTabKey.Topics to topicsCard(it) }, flows?.let { CanvasTabKey.Flows to flowsCard(it) },
+            topics?.let { CanvasTabKey.Topics to topicsCard(it) },
             words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) }, diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
             semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) }).toMap() +
             summaryCards +
@@ -313,7 +308,6 @@ internal class NoteCanvas(
             "Search · " + if (it.length > 32) it.take(31) + "…" else it
         } ?: "Search"
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
-        CanvasTabKey.Flows -> "Change flows"
         CanvasTabKey.Words -> "Word changes"
         CanvasTabKey.DiffOverview -> "Diff overview"
         CanvasTabKey.Semantic -> "Semantic changes"
@@ -474,84 +468,7 @@ internal class NoteCanvas(
         return card
     }
 
-    /** The change-flow graph; expanding or collapsing rebuilds only this card, in place. */
-    private fun flowsCard(flows: ChangeFlows): JPanel {
-        val width = cardWidth(FLOWS_WIDTH)
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Change flows").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "Functions, calls, clusters, counts and outlines come from comparing and resolving the snapshot's source. " +
-                    "Arrows are statically resolved calls, not runtime order. Themes, summaries and intents are the assistant's interpretation."
-            }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
-                isOpaque = false
-                val group = ButtonGroup()
-                ChangeFlowsMode.entries.forEach { mode ->
-                    add(JToggleButton(if (mode == ChangeFlowsMode.MAP) "Map" else "Outline", flowsView.mode == mode).apply {
-                        font = scaledFont(JBFont.small())
-                        cursor = Cursor.getDefaultCursor()
-                        toolTipText = if (mode == ChangeFlowsMode.MAP) "Connected steps with function details on selection" else "Expandable call tree with inline details"
-                        group.add(this)
-                        addActionListener { flowsView.mode = mode; flowsScroll = 0; refreshFlows() }
-                    })
-                }
-                add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { sourceActions.removeFlows() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
-        }
-        val actions = ChangeFlowActions(
-            toggle = { key -> flowsView.toggle(key); refreshFlows() },
-            focus = { node -> flowsView.focus(flows, node); refreshFlows() },
-            openNode = { node ->
-                if (node.offset != null) sourceActions.openSymbol(DiffSymbol(node.path, node.absolutePath, node.name, node.qualifiedName,
-                    dev.insight.callgraph.SymbolKind.FUNCTION, node.line, node.offset))
-                else open(node.path)
-            },
-            openCaller = { caller ->
-                if (caller.absolutePath != null && caller.offset != null) sourceActions.openSymbol(DiffSymbol(caller.path, caller.absolutePath,
-                    caller.qualifiedName.substringAfterLast('.'), caller.qualifiedName, dev.insight.callgraph.SymbolKind.FUNCTION, caller.line, caller.offset))
-            },
-            openFile = open,
-        )
-        val inner = width - scaled(2 * PADDING + 4)
-        val body = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(ChangeFlowsPanel(flows, flowsView, inner - scaled(16), zoom, actions), BorderLayout.CENTER)
-        }
-        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
-        card.add(header, BorderLayout.NORTH)
-        val maxBody = scaled(MAX_FLOWS_HEIGHT)
-        card.add(JBScrollPane(body).apply {
-            border = null; isOpaque = false; viewport.isOpaque = false
-            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-            preferredSize = Dimension(width, minOf(body.preferredSize.height, maxBody))
-            verticalScrollBar.unitIncrement = scaled(16)
-            // The viewport has no size yet; restore the reading position after layout.
-            val restore = flowsScroll
-            verticalScrollBar.addAdjustmentListener { flowsScroll = it.value }
-            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
-        }, BorderLayout.CENTER)
-        return card
-    }
-
     internal fun chooseWordScope(scope: WordScope) = metricsCards.chooseWordScope(scope)
-
-    private fun refreshFlows() {
-        val flows = flows ?: return
-        val card = flowsCard(flows)
-        replaceCard(CanvasTabKey.Flows, card)
-        flowsView.reveal?.let { node ->
-            flowsView.reveal = null
-            SwingUtilities.invokeLater {
-                card.validate()
-                val target = descendantsOf(card).firstOrNull { it.name == "node:$node" } as? JComponent ?: return@invokeLater
-                target.scrollRectToVisible(Rectangle(0, 0, target.width, minOf(target.height, scaled(120))))
-            }
-        }
-    }
 
     /**
      * The change as one document with its topic rail, or as the topic hierarchy with each file's summary; mode changes,
@@ -1439,7 +1356,6 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Flows -> flows?.let(::flowsCard)
             CanvasTabKey.Words -> words?.let { metricsCards.wordsCard(it) }
             CanvasTabKey.DiffOverview -> diffOverview?.let { metricsCards.wordsCard(it, overview = true) }
             CanvasTabKey.Semantic -> semantic?.let(metricsCards::semanticCard)
@@ -1619,7 +1535,5 @@ internal class NoteCanvas(
         const val SUMMARIES_WIDTH = 840
         const val MAX_SUMMARIES_HEIGHT = 820
         const val MAX_TOPICS_HEIGHT = 900
-        const val FLOWS_WIDTH = 920
-        const val MAX_FLOWS_HEIGHT = 760
     }
 }

@@ -47,8 +47,6 @@ internal data class ReviewVocabulary(
             canvasHeading = "Diff review tabs",
             canvasHints = listOf(
                 "Select files on the left to inspect changes.",
-                "Click Description or type /description below to add notes.",
-                "Click Flows or type /flows to map the change from overview to code.",
                 "Click Summaries or type /summaries to read the change from the whole down to each file.",
                 "Click Topics or type /topics to read every diff as one document, grouped by topic, with each file's summary.",
             ),

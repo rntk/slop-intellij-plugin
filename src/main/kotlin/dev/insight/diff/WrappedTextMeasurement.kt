@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import java.awt.Dimension
+import javax.swing.JTextArea
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.text.Document
@@ -54,4 +55,23 @@ internal class WrappedTextMeasurement(private val component: JTextComponent, pri
         measuredSize = measured
         return Dimension(measured)
     }
+}
+
+/**
+ * Measures its height at a fixed wrap width. A plain wrapping text area measures at its current width, which nested
+ * layouts can briefly make tiny, wrapping every character onto its own line.
+ */
+internal class WrappedText(value: String, private val wrapWidth: Int) : JTextArea(value) {
+    private var measurement: WrappedTextMeasurement? = null
+    init {
+        // These read-only labels measure the full content width. BasicTextUI otherwise reserves a pixel for the caret
+        // during painting, making the wrapped view alternate widths and request another layout on every repaint.
+        putClientProperty("caretWidth", 0)
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val measure = measurement ?: WrappedTextMeasurement(this, wrapWidth).also { measurement = it }
+        return measure.preferredSize() ?: super.getPreferredSize()
+    }
+    override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
 }

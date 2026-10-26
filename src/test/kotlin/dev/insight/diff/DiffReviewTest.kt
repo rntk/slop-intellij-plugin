@@ -5,9 +5,7 @@ import dev.insight.callgraph.LineChange
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
 import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmMessage
-import dev.insight.llm.LlmRole
 import dev.insight.llm.LlmToolCall
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -366,9 +364,8 @@ class DiffReviewTest {
         val state = state()
         rejected { state.addNotes(state.revision, listOf(DiffNote(listOf("src/a.kt"), "Fine"), DiffNote(listOf("missing"), "Bad"))) }
         assertTrue(state.notes.isEmpty())
-        assertEquals(listOf("src/a.kt", "src/b.kt"), state.uncovered())
         state.addNotes(state.revision, listOf(DiffNote(listOf("src/a.kt"), "Fine"), DiffNote(listOf("src/b.kt"), "Also fine")))
-        assertTrue(state.uncovered().isEmpty())
+        assertEquals(listOf("Fine", "Also fine"), state.notes.map { it.text })
     }
 
     @Test fun `file and symbol notes coexist replace and remove independently`() {
@@ -400,12 +397,11 @@ class DiffReviewTest {
             return reviewJson.toJson(mapOf("files" to paths.map { path -> mapOf("path" to path, "patch" to state.snapshot.files.single { it.path == path }.patch) }))
         }
         override suspend fun addNotes(notes: List<DiffNote>): String { state.addNotes(state.revision, notes); return "Added" }
-        override suspend fun uncovered() = state.uncovered()
     }
 
     private fun call(name: String, args: String) = Completion("", toolCalls = listOf(LlmToolCall(name, name, JsonParser.parseString(args).asJsonObject)))
 
-    @Test fun `description reads several files per call and publishes several notes per call`() = runBlocking {
+    @Test fun `chat reads several files per call and publishes several notes per call`() = runBlocking {
         val context = Context()
         val completions = ArrayDeque(listOf(
             call("read_diff_files", """{"paths":["a.kt","b.kt"]}"""),
@@ -414,31 +410,10 @@ class DiffReviewTest {
             Completion("2 notes covering 2/2 files."),
         ))
         val result = ToolChatRunner({ completions.removeFirst() }, diffReviewTools(context))
-            .run(listOf(LlmMessage.system(diffReviewPrompt()), LlmMessage.user("/description")))
+            .run(listOf(LlmMessage.system(diffReviewPrompt()), LlmMessage.user("Explain the change")))
         assertEquals(3, result.requestCount)
         assertEquals(listOf(listOf("a.kt", "b.kt")), context.reads)
         assertEquals(listOf("Replaces the old value.", "Switches the literal."), context.state.notes.map { it.text })
-    }
-
-    @Test fun `coverage check sends missing files back until every file has a note`() = runBlocking {
-        val context = Context()
-        val requests = mutableListOf<CompletionRequest>()
-        val completions = ArrayDeque(listOf(
-            call("add_diff_notes", """{"notes":[{"paths":["a.kt"],"text":"Changes a."}]}"""),
-            Completion("Done."),
-            call("add_diff_notes", """{"notes":[{"paths":["b.kt"],"text":"Changes b."}]}"""),
-            Completion("2 notes covering 2/2 files."),
-        ))
-        val result = ToolChatRunner({ requests += it; completions.removeFirst() }, diffReviewTools(context),
-            followUp = { context.uncovered().takeIf { it.isNotEmpty() }?.let { coverageNote(it, 2) } })
-            .run(listOf(LlmMessage.system(diffReviewPrompt()), LlmMessage.user("/description")))
-        assertEquals("2 notes covering 2/2 files.", result.reply)
-        assertTrue(context.state.uncovered().isEmpty())
-        val nudge = requests[2].messages.last()
-        assertEquals(LlmRole.USER, nudge.role)
-        assertTrue(nudge.content.contains("1 of 2 files still have no note: b.kt"))
-        // The rejected answer stays in the request so the next prefix matches the previous request.
-        assertEquals(requests[1].messages, requests[2].messages.dropLast(2))
     }
 
     @Test fun `tool inputs reject malformed paths batches and oversized notes before dispatch`() = runBlocking {
@@ -485,8 +460,6 @@ class DiffReviewTest {
         for (name in Regex("[a-z]+(?:_[a-z]+)+").findAll(prompt).map { it.value }.filter { it.endsWith("_diff") || it.contains("_diff_") })
             assertTrue("Unknown tool $name in the prompt", name in names)
         assertFalse(diffReviewTools(Context()).any { it.definition.parameters.toString().contains("revision") })
-        assertTrue(isDescriptionRequest(" /Description ") && isDescriptionRequest("description") && !isDescriptionRequest("describe a.kt"))
-        assertTrue(descriptionRequest("/description tests").endsWith("Focus: tests") && !descriptionRequest("/description").contains("Focus"))
     }
 
     private fun rejected(block: () -> Unit) {
