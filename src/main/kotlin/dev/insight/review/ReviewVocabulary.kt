@@ -70,7 +70,7 @@ internal data class ReviewVocabulary(
                 val facts = file?.facts.orEmpty()
                 "${facts.firstOrNull() ?: "changed"} file" + facts.drop(1).joinToString("") { " · $it" }
             },
-            summariesMode = ReviewSummariesMode.OUTLINE,
+            summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = false,
             scoreVisibleOnly = false,
         )
@@ -100,7 +100,7 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
-            summariesMode = ReviewSummariesMode.DOCUMENT,
+            summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = true,
             scoreVisibleOnly = true,
         )

@@ -55,6 +55,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     vocabulary: ReviewVocabulary,
     sourcePointsTitle: String,
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
+    init { state.showSummaries() }
+
     protected val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     protected var disposed = false
         private set

@@ -114,6 +114,11 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(buttons.containsAll(listOf("Summaries", "Topics", "Open review", "Clear tabs")))
             assertFalse(buttons.any { it == "Description" || it == "Flows" })
             assertTrue(descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }.isEnabled)
+            assertTrue(tab.state.summariesVisible)
+            assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, tab.canvas.summariesView.mode)
+            assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
+            assertFalse(tab.session.busy)
+            assertTrue(tab.session.messages.none { it.role == ChatMessage.USER })
         } finally { Disposer.dispose(tab) }
     }
 

@@ -1,6 +1,6 @@
 # Code review flow
 
-Code Review is a read-only workspace for exploring an existing codebase. A user chooses a project scope, then uses conversation, summaries, topics, and source views to understand how that code is organized and what it does. Assistant explanations stay tied to the selected code so readers can inspect the source themselves.
+Code Review is a read-only workspace for exploring an existing codebase. It opens in Split view with the project root as its scope. A user can choose another scope, then use conversation, summaries, topics, and source views to understand how that code is organized and what it does. Assistant explanations stay tied to the selected code so readers can inspect the source themselves.
 
 A file, folder or summary entry can be taken to chat: a new review tab whose conversation is focused on it, with its summaries and source in context, while the rest of the scope stays reachable on demand.
 

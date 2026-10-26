@@ -163,6 +163,11 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
             assertTrue(manager.isFileOpen(first.canvasFile))
+            assertTrue(first.state.summariesVisible)
+            assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
+            assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
+            assertFalse(first.session.busy)
+            assertTrue(first.session.messages.none { it.role == ChatMessage.USER })
             descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             val second = tabs.selectedInfo!!.component as DiffReviewTab
             assertTrue(manager.isFileOpen(second.canvasFile))
@@ -711,15 +716,15 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue("Summaries must show the canvas editor", manager.isFileOpen(tab.canvasFile))
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
-            assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)
+            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
             assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.summariesVisible)
-            assertTrue(descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().isEmpty())
+            assertTrue(descendants(tab.canvas).none { it.name == "summary-split-panels" })
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertTrue(tab.state.summaries.complete)
-            assertEquals(1, descendants(tab.canvas).filterIsInstance<ChangeSummariesPanel>().size)
+            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
             assertEquals("Reopening completed summaries must not send a turn", 0, tab.session.messages.count { it.text == "/summaries" })
 
             // Stay on the EDT so the queued turn cannot contact a backend during this test.
