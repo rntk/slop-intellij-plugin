@@ -145,7 +145,7 @@ internal data class TopicEvidence(val fields: Map<String, Any?>, val cut: Boolea
 class ReviewTopicGenerator internal constructor(
     private val complete: suspend (CompletionRequest) -> Completion,
     private val readTool: ChatTool?,
-    private val patchChars: Int = 12_000,
+    patchChars: Int = 12_000,
     private val attempts: Int = 5,
     private val system: String,
     private val evidence: (ReviewSource, ReviewTopics) -> TopicEvidence,

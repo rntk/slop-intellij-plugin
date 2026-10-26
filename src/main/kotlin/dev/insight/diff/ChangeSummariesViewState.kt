@@ -7,7 +7,6 @@ import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.relatedSummaryNodes
-import dev.insight.review.resummaryRequest
 
 /**
  * A folder, group or the root: the branches that levels and "Files" open. A file with parts is a branch too, but is opened by

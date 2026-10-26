@@ -4,7 +4,6 @@ import dev.insight.enrichment.CODE_AS_DATA
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
-import dev.insight.review.ReviewTopicGenerator
 import dev.insight.review.ReviewTopics
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode

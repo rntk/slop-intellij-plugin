@@ -126,7 +126,7 @@ class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
                     assertNotNull("Request in ${viewer.javaClass.simpleName}", event.getData(com.intellij.diff.tools.util.DiffDataKeys.DIFF_REQUEST))
                     assertNotNull("Editor in ${viewer.javaClass.simpleName}", event.getData(CommonDataKeys.EDITOR))
                     assertNotNull("Viewer in ${viewer.javaClass.simpleName}", event.getData(com.intellij.diff.tools.util.DiffDataKeys.DIFF_VIEWER))
-                    val location = ReviewDiffNavigationGroup.location(event)!!
+                    val location = reviewDiffLocation(event)!!
                     assertEquals(2, location.line)
                     assertEquals(6, location.column)
                     assertEquals(if (old) before else after, location.text)

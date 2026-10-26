@@ -7,7 +7,6 @@ import com.intellij.openapi.editor.ScrollType
 import com.intellij.openapi.editor.colors.EditorColors
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
@@ -27,7 +26,6 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTabbedPane
-import javax.swing.SwingUtilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +130,7 @@ internal class ReviewSummaryLinkLauncher(private val project: Project, private v
                 }
             })
         } catch (e: CancellationException) {
+            // Progress-only cancellation completes the card; tab/job cancellation must propagate.
             currentCoroutineContext().ensureActive()
             Result.failure(e)
         } catch (e: Exception) {
@@ -171,6 +170,7 @@ internal class ReviewContextSummaryLauncher(
                     }
                 })
             } catch (e: CancellationException) {
+                // Progress-only cancellation completes the card; tab/job cancellation must propagate.
                 currentCoroutineContext().ensureActive()
                 Result.failure(e)
             } catch (e: Exception) {

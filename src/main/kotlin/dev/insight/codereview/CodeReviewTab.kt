@@ -410,6 +410,7 @@ internal class CodeReviewTab(
                     smartReadAction(project) { CodeFileStructureBuilder(project, snapshot).build(file) }
                 })
             } catch (e: CancellationException) {
+                // Propagate tab/job cancellation; progress-only cancellation must clear the file card's pending state.
                 currentCoroutineContext().ensureActive()
                 Result.failure(e)
             } catch (e: Exception) {

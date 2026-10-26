@@ -319,7 +319,7 @@ internal class CodeReviewPanel(
 
     private fun affects(root: String, event: VFileEvent): Boolean {
         val path = event.path
-        if ("/${dev.insight.review.ReviewDiskCache.DIRECTORY}/" in "$path/") return false
+        if ("/${ReviewDiskCache.DIRECTORY}/" in "$path/") return false
         watchedFiles?.let { watched -> return affectsDependencies(watched, event) }
         if (path != root && !path.startsWith("$root/")) return false
         if ("/.idea/" in "${path.removePrefix(root)}/") return false
@@ -339,7 +339,7 @@ internal class CodeReviewPanel(
      * a reference that resolved to nothing before.
      */
     private fun affectsDependencies(watched: Set<String>, event: VFileEvent): Boolean {
-        if ("/${dev.insight.review.ReviewDiskCache.DIRECTORY}/" in "${event.path}/") return false
+        if ("/${ReviewDiskCache.DIRECTORY}/" in "${event.path}/") return false
         if (event.path in watched) return true
         if (event !is VFileCreateEvent && event !is VFileMoveEvent && event !is VFileCopyEvent) return false
         if ("/.idea/" in event.path) return false

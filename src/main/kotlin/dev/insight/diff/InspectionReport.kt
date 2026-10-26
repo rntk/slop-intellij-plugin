@@ -58,7 +58,8 @@ internal fun inspectReviewFiles(project: Project, scope: String, sources: List<R
         Messages.showInfoMessage(project, "None of these files are in the working tree, so there is nothing to inspect.", "Inspect Code")
         return
     }
-    // Shows its own cancellable modal progress, so it runs from the event thread.
+    // Shows its own cancellable modal progress, so it runs from the event thread. The exception only reports that the
+    // user cancelled that modal task, not cancellation of the caller, so it ends the action instead of propagating.
     val smells = try { CodeSmellDetector.getInstance(project).findCodeSmells(virtualFiles) }
         catch (_: ProcessCanceledException) { return }
     val root = project.basePath

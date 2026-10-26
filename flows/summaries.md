@@ -16,5 +16,5 @@ Summaries favor a short statement of purpose or behavior, with only essential di
 
 Entry points for further exploration:
 
-- [ChangeSummaryModel.kt](../src/main/kotlin/dev/insight/diff/ChangeSummaryModel.kt) — summary structure
+- [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure
 - [ChangeSummarizer.kt](../src/main/kotlin/dev/insight/diff/ChangeSummarizer.kt) — summary generation

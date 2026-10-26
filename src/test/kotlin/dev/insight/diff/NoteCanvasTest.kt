@@ -15,7 +15,6 @@ import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
-import dev.insight.review.resummaryRequest
 import dev.insight.review.topicOutline
 import java.awt.Component
 import java.awt.Container

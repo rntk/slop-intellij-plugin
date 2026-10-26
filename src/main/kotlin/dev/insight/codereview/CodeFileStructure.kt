@@ -183,7 +183,7 @@ internal class CodeFileStructureBuilder(private val project: Project, snapshot: 
     }
 
     private fun followed(file: VirtualFile) = file.isValid && !file.isDirectory && index.isInContent(file) &&
-        "/.idea/" !in file.path && "/${dev.insight.review.ReviewDiskCache.DIRECTORY}/" !in file.path
+        "/.idea/" !in file.path && "/${ReviewDiskCache.DIRECTORY}/" !in file.path
 
     /** A scope path for a file in the snapshot, else its project-relative path. */
     private fun reviewPath(file: VirtualFile): String =

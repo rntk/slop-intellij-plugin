@@ -77,7 +77,7 @@ internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffR
         "Content unavailable",
     )
     request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY, true)
-    request.putUserData(ReviewDiffNavigationGroup.FILE, file)
+    request.putUserData(REVIEW_DIFF_FILE, file)
     return request
 }
 

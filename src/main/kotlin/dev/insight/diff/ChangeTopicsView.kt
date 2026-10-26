@@ -669,11 +669,6 @@ internal abstract class DocumentColumnsPanel(
         /** Card geometry and typography must grow together, including during zoom out. */
         private fun cardScale(zoom: Double) = maxOf(zoom, 1.25 - 0.25 * zoom)
         private fun cardScaledBy(zoom: Double, n: Int) = scaledBy(cardScale(zoom), n)
-        fun railWidth(depth: Int, zoom: Double) =
-            if (depth <= 0) 0 else depth * cardScaledBy(zoom, RAIL_CARD_WIDTH) + (depth - 1) * scaledBy(zoom, RAIL_GAP)
-        /** Unscaled width that fits the summaries, a readable diff column and every rail level. */
-        fun defaultWidth(depth: Int) = SUMMARY_WIDTH + DOC_WIDTH + 2 * COLUMN_GAP +
-            maxOf(depth, 1) * RAIL_CARD_WIDTH + (maxOf(depth, 1) - 1) * RAIL_GAP
         fun defaultWidth(depth: Int, zoom: Double): Int {
             val levels = maxOf(depth, 1)
             return cardScaledBy(zoom, SUMMARY_WIDTH) + scaledBy(zoom, DOC_WIDTH + 2 * COLUMN_GAP) +
@@ -817,7 +812,7 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
                 ReviewCodeNavigation.columnAt(it.source, point.x - gutter - pad - metrics.stringWidth(" "), metrics::stringWidth)
             }
             val before = row?.kind == Kind.REMOVED
-            val line = if (before) row?.old else row?.new
+            val line = if (before) row.old else row?.new
             val text = if (before) file.before else file.after
             if (column == null || line == null || text == null) null
             else ReviewCodeLocation(if (before) file.previousPath ?: file.path else file.path, text, line, column,

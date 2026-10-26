@@ -25,7 +25,7 @@ fun layoutCallGraph(graph: CallGraph, metrics: LayoutMetrics): GraphLayout {
     columns[0]?.forEachIndexed { i, id -> row[id] = i }
     val minLevel = columns.keys.min()
     val maxLevel = columns.keys.max()
-    for (level in (-1 downTo minLevel) + (1..maxLevel)) {
+    for (level in sequenceOf(-1 downTo minLevel, 1..maxLevel).flatten()) {
         val column = columns[level] ?: continue
         val inner = if (level < 0) level + 1..0 else 0 until level
         val rank = column.associateWith { id ->
