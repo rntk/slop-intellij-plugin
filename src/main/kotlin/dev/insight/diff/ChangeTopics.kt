@@ -278,8 +278,8 @@ class ChangeTopicGenerator internal constructor(
     }
 }
 
-internal fun topicsReply(run: ChangeTopicsRun): String {
-    if (run.topics.files.isEmpty()) return "There are no changed files to classify."
+internal fun topicsReply(run: ChangeTopicsRun, empty: String = "There are no changed files to classify."): String {
+    if (run.topics.files.isEmpty()) return empty
     return "${run.topics.groups.size} topics on the canvas · ${run.topics.labels.size} of ${run.topics.files.size} files · ${run.requests} requests." +
         if (run.topics.complete) "" else "\n\nSome files still need topics. Run /topics to continue." +
             (run.error?.let { " Last failure: ${it.take(300)}" } ?: "")

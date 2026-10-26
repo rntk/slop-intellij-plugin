@@ -13,7 +13,6 @@ import java.awt.Graphics2D
 import java.awt.RenderingHints
 import javax.swing.JLabel
 import javax.swing.JPanel
-import kotlin.math.roundToInt
 
 /** One step of the change flow; [repeat] marks a symbol drawn above, so shared callees and cycles still read as a tree. */
 internal data class ChangeFlowRow(val note: DiffNote, val depth: Int, val parent: Int?, val repeat: Boolean)
@@ -65,8 +64,8 @@ internal class ChangeFlowDiagram(
     private val zoom: Double,
     focus: (DiffNote) -> Unit,
 ) : JPanel(null) {
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: java.awt.Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    private fun scaled(n: Int) = zoomScaled(n, zoom)
+    private fun font(base: java.awt.Font) = base.zoomed(zoom)
     private val row = scaled(44)
     private val gap = scaled(6)
     private val indent = scaled(28)

@@ -163,12 +163,12 @@ internal class SummaryReviewLinker(
             }
             saved.putAll(values)
             memory[slot] = saved.toMap()
-            cache?.let { disk -> synchronized(disk) {
-                // Other review tabs may have filled different questions for this same summary pair.
-                val merged = disk.read("review-links", slot, slot)?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()
-                saved.forEach { (id, p) -> merged.addProperty(id, p) }
-                disk.write("review-links", slot, slot, merged)
-            } }
+            // Other review tabs may have filled different questions for this same summary pair.
+            cache?.update("review-links", slot, slot) { old ->
+                (old?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()).apply {
+                    saved.forEach { (id, p) -> addProperty(id, p) }
+                }
+            }
             batch = linkedMapOf()
         }
         for ((id, question) in missing) {

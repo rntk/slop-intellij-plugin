@@ -55,6 +55,9 @@ internal data class TopicsCard(
 /** The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary. */
 internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
 
+/** What the shown outline was filtered for: the card and both trimmed queries. */
+private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, val summaryQuery: String)
+
 /**
  * The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists, and is
  * shared by both modes. Folded topics and the chosen level belong to the hierarchy; topics that appear after a level was
@@ -86,7 +89,7 @@ internal class ChangeTopicsViewState(
     private val folds get() = if (summaryFilter.isBlank()) collapsed else handFolded
     val filtering get() = topicFilter.isNotBlank() || summaryFilter.isNotBlank()
 
-    private var filterFor: Triple<TopicsCard, String, String>? = null
+    private var filterFor: OutlineFilter? = null
     private var full: TopicOutline? = null
     private var shown: TopicOutline? = null
     /** The paths and topic identities left by the search fields; null hides nothing. */
@@ -103,9 +106,9 @@ internal class ChangeTopicsViewState(
         val topicQuery = topicFilter.trim()
         val summaryQuery = summaryFilter.trim()
         val previous = filterFor
-        if (previous == null || previous.first !== card || previous.second != topicQuery || previous.third != summaryQuery) {
-            filterFor = Triple(card, topicQuery, summaryQuery)
-            val outline = full.takeIf { previous?.first?.topics === card.topics } ?: topicOutline(card.topics)
+        if (previous == null || previous.card !== card || previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery) {
+            filterFor = OutlineFilter(card, topicQuery, summaryQuery)
+            val outline = full.takeIf { previous?.card?.topics === card.topics } ?: topicOutline(card.topics)
             full = outline
             shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty()) outline else {
                 val summaries = card.summaries
@@ -272,11 +275,11 @@ internal abstract class DocumentColumnsPanel(
         sourceCards = cards
         applyActive()
     }
-    protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+    protected fun scaled(n: Int) = zoomScaled(n, zoom)
     protected fun cardScaled(n: Int) = cardScaledBy(zoom, n)
-    protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    protected fun font(base: Font) = base.zoomed(zoom)
     /** Match the example canvas's inverse scale: card text stays legible and grows gently on zoom out. */
-    protected fun cardFont(base: Font) = base.deriveFont((base.size2D * cardScale(zoom)).toFloat())
+    protected fun cardFont(base: Font) = base.zoomed(cardScale(zoom))
     protected val help: Color get() = UIUtil.getContextHelpForeground()
 
     init { isOpaque = false }
@@ -648,7 +651,7 @@ internal abstract class DocumentColumnsPanel(
         const val RAIL_ACCENT = 4
         const val NOTE_INSET = 10
 
-        private fun scaledBy(zoom: Double, n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+        private fun scaledBy(zoom: Double, n: Int) = zoomScaled(n, zoom)
         /** Card geometry and typography must grow together, including during zoom out. */
         private fun cardScale(zoom: Double) = maxOf(zoom, 1.25 - 0.25 * zoom)
         private fun cardScaledBy(zoom: Double, n: Int) = scaledBy(cardScale(zoom), n)

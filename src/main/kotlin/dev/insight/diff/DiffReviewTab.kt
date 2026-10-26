@@ -167,8 +167,7 @@ internal class DiffReviewTab(
                                     reporter.fraction(if (total > 0) done.toDouble() / total else null)
                                 })
                     }
-                    return if (topicSummaries) summariesReply(run).replace("They show their names in the Summaries card.",
-                        "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else summariesReply(run)
+                    return if (topicSummaries) summariesReply(run, missing = TOPIC_SUMMARIES_MISSING) else summariesReply(run)
                 }
                 val description = isDescriptionRequest(question)
                 val flows = isFlowsRequest(question)

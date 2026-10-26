@@ -49,8 +49,21 @@ class ReviewDiskCache(private val directory: Path) {
         }
     }
 
-    /** Text entries by content key, oldest first. Callers synchronize on this cache while they read or change them. */
-    internal fun results(slot: String): Map<String, LinkedHashMap<String, String>> = results.getOrPut(slot) {
+    /** Reads, transforms and writes one entry under the cache's lock, so concurrent tabs merge rather than overwrite each other. */
+    internal fun update(category: String, slot: String, fingerprint: String, transform: (JsonElement?) -> JsonElement) =
+        synchronized(this) { write(category, slot, fingerprint, transform(read(category, slot, fingerprint))) }
+
+    /**
+     * Runs [block] on the slot's text entries by content key, oldest first, then writes them when [save] is set. The lock
+     * spans the write so concurrent saves of a slot can neither interleave nor land out of order.
+     */
+    internal fun <T> results(slot: String, save: Boolean = false, block: (Map<String, LinkedHashMap<String, String>>) -> T): T =
+        synchronized(this) {
+            val entries = entries(slot)
+            block(entries).also { if (save) writeResults(slot, entries) }
+        }
+
+    private fun entries(slot: String): Map<String, LinkedHashMap<String, String>> = results.getOrPut(slot) {
         val saved = read(RESULTS, slot, slot)?.takeIf { it.isJsonObject }?.asJsonObject
         RESULT_KINDS.associateWith { name ->
             LinkedHashMap<String, String>().apply {
@@ -61,8 +74,7 @@ class ReviewDiskCache(private val directory: Path) {
         }
     }
 
-    internal fun writeResults(slot: String) {
-        val entries = results[slot] ?: return
+    private fun writeResults(slot: String, entries: Map<String, LinkedHashMap<String, String>>) {
         write(RESULTS, slot, slot, JsonObject().apply {
             entries.forEach { (name, texts) -> add(name, JsonObject().apply { texts.forEach { (key, text) -> addProperty(key, text) } }) }
         })
@@ -122,10 +134,9 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     /** Apply only this operation so stale tabs cannot discard or resurrect unrelated marks. */
     fun saveReviewed(keys: List<String>, reviewed: Boolean) {
         if (disk == null || slot.isEmpty()) return
-        synchronized(disk) {
-            val saved = disk.results(slot).getValue(ReviewDiskCache.REVIEWED)
+        disk.results(slot, save = true) { results ->
+            val saved = results.getValue(ReviewDiskCache.REVIEWED)
             keys.forEach { if (reviewed) saved[it] = "true" else saved.remove(it) }
-            disk.writeResults(slot)
         }
     }
 
@@ -143,24 +154,22 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     /** Regenerate: drops the kinds' entries of every snapshot, since parents elsewhere were condensed from the old texts. */
     fun forget(vararg names: String) {
         if (disk == null || slot.isEmpty()) return
-        synchronized(disk) { disk.results(slot).let { results -> names.forEach { results[it]?.clear() } } }
+        disk.results(slot) { results -> names.forEach { results[it]?.clear() } }
     }
 
     fun save(summaries: ChangeSummaries, topics: ChangeTopics, filled: ChangeSummaries) {
         if (disk == null || slot.isEmpty()) return
         fun texts(value: ChangeSummaries) = value.tree.nodes.mapNotNull { node -> value.text(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it } }
-        synchronized(disk) {
-            val results = disk.results(slot)
+        disk.results(slot, save = true) { results ->
             merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
             merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })
             merge(results.getValue(ReviewDiskCache.FILLED), texts(filled))
-            disk.writeResults(slot)
         }
     }
 
     private fun saved(name: String): Map<String, String>? {
         if (disk == null || slot.isEmpty()) return null
-        return synchronized(disk) { HashMap(disk.results(slot).getValue(name)) }
+        return disk.results(slot) { HashMap(it.getValue(name)) }
     }
 
     /** The current entries become the newest; the oldest entries of other snapshots go first once the slot is full. */

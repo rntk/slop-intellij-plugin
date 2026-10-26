@@ -327,13 +327,19 @@ internal fun changedLines(file: ReviewFile): String =
 
 internal fun summariesFocus(text: String): String = text.trim().substringAfter(" ", "").trim()
 
-/** The chat reply to /summaries, written by code: the root summary, or what is still missing and why. [empty] answers a tree without files. */
-internal fun summariesReply(run: ChangeSummaryRun, empty: String = "There are no changed files to summarize."): String {
+/** The [summariesReply] hint for /topic-summaries, whose unsummarized topics show in Hierarchy rather than the Summaries card. */
+internal const val TOPIC_SUMMARIES_MISSING = "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue."
+
+/**
+ * The chat reply to /summaries, written by code: the root summary, or what is still missing and why.
+ * [empty] answers a tree without files; [missing] tells where unsummarized nodes show.
+ */
+internal fun summariesReply(run: ChangeSummaryRun, empty: String = "There are no changed files to summarize.",
+    missing: String = "They show their names in the Summaries card."): String {
     val summaries = run.summaries
     val requests = "${run.requests} request${if (run.requests == 1) "" else "s"}"
     if (summaries.total == 0) return empty
     if (summaries.complete) return "${summaries.text(summaries.tree.root.id)}\n\n[${summaries.total} summaries · $requests]"
-    val missing = summaries.missing().size
-    return "Summarized ${summaries.count} of ${summaries.total} tree nodes with $requests.\n\n[No summary for $missing nodes. " +
-        "They show their names in the Summaries card.${run.error?.let { " Last failure: ${it.take(300)}" } ?: ""}]"
+    return "Summarized ${summaries.count} of ${summaries.total} tree nodes with $requests.\n\n[No summary for ${summaries.missing().size} nodes. " +
+        "$missing${run.error?.let { " Last failure: ${it.take(300)}" } ?: ""}]"
 }

@@ -7,6 +7,7 @@ import dev.insight.diff.ChangeSummaries
 import dev.insight.diff.ChangeSummaryTree
 import dev.insight.diff.ChangeTopics
 import dev.insight.diff.DiffNote
+import dev.insight.diff.DiffNoteKey
 import dev.insight.diff.DiffSourceBlock
 import dev.insight.diff.DiffSourceRange
 import dev.insight.diff.ReviewSource
@@ -47,7 +48,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     var refreshing = true
     var snapshot = CodeSnapshot.empty()
         private set
-    private val cards = linkedMapOf<Pair<List<String>, String?>, DiffNote>()
+    private val cards = linkedMapOf<DiffNoteKey, DiffNote>()
     val notes: List<DiffNote> get() = cards.values.toList()
     private val sourceCards = linkedMapOf<DiffSourceRange, DiffSourceBlock>()
     val sources: List<DiffSourceBlock> get() = sourceCards.values.toList()
@@ -114,12 +115,12 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
                 throw ToolInputException("${prefix}Use a symbol of 1–500 characters.")
             note.copy(paths = note.paths.distinct().sorted(), text = note.text.trim(), symbol = note.symbol?.trim())
         }
-        if ((cards.keys + added.map(::key)).toSet().size > MAX_NOTES) throw ToolInputException("The canvas has reached its $MAX_NOTES-note limit.")
-        added.forEach { cards[key(it)] = it }
+        if ((cards.keys + added.map { it.key }).toSet().size > MAX_NOTES) throw ToolInputException("The canvas has reached its $MAX_NOTES-note limit.")
+        added.forEach { cards[it.key] = it }
         return added
     }
 
-    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(paths.distinct().sorted() to symbol) }
+    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(DiffNoteKey(paths.distinct().sorted(), symbol)) }
 
     fun showSource(expected: Int, range: DiffSourceRange): DiffSourceBlock {
         check(expected)
@@ -219,7 +220,6 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         return topicSummaries
     }
 
-    private fun key(note: DiffNote) = note.paths to note.symbol
 
     private companion object {
         const val MAX_NOTES = 200

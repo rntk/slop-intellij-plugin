@@ -89,8 +89,8 @@ internal class ChangeFlowsPanel(
     private val actions: ChangeFlowActions,
 ) : JPanel(VerticalLayout(0)) {
     private val graph = flows.graph
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    private fun scaled(n: Int) = zoomScaled(n, zoom)
+    private fun font(base: Font) = base.zoomed(zoom)
     private val help get() = UIUtil.getContextHelpForeground()
 
     init {

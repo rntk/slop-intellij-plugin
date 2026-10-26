@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import com.intellij.openapi.util.Key
+import com.intellij.ui.ClientProperty
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.UIUtil
 import kotlinx.coroutines.Job
@@ -65,16 +67,15 @@ internal class SummaryReviewSession(
     fun stop() { generation++; job?.cancel(); content = null; revision = -1; running = false }
 }
 
-private val REVIEW_PRESENTATION_UPDATE = Any()
+private val REVIEW_PRESENTATION_UPDATE = Key.create<() -> Unit>("insight.review.presentationUpdate")
 
 /** Follow new marks and links in a live checkbox, summary or status line, keeping the card's geometry and viewports. */
 internal fun updateReviewPresentation(component: JComponent) {
-    @Suppress("UNCHECKED_CAST")
-    (component.getClientProperty(REVIEW_PRESENTATION_UPDATE) as? (() -> Unit))?.invoke()
+    ClientProperty.get(component, REVIEW_PRESENTATION_UPDATE)?.invoke()
 }
 
 internal fun installReviewPresentationUpdate(component: JComponent, update: () -> Unit) {
-    component.putClientProperty(REVIEW_PRESENTATION_UPDATE, update)
+    ClientProperty.put(component, REVIEW_PRESENTATION_UPDATE, update)
 }
 
 /** Applies foreground attributes without changing the prose, word sizes, selection or trace offsets. */

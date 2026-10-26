@@ -2,6 +2,8 @@ package dev.insight.diff
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.util.Key
+import com.intellij.ui.ClientProperty
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.panels.VerticalLayout
@@ -332,7 +334,7 @@ internal fun installWordTracing(
             highlights += area.highlighter.addHighlight(current.word.start, current.word.end, DefaultHighlighter.DefaultHighlightPainter(TraceStyle.TRACED_WORD))
         }
     }
-    area.putClientProperty(WORD_TRACING_UPDATE, ::updateHighlights)
+    ClientProperty.put(area, WORD_TRACING_UPDATE, ::updateHighlights)
     updateHighlights()
     /** The word of [candidates] under [point]: the nearest offset is not enough, the pointer must be on the word itself. */
     fun hit(point: Point, candidates: (SummaryWord) -> Boolean): SummaryWord? {
@@ -446,7 +448,7 @@ internal fun installWordTracing(
             e.consume()
         }
     }
-    area.putClientProperty(SELECTION_MENU, { point: Point? -> contextMenu(point) })
+    ClientProperty.put(area, SELECTION_MENU) { point: Point? -> contextMenu(point) }
     area.addCaretListener { event ->
         val start = minOf(event.dot, event.mark)
         val end = maxOf(event.dot, event.mark)
@@ -457,19 +459,17 @@ internal fun installWordTracing(
     area.addMouseMotionListener(pointer)
 }
 
-private val SELECTION_MENU = Any()
-private val SUMMARY_ENTRY_MENU = Any()
+private val SELECTION_MENU = Key.create<(Point?) -> JPopupMenu?>("insight.summary.selectionMenu")
+private val SUMMARY_ENTRY_MENU = Key.create<() -> JPopupMenu>("insight.summary.entryMenu")
 
-@Suppress("UNCHECKED_CAST")
-private fun summaryEntryMenu(area: JComponent): (() -> JPopupMenu)? =
-    area.getClientProperty(SUMMARY_ENTRY_MENU) as? (() -> JPopupMenu)
+private fun summaryEntryMenu(area: JComponent): (() -> JPopupMenu)? = ClientProperty.get(area, SUMMARY_ENTRY_MENU)
 
 /** Gives [component] and everything in it the entry's [menu]; a traced summary puts it above its own word actions. */
 internal fun installSummaryEntryMenu(component: JComponent, menu: () -> JPopupMenu) {
     fun install(part: java.awt.Component) {
         if (part is JComponent) {
-            part.putClientProperty(SUMMARY_ENTRY_MENU, menu)
-            if (part !is JTextComponent || part.getClientProperty(SELECTION_MENU) == null)
+            ClientProperty.put(part, SUMMARY_ENTRY_MENU, menu)
+            if (part !is JTextComponent || ClientProperty.get(part, SELECTION_MENU) == null)
                 part.componentPopupMenu = menu()
         }
         if (part is java.awt.Container) part.components.forEach(::install)
@@ -485,29 +485,26 @@ internal fun selectionMenu(area: JTextComponent): JPopupMenu? = selectionMenu(ar
 
 /** The context menu for a summary at [point]; see [selectionMenu]. */
 internal fun selectionMenu(area: JTextComponent, point: Point?): JPopupMenu? {
-    @Suppress("UNCHECKED_CAST")
-    return (area.getClientProperty(SELECTION_MENU) as? ((Point?) -> JPopupMenu?))?.invoke(point)
+    return ClientProperty.get(area, SELECTION_MENU)?.invoke(point)
 }
 
-private val WORD_TRACING_UPDATE = Any()
+private val WORD_TRACING_UPDATE = Key.create<() -> Unit>("insight.summary.wordTracingUpdate")
 
 /** Repaint cached word contexts without replacing text components or their scroll panes. */
 internal fun updateWordTracing(area: JTextComponent) {
-    @Suppress("UNCHECKED_CAST")
-    (area.getClientProperty(WORD_TRACING_UPDATE) as? (() -> Unit))?.invoke()
+    ClientProperty.get(area, WORD_TRACING_UPDATE)?.invoke()
 }
 
-private val TRACE_DECORATION_RESET = Any()
+private val TRACE_DECORATION_RESET = Key.create<() -> Unit>("insight.summary.traceDecorationReset")
 
 /** Search decorations can be cleared by a new hover without changing the row's geometry. */
 internal fun installTraceDecorationReset(component: JComponent, reset: () -> Unit) {
-    component.putClientProperty(TRACE_DECORATION_RESET, reset)
+    ClientProperty.put(component, TRACE_DECORATION_RESET, reset)
 }
 
 internal fun resetTraceDecoration(component: JComponent) {
-    @Suppress("UNCHECKED_CAST")
-    val reset = component.getClientProperty(TRACE_DECORATION_RESET) as? (() -> Unit) ?: return
-    component.putClientProperty(TRACE_DECORATION_RESET, null)
+    val reset = ClientProperty.get(component, TRACE_DECORATION_RESET) ?: return
+    ClientProperty.put(component, TRACE_DECORATION_RESET, null)
     reset()
 }
 
@@ -518,6 +515,9 @@ internal data class SearchCrumb(
     val related: Set<String> = shown,
     val trace: SummaryTrace? = null,
 )
+
+/** What the shown nodes were computed for: the summaries, the trimmed search field and the last search. */
+private data class SummariesFilter(val summaries: ChangeSummaries, val query: String, val crumb: SearchCrumb?)
 
 /**
  * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
@@ -606,7 +606,7 @@ internal class ChangeSummariesViewState(
     var fuzzy = ""
         set(value) { if (field.trim() != value.trim()) folded.clear(); field = value }
     private val folded = hashSetOf<String>()
-    private var filterFor: Triple<ChangeSummaries, String, SearchCrumb?>? = null
+    private var filterFor: SummariesFilter? = null
     private var shown: Set<String>? = null
     private var opened = emptySet<String>()
 
@@ -614,7 +614,7 @@ internal class ChangeSummariesViewState(
     fun shownNodes(summaries: ChangeSummaries): Set<String>? {
         val query = fuzzy.trim()
         val crumb = crumbs.lastOrNull()
-        val key = Triple(summaries, query, crumb)
+        val key = SummariesFilter(summaries, query, crumb)
         if (filterFor == key) return shown
         filterFor = key
         val searched = crumb?.shown
@@ -707,7 +707,7 @@ internal class ChangeSummariesViewState(
     /** Documents keep every file visible; outlines and hierarchies hide nodes under folded folders. */
     override fun visibility(tree: ChangeSummaryTree): (SummaryNode) -> Boolean {
         // The filter of the last rendering; scoring follows what is on screen.
-        val filter = shown.takeIf { filterFor?.first?.tree === tree }
+        val filter = shown.takeIf { filterFor?.summaries?.tree === tree }
         val explorerEntries = if (mode == ChangeSummariesMode.EXPLORER) {
             val current = explorerBreadcrumbs(tree).lastOrNull { filter == null || it.identity in filter }
             current?.children?.toSet() ?: setOf(tree.root.id)
@@ -1120,8 +1120,8 @@ internal class ChangeSummariesPanel(
     private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
     private val files = tree.nodes.mapNotNull { it.file }.associateBy { it.path }
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    private fun scaled(n: Int) = zoomScaled(n, zoom)
+    private fun font(base: Font) = base.zoomed(zoom)
     private val help get() = UIUtil.getContextHelpForeground()
     private val trace = state.resultTrace
     private val matches = trace?.related.orEmpty().associateBy { it.identity }

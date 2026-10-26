@@ -7,6 +7,8 @@ import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
+import com.intellij.ui.ClientProperty
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
@@ -32,6 +34,9 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import javax.swing.*
 import javax.swing.event.DocumentEvent
+
+/** The word changes of [scope], memoized while the unscoped changes stay [all]. */
+private data class ScopedWords(val all: WordChanges, val scope: WordScope, val words: WordChanges)
 
 /** Review artifacts, each in its own normally scrollable tab. */
 internal class NoteCanvas(
@@ -83,9 +88,9 @@ internal class NoteCanvas(
     private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
     private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = openLines ?: { node, _ -> openSummaryNode(node) }
     internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
-    private val pages = mutableMapOf<DiffNoteKey, JScrollPane>()
-    private val cards = mutableMapOf<DiffNoteKey, JPanel>()
-    private val stickyTargets = mutableMapOf<DiffNoteKey, JComponent>()
+    private val pages = mutableMapOf<CanvasTabKey, JScrollPane>()
+    private val cards = mutableMapOf<CanvasTabKey, JPanel>()
+    private val stickyTargets = mutableMapOf<CanvasTabKey, JComponent>()
 
     private var notes = emptyList<DiffNote>()
     private var sources = emptyList<DiffSourceBlock>()
@@ -126,13 +131,13 @@ internal class NoteCanvas(
     /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
     private var wordScope = WordScope("", true, 0)
     /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
-    private var scopedWords: Triple<WordChanges, WordScope, WordChanges>? = null
+    private var scopedWords: ScopedWords? = null
 
     /**
      * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
      * field.
      */
-    private inner class SummariesTab(val key: DiffNoteKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
+    private inner class SummariesTab(val key: CanvasTabKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
         val review = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(key) }
         var scroll = 0
         /** The sideways reading position of the split view's one-line summaries. */
@@ -157,12 +162,12 @@ internal class NoteCanvas(
         }
     }
 
-    private val mainSummaries = SummariesTab(SUMMARIES_KEY, summariesView)
+    private val mainSummaries = SummariesTab(CanvasTabKey.Summaries, summariesView)
     private val summariesTrace get() = mainSummaries.trace
     private val searchTabs = mutableListOf<SummariesTab>()
     private var searchTabCount = 0
     private fun summaryTabs() = listOf(mainSummaries) + searchTabs
-    private fun summaryTab(key: DiffNoteKey) = summaryTabs().firstOrNull { it.key == key }
+    private fun summaryTab(key: CanvasTabKey) = summaryTabs().firstOrNull { it.key == key }
     private fun version(tab: SummariesTab) = summaryVersions.firstOrNull { it.id == tab.version }
     private fun reading(tab: SummariesTab): ChangeSummaries? = version(tab)?.summaries ?: summaries?.summaries
 
@@ -199,23 +204,23 @@ internal class NoteCanvas(
             })
         }
     private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
-        update = { updateTracePresentation(TOPICS_KEY) }) { refreshCard(TOPICS_KEY) }
-    private val topicsReview = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(TOPICS_KEY) }
+        update = { updateTracePresentation(CanvasTabKey.Topics) }) { refreshCard(CanvasTabKey.Topics) }
+    private val topicsReview = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(CanvasTabKey.Topics) }
 
     /** Marks restyle the live cards; rebuilding them would reset both viewports and make the reading position jump. */
     private fun toggleReviewed(node: SummaryNode, value: Boolean) {
         if (markReviewed != null) markReviewed.invoke(node, value) else reviewed.set(node.files, value)
         summaryTabs().forEach { updateReview(it.key, it.review, summaries?.summaries) }
-        updateReview(TOPICS_KEY, topicsReview, topics?.reading)
+        updateReview(CanvasTabKey.Topics, topicsReview, topics?.reading)
     }
 
-    private fun updateReview(key: DiffNoteKey, session: SummaryReviewSession, content: ChangeSummaries?) {
+    private fun updateReview(key: CanvasTabKey, session: SummaryReviewSession, content: ChangeSummaries?) {
         if (key !in cards) return
         content?.let(session::sync)
         restyleReview(key)
     }
 
-    private fun restyleReview(key: DiffNoteKey) {
+    private fun restyleReview(key: CanvasTabKey) {
         val card = cards[key] ?: return
         descendantsOf(card).forEach { (it as? JComponent)?.let(::updateReviewPresentation) }
     }
@@ -223,7 +228,7 @@ internal class NoteCanvas(
     private val editors = mutableMapOf<DiffNoteKey, DiffSourceEditor>()
     private val diffEditors = mutableMapOf<DiffNoteKey, DiffFileEditor>()
     private var highlighted = emptySet<String>()
-    private var focused: DiffNoteKey? = null
+    private var focused: CanvasTabKey? = null
     private val zoom = 1.0
     private var documentZoom = 1.0
 
@@ -287,12 +292,12 @@ internal class NoteCanvas(
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
-        val built = listOfNotNull(explanation?.let { EXPLANATION_KEY to explanationCard(it) },
-            topics?.let { TOPICS_KEY to topicsCard(it) }, flows?.let { FLOWS_KEY to flowsCard(it) },
-            words?.let { WORDS_KEY to wordsCard(it) }, diffOverview?.let { DIFF_OVERVIEW_KEY to wordsCard(it, overview = true) },
-            semantic?.let { SEMANTIC_KEY to semanticCard(it) }).toMap() +
+        val built = listOfNotNull(explanation?.let { CanvasTabKey.Explanation to explanationCard(it) },
+            topics?.let { CanvasTabKey.Topics to topicsCard(it) }, flows?.let { CanvasTabKey.Flows to flowsCard(it) },
+            words?.let { CanvasTabKey.Words to wordsCard(it) }, diffOverview?.let { CanvasTabKey.DiffOverview to wordsCard(it, overview = true) },
+            semantic?.let { CanvasTabKey.Semantic to semanticCard(it) }).toMap() +
             summaryCards +
-            listOfNotNull(fileView?.let { FILE_VIEW_KEY to fileViewCard(it) }, flow?.let { FLOW_KEY to flowCard(it) }).toMap() +
+            listOfNotNull(fileView?.let { CanvasTabKey.FileView to fileViewCard(it) }, flow?.let { CanvasTabKey.SymbolFlow to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
             sources.associate { it.key to sourceCard(it) } +
             diffs.associate { it.diffKey to diffCard(it) }
@@ -318,7 +323,7 @@ internal class NoteCanvas(
 
     fun highlight(paths: Set<String>) {
         highlighted = paths
-        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || key.paths.any { it in paths }) }
+        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || (key as? DiffNoteKey)?.paths.orEmpty().any { it in paths }) }
         repaint()
     }
 
@@ -331,52 +336,52 @@ internal class NoteCanvas(
         focusCard(diffNoteKey(path))
     }
 
-    internal fun focusTopics() { focusCard(TOPICS_KEY) }
+    internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
 
-    internal fun focusWords() { focusCard(WORDS_KEY) }
-    internal fun focusDiffOverview() { focusCard(DIFF_OVERVIEW_KEY) }
-    internal fun focusSemantic() { focusCard(SEMANTIC_KEY) }
-    internal fun focusExplanation() { focusCard(EXPLANATION_KEY) }
+    internal fun focusWords() { focusCard(CanvasTabKey.Words) }
+    internal fun focusDiffOverview() { focusCard(CanvasTabKey.DiffOverview) }
+    internal fun focusSemantic() { focusCard(CanvasTabKey.Semantic) }
+    internal fun focusExplanation() { focusCard(CanvasTabKey.Explanation) }
 
     /** Selects the source tab. */
     internal fun focusSource(range: DiffSourceRange) { focusCard(DiffSourceBlock(range, "").key) }
 
-    internal fun focusFileView() { focusCard(FILE_VIEW_KEY) }
+    internal fun focusFileView() { focusCard(CanvasTabKey.FileView) }
 
     internal fun focusSummaries() {
-        focusCard(SUMMARIES_KEY)
+        focusCard(CanvasTabKey.Summaries)
     }
 
-    private fun focusCard(key: DiffNoteKey) {
+    private fun focusCard(key: CanvasTabKey) {
         val page = pages[key] ?: return
         tabs.selectedComponent = page
         focused = key
         highlight(highlighted)
     }
 
-    private fun tabTooltip(key: DiffNoteKey): String = summaryTab(key)?.takeIf { it.search }?.let { tab ->
+    private fun tabTooltip(key: CanvasTabKey): String = summaryTab(key)?.takeIf { it.search }?.let { tab ->
         (listOf("Summaries") + searchPath(tab).map { "“$it”" }).joinToString(" › ")
-    } ?: key.paths.joinToString(", ").ifEmpty { tabTitle(key) }
+    } ?: (key as? DiffNoteKey)?.paths.orEmpty().joinToString(", ").ifEmpty { tabTitle(key) }
 
     /** A search tab's queries: the finished searches, or the first query while it is still searched. */
     private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty {
         listOfNotNull(tab.view.tracing?.takeIf { it.searchRequested }?.context?.query)
     }
 
-    private fun tabTitle(key: DiffNoteKey): String = when (key) {
-        TOPICS_KEY -> "Topics"
-        SUMMARIES_KEY -> "Summaries"
-        in searchTabs.map { it.key } -> searchPath(summaryTab(key)!!).lastOrNull()?.let {
+    private fun tabTitle(key: CanvasTabKey): String = when (key) {
+        CanvasTabKey.Topics -> "Topics"
+        CanvasTabKey.Summaries -> "Summaries"
+        is CanvasTabKey.SummarySearch -> summaryTab(key)?.let(::searchPath)?.lastOrNull()?.let {
             "Search · " + if (it.length > 32) it.take(31) + "…" else it
         } ?: "Search"
-        FILE_VIEW_KEY -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
-        FLOWS_KEY -> "Change flows"
-        WORDS_KEY -> "Word changes"
-        DIFF_OVERVIEW_KEY -> "Diff overview"
-        SEMANTIC_KEY -> "Semantic changes"
-        EXPLANATION_KEY -> if (explanation?.running == true) "Explaining…" else "Explanation"
-        FLOW_KEY -> "Symbol flow"
-        else -> {
+        CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
+        CanvasTabKey.Flows -> "Change flows"
+        CanvasTabKey.Words -> "Word changes"
+        CanvasTabKey.DiffOverview -> "Diff overview"
+        CanvasTabKey.Semantic -> "Semantic changes"
+        CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
+        CanvasTabKey.SymbolFlow -> "Symbol flow"
+        is DiffNoteKey -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
             val source = sources.firstOrNull { it.key == key }
             when {
@@ -404,7 +409,7 @@ internal class NoteCanvas(
         (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as? JScrollPane
 
     /** Zoom the document around a point in its viewport, keeping that content under the pointer. */
-    private fun zoomDocument(key: DiffNoteKey, requested: Double, anchor: Point? = null) {
+    private fun zoomDocument(key: CanvasTabKey, requested: Double, anchor: Point? = null) {
         val old = cards[key]?.let(::bodyScroll) ?: return
         val next = requested.coerceIn(MIN_DOCUMENT_ZOOM, MAX_DOCUMENT_ZOOM)
         if (next == documentZoom) return
@@ -419,8 +424,8 @@ internal class NoteCanvas(
             ((previous.y + point.y) * ratio - point.y).roundToInt().coerceAtLeast(0),
         )
         when (key) {
-            TOPICS_KEY -> topicsScroll = target.y
-            FILE_VIEW_KEY -> fileViewScroll = target.y
+            CanvasTabKey.Topics -> topicsScroll = target.y
+            CanvasTabKey.FileView -> fileViewScroll = target.y
             else -> summaryTab(key)?.scroll = target.y
         }
         SwingUtilities.invokeLater {
@@ -428,7 +433,7 @@ internal class NoteCanvas(
         }
     }
 
-    private fun documentZoomControls(key: DiffNoteKey): JComponent = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(2), 0)).apply {
+    private fun documentZoomControls(key: CanvasTabKey): JComponent = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(2), 0)).apply {
         isOpaque = false
         add(JButton("−").apply {
             name = "document-zoom-out"
@@ -451,7 +456,7 @@ internal class NoteCanvas(
         })
     }
 
-    private fun installDocumentWheelZoom(key: DiffNoteKey, scroll: JScrollPane) {
+    private fun installDocumentWheelZoom(key: CanvasTabKey, scroll: JScrollPane) {
         val listener = java.awt.event.MouseWheelListener { event: MouseWheelEvent ->
             if (!event.isControlDown && !event.isMetaDown) {
                 if (event.component !== scroll) {
@@ -470,7 +475,7 @@ internal class NoteCanvas(
     }
 
     /** Both the card and its editor page can scroll; use whichever top edge currently hides more of the card. */
-    private fun installStickyScrolling(key: DiffNoteKey, page: JScrollPane, card: JPanel) {
+    private fun installStickyScrolling(key: CanvasTabKey, page: JScrollPane, card: JPanel) {
         val inner = bodyScroll(card) ?: return
         val target = descendantsOf(card).filterIsInstance<JComponent>()
             .firstOrNull { it is DocumentColumnsPanel || it is HierarchyColumnsPanel } ?: return
@@ -482,7 +487,7 @@ internal class NoteCanvas(
         }
     }
 
-    private fun updateStickyScrolling(key: DiffNoteKey, page: JScrollPane) {
+    private fun updateStickyScrolling(key: CanvasTabKey, page: JScrollPane) {
         val panel = stickyTargets[key] ?: return
         val inner = cards[key]?.let(::bodyScroll) ?: return
         val innerTop = SwingUtilities.convertPoint(inner.viewport, 0, 0, panel).y
@@ -494,7 +499,7 @@ internal class NoteCanvas(
         }
     }
 
-    private fun replaceCard(key: DiffNoteKey, card: JPanel) {
+    private fun replaceCard(key: CanvasTabKey, card: JPanel) {
         val old = cards[key] ?: return
         val container = old.parent ?: return
         val horizontal = bodyScroll(old)?.horizontalScrollBar?.value
@@ -600,8 +605,8 @@ internal class NoteCanvas(
         val scopes = wordScopes(wordFiles)
         wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
         val words = if (wordScope.path.isEmpty()) all
-            else scopedWords?.takeIf { it.first === all && it.second == wordScope }?.third
-                ?: wordChanges(wordFiles.filter { wordScope.contains(it.path) }).also { scopedWords = Triple(all, wordScope, it) }
+            else scopedWords?.takeIf { it.all === all && it.scope == wordScope }?.words
+                ?: wordChanges(wordFiles.filter { wordScope.contains(it.path) }).also { scopedWords = ScopedWords(all, wordScope, it) }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -663,7 +668,7 @@ internal class NoteCanvas(
                                 SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
                             }
                             group.add(this)
-                            addActionListener { if (semanticMode != mode) { semanticMode = mode; refreshCard(SEMANTIC_KEY) } }
+                            addActionListener { if (semanticMode != mode) { semanticMode = mode; refreshCard(CanvasTabKey.Semantic) } }
                         })
                     }
                 } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
@@ -684,7 +689,7 @@ internal class NoteCanvas(
                     renderer = SimpleListCellRenderer.create("") { it.label }
                     toolTipText = "The metric plotted for each function"
                     selectedItem = semanticMetric
-                    addActionListener { (selectedItem as? Metric)?.takeIf { it != semanticMetric }?.let { semanticMetric = it; refreshCard(SEMANTIC_KEY) } }
+                    addActionListener { (selectedItem as? Metric)?.takeIf { it != semanticMetric }?.let { semanticMetric = it; refreshCard(CanvasTabKey.Semantic) } }
                 })
                 add(InplaceButton(IconButton("Remove semantic changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSemantic() }
                     .apply { cursor = Cursor.getDefaultCursor() })
@@ -764,14 +769,14 @@ internal class NoteCanvas(
     internal fun chooseWordScope(scope: WordScope) {
         if (scope == wordScope) return
         wordScope = scope
-        refreshCard(WORDS_KEY)
-        refreshCard(DIFF_OVERVIEW_KEY)
+        refreshCard(CanvasTabKey.Words)
+        refreshCard(CanvasTabKey.DiffOverview)
     }
 
     private fun refreshFlows() {
         val flows = flows ?: return
         val card = flowsCard(flows)
-        replaceCard(FLOWS_KEY, card)
+        replaceCard(CanvasTabKey.Flows, card)
         flowsView.reveal?.let { node ->
             flowsView.reveal = null
             SwingUtilities.invokeLater {
@@ -806,7 +811,7 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (document) add(documentZoomControls(TOPICS_KEY))
+                if (document) add(documentZoomControls(CanvasTabKey.Topics))
                 if (outline.depth > 0) add(topicLevels(outline))
                 val group = ButtonGroup()
                 ChangeTopicsMode.entries.forEach { mode ->
@@ -816,7 +821,7 @@ internal class NoteCanvas(
                         toolTipText = if (mode == ChangeTopicsMode.DOCUMENT) "Every file in topic order, with its summary and the topic rail"
                             else "Topics broad to specific, left to right, with each file's summary"
                         group.add(this)
-                        addActionListener { topicsView.mode = mode; topicsScroll = 0; refreshCard(TOPICS_KEY) }
+                        addActionListener { topicsView.mode = mode; topicsScroll = 0; refreshCard(CanvasTabKey.Topics) }
                     })
                 }
                 add(JButton(when {
@@ -853,7 +858,7 @@ internal class NoteCanvas(
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(TOPICS_KEY) },
+            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(CanvasTabKey.Topics) },
                 trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode,
                 review = topicsReview.presentation(content.reading, ::toggleReviewed),
                 entryMenu = topicEntryMenu(content))
@@ -895,14 +900,14 @@ internal class NoteCanvas(
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
-            if (document) installDocumentWheelZoom(TOPICS_KEY, this)
+            if (document) installDocumentWheelZoom(CanvasTabKey.Topics, this)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = topicsScroll
             verticalScrollBar.addAdjustmentListener { topicsScroll = it.value }
             SwingUtilities.invokeLater {
                 verticalScrollBar.value = restore
                 // A traced match scrolls into view once the rebuilt card is laid out; a newer rebuild owns the reveal.
-                if (cards[TOPICS_KEY] !== card) return@invokeLater
+                if (cards[CanvasTabKey.Topics] !== card) return@invokeLater
                 val target = topicsView.reveal ?: return@invokeLater
                 topicsView.reveal = null
                 card.validate()
@@ -924,7 +929,7 @@ internal class NoteCanvas(
             toolTipText = if (topicsView.mode == ChangeTopicsMode.DOCUMENT)
                 "Show topic rail levels through the selected level; Files shows every rail level"
             else "Show topic levels through the selected level; Files shows every topic and file"
-            addActionListener { topicsView.selectLevel(selectedIndex, outline); refreshCard(TOPICS_KEY) }
+            addActionListener { topicsView.selectLevel(selectedIndex, outline); refreshCard(CanvasTabKey.Topics) }
         }
         add(JLabel("Levels").apply {
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
@@ -935,7 +940,7 @@ internal class NoteCanvas(
 
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
     fun updateTopics(content: TopicsCard?) {
-        if ((content == null) != (topics == null) || (content != null && cards[TOPICS_KEY] == null)) {
+        if ((content == null) != (topics == null) || (content != null && cards[CanvasTabKey.Topics] == null)) {
             showNotes(notes, sources, diffs, flows, summaries, content, fileView, explanation = explanation)
             return
         }
@@ -948,7 +953,7 @@ internal class NoteCanvas(
     /** Rebuilding moves the search fields into the new card; typing goes on where it was. */
     private fun refreshTopics() {
         val typing = listOf(topicSearchField, topicSummarySearchField).firstOrNull { it.textEditor.isFocusOwner }
-        refreshCard(TOPICS_KEY)
+        refreshCard(CanvasTabKey.Topics)
         typing?.textEditor?.requestFocusInWindow()
     }
 
@@ -1456,7 +1461,7 @@ internal class NoteCanvas(
     /** Opens a search tab that starts from [from]'s view and searches, and searches [context] there. */
     private fun openSearchTab(from: SummariesTab, context: SummaryContext) {
         val content = summaries ?: return
-        val tab = SummariesTab(DiffNoteKey(emptyList(), "summary-search-${++searchTabCount}"), from.view.fork(), search = true)
+        val tab = SummariesTab(CanvasTabKey.SummarySearch(++searchTabCount), from.view.fork(), search = true)
         tab.version = from.version
         searchTabs += tab
         tab.view.update(content.summaries.tree)
@@ -1494,23 +1499,22 @@ internal class NoteCanvas(
             font = scaledFont(JBFont.small())
             cursor = Cursor.getDefaultCursor()
             isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            putClientProperty(TRACE_PRESENTATION_UPDATE, {
+            ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) {
                 isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            })
+            }
             toolTipText = "Precalculate word contexts for " + scoredSummaries(state) + ". Uses the Decisions API."
             addActionListener { session.prescore() }
         }
 
     /** Hover and scoring updates keep the live components and both viewports intact. */
-    private fun updateTracePresentation(key: DiffNoteKey) {
+    private fun updateTracePresentation(key: CanvasTabKey) {
         val card = cards[key] ?: return
         val state = summaryTab(key)?.view ?: topicsView
         val results = state.resultTrace
         descendantsOf(card).forEach { component ->
             if (component is javax.swing.text.JTextComponent) updateWordTracing(component)
             if (component is JComponent && results == null) resetTraceDecoration(component)
-            @Suppress("UNCHECKED_CAST")
-            ((component as? JComponent)?.getClientProperty(TRACE_PRESENTATION_UPDATE) as? (() -> Unit))?.invoke()
+            ClientProperty.get(component, TRACE_PRESENTATION_UPDATE)?.invoke()
         }
     }
 
@@ -1531,10 +1535,10 @@ internal class NoteCanvas(
             preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
         }
         return listOf(line(scoringStatus(state, summaries, selection), "scoring-status").apply {
-            putClientProperty(TRACE_PRESENTATION_UPDATE, {
+            ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) {
                 text = scoringStatus(state, summaries, selection)
                 toolTipText = text
-            })
+            }
         }, JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
             add(line(" ", "trace-status", width - scaled(56)).apply {
@@ -1544,12 +1548,12 @@ internal class NoteCanvas(
                     toolTipText = text.takeIf { it.isNotBlank() }
                     foreground = if (tracing?.trace?.related.isNullOrEmpty()) UIUtil.getContextHelpForeground() else TraceStyle.MATCH_TEXT
                 }
-                putClientProperty(TRACE_PRESENTATION_UPDATE, update)
+                ClientProperty.put(this, TRACE_PRESENTATION_UPDATE, update)
                 update()
             }, BorderLayout.CENTER)
             add(ActionLink("Clear") { session.clear() }.apply {
                 name = "trace-clear"; font = scaledFont(JBFont.small()); isEnabled = state.tracing != null || state.resultTrace != null
-                putClientProperty(TRACE_PRESENTATION_UPDATE, { isEnabled = state.tracing != null || state.resultTrace != null })
+                ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) { isEnabled = state.tracing != null || state.resultTrace != null }
             }, BorderLayout.EAST)
         })
     }
@@ -1594,7 +1598,7 @@ internal class NoteCanvas(
 
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
-        if ((content == null) != (summaries == null) || cards[SUMMARIES_KEY] == null) {
+        if ((content == null) != (summaries == null) || cards[CanvasTabKey.Summaries] == null) {
             showNotes(notes, sources, diffs, flows, content, topics, fileView, explanation = explanation)
             return
         }
@@ -1639,7 +1643,7 @@ internal class NoteCanvas(
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (structure != null) add(documentZoomControls(FILE_VIEW_KEY))
+                if (structure != null) add(documentZoomControls(CanvasTabKey.FileView))
                 if (content.missingTopics > 0) add(JButton("Classify").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
@@ -1681,7 +1685,7 @@ internal class NoteCanvas(
             preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
             horizontalScrollBar.unitIncrement = scaled(16)
-            if (structure != null) installDocumentWheelZoom(FILE_VIEW_KEY, this)
+            if (structure != null) installDocumentWheelZoom(CanvasTabKey.FileView, this)
             // The viewport has no size yet; restore the reading position after layout.
             val restore = fileViewScroll
             verticalScrollBar.addAdjustmentListener { fileViewScroll = it.value }
@@ -1692,14 +1696,14 @@ internal class NoteCanvas(
 
     /** Follows the analysis, topics, summaries and chat state without rebuilding the other cards. */
     fun updateFileView(content: FileViewCard?) {
-        if ((content == null) != (fileView == null) || (content != null && cards[FILE_VIEW_KEY] == null)) {
+        if ((content == null) != (fileView == null) || (content != null && cards[CanvasTabKey.FileView] == null)) {
             showNotes(notes, sources, diffs, flows, summaries, topics, content, explanation = explanation)
             return
         }
         if (content == fileView) return
         if (content?.file?.path != fileView?.file?.path) fileViewScroll = 0
         fileView = content
-        refreshCard(FILE_VIEW_KEY)
+        refreshCard(CanvasTabKey.FileView)
     }
 
     private fun descendantsOf(component: Container): List<Component> =
@@ -1714,18 +1718,20 @@ internal class NoteCanvas(
         horizontalScrollBar.unitIncrement = scaled(16)
     }
 
-    private fun refreshCard(key: DiffNoteKey) {
+    private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            FLOWS_KEY -> flows?.let(::flowsCard)
-            WORDS_KEY -> words?.let { wordsCard(it) }
-            DIFF_OVERVIEW_KEY -> diffOverview?.let { wordsCard(it, overview = true) }
-            SEMANTIC_KEY -> semantic?.let(::semanticCard)
-            TOPICS_KEY -> topics?.let(::topicsCard)
-            in summaryTabs().map { it.key } -> summaries?.let { summariesCard(summaryTab(key)!!, it) }
-            FILE_VIEW_KEY -> fileView?.let(::fileViewCard)
-            FLOW_KEY -> flowCard(changeFlow(notes))
-            else -> notes.firstOrNull { it.key == key }?.let(::card)
+            CanvasTabKey.Flows -> flows?.let(::flowsCard)
+            CanvasTabKey.Words -> words?.let { wordsCard(it) }
+            CanvasTabKey.DiffOverview -> diffOverview?.let { wordsCard(it, overview = true) }
+            CanvasTabKey.Semantic -> semantic?.let(::semanticCard)
+            CanvasTabKey.Topics -> topics?.let(::topicsCard)
+            CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
+                summaryTab(key)?.let { tab -> summaries?.let { summariesCard(tab, it) } }
+            CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
+            CanvasTabKey.SymbolFlow -> flowCard(changeFlow(notes))
+            CanvasTabKey.Explanation -> null
+            is DiffNoteKey -> notes.firstOrNull { it.key == key }?.let(::card)
                 ?: sources.firstOrNull { it.key == key }?.let(::sourceCard)
                 ?: diffs.firstOrNull { it.diffKey == key }?.let(::diffCard)
         } ?: return
@@ -1869,8 +1875,8 @@ internal class NoteCanvas(
 
     private fun files(count: Int) = if (count == 1) "1 file" else "$count files"
 
-    private fun scaled(value: Int) = (JBUI.scale(value) * zoom).roundToInt().coerceAtLeast(1)
-    private fun scaledFont(font: java.awt.Font) = font.deriveFont((font.size2D * zoom).toFloat())
+    private fun scaled(value: Int) = zoomScaled(value, zoom)
+    private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)
     override fun dispose() {
         summaryVersions.forEach { it.job?.cancel() }
         topicSummaryJob?.cancel()
@@ -1884,22 +1890,13 @@ internal class NoteCanvas(
     }
 
     private companion object {
-        val TRACE_PRESENTATION_UPDATE = Any()
+        val TRACE_PRESENTATION_UPDATE = Key.create<() -> Unit>("insight.note.tracePresentationUpdate")
         const val MIN_DOCUMENT_ZOOM = 0.1
         const val MAX_DOCUMENT_ZOOM = 3.0
         const val CARD_WIDTH = 460
         const val GAP = 20
         const val PADDING = 12
         const val MAX_BODY_HEIGHT = 520
-        val FLOW_KEY = DiffNoteKey(emptyList(), "change-flow")
-        val FLOWS_KEY = DiffNoteKey(emptyList(), "change-flows")
-        val TOPICS_KEY = DiffNoteKey(emptyList(), "change-topics")
-        val SUMMARIES_KEY = DiffNoteKey(emptyList(), "change-summaries")
-        val FILE_VIEW_KEY = DiffNoteKey(emptyList(), "file-view")
-        val WORDS_KEY = DiffNoteKey(emptyList(), "word-changes")
-        val DIFF_OVERVIEW_KEY = DiffNoteKey(emptyList(), "diff-overview")
-        val SEMANTIC_KEY = DiffNoteKey(emptyList(), "semantic-changes")
-        val EXPLANATION_KEY = DiffNoteKey(emptyList(), "explanation")
         const val WORDS_WIDTH = 1100
         const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840

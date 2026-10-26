@@ -54,8 +54,8 @@ internal class ChangeSummarySplitPanel(
     private val summaries = card.summaries
     private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: Font) = base.deriveFont((base.size2D * 1.08 * zoom).toFloat())
+    private fun scaled(n: Int) = zoomScaled(n, zoom)
+    private fun font(base: Font) = base.zoomed(1.08 * zoom)
     private val help get() = UIUtil.getContextHelpForeground()
     private val trace = state.resultTrace
     private val matches = trace?.related.orEmpty().associateBy { it.identity }

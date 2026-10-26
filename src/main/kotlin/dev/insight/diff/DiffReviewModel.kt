@@ -38,12 +38,26 @@ data class DiffNote(
     internal val key get() = DiffNoteKey(paths, symbol)
 }
 
+/** One tab of the [NoteCanvas]: a fixed view, a summary search, or a note, source or diff by its [DiffNoteKey]. */
+internal sealed interface CanvasTabKey {
+    data object Explanation : CanvasTabKey
+    data object Topics : CanvasTabKey
+    data object Flows : CanvasTabKey
+    data object Words : CanvasTabKey
+    data object DiffOverview : CanvasTabKey
+    data object Semantic : CanvasTabKey
+    data object Summaries : CanvasTabKey
+    data object FileView : CanvasTabKey
+    data object SymbolFlow : CanvasTabKey
+    data class SummarySearch(val id: Int) : CanvasTabKey
+}
+
 internal data class DiffNoteKey(
     val paths: List<String>,
     val symbol: String?,
     val source: DiffSourceRange? = null,
     val diff: String? = null,
-)
+) : CanvasTabKey
 internal fun diffNoteKey(path: String) = DiffNoteKey(listOf(path), null, diff = path)
 
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */

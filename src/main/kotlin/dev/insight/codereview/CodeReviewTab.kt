@@ -72,6 +72,7 @@ import dev.insight.diff.reviewJson
 import dev.insight.diff.seedTopicSummaries
 import dev.insight.diff.summariesFocus
 import dev.insight.diff.summariesReply
+import dev.insight.diff.TOPIC_SUMMARIES_MISSING
 import dev.insight.diff.topicsReply
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
@@ -236,7 +237,7 @@ internal class CodeReviewTab(
                                     })
                         }
                     }
-                    return topicsReply(run).replace("There are no changed files to classify.", "There are no files in scope to classify.")
+                    return topicsReply(run, empty = "There are no files in scope to classify.")
                 }
                 if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
                     val topicSummaries = question.trim() == "/topic-summaries"
@@ -260,9 +261,8 @@ internal class CodeReviewTab(
                                     })
                         }
                     }
-                    val reply = summariesReply(run, empty = "There are no files in scope to summarize.")
-                    return if (topicSummaries) reply.replace("They show their names in the Summaries card.",
-                        "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue.") else reply
+                    val empty = "There are no files in scope to summarize."
+                    return if (topicSummaries) summariesReply(run, empty, TOPIC_SUMMARIES_MISSING) else summariesReply(run, empty)
                 }
                 val files = context.snapshot.files
                 val explain = if (isExplainRequest(question)) withContext(Dispatchers.EDT) { takeExplain(question, files.map { it.path }) } else null

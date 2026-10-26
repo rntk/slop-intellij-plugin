@@ -12,7 +12,6 @@ import java.awt.Graphics2D
 import java.awt.RenderingHints
 import javax.swing.JLabel
 import javax.swing.JPanel
-import kotlin.math.roundToInt
 
 /** A bounded one-hop tree, with one shared trunk instead of crossing graph edges. */
 internal class DiffSymbolDiagram(
@@ -21,7 +20,7 @@ internal class DiffSymbolDiagram(
     private val zoom: Double,
     open: (DiffSymbol) -> Unit,
 ) : JPanel(null) {
-    private fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
+    private fun scaled(n: Int) = zoomScaled(n, zoom)
     private val row = scaled(28)
     private val inset = scaled(10)
     private val indent = scaled(32)
@@ -37,11 +36,11 @@ internal class DiffSymbolDiagram(
                 border = JBUI.Borders.compound(JBUI.Borders.customLine(if (root) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()),
                     JBUI.Borders.empty(2, 6))
                 if (prefix.isNotEmpty()) add(JLabel(prefix).apply {
-                    font = JBFont.small().deriveFont((JBFont.small().size2D * zoom).toFloat())
+                    font = JBFont.small().zoomed(zoom)
                     foreground = UIUtil.getContextHelpForeground()
                 }, java.awt.BorderLayout.WEST)
                 add(ActionLink(symbol.qualifiedName) { open(symbol) }.apply {
-                    font = JBFont.label().deriveFont((JBFont.label().size2D * zoom).toFloat())
+                    font = JBFont.label().zoomed(zoom)
                     toolTipText = "${symbol.kind.name.lowercase()} ${symbol.qualifiedName} — ${symbol.path}:${symbol.line}"
                 }, java.awt.BorderLayout.CENTER)
                 setBounds(x, y, width - x, row - scaled(4))
@@ -61,7 +60,7 @@ internal class DiffSymbolDiagram(
             val omitted = links.total - visible.size
             if (omitted > 0) {
                 add(JLabel("+$omitted ${links.label.lowercase()} not shown").apply {
-                    font = JBFont.small().deriveFont((JBFont.small().size2D * zoom).toFloat())
+                    font = JBFont.small().zoomed(zoom)
                     foreground = UIUtil.getContextHelpForeground()
                     setBounds(indent, y, width - indent, row)
                 })
@@ -70,7 +69,7 @@ internal class DiffSymbolDiagram(
         }
         if (evidence.links.isEmpty()) {
             add(JLabel("No resolved in-project links for this symbol").apply {
-                font = JBFont.small().deriveFont((JBFont.small().size2D * zoom).toFloat())
+                font = JBFont.small().zoomed(zoom)
                 foreground = UIUtil.getContextHelpForeground()
                 setBounds(0, y, width, row)
             })

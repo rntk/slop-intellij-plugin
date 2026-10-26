@@ -49,8 +49,8 @@ internal abstract class HierarchyColumnsPanel(
     val anchors = mutableMapOf<String, JComponent>()
     private val stickyHeaders = StickyCardHeaders()
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
-    protected fun scaled(n: Int) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
-    protected fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    protected fun scaled(n: Int) = zoomScaled(n, zoom)
+    protected fun font(base: Font) = base.zoomed(zoom)
     protected val help: Color get() = UIUtil.getContextHelpForeground()
     protected val step get() = cardWidth + scaled(COLUMN_GAP)
 

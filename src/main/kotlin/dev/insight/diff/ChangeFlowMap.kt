@@ -3,7 +3,6 @@ package dev.insight.diff
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBFont
-import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BasicStroke
 import java.awt.Color
@@ -109,8 +108,8 @@ internal class ChangeFlowMap(
     focus: (Int) -> Unit,
     limit: Int = Int.MAX_VALUE,
 ) : JPanel(null) {
-    private fun scaled(value: Int) = (JBUI.scale(value) * zoom).roundToInt().coerceAtLeast(1)
-    private fun font(base: Font) = base.deriveFont((base.size2D * zoom).toFloat())
+    private fun scaled(value: Int) = zoomScaled(value, zoom)
+    private fun font(base: Font) = base.zoomed(zoom)
     private val help get() = UIUtil.getContextHelpForeground()
     internal val geometry = changeMapGeometry(flows.graph, cluster, width, scaled(108), scaled(38), scaled(42), scaled(32), scaled(13), limit)
 
