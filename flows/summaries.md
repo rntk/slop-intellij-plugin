@@ -6,7 +6,7 @@ The same summary process describes both the folder hierarchy and an existing top
 
 File and summary context menus can regenerate one entry or its entire subtree, with optional custom instructions. Results open as a separate summary version for comparison. In the topic hierarchy, entries can likewise fill their missing summaries or regenerate their topics at any level, without waiting for the whole hierarchy; those results are saved in place.
 
-The Diff view keeps the file tree beside the IDE’s native diff viewer. Select a file to inspect its changes, or a directory or All changes to read every matching file’s diff one after another.
+The Diff view keeps the file tree beside the IDE’s native diff viewer. Select a file to inspect its changes, or a directory or All changes to read every matching file’s diff one after another. In both views an entry's menu can also run the IDE's own inspections over its working-tree files and list the errors and warnings as plain text ready to hand to a coding agent.
 
 The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly. Hovering or selecting words in a summary highlights where they recur in the summaries below it and in the folders above it.
 

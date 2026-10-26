@@ -845,6 +845,13 @@ internal class NoteCanvas(
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
             explain = summaryActions.explainNode,
             toChat = summaryActions.chatNode?.let { chat -> { node -> chat(node, content.summaries) } },
+            inspect = project?.let { project ->
+                val sources = tree.nodes.mapNotNull { it.file }.associateBy { it.path }
+                val inspect: (SummaryNode) -> Unit = { node ->
+                    inspectReviewFiles(project, if (node.kind == SummaryKind.ROOT) vocabulary.rootName else node.path, node.files.mapNotNull(sources::get))
+                }
+                inspect
+            },
             resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { summaryActions.contextSummaries != null },
             resummaryEnabled = content.canRun && !summaryGenerationRunning,
             review = tab.review.presentation(content.summaries, ::toggleReviewed),

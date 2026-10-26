@@ -57,6 +57,8 @@ internal class ChangeSummaryActions(
     val resummaryEnabled: Boolean = true,
     /** Open a new review tab whose chat is focused on an entry; null hides To Chat. */
     val toChat: ((SummaryNode) -> Unit)? = null,
+    /** Run the IDE's inspections over an entry's files and list the problems; null hides Inspect code. */
+    val inspect: ((SummaryNode) -> Unit)? = null,
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
         if (toChat != null && node.files.isNotEmpty()) menu.add(JMenuItem("To Chat").apply {
@@ -92,4 +94,7 @@ internal class ChangeSummaryActions(
 
     fun explainAction(node: SummaryNode): (() -> Unit)? =
         if (node.files.isEmpty() || node.isTopicBranch) null else explain?.let { explain -> { explain(node) } }
+
+    fun inspectAction(node: SummaryNode): (() -> Unit)? =
+        if (node.files.isEmpty()) null else inspect?.let { inspect -> { inspect(node) } }
 }

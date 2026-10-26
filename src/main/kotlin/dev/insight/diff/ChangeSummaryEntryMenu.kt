@@ -33,6 +33,7 @@ internal fun summaryEntryMenu(
     actions.wholeFileAction(node)?.let { item("Open file", action = it) }
     actions.directoryAction(node)?.let { item("Open diff", action = it) }
     actions.explainAction(node)?.let { item("Explain", card.canRun, it) }
+    actions.inspectAction(node)?.let { item("Inspect code", action = it) }
     actions.addEntryItems(this, node)
     val reviewed = actions.review?.menuItem(node)?.also {
         addSeparator()
