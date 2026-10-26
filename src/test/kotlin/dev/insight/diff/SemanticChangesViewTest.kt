@@ -49,9 +49,9 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
         val opened = mutableListOf<String>()
         val directories = mutableListOf<List<String>>()
         val files = listOf(file("a.kt"), file("b.kt"))
-        val canvas = NoteCanvas({ opened += it }, {}, openDirectoryDiff = { directories += it.map { f -> f.path } }).apply { setSize(1200, 800) }
+        val canvas = NoteCanvas({ opened += it }, {}, summaryActions = SummaryCanvasActions(openDirectoryDiff = { directories += it.map { f -> f.path } })).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes))
+            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
             val modes = descendants(canvas).filterIsInstance<AbstractButton>().filter { it.name?.startsWith("semantic-mode:") == true }
@@ -82,7 +82,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
 
             descendants(canvas).filterIsInstance<AbstractButton>().single { it.name == "semantic-mode:CONSTRUCTS" }.doClick()
             assertEquals(listOf("if", "TODO", "loop"), descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word })
-            canvas.showNotes(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes))
+            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals("the mode survives a rebuild", 1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
         } finally { canvas.dispose() }
     }
@@ -90,12 +90,12 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
     fun testCardShowsCountingAndErrorPlaceholders() {
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(emptyList(), semantic = SemanticResult.Counting)
+            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Counting))
             assertEquals("Counting…", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-counting" }.text)
-            canvas.showNotes(emptyList(), semantic = SemanticResult.Failed("boom"))
+            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Failed("boom")))
             assertEquals("Could not count semantic changes: boom", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-error" }.text)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
-            canvas.showNotes(emptyList())
+            canvas.showNotes(CanvasState(emptyList()))
             assertTrue(descendants(canvas).none { it.name == "semantic-error" })
         } finally { canvas.dispose() }
     }
@@ -162,7 +162,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
         val data = SemanticChanges(listOf(FileMetrics("a.kt", "modified", null, null, listOf(owner))))
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(emptyList(), semantic = SemanticResult.Ready(data))
+            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Ready(data)))
             descendants(canvas).filterIsInstance<AbstractButton>().single { it.name == "semantic-mode:COMPLEXITY" }.doClick()
             assertTrue(descendants(canvas).none { it is SemanticComplexityChart })
             assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "No functions in the changed files." })

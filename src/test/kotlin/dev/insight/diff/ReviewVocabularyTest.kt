@@ -45,9 +45,9 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName))
         val opened = mutableListOf<String>()
         val shown = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}, showDiffCard = { shown += it }, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({ opened += it }, {}, vocabulary = ReviewVocabulary.CODE, sourceActions = SourceCanvasActions(showDiffCard = { shown += it })).apply { setSize(1600, 900) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
             assertEquals(ChangeTopicsMode.DOCUMENT, canvas.topicsView.mode)
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
@@ -78,9 +78,9 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val files = listOf(Source("src/a.kt"), Source("src/b.kt"), Source("lib/c.kt"))
         val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName)
         val opened = mutableListOf<SummaryNode>()
-        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true)))
             assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
@@ -102,10 +102,10 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val bigNode = tree.nodes.single { it.identity == "file:src/Big.kt" }
         val summaries = ChangeSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { "Explains the complete file." })
         val opened = mutableListOf<SummaryNode>()
-        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
             assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
@@ -169,8 +169,8 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             }
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, false),
-                topics = TopicsCard(ChangeTopics(files).assign(files.single().path, "Example>Document"), summaries, false))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, false),
+                topics = TopicsCard(ChangeTopics(files).assign(files.single().path, "Example>Document"), summaries, false)))
             layoutTree(canvas)
             val texts = descendants(canvas).filterIsInstance<WrappedText>()
             fun paintText() = texts.forEach { text ->
@@ -195,12 +195,12 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val chunk = tree.nodes.single { it.identity == "chunk:src/Big.kt:1" }
         val opened = mutableListOf<SummaryNode>()
         val shown = mutableListOf<SummaryNode>()
-        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, openNode = { opened += it }, showNode = { shown += it })
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it }, showNode = { shown += it }))
             .apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun names() = panel().components.mapNotNull { it.name }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = true)))
             assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)

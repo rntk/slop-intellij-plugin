@@ -39,7 +39,7 @@ class SummaryTextLayoutTest : BasePlatformTestCase() {
                 val graphics = image.createGraphics()
                 fun layoutAndPaint() { layoutTree(canvas); canvas.paint(graphics) }
                 try {
-                    canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                    canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                     repeat(3) { layoutAndPaint() }
                     manager.reset()
                     repeat(10) { layoutAndPaint() }

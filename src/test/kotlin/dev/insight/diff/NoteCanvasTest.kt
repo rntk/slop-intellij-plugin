@@ -12,6 +12,100 @@ import kotlinx.coroutines.Job
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = DiffNote(listOf("src/a.kt"), "A short explanation.")
 
+    fun testPartialCardUpdatesPreserveMetricsAndTheirScopeInputs() {
+        val files = listOf("src/a.kt", "other/b.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-oldWord\n+newWord\n", "1")
+        }
+        val summaries = ChangeSummaries(buildSummaryTree(files))
+        val topics = ChangeTopics(files).assign(files.first().path, "Product>Feature")
+        val summaryCard = SummariesCard(summaries, running = false, canRun = false)
+        val topicCard = TopicsCard(topics, summaries, canRun = false)
+        val fileCard = FileViewCard(files.first(), null, null, topics, summaries, canRun = false)
+        val words = wordChanges(files)
+        val explanation = ExplainResult("/explain", "An explanation.", running = false)
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
+        try {
+            canvas.showNotes(CanvasState(notes = listOf(note), words = words, wordFiles = files,
+                diffOverview = words, semantic = SemanticResult.Counting, explanation = explanation))
+            canvas.focusWords()
+            val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
+            val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
+            fun assertRetained() {
+                assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
+                assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
+                assertEquals("Word changes", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+                assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
+                assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == explanation.text })
+                assertTrue((0 until canvas.tabs.tabCount).any { canvas.tabs.getTitleAt(it) == "Note · a.kt" })
+            }
+            // Exercise mount, in-place update and removal for every partial-update entry point.
+            canvas.updateTopics(topicCard)
+            assertRetained()
+            canvas.updateTopics(topicCard.copy(canRun = true))
+            assertRetained()
+            canvas.updateTopics(null)
+            assertRetained()
+            canvas.updateSummaries(summaryCard)
+            assertRetained()
+            canvas.updateSummaries(summaryCard.copy(canRun = true))
+            assertRetained()
+            canvas.updateSummaries(null)
+            assertRetained()
+            canvas.updateFileView(fileCard)
+            assertRetained()
+            canvas.updateFileView(fileCard.copy(error = "Analysis failed."))
+            assertRetained()
+            canvas.updateFileView(null)
+            assertRetained()
+
+            // The charts' backing files must survive too, so scope selection still counts the intended file.
+            canvas.chooseWordScope(wordScopes(files).single { it.path == files.first().path })
+            val scoped = wordChanges(files.take(1))
+            assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
+            assertEquals(scoped, descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes)
+            canvas.updateSummaries(summaryCard)
+            assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
+            canvas.showNotes(CanvasState(notes = listOf(note)))
+            assertEquals(1, canvas.tabs.tabCount)
+            assertTrue(descendants(canvas).none { it is WordChangeChart || it is DiffOverviewChart || it.name == "semantic-counting" })
+        } finally { canvas.dispose() }
+    }
+
+    fun testOpeningAndClosingSummarySearchTabsPreservesMetricCards() {
+        val file = ReviewFile("src/a.kt", "/repo/src/a.kt", null, "modified", "@@ -1 +1 @@\n-oldWord\n+newWord\n", "1")
+        val tree = buildSummaryTree(listOf(file))
+        val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Updates important behavior." })
+        val words = wordChanges(listOf(file))
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply {
+            setSize(1600, 900)
+            summariesView.mode = ChangeSummariesMode.OUTLINE
+        }
+        try {
+            canvas.showNotes(CanvasState(summaries = SummariesCard(summaries, false, true),
+                words = words, wordFiles = listOf(file), diffOverview = words, semantic = SemanticResult.Counting))
+            canvas.focusSummaries()
+            layoutTree(canvas)
+            val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
+            val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
+            val row = descendants(canvas).single { it.name == "summary:root" } as Container
+            val area = descendants(row).filterIsInstance<javax.swing.text.JTextComponent>().first()
+            area.select(0, "Updates".length)
+            selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-tab" }.doClick()
+            assertEquals(5, canvas.tabs.tabCount)
+            assertTrue(canvas.tabs.getTitleAt(canvas.tabs.selectedIndex).startsWith("Search"))
+            assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
+            assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
+            assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
+            (descendants(canvas).single { it.name == "close-search-tab" } as com.intellij.ui.InplaceButton).doClick()
+            assertEquals(4, canvas.tabs.tabCount)
+            assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
+            assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
+            assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
+            canvas.chooseWordScope(wordScopes(listOf(file)).single { it.path == file.path })
+            assertEquals(words, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
+        } finally { canvas.dispose() }
+    }
+
     fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ChangeSummariesMode.entries.forEach { mode ->
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
@@ -25,7 +119,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun size(word: String): Int = area().let { it.styledDocument.getFont(it.styledDocument.getCharacterElement(it.text.indexOf(word)).attributes).size }
         fun cloud() = descendants(canvas).single { it.name == "summaries-tags-cloud" } as javax.swing.JCheckBox
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             if (mode == ChangeSummariesMode.HIERARCHY) {
                 val toggle = descendants(canvas).single { it.name == "toggle:root" }
@@ -84,15 +178,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val other = DiffNote(listOf("src/b.kt"), "Other note")
         val canvas = canvas()
         try {
-            canvas.showNotes(listOf(note, other))
+            canvas.showNotes(CanvasState(listOf(note, other)))
             assertEquals(2, canvas.tabs.tabCount)
             canvas.focusNote(other)
             assertEquals(1, canvas.tabs.selectedIndex)
-            canvas.showNotes(listOf(note.copy(text = "Updated"), other))
+            canvas.showNotes(CanvasState(listOf(note.copy(text = "Updated"), other)))
             assertEquals(1, canvas.tabs.selectedIndex)
             canvas.focusNote(note)
             assertEquals(0, canvas.tabs.selectedIndex)
-            canvas.showNotes(listOf(other))
+            canvas.showNotes(CanvasState(listOf(other)))
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Note · b.kt", canvas.tabs.getTitleAt(0))
             assertTrue(descendants(canvas).none { it.name == "Resize block" })
@@ -103,13 +197,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = canvas().apply { setSize(300, 300) }
         val longNote = note.copy(text = "Long explanation. ".repeat(2000))
         try {
-            canvas.showNotes(listOf(longNote))
+            canvas.showNotes(CanvasState(listOf(longNote)))
             layoutTree(canvas)
             val page = canvas.tabs.selectedComponent as javax.swing.JScrollPane
             assertTrue(page.horizontalScrollBar.maximum > page.horizontalScrollBar.visibleAmount)
             page.horizontalScrollBar.value = 60
             val position = Point(page.viewport.viewPosition)
-            canvas.showNotes(listOf(longNote.copy(text = longNote.text + "Updated.")))
+            canvas.showNotes(CanvasState(listOf(longNote.copy(text = longNote.text + "Updated."))))
             layoutTree(canvas)
             com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
             val refreshed = canvas.tabs.selectedComponent as javax.swing.JScrollPane
@@ -120,7 +214,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     fun testWheelScrollsLongNotesWithoutChangingFontSize() {
         val canvas = canvas()
         try {
-            canvas.showNotes(listOf(note.copy(text = "Long explanation. ".repeat(2000))))
+            canvas.showNotes(CanvasState(listOf(note.copy(text = "Long explanation. ".repeat(2000)))))
             layoutTree(canvas)
             val text = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().single()
             val font = text.font
@@ -141,7 +235,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             layoutTree(canvas)
             fun document() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             fun title() = descendants(document()).filterIsInstance<javax.swing.text.JTextComponent>().first { it.text == "Feature" }
@@ -179,7 +273,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             .associate { it.id to if (it.path == files[0].path) "Persists balances" else "Renders the basket" })
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))
             fun field(name: String) = descendants(canvas).single { it.name == name } as com.intellij.ui.SearchTextField
             fun shownFiles() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("file:") }.map { it.removePrefix("file:") }.toSet()
             val topicField = field("topics-topic-search")
@@ -205,7 +299,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val topics = ChangeTopics(listOf(file)).assign(file.path, "Product>Feature")
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
             fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text
             repeat(14) { button("document-zoom-out").doClick() }
@@ -234,8 +328,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(buildSummaryTree(files))
         val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false),
-                summaries = SummariesCard(summaries, running = false, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false),
+                summaries = SummariesCard(summaries, running = false, canRun = false)))
             fun topicLevel() = descendants(canvas).single { it.name == "topic-level-selector" } as javax.swing.JComboBox<*>
             fun topicPanel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             fun folderPanel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
@@ -277,7 +371,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == file.path }.id to longWord))
         val canvas = canvas().apply { setSize(1200, 700) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))
             repeat(4) { (descendants(canvas).first { it.name == "document-zoom-out" } as javax.swing.JButton).doClick() }
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
@@ -313,7 +407,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.id to sentence } + (folderNode.id to sentence))
         val canvas = canvas().apply { setSize(1200, 700); summariesView.mode = ChangeSummariesMode.DOCUMENT }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             fun document() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
             fun rail() = document().components.single { it.name == "node:${folderNode.identity}" } as Container
             fun summary() = document().components.single { it.name == "summary:${files.first().path}" } as Container
@@ -358,7 +452,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             fun named(name: String) = panel.components.single { it.name == name }
@@ -450,7 +544,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val topics = files.fold(ChangeTopics(files)) { result, file -> result.assign(file.path, "Storage>User") }
         val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(files)), canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(buildSummaryTree(files)), canRun = false)))
             layoutTree(canvas)
             val document = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             val documentScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, document) as javax.swing.JScrollPane
@@ -498,7 +592,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false)))
             canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
             descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
@@ -539,7 +633,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
         }
         try {
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, summaries, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
             // The document stays the default; the hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicsPanel>().size)
@@ -644,7 +738,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun level() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
         fun fold(action: String) = (descendants(canvas).single { it.name == "summary-$action" } as javax.swing.JButton).doClick()
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             // The outline stays the default; the hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
@@ -738,7 +832,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun selector() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
         fun action(name: String) = (descendants(canvas).single { it.name == "summary-$name" } as javax.swing.JButton).doClick()
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), running = false, canRun = false)))
             for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.EXPLORER }) {
                 (descendants(canvas).single { it.name == "summaries-mode:${mode.name.lowercase()}" } as javax.swing.JToggleButton).doClick()
                 val before = canvas.summariesView.expanded.toSet()
@@ -777,7 +871,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
         fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             toggleButton("Document").doClick(); layoutTree(canvas)
             assertEquals(ChangeSummariesMode.DOCUMENT, canvas.summariesView.mode)
@@ -845,11 +939,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
         )
         val requested = mutableListOf<String>()
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}, showDiffCard = { requested += it }, project = project)
+        val canvas = NoteCanvas({ opened += it }, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }))
             .apply { setSize(1400, 900) }
         try {
             val sources = paths.map { DiffSourceBlock(DiffSourceRange(it, 1, 1), "val a = 1") }
-            canvas.showNotes(paths.map { DiffNote(listOf(it), "Explanation.") }, sources)
+            canvas.showNotes(CanvasState(paths.map { DiffNote(listOf(it), "Explanation.") }, sources))
             run {
                 layoutTree(canvas)
                 val buttons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
@@ -876,7 +970,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val originalToolOrder = settings.diffToolsOrder.toList()
         val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1400, 900) }
         try {
-            canvas.showNotes(emptyList(), diffs = listOf(file))
+            canvas.showNotes(CanvasState(emptyList(), diffs = listOf(file)))
             val viewer = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
             val switchTool = com.intellij.diff.impl.DiffRequestProcessor::class.java
                 .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
@@ -906,7 +1000,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val source = DiffSourceBlock(DiffSourceRange("src/a.kt", 8, 9), "val x = 1\n  println(x)")
         val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1000, 700) }
         try {
-            canvas.showNotes(listOf(note), listOf(source))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source)))
             assertEquals(2, canvas.tabs.tabCount)
             val viewer = descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor
             assertTrue(viewer.isViewer)
@@ -917,9 +1011,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             viewer.selectionModel.setSelection(0, 3)
             assertSame(viewer, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
             assertEquals("val", viewer.selectionModel.selectedText)
-            canvas.showNotes(listOf(note), listOf(source, source.copy(range = source.range.copy(side = "before"))))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source, source.copy(range = source.range.copy(side = "before")))))
             val other = descendants(canvas).filterIsInstance<DiffSourceEditor>().single { it.editor !== viewer }.editor
-            canvas.showNotes(listOf(note), listOf(source.copy(range = source.range.copy(side = "before"))))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source.copy(range = source.range.copy(side = "before")))))
             assertTrue(viewer.isDisposed)
             assertFalse(other.isDisposed)
             canvas.dispose()
@@ -932,18 +1026,18 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val fileB = ReviewFile("src/b.kt", "/project/src/b.kt", null, "added", "+added\n", "1", "", "val b = 3\n")
         val requested = mutableListOf<String>()
         val removed = mutableListOf<String>()
-        val canvas = NoteCanvas({}, {}, showDiffCard = { requested += it }, removeDiff = { removed += it }, project = project)
+        val canvas = NoteCanvas({}, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }, removeDiff = { removed += it }))
             .apply { setSize(1400, 900) }
         try {
             val source = DiffSourceBlock(DiffSourceRange("src/b.kt", 1, 1), "val b = 3")
-            canvas.showNotes(listOf(note), listOf(source))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source)))
             val diffButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
                 .filter { it.toolTipText == "Show diff in tab" }
             assertEquals(2, diffButtons.size)
             diffButtons.forEach { it.doClick() }
             assertEquals(listOf("src/a.kt", "src/b.kt"), requested)
 
-            canvas.showNotes(listOf(note), listOf(source), listOf(fileA, fileB))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source), listOf(fileA, fileB)))
             assertEquals(4, canvas.tabs.tabCount)
             val diffViewers = descendants(canvas).filterIsInstance<DiffFileEditor>()
             assertEquals(2, diffViewers.size)
@@ -960,7 +1054,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             removeButtons.first().doClick()
             assertEquals(listOf("src/a.kt"), removed)
 
-            canvas.showNotes(listOf(note), listOf(source), listOf(fileB))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source), listOf(fileB)))
             assertTrue(viewerA.isDisposed && viewerA.editors.all { it.isDisposed })
             assertFalse(viewerB.isDisposed)
             canvas.dispose()
@@ -975,16 +1069,16 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }, 20)))
         val semantic = note.copy(symbol = symbol.selector, evidence = evidence)
         val canvas = canvas()
-        canvas.showNotes(listOf(note, semantic))
+        canvas.showNotes(CanvasState(listOf(note, semantic)))
         assertEquals(2, canvas.tabs.tabCount)
         canvas.focusNote(semantic)
         val title = canvas.tabs.getTitleAt(canvas.tabs.selectedIndex)
         val diagram = descendants(canvas).filterIsInstance<DiffSymbolDiagram>().single()
         assertEquals(5, diagram.componentCount) // Root, three callees, one omitted count.
         assertTrue(descendants(diagram).filterIsInstance<JLabel>().any { it.text == "+17 calls not shown" })
-        canvas.showNotes(listOf(note, semantic.copy(text = "Updated")))
+        canvas.showNotes(CanvasState(listOf(note, semantic.copy(text = "Updated"))))
         assertEquals(title, canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-        canvas.showNotes(listOf(semantic))
+        canvas.showNotes(CanvasState(listOf(semantic)))
         assertEquals(title, canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
     }
 
@@ -1026,7 +1120,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertTrue(changeFlow(listOf(step("a"), note)).rows.isEmpty())
 
         val canvas = canvas()
-        canvas.showNotes(notes)
+        canvas.showNotes(CanvasState(notes))
         assertEquals(5, canvas.tabs.tabCount) // Flow card plus four notes.
         val diagram = descendants(canvas).filterIsInstance<ChangeFlowDiagram>().single()
         val links = descendants(diagram).filterIsInstance<com.intellij.ui.components.ActionLink>()
@@ -1038,9 +1132,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
         links[2].doClick()
         assertTrue(descendants(canvas.tabs.selectedComponent as Container).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text.startsWith("c ") })
-        canvas.showNotes(notes.take(3))
+        canvas.showNotes(CanvasState(notes.take(3)))
         assertEquals(4, canvas.tabs.tabCount)
-        canvas.showNotes(listOf(notes[3]))
+        canvas.showNotes(CanvasState(listOf(notes[3])))
         assertEquals(1, canvas.tabs.tabCount) // The flow disappears once no calls connect notes.
     }
 
@@ -1086,7 +1180,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             override fun searchLines(content: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
                 error("Only file summaries search lines")
         }
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
         fun named(name: String) = descendants(canvas).filter { it.name == name }
         fun rootText() = descendants(named("summary:root").single() as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         fun pointAtWord(text: String, event: Int) {
@@ -1099,7 +1193,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun clickWord(text: String) = pointAtWord(text, MouseEvent.MOUSE_CLICKED)
         fun hoverWord(text: String) = pointAtWord(text, MouseEvent.MOUSE_MOVED)
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             assertTrue(named("summaries-interactive").isEmpty())
             assertTrue(traced.isEmpty())
@@ -1268,7 +1362,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
         val columnsFile = node("ui/hierarchy/Columns.kt")
         val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
         fun page(index: Int) = canvas.tabs.getComponentAt(index) as Container
         fun named(index: Int, name: String) = descendants(page(index)).filter { it.name == name }
         fun shown(index: Int) = descendants(page(index)).mapNotNull { it.name?.removePrefix("summary:")?.takeIf { _ -> it.name!!.startsWith("summary:") } }.toSet()
@@ -1281,7 +1375,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         try {
             canvas.summariesView.mode = ChangeSummariesMode.OUTLINE
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             val everything = shown(0)
             assertTrue(canvasDir.identity in everything && hierarchyFile.identity in everything)
@@ -1379,14 +1473,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
         for (searchTab in listOf(false, true)) {
             val launcher = FakeTraceLauncher()
-            val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply {
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
                 setSize(1600, 900); summariesView.mode = ChangeSummariesMode.EXPLORER
             }
             fun page() = canvas.tabs.selectedComponent as Container
             fun named(name: String) = descendants(page()).single { it.name == name }
             fun texts() = descendants(page()).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 val area = descendants(page()).filterIsInstance<WrappedSummaryText>().single()
                 area.select(0, "Updates".length)
                 selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
@@ -1427,7 +1521,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
         for (mode in ChangeSummariesMode.entries.filter { it != ChangeSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
             val launcher = FakeTraceLauncher()
-            val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply {
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
                 setSize(1600, 900)
                 summariesView.apply {
                     this.mode = mode
@@ -1437,7 +1531,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 }
             }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 layoutTree(canvas)
                 val area = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().singleOrNull { it.text == root }
                 assertNotNull("$mode shows the root summary to search", area)
@@ -1519,10 +1613,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         for (node in listOf(tree.root, leaf)) {
             val launcher = FakeTraceLauncher()
             val opened = mutableListOf<LineTrace>()
-            val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { _, lines -> opened += lines })
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { _, lines -> opened += lines }))
                 .apply { setSize(1600, 900) }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 layoutTree(canvas)
                 val row = descendants(canvas).single { it.name == "summary:${node.identity}" } as Container
                 val area = descendants(row).filterIsInstance<javax.swing.text.JTextComponent>().first()
@@ -1558,7 +1652,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(buildSummaryTree(listOf(file)))
         val canvas = NoteCanvas({}, {})
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             val field = descendants(canvas).single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
             field.text = "no-such-summary"
             assertTrue(descendants(canvas).any { it.name == "no-matches" })
@@ -1610,7 +1704,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val hierarchyDir = node("ui/hierarchy")
         val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
         val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun named(name: String) = descendants(canvas).filter { it.name == name }
         fun note(identity: String) = panel().components.single { it.name == "summary:$identity" } as javax.swing.text.JTextComponent
@@ -1621,7 +1715,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
@@ -1700,7 +1794,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
         val file = tree.nodes.single { it.path == "Paint.kt" }
         val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher)
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
                 if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
@@ -1720,7 +1814,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun expected(node: SummaryNode) = SummaryWord.split(summaries.text(node.id)!!)
             .filter { it.meaningful }.map { node.id to it.index }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             val fileArea = area(file)
             assertTrue("An unscored summary offers Score", scoreItem(fileArea).isEnabled)
@@ -1769,7 +1863,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
                 if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
@@ -1781,7 +1875,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         fun status() = (named("trace-status").single() as JLabel).text
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             // Document files remain visible even when their folders are folded in the other modes.
             if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
@@ -1948,7 +2042,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
             .apply {
                 setSize(1600, 900); summariesView.mode = mode
                 if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
@@ -1968,7 +2062,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             if (mode == ChangeSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
             assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
@@ -2013,7 +2107,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val card = TopicsCard(ChangeTopics(listOf(source)).assign(source.path, "UI>Painting"), summaries, canRun = true)
         val launcher = FakeTraceLauncher()
         val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher, openLines = { node, lines -> opened += node to lines })
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
             .apply { setSize(1600, 900); topicsView.mode = mode; topicsView.visibleOnly = true }
         fun named(name: String) = descendants(canvas).single { it.name == name }
         fun area(): javax.swing.text.JTextComponent {
@@ -2021,7 +2115,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
         }
         try {
-            canvas.showNotes(emptyList(), topics = card)
+            canvas.showNotes(CanvasState(emptyList(), topics = card))
             layoutTree(canvas)
             if (mode == ChangeTopicsMode.DOCUMENT) canvas.topicsView.selectLevel(0, topicOutline(card.topics))
             (named("topics-score") as javax.swing.JButton).doClick()
@@ -2063,7 +2157,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         })
         val shared = ChangeSummaries(buildSummaryTree(files))
         val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, traceSummaries = launcher).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
         fun named(name: String) = descendants(canvas).filter { it.name == name }
         fun note(name: String) = panel().components.single { it.name == "summary:$name" } as javax.swing.text.JTextComponent
@@ -2075,7 +2169,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         try {
             val card = TopicsCard(topics, shared, canRun = true, topicSummaries)
-            canvas.showNotes(emptyList(), topics = card)
+            canvas.showNotes(CanvasState(emptyList(), topics = card))
             layoutTree(canvas)
             assertTrue("Scoring is available in the document too", named("topics-score").isNotEmpty())
             descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
@@ -2137,7 +2231,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val nextWord = words.first { it.text == "Additional" }
         val query = "A long hover query that must never wrap into extra status rows. ".repeat(30)
         for (mode in ChangeSummariesMode.entries) {
-            val canvas = NoteCanvas({}, {}, traceSummaries = FakeTraceLauncher()).apply { setSize(1000, 700) }
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply { setSize(1000, 700) }
             canvas.summariesView.apply {
                 this.mode = mode
                 update(tree)
@@ -2157,7 +2251,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, area()) as javax.swing.JScrollPane
             fun bounds() = javax.swing.SwingUtilities.convertRectangle(area().parent, area().bounds, canvas)
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
                 layoutTree(canvas)
                 com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
                 area().scrollRectToVisible(java.awt.Rectangle(0, 0, area().width, area().height))
@@ -2222,7 +2316,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             assertEquals(listOf("Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
             assertTrue(descendants(canvas).none { it.name == "summaries-show-names" })
@@ -2258,14 +2352,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val summaries = ChangeSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
         val explained = mutableListOf<String>()
-        val canvas = NoteCanvas({}, {}, explainNode = { explained += it.identity }).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(explainNode = { explained += it.identity })).apply { setSize(1600, 900) }
         // The split view keeps entry actions in each tree row's context menu.
         fun links(): List<javax.swing.AbstractButton> = (descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>() +
             descendants(canvas).mapNotNull { (it as? JComponent)?.componentPopupMenu }.distinct()
                 .flatMap { it.components.filterIsInstance<javax.swing.JMenuItem>() }).filter { it.text == "Explain" }
         try {
             canvas.summariesView.mode = mode
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             assertTrue(mode.name, links().isNotEmpty())
             assertTrue(mode.name, links().all { it.isEnabled })
@@ -2288,14 +2382,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val result = ExplainResult("/explain src/a.kt", "The cache avoids repeated reads.", running = false, chart)
         val canvas = canvas()
         try {
-            canvas.showNotes(listOf(note), explanation = result)
+            canvas.showNotes(CanvasState(listOf(note), explanation = result))
             canvas.focusExplanation()
             assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
             assertTrue(descendants(canvas.tabs.selectedComponent as Container)
                 .filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == result.text })
             descendants(canvas).filterIsInstance<javax.swing.JButton>().single { it.text == "Open Flow Chart" }.doClick()
             assertEquals(1, chartOpened)
-            canvas.showNotes(listOf(note.copy(text = "Updated note")), explanation = result)
+            canvas.showNotes(CanvasState(listOf(note.copy(text = "Updated note")), explanation = result))
             assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
             canvas.updateSummaries(null)
             canvas.updateTopics(null)
@@ -2305,7 +2399,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("Note · a.kt", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
             canvas.focusExplanation()
             assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            canvas.showNotes(listOf(note))
+            canvas.showNotes(CanvasState(listOf(note)))
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Note · a.kt", canvas.tabs.getTitleAt(0))
         } finally { canvas.dispose() }
@@ -2315,10 +2409,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = canvas()
         try {
             val result = ExplainResult("/explain", "Explaining…", running = true)
-            canvas.showNotes(emptyList(), explanation = result)
+            canvas.showNotes(CanvasState(emptyList(), explanation = result))
             assertEquals("Explaining…", canvas.tabs.getTitleAt(0))
-            canvas.showNotes(emptyList(), explanation = result.copy(text = "Stopped.", running = false,
-                chart = dev.insight.callgraph.ExplainChartResult.Unavailable("the graph is building.")))
+            canvas.showNotes(CanvasState(emptyList(), explanation = result.copy(text = "Stopped.", running = false,
+                chart = dev.insight.callgraph.ExplainChartResult.Unavailable("the graph is building."))))
             assertEquals("Explanation", canvas.tabs.getTitleAt(0))
             val texts = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
             assertTrue("Stopped." in texts)
@@ -2327,7 +2421,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(listOf(note)) }
+    private fun canvas() =NoteCanvas({}, {}).apply { setSize(1000, 700); showNotes(CanvasState(listOf(note))) }
     private fun clickSummary(canvas: NoteCanvas, identity: String) {
         val row = descendants(canvas).single { it.name == "summary:$identity" }
         row.dispatchEvent(MouseEvent(row, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))

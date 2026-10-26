@@ -46,8 +46,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
             }
             override fun searchLines(summaries: ChangeSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job = Job()
         }
-        return NoteCanvas({}, {}, traceSummaries = tracer, contextSummaries = launcher).apply {
-            showNotes(emptyList(), summaries = SummariesCard(original, running = false, canRun = true))
+        return NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = tracer, contextSummaries = launcher)).apply {
+            showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, running = false, canRun = true)))
         }
     }
 
@@ -75,7 +75,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             try {
                 canvas.summariesView.mode = mode
                 if (mode == ChangeSummariesMode.EXPLORER) canvas.summariesView.browse(tree.root.identity, tree)
-                canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
                 canvas.requestResummaryInstructions = { node, recursive, destination ->
                     assertEquals(ResummaryDestination.VERSION, destination)
                     assertEquals(app.identity, node.identity)
@@ -102,7 +102,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
         val canvas = canvas(launcher)
         try {
             canvas.summariesView.toggle(app.identity)
-            canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
             canvas.requestResummaryInstructions = { _, _, _ -> null }
             val entry = named(canvas, 0, "summary:${app.identity}") as javax.swing.JComponent
             fun all() = entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Resummarize all" }.doClick()
@@ -129,13 +129,14 @@ class ContextSummariesTest : BasePlatformTestCase() {
         var focus: ChatFocus? = null
         var origin: ChangeSummaries? = null
         val card = TopicsCard(topics, original, canRun = false, topicSummaries = topicSummaries)
-        val canvas = NoteCanvas({}, {}, chatNode = { node, summaries ->
-            origin = summaries
-            focus = chatFocus(node, summaries)
-        })
+        val canvas = NoteCanvas({}, {},
+            summaryActions = SummaryCanvasActions(chatNode = { node, summaries ->
+                origin = summaries
+                focus = chatFocus(node, summaries)
+            }))
         try {
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
-            canvas.showNotes(emptyList(), topics = card)
+            canvas.showNotes(CanvasState(emptyList(), topics = card))
             val entry = named(canvas, 0, "summary:app/a.kt") as JTextComponent
             selectionMenu(entry)!!.components.filterIsInstance<JMenuItem>().single { it.text == "To Chat" }.doClick()
             assertSame(card.reading, origin)
@@ -153,10 +154,10 @@ class ContextSummariesTest : BasePlatformTestCase() {
         val wallet = topicTree.nodes.single { it.identity == "topic:storage > wallet" }
         val launcher = ContextLauncher()
         val saved = mutableListOf<Pair<ChangeSummaries, Set<Int>>>()
-        val canvas = NoteCanvas({}, {}, contextSummaries = launcher, saveTopicSummaries = { summaries, ids -> saved += summaries to ids })
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { summaries, ids -> saved += summaries to ids }))
         try {
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
-            canvas.showNotes(emptyList(), topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true)))
             fun item(entry: String, label: String) = (named(canvas, 0, entry) as javax.swing.JComponent).componentPopupMenu
                 .components.filterIsInstance<JMenuItem>().single { it.text == label }
             // File summaries are shared with the Summaries card, so files only fill.
@@ -194,12 +195,12 @@ class ContextSummariesTest : BasePlatformTestCase() {
 
     fun testTopicAndVersionRunsExcludeEachOtherIncludingStaleMenus() {
         val launcher = ContextLauncher()
-        val canvas = NoteCanvas({}, {}, contextSummaries = launcher, saveTopicSummaries = { _, _ -> })
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { _, _ -> }))
         val topics = ChangeTopics(files, files.associate { it.path to "Storage" })
         try {
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
-            canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true),
-                topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true),
+                topics = TopicsCard(topics, ChangeSummaries(tree), canRun = true)))
             fun item(name: String, label: String): JMenuItem {
                 val entry = descendants(canvas).single { it.name == name } as javax.swing.JComponent
                 return entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == label }
@@ -258,8 +259,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
             versions(canvas, 0).selectedIndex = 1
             assertEquals("Context app/", summary(canvas, 0, app.identity).text)
             // Closing and reopening the summaries card keeps its versions in this review.
-            canvas.showNotes(emptyList())
-            canvas.showNotes(emptyList(), summaries = SummariesCard(original, false, true))
+            canvas.showNotes(CanvasState(emptyList()))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
             assertEquals(2, versions(canvas, 0).itemCount)
             button(canvas, 0, "delete-summary-version").doClick()
             assertEquals(1, versions(canvas, 0).itemCount)

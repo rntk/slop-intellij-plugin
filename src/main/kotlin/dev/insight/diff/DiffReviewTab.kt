@@ -47,53 +47,61 @@ internal class DiffReviewTab(
     override val canvas: NoteCanvas = NoteCanvas(
         showDiff,
         { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
-        { symbol ->
-            LocalFileSystem.getInstance().findFileByPath(symbol.absolutePath)?.let { file ->
-                OpenFileDescriptor(project, file, symbol.offset).navigate(true)
-            }
-        },
-        removeSource = { range -> state.removeSource(range); renderCanvas() },
-        showDiffCard = { path ->
-            if (state.showDiff(path) != null) {
-                renderCanvas()
-                canvas.focusDiff(path)
-            }
-        },
-        removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         project = project,
-        removeFlows = { state.removeFlows(); renderCanvas() },
-        summarize = { summarize() },
-        fillTopicSummaries = { if (canSummarize) session.send("/topic-summaries") },
-        generateTopics = { if (canSummarize) session.send("/topics") },
-        removeTopics = { state.hideTopics(); renderCanvas() },
-        removeSummaries = { state.hideSummaries(); renderCanvas() },
-        traceSummaries = ReviewTraceLauncher(project, scope),
         reviewed = state.reviewed,
-        markReviewed = state::setReviewed,
-        reviewSummaries = ReviewSummaryLinkLauncher(project, scope),
-        contextSummaries = ReviewContextSummaryLauncher(project, scope) {
-            val context = captureContext()
-            val files = state.snapshot.files
-            val client = ChatSettings.getInstance().createClient()
-            val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
-            ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
-        },
-        deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
-        saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
-        // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
-        openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
-        openWholeFile = { file ->
-            WriteIntentReadAction.run {
-                val snapshot = fullFileSnapshots.getOrPut(file) { createFullFileSnapshot(file) }
-                FileEditorManager.getInstance(project).openFile(snapshot, true)
-            }
-        },
-        openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
-        removeWords = { state.hideWords(); renderCanvas() },
-        removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
-        removeSemantic = { state.hideSemantic(); renderCanvas() },
-        explainNode = { node -> explain(node) },
-        chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
+        sourceActions = SourceCanvasActions(
+            openSymbol = { symbol ->
+                LocalFileSystem.getInstance().findFileByPath(symbol.absolutePath)?.let { file ->
+                    OpenFileDescriptor(project, file, symbol.offset).navigate(true)
+                }
+            },
+            removeSource = { range -> state.removeSource(range); renderCanvas() },
+            showDiffCard = { path ->
+                if (state.showDiff(path) != null) {
+                    renderCanvas()
+                    canvas.focusDiff(path)
+                }
+            },
+            removeDiff = { path -> state.removeDiff(path); renderCanvas() },
+            removeFlows = { state.removeFlows(); renderCanvas() },
+        ),
+        summaryActions = SummaryCanvasActions(
+            summarize = { summarize() },
+            removeSummaries = { state.hideSummaries(); renderCanvas() },
+            traceSummaries = ReviewTraceLauncher(project, scope),
+            markReviewed = state::setReviewed,
+            reviewSummaries = ReviewSummaryLinkLauncher(project, scope),
+            contextSummaries = ReviewContextSummaryLauncher(project, scope) {
+                val context = captureContext()
+                val files = state.snapshot.files
+                val client = ChatSettings.getInstance().createClient()
+                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
+                ChangeSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+            },
+            deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
+            // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
+            openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
+            openWholeFile = { file ->
+                WriteIntentReadAction.run {
+                    val snapshot = fullFileSnapshots.getOrPut(file) { createFullFileSnapshot(file) }
+                    FileEditorManager.getInstance(project).openFile(snapshot, true)
+                }
+            },
+            openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
+            explainNode = { node -> explain(node) },
+            chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
+        ),
+        topicActions = TopicCanvasActions(
+            fillTopicSummaries = { if (canSummarize) session.send("/topic-summaries") },
+            generateTopics = { if (canSummarize) session.send("/topics") },
+            removeTopics = { state.hideTopics(); renderCanvas() },
+            saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
+        ),
+        metricActions = MetricCardActions(
+            removeWords = { state.hideWords(); renderCanvas() },
+            removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
+            removeSemantic = { state.hideSemantic(); renderCanvas() },
+        ),
     )
 
     val canvasFile = DiffReviewCanvasFile(this)
@@ -427,10 +435,10 @@ internal class DiffReviewTab(
     }
 
     private fun renderCanvas() {
-        canvas.showNotes(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard(),
+        canvas.showNotes(CanvasState(state.notes, state.sources, state.diffs, state.flows, summariesCard(), topicsCard(),
             words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
             diffOverview = if (state.diffOverviewVisible) state.words else null,
-            semantic = if (state.semanticVisible) state.semantic else null, explanation = explanations.result)
+            semantic = if (state.semanticVisible) state.semantic else null, explanation = explanations.result))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
     }
@@ -615,7 +623,7 @@ internal class DiffReviewTab(
         state.update(ReviewSnapshot(emptyList(), emptyList()))
         state.clearNotes()
         state.refreshing = true
-        canvas.showNotes(emptyList())
+        canvas.showNotes(CanvasState(emptyList()))
         canvas.removeAll()
         removeAll()
     }

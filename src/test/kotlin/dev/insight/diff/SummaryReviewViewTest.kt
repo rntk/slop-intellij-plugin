@@ -25,13 +25,13 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
             val node = tree.nodes.single { it.path == "docs/readme.md" }
             val texts = tree.nodes.associate { it.id to "Summary for ${it.path.ifEmpty { "root" }}" }
             val summaries = ChangeSummaries(tree, texts)
-            val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, markReviewed = state::setReviewed).apply {
+            val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, summaryActions = SummaryCanvasActions(markReviewed = state::setReviewed)).apply {
                 setSize(1600, 900)
                 summariesView.mode = mode
                 if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse("directory:docs", tree)
             }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 fun control() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name == "reviewed:${node.identity}" }
                 fun area() = descendants(canvas).filterIsInstance<WrappedSummaryText>().single { it.text == texts[node.id] }
                 assertFalse(control().isSelected)

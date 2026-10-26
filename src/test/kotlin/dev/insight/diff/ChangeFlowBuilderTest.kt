@@ -217,7 +217,7 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 900) }
         try {
             canvas.flowsView.mode = ChangeFlowsMode.OUTLINE
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             fun texts() = descendants(canvas).mapNotNull {
                 (it as? JLabel)?.text ?: (it as? javax.swing.AbstractButton)?.text ?: (it as? javax.swing.text.JTextComponent)?.text
             }
@@ -228,21 +228,21 @@ class ChangeFlowBuilderTest : BasePlatformTestCase() {
             // Formatting-only total is minor and folds away under its caller.
             assertFalse(texts().contains("Shop.total"))
             canvas.flowsView.toggle(ChangeFlowsViewState.node(checkout.id))
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             assertTrue(texts().any { it.startsWith("Outline ·") })
             assertTrue(texts().any { it.contains("if vip() › discount()") })
             assertTrue(texts().contains("⚑ Check the discount guard"))
             assertFalse(texts().any { it.startsWith("+") && it.contains("discount();") })
             canvas.flowsView.toggle(ChangeFlowsViewState.diff(checkout.id))
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             assertTrue(texts().any { it.startsWith("+") && it.contains("discount();") })
             // Following a call to a folded function opens it.
             canvas.flowsView.focus(flows, graph.nodes.single { it.name == "total" }.id)
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             assertTrue(texts().contains("Shop.total"))
             assertTrue(texts().contains("Whitespace only"))
             // A new graph starts folded again.
-            canvas.showNotes(emptyList(), flows = ChangeFlows(graph.copy()))
+            canvas.showNotes(CanvasState(emptyList(), flows = ChangeFlows(graph.copy())))
             assertFalse(texts().any { it.startsWith("Outline ·") })
         } finally { Disposer.dispose(canvas) }
     }

@@ -43,7 +43,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             }
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layout()
             assertFalse(checkbox().isSelected)
             val originalHeight = named("summary:file:src/a.kt").height
@@ -103,7 +103,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
         fun layout() = repeat(5) { layoutTree(canvas) }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layout()
             val left = named("summary-split-tree-scroll") as JScrollPane
             val right = named("summary-split-summary-scroll") as JScrollPane
@@ -153,7 +153,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             layoutTree(canvas)
         }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
             val all = listOf("root", "directory:src", "file:src/a.kt", "directory:src/nested", "file:src/nested/b.kt", "directory:docs", "file:docs/readme.md")
                 .filter { identity -> tree.nodes.any { it.identity == identity } }
@@ -228,7 +228,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val summaries = ChangeSummaries(tree, mapOf(tree.root.id to text))
         val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
             val area = descendants(canvas).filterIsInstance<WrappedSummaryText>().single()
             assertEquals(text.map { if (it in "\r\n\u2028\u2029") ' ' else it }.joinToString(""), area.text)
@@ -247,7 +247,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         }
         fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             repeat(3) { layoutTree(canvas) }
             val left = named("summary-split-tree-scroll") as JScrollPane
             val right = named("summary-split-summary-scroll") as JScrollPane
@@ -300,7 +300,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val reviewed = ReviewedFiles().apply { restore(files) }
         val canvas = NoteCanvas({}, {}, reviewed = reviewed).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, true)))
             val row = descendants(canvas).single { it.name == "summary-tree:${node.identity}" } as JComponent
             val menu = row.componentPopupMenu
             fun item() = menu.components.filterIsInstance<JMenuItem>().single { it.name == "reviewed-menu:${node.identity}" }
@@ -329,7 +329,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
         var dialogs = 0
         try {
-            canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
             for (identity in listOf("root", "file:src/a.kt")) {
                 UiInterceptors.register(object : UiInterceptors.UiInterceptor<SummaryTextDialog>(SummaryTextDialog::class.java) {
@@ -370,9 +370,10 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             val whole = mutableListOf<String>()
             val folders = mutableListOf<List<ReviewFile>>()
             val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary, openNode = { opened += it.identity },
-                openWholeFile = { whole += it.path },
-                openDirectoryDiff = if (vocabulary == ReviewVocabulary.DIFF) ({ folders += it }) else null)
+            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary,
+                summaryActions = SummaryCanvasActions(openNode = { opened += it.identity },
+                    openWholeFile = { whole += it.path },
+                    openDirectoryDiff = if (vocabulary == ReviewVocabulary.DIFF) ({ folders += it }) else null))
                 .apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
             var dialogOpened = false
             val interception = Disposer.newDisposable()
@@ -381,7 +382,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
                     override fun doIntercept(dialog: SummaryTextDialog) { dialogOpened = true; dialog.close(0) }
                 })
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 layoutTree(canvas)
                 val row = descendants(canvas).single { it.name == "summary:file:src/a.kt" } as Container
                 val area = descendants(row).filterIsInstance<WrappedSummaryText>().single()
@@ -421,7 +422,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             }
             fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, false, true))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
                 repeat(5) { layoutTree(canvas) }
                 val left = named("summary-split-tree-scroll") as JScrollPane
                 val right = named("summary-split-summary-scroll") as JScrollPane

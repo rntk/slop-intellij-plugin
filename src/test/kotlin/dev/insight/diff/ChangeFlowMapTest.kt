@@ -81,7 +81,7 @@ class ChangeFlowMapTest : BasePlatformTestCase() {
         val flows = flows()
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 900) }
         try {
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             assertTrue(descendants(canvas).filterIsInstance<ChangeFlowMap>().isNotEmpty())
             assertFalse(texts(canvas).any { it.startsWith("Outline ·") })
             descendants(canvas).filterIsInstance<AbstractButton>().single { it.text == "Discount.apply" }.doClick()
@@ -97,12 +97,12 @@ class ChangeFlowMapTest : BasePlatformTestCase() {
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.text == "Map" }.doClick()
             assertEquals(3, canvas.flowsView.selected[0])
             val interpreted = flows.annotate(FlowAnnotationUpdate(nodes = mapOf(3 to flows.nodeNotes.getValue(3).copy(summary = "Updated interpretation."))))
-            canvas.showNotes(emptyList(), flows = interpreted)
+            canvas.showNotes(CanvasState(emptyList(), flows = interpreted))
             assertEquals(3, canvas.flowsView.selected[0])
             assertTrue(texts(canvas).contains("Updated interpretation."))
             assertEquals(3, canvas.flowsView.selected[0])
             paint(canvas)
-            canvas.showNotes(emptyList(), flows = ChangeFlows(flows.graph.copy()))
+            canvas.showNotes(CanvasState(emptyList(), flows = ChangeFlows(flows.graph.copy())))
             assertTrue(canvas.flowsView.selected.isEmpty())
             assertEquals(ChangeFlowsMode.MAP, canvas.flowsView.mode)
         } finally { com.intellij.openapi.util.Disposer.dispose(canvas) }
@@ -135,7 +135,7 @@ class ChangeFlowMapTest : BasePlatformTestCase() {
         val flows = ChangeFlows(ChangeGraph(nodes, edges, listOf(ChangeCluster(0, nodes.indices.toList(), "Large flow")), emptyList()))
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 900) }
         try {
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             fun map() = descendants(canvas).filterIsInstance<ChangeFlowMap>().single()
             assertEquals(CHANGE_MAP_PREVIEW_STEPS, map().geometry.nodes.size)
             assertTrue(texts(canvas).any { it.contains("12 of 30 steps") })
@@ -144,7 +144,7 @@ class ChangeFlowMapTest : BasePlatformTestCase() {
             descendants(canvas).filterIsInstance<AbstractButton>().single { it.text == "Show fewer steps" }.doClick()
             assertEquals(12, map().geometry.nodes.size)
             canvas.flowsView.focus(flows, 28)
-            canvas.showNotes(emptyList(), flows = flows)
+            canvas.showNotes(CanvasState(emptyList(), flows = flows))
             assertEquals(30, map().geometry.nodes.size)
             assertEquals(28, canvas.flowsView.selected[0])
             descendants(canvas).filterIsInstance<AbstractButton>().single { it.text == "Show fewer steps" }.doClick()

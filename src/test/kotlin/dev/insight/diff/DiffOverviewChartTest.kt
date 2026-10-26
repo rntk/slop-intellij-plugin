@@ -49,9 +49,9 @@ class DiffOverviewChartTest : BasePlatformTestCase() {
         val counts = wordChanges(files)
         var removeWords = 0
         var removeOverview = 0
-        val canvas = NoteCanvas({}, {}, removeWords = { removeWords++ }, removeDiffOverview = { removeOverview++ })
+        val canvas = NoteCanvas({}, {}, metricActions = MetricCardActions(removeWords = { removeWords++ }, removeDiffOverview = { removeOverview++ }))
         try {
-            canvas.showNotes(emptyList(), words = counts, wordFiles = files, diffOverview = counts)
+            canvas.showNotes(CanvasState(emptyList(), words = counts, wordFiles = files, diffOverview = counts))
             assertEquals(listOf("Word changes", "Diff overview"), (0 until canvas.tabs.tabCount).map { canvas.tabs.getTitleAt(it) })
             assertEquals(1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
             assertEquals(1, descendants(canvas).filterIsInstance<DiffOverviewChart>().size)
@@ -64,11 +64,11 @@ class DiffOverviewChartTest : BasePlatformTestCase() {
             descendants(canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove diff overview" }.doClick()
             assertEquals(1, removeOverview)
             assertEquals(0, removeWords)
-            canvas.showNotes(emptyList(), words = counts, wordFiles = files)
+            canvas.showNotes(CanvasState(emptyList(), words = counts, wordFiles = files))
             assertEquals("Word changes", canvas.tabs.getTitleAt(0))
             assertEquals(1, canvas.tabs.tabCount)
             assertTrue(descendants(canvas).none { it is DiffOverviewChart })
-            canvas.showNotes(emptyList(), wordFiles = files, diffOverview = counts)
+            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, diffOverview = counts))
             assertEquals("Diff overview", canvas.tabs.getTitleAt(0))
             assertTrue(descendants(canvas).none { it is WordChangeChart })
         } finally { canvas.dispose() }
@@ -96,7 +96,7 @@ class DiffOverviewChartTest : BasePlatformTestCase() {
         assertTrue(counts.words.isEmpty())
         val canvas = NoteCanvas({}, {})
         try {
-            canvas.showNotes(emptyList(), wordFiles = files, diffOverview = counts)
+            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, diffOverview = counts))
             val chart = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
             assertEquals(ChangedLineCounts(1, 2), chart.changes.lines)
             chart.setSize(chart.preferredSize)

@@ -25,13 +25,13 @@ class SummaryNavigationTest : BasePlatformTestCase() {
         for (mode in ChangeSummariesMode.entries) {
             val opened = mutableListOf<ReviewFile>()
             val directories = mutableListOf<List<ReviewFile>>()
-            val canvas = NoteCanvas({}, {}, openWholeFile = { opened += it }, openDirectoryDiff = { directories += it })
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { opened += it }, openDirectoryDiff = { directories += it }))
                 .apply {
                     setSize(1600, 900); summariesView.mode = mode
                     if (mode == ChangeSummariesMode.EXPLORER) summariesView.browse(folder.identity, tree)
                 }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
                 fun named(name: String) = descendants(canvas).single { it.name == name } as Container
                 val fileHeader = named(when (mode) {
                     ChangeSummariesMode.OUTLINE, ChangeSummariesMode.EXPLORER -> "summary-header:file:src/a.kt"
@@ -59,10 +59,10 @@ class SummaryNavigationTest : BasePlatformTestCase() {
         val unavailable = file("src/binary.bin", before = null, after = null)
         val tree = buildSummaryTree(listOf(unavailable))
         for (mode in ChangeSummariesMode.entries) {
-            val canvas = NoteCanvas({}, {}, openWholeFile = { fail("No full text") }, openDirectoryDiff = {})
+            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { fail("No full text") }, openDirectoryDiff = {}))
                 .apply { setSize(1600, 900); summariesView.mode = mode }
             try {
-                canvas.showNotes(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, false))
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ChangeSummaries(tree), false, false)))
                 assertTrue(actions(canvas).none { it.text == "Open file" })
                 assertTrue(actions(canvas).any { it.text == if (mode == ChangeSummariesMode.SPLIT) "Open diff" else "View diff" })
             } finally { canvas.dispose() }

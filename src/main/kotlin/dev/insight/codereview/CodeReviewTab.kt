@@ -29,6 +29,7 @@ import dev.insight.chat.ToolInputException
 import dev.insight.chat.TraceFile
 import dev.insight.chat.tracedFileCompletion
 import dev.insight.callgraph.ExplainChartResult
+import dev.insight.diff.CanvasState
 import dev.insight.diff.ChangeSummaries
 import dev.insight.diff.ChatFocus
 import dev.insight.diff.chatFocus
@@ -60,9 +61,12 @@ import dev.insight.diff.ReviewCanvasOwner
 import dev.insight.diff.ReviewTraceLauncher
 import dev.insight.diff.ReviewContextSummaryLauncher
 import dev.insight.diff.ReviewVocabulary
+import dev.insight.diff.SourceCanvasActions
 import dev.insight.diff.SummariesCard
+import dev.insight.diff.SummaryCanvasActions
 import dev.insight.diff.SummaryNode
 import dev.insight.diff.SymbolFile
+import dev.insight.diff.TopicCanvasActions
 import dev.insight.diff.TopicsCard
 import dev.insight.diff.isSummariesRequest
 import dev.insight.diff.isTopicsRequest
@@ -142,40 +146,46 @@ internal class CodeReviewTab(
     override val canvas: NoteCanvas = NoteCanvas(
         open = { path -> openFile(path, null) },
         remove = { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
-        openSymbol = { symbol ->
-            findSourceFile(project, symbol.path, symbol.absolutePath)?.let { OpenFileDescriptor(project, it, symbol.offset).navigate(true) }
-        },
-        removeSource = { range -> state.removeSource(range); renderCanvas() },
-        showDiffCard = { path -> showSourceBlock(path, null) },
         project = project,
-        summarize = { summarize() },
-        generateTopics = { if (canSummarize) session.send("/topics") },
-        fillTopicSummaries = { if (canSummarize) session.send("/topic-summaries") },
-        removeTopics = { state.hideTopics(); renderCanvas() },
-        removeSummaries = { state.hideSummaries(); renderCanvas() },
-        traceSummaries = ReviewTraceLauncher(project, scope),
         reviewed = state.reviewed,
-        markReviewed = state::setReviewed,
-        reviewSummaries = dev.insight.diff.ReviewSummaryLinkLauncher(project, scope),
-        contextSummaries = ReviewContextSummaryLauncher(project, scope) {
-            val snapshot = state.snapshot
-            val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
-                this.complete ?: ChatSettings.getInstance().createClient()::complete)
-            ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
-        },
-        deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
-        saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         vocabulary = ReviewVocabulary.CODE,
-        openNode = { node -> openFile(node.path, node.lines?.first) },
-        showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
-        openLines = { node, lines ->
-            findSourceFile(project, node.path, node.file?.absolutePath)?.let { openHighlightedLines(project, it, lines.after) }
-        },
-        openFileAt = { path, line -> openFile(path, line) },
-        showFileLines = { path, lines -> showSourceBlock(path, lines) },
-        removeFileView = { closeFileView() },
-        explainNode = { node -> explain(node) },
-        chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
+        sourceActions = SourceCanvasActions(
+            openSymbol = { symbol ->
+                findSourceFile(project, symbol.path, symbol.absolutePath)?.let { OpenFileDescriptor(project, it, symbol.offset).navigate(true) }
+            },
+            removeSource = { range -> state.removeSource(range); renderCanvas() },
+            showDiffCard = { path -> showSourceBlock(path, null) },
+            openFileAt = { path, line -> openFile(path, line) },
+            showFileLines = { path, lines -> showSourceBlock(path, lines) },
+            removeFileView = { closeFileView() },
+        ),
+        summaryActions = SummaryCanvasActions(
+            summarize = { summarize() },
+            removeSummaries = { state.hideSummaries(); renderCanvas() },
+            traceSummaries = ReviewTraceLauncher(project, scope),
+            markReviewed = state::setReviewed,
+            reviewSummaries = dev.insight.diff.ReviewSummaryLinkLauncher(project, scope),
+            contextSummaries = ReviewContextSummaryLauncher(project, scope) {
+                val snapshot = state.snapshot
+                val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
+                    this.complete ?: ChatSettings.getInstance().createClient()::complete)
+                ChangeSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
+            },
+            deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
+            openNode = { node -> openFile(node.path, node.lines?.first) },
+            showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
+            openLines = { node, lines ->
+                findSourceFile(project, node.path, node.file?.absolutePath)?.let { openHighlightedLines(project, it, lines.after) }
+            },
+            explainNode = { node -> explain(node) },
+            chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
+        ),
+        topicActions = TopicCanvasActions(
+            generateTopics = { if (canSummarize) session.send("/topics") },
+            fillTopicSummaries = { if (canSummarize) session.send("/topic-summaries") },
+            removeTopics = { state.hideTopics(); renderCanvas() },
+            saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
+        ),
     )
 
     /** The file shown in File view, its structure once analyzed or why it could not be, and the analysis in progress. */
@@ -587,8 +597,8 @@ internal class CodeReviewTab(
     }
 
     private fun renderCanvas() {
-        canvas.showNotes(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
-            explanation = explanations.result)
+        canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
+            explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
     }
 
@@ -734,7 +744,7 @@ internal class CodeReviewTab(
         state.update(CodeSnapshot.empty())
         state.clearNotes()
         state.refreshing = true
-        canvas.showNotes(emptyList())
+        canvas.showNotes(CanvasState(emptyList()))
         canvas.removeAll()
         removeAll()
     }

@@ -5,7 +5,6 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ui.popup.IconButton
-import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.ui.ClientProperty
@@ -13,7 +12,6 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.panels.VerticalLayout
@@ -35,70 +33,36 @@ import kotlin.math.roundToInt
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 
-/** The word changes of [scope], memoized while the unscoped changes stay [all]. */
-private data class ScopedWords(val all: WordChanges, val scope: WordScope, val words: WordChanges)
-
 /** Review artifacts, each in its own normally scrollable tab. */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
     private val remove: (DiffNote) -> Unit,
-    private val openSymbol: (DiffSymbol) -> Unit = {},
-    private val removeSource: (DiffSourceRange) -> Unit = {},
-    private val showDiffCard: (String) -> Unit = {},
-    private val removeDiff: (String) -> Unit = {},
     private val project: Project? = null,
-    private val removeFlows: () -> Unit = {},
-    private val summarize: () -> Unit = {},
-    private val generateTopics: () -> Unit = {},
-    private val fillTopicSummaries: () -> Unit = {},
-    private val removeTopics: () -> Unit = {},
-    private val removeSummaries: () -> Unit = {},
-    /** Summary prescoring and search use the Decisions API through this launcher. */
-    private val traceSummaries: SummaryTraceLauncher? = null,
-    /** The words of the canvas; a diff review by default. */
     private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
-    /** Open the file of a summary node (a part opens at its first line). Null opens the node's file by path like [open]. */
-    openNode: ((SummaryNode) -> Unit)? = null,
-    /** Put a summary node's source on the canvas. Null shows the node's file by path like [showDiffCard]. */
-    showNode: ((SummaryNode) -> Unit)? = null,
-    /** Open a file or part at the lines a traced word of its summary refers to, highlighted. Null opens the node like [openNode]. */
-    openLines: ((SummaryNode, LineTrace) -> Unit)? = null,
-    /** File view: open a file at a line, put lines of the viewed file on the canvas, and close the view. */
-    private val openFileAt: (String, Int?) -> Unit = { path, _ -> open(path) },
-    private val showFileLines: (String, IntRange) -> Unit = { path, _ -> showDiffCard(path) },
-    private val removeFileView: () -> Unit = {},
-    private val contextSummaries: ContextSummaryLauncher? = null,
-    private val deleteOriginalSummaries: (() -> Unit)? = null,
-    private val openWholeFile: ((ReviewFile) -> Unit)? = null,
-    private val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
-    private val removeWords: () -> Unit = {},
-    private val removeDiffOverview: () -> Unit = {},
-    private val removeSemantic: () -> Unit = {},
-    /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
-    private val explainNode: ((SummaryNode) -> Unit)? = null,
-    /** Open a chat on an entry with its displayed hierarchy and summary version; null hides To Chat. */
-    private val chatNode: ((SummaryNode, ChangeSummaries) -> Unit)? = null,
     private val reviewed: ReviewedFiles = ReviewedFiles(),
-    private val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
-    private val reviewSummaries: SummaryReviewLauncher? = null,
-    /** Saves what a fill or resummarization of part of the topic hierarchy has written; null hides those entry actions. */
-    private val saveTopicSummaries: ((ChangeSummaries, Set<Int>) -> Unit)? = null,
+    private val sourceActions: SourceCanvasActions = SourceCanvasActions(),
+    private val summaryActions: SummaryCanvasActions = SummaryCanvasActions(),
+    private val topicActions: TopicCanvasActions = TopicCanvasActions(),
+    private val metricActions: MetricCardActions = MetricCardActions(),
 ) : JPanel(BorderLayout()), Disposable {
-    private val openSummaryNode: (SummaryNode) -> Unit = openNode ?: { node -> open(node.path) }
-    private val showSummaryNode: (SummaryNode) -> Unit = showNode ?: { node -> showDiffCard(node.path) }
-    private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = openLines ?: { node, _ -> openSummaryNode(node) }
+    private val openFileAt: (String, Int?) -> Unit = sourceActions.openFileAt ?: { path, _ -> open(path) }
+    private val showFileLines: (String, IntRange) -> Unit = sourceActions.showFileLines ?: { path, _ -> sourceActions.showDiffCard(path) }
+    private val openSummaryNode: (SummaryNode) -> Unit = summaryActions.openNode ?: { node -> open(node.path) }
+    private val showSummaryNode: (SummaryNode) -> Unit = summaryActions.showNode ?: { node -> sourceActions.showDiffCard(node.path) }
+    private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = summaryActions.openLines ?: { node, _ -> openSummaryNode(node) }
     internal val tabs = JTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
     private val pages = mutableMapOf<CanvasTabKey, JScrollPane>()
     private val cards = mutableMapOf<CanvasTabKey, JPanel>()
     private val stickyTargets = mutableMapOf<CanvasTabKey, JComponent>()
 
-    private var notes = emptyList<DiffNote>()
-    private var sources = emptyList<DiffSourceBlock>()
-    private var diffs = emptyList<ReviewFile>()
-    private var flows: ChangeFlows? = null
+    private var state = CanvasState()
+    private val notes: List<DiffNote> get() = state.notes
+    private val sources: List<DiffSourceBlock> get() = state.sources
+    private val diffs: List<ReviewFile> get() = state.diffs
+    private val flows: ChangeFlows? get() = state.flows
     internal val flowsView = ChangeFlowsViewState()
     private var flowsScroll = 0
-    private var topics: TopicsCard? = null
+    private val topics: TopicsCard? get() = state.topics
     internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
     private var topicsScroll = 0
     /** A fill or resummarization of part of the topic hierarchy; one at a time, saved into the review as it goes. */
@@ -106,46 +70,40 @@ internal class NoteCanvas(
     private var topicSummaryStatus: String? = null
     internal val topicSummariesRunning: Boolean get() = topicSummaryJob != null
     private val summaryGenerationRunning: Boolean get() = topicSummariesRunning || summaryVersions.any { it.running }
-    private var summaries: SummariesCard? = null
+    private val summaries: SummariesCard? get() = state.summaries
     private val summaryVersions = mutableListOf<ContextSummaryVersion>()
     private var summaryVersionCount = 0
     internal val summariesView = ChangeSummariesViewState().also {
         it.mode = vocabulary.summariesMode
         it.visibleOnly = vocabulary.scoreVisibleOnly
     }
-    private var fileView: FileViewCard? = null
-    private var fileViewScroll = 0
-    private var words: WordChanges? = null
-    private var wordFiles = emptyList<ReviewFile>()
-    /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
-    private var wordChart: WordChangeChart? = null
-    private var diffOverview: WordChanges? = null
-    private var diffOverviewChart: DiffOverviewChart? = null
-    private var semantic: SemanticResult? = null
-    private var explanation: ExplainResult? = null
-    /** The selected view and plotted metric of the semantic changes card, kept across rebuilds. */
-    private var semanticMode = SemanticMode.METRICS
-    private var semanticMetric = Metric.CYCLOMATIC
-    private var semanticChart: SemanticComplexityChart? = null
-    private var constructChart: Pair<SemanticChanges, WordChangeChart>? = null
-    /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
-    private var wordScope = WordScope("", true, 0)
-    /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
-    private var scopedWords: ScopedWords? = null
+    private val fileView: FileViewCard? get() = state.fileView
+    private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
+        openFileAt = openFileAt, showFileLines = showFileLines, close = sourceActions.removeFileView,
+        summarize = summaryActions.summarize, generateTopics = topicActions.generateTopics,
+    ))
+    private val words: WordChanges? get() = state.words
+    private val diffOverview: WordChanges? get() = state.diffOverview
+    private val semantic: SemanticResult? get() = state.semantic
+    private val explanation: ExplainResult? get() = state.explanation
+    private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
+        open = open, openDirectoryDiff = summaryActions.openDirectoryDiff, removeWords = metricActions.removeWords,
+        removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic, refresh = ::refreshCard,
+    ))
 
     /**
      * The summaries tab, or a search tab over the same summaries: its own view and searches, reading position and search
      * field.
      */
     private inner class SummariesTab(val key: CanvasTabKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
-        val review = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(key) }
+        val review = SummaryReviewSession(reviewed, summaryActions.reviewSummaries) { restyleReview(key) }
         var scroll = 0
         /** The sideways reading position of the split view's one-line summaries. */
         var scrollX = 0
         var treeScrollX = 0
         var treeWidth: Int? = null
         var version: Int? = null
-        val trace = SummaryTraceSession(traceSummaries, view, { reading(this) }, openSummaryLines,
+        val trace = SummaryTraceSession(summaryActions.traceSummaries, view, { reading(this) }, openSummaryLines,
             update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
         /** Kept across rebuilds of the card, so typing never loses focus or caret. */
         val searchField = SearchTextField(false).apply {
@@ -203,13 +161,13 @@ internal class NoteCanvas(
                 }
             })
         }
-    private val topicsTrace = SummaryTraceSession(traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
+    private val topicsTrace = SummaryTraceSession(summaryActions.traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(CanvasTabKey.Topics) }) { refreshCard(CanvasTabKey.Topics) }
-    private val topicsReview = SummaryReviewSession(reviewed, reviewSummaries) { restyleReview(CanvasTabKey.Topics) }
+    private val topicsReview = SummaryReviewSession(reviewed, summaryActions.reviewSummaries) { restyleReview(CanvasTabKey.Topics) }
 
     /** Marks restyle the live cards; rebuilding them would reset both viewports and make the reading position jump. */
     private fun toggleReviewed(node: SummaryNode, value: Boolean) {
-        if (markReviewed != null) markReviewed.invoke(node, value) else reviewed.set(node.files, value)
+        if (summaryActions.markReviewed != null) summaryActions.markReviewed.invoke(node, value) else reviewed.set(node.files, value)
         summaryTabs().forEach { updateReview(it.key, it.review, summaries?.summaries) }
         updateReview(CanvasTabKey.Topics, topicsReview, topics?.reading)
     }
@@ -238,38 +196,16 @@ internal class NoteCanvas(
         add(tabs, BorderLayout.CENTER)
     }
 
-    fun showNotes(
-        notes: List<DiffNote>,
-        sources: List<DiffSourceBlock> = emptyList(),
-        diffs: List<ReviewFile> = emptyList(),
-        flows: ChangeFlows? = null,
-        summaries: SummariesCard? = null,
-        topics: TopicsCard? = null,
-        fileView: FileViewCard? = null,
-        words: WordChanges? = null,
-        wordFiles: List<ReviewFile> = emptyList(),
-        diffOverview: WordChanges? = null,
-        semantic: SemanticResult? = null,
-        explanation: ExplainResult? = null,
-    ) {
-        this.explanation = explanation
-        this.words = words
-        this.diffOverview = diffOverview
-        this.semantic = semantic
-        this.wordFiles = wordFiles
-        if (topics == null) topicsScroll = 0
-        if (fileView?.file?.path != this.fileView?.file?.path) fileViewScroll = 0
-        this.fileView = fileView
-        this.topics = topics
+    fun showNotes(state: CanvasState) {
+        if (state.topics == null) topicsScroll = 0
+        fileViewCardBuilder.update(state.fileView)
+        if (state.flows?.graph !== flows?.graph) flowsScroll = 0
+        this.state = state
+        metricsCards.update(state.wordFiles, state.semantic)
+        val summaries = state.summaries
         if (topics == null) topicsReview.stop()
         topics?.let { topicsTrace.retain(it.reading) } ?: topicsTrace.stop()
-        this.notes = notes
-        this.sources = sources
-        this.diffs = diffs
-        if (flows?.graph !== this.flows?.graph) flowsScroll = 0
-        this.flows = flows
         flowsView.reset(flows)
-        this.summaries = summaries
         if (summaries == null) {
             summaryTabs().forEach { it.trace.stop(); it.review.stop() }
             searchTabs.clear()
@@ -294,8 +230,8 @@ internal class NoteCanvas(
         val summaryCards = summaries?.let { content -> summaryTabs().map { it.key to summariesCard(it, content) } }.orEmpty()
         val built = listOfNotNull(explanation?.let { CanvasTabKey.Explanation to explanationCard(it) },
             topics?.let { CanvasTabKey.Topics to topicsCard(it) }, flows?.let { CanvasTabKey.Flows to flowsCard(it) },
-            words?.let { CanvasTabKey.Words to wordsCard(it) }, diffOverview?.let { CanvasTabKey.DiffOverview to wordsCard(it, overview = true) },
-            semantic?.let { CanvasTabKey.Semantic to semanticCard(it) }).toMap() +
+            words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) }, diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
+            semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) }).toMap() +
             summaryCards +
             listOfNotNull(fileView?.let { CanvasTabKey.FileView to fileViewCard(it) }, flow?.let { CanvasTabKey.SymbolFlow to flowCard(it) }).toMap() +
             notes.associate { it.key to card(it) } +
@@ -425,7 +361,7 @@ internal class NoteCanvas(
         )
         when (key) {
             CanvasTabKey.Topics -> topicsScroll = target.y
-            CanvasTabKey.FileView -> fileViewScroll = target.y
+            CanvasTabKey.FileView -> fileViewCardBuilder.scroll = target.y
             else -> summaryTab(key)?.scroll = target.y
         }
         SwingUtilities.invokeLater {
@@ -559,7 +495,7 @@ internal class NoteCanvas(
                         addActionListener { flowsView.mode = mode; flowsScroll = 0; refreshFlows() }
                     })
                 }
-                add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFlows() }
+                add(InplaceButton(IconButton("Remove change flows", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { sourceActions.removeFlows() }
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
@@ -567,12 +503,12 @@ internal class NoteCanvas(
             toggle = { key -> flowsView.toggle(key); refreshFlows() },
             focus = { node -> flowsView.focus(flows, node); refreshFlows() },
             openNode = { node ->
-                if (node.offset != null) openSymbol(DiffSymbol(node.path, node.absolutePath, node.name, node.qualifiedName,
+                if (node.offset != null) sourceActions.openSymbol(DiffSymbol(node.path, node.absolutePath, node.name, node.qualifiedName,
                     dev.insight.callgraph.SymbolKind.FUNCTION, node.line, node.offset))
                 else open(node.path)
             },
             openCaller = { caller ->
-                if (caller.absolutePath != null && caller.offset != null) openSymbol(DiffSymbol(caller.path, caller.absolutePath,
+                if (caller.absolutePath != null && caller.offset != null) sourceActions.openSymbol(DiffSymbol(caller.path, caller.absolutePath,
                     caller.qualifiedName.substringAfterLast('.'), caller.qualifiedName, dev.insight.callgraph.SymbolKind.FUNCTION, caller.line, caller.offset))
             },
             openFile = open,
@@ -599,179 +535,7 @@ internal class NoteCanvas(
         return card
     }
 
-    /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
-    private fun wordsCard(all: WordChanges, overview: Boolean = false): JPanel {
-        val width = cardWidth(WORDS_WIDTH)
-        val scopes = wordScopes(wordFiles)
-        wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
-        val words = if (wordScope.path.isEmpty()) all
-            else scopedWords?.takeIf { it.all === all && it.scope == wordScope }?.words
-                ?: wordChanges(wordFiles.filter { wordScope.contains(it.path) }).also { scopedWords = ScopedWords(all, wordScope, it) }
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(if (overview) "Diff overview · Deleted and added lines"
-                else "Word changes · ${words.words.size} most frequent words of the changed lines").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
-                    (if (overview) "Compact word lists fill opposite corners, longest first. The middle chart compares deleted and added line counts, including blank lines. "
-                    else "A word's position compares its share of removed and added words, its size how often it occurs. ") +
-                    "Click a word to open its files' diffs."
-            }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
-                isOpaque = false
-                add(wordScopeButton(scopes))
-                add(InplaceButton(IconButton(if (overview) "Remove diff overview" else "Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                    if (overview) removeDiffOverview() else removeWords()
-                }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
-        }
-        val body = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(if (words.words.isEmpty() && !overview) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
-                else if (overview) diffOverviewChart?.takeIf { it.changes === words }
-                    ?: DiffOverviewChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { diffOverviewChart = it }
-                else wordChart?.takeIf { it.changes === words }
-                    ?: WordChangeChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { wordChart = it }, BorderLayout.CENTER)
-        }
-        return JPanel(BorderLayout()).apply {
-            background = UIUtil.getListBackground(); border = cardBorder(false)
-            add(header, BorderLayout.NORTH)
-            add(body, BorderLayout.CENTER)
-        }
-    }
-
-    /**
-     * Semantic metrics counted from both sides of the changed files, as a delta table, a scatter of function complexity
-     * or a cloud of the constructs added and removed. The mode and the plotted metric survive rebuilds.
-     */
-    private fun semanticCard(result: SemanticResult): JPanel {
-        val width = cardWidth(WORDS_WIDTH)
-        val changes = (result as? SemanticResult.Ready)?.changes
-        val skipped = changes?.files?.filter { it.skipped != null }.orEmpty()
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                if (changes != null) {
-                    val group = ButtonGroup()
-                    SemanticMode.entries.forEach { mode ->
-                        add(JToggleButton(mode.label, mode == semanticMode).apply {
-                            name = "semantic-mode:${mode.name}"
-                            font = scaledFont(JBFont.small())
-                            toolTipText = when (mode) {
-                                SemanticMode.METRICS -> "Totals of each metric before and after the change; click a row to open the diffs of its files"
-                                SemanticMode.COMPLEXITY -> "Each function's value before and after the change; click a point to open its diff"
-                                SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
-                            }
-                            group.add(this)
-                            addActionListener { if (semanticMode != mode) { semanticMode = mode; refreshCard(CanvasTabKey.Semantic) } }
-                        })
-                    }
-                } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-            }, BorderLayout.WEST)
-            add(JLabel(if (skipped.isEmpty()) "" else "${files(skipped.size)} skipped").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                horizontalAlignment = SwingConstants.CENTER
-                name = "semantic-skipped"
-                toolTipText = if (skipped.isEmpty()) null else "<html>Not counted:<br>" + skipped.take(20).joinToString("<br>") {
-                    "${escapeHtml(it.path)} · ${escapeHtml(it.skipped.orEmpty())}"
-                } + (if (skipped.size > 20) "<br>… ${skipped.size - 20} more" else "") + "</html>"
-            }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
-                isOpaque = false
-                if (changes != null && semanticMode == SemanticMode.COMPLEXITY) add(JComboBox(COMPLEXITY_METRICS.toTypedArray()).apply {
-                    name = "semantic-metric"
-                    font = scaledFont(JBFont.small())
-                    renderer = SimpleListCellRenderer.create("") { it.label }
-                    toolTipText = "The metric plotted for each function"
-                    selectedItem = semanticMetric
-                    addActionListener { (selectedItem as? Metric)?.takeIf { it != semanticMetric }?.let { semanticMetric = it; refreshCard(CanvasTabKey.Semantic) } }
-                })
-                add(InplaceButton(IconButton("Remove semantic changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSemantic() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
-        }
-        val chartWidth = width - scaled(2 * PADDING + 4)
-        fun note(text: String) = JLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }
-        val body = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(when (result) {
-                SemanticResult.Counting -> note("Counting…").apply { name = "semantic-counting" }
-                is SemanticResult.Failed -> note("Could not count semantic changes: ${result.message}").apply {
-                    name = "semantic-error"; foreground = JBColor.RED
-                }
-                is SemanticResult.Ready -> when (semanticMode) {
-                    SemanticMode.METRICS -> SemanticMetricsTable(result.changes, chartWidth, ::openMetricDiff).let { table ->
-                        if (table.rows().isEmpty()) note("No metric differs.") else scrollBody(table, chartWidth, scaled(WORDS_HEIGHT))
-                    }
-                    SemanticMode.COMPLEXITY ->
-                        (semanticChart?.takeIf { it.changes === result.changes && it.metric == semanticMetric }
-                            ?: SemanticComplexityChart(result.changes, semanticMetric, chartWidth, scaled(WORDS_HEIGHT), ::openDeclarationDiff)
-                                .also { semanticChart = it }).let { if (it.hasFunctions()) it else note("No functions in the changed files.") }
-                    SemanticMode.CONSTRUCTS -> constructChart?.takeIf { it.first === result.changes }?.second
-                        ?: constructChanges(result.changes).let { constructs ->
-                            if (constructs.words.isEmpty()) note("No construct was added or removed.")
-                            else WordChangeChart(constructs, chartWidth, scaled(WORDS_HEIGHT), ::openWordDiff).also { constructChart = result.changes to it }
-                        }
-                }
-            }, BorderLayout.CENTER)
-        }
-        return JPanel(BorderLayout()).apply {
-            background = UIUtil.getListBackground(); border = cardBorder(false)
-            add(header, BorderLayout.NORTH)
-            add(body, BorderLayout.CENTER)
-        }
-    }
-
-    private fun openMetricDiff(metric: Metric) {
-        val changes = (semantic as? SemanticResult.Ready)?.changes ?: return
-        openPaths(changes.filesChanging(metric).map { it.path }.toSet())
-    }
-
-    private fun openDeclarationDiff(declaration: DeclarationMetrics) { open(declaration.path) }
-
-    private fun openWordDiff(word: WordChange) { openPaths(word.paths) }
-
-    private fun openPaths(paths: Set<String>) {
-        val files = wordFiles.filter { it.path in paths }
-        val directory = openDirectoryDiff
-        when {
-            files.size == 1 || (directory == null && files.isNotEmpty()) -> open(files.first().path)
-            directory != null && files.isNotEmpty() -> directory(files)
-        }
-    }
-
-    private fun escapeHtml(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    /** Limits the chart to one changed file or directory, chosen from a list that typing filters. */
-    private fun wordScopeButton(scopes: List<WordScope>): JButton = JButton(wordScope.toString(), AllIcons.General.ArrowDown).apply {
-        name = "word-scope"
-        horizontalTextPosition = SwingConstants.LEFT
-        font = scaledFont(JBFont.small())
-        toolTipText = "Count the words of one changed file or directory · type in the list to filter it"
-        addActionListener {
-            JBPopupFactory.getInstance().createPopupChooserBuilder(scopes)
-                .setTitle("Word Changes Scope")
-                .setNamerForFiltering { if (it.path.isEmpty()) "All changed files" else it.path }
-                .setSelectedValue(wordScope, true)
-                .setMovable(true)
-                .setResizable(true)
-                .setItemChosenCallback(::chooseWordScope)
-                .createPopup().showUnderneathOf(this)
-        }
-    }
-
-    internal fun chooseWordScope(scope: WordScope) {
-        if (scope == wordScope) return
-        wordScope = scope
-        refreshCard(CanvasTabKey.Words)
-        refreshCard(CanvasTabKey.DiffOverview)
-    }
+    internal fun chooseWordScope(scope: WordScope) = metricsCards.chooseWordScope(scope)
 
     private fun refreshFlows() {
         val flows = flows ?: return
@@ -833,7 +597,7 @@ internal class NoteCanvas(
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && topics.files.isNotEmpty()
                     toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
-                    addActionListener { generateTopics() }
+                    addActionListener { topicActions.generateTopics() }
                 })
                 if (topicsTrace.available) add(scoreButton("topics-score", topicsView, content.reading, topicsTrace))
                 if (hierarchy) add(JButton("Fill summaries").apply {
@@ -841,7 +605,7 @@ internal class NoteCanvas(
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && !summaryGenerationRunning && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
                     toolTipText = "Fill missing summaries for every topic and subtopic, including folded topics"
-                    addActionListener { fillTopicSummaries() }
+                    addActionListener { topicActions.fillTopicSummaries() }
                 })
                 val summaries = content.summaries
                 if (summaries.total > 0 && !summaries.complete) add(JButton(if (summaries.count == 0) "Summarize" else "Continue summaries").apply {
@@ -849,16 +613,16 @@ internal class NoteCanvas(
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun
                     toolTipText = vocabulary.topicsSummarizeTooltip
-                    addActionListener { summarize() }
+                    addActionListener { summaryActions.summarize() }
                 })
-                add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeTopics() }
+                add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() }
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            val actions = ChangeTopicActions(openFile = open, showDiffCard = showDiffCard, refresh = { refreshCard(CanvasTabKey.Topics) },
+            val actions = ChangeTopicActions(openFile = open, showDiffCard = sourceActions.showDiffCard, refresh = { refreshCard(CanvasTabKey.Topics) },
                 trace = topicsTrace::trace, openNode = openSummaryNode, showNode = showSummaryNode,
                 review = topicsReview.presentation(content.reading, ::toggleReviewed),
                 entryMenu = topicEntryMenu(content))
@@ -941,11 +705,11 @@ internal class NoteCanvas(
     /** Follows topic assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
     fun updateTopics(content: TopicsCard?) {
         if ((content == null) != (topics == null) || (content != null && cards[CanvasTabKey.Topics] == null)) {
-            showNotes(notes, sources, diffs, flows, summaries, content, fileView, explanation = explanation)
+            showNotes(state.copy(topics = content))
             return
         }
         if (content == topics) return
-        topics = content
+        state = state.copy(topics = content)
         content?.let { topicsTrace.retain(it.reading) }
         refreshTopics()
     }
@@ -1046,11 +810,11 @@ internal class NoteCanvas(
                     isEnabled = content.canRun && summaries.total > 0 && !summaryGenerationRunning
                     toolTipText = if (summaries.complete) "Write every summary again (/summaries)"
                         else vocabulary.summarizeTooltip
-                    addActionListener { summarize() }
+                    addActionListener { summaryActions.summarize() }
                 })
                 add(if (tab.search) InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { closeSearchTab(tab) }
                         .apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() }
-                    else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeSummaries() }
+                    else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { summaryActions.removeSummaries() }
                         .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.EAST)
         }
@@ -1058,11 +822,11 @@ internal class NoteCanvas(
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
             select = { identity -> summariesView.select(identity); refreshSummaries(tab) },
             openFile = open,
-            showDiffCard = showDiffCard,
+            showDiffCard = sourceActions.showDiffCard,
             openNode = openSummaryNode,
             showNode = showSummaryNode,
-            openWholeFile = openWholeFile,
-            openDirectory = openDirectoryDiff?.let { open ->
+            openWholeFile = summaryActions.openWholeFile,
+            openDirectory = summaryActions.openDirectoryDiff?.let { open ->
                 val files = tree.nodes.mapNotNull { (it.file as? ReviewFile)?.let { file -> file.path to file } }.toMap()
                 val navigate: (SummaryNode) -> Unit = { node -> open(node.files.mapNotNull(files::get)) }
                 navigate
@@ -1072,9 +836,9 @@ internal class NoteCanvas(
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
             follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
             score = summariesTrace::prescore.takeIf { summariesTrace.available },
-            explain = explainNode,
-            toChat = chatNode?.let { chat -> { node -> chat(node, content.summaries) } },
-            resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { contextSummaries != null },
+            explain = summaryActions.explainNode,
+            toChat = summaryActions.chatNode?.let { chat -> { node -> chat(node, content.summaries) } },
+            resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { summaryActions.contextSummaries != null },
             resummaryEnabled = content.canRun && !summaryGenerationRunning,
             review = tab.review.presentation(content.summaries, ::toggleReviewed),
         )
@@ -1118,7 +882,7 @@ internal class NoteCanvas(
                 })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        if (summariesTrace.available || reviewSummaries != null) card.add(JPanel(VerticalLayout(scaled(4))).apply {
+        if (summariesTrace.available || summaryActions.reviewSummaries != null) card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
             traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true,
@@ -1168,7 +932,7 @@ internal class NoteCanvas(
 
     /** A fixed-height line, so linking starting or finishing never moves the summaries. */
     private fun reviewStatus(session: SummaryReviewSession): JComponent? {
-        if (reviewSummaries == null) return null
+        if (summaryActions.reviewSummaries == null) return null
         fun message() = when {
             session.running -> "Linking reviewed summary text…"
             session.error != null -> "Review links unavailable: ${session.error}. Toggle Reviewed to retry."
@@ -1202,10 +966,10 @@ internal class NoteCanvas(
             })
             add(JButton("Delete version").apply {
                 name = "delete-summary-version"
-                isEnabled = version(tab) != null || deleteOriginalSummaries != null && content.summaries.count > 0
+                isEnabled = version(tab) != null || summaryActions.deleteOriginalSummaries != null && content.summaries.count > 0
                 addActionListener {
                     val selected = version(tab)
-                    if (selected == null) deleteOriginalSummaries?.invoke()
+                    if (selected == null) summaryActions.deleteOriginalSummaries?.invoke()
                     else {
                         selected.job?.cancel()
                         summaryVersions.remove(selected)
@@ -1223,7 +987,7 @@ internal class NoteCanvas(
             val pendingSearch = tab.view.tracing?.let { it.searchRequested && it.trace == null && it.error == null } == true
             add(JButton("Resummarize with context").apply {
                 name = "resummarize-with-context"
-                isEnabled = contextSummaries != null && content.canRun && request != null &&
+                isEnabled = summaryActions.contextSummaries != null && content.canRun && request != null &&
                     !pendingSearch && !summaryGenerationRunning
                 toolTipText = request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
                     ?: "Search related summaries to choose a query and the summaries to rewrite"
@@ -1285,7 +1049,7 @@ internal class NoteCanvas(
     }
 
     private fun resummarize(tab: SummariesTab, node: SummaryNode, recursive: Boolean) {
-        if (contextSummaries == null || summaries?.canRun != true || summaryGenerationRunning) return
+        if (summaryActions.contextSummaries == null || summaries?.canRun != true || summaryGenerationRunning) return
         val current = reading(tab) ?: return
         val instructions = requestResummaryInstructions(node, recursive, ResummaryDestination.VERSION) ?: return
         startContextSummaries(tab, resummaryRequest(current, node, recursive, instructions))
@@ -1296,8 +1060,8 @@ internal class NoteCanvas(
      * rewrites topics only: file summaries are shared with the Summaries card, where Resummarize opens them as a version.
      */
     private fun topicEntryMenu(content: TopicsCard): ((String) -> JPopupMenu)? {
-        val canSummarize = contextSummaries != null && saveTopicSummaries != null
-        if (!canSummarize && chatNode == null) return null
+        val canSummarize = summaryActions.contextSummaries != null && topicActions.saveTopicSummaries != null
+        if (!canSummarize && summaryActions.chatNode == null) return null
         val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
         val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
         return { identity ->
@@ -1310,7 +1074,7 @@ internal class NoteCanvas(
                     toolTipText = tooltip
                     addActionListener { action() }
                 })
-                chatNode?.let { chat ->
+                summaryActions.chatNode?.let { chat ->
                     if (node.files.isNotEmpty()) item("To Chat", true, "Chat about this entry in a new tab") {
                         chat(node, content.reading)
                     }
@@ -1328,8 +1092,8 @@ internal class NoteCanvas(
 
     /** Fills the missing summaries beneath [identity] when [recursive] is null, else regenerates it, saving into the review. */
     private fun summarizeTopic(identity: String, recursive: Boolean?) {
-        val launcher = contextSummaries ?: return
-        val save = saveTopicSummaries ?: return
+        val launcher = summaryActions.contextSummaries ?: return
+        val save = topicActions.saveTopicSummaries ?: return
         val content = topics ?: return
         if (!content.canRun || summaryGenerationRunning) return
         val seeded = seedTopicSummaries(content.topicSummaries, content.summaries)
@@ -1363,7 +1127,7 @@ internal class NoteCanvas(
     }
 
     private fun startContextSummaries(tab: SummariesTab, explicit: ContextSummaryRequest? = null) {
-        val launcher = contextSummaries ?: return
+        val launcher = summaryActions.contextSummaries ?: return
         val current = reading(tab) ?: return
         val request = explicit ?: contextSummaryRequest(tab) ?: return
         if (summaries?.canRun != true || summaryGenerationRunning) return
@@ -1467,7 +1231,7 @@ internal class NoteCanvas(
         tab.view.update(content.summaries.tree)
         // Searching first lets the new card show the running query.
         tab.trace.searchContext(context)
-        showNotes(notes, sources, diffs, flows, summaries, topics, fileView, explanation = explanation)
+        showNotes(state)
         focusCard(tab.key)
     }
 
@@ -1475,7 +1239,7 @@ internal class NoteCanvas(
         tab.trace.stop()
         tab.review.stop()
         searchTabs -= tab
-        showNotes(notes, sources, diffs, flows, summaries, topics, fileView, explanation = explanation)
+        showNotes(state)
     }
 
     /** Goes back to the summaries left after the first [count] searches of a search tab; zero shows every summary. */
@@ -1599,11 +1363,11 @@ internal class NoteCanvas(
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
         if ((content == null) != (summaries == null) || cards[CanvasTabKey.Summaries] == null) {
-            showNotes(notes, sources, diffs, flows, content, topics, fileView, explanation = explanation)
+            showNotes(state.copy(summaries = content))
             return
         }
         if (content == summaries) return
-        summaries = content
+        state = state.copy(summaries = content)
         content?.let {
             retainSummaryVersions(it.summaries.tree)
             summaryTabs().forEach { tab -> tab.view.update(it.summaries.tree); tab.trace.retain(reading(tab)!!) }
@@ -1623,86 +1387,19 @@ internal class NoteCanvas(
         }
     }
 
-    /**
-     * One file block by block, each beside the topics and summaries of the files its calls end in; zoom, selection and new
-     * topics or summaries rebuild only this card, in place.
-     */
-    private fun fileViewCard(content: FileViewCard): JPanel {
-        val structure = content.structure
-        val width = DocumentColumnsPanel.defaultWidth(FileStructurePanel.railDepth(content), documentZoom)
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(listOfNotNull("File view · ${content.file.path}", structure?.let {
-                "${it.blocks.size} ${if (it.blocks.size == 1) "block" else "blocks"} · reaches ${files(content.reached().size)}"
-            }).joinToString(" · ")).apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "Blocks, calls and reached files come from resolving the source: each call is followed through the call graph " +
-                    "to the next project file, following local helpers. Hover a source line or topic card for its neighbors' summaries. " +
-                    "Calls are static, not runtime order. Topics and summaries are the assistant's interpretation."
-            }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
-                isOpaque = false
-                if (structure != null) add(documentZoomControls(CanvasTabKey.FileView))
-                if (content.missingTopics > 0) add(JButton("Classify").apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    isEnabled = content.canRun
-                    toolTipText = "${files(content.missingTopics)} reached from this file have no topic yet (/topics)"
-                    addActionListener { generateTopics() }
-                })
-                if (content.missingSummaries > 0) add(JButton("Summarize").apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    isEnabled = content.canRun
-                    toolTipText = "${files(content.missingSummaries)} reached from this file have no summary yet (/summaries)"
-                    addActionListener { summarize() }
-                })
-                add(InplaceButton(IconButton("Close file view", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeFileView() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
-        }
-        val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val body = JPanel(VerticalLayout(scaled(8))).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            val status = when {
-                content.error != null -> content.error
-                structure == null -> "Following the calls of ${content.file.path}…"
-                structure.truncated -> "Some local helper chains reached the analysis limit; neighboring calls may be incomplete."
-                else -> null
-            }
-            status?.let { add(JLabel(it).apply { name = "file-view-status"; font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() }) }
-            if (structure != null) add(FileStructurePanel(content, structure, inner, documentZoom,
-                FileStructureActions(openFile = openFileAt, showLines = showFileLines), vocabulary))
-        }
-        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
-        card.add(header, BorderLayout.NORTH)
-        card.add(JBScrollPane(body).apply {
-            border = null; isOpaque = false; viewport.isOpaque = false
-            // Several neighboring topics may scroll sideways; leave room for that scroll bar.
-            val sideways = if (body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
-            preferredSize = Dimension(width, minOf(body.preferredSize.height + sideways, scaled(MAX_TOPICS_HEIGHT)))
-            verticalScrollBar.unitIncrement = scaled(16)
-            horizontalScrollBar.unitIncrement = scaled(16)
-            if (structure != null) installDocumentWheelZoom(CanvasTabKey.FileView, this)
-            // The viewport has no size yet; restore the reading position after layout.
-            val restore = fileViewScroll
-            verticalScrollBar.addAdjustmentListener { fileViewScroll = it.value }
-            SwingUtilities.invokeLater { verticalScrollBar.value = restore }
-        }, BorderLayout.CENTER)
-        return card
-    }
+    private fun fileViewCard(content: FileViewCard): JPanel = fileViewCardBuilder.card(
+        content, documentZoom, documentZoomControls(CanvasTabKey.FileView),
+    ) { installDocumentWheelZoom(CanvasTabKey.FileView, it) }
 
     /** Follows the analysis, topics, summaries and chat state without rebuilding the other cards. */
     fun updateFileView(content: FileViewCard?) {
         if ((content == null) != (fileView == null) || (content != null && cards[CanvasTabKey.FileView] == null)) {
-            showNotes(notes, sources, diffs, flows, summaries, topics, content, explanation = explanation)
+            showNotes(state.copy(fileView = content))
             return
         }
         if (content == fileView) return
-        if (content?.file?.path != fileView?.file?.path) fileViewScroll = 0
-        fileView = content
+        fileViewCardBuilder.update(content)
+        state = state.copy(fileView = content)
         refreshCard(CanvasTabKey.FileView)
     }
 
@@ -1722,9 +1419,9 @@ internal class NoteCanvas(
         if (key !in cards) return
         val card = when (key) {
             CanvasTabKey.Flows -> flows?.let(::flowsCard)
-            CanvasTabKey.Words -> words?.let { wordsCard(it) }
-            CanvasTabKey.DiffOverview -> diffOverview?.let { wordsCard(it, overview = true) }
-            CanvasTabKey.Semantic -> semantic?.let(::semanticCard)
+            CanvasTabKey.Words -> words?.let { metricsCards.wordsCard(it) }
+            CanvasTabKey.DiffOverview -> diffOverview?.let { metricsCards.wordsCard(it, overview = true) }
+            CanvasTabKey.Semantic -> semantic?.let(metricsCards::semanticCard)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
                 summaryTab(key)?.let { tab -> summaries?.let { summariesCard(tab, it) } }
@@ -1747,7 +1444,7 @@ internal class NoteCanvas(
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
             }, BorderLayout.CENTER)
             add(InplaceButton(IconButton("Remove diff block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                removeDiff(file.path)
+                sourceActions.removeDiff(file.path)
             }.apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
         }
         val editor = diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }
@@ -1774,7 +1471,7 @@ internal class NoteCanvas(
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
             }, BorderLayout.CENTER)
             add(InplaceButton(IconButton("Remove source block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                removeSource(range)
+                sourceActions.removeSource(range)
             }, BorderLayout.EAST)
         }
         val editor = editors.getOrPut(block.key) { DiffSourceEditor(block, project) }
@@ -1816,7 +1513,7 @@ internal class NoteCanvas(
                     font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                     toolTipText = "In-project links resolved from current source when this note was added. Direct links only; no runtime order is implied. Callers are limited to this file."
                 })
-                add(DiffSymbolDiagram(evidence, textWidth, zoom, openSymbol))
+                add(DiffSymbolDiagram(evidence, textWidth, zoom, sourceActions.openSymbol))
             }
             add(JTextArea(note.text).apply {
                 isEditable = false; isOpaque = false; lineWrap = true; wrapStyleWord = true
@@ -1856,7 +1553,7 @@ internal class NoteCanvas(
         val canvasText = vocabulary.showOnCanvas
         if (showDiffButton && canvasText != null) {
             add(InplaceButton(IconButton(canvasText, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) {
-                showDiffCard(path)
+                sourceActions.showDiffCard(path)
             }.apply { cursor = Cursor.getDefaultCursor(); toolTipText = canvasText }, BorderLayout.EAST)
         }
     }
@@ -1897,8 +1594,6 @@ internal class NoteCanvas(
         const val GAP = 20
         const val PADDING = 12
         const val MAX_BODY_HEIGHT = 520
-        const val WORDS_WIDTH = 1100
-        const val WORDS_HEIGHT = 640
         const val SUMMARIES_WIDTH = 840
         const val MAX_SUMMARIES_HEIGHT = 820
         const val MAX_TOPICS_HEIGHT = 900

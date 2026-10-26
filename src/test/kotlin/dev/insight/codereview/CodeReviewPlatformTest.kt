@@ -9,6 +9,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
 import dev.insight.chat.ChatMessage
+import dev.insight.diff.CanvasState
 import dev.insight.diff.ChangeSummaries
 import dev.insight.diff.ChangeSummarizer
 import dev.insight.diff.ChangeTopics
@@ -350,7 +351,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val trace = dev.insight.diff.SummaryTrace(tree.root.identity, text, word, listOf(word), "parsing",
                 listOf(dev.insight.diff.SummaryMatch(app.id, app.identity, 0.9, 1)), 2)
             tab.canvas.summariesView.tracing = dev.insight.diff.SummaryTracing(tree.root.identity, text, word, trace = trace)
-            tab.canvas.showNotes(emptyList(), summaries = dev.insight.diff.SummariesCard(original, false, true))
+            tab.canvas.showNotes(CanvasState(emptyList(), summaries = dev.insight.diff.SummariesCard(original, false, true)))
             descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "resummarize-with-context" }.doClick()
             PlatformTestUtil.waitWithEventsDispatching("The contextual version should finish", {
                 descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
