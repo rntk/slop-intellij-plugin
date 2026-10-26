@@ -2,7 +2,7 @@
 
 Summaries provide a hierarchical guide to a review scope, from an overall view down to individual files and relevant sections. They help readers navigate a large body of source or a code change while keeping the underlying evidence close at hand.
 
-The same summary process describes both the folder hierarchy and an existing topic hierarchy; topic classification happens separately.
+The same summary process describes both the folder hierarchy and an existing topic hierarchy; topic classification happens separately. In the views, a chain of folders that each hold only another folder reads as one entry with one summary; the summary tree itself keeps every folder. Likewise, an open folder holding a single file leaves its row's summary blank, since the file's row repeats it.
 
 File and summary context menus can regenerate one entry or its entire subtree, with optional custom instructions. Results open as a separate summary version for comparison. In the topic hierarchy, entries can likewise fill their missing summaries or regenerate their topics at any level, without waiting for the whole hierarchy; those results are saved in place.
 

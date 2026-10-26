@@ -442,6 +442,30 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }
 
+    fun testOpenFolderWithOneFileLeavesItsSummaryToTheFile() {
+        val tree = buildSummaryTree(files)
+        val summaries = ChangeSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = ChangeSummariesMode.SPLIT }
+        fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
+        fun text(identity: String) = descendants(named("summary:$identity")).filterIsInstance<WrappedSummaryText>().singleOrNull()?.text
+        fun show() {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+            repeat(4) { layoutTree(canvas) }
+        }
+        try {
+            canvas.summariesView.expanded += listOf("root", "directory:src", "directory:src/nested")
+            show()
+            assertNull("the file row below already says it", text("directory:src/nested"))
+            assertEquals("Summary of file:src/nested/b.kt.", text("file:src/nested/b.kt"))
+            assertEquals("folders with several entries keep their summary", "Summary of directory:src.", text("directory:src"))
+            assertEquals(named("summary-tree:directory:src/nested").height, named("summary:directory:src/nested").height)
+
+            canvas.summariesView.expanded -= "directory:src/nested"
+            show()
+            assertEquals("a folded folder shows its summary", "Summary of directory:src/nested.", text("directory:src/nested"))
+        } finally { canvas.dispose() }
+    }
+
     private fun layoutTree(component: Container) {
         component.doLayout()
         component.components.filterIsInstance<Container>().forEach(::layoutTree)

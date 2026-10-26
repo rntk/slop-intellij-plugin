@@ -57,6 +57,13 @@ class ChangeSummaryTree(val nodes: List<SummaryNode>) {
         return node.kind == SummaryKind.DIRECTORY && child.kind == SummaryKind.DIRECTORY && !node.isTopicBranch && !child.isTopicBranch
     }
 
+    /** A folder whose only entry is a file repeats that file's summary; an open folder can leave its summary to the file. */
+    fun holdsOnlyFile(id: Int): Boolean {
+        val node = nodes[id]
+        val child = node.children.singleOrNull()?.let(nodes::get) ?: return false
+        return node.kind == SummaryKind.DIRECTORY && child.kind == SummaryKind.FILE && !node.isTopicBranch
+    }
+
     /** The entry [id] shows as: the last folder of its merged chain, else the node itself. */
     fun shown(id: Int): SummaryNode = generateSequence(nodes[id]) { node -> if (isMerged(node.id)) nodes[node.children.single()] else null }.last()
 

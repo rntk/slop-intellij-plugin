@@ -256,8 +256,11 @@ internal class ChangeSummarySplitPanel(
                 2 -> navigate?.invoke()
             }
         }
+        // An open folder with a single file would repeat the file's summary on the next row, so its cell stays blank.
+        val repeated = open && tree.holdsOnlyFile(node.id) && state.shows(tree[node.children.single()], summaries)
         // Replace each break with one character so tracing and review offsets still refer to the original prose.
-        val text: JComponent = if (summary != null) WrappedSummaryText(
+        val text: JComponent = if (repeated) JLabel(" ").apply { font = font(JBFont.label()).forSummaryText() }
+            else if (summary != null) WrappedSummaryText(
             summary.replace('\n', ' ').replace('\r', ' ').replace('\u2028', ' ').replace('\u2029', ' '), null,
             font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
             if (state.tagsCloud) wordWeights[node.id] else emptyMap(), breakLongWords = state.softWrap).also { area ->
