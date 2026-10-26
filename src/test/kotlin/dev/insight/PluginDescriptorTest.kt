@@ -11,6 +11,17 @@ import javax.xml.parsers.DocumentBuilderFactory
  * `supportsKotlinPluginMode` in the main `plugin.xml`.
  */
 class PluginDescriptorTest {
+    @Test fun `prompt constructor has a separate tool window and Tools menu entry`() {
+        val descriptor = loadDescriptor("plugin.xml")
+        val window = childElements(descriptor).filter { it.tagName == "extensions" }
+            .flatMap { childElements(it) }.single { it.tagName == "toolWindow" && it.getAttribute("id") == "Prompt Constructor" }
+        assertEquals("dev.insight.prompts.PromptConstructorToolWindowFactory", window.getAttribute("factoryClass"))
+        val action = childElements(descriptor).filter { it.tagName == "actions" }
+            .flatMap { childElements(it) }.single { it.getAttribute("id") == "Insight.OpenPromptConstructor" }
+        assertEquals("dev.insight.prompts.OpenPromptConstructorAction", action.getAttribute("class"))
+        assertEquals("ToolsMenu", childElements(action).single().getAttribute("group-id"))
+    }
+
     private fun loadDescriptor(name: String): Element =
         requireNotNull(javaClass.getResource("/META-INF/$name")) { "missing /META-INF/$name" }
             .openStream().use { stream ->
