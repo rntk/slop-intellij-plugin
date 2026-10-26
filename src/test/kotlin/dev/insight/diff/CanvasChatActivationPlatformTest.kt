@@ -48,8 +48,8 @@ class CanvasChatActivationPlatformTest : FileEditorManagerTestCase() {
             val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
             val original = canvas(tabs.selectedInfo!!.component as JPanel)
             assertTrue(manager.isFileOpen(original))
-            panel.javaClass.getDeclaredMethod("openChat", ChatFocus::class.java, Set::class.java)
-                .apply { isAccessible = true }.invoke(panel, ChatFocus("a.kt", listOf("a.kt")), null)
+            val controller = panel.javaClass.getDeclaredField("tabs").apply { isAccessible = true }.get(panel) as ReviewTabsController<*>
+            controller.openChat(ChatFocus("a.kt", listOf("a.kt")), null)
             val chat = canvas(tabs.selectedInfo!!.component as JPanel)
             assertNotSame(original, chat)
             assertFalse("Selecting the focused chat must preserve the original canvas", manager.isFileOpen(chat))

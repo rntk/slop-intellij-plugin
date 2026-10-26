@@ -1,24 +1,16 @@
 package dev.insight.codereview
 
-import dev.insight.chat.ToolInputException
-import dev.insight.review.ReviewCacheSession
 import dev.insight.review.ReviewDiskCache
-import dev.insight.review.ReviewNote
-import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewStateMessages
 import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTabState
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
-import dev.insight.review.ReviewedFiles
-import dev.insight.review.SummaryKind
-import dev.insight.review.SummaryNode
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
-import dev.insight.review.seedTopicSummaries
-import dev.insight.review.targetedEntries
 
 /** The summary tree of code files: folders and files, with the parts of large files beneath them. */
 internal fun codeSummaryTree(files: List<CodeFile>): ReviewSummaryTree =
@@ -33,37 +25,21 @@ private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orE
  * source blocks belong to file contents: an edit drops those of the edited file. Summaries and topics are kept by
  * content-hash keys, so they survive edits elsewhere, refreshes and scope changes; only Regenerate clears them.
  */
-class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
-    private val disk = ReviewCacheSession(cache, "code", paths)
-    val reviewed = ReviewedFiles()
-    fun setReviewed(node: SummaryNode, value: Boolean) {
-        val keys = reviewed.set(node.files, value)
-        disk.saveReviewed(keys, value)
-    }
-    private fun persist() = disk.save(summaries, topics, topicSummaries)
+class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) : ReviewTabState<CodeFile>(
+    "code", paths, cache, ::codeSummaryTree, ::codeTopicSummaryTree, ReviewStateMessages(
+        refreshing = "The code is refreshing. Retry after refresh completes.",
+        changed = "The files changed. Start a new request to review the current code.",
+        notePaths = "Use 1 to 30 file paths in scope.",
+        unknownFile = { "$it is not a file in this review's scope." },
+    ),
+) {
     /** Null follows the whole snapshot; a fixed set of files and folders stays scoped as the snapshot changes. */
-    val scopePaths: Set<String>? = paths?.map { it.trim('/') }?.toSet()
-    var revision = 0
-        private set
-    var refreshing = true
+    override val scopePaths: Set<String>? = paths?.map { it.trim('/') }?.toSet()
     var snapshot = CodeSnapshot.empty()
         private set
-    private val cards = linkedMapOf<ReviewNoteKey, ReviewNote>()
-    val notes: List<ReviewNote> get() = cards.values.toList()
-    private val sourceCards = linkedMapOf<ReviewSourceRange, ReviewSourceBlock>()
-    val sources: List<ReviewSourceBlock> get() = sourceCards.values.toList()
-
-    var summaries = ReviewSummaries(codeSummaryTree(emptyList()))
-        private set
-    /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
-    var summariesVisible = false
-        private set
-    var topics = ReviewTopics(emptyList())
-        private set
-    var topicSummaries = ReviewSummaries(codeTopicSummaryTree(topics))
-        private set
-    var topicsVisible = false
-        private set
+    override val snapshotFiles: List<CodeFile> get() = snapshot.files
+    override fun hasFile(path: String): Boolean = path in snapshot.byPath
+    override fun resolveSource(range: ReviewSourceRange): ReviewSourceBlock = resolveCodeSource(snapshot, range)
 
     /** Whether [path] belongs to this tab: everything without a fixed scope, else a listed file or a file in a listed folder. */
     fun inScope(path: String): Boolean = scopePaths == null || path in scopePaths ||
@@ -78,173 +54,10 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             val old = snapshot.byPath
             val fresh = next.byPath
             fun changed(path: String) = fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
-            cards.entries.removeIf { (_, note) -> note.paths.any(::changed) }
-            sourceCards.entries.removeIf { (range, _) -> changed(range.path) }
-            // Keys hold paths and content hashes only, so unchanged files, parts and folders keep their summaries.
-            summaries = summaries.retainedIn(codeSummaryTree(next.files))
-            topics = topics.retainedIn(next.files)
-            topicSummaries = topicSummaries.retainedIn(codeTopicSummaryTree(topics))
-            // Saved entries are keyed by content, so the scope alone picks the slot; changed files simply miss their keys.
-            disk.load(listOf(next.scope.path, next.scope.entry, next.scope.excludes))
-            disk.restoreReviewed(reviewed, next.files)
-            summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
-            topics = disk.restoreTopics(topics)
-            topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(codeTopicSummaryTree(topics)))
-            revision++
+            // The scope alone picks the cache slot; summaries and topics are never reset by a refresh.
+            applyRevision(next.files, listOf(next.scope.path, next.scope.entry, next.scope.excludes), reset = false, ::changed)
         }
         snapshot = next
         refreshing = false
     }
-
-    fun check(expected: Int) {
-        if (refreshing) throw ToolInputException("The code is refreshing. Retry after refresh completes.")
-        if (expected != revision) throw ToolInputException("The files changed. Start a new request to review the current code.")
-    }
-
-    /** Validates every note before adding any, so a rejected batch leaves the canvas unchanged. */
-    fun addNotes(expected: Int, notes: List<ReviewNote>): List<ReviewNote> {
-        check(expected)
-        if (notes.isEmpty()) throw ToolInputException("Add at least one note.")
-        val known = snapshot.byPath
-        val added = notes.mapIndexed { index, note ->
-            val prefix = if (notes.size > 1) "Note ${index + 1}: " else ""
-            if (note.paths.isEmpty() || note.paths.size > 30) throw ToolInputException("${prefix}Use 1 to 30 file paths in scope.")
-            note.paths.firstOrNull { it !in known }?.let { throw ToolInputException("${prefix}$it is not a file in this review's scope.") }
-            if (note.text.isBlank() || note.text.length > 2000) throw ToolInputException("${prefix}Use a note of 1–2000 characters.")
-            if (note.symbol != null && (note.symbol.isBlank() || note.symbol.length > 500))
-                throw ToolInputException("${prefix}Use a symbol of 1–500 characters.")
-            note.copy(paths = note.paths.distinct().sorted(), text = note.text.trim(), symbol = note.symbol?.trim())
-        }
-        if ((cards.keys + added.map { it.key }).toSet().size > MAX_NOTES) throw ToolInputException("The canvas has reached its $MAX_NOTES-note limit.")
-        added.forEach { cards[it.key] = it }
-        return added
-    }
-
-    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(ReviewNoteKey(paths.distinct().sorted(), symbol)) }
-
-    fun showSource(expected: Int, range: ReviewSourceRange): ReviewSourceBlock {
-        check(expected)
-        val block = resolveCodeSource(snapshot, range)
-        if (block.range !in sourceCards && sourceCards.size >= MAX_SOURCES)
-            throw ToolInputException("The canvas has reached its $MAX_SOURCES-source-block limit.")
-        sourceCards[block.range] = block
-        return block
-    }
-
-    fun removeSource(range: ReviewSourceRange) { sourceCards.remove(range) }
-    fun clearNotes() { cards.clear(); sourceCards.clear(); summariesVisible = false; topicsVisible = false }
-
-    /** Starts /summaries: an incomplete tree is continued, a complete one is written again. */
-    fun startSummaries(expected: Int): ReviewSummaries {
-        check(expected)
-        if (summaries.complete) clearSummaries()
-        summariesVisible = true
-        return summaries
-    }
-
-    fun summarize(expected: Int, entries: Map<Int, String>): ReviewSummaries {
-        check(expected)
-        return summaries.summarize(entries).also { summaries = it; persist() }
-    }
-
-    fun clearSummaries() { summaries = ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
-    fun showSummaries() { summariesVisible = true }
-    fun hideSummaries() { summariesVisible = false }
-
-    /** Starts /topics: an incomplete result is continued, a complete one is generated again. */
-    fun startTopics(): ReviewTopics {
-        if (topics.complete) {
-            topics = ReviewTopics(snapshot.files)
-            topicSummaries = ReviewSummaries(codeTopicSummaryTree(topics))
-            disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
-            persist()
-        }
-        topicsVisible = true
-        return topics
-    }
-
-    fun showTopics() { topicsVisible = true }
-    fun hideTopics() { topicsVisible = false }
-
-    fun assignTopic(expected: Int, path: String, label: String): ReviewTopics {
-        check(expected)
-        return topics.assign(path, label).also {
-            topics = it
-            topicSummaries = topicSummaries.retainedIn(codeTopicSummaryTree(it))
-            persist()
-        }
-    }
-
-    /** Seeds the topic tree with the summaries of the same files and parts before the missing ones are written. */
-    fun startTopicSummaries(expected: Int): ReviewSummaries {
-        check(expected)
-        topicSummaries = seedTopicSummaries(topicSummaries, summaries)
-        persist()
-        return topicSummaries
-    }
-
-    /** Saves topic summaries and shares the file and part summaries among them with the ordinary Summaries tree. */
-    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries {
-        check(expected)
-        topicSummaries = topicSummaries.summarize(entries)
-        val topicTree = topicSummaries.tree
-        val files = HashMap<String, String>()
-        val parts = HashMap<String, String>()
-        for (node in topicTree.nodes) {
-            val text = topicSummaries.text(node.id) ?: continue
-            when (node.kind) {
-                SummaryKind.FILE -> files[node.path] = text
-                SummaryKind.CHUNK -> parts[node.key] = text
-                else -> {}
-            }
-        }
-        val cachedKeys = topicTree.nodes.filter { it.id in topicSummaries.cachedIds }.mapTo(hashSetOf()) { it.key }
-        val cachedFiles = topicTree.nodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
-            .mapTo(hashSetOf()) { it.path }
-        summaries = shareInto(summaries, cached = { node ->
-            if (node.kind == SummaryKind.FILE) node.path in cachedFiles else node.key in cachedKeys
-        }) { node ->
-            when (node.kind) {
-                SummaryKind.FILE -> files[node.path]
-                SummaryKind.CHUNK -> parts[node.key]
-                else -> null
-            }
-        }
-        persist()
-        return topicSummaries
-    }
-
-    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the code changed. */
-    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
-        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
-        return topicSummaries
-    }
-
-
-    private companion object {
-        const val MAX_NOTES = 200
-        const val MAX_SOURCES = 30
-    }
-}
-
-/**
- * Adds the [shared] texts to the missing nodes of [target]. A node with children is added only when all of them are
- * summarized or added too, so the bottom-up rule holds; batches go children first.
- */
-internal fun shareInto(target: ReviewSummaries, cached: (SummaryNode) -> Boolean = { false },
-                       shared: (SummaryNode) -> String?): ReviewSummaries {
-    val tree = target.tree
-    val added = LinkedHashMap<Int, String>()
-    // Pre-order: walking backwards visits children before their parents.
-    for (node in tree.nodes.asReversed()) {
-        if (target.text(node.id) != null) continue
-        val text = shared(node) ?: continue
-        if (node.children.all { target.text(it) != null || it in added }) added[node.id] = text
-    }
-    var result = target
-    added.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
-        val entries = batch.associate { it.key to it.value }
-        result = result.share(entries, entries.keys.filterTo(hashSetOf()) { cached(tree[it]) })
-    }
-    return result
 }

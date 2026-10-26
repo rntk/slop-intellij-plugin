@@ -1,11 +1,8 @@
 package dev.insight.codereview
 
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -13,10 +10,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
-import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
-import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.ChatBackend
 import dev.insight.chat.ChatMessage
 import dev.insight.chat.ChatPanel
@@ -32,24 +26,22 @@ import dev.insight.chat.tracedFileCompletion
 import dev.insight.diff.CanvasState
 import dev.insight.diff.FileStructure
 import dev.insight.diff.FileViewCard
+import dev.insight.diff.NOTES_CHANGED
 import dev.insight.diff.NoteCanvas
 import dev.insight.diff.ReviewContextSummaryLauncher
+import dev.insight.diff.ReviewTab
 import dev.insight.diff.ReviewTraceLauncher
+import dev.insight.diff.SYMBOLS_CHANGED
 import dev.insight.diff.SourceCanvasActions
-import dev.insight.diff.SummariesCard
 import dev.insight.diff.SummaryCanvasActions
 import dev.insight.diff.TopicCanvasActions
-import dev.insight.diff.TopicsCard
 import dev.insight.diff.isSummariesRequest
 import dev.insight.diff.openHighlightedLines
+import dev.insight.diff.readPsiThen
+import dev.insight.diff.withCountProgress
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.review.ChatFocus
-import dev.insight.review.ExplainDialog
-import dev.insight.review.ExplainResults
-import dev.insight.review.ExplainTarget
-import dev.insight.review.ReviewCanvasFile
-import dev.insight.review.ReviewCanvasOwner
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
@@ -66,36 +58,24 @@ import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
 import dev.insight.review.chatFocusPrompt
 import dev.insight.review.current
-import dev.insight.review.explainChartFor
-import dev.insight.review.explainChartPrompt
-import dev.insight.review.explainCommand
-import dev.insight.review.explainRequest
-import dev.insight.review.explainTarget
 import dev.insight.review.isExplainRequest
 import dev.insight.review.isTopicsRequest
-import dev.insight.review.openReviewCanvas
 import dev.insight.review.reviewJson
 import dev.insight.review.seedTopicSummaries
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
-import dev.insight.review.textOf
 import dev.insight.review.topicsReply
-import dev.insight.review.typedExplainTarget
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.SwingUtilities
 import javax.swing.Timer
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
@@ -109,24 +89,16 @@ import kotlinx.coroutines.withContext
  * [complete] replaces the configured model (tests).
  */
 internal class CodeReviewTab(
-    private val project: Project,
+    project: Project,
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     private val openFile: (path: String, line: Int?) -> Unit,
     private val complete: (suspend (CompletionRequest) -> Completion)? = null,
-    /** Pinned to every turn of this tab's chat; see [ChatFocus]. */
-    val focus: ChatFocus? = null,
+    focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
-) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    val state = CodeReviewState(paths, dev.insight.review.ReviewDiskCache.forProject(project))
-    private var disposed = false
-    private val sourcePoints = dev.insight.chat.SourcePoints(project, "Code chat")
-    override val isDisposed: Boolean get() = disposed
-    override val canvasTitle: String get() = ReviewVocabulary.CODE.canvasTitle
-    var onCanvasSelected: () -> Unit = {}
-    override fun canvasSelected() = onCanvasSelected()
+) : ReviewTab<CodeFile, CodeReviewState>(project, CodeReviewState(paths, ReviewDiskCache.forProject(project)), focus,
+    ReviewVocabulary.CODE, "Code chat") {
 
     /** Pipeline runs in progress (EDT). Updates are held from the start of a run until the chat is idle again. */
     private var pipelineRuns = 0
@@ -197,7 +169,6 @@ internal class CodeReviewTab(
     private var fileViewTarget: CodeFile? = null
     private var fileViewRevision = -1
 
-    val canvasFile = ReviewCanvasFile(this)
     private val summariesButton = JButton("Summaries").apply {
         toolTipText = "Read every source file as one document, with file paths and summaries (/summaries)"
     }
@@ -208,8 +179,7 @@ internal class CodeReviewTab(
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
-    private val explanations = ExplainResults()
-    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
+    override val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
         "Ask about ${focus.label}. Its summaries and source are in this chat's context; other project files are read when a " +
             "question needs them." else
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
@@ -236,16 +206,11 @@ internal class CodeReviewTab(
                     val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                     if (!confirm(requests, "topics")) return cancelledReply(requests)
                     val run = pipeline {
-                        reportRawProgress { reporter ->
-                            reporter.text("Classifying files in scope…")
+                        withCountProgress("Classifying files in scope…", "files classified") { onProgress ->
                             ReviewTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
                                 system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
                                 concurrency = CODE_TOPIC_CONCURRENCY)
-                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
-                                    onProgress = { done, total ->
-                                        reporter.details("$done of $total files classified")
-                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                    })
+                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
                         }
                     }
                     return topicsReply(run, empty = "There are no files in scope to classify.")
@@ -261,44 +226,29 @@ internal class CodeReviewTab(
                     if (!confirm(requests, if (topicSummaries) "topic summaries" else "summaries")) return cancelledReply(requests)
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = pipeline {
-                        reportRawProgress { reporter ->
-                            reporter.text("Summarizing the code…")
+                        withCountProgress("Summarizing the code…", "summaries") { onProgress ->
                             ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
                                 .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
-                                    onProgress = { done, total ->
-                                        reporter.details("$done of $total summaries")
-                                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                    })
+                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
                         }
                     }
                     val empty = "There are no files in scope to summarize."
                     return if (topicSummaries) summariesReply(run, empty, TOPIC_SUMMARIES_MISSING) else summariesReply(run, empty)
                 }
-                val files = context.snapshot.files
-                val explain = if (isExplainRequest(question)) withContext(Dispatchers.EDT) { takeExplain(question, files.map { it.path }) } else null
-                if (explain != null && explain.files.isEmpty()) return "There are no files in scope to explain."
-                val chart = explainChartFor(project, explain, messages) { paths -> files.filter { it.path in paths }.map { it.absolutePath } }
-                if (explain != null) withContext(Dispatchers.EDT) { explanations.chartPrepared(chart) }
-                val chartTools = (chart as? ExplainChartResult.Ready)?.chart?.tools.orEmpty()
-                // Only this turn carries the command's instructions; the transcript keeps the command as typed.
-                val request = if (explain == null) messages else messages.dropLast(1) + messages.last().copy(text = explainRequest(explain,
-                    diff = false, (chart as? ExplainChartResult.Ready)?.chart?.functions, (chart as? ExplainChartResult.Unavailable)?.reason))
+                val turn = chatTurn(messages, context.snapshot.files, diff = false) ?: return "There are no files in scope to explain."
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
                 return LlmChatBackend(rawComplete,
-                    chatTools(context) + chartTools,
-                    codeReviewPrompt(scopeName) + (if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt()) +
-                        focusPrompt(context.snapshot, turnFocus),
+                    chatTools(context) + turn.chartTools,
+                    turn.prompt(codeReviewPrompt(scopeName)) + focusPrompt(context.snapshot, turnFocus),
                     maxContextChars = 160_000, maxToolRounds = 100,
                     context = if (turnFocus == null) { { context.overview() } }
                         else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
                     contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)
-                    .reply(request, onToolCall)
+                    .reply(turn.request, onToolCall)
             }
         }
     }
-    /** Shown by the panel's Chat page, so it is not part of this tab's controls. */
-    internal val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
+    override val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
 
     init {
         minimumSize = Dimension(300, 200)
@@ -325,21 +275,8 @@ internal class CodeReviewTab(
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, sourcePoints)
-        Disposer.register(this, session.subscribe {
-            if (!session.busy) applyHeld()
-            updateControls()
-            summariesChanged()
-            if (explanations.update(session.messages, session.busy)) {
-                renderCanvas()
-                if (explanations.result != null) showCanvas { canvas.focusExplanation() }
-            }
-        })
+        Disposer.register(this, followSession(before = { if (!session.busy) applyHeld() }, updateControls = ::updateControls))
         updateControls()
-    }
-
-    fun openCanvas(focus: Boolean = false) {
-        if (disposed) return
-        openReviewCanvas(project, canvasFile, focus)
     }
 
     /** Blocks the tools until the next update; [stop] (a new scope or an explicit refresh) also ends a held run. */
@@ -409,56 +346,6 @@ internal class CodeReviewTab(
     private fun cancelledReply(requests: Int) =
         "Cancelled: this run needs about $requests model requests. Choose a smaller folder in the Code Review panel, or start it again to confirm."
 
-    fun highlight(paths: Set<String>) { canvas.highlight(paths) }
-
-    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
-        state.snapshot.files.isNotEmpty()
-
-    private fun summarize() { if (canSummarize) session.send("/summaries") }
-
-    /** The target of the /explain command an Explain link sent, until its turn takes it; see [takeExplain]. */
-    private var pendingExplain: Pair<String, ExplainTarget>? = null
-
-    /** Asks what to focus on, then sends /explain for a summary entry; its files and lines need no parsing of the command. */
-    private fun explain(node: SummaryNode) {
-        if (!canSummarize) return
-        val dialog = ExplainDialog(project, node.location, state.summaries.textOf(node))
-        if (!dialog.showAndGet() || !canSummarize) return
-        val target = explainTarget(node, state.summaries, dialog)
-        val command = explainCommand(node.location, target.instructions)
-        pendingExplain = command to target
-        session.send(command)
-    }
-
-    /** The pending link target when [question] is its command, else the typed one; limited to the [paths] still in scope (EDT). */
-    private fun takeExplain(question: String, paths: List<String>): ExplainTarget {
-        val pending = pendingExplain?.takeIf { it.first == question.trim() }?.second
-        pendingExplain = null
-        val inScope = paths.toSet()
-        return pending?.let { it.copy(files = it.files.filter(inScope::contains)) } ?: typedExplainTarget(question, state.summaries, paths)
-    }
-
-    /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
-    fun openSummaries() {
-        state.showSummaries()
-        renderCanvas()
-        showCanvas { canvas.focusSummaries() }
-        if (!state.summaries.complete) summarize()
-    }
-
-    fun openTopics() {
-        state.showTopics()
-        renderCanvas()
-        showCanvas { canvas.focusTopics() }
-        if (!state.topics.complete && canSummarize) session.send("/topics")
-    }
-
-    /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
-    private fun showCanvas(focus: () -> Unit) {
-        openCanvas(true)
-        SwingUtilities.invokeLater { if (!disposed) focus() }
-    }
-
     /** Shows up to [CODE_SOURCE_LINES] lines of a file from the start of [lines] (a part) or from its head. */
     private fun showSourceBlock(path: String, lines: IntRange?) {
         val file = state.snapshot.byPath[path] ?: return
@@ -468,14 +355,8 @@ internal class CodeReviewTab(
         showCanvas { canvas.focusSource(block.range) }
     }
 
-    private fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
-
-    private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
-
-    /** The topics card shows the file summaries too, so it follows every summary and chat update. */
-    private fun summariesChanged() {
-        canvas.updateSummaries(summariesCard())
-        canvas.updateTopics(topicsCard())
+    override fun summariesChanged() {
+        super.summariesChanged()
         canvas.updateFileView(fileViewCard())
     }
 
@@ -547,9 +428,6 @@ internal class CodeReviewTab(
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
     private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
 
-    /** The focus of a To Chat on the files and folders [entries] of this tab's scope; null when they reach no file. */
-    fun focusOn(entries: List<String>): ChatFocus? = chatFocus(entries, state.snapshot.files.map { it.path }, state.summaries)
-
     /** The pinned focus for a turn on [snapshot], numbered like read_code; empty without a focus. */
     private fun focusPrompt(snapshot: CodeSnapshot, focus: ChatFocus?): String {
         focus ?: return ""
@@ -597,7 +475,7 @@ internal class CodeReviewTab(
         }
     }
 
-    private fun renderCanvas() {
+    override fun renderCanvas() {
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
@@ -661,15 +539,7 @@ internal class CodeReviewTab(
 
             override suspend fun symbols(paths: List<String>, query: String, offset: Int): String {
                 withContext(Dispatchers.EDT) { current(); paths.forEach(::file) }
-                val (result, stamp) = withContext(Dispatchers.Default) { readAction {
-                    symbols().find(paths, query, offset) to PsiModificationTracker.getInstance(project).modificationCount
-                } }
-                withContext(Dispatchers.EDT) {
-                    current()
-                    if (stamp != PsiModificationTracker.getInstance(project).modificationCount)
-                        throw ToolInputException("Source changed during symbol discovery. Retry with current source.")
-                }
-                return result
+                return readPsiThen(project, ::current, SYMBOLS_CHANGED, { symbols().find(paths, query, offset) }) { it }
             }
 
             override suspend fun showSource(range: ReviewSourceRange): String = withContext(Dispatchers.EDT) {
@@ -681,13 +551,8 @@ internal class CodeReviewTab(
 
             override suspend fun addNotes(notes: List<ReviewNote>): String {
                 withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
-                val (resolved, stamp) = withContext(Dispatchers.Default) { readAction {
-                    symbols().resolve(notes) to PsiModificationTracker.getInstance(project).modificationCount
-                } }
-                return withContext(Dispatchers.EDT) {
-                    current()
-                    if (notes.any { it.symbol != null } && stamp != PsiModificationTracker.getInstance(project).modificationCount)
-                        throw ToolInputException("Source changed while resolving notes. Retry with current source.")
+                return readPsiThen(project, ::current, NOTES_CHANGED.takeIf { notes.any { it.symbol != null } },
+                    { symbols().resolve(notes) }) { resolved ->
                     val added = live.addNotes(capturedRevision, resolved)
                     renderCanvas()
                     "Added ${added.size} note${if (added.size == 1) "" else "s"} to the canvas."
@@ -732,22 +597,13 @@ internal class CodeReviewTab(
         }
     }
 
+    override fun clearSnapshot() = state.update(CodeSnapshot.empty())
+
     override fun dispose() {
-        disposed = true
-        onCanvasSelected = {}
         canvasTimer.stop()
-        FileEditorManager.getInstance(project).closeFile(canvasFile)
-        canvasFile.setValid(false)
-        session.discard()
-        scope.cancel()
         holding = false
         pendingSnapshot = null
-        state.update(CodeSnapshot.empty())
-        state.clearNotes()
-        state.refreshing = true
-        canvas.showNotes(CanvasState(emptyList()))
-        canvas.removeAll()
-        removeAll()
+        super.dispose()
     }
 
     internal companion object {

@@ -1,7 +1,6 @@
 package dev.insight.diff
 
 import com.intellij.diff.DiffManager
-import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -17,8 +16,6 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupManager
-import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.vcs.VcsMappingListener
 import com.intellij.openapi.vcs.changes.ChangeListListener
@@ -29,23 +26,13 @@ import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.ui.InplaceButton
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
-import com.intellij.ui.tabs.JBTabsFactory
-import com.intellij.ui.tabs.TabInfo
-import com.intellij.ui.tabs.TabsListener
-import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
-import dev.insight.review.ChatFocus
-import dev.insight.review.chatFocusTabName
 import java.awt.BorderLayout
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import javax.swing.*
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
@@ -86,9 +73,6 @@ internal class DiffReviewPanel(
     private val state = DiffReviewState()
     private val included = linkedSetOf<String>()
     private var disposed = false
-    private var readyToOpenCanvas = startupReady
-    private var selectingFromCanvas = false
-    private var chatActivations = 0
     private var refreshJob: Job? = null
     private var repositoriesJob: Job? = null
     private var request = ReviewDiffRequest()
@@ -108,20 +92,21 @@ internal class DiffReviewPanel(
             status.text = e.message
         }
     }
-    private val tabs = JBTabsFactory.createTabs(project, this).apply {
-        presentation.isHideTabs = false
-        presentation.setSingleRow(true).setSupportsCompression(false).setTabLabelActionsAutoHide(false)
-    }
-    private val reviewTabs = mutableListOf<DiffReviewTab>()
-    private var nextTab = 1
     private val newSelectedTab = JButton("New tab from selection").apply {
         toolTipText = "Start a fresh chat and canvas scoped to the selected files or folders"
-        addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { addTab(it) } }
+        addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { tabs.add(it) } }
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
     /** Source controls, files and review tab controls; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
     private val pages = ReviewSidePages(main)
+    private val tabs = ReviewTabsController(project, this, "Diff Review", "All changes", "Insight.DiffReviewTabs", pages,
+        startupReady, ::selectedPaths, create = { paths, focus, toChat ->
+            DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = toChat)
+        }) { tab ->
+        tab.update(state.snapshot)
+        if (state.refreshing) tab.invalidate(stop = false)
+    }
 
     init {
         border = JBUI.Borders.empty(6)
@@ -152,7 +137,7 @@ internal class DiffReviewPanel(
                 border = JBUI.Borders.emptyBottom(6)
                 add(JButton("New tab").apply {
                     toolTipText = "Start a fresh chat and canvas for all files in the selected diff"
-                    addActionListener { addTab() }
+                    addActionListener { tabs.add() }
                 }, BorderLayout.WEST)
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
@@ -160,40 +145,7 @@ internal class DiffReviewPanel(
         main.add(filesPanel, BorderLayout.CENTER)
         main.add(reviewPanel, BorderLayout.SOUTH)
         add(pages, BorderLayout.CENTER)
-        tabs.addListener(object : TabsListener {
-            override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
-                showSelectedChat()
-                (newSelection?.component as? DiffReviewTab)?.let {
-                    it.highlight(selectedPaths().toSet())
-                    if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
-                }
-            }
-        }, this)
-        tabs.addTabMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.button != MouseEvent.BUTTON1) return
-                val info = (e.component as? TabLabel
-                    ?: SwingUtilities.getAncestorOfClass(TabLabel::class.java, e.component) as? TabLabel)?.info
-                    ?: tabs.findInfo(e) ?: return
-                if (e.clickCount == 1) {
-                    if (e.component !is InplaceButton && SwingUtilities.getAncestorOfClass(InplaceButton::class.java, e.component) == null) {
-                        (info.component as? DiffReviewTab)?.openCanvas(true)
-                    }
-                    return
-                }
-                if (e.clickCount != 2) return
-                val renamed = Messages.showInputDialog(project, "Tab name:", "Rename Review Tab",
-                    null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
-                info.setText(renamed)
-                info.setTooltipText("$renamed · Double-click to rename")
-                showSelectedChat()
-                (info.component as DiffReviewTab).canvasFile.let { file ->
-                    file.renameReview(renamed)
-                    FileEditorManager.getInstance(project).updateFilePresentation(file)
-                }
-            }
-        })
-        addTab()
+        tabs.add()
         tree.isRootVisible = false
         tree.showsRootHandles = true
         tree.cellRenderer = object : DefaultTreeCellRenderer() {
@@ -208,39 +160,17 @@ internal class DiffReviewPanel(
             }
         }
         tree.addTreeSelectionListener {
-            selectedTab()?.highlight(selectedPaths().toSet())
+            tabs.selected?.highlight(selectedPaths().toSet())
             updateControls()
         }
-        tree.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) selectedFile()?.let { showDiff(it.path) } }
-        })
+        tree.openFilesOnActivate("showDiff") { selectedFile()?.let { showDiff(it.path); true } ?: false }
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
-            object : DumbAwareAction("To Chat", "Chat about the selection in a new tab, with its summaries and diff in context", AllIcons.Toolwindows.ToolWindowMessages) {
-                override fun getActionUpdateThread() = ActionUpdateThread.EDT
-                override fun update(e: AnActionEvent) { e.presentation.isEnabled = !state.refreshing && selectedEntries().isNotEmpty() }
-                override fun actionPerformed(e: AnActionEvent) {
-                    val tab = selectedTab() ?: return
-                    tab.focusOn(selectedEntries())?.let { openChat(it, tab.state.scopePaths) } ?: run {
-                        status.text = "The selection is not in this tab's changes. Choose the All changes tab or a tab that includes it."
-                    }
-                }
+            tabs.toChatAction("Chat about the selection in a new tab, with its summaries and diff in context",
+                enabled = { !state.refreshing }, entries = ::selectedEntries) {
+                status.text = "The selection is not in this tab's changes. Choose the All changes tab or a tab that includes it."
             },
         ), "Insight.DiffReviewFiles")
-        tree.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "showDiff")
-        tree.actionMap.put("showDiff", object : AbstractAction() {
-            override fun actionPerformed(e: java.awt.event.ActionEvent?) {
-                selectedFile()?.let { showDiff(it.path) } ?: tree.selectionPath?.let {
-                    if (tree.isExpanded(it)) tree.collapsePath(it) else tree.expandPath(it)
-                }
-            }
-        })
         project.messageBus.connect(this).apply {
-            subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
-                override fun toolWindowShown(toolWindow: ToolWindow) {
-                    if (toolWindow.id == "Diff Review" && readyToOpenCanvas && !disposed &&
-                        !selectingFromCanvas && chatActivations == 0) openCanvas()
-                }
-            })
             subscribe(ProjectLevelVcsManager.VCS_CONFIGURATION_CHANGED, object : VcsMappingListener {
                 override fun directoryMappingChanged() {
                     scope.launch { if (!disposed) loadRepositories() }
@@ -264,17 +194,6 @@ internal class DiffReviewPanel(
                     scheduleRefresh(setOf(path))
             }
         }, this)
-        if (!readyToOpenCanvas) {
-            StartupManager.getInstance(project).runAfterOpened {
-                val open = Runnable {
-                    if (!disposed) {
-                        readyToOpenCanvas = true
-                        openCanvas()
-                    }
-                }
-                if (SwingUtilities.isEventDispatchThread()) open.run() else SwingUtilities.invokeLater(open)
-            }
-        }
         loadRepositories()
         refresh()
     }
@@ -316,7 +235,7 @@ internal class DiffReviewPanel(
 
     private fun invalidateDiff(affectedPaths: Set<String>? = null) {
         state.refreshing = true
-        reviewTabs.forEach { it.invalidate(stop = true, affectedPaths) }
+        tabs.all.forEach { it.invalidate(stop = true, affectedPaths) }
         refreshJob?.cancel()
         status.text = "Loading ${request.mode.title.lowercase()}…"
         updateControls()
@@ -338,7 +257,7 @@ internal class DiffReviewPanel(
                     withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
                 }
                 state.update(snapshot)
-                val removed = reviewTabs.sumOf { it.update(snapshot) }
+                val removed = tabs.all.sumOf { it.update(snapshot) }
                 if (selectedRequest.mode.usesWorkingTree)
                     included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
                 renderFiles()
@@ -361,69 +280,7 @@ internal class DiffReviewPanel(
         newSelectedTab.isEnabled = !state.refreshing && selectedPaths().isNotEmpty()
     }
 
-    /**
-     * Opens a new tab with the scope [paths] whose chat is focused on [focus], and shows its chat. The canvas stays
-     * where it is, so To Chat from a summary does not replace the view it was chosen from.
-     */
-    private fun openChat(focus: ChatFocus, paths: Set<String>?) {
-        if (disposed) return
-        selectingFromCanvas = true
-        try { addTab(paths, focus) } finally { selectingFromCanvas = false }
-        ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.let { window ->
-            // Activation may show the window asynchronously, after the tab-selection guard has been released.
-            chatActivations++
-            try { window.activate { chatActivations-- } }
-            catch (e: Exception) { chatActivations--; throw e }
-        }
-        pages.selectChat()
-    }
-
-    private fun addTab(paths: Set<String>? = null, focus: ChatFocus? = null) {
-        val number = nextTab++
-        val name = when {
-            focus != null -> chatFocusTabName(focus)
-            number == 1 -> "All changes"
-            paths == null -> "Review $number"
-            else -> "Selection $number"
-        }
-        val tab = DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = { openChat(it, paths) })
-        Disposer.register(this, tab)
-        reviewTabs += tab
-        tab.update(state.snapshot)
-        if (state.refreshing) tab.invalidate(stop = false)
-        val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
-        tab.canvasFile.renameReview(name)
-        tab.onCanvasSelected = {
-            if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {
-                selectingFromCanvas = true
-                try { tabs.select(info, false) } finally { selectingFromCanvas = false }
-            }
-        }
-        info.setTabLabelActions(DefaultActionGroup(object : DumbAwareAction(
-            "Close Tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
-        ) {
-            override fun getActionUpdateThread() = ActionUpdateThread.EDT
-            override fun actionPerformed(e: AnActionEvent) { closeTab(info) }
-        }), "Insight.DiffReviewTabs")
-        tabs.addTab(info)
-        tabs.select(info, false)
-        showSelectedChat()
-    }
-
-    private fun closeTab(info: TabInfo) {
-        val tab = info.component as DiffReviewTab
-        if (!reviewTabs.remove(tab)) return
-        Disposer.dispose(tab)
-        tabs.removeTab(info)
-        if (reviewTabs.isEmpty()) addTab()
-        showSelectedChat()
-    }
-
-    private fun selectedTab(): DiffReviewTab? = tabs.selectedInfo?.component as? DiffReviewTab
-
-    private fun showSelectedChat() { pages.showChat(selectedTab()?.chat, tabs.selectedInfo?.text.orEmpty()) }
-
-    fun openCanvas(focus: Boolean = false) { selectedTab()?.openCanvas(focus) }
+    fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
 
     private fun selectedFile(): ReviewFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? ReviewFile
 
@@ -436,10 +293,7 @@ internal class DiffReviewPanel(
         }
     }.distinct()
 
-    private fun selectedPaths(): List<String> = tree.selectionPaths.orEmpty().flatMap { path ->
-        val node = path.lastPathComponent as DefaultMutableTreeNode
-        node.depthFirstEnumeration().toList().mapNotNull { (it as DefaultMutableTreeNode).userObject as? ReviewFile }.map { it.path }
-    }.distinct()
+    private fun selectedPaths(): List<String> = tree.selectedFilePaths<ReviewFile>()
 
     private fun renderFiles() {
         val selection = selectedPaths().toSet()

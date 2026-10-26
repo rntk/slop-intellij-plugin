@@ -9,7 +9,6 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.DumbAware
@@ -17,8 +16,6 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.startup.StartupManager
-import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
@@ -29,35 +26,26 @@ import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
-import com.intellij.ui.InplaceButton
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
-import com.intellij.ui.tabs.JBTabsFactory
-import com.intellij.ui.tabs.TabInfo
-import com.intellij.ui.tabs.TabsListener
-import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import dev.insight.diff.ReviewSidePages
-import dev.insight.review.ChatFocus
+import dev.insight.diff.ReviewTabsController
+import dev.insight.diff.openFilesOnActivate
+import dev.insight.diff.selectedFilePaths
 import dev.insight.review.ReviewDiskCache
-import dev.insight.review.chatFocusTabName
 import java.awt.BorderLayout
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.util.Locale
-import javax.swing.AbstractAction
 import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTree
-import javax.swing.KeyStroke
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
@@ -148,9 +136,6 @@ internal class CodeReviewPanel(
 ) : JPanel(BorderLayout()), Disposable {
     private val coroutines = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private var disposed = false
-    private var readyToOpenCanvas = startupReady
-    private var selectingFromCanvas = false
-    private var chatActivations = 0
     private var refreshJob: Job? = null
     /** The applied folder; null until one is valid. */
     internal var scope: CodeScope? = null
@@ -185,15 +170,9 @@ internal class CodeReviewPanel(
     private val scopeControls = CodeScopeControls(project, onError = { message -> status.text = message; status.toolTipText = message }) { scope ->
         setScope(scope)
     }
-    private val tabs = JBTabsFactory.createTabs(project, this).apply {
-        presentation.isHideTabs = false
-        presentation.setSingleRow(true).setSupportsCompression(false).setTabLabelActionsAutoHide(false)
-    }
-    private val reviewTabs = mutableListOf<CodeReviewTab>()
-    private var nextTab = 1
     private val newSelectedTab = JButton("New tab from selection").apply {
         toolTipText = "Start a fresh chat and canvas scoped to the selected files or folders"
-        addActionListener { selectedEntries().toSet().takeIf { it.isNotEmpty() }?.let { addTab(it) } }
+        addActionListener { selectedEntries().toSet().takeIf { it.isNotEmpty() }?.let { tabs.add(it) } }
     }
     private val viewFile = JButton("View").apply {
         toolTipText = "Open the selected file in File view, with neighboring topics and summaries on hover"
@@ -203,6 +182,13 @@ internal class CodeReviewPanel(
     /** Scope controls, files and review tab controls; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
     private val pages = ReviewSidePages(main)
+    private val tabs = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
+        startupReady, ::selectedPaths, create = { paths, focus, toChat ->
+            CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = toChat)
+        }) { tab ->
+        snapshot?.let { tab.update(it) }
+        if (snapshot == null || refreshJob?.isActive == true) tab.invalidate(stop = false)
+    }
 
     init {
         border = JBUI.Borders.empty(6)
@@ -228,7 +214,7 @@ internal class CodeReviewPanel(
                 border = JBUI.Borders.emptyBottom(6)
                 add(JButton("New tab").apply {
                     toolTipText = "Start a fresh chat and canvas for the whole scope"
-                    addActionListener { addTab() }
+                    addActionListener { tabs.add() }
                 }, BorderLayout.WEST)
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
@@ -236,40 +222,7 @@ internal class CodeReviewPanel(
         main.add(filesPanel, BorderLayout.CENTER)
         main.add(reviewPanel, BorderLayout.SOUTH)
         add(pages, BorderLayout.CENTER)
-        tabs.addListener(object : TabsListener {
-            override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
-                showSelectedChat()
-                (newSelection?.component as? CodeReviewTab)?.let {
-                    it.highlight(selectedPaths().toSet())
-                    if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
-                }
-            }
-        }, this)
-        tabs.addTabMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.button != MouseEvent.BUTTON1) return
-                val info = (e.component as? TabLabel
-                    ?: SwingUtilities.getAncestorOfClass(TabLabel::class.java, e.component) as? TabLabel)?.info
-                    ?: tabs.findInfo(e) ?: return
-                if (e.clickCount == 1) {
-                    if (e.component !is InplaceButton && SwingUtilities.getAncestorOfClass(InplaceButton::class.java, e.component) == null) {
-                        (info.component as? CodeReviewTab)?.openCanvas(true)
-                    }
-                    return
-                }
-                if (e.clickCount != 2) return
-                val renamed = Messages.showInputDialog(project, "Tab name:", "Rename Review Tab",
-                    null, info.text, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return
-                info.setText(renamed)
-                info.setTooltipText("$renamed · Double-click to rename")
-                showSelectedChat()
-                (info.component as CodeReviewTab).canvasFile.let { file ->
-                    file.renameReview(renamed)
-                    FileEditorManager.getInstance(project).updateFilePresentation(file)
-                }
-            }
-        })
-        addTab()
+        tabs.add()
         tree.isRootVisible = false
         tree.showsRootHandles = true
         tree.emptyText.text = "No files"
@@ -292,23 +245,15 @@ internal class CodeReviewPanel(
             }
         }
         tree.addTreeSelectionListener {
-            selectedTab()?.highlight(selectedPaths().toSet())
+            tabs.selected?.highlight(selectedPaths().toSet())
             updateControls()
         }
-        tree.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) selectedFile()?.let { openFile(it.path, null) } }
-        })
+        tree.openFilesOnActivate("openFile") { selectedFile()?.let { openFile(it.path, null); true } ?: false }
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
-            object : DumbAwareAction("To Chat", "Chat about the selection in a new tab, with its summaries and source in context", AllIcons.Toolwindows.ToolWindowMessages) {
-                override fun getActionUpdateThread() = ActionUpdateThread.EDT
-                override fun update(e: AnActionEvent) { e.presentation.isEnabled = refreshJob?.isActive != true && selectedEntries().isNotEmpty() }
-                override fun actionPerformed(e: AnActionEvent) {
-                    val tab = selectedTab() ?: return
-                    tab.focusOn(selectedEntries())?.let { openChat(it, tab.state.scopePaths) } ?: run {
-                        status.text = "The selection is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
-                        status.toolTipText = status.text
-                    }
-                }
+            tabs.toChatAction("Chat about the selection in a new tab, with its summaries and source in context",
+                enabled = { refreshJob?.isActive != true }, entries = ::selectedEntries) {
+                status.text = "The selection is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+                status.toolTipText = status.text
             },
             object : DumbAwareAction("Open in File View", "Read the file block by block with the topics of the code its calls reach", AllIcons.Actions.Preview) {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
@@ -334,21 +279,7 @@ internal class CodeReviewPanel(
                 }
             },
         ), "Insight.CodeReviewFiles")
-        tree.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "openFile")
-        tree.actionMap.put("openFile", object : AbstractAction() {
-            override fun actionPerformed(e: java.awt.event.ActionEvent?) {
-                selectedFile()?.let { openFile(it.path, null) } ?: tree.selectionPath?.let {
-                    if (tree.isExpanded(it)) tree.collapsePath(it) else tree.expandPath(it)
-                }
-            }
-        })
         project.messageBus.connect(this).apply {
-            subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
-                override fun toolWindowShown(toolWindow: ToolWindow) {
-                    if (toolWindow.id == CODE_REVIEW_TOOL_WINDOW && readyToOpenCanvas && !disposed &&
-                        !selectingFromCanvas && chatActivations == 0) openCanvas()
-                }
-            })
             // Edits are picked up when saved: the file changes on disk under the scope.
             subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
                 override fun after(events: List<VFileEvent>) {
@@ -356,17 +287,6 @@ internal class CodeReviewPanel(
                     if (events.any { affects(root, it) }) scheduleRefresh()
                 }
             })
-        }
-        if (!readyToOpenCanvas) {
-            StartupManager.getInstance(project).runAfterOpened {
-                val open = Runnable {
-                    if (!disposed) {
-                        readyToOpenCanvas = true
-                        openCanvas()
-                    }
-                }
-                if (SwingUtilities.isEventDispatchThread()) open.run() else SwingUtilities.invokeLater(open)
-            }
         }
         updateSkipped(null)
         // Loading is bounded by the scope limits and runs in the background; summaries start only on request.
@@ -441,7 +361,7 @@ internal class CodeReviewPanel(
         refreshTimer.stop()
         val scope = scope ?: return
         refreshJob?.cancel()
-        if (stopTabs) reviewTabs.forEach { it.invalidate(stop = true) }
+        if (stopTabs) tabs.all.forEach { it.invalidate(stop = true) }
         status.text = "Loading ${scope.displayName}…"
         status.toolTipText = scope.absolutePath
         val previous = snapshot
@@ -458,7 +378,7 @@ internal class CodeReviewPanel(
                 }
                 snapshot = loaded
                 if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
-                val removed = reviewTabs.sumOf { it.update(loaded) }
+                val removed = tabs.all.sumOf { it.update(loaded) }
                 renderFiles(loaded)
                 updateSkipped(loaded)
                 status.text = codeStatusText(loaded) + if (removed > 0) " · $removed outdated notes removed" else ""
@@ -495,84 +415,19 @@ internal class CodeReviewPanel(
     /** Opens the selected file in the current tab's File view; a file outside a tab's fixed selection is reported. */
     private fun viewSelectedFile() {
         val file = selectedFile()?.takeIf { canViewSelectedFile() } ?: return
-        val tab = selectedTab() ?: return
+        val tab = tabs.selected ?: return
         if (!tab.openFileView(file.path)) {
             status.text = "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
             status.toolTipText = status.text
         }
     }
 
-    /**
-     * Opens a new tab with the scope [paths] whose chat is focused on [focus], and shows its chat. The canvas stays
-     * where it is, so To Chat from a summary does not replace the view it was chosen from.
-     */
-    private fun openChat(focus: ChatFocus, paths: Set<String>?) {
-        if (disposed) return
-        selectingFromCanvas = true
-        try { addTab(paths, focus) } finally { selectingFromCanvas = false }
-        ToolWindowManager.getInstance(project).getToolWindow(CODE_REVIEW_TOOL_WINDOW)?.let { window ->
-            // Activation may show the window asynchronously, after the tab-selection guard has been released.
-            chatActivations++
-            try { window.activate { chatActivations-- } }
-            catch (e: Exception) { chatActivations--; throw e }
-        }
-        pages.selectChat()
-    }
-
-    private fun addTab(paths: Set<String>? = null, focus: ChatFocus? = null) {
-        val number = nextTab++
-        val name = when {
-            focus != null -> chatFocusTabName(focus)
-            number == 1 -> "Whole scope"
-            paths == null -> "Review $number"
-            else -> "Selection $number"
-        }
-        val tab = CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = { openChat(it, paths) })
-        Disposer.register(this, tab)
-        reviewTabs += tab
-        snapshot?.let { tab.update(it) }
-        if (snapshot == null || refreshJob?.isActive == true) tab.invalidate(stop = false)
-        val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
-        tab.canvasFile.renameReview(name)
-        tab.onCanvasSelected = {
-            if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {
-                selectingFromCanvas = true
-                try { tabs.select(info, false) } finally { selectingFromCanvas = false }
-            }
-        }
-        info.setTabLabelActions(DefaultActionGroup(object : DumbAwareAction(
-            "Close Tab", "Discard this tab's chat history, draft and canvas", AllIcons.Actions.Close,
-        ) {
-            override fun getActionUpdateThread() = ActionUpdateThread.EDT
-            override fun actionPerformed(e: AnActionEvent) { closeTab(info) }
-        }), "Insight.CodeReviewTabs")
-        tabs.addTab(info)
-        tabs.select(info, false)
-        showSelectedChat()
-    }
-
-    private fun closeTab(info: TabInfo) {
-        val tab = info.component as CodeReviewTab
-        if (!reviewTabs.remove(tab)) return
-        Disposer.dispose(tab)
-        tabs.removeTab(info)
-        if (reviewTabs.isEmpty()) addTab()
-        showSelectedChat()
-    }
-
-    private fun selectedTab(): CodeReviewTab? = tabs.selectedInfo?.component as? CodeReviewTab
-
-    private fun showSelectedChat() { pages.showChat(selectedTab()?.chat, tabs.selectedInfo?.text.orEmpty()) }
-
-    fun openCanvas(focus: Boolean = false) { selectedTab()?.openCanvas(focus) }
+    fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
 
     private fun selectedFile(): CodeFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? CodeFile
 
     /** Every file beneath the selected nodes. */
-    internal fun selectedPaths(): List<String> = tree.selectionPaths.orEmpty().flatMap { path ->
-        val node = path.lastPathComponent as DefaultMutableTreeNode
-        node.depthFirstEnumeration().toList().mapNotNull { (it as DefaultMutableTreeNode).userObject as? CodeFile }.map { it.path }
-    }.distinct()
+    internal fun selectedPaths(): List<String> = tree.selectedFilePaths<CodeFile>()
 
     /** The selected files and folders, as a new tab's fixed scope. */
     private fun selectedEntries(): List<String> = tree.selectionPaths.orEmpty().mapNotNull { path ->

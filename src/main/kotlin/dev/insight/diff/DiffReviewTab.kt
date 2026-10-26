@@ -1,80 +1,52 @@
 package dev.insight.diff
 
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.WriteIntentReadAction
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.platform.util.progress.reportRawProgress
-import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.ui.JBUI
-import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.*
 import dev.insight.review.ChatFocus
-import dev.insight.review.ExplainDialog
-import dev.insight.review.ExplainResults
-import dev.insight.review.ExplainTarget
-import dev.insight.review.ReviewCanvasFile
-import dev.insight.review.ReviewCanvasOwner
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
-import dev.insight.review.SummaryNode
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
 import dev.insight.review.chatFocusPrompt
 import dev.insight.review.current
-import dev.insight.review.explainChartFor
-import dev.insight.review.explainChartPrompt
-import dev.insight.review.explainCommand
-import dev.insight.review.explainRequest
-import dev.insight.review.explainTarget
 import dev.insight.review.isExplainRequest
 import dev.insight.review.isTopicsRequest
-import dev.insight.review.openReviewCanvas
 import dev.insight.review.reviewJson
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
-import dev.insight.review.textOf
 import dev.insight.review.topicsReply
-import dev.insight.review.typedExplainTarget
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.SwingUtilities
 import kotlinx.coroutines.*
 
 /** Owns one conversation and canvas. File selection never changes this tab's scope. */
 internal class DiffReviewTab(
-    private val project: Project,
+    project: Project,
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     showDiff: (String) -> Unit,
-    /** Pinned to every turn of this tab's chat; see [ChatFocus]. */
-    val focus: ChatFocus? = null,
+    focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
-) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    val state = DiffReviewState(paths, ReviewDiskCache.forProject(project))
-    private var disposed = false
-    private val sourcePoints = SourcePoints(project, "Diff chat")
+) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
+    ReviewVocabulary.DIFF, "Diff chat") {
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
-    override val isDisposed: Boolean get() = disposed
-    override val canvasTitle: String get() = ReviewVocabulary.DIFF.canvasTitle
-    var onCanvasSelected: () -> Unit = {}
-    override fun canvasSelected() = onCanvasSelected()
     override val canvas: NoteCanvas = NoteCanvas(
         showDiff,
         { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
@@ -134,7 +106,6 @@ internal class DiffReviewTab(
         ),
     )
 
-    val canvasFile = ReviewCanvasFile(this)
     private val summariesButton = JButton("Summaries").apply {
         toolTipText = "Read the change as summaries, from the whole change down to each file (/summaries)"
     }
@@ -151,8 +122,7 @@ internal class DiffReviewTab(
         toolTipText = "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"
     }
     private val scopeLabel = JLabel()
-    private val explanations = ExplainResults()
-    val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
+    override val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
         "Ask about ${focus.label}. Its summaries and diff are in this chat's context; other project files are read when a " +
             "question needs them." else
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /summaries to read the change from the whole down to each file. " +
@@ -176,58 +146,37 @@ internal class DiffReviewTab(
                 val client = ChatSettings.getInstance().createClient()
                 val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
                 if (isTopicsRequest(question)) {
-                    val run = reportRawProgress { reporter ->
-                        reporter.text("Classifying changed files…")
+                    val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
                         diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
-                            .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall,
-                                onProgress = { done, total ->
-                                    reporter.details("$done of $total files classified")
-                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                })
+                            .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
                     }
                     return topicsReply(run)
                 }
                 if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
                     val topicSummaries = question.trim() == "/topic-summaries"
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
-                    val run = reportRawProgress { reporter ->
-                        reporter.text("Summarizing the change…")
+                    val run = withCountProgress("Summarizing the change…", "summaries") { onProgress ->
                         diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                                if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall,
-                                onProgress = { done, total ->
-                                    reporter.details("$done of $total summaries")
-                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                })
+                                if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
                     }
                     return if (topicSummaries) summariesReply(run, missing = TOPIC_SUMMARIES_MISSING) else summariesReply(run)
                 }
-                val explain = if (isExplainRequest(question)) withContext(Dispatchers.EDT) { takeExplain(question, files.map { it.path }) } else null
-                if (explain != null && explain.files.isEmpty()) return "There are no changed files to explain."
-                val chart = explainChartFor(project, explain, messages) { paths -> files.filter { it.path in paths }.map { it.absolutePath } }
-                if (explain != null) withContext(Dispatchers.EDT) { explanations.chartPrepared(chart) }
-                // Only this turn carries the command's instructions; the transcript keeps the command as typed.
-                val request = when {
-                    explain != null -> messages.dropLast(1) + messages.last().copy(text = explainRequest(explain, diff = true,
-                        (chart as? ExplainChartResult.Ready)?.chart?.functions, (chart as? ExplainChartResult.Unavailable)?.reason))
-                    else -> messages
-                }
-                val chartTools = (chart as? ExplainChartResult.Ready)?.chart?.tools.orEmpty()
+                val turn = chatTurn(messages, files, diff = true) ?: return "There are no changed files to explain."
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
                 return LlmChatBackend(client::complete,
-                    chatTools(context) + chartTools,
-                    diffReviewPrompt() + (if (chartTools.isEmpty()) "" else "\n\n" + explainChartPrompt()) + focusPrompt(files, turnFocus),
+                    chatTools(context) + turn.chartTools,
+                    turn.prompt(diffReviewPrompt()) + focusPrompt(files, turnFocus),
                     maxContextChars = 160_000, maxToolRounds = 100,
                     context = if (turnFocus == null) { { context.state(0, INLINE_PATCH_CHARS) } }
                         else { { withContext(Dispatchers.EDT) { focusState(snapshot, turnFocus) } } },
                     contextLabel = if (turnFocus == null) "Current diff snapshot" else "Current focus snapshot",
                     evictionTarget = 0.7)
-                    .reply(request, onToolCall)
+                    .reply(turn.request, onToolCall)
             }
         }
     }
-    /** Shown by the panel's Chat page, so it is not part of this tab's controls. */
-    internal val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
+    override val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
 
     init {
         minimumSize = Dimension(300, 200)
@@ -259,20 +208,8 @@ internal class DiffReviewTab(
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, sourcePoints)
-        Disposer.register(this, session.subscribe {
-            updateControls()
-            summariesChanged()
-            if (explanations.update(session.messages, session.busy)) {
-                renderCanvas()
-                if (explanations.result != null) showCanvas { canvas.focusExplanation() }
-            }
-        })
+        Disposer.register(this, followSession(updateControls = ::updateControls))
         updateControls()
-    }
-
-    fun openCanvas(focus: Boolean = false) {
-        if (disposed) return
-        openReviewCanvas(project, canvasFile, focus)
     }
 
     fun invalidate(stop: Boolean, affectedPaths: Set<String>? = null) {
@@ -294,50 +231,6 @@ internal class DiffReviewTab(
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
-    }
-
-    fun highlight(paths: Set<String>) { canvas.highlight(paths) }
-
-    private val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
-        state.snapshot.files.isNotEmpty()
-
-    private fun summarize() { if (canSummarize) session.send("/summaries") }
-
-    /** The target of the /explain command an Explain link sent, until its turn takes it; see [takeExplain]. */
-    private var pendingExplain: Pair<String, ExplainTarget>? = null
-
-    /** Asks what to focus on, then sends /explain for a summary entry; its files and lines need no parsing of the command. */
-    private fun explain(node: SummaryNode) {
-        if (!canSummarize) return
-        val dialog = ExplainDialog(project, node.location, state.summaries.textOf(node))
-        if (!dialog.showAndGet() || !canSummarize) return
-        val target = explainTarget(node, state.summaries, dialog)
-        val command = explainCommand(node.location, target.instructions)
-        pendingExplain = command to target
-        session.send(command)
-    }
-
-    /** The pending link target when [question] is its command, else the typed one; limited to the [paths] still in scope (EDT). */
-    private fun takeExplain(question: String, paths: List<String>): ExplainTarget {
-        val pending = pendingExplain?.takeIf { it.first == question.trim() }?.second
-        pendingExplain = null
-        val inScope = paths.toSet()
-        return pending?.let { it.copy(files = it.files.filter(inScope::contains)) } ?: typedExplainTarget(question, state.summaries, paths)
-    }
-
-    /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
-    fun openSummaries() {
-        state.showSummaries()
-        renderCanvas()
-        showCanvas { canvas.focusSummaries() }
-        if (!state.summaries.complete) summarize()
-    }
-
-    fun openTopics() {
-        state.showTopics()
-        renderCanvas()
-        showCanvas { canvas.focusTopics() }
-        if (!state.topics.complete && canSummarize) session.send("/topics")
     }
 
     /** Counted from the snapshot by code, so the chart needs no chat turn. */
@@ -381,22 +274,6 @@ internal class DiffReviewTab(
         }
     }
 
-    /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
-    private fun showCanvas(focus: () -> Unit) {
-        openCanvas(true)
-        SwingUtilities.invokeLater { if (!disposed) focus() }
-    }
-
-    private fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
-
-    private fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
-
-    /** The topics document shows the file summaries too, so it follows every summary and chat update. */
-    private fun summariesChanged() { canvas.updateSummaries(summariesCard()); canvas.updateTopics(topicsCard()) }
-
-    /** The focus of a To Chat on the files and folders [entries] of this tab's changes; null when they reach no file. */
-    fun focusOn(entries: List<String>): ChatFocus? = chatFocus(entries, state.snapshot.files.map { it.path }, state.summaries)
-
     /**
      * The pinned focus for a turn on [files]: each file's patch; empty without a focus. A patch is not split by line, so a
      * focus on part of a file pins the whole file's diff and says so.
@@ -435,7 +312,7 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
-    private fun renderCanvas() {
+    override fun renderCanvas() {
         canvas.showNotes(CanvasState(state.notes, state.sources, state.diffs, summariesCard(), topicsCard(),
             words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
             diffOverview = if (state.diffOverviewVisible) state.words else null,
@@ -490,15 +367,7 @@ internal class DiffReviewTab(
 
             override suspend fun symbols(paths: List<String>, query: String, offset: Int): String {
                 withContext(Dispatchers.EDT) { current(); paths.forEach(::file) }
-                val (result, stamp) = withContext(Dispatchers.Default) { readAction {
-                    diffSymbols(project, snapshot).find(paths, query, offset) to PsiModificationTracker.getInstance(project).modificationCount
-                } }
-                withContext(Dispatchers.EDT) {
-                    current()
-                    if (stamp != PsiModificationTracker.getInstance(project).modificationCount)
-                        throw ToolInputException("Source changed during symbol discovery. Retry with current source.")
-                }
-                return result
+                return readPsiThen(project, ::current, SYMBOLS_CHANGED, { diffSymbols(project, snapshot).find(paths, query, offset) }) { it }
             }
 
             override suspend fun showSource(range: ReviewSourceRange): String = withContext(Dispatchers.EDT) {
@@ -510,13 +379,8 @@ internal class DiffReviewTab(
 
             override suspend fun addNotes(notes: List<ReviewNote>): String {
                 withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
-                val (resolved, stamp) = withContext(Dispatchers.Default) { readAction {
-                    diffSymbols(project, snapshot).resolve(notes) to PsiModificationTracker.getInstance(project).modificationCount
-                } }
-                return withContext(Dispatchers.EDT) {
-                    current()
-                    if (notes.any { it.symbol != null } && stamp != PsiModificationTracker.getInstance(project).modificationCount)
-                        throw ToolInputException("Source changed while resolving notes. Retry with current source.")
+                return readPsiThen(project, ::current, NOTES_CHANGED.takeIf { notes.any { it.symbol != null } },
+                    { diffSymbols(project, snapshot).resolve(notes) }) { resolved ->
                     val added = live.addNotes(capturedRevision, resolved)
                     renderCanvas()
                     "Added ${added.size} note${if (added.size == 1) "" else "s"}." +
@@ -547,10 +411,7 @@ internal class DiffReviewTab(
             override suspend fun startSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 // An incomplete tree is continued, so an edit only re-summarizes the changed files and the folders above them.
-                if (live.summaries.complete) live.clearSummaries()
-                live.showSummaries()
-                renderCanvas()
-                live.summaries
+                live.startSummaries(capturedRevision).also { renderCanvas() }
             }
 
             override suspend fun summaries(offset: Int): String = withContext(Dispatchers.EDT) {
@@ -565,20 +426,11 @@ internal class DiffReviewTab(
         }
     }
 
+    override fun clearSnapshot() = state.update(ReviewSnapshot(emptyList(), emptyList()))
+
     override fun dispose() {
-        disposed = true
         fullFileSnapshots.clear()
-        onCanvasSelected = {}
-        FileEditorManager.getInstance(project).closeFile(canvasFile)
-        canvasFile.setValid(false)
-        session.discard()
-        scope.cancel()
-        state.update(ReviewSnapshot(emptyList(), emptyList()))
-        state.clearNotes()
-        state.refreshing = true
-        canvas.showNotes(CanvasState(emptyList()))
-        canvas.removeAll()
-        removeAll()
+        super.dispose()
     }
 
     private companion object {

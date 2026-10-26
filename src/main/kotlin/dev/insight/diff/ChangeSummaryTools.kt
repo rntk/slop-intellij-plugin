@@ -1,11 +1,10 @@
 package dev.insight.diff
 
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
-import dev.insight.llm.LlmTool
+import dev.insight.chat.intArg
+import dev.insight.chat.objectTool
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSummaryTree
@@ -14,21 +13,13 @@ import dev.insight.review.SummaryNode
 import dev.insight.review.reviewJson
 
 /** Reads the summary tree in chat. Code writes it on /summaries (see [ReviewSummarizer]); the model never pages or tracks it. */
-fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(object : ChatTool {
-    override val definition = LlmTool("get_change_summaries", "Page through the summary tree of the change, written on /summaries: the root, " +
+fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(objectTool("get_change_summaries",
+    "Page through the summary tree of the change, written on /summaries: the root, " +
         "folders, groups that split folders with more than ${ReviewSummaryTree.MAX_CHILDREN} entries, and files, " +
         "each with its summary where one exists. If next_offset is present, call again with it.",
-        JsonParser.parseString("""{"type":"object","properties":{"offset":{"type":"integer","minimum":0,""" +
-            """"description":"First node of the page; use next_offset."}},"required":[],"additionalProperties":false}""").asJsonObject)
-    override suspend fun call(arguments: JsonObject): String = context.summaries(offset(arguments))
+    """"offset":{"type":"integer","minimum":0,"description":"First node of the page; use next_offset."}""") {
+    context.summaries(it.intArg("offset", 0))
 })
-
-/** Strict decoding: a missing offset starts the tree; anything but a nonnegative integer is rejected. */
-private fun offset(args: JsonObject): Int {
-    val value = args["offset"] ?: return 0
-    return value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber && it.asString.matches(Regex("0|[1-9][0-9]{0,8}")) }?.asString?.toInt()
-        ?: throw ToolInputException("offset must be a nonnegative integer")
-}
 
 private fun nodeJson(summaries: ReviewSummaries, node: SummaryNode): Map<String, Any> = buildMap {
     put("id", node.id); put("kind", node.kind.id); put("location", node.location)

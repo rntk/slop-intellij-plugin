@@ -1,24 +1,15 @@
 package dev.insight.diff
 
 import dev.insight.callgraph.LineChange
-import dev.insight.chat.ToolInputException
-import dev.insight.review.ReviewCacheSession
 import dev.insight.review.ReviewDiskCache
-import dev.insight.review.ReviewNote
-import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
-import dev.insight.review.ReviewTopics
-import dev.insight.review.ReviewedFiles
-import dev.insight.review.SummaryKind
-import dev.insight.review.SummaryNode
+import dev.insight.review.ReviewStateMessages
+import dev.insight.review.ReviewTabState
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import dev.insight.review.diffCardKey
-import dev.insight.review.seedTopicSummaries
-import dev.insight.review.targetedEntries
 
 /** Immutable review evidence, independent of PSI, graph construction and the Git plugin. */
 data class ReviewFile(
@@ -46,40 +37,22 @@ data class ReviewSnapshot(
     val comparison: ReviewComparison = ReviewComparison(),
 )
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
-class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) {
-    private val disk = ReviewCacheSession(cache, "diff", paths)
-    val reviewed = ReviewedFiles()
-    fun setReviewed(node: SummaryNode, value: Boolean) {
-        val keys = reviewed.set(node.files, value)
-        disk.saveReviewed(keys, value)
-    }
-    private fun persist() = disk.save(summaries, topics, topicSummaries)
+class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) : ReviewTabState<ReviewFile>(
+    "diff", paths, cache, { buildSummaryTree(it) }, { buildTopicSummaryTree(it) }, ReviewStateMessages(
+        refreshing = "The diff is refreshing. Retry after refresh completes.",
+        changed = "The diff changed. Start a new request to review the current snapshot.",
+        notePaths = "Use 1 to 30 included file paths.",
+        unknownFile = { "$it is not a file included in this diff." },
+    ),
+) {
     /** Null follows all changes; a fixed set stays scoped even when its files leave the diff. */
-    val scopePaths: Set<String>? = paths?.toSet()
-    var revision = 0
-        private set
-    var refreshing = true
+    override val scopePaths: Set<String>? = paths?.toSet()
     var snapshot = ReviewSnapshot(emptyList(), emptyList())
         private set
-    private val cards = linkedMapOf<ReviewNoteKey, ReviewNote>()
-    val notes: List<ReviewNote> get() = cards.values.toList()
-    private val sourceCards = linkedMapOf<ReviewSourceRange, ReviewSourceBlock>()
-    val sources: List<ReviewSourceBlock> get() = sourceCards.values.toList()
+    override val snapshotFiles: List<ReviewFile> get() = snapshot.files
+    override fun resolveSource(range: ReviewSourceRange): ReviewSourceBlock = resolveSourceBlock(snapshot, range)
     private val diffCards = linkedMapOf<String, ReviewFile>()
     val diffs: List<ReviewFile> get() = diffCards.values.toList()
-    /** The summary tree of this revision. Summaries of unchanged subtrees survive snapshot changes; a new request discards all. */
-    var summaries = ReviewSummaries(buildSummaryTree(emptyList()))
-        private set
-    /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
-    var summariesVisible = false
-        private set
-
-    var topics = ReviewTopics(emptyList())
-        private set
-    var topicSummaries = ReviewSummaries(buildTopicSummaryTree(topics))
-        private set
-    var topicsVisible = false
-        private set
 
     /** Whether the word-changes chart is on the canvas; it is counted from the current snapshot when first needed. */
     var wordsVisible = false
@@ -115,27 +88,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
     fun hideSemantic() { semanticVisible = false }
 
-    fun startTopics(): ReviewTopics {
-        if (topics.complete) {
-            topics = ReviewTopics(snapshot.files)
-            topicSummaries = ReviewSummaries(buildTopicSummaryTree(topics))
-            disk.forget(ReviewDiskCache.TOPICS, ReviewDiskCache.FILLED)
-            persist()
-        }
-        topicsVisible = true
-        return topics
-    }
-    fun showTopics() { topicsVisible = true }
-    fun hideTopics() { topicsVisible = false }
-    fun assignTopic(expected: Int, path: String, label: String): ReviewTopics {
-        check(expected)
-        return topics.assign(path, label).also {
-            topics = it
-            topicSummaries = topicSummaries.retainedIn(buildTopicSummaryTree(it))
-            persist()
-        }
-    }
-
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
         val comparisonChanged = next.comparison != snapshot.comparison
@@ -144,73 +96,15 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         if (next.files != snapshot.files || comparisonChanged || revision == 0) {
             val old = snapshot.files.associateBy { it.path }
             val fresh = next.files.associateBy { it.path }
-            cards.entries.removeIf { (_, note) -> note.paths.any { path ->
-                requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
-            } }
-            sourceCards.entries.removeIf { (range, _) ->
-                requestChanged || fresh[range.path] == null || fresh[range.path]?.fingerprint != old[range.path]?.fingerprint
-            }
-            diffCards.entries.removeIf { (path, _) ->
-                requestChanged || fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
-            }
+            fun changed(path: String) = fresh[path] == null || fresh[path]?.fingerprint != old[path]?.fingerprint
+            diffCards.entries.removeIf { (path, _) -> requestChanged || changed(path) }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
-            val tree = buildSummaryTree(next.files)
-            summaries = if (requestChanged) ReviewSummaries(tree) else summaries.retainedIn(tree)
-            topics = if (requestChanged) ReviewTopics(next.files) else topics.retainedIn(next.files)
-            val topicTree = buildTopicSummaryTree(topics)
-            topicSummaries = if (requestChanged) ReviewSummaries(topicTree) else topicSummaries.retainedIn(topicTree)
-            // Saved entries are keyed by content, so the request alone picks the slot; changed files simply miss their keys.
-            disk.load(next.comparison.request)
-            if (requestChanged) reviewed.restore(next.files, emptySet())
-            disk.restoreReviewed(reviewed, next.files)
-            summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
-            topics = disk.restoreTopics(topics)
-            topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(buildTopicSummaryTree(topics)))
-            revision++
+            applyRevision(next.files, next.comparison.request, reset = requestChanged, ::changed)
         }
         snapshot = next
         refreshing = false
     }
 
-    fun check(expected: Int) {
-        if (refreshing) throw ToolInputException("The diff is refreshing. Retry after refresh completes.")
-        if (expected != revision) throw ToolInputException("The diff changed. Start a new request to review the current snapshot.")
-    }
-
-    fun addNote(expected: Int, paths: List<String>, text: String): ReviewNote =
-        addNotes(expected, listOf(ReviewNote(paths, text))).single()
-
-    /** Validates every note before adding any, so a rejected batch leaves the canvas unchanged. */
-    fun addNotes(expected: Int, notes: List<ReviewNote>): List<ReviewNote> {
-        check(expected)
-        if (notes.isEmpty()) throw ToolInputException("Add at least one note.")
-        val known = snapshot.files.mapTo(hashSetOf()) { it.path }
-        val added = notes.mapIndexed { index, note ->
-            val prefix = if (notes.size > 1) "Note ${index + 1}: " else ""
-            if (note.paths.isEmpty() || note.paths.size > 30) throw ToolInputException("${prefix}Use 1 to 30 included file paths.")
-            note.paths.firstOrNull { it !in known }?.let { throw ToolInputException("${prefix}$it is not a file included in this diff.") }
-            if (note.text.isBlank() || note.text.length > 2000)
-                throw ToolInputException("${prefix}Use a note of 1–2000 characters.")
-            if (note.symbol != null && (note.symbol.isBlank() || note.symbol.length > 500))
-                throw ToolInputException("${prefix}Use a symbol of 1–500 characters.")
-            note.copy(paths = note.paths.distinct().sorted(), text = note.text.trim(), symbol = note.symbol?.trim())
-        }
-        if ((cards.keys + added.map { it.key }).toSet().size > 200) throw ToolInputException("The canvas has reached its 200-note limit.")
-        added.forEach { cards[it.key] = it }
-        return added
-    }
-
-    fun removeNote(paths: List<String>, symbol: String? = null) { cards.remove(ReviewNoteKey(paths.distinct().sorted(), symbol)) }
-    fun showSource(expected: Int, range: ReviewSourceRange): ReviewSourceBlock {
-        check(expected)
-        val block = resolveSourceBlock(snapshot, range)
-        if (range !in sourceCards && sourceCards.size >= 30)
-            throw ToolInputException("The canvas has reached its 30-source-block limit.")
-        sourceCards[range] = block
-        return block
-    }
-
-    fun removeSource(range: ReviewSourceRange) { sourceCards.remove(range) }
     fun showDiff(path: String): ReviewFile? {
         val file = snapshot.files.firstOrNull { it.path == path } ?: return null
         diffCards[path] = file
@@ -218,51 +112,11 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     }
 
     fun removeDiff(path: String) { diffCards.remove(path) }
-    fun clearNotes() {
-        cards.clear(); sourceCards.clear(); diffCards.clear()
-        summariesVisible = false; topicsVisible = false; wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
+    override fun clearNotes() {
+        super.clearNotes()
+        diffCards.clear()
+        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
     }
-
-    fun summarize(expected: Int, entries: Map<Int, String>): ReviewSummaries {
-        check(expected)
-        return summaries.summarize(entries).also { summaries = it; persist() }
-    }
-
-    fun startTopicSummaries(expected: Int): ReviewSummaries {
-        check(expected)
-        topicSummaries = seedTopicSummaries(topicSummaries, summaries)
-        persist()
-        return topicSummaries
-    }
-
-    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries {
-        check(expected)
-        topicSummaries = topicSummaries.summarize(entries)
-        // File summaries are shared with the ordinary Summaries view.
-        val files = topicSummaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
-            .mapNotNull { node -> topicSummaries.text(node.id)?.let { node.path to it } }.toMap()
-        val shared = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE && summaries.text(it.id) == null }
-            .mapNotNull { node -> files[node.path]?.let { node.id to it } }.toMap()
-        val cachedPaths = topicSummaries.tree.nodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
-            .mapTo(hashSetOf()) { it.path }
-        val cached = summaries.tree.nodes.filter { it.path in cachedPaths }.mapTo(hashSetOf()) { it.id }
-        shared.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
-            val entries = batch.associate { it.key to it.value }
-            summaries = summaries.share(entries, cached.intersect(entries.keys))
-        }
-        persist()
-        return topicSummaries
-    }
-
-    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the diff changed. */
-    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
-        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
-        return topicSummaries
-    }
-
-    fun clearSummaries() { summaries = ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
-    fun showSummaries() { summariesVisible = true }
-    fun hideSummaries() { summariesVisible = false }
 }
 
 /** Unified evidence with three context lines; deleted lines retain their old-side line numbers. */
