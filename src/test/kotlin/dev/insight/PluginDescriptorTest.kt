@@ -1,8 +1,12 @@
 package dev.insight
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.w3c.dom.Element
+import java.util.Locale
+import java.util.ResourceBundle
 import javax.xml.parsers.DocumentBuilderFactory
 
 /**
@@ -11,6 +15,26 @@ import javax.xml.parsers.DocumentBuilderFactory
  * `supportsKotlinPluginMode` in the main `plugin.xml`.
  */
 class PluginDescriptorTest {
+    @Test fun `settings and action labels resolve from their declared resource bundles`() {
+        val descriptor = loadDescriptor("plugin.xml")
+        val configurable = childElements(descriptor).filter { it.tagName == "extensions" }
+            .flatMap { childElements(it) }.single { it.tagName == "applicationConfigurable" }
+        val settingsBundle = ResourceBundle.getBundle(configurable.getAttribute("bundle"), Locale.ROOT)
+        assertFalse(configurable.hasAttribute("displayName"))
+        assertEquals("Insight Chat", settingsBundle.getString(configurable.getAttribute("key")))
+
+        val actions = childElements(descriptor).single { it.tagName == "actions" }
+        val actionBundle = ResourceBundle.getBundle(actions.getAttribute("resource-bundle"), Locale.ROOT)
+        for (action in childElements(actions).filter { it.tagName == "action" }) {
+            val id = action.getAttribute("id")
+            for (attribute in listOf("text", "description")) {
+                assertFalse("$id must use its resource bundle for $attribute", action.hasAttribute(attribute))
+                assertTrue("$id has an empty $attribute", actionBundle.getString("action.$id.$attribute").isNotBlank())
+            }
+        }
+        assertEquals("Open Prompt Constructor", actionBundle.getString("action.Insight.OpenPromptConstructor.text"))
+    }
+
     @Test fun `prompt constructor has a separate tool window and Tools menu entry`() {
         val descriptor = loadDescriptor("plugin.xml")
         val window = childElements(descriptor).filter { it.tagName == "extensions" }
@@ -37,8 +61,8 @@ class PluginDescriptorTest {
             .filterIsInstance<Element>()
 
     /** All `supportsKotlinPluginMode` declarations, each paired with its descriptor file name. */
-    private fun kotlinModeDeclarations(vararg names: String): List<Pair<String, Element>> =
-        names.flatMap { name ->
+    private fun kotlinModeDeclarations(): List<Pair<String, Element>> =
+        listOf("plugin.xml", "call-graph-kotlin.xml", "call-graph-java.xml").flatMap { name ->
             childElements(loadDescriptor(name))
                 .filter { it.tagName == "extensions" && it.getAttribute("defaultExtensionNs") == "org.jetbrains.kotlin" }
                 .flatMap { childElements(it) }
@@ -47,7 +71,7 @@ class PluginDescriptorTest {
         }
 
     @Test fun `kotlin plugin mode is declared once in the main plugin descriptor`() {
-        val declarations = kotlinModeDeclarations("plugin.xml", "call-graph-kotlin.xml", "call-graph-java.xml")
+        val declarations = kotlinModeDeclarations()
         assertEquals(
             "expected a single supportsKotlinPluginMode declaration, found in: ${declarations.map { it.first }}",
             1,

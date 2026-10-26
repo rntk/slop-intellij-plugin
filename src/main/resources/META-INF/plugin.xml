@@ -45,7 +45,8 @@
         <!-- Raw request/response traffic of the LLM and Decisions APIs, for debugging. -->
         <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/insight.svg"
                     factoryClass="dev.insight.apilog.ApiLogToolWindowFactory"/>
-        <applicationConfigurable parentId="tools" id="dev.insight.chat" displayName="Insight Chat"
+        <applicationConfigurable parentId="tools" id="dev.insight.chat"
+                                 bundle="messages.InsightBundle" key="configurable.insight.chat.display.name"
                                  instance="dev.insight.chat.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.diff.DiffReviewEditorProvider"/>
@@ -57,55 +58,45 @@
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
-    <actions>
+    <actions resource-bundle="messages.InsightBundle">
         <action id="Insight.OpenPromptConstructor" class="dev.insight.prompts.OpenPromptConstructorAction"
-                text="Open Prompt Constructor" description="Assemble and edit prompts from a Markdown prompt and appendix library"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenDiffReview" class="dev.insight.diff.OpenDiffReviewAction"
-                text="Open Diff Review" description="Review local changes, branches or commits with file and group notes"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenCodeReview" class="dev.insight.codereview.OpenCodeReviewAction"
-                text="Open Code Review" description="Review the code in the project, a folder or an entry file with summaries, topics and notes"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.ReviewDirectory" class="dev.insight.codereview.ReviewDirectoryAction"
-                text="Review Code in Directory" description="Open Code Review for the code in this folder"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenDashboard" class="dev.insight.dashboard.OpenDashboardAction"
-                text="Open Insight Dashboard" description="Open the Insight visualization workbench"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.ShowCallGraph" class="dev.insight.callgraph.ShowCallGraphAction"
-                text="Show Call Graph" description="Show the callers and callees of the function at the caret"
                 icon="/icons/insight.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="Insight.AddToFlowChart" class="dev.insight.callgraph.AddToFlowChartAction"
-                text="Add to Flow Chart" description="Add the symbol at the caret to the flow chart of the Application Graph"
                 icon="/icons/insight.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenSideBySide" class="dev.insight.callgraph.OpenSideBySideAction"
-                text="Open Side by Side" description="Open the symbol at the caret side by side with its callers and the functions it calls"
                 icon="/icons/insight.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.ShowChanges" class="dev.insight.callgraph.ShowChangesInGraphAction"
-                text="Show Changes in Application Graph"
-                description="Highlight the symbols changed since HEAD and their callers and callees in the Application Graph"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>

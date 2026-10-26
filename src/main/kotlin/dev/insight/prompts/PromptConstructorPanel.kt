@@ -13,6 +13,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -20,6 +21,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.content.ContentFactory
@@ -42,13 +44,11 @@ import java.nio.file.Path
 import javax.swing.AbstractAction
 import javax.swing.DefaultListModel
 import javax.swing.JButton
-import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JEditorPane
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JSplitPane
-import javax.swing.JTabbedPane
 import javax.swing.KeyStroke
 import javax.swing.ListSelectionModel
 import javax.swing.Timer
@@ -78,7 +78,7 @@ internal class PromptConstructorPanel(private val project: Project) : JPanel(Bor
         ?: Path.of(project.basePath ?: System.getProperty("user.home"), ".insight", "prompt-library").toString())
     private var items = emptyList<PromptItem>()
     private val search = JBTextField().apply { emptyText.text = "Search titles, tags and content" }
-    private val category = JComboBox(arrayOf("All", "Prompts", "Appendices"))
+    private val category = ComboBox(arrayOf("All", "Prompts", "Appendices"))
     private val model = DefaultListModel<PromptItem>()
     private val library = JBList(model).apply { selectionMode = ListSelectionModel.SINGLE_SELECTION }
     private val itemText = JBTextArea().apply { isEditable = false; lineWrap = true; wrapStyleWord = true }
@@ -88,7 +88,7 @@ internal class PromptConstructorPanel(private val project: Project) : JPanel(Bor
         isEditable = false
         putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
     }
-    private val tabs = JTabbedPane()
+    private val tabs = JBTabbedPane()
     private val counts = JLabel()
     private val status = JLabel(" ")
     private val libraryLocation = JLabel()
@@ -145,7 +145,7 @@ internal class PromptConstructorPanel(private val project: Project) : JPanel(Bor
             previewTimer.restart()
         })
         for (key in listOf("ctrl ENTER", "meta ENTER")) {
-            editor.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(key), "copyPrompt")
+            editor.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(key), "copyPrompt")
         }
         editor.actionMap.put("copyPrompt", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) = copy()
@@ -172,7 +172,9 @@ internal class PromptConstructorPanel(private val project: Project) : JPanel(Bor
     }
 
     private fun chooseLibrary() {
-        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor().withTitle("Choose Prompt Library (contains prompts and appendices)"), project, null)?.let {
+        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor()
+            .withTitle("Choose Prompt Library")
+            .withDescription("Choose a folder containing prompts/ and appendices/"), project, null)?.let {
             root = Path.of(it.path)
             state.libraryPath = root.toString()
             reload()
@@ -191,7 +193,7 @@ internal class PromptConstructorPanel(private val project: Project) : JPanel(Bor
     }
 
     private fun save() {
-        val kind = JComboBox(PromptKind.entries.toTypedArray()).apply { selectedItem = selected()?.kind ?: PromptKind.PROMPT }
+        val kind = ComboBox(PromptKind.entries.toTypedArray()).apply { selectedItem = selected()?.kind ?: PromptKind.PROMPT }
         val name = JBTextField(selected()?.filename ?: "my-prompt.md", 28)
         val form = JPanel(BorderLayout(8, 8)).apply {
             add(kind, BorderLayout.NORTH)
