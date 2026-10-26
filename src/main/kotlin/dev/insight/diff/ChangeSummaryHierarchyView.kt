@@ -153,7 +153,8 @@ internal class ChangeSummaryDocumentPanel(
     zoom: Double,
     private val actions: ChangeSummaryActions,
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
-) : DocumentColumnsPanel(zoom, vocabulary) {
+    project: com.intellij.openapi.project.Project? = null,
+) : DocumentColumnsPanel(zoom, vocabulary, project) {
     private val summaries = card.summaries
     private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree

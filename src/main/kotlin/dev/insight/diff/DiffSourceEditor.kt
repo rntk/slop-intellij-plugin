@@ -9,6 +9,8 @@ import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.JBUI
 import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewCodeLocation
+import dev.insight.review.ReviewCodeNavigation
 import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JPanel
@@ -36,6 +38,13 @@ internal class DiffSourceEditor(val block: ReviewSourceBlock, project: Project?)
             override fun getMaxLineNumber(editor: Editor): Int = block.range.endLine
         })
         add(editor.component, BorderLayout.CENTER)
+        ReviewCodeNavigation.install(editor, project, ::locationAt)
+    }
+
+    internal fun locationAt(line: Int, column: Int): ReviewCodeLocation? {
+        if (line !in 0 until editor.document.lineCount) return null
+        return ReviewCodeLocation(block.sourcePath, block.fullText ?: return null,
+            block.range.startLine + line, column, block.absolutePath)
     }
 
     fun resizeFor(width: Int, zoom: Double) {

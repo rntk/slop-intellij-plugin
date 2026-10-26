@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.panels.VerticalLayout
@@ -84,6 +85,7 @@ internal class FileStructurePanel(
     zoom: Double,
     private val actions: FileStructureActions,
     vocabulary: ReviewVocabulary = ReviewVocabulary.CODE,
+    private val project: Project? = null,
 ) : DocumentColumnsPanel(zoom, vocabulary) {
     /** A block as a document section; its path is unique within the document. */
     private class BlockSource(val block: FileBlock, val file: ReviewSource, override val text: String) : ReviewSource {
@@ -171,7 +173,7 @@ internal class FileStructurePanel(
             hoverSource(lineItems[line], topicItems.filter { item ->
                 item.first == index && summaryPaths[item.key].orEmpty().any { it in paths }
             }.mapTo(hashSetOf()) { it.key })
-        }.also { sourceViews[index] = it }
+        }.also { it.enableNavigation(project, card.file); sourceViews[index] = it }
     }
 
     /** No persistent notes or summary-driven row heights: a hover overlays only the relevant neighboring summaries. */

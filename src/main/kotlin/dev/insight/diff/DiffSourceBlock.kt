@@ -16,5 +16,7 @@ internal fun resolveSourceBlock(snapshot: ReviewSnapshot, range: ReviewSourceRan
     if (range.endLine > lines.size) throw ToolInputException("Range exceeds the ${lines.size} lines on the ${range.side} side.")
     val text = lines.subList(range.startLine - 1, range.endLine).joinToString("\n")
     if (text.length > 20_000) throw ToolInputException("Source block exceeds 20000 characters. Select fewer lines.")
-    return ReviewSourceBlock(range, text)
+    val sourcePath = if (range.side == "before") file.previousPath ?: file.path else file.path
+    return ReviewSourceBlock(range, text, source,
+        if (sourcePath == file.path) file.absolutePath else null, sourcePath)
 }

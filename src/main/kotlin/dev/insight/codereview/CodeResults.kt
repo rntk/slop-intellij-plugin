@@ -357,7 +357,7 @@ internal fun resolveCodeSource(snapshot: CodeSnapshot, range: ReviewSourceRange)
     if (range.endLine > file.lineCount) throw ToolInputException("Range exceeds the ${file.lineCount} lines of ${range.path}.")
     val text = file.lines(range.startLine..range.endLine)
     if (text.length > CODE_SOURCE_CHARS) throw ToolInputException("Source block exceeds $CODE_SOURCE_CHARS characters. Select fewer lines.")
-    return ReviewSourceBlock(range.copy(side = CODE_SOURCE_SIDE), text)
+    return ReviewSourceBlock(range.copy(side = CODE_SOURCE_SIDE), text, file.text, file.absolutePath)
 }
 
 /** The side of every code review source block: the file as it is in the snapshot. */

@@ -100,7 +100,7 @@ internal class NoteCanvas(
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
         openFileAt = openFileAt, showFileLines = showFileLines, close = sourceActions.removeFileView,
         summarize = summaryActions.summarize, generateTopics = topicActions.generateTopics,
-    ))
+    ), project)
     private val words: WordChanges? get() = state.words
     private val diffOverview: WordChanges? get() = state.diffOverview
     private val semantic: SemanticResult? get() = state.semantic
@@ -579,7 +579,7 @@ internal class NoteCanvas(
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
                 })
                 else add(if (hierarchy) ChangeTopicHierarchyPanel(content, topicsView, inner, viewZoom, actions, vocabulary)
-                    else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary))
+                    else ChangeTopicsPanel(content, topicsView, inner, viewZoom, actions, vocabulary, project))
             }, BorderLayout.CENTER)
         }
         val search = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
@@ -836,7 +836,7 @@ internal class NoteCanvas(
                 document -> JPanel(VerticalLayout(scaled(8))).apply {
                     isOpaque = false
                     add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary))
+                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, actions, vocabulary, project))
                 }
                 else -> ChangeSummariesPanel(content, summariesView, inner, zoom, actions, vocabulary,
                     browse = if (explorer) { identity ->

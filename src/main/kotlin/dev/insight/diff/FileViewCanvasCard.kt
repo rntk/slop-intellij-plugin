@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
@@ -29,6 +30,7 @@ internal data class FileViewCanvasActions(
 internal class FileViewCanvasCard(
     private val vocabulary: ReviewVocabulary,
     private val actions: FileViewCanvasActions,
+    private val project: Project? = null,
 ) {
     private var filePath: String? = null
     /** The canvas also updates this position when zooming around the pointer. */
@@ -97,7 +99,7 @@ internal class FileViewCanvasCard(
             }
             status?.let { add(JLabel(it).apply { name = "file-view-status"; font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() }) }
             if (structure != null) add(FileStructurePanel(content, structure, inner, documentZoom,
-                FileStructureActions(openFile = actions.openFileAt, showLines = actions.showFileLines), vocabulary))
+                FileStructureActions(openFile = actions.openFileAt, showLines = actions.showFileLines), vocabulary, project))
         }
         val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder() }
         card.add(header, BorderLayout.NORTH)

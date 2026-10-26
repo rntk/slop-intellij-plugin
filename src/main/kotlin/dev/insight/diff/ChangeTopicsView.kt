@@ -5,6 +5,7 @@ import com.intellij.openapi.diff.DiffColors
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
@@ -14,6 +15,8 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewCodeLocation
+import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewTopics
@@ -242,6 +245,7 @@ internal class ChangeTopicActions(
 internal abstract class DocumentColumnsPanel(
     protected val zoom: Double,
     protected val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+    private val project: Project? = null,
 ) : JPanel(null) {
     protected class RailItem(
         val key: String,
@@ -512,13 +516,14 @@ internal abstract class DocumentColumnsPanel(
         if (body != null) add(body, BorderLayout.CENTER)
         else if (file is ReviewFile) {
             val patch = PatchView(file.patch, inner, zoom)
+            patch.enableNavigation(project, file)
             add(patch, BorderLayout.CENTER)
             if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
                 isOpaque = false
                 add(JLabel("… ${patch.hiddenLines} more lines").apply { font = font(JBFont.small()); foreground = help })
                 add(ActionLink("View full diff") { openFile(file) }.apply { font = font(JBFont.small()) })
             }, BorderLayout.SOUTH)
-        } else add(SourceTextView(file.text, inner, zoom), BorderLayout.CENTER)
+        } else add(SourceTextView(file.text, inner, zoom).apply { enableNavigation(project, file) }, BorderLayout.CENTER)
         preferredSize = Dimension(width, preferredSize.height)
     }
 
@@ -696,7 +701,8 @@ internal class ChangeTopicsPanel(
     zoom: Double,
     private val actions: ChangeTopicActions,
     vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
-) : DocumentColumnsPanel(zoom, vocabulary) {
+    project: Project? = null,
+) : DocumentColumnsPanel(zoom, vocabulary, project) {
     val outline = state.outline(card)
     private val nodesByKey = outline.nodes.associateBy { "${it.level}:${it.identity}" }
 
@@ -762,7 +768,7 @@ internal class ChangeTopicsPanel(
  */
 internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JComponent() {
     private enum class Kind { CONTEXT, ADDED, REMOVED, HUNK, NOTE }
-    private class Line(val text: String, val kind: Kind, val old: Int?, val new: Int?)
+    private class Line(val text: String, val kind: Kind, val old: Int?, val new: Int?, val source: String = "")
 
     private val lines: List<Line>
     val hiddenLines: Int
@@ -786,10 +792,10 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
                     old = hunk.groupValues[1].toInt(); new = hunk.groupValues[2].toInt(); inHunk = true
                     Line(text, Kind.HUNK, null, null)
                 }
-                !inHunk || raw.startsWith("[") -> Line(text, Kind.NOTE, null, null)
-                raw.startsWith("+") -> Line(text, Kind.ADDED, null, new++)
-                raw.startsWith("-") -> Line(text, Kind.REMOVED, old++, null)
-                else -> Line(text, Kind.CONTEXT, old++, new++)
+                !inHunk || raw.startsWith("[") || raw.startsWith("\\") -> Line(text, Kind.NOTE, null, null)
+                raw.startsWith("+") -> Line(text, Kind.ADDED, null, new++, raw.drop(1))
+                raw.startsWith("-") -> Line(text, Kind.REMOVED, old++, null, raw.drop(1))
+                else -> Line(text, Kind.CONTEXT, old++, new++, raw.drop(1))
             }
         }
         lines = parsed.take(MAX_LINES)
@@ -801,6 +807,23 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
     }
 
     val lineCount: Int get() = lines.size
+
+    fun enableNavigation(project: Project?, file: ReviewFile) {
+        ReviewCodeNavigation.install(this, project) { point ->
+            val index = if (point.y < pad) -1 else (point.y - pad) / lineHeight
+            val row = lines.getOrNull(index)
+            val gutter = if (numberWidth == 0) 0 else 2 * numberWidth + 3 * pad
+            val column = row?.let {
+                ReviewCodeNavigation.columnAt(it.source, point.x - gutter - pad - metrics.stringWidth(" "), metrics::stringWidth)
+            }
+            val before = row?.kind == Kind.REMOVED
+            val line = if (before) row?.old else row?.new
+            val text = if (before) file.before else file.after
+            if (column == null || line == null || text == null) null
+            else ReviewCodeLocation(if (before) file.previousPath ?: file.path else file.path, text, line, column,
+                if (before && file.previousPath != null) null else file.absolutePath)
+        }
+    }
 
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D

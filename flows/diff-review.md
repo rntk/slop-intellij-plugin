@@ -6,6 +6,8 @@ The workspace is separate from the application graph, though some views can rela
 
 Chat can also read current project files outside the change for supporting context, keeping that context distinct from the comparison.
 
+Source and diff views offer the IDE's declaration navigation and usage search for snapshot files that match current project source.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — review workspace

@@ -2,6 +2,10 @@ package dev.insight.diff
 
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
+import com.intellij.openapi.project.Project
+import dev.insight.review.ReviewCodeLocation
+import dev.insight.review.ReviewCodeNavigation
+import dev.insight.review.ReviewSource
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.Dimension
@@ -60,6 +64,17 @@ internal class SourceTextView(
     /** Snapshot line at this pixel, excluding the padding and empty rows. */
     internal fun lineAt(y: Int): Int? =
         if (y < pad || y >= pad + lineCount * lineHeight) null else firstLine + (y - pad) / lineHeight
+
+    fun enableNavigation(project: Project?, source: ReviewSource) {
+        ReviewCodeNavigation.install(this, project) { point ->
+            val row = lineAt(point.y)
+            val column = row?.let {
+                ReviewCodeNavigation.columnAt(line(it - firstLine), point.x - numberWidth - 3 * pad, metrics::stringWidth)
+            }
+            if (row == null || column == null || source.text == null) null
+            else ReviewCodeLocation(source.path, source.text!!, row, column, source.absolutePath)
+        }
+    }
 
     /** The snapshot line without its final separator; leading characters, including '+' and '-', stay intact. */
     internal fun line(index: Int): String {

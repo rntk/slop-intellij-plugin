@@ -6,6 +6,8 @@ A file, folder or summary entry can be taken to chat: a new review tab whose con
 
 Chat can also read current project files outside the review scope for supporting context, keeping that context distinct from the captured code.
 
+Source views offer the IDE's declaration navigation and usage search when the captured file matches current project source.
+
 Entry points for further exploration:
 
 - [CodeReviewPanel.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewPanel.kt) — review workspace

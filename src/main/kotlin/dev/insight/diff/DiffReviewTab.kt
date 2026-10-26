@@ -5,6 +5,8 @@ import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -12,6 +14,8 @@ import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewCodeLocation
+import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
@@ -87,6 +91,12 @@ internal class DiffReviewTab(
                 WriteIntentReadAction.run {
                     val snapshot = fullFileSnapshots.getOrPut(file) { createFullFileSnapshot(file) }
                     FileEditorManager.getInstance(project).openFile(snapshot, true)
+                        .filterIsInstance<TextEditor>().forEach { opened ->
+                            val editor = opened.editor as? EditorEx ?: return@forEach
+                            ReviewCodeNavigation.install(editor, project) { line, column ->
+                                ReviewCodeLocation(file.path, file.fullFileText.orEmpty(), line + 1, column, file.absolutePath)
+                            }
+                        }
                 }
             },
             openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
