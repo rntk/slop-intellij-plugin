@@ -115,7 +115,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     fun restoreSummaries(name: String, current: ReviewSummaries): ReviewSummaries {
         val saved = saved(name) ?: return current
         val restored = current.tree.summarizable.filter { current.text(it.id) == null && it.key.isNotEmpty() }
-            .mapNotNull { node -> saved[node.key]?.let(Summary::decode)?.let { node.id to it } }.toMap(HashMap())
+            .mapNotNull { node -> saved[summaryKey(node.key)]?.let(Summary::decode)?.let { node.id to it } }.toMap(HashMap())
         // Pre-order reversed visits children first, so a dropped child also drops every ancestor restored above it.
         for (node in current.tree.nodes.asReversed()) {
             if (node.id in restored && node.children.any { it !in restored && current.text(it) == null }) restored.remove(node.id)
@@ -159,7 +159,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
 
     fun save(summaries: ReviewSummaries, topics: ReviewTopics, filled: ReviewSummaries) {
         if (disk == null || slot.isEmpty()) return
-        fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.summary(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it.encode() } }
+        fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.summary(node.id)?.takeIf { node.key.isNotEmpty() }?.let { summaryKey(node.key) to it.encode() } }
         disk.results(slot, save = true) { results ->
             merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
             merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })
@@ -181,6 +181,9 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     }
 
     private fun topicKey(file: ReviewSource) = reviewFingerprint("topic", file.path, file.fingerprint)
+
+    // Prompt and grounding rules changed. Invalidate generated prose without discarding topics or review marks.
+    private fun summaryKey(evidenceKey: String) = reviewFingerprint("summary-rules-3", evidenceKey)
 
     companion object {
         /** Per kind and slot; enough for several snapshots of a large scope, while keeping each save small. */

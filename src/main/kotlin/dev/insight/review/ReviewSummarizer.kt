@@ -6,6 +6,7 @@ import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolChatRunner
 import dev.insight.enrichment.JsonSchemas
+import dev.insight.enrichment.JsonOutputTruncatedException
 import dev.insight.enrichment.clipLine
 import dev.insight.enrichment.completeJson
 import dev.insight.enrichment.forEachConcurrently
@@ -26,7 +27,7 @@ data class ReviewSummaryOptions(
     /** Inlined evidence characters per request, so small files share one request. */
     val batchChars: Int = 24_000,
     val filesPerRequest: Int = 8,
-    val foldersPerRequest: Int = 8,
+    val foldersPerRequest: Int = 4,
     val concurrency: Int = 2,
     /** Requests per node before it is given up; the folders above it then keep their names. */
     val attempts: Int = 5,
@@ -47,6 +48,10 @@ internal interface SummaryEvidence {
     fun size(node: SummaryNode): Int
     /** The numbers of a leaf's evidence lines that its summary may cite, as [describe] numbers them; empty when it has none. */
     fun rows(node: SummaryNode): IntRange
+    /** Changed patch rows, or null for source evidence where every row describes current code. */
+    fun changedRows(node: SummaryNode): Set<Int>? = null
+    /** Evidence provenance, retained when children are condensed. */
+    fun evidenceKind(node: SummaryNode): String? = null
     /**
      * Adds a leaf's evidence to its request [item], which already holds id, kind and location; inlines at most [limit]
      * characters. Every evidence line starts with its number from [rows] and "|".
@@ -60,7 +65,7 @@ internal interface SummaryEvidence {
     fun branchSystem(focus: String): String
 }
 
-internal data class SummaryEvidencePage(val evidence: JsonObject, val rows: IntRange)
+internal data class SummaryEvidencePage(val evidence: JsonObject, val rows: IntRange, val changedRows: Set<Int>? = null)
 
 /** Shared writing policy for source and diff summaries at every level of the tree. */
 internal val SUMMARY_WRITING_GUIDANCE = """
@@ -77,10 +82,9 @@ internal const val SUMMARY_JSON_SHAPE = """{"summaries":[{"id":1,"segments":[{"t
 
 /** How a summary is split into segments, shared by every request. */
 internal val SUMMARY_SEGMENT_GUIDANCE = """
-    Write the brief summary first. Split only where the supporting evidence changes, normally into one to three
-    cited segments. Keep conjunctions and punctuation inside the cited clauses; do not split lists into fragments.
-    The "text" values must concatenate into natural prose, including spaces and punctuation. Standalone connectors
-    or punctuation may optionally have empty "from"; substantive claims must have citations.
+    Return one to three cited segments whose texts join into one brief summary, including spaces and punctuation.
+    Split only where the supporting evidence changes. Keep conjunctions and punctuation inside cited clauses.
+    Substantive claims need citations; connecting words or punctuation alone may have empty "from".
 """.trimIndent()
 
 /** Citations of a leaf's own evidence lines. */
@@ -99,13 +103,12 @@ internal val BRANCH_CITATION_GUIDANCE = """
     Children are evidence, never output nodes. Their source labels C1, C2, etc. are local to their enclosing node.
     Cite a supplied claim label such as "C1.S2" for a specific claim, or "C1" only when condensing that child's
     whole summary. Every substantive segment needs support; it need not cover or cite every child.
+    Copy labels exactly from the input. Never invent labels, fill gaps, or expand a numbered sequence.
+    Cite only the claims needed to support the selected themes; do not enumerate all sources.
     Select one or two dominant themes. Omit helpers, imports, renames and routine test updates unless they are
     the only changes. Preserve whether tests are added, updated or removed; do not infer comprehensive coverage.
-    Example input: {"required_output_ids":[1],"nodes":[{"id":1,"kind":"directory","children":[
-    {"child":"C1","claims":[{"cite":"C1.S1","text":"Adds upload retries."},{"cite":"C1.S2","text":"Renames a helper."}]},
-    {"child":"C2","claims":[{"cite":"C2.S1","text":"Tests the retry limit."}]}]}]}
-    Output: {"summaries":[{"id":1,"segments":[{"text":"Adds upload retries","from":["C1.S1"]},
-    {"text":" with tests for their limit.","from":["C2"]}]}]}
+    Test evidence describes coverage, and documentation evidence describes documentation; neither establishes a new
+    runtime feature. A folder label names a location, not the component that performs the described behavior.
 """.trimIndent()
 
 /** The focus line after cacheable summary instructions, before optional query context; empty without a focus. */
@@ -167,11 +170,19 @@ class ReviewSummarizer internal constructor(
         while (true) {
             val ready = current.ready().filter { (nodeIds == null || it in nodeIds) && (tries[it] ?: 0) < options.attempts }.sorted()
             if (ready.isEmpty()) break
-            val (reused, asked) = ready.map { current.tree[it] }.partition { reuseSingleChildren && it.children.size == 1 }
+            val reusable = if (!reuseSingleChildren) emptyMap() else ready.mapNotNull { id ->
+                val children = current.tree[id].children.map { current.summary(it)!! }
+                val first = children.firstOrNull() ?: return@mapNotNull null
+                // Identical prose with identical segment boundaries can cite every child without another rewrite.
+                if (children.all { child -> child.segments.map { it.text } == first.segments.map { it.text } && child.claims == first.claims })
+                    id to first.relay(children.size) else null
+            }.toMap()
+            val (reused, asked) = ready.map { current.tree[it] }.partition { it.id in reusable }
             if (reused.isNotEmpty()) {
-                val texts = reused.associate { it.id to current.summary(it.children.single())!!.relay() }
                 mutex.withLock {
-                    current = save(texts)
+                    reusable.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
+                        current = save(batch.associate { it.key to it.value })
+                    }
                     progress()
                 }
                 continue
@@ -182,9 +193,13 @@ class ReviewSummarizer internal constructor(
             val batches = leafBatches(leaves).map { it to leafSystem } +
                 otherBranches.chunked(options.foldersPerRequest).map { it to branchSystem } +
                 topics.chunked(options.foldersPerRequest).map { it to topicSystem }
-            forEachConcurrently(batches, options.concurrency) { (batch, system) ->
+            suspend fun processBatch(batch: List<SummaryNode>, system: String) {
                 val texts = try {
                     request(system, branchSystem, batch, current, requests, feedback, onToolCall)
+                } catch (_: JsonOutputTruncatedException) {
+                    // Save each successful half immediately, even if a later half fails or is cancelled.
+                    for (part in batch.chunked((batch.size + 1) / 2)) processBatch(part, system)
+                    return
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: LlmApiException) {
@@ -199,6 +214,7 @@ class ReviewSummarizer internal constructor(
                     progress()
                 }
             }
+            forEachConcurrently(batches, options.concurrency) { (batch, system) -> processBatch(batch, system) }
             // Missing nodes remain eligible until their attempt budget is spent, even after an empty wave.
         }
         val complete = nodeIds?.all { current.text(it) != null } ?: current.complete
@@ -237,7 +253,7 @@ class ReviewSummarizer internal constructor(
                 addProperty("location", node.location)
                 addProperty("part", "${index + 1} of ${pages.size}")
             }
-            ask(system, item, Citations.Lines(page.rows))
+            ask(system, item, Citations.Lines(page.rows, page.changedRows))
         }
         // Bound reduction requests too: a very large patch must not produce an unbounded final prompt.
         while (summaries.size > 1) {
@@ -247,9 +263,11 @@ class ReviewSummarizer internal constructor(
                         addProperty("id", 1)
                         addProperty("kind", "file")
                         addProperty("location", node.location)
+                        evidence.evidenceKind(node)?.let { addProperty("evidence_kind", it) }
                         add("children", JsonArray().apply {
                             children.forEachIndexed { index, summary -> add(JsonObject().apply {
                                 addProperty("child", "C${index + 1}")
+                                evidence.evidenceKind(node)?.let { addProperty("evidence_kind", it) }
                                 add("claims", summary.claimsJson(index, labeled = true))
                             }) }
                         })
@@ -316,7 +334,8 @@ class ReviewSummarizer internal constructor(
             val reply = ToolChatRunner(counted, listOf(readTool), maxToolRounds = options.maxToolRounds)
                 .run(listOf(LlmMessage.system(system), LlmMessage.user("$user\n\n$JSON_ONLY")), onToolCall).reply
             parseJsonObjectLeniently(reply) ?: throw IllegalStateException("The summary answer is not a JSON object: ${reply.take(200)}")
-        } else completeJson(counted, system, user, schema(batch.size), maxTokens = 4096 + 768 * batch.size)
+        } else completeJson(counted, system, user, schema(batch.size), maxTokens = 4096 + 768 * batch.size,
+            retryTruncated = batch.size == 1)
         val decoded = decode(answer, batch.map { node -> citations(node, summaries) })
         batch.forEachIndexed { index, node ->
             when (val problem = decoded.problems[index + 1]) {
@@ -330,13 +349,14 @@ class ReviewSummarizer internal constructor(
 
     /** How a node's answer may cite: its own evidence lines for a leaf, its children's claims for a branch. */
     private fun citations(node: SummaryNode, summaries: ReviewSummaries): Citations =
-        if (node.children.isEmpty()) Citations.Lines(evidence.rows(node))
+        if (node.children.isEmpty()) Citations.Lines(evidence.rows(node), evidence.changedRows(node))
         else Citations.Children(node.children.map { summaries.summary(it)?.claims.orEmpty() })
 
     /** What the model sees of one node: a leaf's numbered evidence, or a branch's children with their claims, and why its last answer was [rejected]. */
     private fun item(position: Int, node: SummaryNode, summaries: ReviewSummaries, rejected: String?) = JsonObject().apply {
         addProperty("id", position)
         addProperty("kind", node.requestKind)
+        evidence.evidenceKind(node)?.let { addProperty("evidence_kind", it) }
         if (node.isTopicBranch) addProperty("topic_path", node.path)
         else addProperty("location", node.location)
         rejected?.let { addProperty("previous_answer_rejected", it) }
@@ -349,6 +369,7 @@ class ReviewSummarizer internal constructor(
                     add(JsonObject().apply {
                         addProperty("child", "C${index + 1}")
                         addProperty("kind", child.requestKind)
+                        evidence.evidenceKind(child)?.let { addProperty("evidence_kind", it) }
                         if (child.isTopicBranch) addProperty("topic_path", child.path)
                         addProperty("label", child.label)
                         summaries.summary(id)?.let { add("claims", it.claimsJson(index, labeled = true)) }
@@ -361,7 +382,7 @@ class ReviewSummarizer internal constructor(
     /** What one node's "from" entries may refer to. */
     internal sealed interface Citations {
         /** Evidence lines numbered [rows]; empty when the leaf has nothing to cite. */
-        data class Lines(val rows: IntRange) : Citations
+        data class Lines(val rows: IntRange, val changedRows: Set<Int>? = null) : Citations
         /** The claim segments of each child, by position. */
         data class Children(val claims: List<List<Int>>) : Citations
 
@@ -453,6 +474,9 @@ class ReviewSummarizer internal constructor(
                     if (invalid.isNotEmpty()) uncited += "Invalid citations: " + invalid.joinToString() +
                         ". Use only supplied source labels or ascending line ranges entirely within this page."
                     val sources = from.flatMap(allowed::parse).distinct()
+                    if (allowed is Citations.Lines && !allowed.changedRows.isNullOrEmpty() && sources.isNotEmpty() && !connector(text) &&
+                        sources.none { source -> source is SummarySource.Rows && allowed.changedRows.any { it in source.first..source.last } })
+                        uncited += "\"${text.trim().clipLine(80)}\" cites only unchanged context; cite an added or removed patch row establishing the change"
                     if (allowed.citable && sources.isEmpty() && !connector(text)) uncited += if (from.isEmpty())
                         "\"${text.trim().clipLine(80)}\" cites nothing" else "\"${text.trim().clipLine(80)}\" cites ${from.joinToString()}, " +
                             "which ${if (allowed is Citations.Lines) "are not lines of this node's evidence" else "are not claims of this node's children"}"

@@ -189,7 +189,9 @@ class ChangeTopicSummariesTest {
                 "{\"id\":${it.asJsonObject["id"]},\"segments\":[{\"text\":\"Generated summary\",\"from\":[\"1\"]}]}"
             } + "]}")
         }, null, ReviewSummaryOptions(concurrency = 1))
-        val run = summarizer.run(current, "reliability", { current = current.summarize(it); current }, queryContext = "persistence")
+        // Exercise every branch's request metadata even when the fake returns identical summaries for all files.
+        val run = summarizer.run(current, "reliability", { current = current.summarize(it); current },
+            queryContext = "persistence", reuseSingleChildren = false)
         assertTrue(run.summaries.complete)
         assertTrue("root" to "" in seen)
         assertTrue("group" to "" in seen)

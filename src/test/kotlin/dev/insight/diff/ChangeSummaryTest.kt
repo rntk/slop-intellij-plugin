@@ -340,7 +340,7 @@ class ChangeSummaryTest {
             if (node.id !in ids) assertEquals(original.text(node.id), version.text(node.id))
         }
         assertEquals(listOf(0 to 3, 2 to 3, 3 to 3), progress)
-        val evidence = DiffSummaryEvidence(ReviewSummaryOptions())
+        val evidence = DiffSummaryEvidence()
         assertTrue(model.requests[0].messages.first().content.startsWith(evidence.leafSystem(tree, "")))
         assertTrue(model.requests[1].messages.first().content.startsWith(evidence.branchSystem("")))
         assertTrue(model.requests.all { it.messages.first().content.contains("The reader is exploring this query: How does parsing work?") })

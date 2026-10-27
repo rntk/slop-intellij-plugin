@@ -24,27 +24,38 @@ internal fun diffSummarizer(
     complete: suspend (CompletionRequest) -> Completion,
     readTool: ChatTool?,
     options: ReviewSummaryOptions = ReviewSummaryOptions(),
-    evidence: SummaryEvidence = DiffSummaryEvidence(options),
+    evidence: SummaryEvidence = DiffSummaryEvidence(),
 ): ReviewSummarizer = ReviewSummarizer(complete, readTool, options, evidence)
 
-/** A changed file's patch, with the changed paths as context. A summary cites the patch's own lines, numbered from 1. */
-internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : SummaryEvidence {
+/** A changed file's patch and provenance. A summary cites the patch's own lines, numbered from 1. */
+internal class DiffSummaryEvidence : SummaryEvidence {
     override fun size(node: SummaryNode): Int = (node.file as? ReviewFile)?.patch?.length ?: 0
 
     override fun rows(node: SummaryNode): IntRange = 1..((node.file as? ReviewFile)?.let { patchRows(it.patch) } ?: 0)
+
+    override fun changedRows(node: SummaryNode): Set<Int>? = (node.file as? ReviewFile)?.patch?.lineSequence()
+        ?.mapIndexedNotNull { index, line -> (index + 1).takeIf { line.startsWith('+') || line.startsWith('-') } }?.toSet()
+
+    override fun evidenceKind(node: SummaryNode): String = node.files.map(::diffEvidenceKind).distinct().singleOrNull() ?: "mixed"
 
     override fun pages(node: SummaryNode, limit: Int): List<SummaryEvidencePage>? {
         val file = node.file as? ReviewFile ?: return null
         if (file.patch.length <= limit) return null
         require(limit > 0) { "Patch page size must be positive" }
         val pages = mutableListOf<SummaryEvidencePage>()
+        val lines = file.patch.lineSequence().toList()
+        val changed = changedRows(node).orEmpty()
+        val hunks = java.util.TreeMap<Int, String>().apply {
+            lines.forEachIndexed { index, line -> if (line.startsWith("@@")) put(index + 1, line) }
+        }
         var offset = 0
         var firstLine = 1
         while (offset < file.patch.length) {
             val end = patchPageEnd(file.patch, offset, (offset + limit).coerceAtMost(file.patch.length))
             val text = file.patch.substring(offset, end)
             val lastLine = firstLine + patchRows(text) - 1
-            pages += SummaryEvidencePage(JsonObject().apply {
+            val pageChanges = (firstLine..lastLine).filterTo(mutableSetOf()) { it in changed }
+            val item = JsonObject().apply {
                 addProperty("path", file.path)
                 addProperty("status", file.status)
                 addProperty("first_line", firstLine)
@@ -52,7 +63,11 @@ internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : 
                 addProperty("first_line_continues", offset > 0 && file.patch[offset - 1] != '\n')
                 addProperty("last_line_continues", end < file.patch.length && file.patch[end - 1] != '\n')
                 addProperty("patch", numberedRows(text, firstLine))
-            }, firstLine..lastLine)
+                addPatchContext(file.path, lines, firstLine..lastLine, hunks.floorEntry(pageChanges.minOrNull() ?: firstLine)?.value)
+            }
+            // A page of unchanged context cannot establish a change of its own.
+            if (pageChanges.isNotEmpty() || changed.isEmpty())
+                pages += SummaryEvidencePage(item, firstLine..lastLine, pageChanges)
             firstLine += text.count { it == '\n' }
             offset = end
         }
@@ -67,6 +82,8 @@ internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : 
         item.addProperty("lines", changedLines(file))
         val cut = patchPageEnd(file.patch, 0, limit)
         item.addProperty("patch", numberedRows(file.patch.take(cut), 1))
+        val lines = file.patch.lineSequence().toList()
+        item.addPatchContext(file.path, lines, 1..patchRows(file.patch.take(cut)), lines.firstOrNull()?.takeIf { it.startsWith("@@") })
         if (cut < file.patch.length) {
             item.addProperty("patch_cut_at", cut)
             item.addProperty("patch_length", file.patch.length)
@@ -74,30 +91,27 @@ internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : 
         }
     }
 
-    /** File requests share this prefix, with the per-run focus last so the overview stays cached across focus changes. */
+    /** Fixed instructions stay cacheable across files and focus changes; each node supplies its own context. */
     override fun leafSystem(tree: ReviewSummaryTree, focus: String): String {
-        val overview = StringBuilder()
-        for (node in tree.nodes) {
-            val file = node.file as? ReviewFile ?: continue
-            val line = "${file.path} (${file.status}, ${changedLines(file)})\n"
-            if (overview.length + line.length > options.overviewChars) { overview.append("…\n"); break }
-            overview.append(line)
-        }
         return "$SYSTEM_PREFIX\n" + """
             Every node in "nodes" is a changed file or a patch part (kind "chunk") with its evidence inline.
             For a part, summarize only the shown changes. Other parts are processed separately and combined by the application.
             first_line_continues and last_line_continues mean a long line crosses a page boundary; do not infer its unseen text.
-            The evidence lines are the lines of the patch, hunk headers included, numbered from 1.
+            Use the supplied patch row numbers, which continue across pages. hunk_header is navigation context only.
             After the "N|" line-number prefix, "-" marks removed text and "+" marks added text; a space marks unchanged
             context. Context may explain a change but is not itself a change. Hunk headers are navigation, not changes.
-            Describe before/after behavior only when supported by changed lines; preserve qualifications and exceptions.
-            A file with status
-            "deleted" no longer exists: describe what was removed, such as "Removes the scorer that …", never what it provides.
-        """.trimIndent() + "\n" + LEAF_CITATION_GUIDANCE + "\n" + """
-            Answer from the supplied evidence. Cite only the numbered rows shown, never character offsets.
-
-            All files in the change, for context only; summarize just the files in "nodes":
-        """.trimIndent() + "\n" + overview.toString().trimEnd() + summaryFocusLine(focus)
+            Each change claim must cite at least one added or removed row establishing that change, even when also citing context.
+            added_lines and removed_lines count changed rows in this page, including a continued row's original sign.
+            When added_lines is zero and removed_lines is positive, describe removals, even in a modified file.
+            For example, "7|-fun rank() = askModel()" means "Removes model-based ranking", not "Ranks using a model".
+            A file with status "deleted" no longer exists; describe what was removed. Preserve qualifications and exceptions.
+            For evidence_kind "test", describe added, updated or removed coverage. A removed test is not new coverage.
+            Test setup selecting an existing mode does not add that mode. Keep fixture values scoped to their assertion;
+            an assertion for selected level 1 does not mean every selection resets the level to 1.
+            For evidence_kind "documentation", describe what the documentation adds, changes or removes.
+            Neither tests nor documentation alone establish a new runtime feature. Omit unchanged assertions and prose.
+            Cite only numbered patch rows shown, never character offsets or hunk_header text.
+        """.trimIndent() + "\n" + LEAF_CITATION_GUIDANCE + summaryFocusLine(focus)
     }
 
     override fun branchSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
@@ -106,6 +120,9 @@ internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : 
         listing the children or repeating subordinate details. Preserve meaningful qualifications and do not
         force unrelated changes into a shared purpose or infer broader guarantees.
         If a node has kind "root", summarize the overall change.
+        For a file assembled from parts, preserve which behavior or tests were removed versus added or updated.
+        For folders and the root, select the main behavioral themes instead of repeating implementation inventories.
+        Preserve each child's evidence_kind: test coverage and documentation updates remain such when condensed.
     """.trimIndent() + "\n" + BRANCH_CITATION_GUIDANCE + summaryFocusLine(focus)
 
     private companion object {
@@ -115,6 +132,26 @@ internal class DiffSummaryEvidence(private val options: ReviewSummaryOptions) : 
             Return exactly required_output_ids, one summary per node, never one per child. Return only JSON matching $SUMMARY_JSON_SHAPE.
         """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE + "\n" + SUMMARY_SEGMENT_GUIDANCE
     }
+}
+
+/** Path hints describe the evidence, not proof that a runtime feature changed. */
+private fun diffEvidenceKind(path: String): String {
+    val name = path.substringAfterLast('/').lowercase()
+    return when {
+        path.split('/').any { it.lowercase() in setOf("test", "tests", "testfixtures", "androidtest") } ||
+            name.substringBeforeLast('.').endsWith("test") || name.startsWith("test_") || name.contains(".test.") || name.contains(".spec.") -> "test"
+        name.substringAfterLast('.') in setOf("md", "rst", "adoc") -> "documentation"
+        else -> "implementation"
+    }
+}
+
+private fun JsonObject.addPatchContext(path: String, lines: List<String>, rows: IntRange, hunkHeader: String?) {
+    addProperty("evidence_kind", diffEvidenceKind(path))
+    val shown = lines.subList((rows.first - 1).coerceAtLeast(0), rows.last.coerceAtMost(lines.size))
+    addProperty("added_lines", shown.count { it.startsWith('+') })
+    addProperty("removed_lines", shown.count { it.startsWith('-') })
+    // Carry the nearest hunk header even when a page starts in the middle of a removed declaration.
+    hunkHeader?.let { addProperty("hunk_header", it.take(400)) }
 }
 
 internal fun changedLines(file: ReviewFile): String =

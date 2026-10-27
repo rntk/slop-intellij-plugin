@@ -4,6 +4,8 @@ import dev.insight.review.Summary
 import dev.insight.review.summarizeTopics
 import dev.insight.review.summarize
 import com.google.gson.JsonPrimitive
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import dev.insight.codereview.CodeFile
 import dev.insight.codereview.CodeReviewState
 import dev.insight.codereview.CodeScope
@@ -99,6 +101,25 @@ class ReviewDiskCacheTest {
         assertEquals(state.topicSummaries.text(0), restored.topicSummaries.text(0))
         assertTrue(restored.notes.isEmpty())
         assertTrue(restored.sources.isEmpty())
+    }
+
+    @Test fun `older summary rules are invalidated without losing topics or review marks`() {
+        val state = code()
+        fill({ state.summaries }) { state.summarize(state.revision, it) }
+        state.assignTopic(state.revision, "a.kt", "Application > Values")
+        val leaf = state.summaries.tree.nodes.single { it.kind == SummaryKind.FILE }
+        state.setReviewed(leaf, true)
+        val file = Files.walk(directory).use { paths -> paths.filter { it.toString().endsWith(".json") }.findFirst().get() }
+        val root = JsonParser.parseString(Files.readString(file)).asJsonObject
+        // Previous releases stored generated summaries directly under the evidence key.
+        root.getAsJsonObject("value").add("summaries", JsonObject().apply {
+            state.summaries.tree.nodes.forEach { addProperty(it.key, Summary.plain("Old interpretation").encode()) }
+        })
+        Files.writeString(file, root.toString())
+        val restored = code()
+        assertEquals(0, restored.summaries.count)
+        assertEquals(state.topics.labels, restored.topics.labels)
+        assertTrue(restored.reviewed.isReviewed(restored.summaries.tree.nodes.single { it.kind == SummaryKind.FILE }))
     }
 
     @Test fun `same length edit misses its entries while the previous snapshot stays restorable`() {

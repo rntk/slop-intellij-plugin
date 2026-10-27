@@ -10,7 +10,6 @@ import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmToolCall
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaryOptions
 import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.reviewJson
@@ -244,7 +243,7 @@ class DiffReviewTest {
         val changed = file("long.kt").copy(patch = patch)
         fun page(offset: Int) = JsonParser.parseString(diffReadResult(listOf(changed), offset)).asJsonObject["files"].asJsonArray.single().asJsonObject
         // The inline evidence cuts where the tool continues, after a complete line.
-        val inline = JsonObject().also { DiffSummaryEvidence(ReviewSummaryOptions()).describe(buildSummaryTree(listOf(changed)).nodes.single { node -> node.kind == SummaryKind.FILE }, it, 6000) }
+        val inline = JsonObject().also { DiffSummaryEvidence().describe(buildSummaryTree(listOf(changed)).nodes.single { node -> node.kind == SummaryKind.FILE }, it, 6000) }
         assertEquals("1|@@ -1,2 +1,2 @@\n2|-old", inline["patch"].asString)
         assertEquals(patch.indexOf(long), inline["patch_cut_at"].asInt)
         assertEquals(4, inline["patch_lines"].asInt)

@@ -26,11 +26,11 @@ data class Summary(val segments: List<SummarySegment>) {
     val claims: List<Int> get() = segments.indices.filter { segments[it].sources.isNotEmpty() }
         .ifEmpty { segments.indices.filter { segments[it].text.any(Char::isLetterOrDigit) } }
 
-    /** The same prose written by a parent with this summary's node as its only child: each claim cites the child's own. */
-    fun relay(): Summary {
+    /** The same prose written by a parent whose children have identical text and claim positions. */
+    fun relay(childCount: Int = 1): Summary {
         val claims = claims.toSet()
         return Summary(segments.mapIndexed { index, segment ->
-            SummarySegment(segment.text, if (index in claims) listOf(SummarySource.Claim(0, index)) else emptyList())
+            SummarySegment(segment.text, if (index in claims) (0 until childCount).map { SummarySource.Claim(it, index) } else emptyList())
         })
     }
 
