@@ -1,16 +1,21 @@
 package dev.insight.chat
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.codereview.CodeFile
 import dev.insight.codereview.CodeRange
 import dev.insight.codereview.CodeScope
 import dev.insight.codereview.CodeSnapshot
+import dev.insight.codereview.CodeSummaryEvidence
 import dev.insight.codereview.codeReadResult
 import dev.insight.codereview.codeSearchResult
+import dev.insight.codereview.codeSummaryTree
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.diffReadResult
 import dev.insight.llm.*
+import dev.insight.review.SourceChunk
+import dev.insight.review.SummaryKind
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -60,6 +65,18 @@ class FileTraceTest {
         assertEquals("3", traceLines(docs.getValue(TraceKey(file.path, "After")), evidence(trace).getValue(TraceKey(file.path, "After"))))
     }
 
+    @Test fun `numbered summary patches map to their lines, and invented rows do not count`() = runBlocking {
+        val patch = "@@ -2,2 +2,2 @@\n-old\n+new\n same\n"
+        val file = ReviewFile("a.kt", "/a.kt", null, "modified", patch, "v1", "unseen\nold\nsame\ntail\n", "unseen\nnew\nsame\ntail\n")
+        val trace = FileTrace("Summaries")
+        trace.register(listOf(TraceFile(file.path, patch = patch, before = file.before, after = file.after)))
+        trace.complete(CompletionRequest(listOf(LlmMessage.user(
+            """{"nodes":[{"id":1,"kind":"file","path":"a.kt","patch":"3|+new\n4|+invented"}]}"""))), ok)
+        val docs = trace.snapshot().documents
+        assertEquals("2", traceLines(docs.getValue(TraceKey(file.path, "After")), evidence(trace).getValue(TraceKey(file.path, "After"))))
+        assertEquals("3", traceLines(docs.getValue(TraceKey(file.path, "Diff")), evidence(trace).getValue(TraceKey(file.path, "Diff"))))
+    }
+
     @Test fun `inline source evidence is recorded but summaries metadata and invented excerpts are not`() = runBlocking {
         val trace = FileTrace("Explain")
         trace.register(listOf(TraceFile("a.kt", source = "first\nsecond\nthird")))
@@ -68,6 +85,41 @@ class FileTraceTest {
             LlmMessage.user("""{"nodes":[{"path":"a.kt","start_line":2,"code":"second"},{"path":"a.kt","summary":"third"},{"path":"a.kt","code":"invented"}]}""" + "\n[Context omitted]"),
         )), ok)
         assertEquals(listOf(6..11), evidence(trace).getValue(TraceKey("a.kt", "Source")))
+    }
+
+    @Test fun `numbered summary code maps to its file lines, and invented rows do not count`() = runBlocking {
+        val trace = FileTrace("Summaries")
+        trace.register(listOf(TraceFile("a.kt", source = "first\nsecond\nthird")))
+        trace.complete(CompletionRequest(listOf(LlmMessage.user(
+            """{"nodes":[{"id":1,"kind":"file","path":"a.kt","start_line":2,"code":"2|second\n3|invented"}]}"""))), ok)
+        assertEquals(listOf(6..11), evidence(trace).getValue(TraceKey("a.kt", "Source")))
+    }
+
+    @Test fun `real code summary evidence traces whole files and later parts at their source coordinates`() = runBlocking {
+        val small = CodeFile("small.kt", "/small.kt", "package sample\n\nfun small() = 1\n")
+        val chunked = CodeFile("large.kt", "/large.kt", "unseen\nsecond\nthird\n", chunks = listOf(
+            SourceChunk(0, 1..1, "first"), SourceChunk(1, 2..3, "later")))
+        val snapshot = CodeSnapshot(CodeScope("", ""), listOf(small, chunked))
+        val tree = codeSummaryTree(snapshot.files)
+        val summaryEvidence = CodeSummaryEvidence(snapshot)
+        val descriptions = JsonObject().apply {
+            add("nodes", JsonArray().apply {
+                for (node in tree.nodes.filter { it.path == small.path || it.kind == SummaryKind.CHUNK && it.lines == 2..3 }) {
+                    add(JsonObject().also { summaryEvidence.describe(node, it, Int.MAX_VALUE) })
+                }
+            })
+        }
+        val trace = FileTrace("Summaries")
+        withContext(FileTraceContext(trace)) {
+            val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) }, ok)
+            complete(CompletionRequest(listOf(LlmMessage.user(descriptions.toString()))))
+        }
+        val docs = trace.snapshot().documents
+        val smallKey = TraceKey(small.path, "Source")
+        val chunkKey = TraceKey(chunked.path, "Source")
+        assertTrue(traceCoverage(docs.getValue(smallKey), evidence(trace).getValue(smallKey)).startsWith("100.0%"))
+        assertEquals(listOf(7..12, 14..18), evidence(trace).getValue(chunkKey))
+        assertEquals("2–3", traceLines(docs.getValue(chunkKey), evidence(trace).getValue(chunkKey)))
     }
 
     @Test fun `bounded tool output and context eviction are measured at the completion boundary`() = runBlocking {

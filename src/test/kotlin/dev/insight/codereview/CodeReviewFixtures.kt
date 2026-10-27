@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.review.summarize
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.llm.Completion
@@ -28,7 +29,7 @@ internal fun fillAll(summaries: ReviewSummaries, save: ((Map<Int, String>) -> Re
         val ready = current.ready()
         if (ready.isEmpty()) return current
         ready.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
-            current = (save ?: current::summarize)(batch.associateWith { "${current.tree[it].kind.id} ${current.tree[it].location}" })
+            current = (save ?: { entries -> current.summarize(entries) })(batch.associateWith { "${current.tree[it].kind.id} ${current.tree[it].location}" })
         }
     }
 }
@@ -43,7 +44,7 @@ internal class SummaryModel {
     fun complete(request: CompletionRequest): Completion {
         synchronized(requests) { requests += request }
         return Completion(reviewJson.toJson(mapOf("summaries" to nodes(request).map {
-            mapOf("id" to it["id"].asInt, "summary" to "${it["kind"].asString} ${it["location"].asString}")
+            mapOf("id" to it["id"].asInt, "segments" to listOf(mapOf("text" to "${it["kind"].asString} ${it["location"].asString}", "from" to listOf(it["start_line"]?.asString ?: "1"))))
         })))
     }
 }

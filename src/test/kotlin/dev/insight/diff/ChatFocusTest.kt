@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
 import dev.insight.review.SummaryLevel

@@ -4,7 +4,12 @@ import com.google.gson.JsonObject
 import dev.insight.enrichment.CODE_AS_DATA
 import dev.insight.review.ReviewSummaryOptions
 import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.BRANCH_CITATION_GUIDANCE
+import dev.insight.review.LEAF_CITATION_GUIDANCE
+import dev.insight.review.SUMMARY_JSON_SHAPE
+import dev.insight.review.SUMMARY_SEGMENT_GUIDANCE
 import dev.insight.review.SUMMARY_WRITING_GUIDANCE
+import dev.insight.review.numberedRows
 import dev.insight.review.SummaryEvidence
 import dev.insight.review.SummaryNode
 import dev.insight.review.summaryFocusLine
@@ -35,6 +40,11 @@ internal class CodeSummaryEvidence(
         return file.lines(lines).length
     }
 
+    override fun rows(node: SummaryNode): IntRange {
+        val file = node.file as? CodeFile ?: return IntRange.EMPTY
+        return node.lines ?: 1..file.lineCount
+    }
+
     override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
         val file = node.file as? CodeFile ?: return
         item.addProperty("path", file.path)
@@ -50,7 +60,7 @@ internal class CodeSummaryEvidence(
             if (index >= 0) item.addProperty("part", "${index + 1} of ${file.chunks.size}")
         }
         val code = if (node.lines == null) file.text.removeSuffix("\n") else file.lines(lines)
-        item.addProperty("code", code.take(limit))
+        item.addProperty("code", numberedRows(code.take(limit), lines.first))
         // Parts are smaller than the limit; only a single overlong line can be cut.
         if (code.length > limit) {
             item.addProperty("code_cut_at", limit)
@@ -67,8 +77,9 @@ internal class CodeSummaryEvidence(
             For a part, describe only the code in that part. The other parts are summarized separately and combined later;
             a part may start or end inside a declaration.
             If code_cut_at is set, the code was cut there; summarize what is shown without guessing the rest.
+            The evidence lines are the file's own lines, numbered as in the file.
             The folder outline gives scope context only; summarize just the nodes in "nodes".
-        """.trimIndent() + scopeContext() + "\n\nFolders in scope with their file counts:\n" + outline + summaryFocusLine(focus)
+        """.trimIndent() + "\n" + LEAF_CITATION_GUIDANCE + scopeContext() + "\n\nFolders in scope with their file counts:\n" + outline + summaryFocusLine(focus)
     }
 
     override fun branchSystem(focus: String): String = "${systemPrefix()}\n" + """
@@ -80,14 +91,14 @@ internal class CodeSummaryEvidence(
         If a node has kind "file", summarize the whole file. If a node has kind "chunk", summarize those lines of the file.
         If a node has kind "root", summarize the whole scope's main purpose or responsibilities.
         For the root of an entry-file scope, describe what the entry file does and how the other parts serve it.
-    """.trimIndent() + scopeContext() + summaryFocusLine(focus)
+    """.trimIndent() + "\n" + BRANCH_CITATION_GUIDANCE + scopeContext() + summaryFocusLine(focus)
 
     /** Fixed policy comes before scope context in both leaf and branch requests. */
     private fun systemPrefix() = """
         $CODE_AS_DATA
         You write concise summaries of source code, shown as a tree with the whole scope at the top.
-        This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching {"summaries":[{"id":1,"summary":"…"}]}.
-    """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE
+        This request covers only the nodes in "nodes". Return every id in "nodes" exactly once. Return only JSON matching $SUMMARY_JSON_SHAPE.
+    """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE + "\n" + SUMMARY_SEGMENT_GUIDANCE
 
     private fun scopeName() = snapshot.scope.let { scope ->
         when {

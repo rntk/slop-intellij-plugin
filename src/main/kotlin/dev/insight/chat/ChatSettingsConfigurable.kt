@@ -101,7 +101,7 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                     row("Max output tokens:") {
                         intTextField(0..Int.MAX_VALUE)
                             .bindIntText({ options.maxOutputTokens }, { options.maxOutputTokens = it })
-                            .comment("Default for requests without an explicit token budget, including chat. 0 uses the provider default (8192 for Anthropic). Analysis requests keep their own budgets.")
+                            .comment("Default for requests without an explicit token budget, including chat. 0 uses the provider default (10000 for Anthropic). Analysis requests keep their own budgets.")
                     }
                     row("Request timeout (seconds):") {
                         intTextField(10..86400).bindIntText({ options.requestTimeoutSeconds }, { options.requestTimeoutSeconds = it })

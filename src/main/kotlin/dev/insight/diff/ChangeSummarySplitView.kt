@@ -218,7 +218,7 @@ internal class ChangeSummarySplitPanel(
             }, BorderLayout.CENTER)
             val badge = match?.let {
                 val label = if (node.identity == best) "● Best match" else "● Related"
-                JLabel("$label · ${(it.probability * 100).roundToInt()}%").apply {
+                JLabel("$label · ${levelsBelow(it)}").apply {
                     name = "match:${node.identity}"
                     font = font(JBFont.small())
                     foreground = TraceStyle.MATCH_TEXT
@@ -266,7 +266,7 @@ internal class ChangeSummarySplitPanel(
                 if (!state.traced(node)) area.componentPopupMenu = menu(node)
                 actions.review?.decorate(area, node)
                 if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
-                    actions.searchTab.takeIf { branch }, actions.score, actions.follow,
+                    actions.searchTab.takeIf { branch }, actions.follow,
                     click = { summaryClick(it.clickCount) }, entryMenu = { menu(node) })
             }
             else JLabel(if (card.running) "summarizing…" else "no summary yet").apply {

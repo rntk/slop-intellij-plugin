@@ -82,7 +82,7 @@ internal class ChangeTopicsViewState(
     /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
     private val foldLargeOutline: Boolean = false,
     var mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
-) : SummaryTraceState(traceRoot = false, traceLeaves = true) {
+) : SummaryTraceState(traceRoot = false) {
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
@@ -105,9 +105,6 @@ internal class ChangeTopicsViewState(
     private var filterFor: OutlineFilter? = null
     private var full: TopicOutline? = null
     private var shown: TopicOutline? = null
-    /** The paths and topic identities left by the search fields; null hides nothing. */
-    private var shownFiles: Set<String>? = null
-    private var shownTopics: Set<String>? = null
 
     /** Every file of [card] in topic order. Like [outline], it updates this state. */
     fun fullOutline(card: TopicsCard): TopicOutline = outlines(card).first
@@ -133,8 +130,6 @@ internal class ChangeTopicsViewState(
                 val paths = kept.mapTo(hashSetOf()) { it.path }
                 topicOutline(ReviewTopics(kept, card.topics.labels.filterKeys { it in paths }))
             }
-            shownFiles = shown?.takeIf { it !== outline }?.files?.mapTo(hashSetOf()) { it.path }
-            shownTopics = shown?.takeIf { it !== outline }?.nodes?.mapTo(hashSetOf()) { it.identity }
         }
         update(full!!)
         return full!! to shown!!
@@ -174,20 +169,6 @@ internal class ChangeTopicsViewState(
     /** Document mode keeps every file visible and limits the rail to the picked levels. */
     fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)
 
-    /** Documents keep every file visible; hierarchies hide nodes under folded topics. [tree] is the reading tree. */
-    override fun visibility(tree: ReviewSummaryTree): (SummaryNode) -> Boolean = { node ->
-        filtered(node) && if (mode == ChangeTopicsMode.DOCUMENT) node.kind == SummaryKind.FILE || tree.depth(node.id) - 1 <= (level ?: Int.MAX_VALUE)
-        else generateSequence(node.parent) { tree[it].parent }.map(tree::get)
-            .none { it.identity.startsWith(TOPIC) && "${tree.depth(it.id) - 1}:${it.identity.removePrefix(TOPIC)}" in folds }
-    }
-
-    /** Whether the search fields leave [node] of the reading tree on screen. */
-    private fun filtered(node: SummaryNode): Boolean = when {
-        node.identity.startsWith(TOPIC) -> shownTopics?.contains(node.identity.removePrefix(TOPIC)) ?: true
-        node.kind == SummaryKind.FILE -> shownFiles?.contains(node.path) ?: true
-        else -> true
-    }
-
     /**
      * Opens the topics down to the matches and folds related topics with no related entry beneath, so their summary shows.
      * [tree] is the reading tree: its topics are `topic:` identities one level below the hidden root.
@@ -216,8 +197,8 @@ internal class ChangeTopicsViewState(
 }
 
 /**
- * [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. [trace] scores word
- * [Int] of a summary; with `true`, Search from a scored word's context menu searches and opens the path to the matches.
+ * [refresh] rebuilds the card after the hierarchy changed the view state, as folding changes the layout. [trace] shows the context of word
+ * [Int] of a summary; with `true`, it also searches what that word's segment cites and opens the path to the matches.
  */
 internal class ChangeTopicActions(
     val openFile: (String) -> Unit,
@@ -334,7 +315,7 @@ internal abstract class DocumentColumnsPanel(
         val trace = resultTrace() ?: return null
         val match = trace.related.firstOrNull { it.identity == identity } ?: return null
         val title = if (trace.best?.identity == identity) "● Best match" else "● Related"
-        return JLabel("$title · ${(match.probability * 100).roundToInt()}%").apply {
+        return JLabel("$title · ${levelsBelow(match)}").apply {
             name = "match:$identity"
             font = cardFont(JBFont.small())
             foreground = TraceStyle.MATCH_TEXT

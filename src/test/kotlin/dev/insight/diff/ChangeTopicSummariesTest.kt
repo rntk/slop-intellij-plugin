@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.review.summarizeTopics
+import dev.insight.review.summarize
 import com.google.gson.JsonParser
 import dev.insight.llm.Completion
 import dev.insight.review.ContextSummaryRequest
@@ -68,7 +70,7 @@ class ChangeTopicSummariesTest {
                 }
             }
             val answers = nodes.map { node ->
-                "{\"id\":${node.asJsonObject.get("id")},\"summary\":\"Generated summary\"}"
+                "{\"id\":${node.asJsonObject.get("id")},\"segments\":[{\"text\":\"Generated summary\",\"from\":[\"1\"]}]}"
             }
             Completion("{\"summaries\":[${answers.joinToString()}]}")
         }, null)
@@ -101,7 +103,7 @@ class ChangeTopicSummariesTest {
         val summarizer = diffSummarizer({ request ->
             systems += request.messages.first().content
             val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
-            Completion("{\"summaries\":[${nodes.joinToString { "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated ${systems.size}\"}" }}]}")
+            Completion("{\"summaries\":[${nodes.joinToString { "{\"id\":${it.asJsonObject["id"]},\"segments\":[{\"text\":\"Generated ${systems.size}\",\"from\":[\"1\"]}]}" }}]}")
         }, null)
         suspend fun run(start: ReviewSummaries, request: ContextSummaryRequest) {
             var current = start
@@ -184,7 +186,7 @@ class ChangeTopicSummariesTest {
                 }
             }
             Completion("{\"summaries\":[" + nodes.joinToString {
-                "{\"id\":${it.asJsonObject["id"]},\"summary\":\"Generated summary\"}"
+                "{\"id\":${it.asJsonObject["id"]},\"segments\":[{\"text\":\"Generated summary\",\"from\":[\"1\"]}]}"
             } + "]}")
         }, null, ReviewSummaryOptions(concurrency = 1))
         val run = summarizer.run(current, "reliability", { current = current.summarize(it); current }, queryContext = "persistence")

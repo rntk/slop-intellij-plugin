@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.review.Summary
+import dev.insight.review.summarize
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
@@ -141,14 +143,14 @@ class ChunkedSummaryTreeTest {
         val a = tree.byIdentity("file:src/a.kt").id
         val x = tree.byIdentity("file:lib/x.kt").id
         assertEquals(chunkLeaves + x + a, summaries.ready())
-        summaries = summaries.summarize(summaries.ready().associateWith { "Leaf." })
+        summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("Leaf.") })
         val groups = tree.byIdentity("file:src/big.kt").children
         assertEquals(groups, summaries.ready())
-        summaries = summaries.summarize(groups.associateWith { "Group." })
+        summaries = summaries.summarize(groups.associateWith { Summary.plain("Group.") })
         assertEquals(listOf(tree.byIdentity("file:src/big.kt").id), summaries.ready())
-        summaries = summaries.summarize(summaries.ready().associateWith { "File." })
+        summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("File.") })
         assertEquals(listOf(tree.byIdentity("directory:src").id), summaries.ready())
-        summaries = summaries.summarize(summaries.ready().associateWith { "Folder." })
+        summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("Folder.") })
         assertEquals(listOf(tree.root.id), summaries.ready())
     }
 
@@ -159,7 +161,7 @@ class ChunkedSummaryTreeTest {
         rejected { summaries.summarize(mapOf(big.id to "The whole file.")) }
         val group = tree[big.children[0]]
         rejected { summaries.summarize(mapOf(group.id to "Lines 1–70.")) }
-        val written = summaries.summarize((group.children + group.id).associateWith { "Part." })
+        val written = summaries.summarize((group.children + group.id).associateWith { Summary.plain("Part.") })
         assertEquals("Part.", written.text(group.id))
         assertEquals(0, ReviewSummaries(buildSummaryTree(emptyList())).total)
         val message = try { ReviewSummaries(buildSummaryTree(emptyList())).summarize(mapOf(0 to "x")); null } catch (e: ToolInputException) { e.message }

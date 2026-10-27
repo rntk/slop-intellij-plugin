@@ -38,8 +38,6 @@ internal data class ReviewVocabulary(
     val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
-    /** Score only the nodes currently shown, as a huge tree has too many words to score at once. */
-    val scoreVisibleOnly: Boolean,
 ) {
     companion object {
         val DIFF = ReviewVocabulary(
@@ -72,7 +70,6 @@ internal data class ReviewVocabulary(
             },
             summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = false,
-            scoreVisibleOnly = false,
         )
 
         val CODE = ReviewVocabulary(
@@ -102,7 +99,6 @@ internal data class ReviewVocabulary(
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
             summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = true,
-            scoreVisibleOnly = true,
         )
     }
 }

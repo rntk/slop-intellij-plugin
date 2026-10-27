@@ -140,7 +140,7 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         return summaries
     }
 
-    fun summarize(expected: Int, entries: Map<Int, String>): ReviewSummaries {
+    fun summarize(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
         check(expected)
         return summaries.summarize(entries).also { summaries = it; persist() }
     }
@@ -182,14 +182,14 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     }
 
     /** Saves topic summaries and shares the file and part summaries among them with the ordinary Summaries tree. */
-    fun summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries {
+    fun summarizeTopics(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
         check(expected)
         topicSummaries = topicSummaries.summarize(entries)
         val topicNodes = topicSummaries.tree.nodes
-        val files = HashMap<String, String>()
-        val parts = HashMap<String, String>()
+        val files = HashMap<String, Summary>()
+        val parts = HashMap<String, Summary>()
         for (node in topicNodes) {
-            val text = topicSummaries.text(node.id) ?: continue
+            val text = topicSummaries.summary(node.id) ?: continue
             when (node.kind) {
                 SummaryKind.FILE -> files[node.path] = text
                 SummaryKind.CHUNK -> parts[node.key] = text
@@ -229,9 +229,9 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
  * summarized or added too, so the bottom-up rule holds; batches go children first.
  */
 internal fun shareInto(target: ReviewSummaries, cached: (SummaryNode) -> Boolean = { false },
-                       shared: (SummaryNode) -> String?): ReviewSummaries {
+                       shared: (SummaryNode) -> Summary?): ReviewSummaries {
     val tree = target.tree
-    val added = LinkedHashMap<Int, String>()
+    val added = LinkedHashMap<Int, Summary>()
     // Pre-order: walking backwards visits children before their parents.
     for (node in tree.nodes.asReversed()) {
         if (target.text(node.id) != null) continue

@@ -14,7 +14,7 @@ import javax.swing.text.JTextComponent
 /**
  * The summary tree read left to right, like the topic hierarchy: the root folder in the first column, its folders and groups
  * in the next, each card as tall as the rows beneath it, and the changed files as leaves with their summary beside them.
- * A folded folder takes a single row and shows its own summary, whose scored words can be traced as in the outline.
+ * A folded folder takes a single row and shows its own summary, whose cited parts can be traced as in the outline.
  */
 internal class ChangeSummaryHierarchyPanel(
     private val card: SummariesCard,
@@ -76,7 +76,7 @@ internal class ChangeSummaryHierarchyPanel(
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark,
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
             actions.review?.decorate(note, node)
-            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.score, actions.follow) { actions.toggle(node.identity) } }
+            summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.follow) { actions.toggle(node.identity) } }
             actions.installEntryMenu(note, node)
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -115,7 +115,7 @@ internal class ChangeSummaryHierarchyPanel(
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
         actions.review?.decorate(note, node)
-        if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, score = actions.score, follow = actions.follow)
+        if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, follow = actions.follow)
         actions.installEntryMenu(leaf, node)
         actions.installEntryMenu(note, node)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)
@@ -268,7 +268,7 @@ internal class ChangeSummaryDocumentPanel(
         (if (summary != null) summaryText(identity, summary, width)
             else super.summaryBody(identity, null, missingSummary, width)).also { area ->
             if (summary != null) installWordTracing(area as JTextComponent, identity, summary, state, actions.trace, actions.searchSelection,
-                actions.searchTab.takeIf { identity in branches }, actions.score, actions.follow)
+                actions.searchTab.takeIf { identity in branches }, actions.follow)
         }.let { actions.review?.body(identity, it) ?: it }
 
     private fun summaryText(identity: String, summary: String, width: Int) =

@@ -8,13 +8,14 @@ File and summary context menus can regenerate one entry or its entire subtree, w
 
 The Diff view keeps the file tree beside the IDE’s native diff viewer. Select a file to inspect its changes, or a directory or All changes to read every matching file’s diff one after another. In both views an entry's menu can also run the IDE's own inspections over its working-tree files and list the errors and warnings as plain text ready to hand to a coding agent.
 
-The descriptions are generated from the content they summarize. Use them to find areas worth exploring, then check the source or diff directly. Hovering or selecting words in a summary highlights where they recur in the summaries below it and in the folders above it.
+The descriptions are generated from the content they summarize, and every claim in one cites what it was written from: a file's claims cite its lines, and a folder's or topic's claims cite the claims of the summaries directly below it. These citations are recorded while the summaries are written, so the views read the links directly instead of matching text afterwards. Hovering or selecting part of a summary highlights what it condenses below and what condenses it above. Searching from it opens the cited summaries, or a file's cited lines. To file and To directory open the levels down to the files or folders it cites at any depth, highlight them, and select and scroll to the chosen one. Use the summaries to find areas worth exploring, then check the source or diff directly.
 
-Readers can mark files or directories as reviewed. Their summaries dim, and related words in higher summaries dim only when every contributing item is reviewed. Review marks follow the underlying evidence; cached semantic links let repeated toggles reuse earlier judgments.
+Readers can mark files or directories as reviewed. Their summaries dim, and a claim in a higher summary dims once every file it cites, directly or through the levels between, is reviewed. Review marks follow the underlying evidence.
 
 Summaries favor a short statement of purpose or behavior, with only essential distinctions supported by the evidence. They omit file names, paths, code, and implementation inventories. Simple items need very little text; subtle behavior may need more explanation. Higher levels condense the main themes rather than repeat the details below.
 
 Entry points for further exploration:
 
 - [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure
+- [Summary.kt](../src/main/kotlin/dev/insight/review/Summary.kt) — segments and their citations
 - [ChangeSummarizer.kt](../src/main/kotlin/dev/insight/diff/ChangeSummarizer.kt) — summary generation

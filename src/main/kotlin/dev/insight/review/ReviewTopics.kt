@@ -193,7 +193,7 @@ class ReviewTopicGenerator internal constructor(
     ): String? {
         // The output allowance includes reasoning, even though the final label is tiny.
         // Keep the raised budget across retries instead of restarting at the original limit.
-        var outputBudget = 4096
+        var outputBudget = dev.insight.llm.DEFAULT_OUTPUT_TOKENS
         repeat(attempts) {
             currentCoroutineContext().ensureActive()
             val topic = try {

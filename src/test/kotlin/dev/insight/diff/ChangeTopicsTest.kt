@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.google.gson.JsonParser
 import dev.insight.chat.ToolInputException
 import dev.insight.llm.Completion
@@ -36,7 +37,7 @@ class ChangeTopicsTest {
                     Completion("", reasoning = "Still classifying", finishReason = FinishReason.TRUNCATED)
                 } else Completion("""{"topic":"UI>DiffReview>Topics"}""")
             }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
-            assertEquals(listOf(4096, 8192, 4096), budgets)
+            assertEquals(listOf(10_000, 20_000, 10_000), budgets)
             assertEquals(3, run.requests)
             assertTrue(run.topics.complete)
         }
@@ -279,7 +280,7 @@ class ChangeTopicsTest {
         }
         val run = diffTopicGenerator({ request ->
             calls++
-            assertEquals(4096, request.maxTokens)
+            assertEquals(10_000, request.maxTokens)
             if (calls == 1) {
                 val input = JsonParser.parseString(request.messages.last().content).asJsonObject
                 assertEquals(10, input["patch"].asString.length)

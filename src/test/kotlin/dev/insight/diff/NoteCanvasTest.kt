@@ -1,5 +1,9 @@
 package dev.insight.diff
 
+import dev.insight.review.SummarySource
+import dev.insight.review.SummarySegment
+import dev.insight.review.Summary
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.review.ExplainResult
 import dev.insight.review.ReviewNote
@@ -91,7 +95,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(listOf(file))
         val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Updates important behavior." })
         val words = wordChanges(listOf(file))
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply {
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions()).apply {
             setSize(1600, 900)
             summariesView.mode = ReviewSummariesMode.OUTLINE
         }
@@ -568,7 +572,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val topic = document.components.single { it.name == "topic:0:storage" } as Container
             val topicHeading = topic.components.first()
             val outer = canvas.tabs.selectedComponent as javax.swing.JScrollPane
-            outer.verticalScrollBar.value = 120
+            // Scrolls the card just past the component's top, whatever the status lines above it take.
+            fun scrollPast(component: Component) {
+                outer.verticalScrollBar.value = javax.swing.SwingUtilities.convertPoint(component, 0, 0, outer.viewport.view).y + 30
+            }
+            scrollPast(file)
             assertTrue(fileHeading.y > file.insets.top)
             assertTrue(topicHeading.y > topic.insets.top)
             assertTrue(javax.swing.SwingUtilities.convertPoint(fileHeading, 0, 0, outer.viewport).y >= 0)
@@ -589,7 +597,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val hierarchyScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
             val branch = hierarchy.components.single { it.name == "topic:0:storage" } as Container
             val branchHeading = branch.components.first()
-            outer.verticalScrollBar.value = 120
+            scrollPast(branch)
             assertTrue(branchHeading.y > branch.insets.top)
             assertTrue(javax.swing.SwingUtilities.convertPoint(branchHeading, 0, 0, outer.viewport).y >= 0)
             outer.verticalScrollBar.value = 0
@@ -1153,515 +1161,6 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertEquals(1, canvas.tabs.tabCount) // The flow disappears once no calls connect notes.
     }
 
-    fun testSummariesPrescoreEveryWordAndSearchOnlyOnClick() {
-        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt", "ui/summaries/Summaries.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val root = "Deleted views: canvas, hierarchy, summaries."
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
-            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label.substringBefore('/')} view."
-        })
-        val hierarchy = tree.nodes.single { it.path == "ui/hierarchy/Hierarchy.kt" }
-        val canvasFile = tree.nodes.single { it.path == "ui/canvas/Canvas.kt" }
-        val traced = mutableListOf<Pair<Int, Int>>()
-        val searched = mutableListOf<SummaryContext>()
-        var finishSearch: ((Result<SummaryTrace>) -> Unit)? = null
-        var finishScoring: ((Result<Unit>) -> Unit)? = null
-        var saveContext: ((SummaryContext) -> Unit)? = null
-        val searchJobs = mutableListOf<Job>()
-        val scoreJobs = mutableListOf<Job>()
-        val launcher = object : SummaryTraceLauncher {
-            override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
-                                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
-                traced += words
-                saveContext = scored
-                finishScoring = done
-                for ((id, word) in words) {
-                    val text = summaries.text(id)!!
-                    val split = SummaryWord.split(text)
-                    val context = (listOf(split[0], split[1], split[word])).distinctBy { it.index }.sortedBy { it.index }
-                    scored(SummaryContext(summaries.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
-                }
-                return Job().also { scoreJobs += it }
-            }
-
-            override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
-                searched += context
-                finishSearch = done
-                return Job().also { searchJobs += it }
-            }
-
-            override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
-                error("Only file summaries search lines")
-        }
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
-        fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun rootText() = descendants(named("summary:root").single() as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
-        fun pointAtWord(text: String, event: Int) {
-            val area = rootText()
-            val start = area.text.indexOf(text)
-            val box = area.modelToView2D(start + 1)
-            area.dispatchEvent(MouseEvent(area, event, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false, if (event == MouseEvent.MOUSE_CLICKED) MouseEvent.BUTTON1 else MouseEvent.NOBUTTON))
-            layoutTree(canvas)
-        }
-        fun clickWord(text: String) = pointAtWord(text, MouseEvent.MOUSE_CLICKED)
-        fun hoverWord(text: String) = pointAtWord(text, MouseEvent.MOUSE_MOVED)
-        try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            assertTrue(named("summaries-interactive").isEmpty())
-            assertTrue(traced.isEmpty())
-            clickWord("hierarchy")
-            assertNull("Unscored words must not trigger scoring on demand", canvas.summariesView.tracing)
-            assertFalse("An unscored summary click folds its children", "root" in canvas.summariesView.expanded)
-            val toggle = named("toggle:root").single()
-            toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-            layoutTree(canvas)
-            canvas.summariesView.selected = null
-            (named("summaries-score").single() as javax.swing.JButton).doClick()
-            // File summaries are scored too; their highlights search the file's lines.
-            val expected = tree.nodes.flatMap { node ->
-                SummaryWord.split(summaries.text(node.id)!!).filter { it.meaningful }.map { node.id to it.index }
-            }
-            assertEquals(expected, traced)
-            assertTrue(canvas.summariesView.scoring)
-            assertFalse((named("summaries-score").single() as javax.swing.JButton).isEnabled)
-            finishScoring!!(Result.success(Unit))
-            layoutTree(canvas)
-            assertFalse(canvas.summariesView.scoring)
-            val scoredCount = traced.size
-            assertFalse((named("summaries-score").single() as javax.swing.JButton).isEnabled)
-
-            fun rowBounds() = descendants(canvas).filter { it.name?.startsWith("summary:") == true }.associate { row ->
-                row.name to javax.swing.SwingUtilities.convertRectangle(row.parent, row.bounds, canvas)
-            }
-            val beforeHover = rowBounds()
-            val sizeBeforeHover = canvas.preferredSize
-            hoverWord("hierarchy")
-            assertEquals("Hover must not move any summary row", beforeHover, rowBounds())
-            assertEquals(sizeBeforeHover, canvas.preferredSize)
-            hoverWord("canvas")
-            assertEquals("Changing the hover query must not move any summary row", beforeHover, rowBounds())
-            hoverWord("hierarchy")
-            assertEquals(scoredCount, traced.size)
-            assertTrue("Scoring alone must not search candidates", searched.isEmpty())
-            assertNull(canvas.summariesView.selected)
-            assertEquals(3, rootText().highlighter.highlights.size)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("Right-click a scored word"))
-
-            // A left click on a scored word must not search, so it cannot conflict with selecting words by hand.
-            clickWord("Deleted")
-            assertTrue("Clicking a scored word must not search", searched.isEmpty())
-
-            // Choosing Search from a context word's context menu searches the original query, without rescoring that word.
-            searchScoredWord(canvas, rootText(), "Deleted")
-            assertEquals(scoredCount, traced.size)
-            assertEquals("hierarchy", searched.single().word.text)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("Searching"))
-            assertEquals("Starting a search must not move rows", beforeHover, rowBounds())
-            searchScoredWord(canvas, rootText(), "views")
-            assertEquals("Repeated searches must not start overlapping searches", 1, searched.size)
-            val context = searched.single()
-            val result = SummaryTrace("root", root, context.word, context.context, context.query,
-                listOf(SummaryMatch(hierarchy.id, hierarchy.identity, 0.9, 1), SummaryMatch(canvasFile.id, canvasFile.identity, 0.1, 1)), 3)
-            finishSearch!!(Result.success(result))
-            layoutTree(canvas)
-            // The best related summary is selected, labelled and its level opened; unrelated ones are not marked.
-            assertEquals(hierarchy.identity, canvas.summariesView.selected)
-            val badge = named("match:${hierarchy.identity}").single() as JLabel
-            assertEquals("● Best match · 90%", badge.text)
-            assertTrue(badge.toolTipText.startsWith("● Best match for “Deleted views: hierarchy”"))
-            assertTrue(named("match:${canvasFile.identity}").isEmpty())
-            assertTrue((named("trace-status").single() as JLabel).text.contains("1 of 3 summaries"))
-            // The traced word and its two context words are highlighted, not the siblings.
-            assertEquals(3, rootText().highlighter.highlights.size)
-
-            searchScoredWord(canvas, rootText(), "hierarchy")
-            assertEquals("Hover and searches never request scoring", scoredCount, traced.size)
-            assertEquals("Completed searches are reused", 1, searched.size)
-
-            // Moving onto another cached word cancels pending searches and ignores their late results.
-            searchScoredWord(canvas, rootText(), "canvas")
-            searchScoredWord(canvas, rootText(), "canvas")
-            assertEquals(2, searched.size)
-            hoverWord("hierarchy")
-            assertTrue(searchJobs.last().isCancelled)
-            finishSearch(Result.success(result))
-            assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
-            assertNull(canvas.summariesView.tracing!!.trace)
-
-            // Changed summaries lose their cached contexts; unchanged nodes keep theirs.
-            val oldContext = canvas.summariesView.scored.getValue("root" to 3)
-            val changed = summaries.summarize(mapOf(0 to "Updated summary."))
-            canvas.updateSummaries(SummariesCard(changed, running = false, canRun = true))
-            assertNull(canvas.summariesView.tracing)
-            assertTrue(canvas.summariesView.scored.values.none { it.identity == "root" })
-            (named("summaries-score").single() as javax.swing.JButton).doClick()
-            canvas.updateSummaries(SummariesCard(summaries, running = false, canRun = true))
-            assertTrue(scoreJobs.last().isCancelled)
-            saveContext!!(oldContext)
-            finishScoring(Result.success(Unit))
-            assertTrue("Cancelled scoring must ignore late results", canvas.summariesView.scored.values.none { it.identity == "root" })
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    /** Scores every word with the summary's first two words as context; searches wait for the test to finish them. */
-    private class FakeTraceLauncher : SummaryTraceLauncher {
-        val scoredWords = mutableListOf<Pair<Int, Int>>()
-        val searched = mutableListOf<SummaryContext>()
-        val searchJobs = mutableListOf<Job>()
-        var finishSearch: ((Result<SummaryTrace>) -> Unit)? = null
-        val searchedLines = mutableListOf<SummaryContext>()
-        var finishLines: ((Result<LineTrace>) -> Unit)? = null
-
-        override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
-                              scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job {
-            scoredWords += words
-            for ((id, word) in words) {
-                val text = summaries.text(id)!!
-                val split = SummaryWord.split(text)
-                val context = listOf(split[0], split[1], split[word]).distinctBy { it.index }.sortedBy { it.index }
-                scored(SummaryContext(summaries.tree[id].identity, text, split[word], context, SummaryTracer.query(text, context)))
-            }
-            done(Result.success(Unit))
-            return Job()
-        }
-
-        override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
-            searched += context
-            finishSearch = done
-            return Job().also { searchJobs += it }
-        }
-
-        override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job {
-            searchedLines += context
-            finishLines = done
-            return Job().also { searchJobs += it }
-        }
-
-        fun finish(context: SummaryContext, candidates: Int, vararg matches: SummaryMatch) = finishSearch!!(Result.success(
-            SummaryTrace(context.identity, context.summary, context.word, context.context, context.query, matches.sortedByDescending { it.probability }, candidates)))
-    }
-
-    private fun pointAtWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String, event: Int) {
-        val box = area.modelToView2D(area.text.indexOf(word) + 1)
-        area.dispatchEvent(MouseEvent(area, event, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false,
-            if (event == MouseEvent.MOUSE_CLICKED) MouseEvent.BUTTON1 else MouseEvent.NOBUTTON))
-        layoutTree(canvas)
-    }
-
-    /** Chooses Search from the context menu of the scored [word] in [area], as a right click on it does. */
-    private fun searchScoredWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String) {
-        val box = area.modelToView2D(area.text.indexOf(word) + 1)
-        val item = selectionMenu(area, Point(box.centerX.toInt(), box.centerY.toInt()))!!
-            .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-scored-query" }
-        item.doClick()
-        layoutTree(canvas)
-    }
-
-    fun testSearchTabKeepsOnlyRelatedSummariesAndNarrowsWithBreadcrumbs() {
-        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val root = "Deleted views: canvas, hierarchy."
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
-            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes the ${node.label} view."
-        })
-        fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
-        val canvasDir = node("ui/canvas")
-        val hierarchyDir = node("ui/hierarchy")
-        val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
-        val columnsFile = node("ui/hierarchy/Columns.kt")
-        val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
-        fun page(index: Int) = canvas.tabs.getComponentAt(index) as Container
-        fun named(index: Int, name: String) = descendants(page(index)).filter { it.name == name }
-        fun shown(index: Int) = descendants(page(index)).mapNotNull { it.name?.removePrefix("summary:")?.takeIf { _ -> it.name!!.startsWith("summary:") } }.toSet()
-        fun summaryArea(index: Int, identity: String) =
-            descendants(named(index, "summary:$identity").single() as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
-        fun menuItem(area: javax.swing.text.JTextComponent, word: String, name: String): javax.swing.JMenuItem {
-            val start = area.text.indexOf(word)
-            area.select(start, start + word.length)
-            return selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == name }
-        }
-        try {
-            canvas.summariesView.mode = ReviewSummariesMode.OUTLINE
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            val everything = shown(0)
-            assertTrue(canvasDir.identity in everything && hierarchyFile.identity in everything)
-            // A file's summary has no summaries below it to keep, so it offers no Search tab.
-            menuItem(summaryArea(0, hierarchyFile.identity), "Deletes", "search-selection")
-            assertTrue(selectionMenu(summaryArea(0, hierarchyFile.identity))!!.components.none { it.name == "search-tab" })
-
-            // Search tab opens a second tab and searches there; the summaries tab keeps showing everything.
-            menuItem(summaryArea(0, "root"), "hierarchy", "search-tab").doClick()
-            layoutTree(canvas)
-            assertEquals(2, canvas.tabs.tabCount)
-            assertEquals(1, canvas.tabs.selectedIndex)
-            assertEquals("Search · hierarchy", canvas.tabs.getTitleAt(1))
-            assertEquals("hierarchy", launcher.searched.single().query)
-            assertEquals("“hierarchy”…", (named(1, "summaries-crumb:searching").single() as JLabel).text)
-            launcher.finish(launcher.searched.single(), 4, SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.9, 1),
-                SummaryMatch(canvasDir.id, canvasDir.identity, 0.1, 1))
-            layoutTree(canvas)
-            // Only the related folder, everything beneath it and the way up to the root are left; the match is marked.
-            val related = shown(1)
-            assertTrue(hierarchyDir.identity in related && hierarchyFile.identity in related && columnsFile.identity in related && "root" in related)
-            assertFalse(canvasDir.identity in related)
-            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
-            assertEquals(TraceStyle.BEST_MATCH, named(1, "summary:${hierarchyDir.identity}").single().background)
-            assertTrue(named(1, "match:${hierarchyFile.identity}").isEmpty())
-            assertEquals("“hierarchy”", (named(1, "summaries-crumb:1").single() as JLabel).text)
-            assertEquals(everything, shown(0))
-            assertTrue(canvas.summariesView.crumbs.isEmpty())
-
-            // Hovering another scored word keeps this breadcrumb's result highlights in place.
-            (named(1, "summaries-score").single() as javax.swing.JButton).doClick()
-            val resultRow = named(1, "summary:${hierarchyDir.identity}").single()
-            pointAtWord(canvas, summaryArea(1, "root"), "Deleted", MouseEvent.MOUSE_MOVED)
-            assertSame(resultRow, named(1, "summary:${hierarchyDir.identity}").single())
-            assertEquals(TraceStyle.BEST_MATCH, resultRow.background)
-            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
-
-            // Searching again in the search tab narrows it and adds the query to the breadcrumbs.
-            menuItem(summaryArea(1, hierarchyDir.identity), "Deletes", "search-selection").doClick()
-            launcher.finish(launcher.searched.last(), 2, SummaryMatch(hierarchyFile.id, hierarchyFile.identity, 0.8, 1))
-            layoutTree(canvas)
-            assertTrue(hierarchyFile.identity in shown(1))
-            assertFalse(columnsFile.identity in shown(1))
-            assertEquals("“Deletes”", (named(1, "summaries-crumb:2").single() as JLabel).text)
-            assertEquals("Search · Deletes", canvas.tabs.getTitleAt(1))
-            assertTrue(named(1, "match:${hierarchyDir.identity}").isEmpty())
-            assertEquals("● Best match · 80%", (named(1, "match:${hierarchyFile.identity}").single() as JLabel).text)
-
-            // An earlier breadcrumb goes back to the summaries left after it.
-            (named(1, "summaries-crumb:1").single() as com.intellij.ui.components.ActionLink).doClick()
-            layoutTree(canvas)
-            assertTrue(columnsFile.identity in shown(1))
-            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
-            assertTrue(named(1, "match:${hierarchyFile.identity}").isEmpty())
-            assertEquals(1, descendants(page(1)).count { it.name?.startsWith("summaries-crumb:") == true && it.name != "summaries-crumb:0" })
-            val clear = named(1, "trace-clear").single() as com.intellij.ui.components.ActionLink
-            assertTrue("Restored breadcrumb highlights can be cleared", clear.isEnabled)
-            clear.doClick()
-            assertTrue(named(1, "match:${hierarchyDir.identity}").isEmpty())
-            assertTrue(columnsFile.identity in shown(1))
-            menuItem(summaryArea(1, "root"), "hierarchy", "search-selection").doClick()
-            launcher.finish(launcher.searched.last(), 4, SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.9, 1))
-            layoutTree(canvas)
-            assertEquals("● Best match · 90%", (named(1, "match:${hierarchyDir.identity}").single() as JLabel).text)
-            assertTrue(named(1, "summaries-crumb:2").isEmpty())
-
-            // Typing filters fuzzily, with the folders above every match, and stays out of the breadcrumbs.
-            val field = named(0, "summaries-search").single() as com.intellij.ui.SearchTextField
-            field.text = "colmns"
-            layoutTree(canvas)
-            assertEquals(generateSequence(columnsFile) { it.parent?.let(tree::get) }.map { it.identity }.toSet(), shown(0))
-            assertTrue(named(0, "summaries-crumb:1").isEmpty())
-            assertSame("The search field survives the rebuilt card", field, named(0, "summaries-search").single())
-            field.text = "zzz"
-            layoutTree(canvas)
-            assertEquals(1, named(0, "no-matches").size)
-            field.text = ""
-            layoutTree(canvas)
-            assertEquals(everything, shown(0))
-
-            (named(1, "close-search-tab").single() as com.intellij.ui.InplaceButton).doClick()
-            assertEquals(1, canvas.tabs.tabCount)
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testExplorerSearchAndSearchTabsHighlightResultsAsPagesAreOpened() {
-        val tree = buildSummaryTree(listOf("ui/Canvas.kt", "ui/Unrelated.kt", "docs/Readme.md").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
-        })
-        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Updates ${it.label}." })
-        val folder = tree.nodes.single { it.path == "ui" }
-        val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
-        val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
-        for (searchTab in listOf(false, true)) {
-            val launcher = FakeTraceLauncher()
-            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
-                setSize(1600, 900); summariesView.mode = ReviewSummariesMode.EXPLORER
-            }
-            fun page() = canvas.tabs.selectedComponent as Container
-            fun named(name: String) = descendants(page()).single { it.name == name }
-            fun texts() = descendants(page()).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
-            try {
-                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
-                val area = descendants(page()).filterIsInstance<WrappedSummaryText>().single()
-                area.select(0, "Updates".length)
-                selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
-                    .single { it.name == if (searchTab) "search-tab" else "search-selection" }.doClick()
-                launcher.finish(launcher.searched.single(), 3,
-                    SummaryMatch(folder.id, folder.identity, 0.9, 1),
-                    SummaryMatch(matching.id, matching.identity, 0.8, 2),
-                    SummaryMatch(rejected.id, rejected.identity, 0.1, 2))
-                assertEquals("● Best match · 90%", (named("match:${folder.identity}") as JLabel).text)
-                assertEquals(TraceStyle.BEST_MATCH, (named("summary:${folder.identity}") as JComponent).background)
-                assertFalse(summaries.text(matching.id) in texts())
-                val row = named("summary:${folder.identity}")
-                row.dispatchEvent(MouseEvent(row, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-                assertTrue(summaries.text(matching.id) in texts())
-                assertEquals(!searchTab, summaries.text(rejected.id) in texts())
-                assertEquals("● Related · 80%", (named("match:${matching.identity}") as JLabel).text)
-                assertEquals(TraceStyle.RELATED, (named("summary:${matching.identity}") as JComponent).background)
-                (named("summary-explorer-back") as javax.swing.JButton).doClick()
-                assertEquals("● Best match · 90%", (named("match:${folder.identity}") as JLabel).text)
-                (named("summaries-cancel-search") as javax.swing.JButton).doClick()
-                assertTrue(summaries.text(0) in texts())
-                assertTrue(descendants(page()).none { it.name?.startsWith("match:") == true })
-            } finally { canvas.dispose() }
-        }
-    }
-
-    fun testSearchAndSearchTabsHighlightResultsInEveryLayout() {
-        val files = listOf("ui/Canvas.kt", "ui/Unrelated.kt", "docs/Readme.md").map { path ->
-            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val root = "Updates canvas and documentation."
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
-            node.id to if (node.kind == SummaryKind.ROOT) root else "Updates ${node.label}."
-        })
-        val folder = tree.nodes.single { it.path == "ui" }
-        val matching = tree.nodes.single { it.path == "ui/Canvas.kt" }
-        val rejected = tree.nodes.single { it.path == "ui/Unrelated.kt" }
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) for (searchTab in listOf(false, true)) {
-            val launcher = FakeTraceLauncher()
-            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply {
-                setSize(1600, 900)
-                summariesView.apply {
-                    this.mode = mode
-                    update(tree)
-                    if (mode == ReviewSummariesMode.HIERARCHY) selectLevel(0, tree)
-                    if (mode == ReviewSummariesMode.DOCUMENT) selected = tree.root.identity
-                }
-            }
-            try {
-                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
-                layoutTree(canvas)
-                val area = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().singleOrNull { it.text == root }
-                assertNotNull("$mode shows the root summary to search", area)
-                val start = root.indexOf("canvas")
-                area!!.select(start, start + "canvas".length)
-                selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
-                    .single { it.name == if (searchTab) "search-tab" else "search-selection" }.doClick()
-                launcher.finish(launcher.searched.single(), 3,
-                    SummaryMatch(folder.id, folder.identity, 0.9, 1),
-                    SummaryMatch(matching.id, matching.identity, 0.8, 2),
-                    SummaryMatch(rejected.id, rejected.identity, 0.1, 2))
-                layoutTree(canvas)
-                val page = canvas.tabs.selectedComponent as Container
-                val texts = descendants(page).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
-                assertTrue("$mode keeps the matching summary", summaries.text(matching.id) in texts)
-                assertEquals("$mode hides rejected summaries only in search tabs", !searchTab, summaries.text(rejected.id) in texts)
-                val badges = descendants(page).filterIsInstance<JLabel>()
-                fun matchTexts(identity: String): List<String> {
-                    val components = if (mode == ReviewSummariesMode.HIERARCHY) {
-                        val card = descendants(page).single { it.name == if (identity.startsWith("file:")) identity else "node:$identity" } as Container
-                        descendants(card).filter { it.name == "match" }
-                    } else descendants(page).filter { it.name == "match:$identity" }
-                    return components.mapNotNull { (it as? JLabel)?.text ?: (it as? javax.swing.text.JTextComponent)?.text }
-                }
-                assertTrue("$mode labels the best result", "● Best match · 90%" in matchTexts(folder.identity))
-                assertTrue("$mode labels related results", "● Related · 80%" in matchTexts(matching.identity))
-                if (!searchTab) assertTrue("$mode does not label rejected results", matchTexts(rejected.identity).isEmpty())
-                val highlighted = descendants(page).filterIsInstance<JComponent>().filter { it.isOpaque }
-                assertTrue("$mode highlights the best result", highlighted.any { it.background == TraceStyle.BEST_MATCH })
-                assertTrue("$mode highlights related results", highlighted.any { it.background == TraceStyle.RELATED })
-                assertTrue("$mode reports highlighting", badges.any { it.name == "trace-status" && it.text.contains("highlighted in the view") })
-                if (searchTab) assertTrue("$mode reports that unrelated summaries are hidden", badges
-                    .any { it.name == "trace-status" && it.text.contains("the rest are hidden") })
-                (descendants(page).single { it.name == "trace-clear" } as com.intellij.ui.components.ActionLink).doClick()
-                assertTrue("$mode clears result badges", descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
-                assertTrue("$mode clears result backgrounds", highlighted.none { it.isOpaque && it.background in listOf(TraceStyle.BEST_MATCH, TraceStyle.RELATED) })
-                assertEquals("Clearing highlights preserves filtering", !searchTab, summaries.text(rejected.id) in texts)
-
-                // Cancel resets both kinds of filtering, even after Clear has removed the current trace.
-                (descendants(page).single { it.name == "summaries-score" } as javax.swing.JButton).doClick()
-                val scored = canvas.summariesView.scored.toMap()
-                assertTrue(scored.isNotEmpty())
-                val field = descendants(page).single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
-                field.text = "no-such-summary"
-                if (searchTab) {
-                    val mainField = descendants(canvas.tabs.getComponentAt(0) as Container)
-                        .single { it.name == "summaries-search" } as com.intellij.ui.SearchTextField
-                    mainField.text = "Readme"
-                }
-                (descendants(page).single { it.name == "summaries-cancel-search" } as javax.swing.JButton).doClick()
-                layoutTree(canvas)
-                assertEquals("", field.text)
-                assertSame(field, descendants(page).single { it.name == "summaries-search" })
-                assertTrue("$mode restores rejected summaries", descendants(page).filterIsInstance<javax.swing.text.JTextComponent>()
-                    .any { it.text == summaries.text(rejected.id) })
-                assertTrue(descendants(page).none { it.name == "match" || it.name?.startsWith("match:") == true })
-                assertTrue(descendants(page).none { it.name == "summaries-crumb:1" || it.name == "summaries-crumb:searching" })
-                assertTrue(descendants(page).filterIsInstance<javax.swing.text.JTextComponent>()
-                    .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
-                assertEquals(scored, canvas.summariesView.scored)
-                if (searchTab) {
-                    assertEquals("Search", canvas.tabs.getTitleAt(1))
-                    assertEquals("Summaries", canvas.tabs.getToolTipTextAt(1))
-                    assertEquals("Cancel affects only its tab", "Readme", canvas.summariesView.fuzzy)
-                } else {
-                    assertNull(canvas.summariesView.selected)
-                    assertNull(canvas.summariesView.reveal)
-                    assertNull(canvas.summariesView.shownNodes(summaries))
-                }
-            } finally { canvas.dispose() }
-        }
-    }
-
-    fun testCancelSearchCancelsPendingResultsAndLineNavigation() {
-        val file = ReviewFile("ui/Canvas.kt", "/repo/ui/Canvas.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        val tree = buildSummaryTree(listOf(file))
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val leaf = tree.nodes.single { it.path == file.path }
-        for (node in listOf(tree.root, leaf)) {
-            val launcher = FakeTraceLauncher()
-            val opened = mutableListOf<LineTrace>()
-            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { _, lines -> opened += lines }))
-                .apply { setSize(1600, 900) }
-            try {
-                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
-                layoutTree(canvas)
-                val row = descendants(canvas).single { it.name == "summary:${node.identity}" } as Container
-                val area = descendants(row).filterIsInstance<javax.swing.text.JTextComponent>().first()
-                area.select(0, "Paints".length)
-                selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>()
-                    .single { it.name == "search-selection" }.doClick()
-                assertNotNull(canvas.summariesView.tracing)
-                (descendants(canvas).single { it.name == "summaries-cancel-search" } as javax.swing.JButton).doClick()
-                assertTrue(launcher.searchJobs.single().isCancelled)
-                assertNull(canvas.summariesView.tracing)
-
-                // A request may deliver its callback despite cancellation.
-                if (node === leaf) {
-                    val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
-                    launcher.finishLines!!(Result.success(LineTrace(leaf.identity, leaf.path, "Paints",
-                        listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
-                } else {
-                    launcher.finish(launcher.searched.single(), 1, SummaryMatch(leaf.id, leaf.identity, 0.9, 1))
-                }
-                layoutTree(canvas)
-                assertTrue(opened.isEmpty())
-                assertNull(canvas.summariesView.tracing)
-                assertNull(canvas.summariesView.selected)
-                assertNull(canvas.summariesView.reveal)
-                assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>()
-                    .all { it.highlighter.highlights.isEmpty() && it.selectedText == null })
-            } finally { canvas.dispose() }
-        }
-    }
-
     fun testCancelSearchClearsTextFilterWithoutTraceLauncher() {
         val file = ReviewFile("Canvas.kt", "/repo/Canvas.kt", null, "modified", "-old\n+new\n", "1")
         val summaries = ReviewSummaries(buildSummaryTree(listOf(file)))
@@ -1686,7 +1185,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val state = ChangeSummariesViewState(filtering = true)
         val context = selectionContext(tree.root.identity, summaries.text(tree.root.id)!!, 0, 7)!!
         val trace = SummaryTrace(context.identity, context.summary, context.word, context.context, context.query,
-            tree.root.children.map { SummaryMatch(it, tree[it].identity, 0.1, 1) }, tree.root.children.size)
+            tree.root.children.map { SummaryMatch(it, tree[it].identity, false, 1) })
         state.shownNodes(summaries)
         state.showTrace(tree, trace)
         assertEquals(emptySet<String>(), state.shownNodes(summaries))
@@ -1705,734 +1204,138 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertFalse("Short words need an exact substring", fuzzyMatches("tx", "builds the tree"))
     }
 
-    fun testSummariesHierarchyTracesFoldedSummariesAndOpensThePathToTwoLevelsBelow() {
-        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "ui/hierarchy/Hierarchy.kt", "ui/hierarchy/Columns.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1")
+    /**
+     * Files cite their removed line; ui/ cites each file; docs/ repeats its only file; the root's first part cites both ui/
+     * parts and its last part the guide.
+     */
+    private fun linkedSummaries(): ReviewSummaries {
+        val files = listOf("ui/Canvas.kt", "ui/Hierarchy.kt", "docs/Guide.md").map { path ->
+            ReviewFile(path, "/repo/$path", null, "deleted", "@@ -1 +0,0 @@\n-old\n", "1", before = "old\n", after = "")
         }
         val tree = buildSummaryTree(files)
-        val root = "Deleted views: canvas, hierarchy."
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { node ->
-            node.id to if (node.kind == SummaryKind.ROOT) root else "Deletes ${node.label}."
-        })
-        fun node(path: String) = tree.nodes.single { it.path == path && it.kind != SummaryKind.ROOT }
-        val canvasDir = node("ui/canvas")
-        val hierarchyDir = node("ui/hierarchy")
-        val hierarchyFile = node("ui/hierarchy/Hierarchy.kt")
-        val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
-        fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
-        fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun note(identity: String) = panel().components.single { it.name == "summary:$identity" } as javax.swing.text.JTextComponent
-        fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
-            .filterIsInstance<javax.swing.text.JTextComponent>().filter { it.name == "match" }.map { it.text }
-        fun click(component: Component) {
-            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-            layoutTree(canvas)
-        }
-        try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
-            layoutTree(canvas)
-            // The canvas folder is open; the root folds to one row that shows its summary.
-            assertTrue(canvasDir.identity in canvas.summariesView.expanded)
-            click(descendants(panel()).single { it.name == "toggle:root" })
-            assertEquals(root, note("root").text)
-
-            // Scoring is available in the hierarchy too.
-            (named("summaries-score").single() as javax.swing.JButton).doClick()
-            layoutTree(canvas)
-            assertTrue(launcher.scoredWords.isNotEmpty())
-            val beforeHover = javax.swing.SwingUtilities.convertRectangle(note("root").parent, note("root").bounds, canvas)
-            val sizeBeforeHover = panel().preferredSize
-            pointAtWord(canvas, note("root"), "hierarchy", MouseEvent.MOUSE_MOVED)
-            assertEquals(beforeHover, javax.swing.SwingUtilities.convertRectangle(note("root").parent, note("root").bounds, canvas))
-            assertEquals(sizeBeforeHover, panel().preferredSize)
-            assertEquals("hierarchy", canvas.summariesView.tracing!!.word.text)
-            assertEquals(3, note("root").highlighter.highlights.size)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("Right-click a scored word"))
-            searchScoredWord(canvas, note("root"), "hierarchy")
-            val context = launcher.searched.single()
-            launcher.finish(context, 6,
-                SummaryMatch(hierarchyFile.id, hierarchyFile.identity, 0.9, 2),
-                SummaryMatch(hierarchyDir.id, hierarchyDir.identity, 0.6, 1),
-                SummaryMatch(canvasDir.id, canvasDir.identity, 0.7, 1),
-                SummaryMatch(node("ui/canvas/Paint.kt").id, "file:ui/canvas/Paint.kt", 0.2, 2))
-            layoutTree(canvas)
-
-            // The traced folder and the folders leading to deeper matches open; the related canvas folder, with nothing
-            // related beneath, folds so its summary shows.
-            assertTrue("root" in canvas.summariesView.expanded)
-            assertTrue(hierarchyDir.identity in canvas.summariesView.expanded)
-            assertFalse(canvasDir.identity in canvas.summariesView.expanded)
-            assertEquals("Deletes ${canvasDir.label}.", note(canvasDir.identity).text)
-            // Matches are tinted and labelled; the best is selected.
-            assertEquals(listOf("● Best match · 90%"), badges(hierarchyFile.identity))
-            assertEquals(listOf("● Related · 60%"), badges(hierarchyDir.identity))
-            assertEquals(listOf("● Related · 70%"), badges(canvasDir.identity))
-            assertTrue(badges("root").isEmpty())
-            assertEquals(TraceStyle.BEST_MATCH, note(hierarchyFile.identity).background)
-            assertTrue(note(hierarchyFile.identity).isOpaque)
-            assertFalse(note("file:ui/hierarchy/Columns.kt").isOpaque)
-            assertEquals(hierarchyFile.identity, canvas.summariesView.selected)
-            assertTrue((named("trace-status").single() as JLabel).text.contains("3 of 6 summaries"))
-
-            // Moving away from completed search results also clears their decorations in place.
-            val searchedPanel = panel()
-            val searchedNote = note(canvasDir.identity)
-            val searchedBounds = searchedNote.bounds
-            val searchedSize = panel().preferredSize
-            pointAtWord(canvas, searchedNote, "Deletes", MouseEvent.MOUSE_MOVED)
-            assertSame(searchedPanel, panel())
-            assertSame(searchedNote, note(canvasDir.identity))
-            assertEquals(searchedBounds, searchedNote.bounds)
-            assertEquals(searchedSize, panel().preferredSize)
-            assertTrue(badges(hierarchyFile.identity).isEmpty())
-            assertFalse(note(hierarchyFile.identity).isOpaque)
-
-            // Clearing drops the marks but keeps the folding and the saved contexts.
-            (named("trace-clear").single() as com.intellij.ui.components.ActionLink).doClick()
-            layoutTree(canvas)
-            assertNull(canvas.summariesView.tracing)
-            assertTrue(badges(hierarchyFile.identity).isEmpty())
-            assertTrue(hierarchyDir.identity in canvas.summariesView.expanded)
-            assertTrue(canvas.summariesView.scored.isNotEmpty())
-        } finally {
-            canvas.dispose()
-        }
+        fun node(path: String) = tree.nodes.single { it.path == path }
+        fun part(text: String, vararg sources: SummarySource) = SummarySegment(text, sources.toList())
+        return ReviewSummaries(tree)
+            .summarize(mapOf(
+                node("ui/Canvas.kt").id to Summary(listOf(part("Deletes the canvas view.", SummarySource.Rows(2, 2)))),
+                node("ui/Hierarchy.kt").id to Summary(listOf(part("Deletes the hierarchy view.", SummarySource.Rows(2, 2)))),
+                node("docs/Guide.md").id to Summary(listOf(part("Documents the views.", SummarySource.Rows(2, 2)))),
+            ))
+            .summarize(mapOf(node("ui").id to Summary(listOf(
+                part("Deletes the canvas view", SummarySource.Claim(0, 0)), part(" and "),
+                part("the hierarchy view.", SummarySource.Claim(1, 0)),
+            ))))
+            .summarize(mapOf(tree.root.id to Summary(listOf(
+                part("Removes the canvas and hierarchy views", SummarySource.Claim(1, 0), SummarySource.Claim(1, 2)), part(", "),
+                part("updating the guide.", SummarySource.Claim(0, 0)),
+            ))))
     }
 
-    fun testSummaryContextMenuScoresOnlyThatSummary() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
-        val tree = buildSummaryTree(listOf("Canvas.kt", "Paint.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        })
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val file = tree.nodes.single { it.path == "Paint.kt" }
-        val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher))
-            .apply {
-                setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
-                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
-            }
-        fun area(node: SummaryNode): javax.swing.text.JTextComponent {
-            val name = when {
-                mode != ReviewSummariesMode.DOCUMENT -> "summary:${node.identity}"
-                node.kind == SummaryKind.FILE -> "summary:${node.path}"
-                else -> "card-summary:${node.identity}"
-            }
-            val component = descendants(canvas).single { it.name == name }
-            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>()
-                .single { it.text == summaries.text(node.id) }
-        }
-        fun scoreItem(area: javax.swing.text.JTextComponent) = selectionMenu(area)!!.components
-            .filterIsInstance<javax.swing.JMenuItem>().single { it.name == "score-summary" }
-        fun expected(node: SummaryNode) = SummaryWord.split(summaries.text(node.id)!!)
-            .filter { it.meaningful }.map { node.id to it.index }
-        try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            val fileArea = area(file)
-            assertTrue("An unscored summary offers Score", scoreItem(fileArea).isEnabled)
-            canvas.summariesView.scoring = true
-            assertFalse("Score is disabled during another scoring run", scoreItem(fileArea).isEnabled)
-            canvas.summariesView.scoring = false
-            val first = SummaryWord.split(fileArea.text).first()
-            canvas.summariesView.scored[file.identity to first.index] = SummaryContext(
-                file.identity, fileArea.text, first, listOf(first), first.text)
-            fileArea.select(fileArea.text.indexOf("canvas"), fileArea.text.indexOf("canvas") + "canvas".length)
-            assertTrue("Score remains available with selected text", scoreItem(fileArea).isEnabled)
-            scoreItem(fileArea).doClick()
-            assertEquals(expected(file).filter { it.second != first.index }, launcher.scoredWords)
-            assertEquals(setOf(file.identity), canvas.summariesView.scored.values.map { it.identity }.toSet())
-            assertFalse("A fully scored summary disables Score", scoreItem(fileArea).isEnabled)
-            assertTrue(launcher.searched.isEmpty())
-            assertTrue(launcher.searchedLines.isEmpty())
+    private fun summaryText(canvas: Container, identity: String) =
+        descendants(descendants(canvas).single { it.name == "summary:$identity" } as Container)
+            .filterIsInstance<javax.swing.text.JTextComponent>().first()
 
-            if (mode == ReviewSummariesMode.HIERARCHY) {
-                descendants(canvas).single { it.name == "toggle:root" }.let { toggle ->
-                    toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-                }
-                layoutTree(canvas)
+    private fun pointAtWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String, event: Int) {
+        val box = area.modelToView2D(area.text.indexOf(word) + 1)
+        area.dispatchEvent(MouseEvent(area, event, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 1, false,
+            if (event == MouseEvent.MOUSE_CLICKED) MouseEvent.BUTTON1 else MouseEvent.NOBUTTON))
+        layoutTree(canvas)
+    }
+
+    /** Chooses [item] from the context menu of [word] in [area], as a right click on it does. */
+    private fun chooseOnWord(canvas: Container, area: javax.swing.text.JTextComponent, word: String, item: String) {
+        val box = area.modelToView2D(area.text.indexOf(word) + 1)
+        selectionMenu(area, Point(box.centerX.toInt(), box.centerY.toInt()))!!
+            .components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == item }.doClick()
+        layoutTree(canvas)
+    }
+
+    private fun highlighted(area: javax.swing.text.JTextComponent): List<String> =
+        area.highlighter.highlights.sortedBy { it.startOffset }.map { area.text.substring(it.startOffset, it.endOffset) }
+
+    fun testHoverHighlightsTheCitedPartAndEchoesWhatItCondensesAndWhatCondensesIt() {
+        val summaries = linkedSummaries()
+        val tree = summaries.tree
+        val canvas = NoteCanvas({}, {}).apply {
+            setSize(1600, 900)
+            summariesView.mode = ReviewSummariesMode.OUTLINE
+            summariesView.expanded += tree.nodes.map { it.identity }
+        }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+            layoutTree(canvas)
+            fun rowBounds() = descendants(canvas).filter { it.name?.startsWith("summary:") == true }.associate { row ->
+                row.name to javax.swing.SwingUtilities.convertRectangle(row.parent, row.bounds, canvas)
             }
-            if (mode == ReviewSummariesMode.DOCUMENT) {
-                descendants(canvas).single { it.name == "node:root" }.let { rail ->
-                    rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-                }
-                layoutTree(canvas)
-            }
-            launcher.scoredWords.clear()
-            if (mode == ReviewSummariesMode.EXPLORER)
-                (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
-            scoreItem(area(tree.root)).doClick()
-            assertEquals("Scoring a parent must not score its descendants", expected(tree.root), launcher.scoredWords)
-            assertEquals(setOf(file.identity, tree.root.identity), canvas.summariesView.scored.values.map { it.identity }.toSet())
+            val before = rowBounds()
+            val root = summaryText(canvas, "root")
+            pointAtWord(canvas, root, "canvas", MouseEvent.MOUSE_MOVED)
+            assertEquals("Hover must not move any summary row", before, rowBounds())
+            assertEquals("Removes the canvas and hierarchy views", canvas.summariesView.tracing!!.context.query)
+            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), highlighted(root))
+            // Both parts of ui/ and both of its files are echoed; the guide is not.
+            assertEquals(listOf("Deletes", "the", "canvas", "view", "the", "hierarchy", "view"), highlighted(summaryText(canvas, "directory:ui")))
+            assertEquals(listOf("Deletes", "the", "canvas", "view"), highlighted(summaryText(canvas, "file:ui/Canvas.kt")))
+            assertEquals(emptyList<String>(), highlighted(summaryText(canvas, "file:docs/Guide.md")))
+            // Hovering a file echoes what condenses it above, up to the root.
+            pointAtWord(canvas, summaryText(canvas, "file:ui/Hierarchy.kt"), "hierarchy", MouseEvent.MOUSE_MOVED)
+            assertEquals(listOf("the", "hierarchy", "view"), highlighted(summaryText(canvas, "directory:ui")))
+            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), highlighted(summaryText(canvas, "root")))
+            assertEquals(emptyList<String>(), highlighted(summaryText(canvas, "file:ui/Canvas.kt")))
         } finally { canvas.dispose() }
     }
 
-    fun testFileSummaryHighlightsSearchAndOpenTheFileLines() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
-        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
-        val launcher = FakeTraceLauncher()
-        val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
-            .apply {
-                setSize(1600, 900); summariesView.mode = mode; summariesView.visibleOnly = true
-                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
-            }
-        fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun area(): javax.swing.text.JTextComponent {
-            val component = named("summary:${if (mode == ReviewSummariesMode.DOCUMENT) file.path else file.identity}").single()
-            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
-        }
-        fun status() = (named("trace-status").single() as JLabel).text
-        try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            // Document files remain visible even when their folders are folded in the other modes.
-            if (mode == ReviewSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
-            (named("summaries-score").single() as javax.swing.JButton).doClick()
-            layoutTree(canvas)
-            assertTrue("File summaries are scored", launcher.scoredWords.any { (id, _) -> id == file.id })
-
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_MOVED)
-            assertEquals("ui/canvas/Paint.kt", canvas.summariesView.tracing!!.file)
-            assertEquals(3, area().highlighter.highlights.size)
-            assertTrue(status().contains("find its lines in Paint.kt"))
-            val unscoredBox = area().modelToView2D(area().text.indexOf("the") + 1)
-            assertTrue("A pointed menu on an unscored word must not fall back to the traced word",
-                selectionMenu(area(), Point(unscoredBox.centerX.toInt(), unscoredBox.centerY.toInt()))!!
-                    .components.none { it.name == "search-selection" })
-
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
-            assertTrue("Clicking a scored word must not search its lines", launcher.searchedLines.isEmpty())
-            searchScoredWord(canvas, area(), "border")
-            val context = launcher.searchedLines.single()
-            assertTrue("A file summary searches its lines, not summaries", launcher.searched.isEmpty())
-            assertTrue(status().contains("Searching the lines of Paint.kt"))
-            val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
-            launcher.finishLines!!(Result.success(LineTrace(file.identity, file.path, context.query, listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
-            layoutTree(canvas)
-            assertEquals(file.identity, opened.single().first.identity)
-            assertEquals(listOf(1), opened.single().second.after)
-            assertTrue(status(), status().contains("Best match at Paint.kt:1 · 80%"))
-
-            // Choosing Search on a highlight again reopens the found lines without searching again.
-            searchScoredWord(canvas, area(), "border")
-            assertEquals(2, opened.size)
-            assertEquals(1, launcher.searchedLines.size)
-
-            // Switching scopes on the same word must replace the query, even inside an existing highlight.
-            val word = SummaryWord.split(area().text).single { it.text == "border" }
-            val box = area().modelToView2D(word.start + 1)
-            selectionMenu(area(), Point(box.centerX.toInt(), box.centerY.toInt()))!!.components
-                .filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-word" }.doClick()
-            assertEquals("border", launcher.searchedLines.last().query)
-            searchScoredWord(canvas, area(), "border")
-            assertEquals(context, launcher.searchedLines.last())
-            assertEquals(3, launcher.searchedLines.size)
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testWordMenuOffersIndependentSearchScopes() {
-        val summary = "Paints the canvas border."
-        val words = SummaryWord.split(summary)
-        val word = words.single { it.text == "canvas" }
-        val state = ChangeSummariesViewState()
-        val scored = SummaryContext("root", summary, word, words, "Paints the canvas border")
-        state.scored["root" to word.index] = scored
-        val area = javax.swing.JTextArea(summary).apply { setSize(400, 100) }
-        val searches = mutableListOf<String>()
-        val traces = mutableListOf<Int>()
-        installWordTracing(area, "root", summary, state,
-            trace = { _, index, search -> if (search) traces += index },
-            searchSelection = { identity, start, end -> searches += selectionContext(identity, summary, start, end)!!.query })
-        area.select(word.start, words.last().end)
-        val box = area.modelToView2D(word.start + 1)
-        val point = Point(box.centerX.toInt(), box.centerY.toInt())
-        val items = selectionMenu(area, point)!!.components.filterIsInstance<javax.swing.JMenuItem>()
-        assertEquals(listOf("Search current word", "Search whole scored query", "Search selected query"), items.map { it.text })
-        items.forEach { it.doClick() }
-        assertEquals(listOf("canvas", "canvas border"), searches)
-        assertEquals(listOf(word.index), traces)
-
-        // Word-only search stays available without a score or selection.
-        state.scored.clear()
-        area.select(word.start, word.start)
-        val unscored = selectionMenu(area, point)!!.components.filterIsInstance<javax.swing.JMenuItem>()
-        assertEquals(listOf("search-word"), unscored.map { it.name })
-        unscored.single().doClick()
-        assertEquals("canvas", searches.last())
-        assertNull("Blank space must not fall back to another word", selectionMenu(area, Point(390, 80)))
-    }
-
-    fun testHoveredAndSelectedWordsEchoInSummariesBelow() {
-        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt", "docs/Guide.md").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val parent = tree.root
-        val child = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
-        val summary = "Paints the canvas border and the frame."
-        val childSummary = "Draws the Canvas border twice."
-        val state = ChangeSummariesViewState()
-        val areas = mutableListOf<javax.swing.text.JTextComponent>()
-        state.echoTree = { tree }
-        state.echoChanged = { areas.forEach(::updateWordTracing) }
-        val area = javax.swing.JTextArea(summary).apply { setSize(400, 100) }
-        val below = javax.swing.JTextArea(childSummary).apply { setSize(400, 100) }
-        installWordTracing(area, parent.identity, summary, state, trace = { _, _, _ -> })
-        installWordTracing(below, child.identity, childSummary, state, trace = { _, _, _ -> })
-        areas += listOf(area, below)
-        fun echoed() = below.highlighter.highlights.filter {
-            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
-        }.map { childSummary.substring(it.startOffset, it.endOffset) }
-        fun hover(text: String) {
-            val word = SummaryWord.split(summary).single { it.text == text }
-            val box = area.modelToView2D(word.start + 1)
-            val event = MouseEvent(area, MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
-            area.mouseMotionListeners.forEach { it.mouseMoved(event) }
-        }
-
-        // Without a score, the hovered word alone recurs below, regardless of case.
-        hover("canvas")
-        assertEquals(listOf("Canvas"), echoed())
-
-        // A scored word echoes its whole context.
-        val words = SummaryWord.split(summary)
-        val border = words.single { it.text == "border" }
-        state.scored[parent.identity to border.index] =
-            SummaryContext(parent.identity, summary, border, words.filter { it.text in setOf("canvas", "border") }, "canvas border")
-        hover("border")
-        assertEquals(listOf("Canvas", "border"), echoed())
-
-        // A selection echoes its meaningful words until it is cleared; summaries outside the subtree never echo.
-        area.select(summary.indexOf("frame"), summary.indexOf("frame") + 5)
-        assertEquals(emptyList<String>(), echoed())
-        hover("canvas")
-        assertEquals("Hovering keeps the selection's echo", emptyList<String>(), echoed())
-        area.select(0, summary.indexOf(" border"))
-        assertEquals(listOf("Canvas"), echoed())
-        area.select(0, 0)
-        assertNull(state.echo)
-        val sibling = tree.nodes.single { it.path == "docs/Guide.md" }
-        state.echo(child.identity, SummaryWord.split(childSummary))
-        assertFalse(sibling.identity in state.echo!!.below)
-        assertFalse(state.echo!!.reaches(sibling.identity))
-        state.clearEcho()
-
-        // Hovering a file's word echoes it in its folders up to the root, but not in the hovered summary itself.
-        fun echoedAbove() = area.highlighter.highlights.filter {
-            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
-        }.map { summary.substring(it.startOffset, it.endOffset) }
-        val folder = tree.nodes.single { it.path == "ui/canvas" }
-        val folderSummary = "Canvas drawing and its border."
-        val middle = javax.swing.JTextArea(folderSummary).apply { setSize(400, 100) }
-        installWordTracing(middle, folder.identity, folderSummary, state, trace = { _, _, _ -> })
-        areas += middle
-        val childWord = SummaryWord.split(childSummary).single { it.text == "border" }
-        val box = below.modelToView2D(childWord.start + 1)
-        val event = MouseEvent(below, MouseEvent.MOUSE_MOVED, 0, 0, box.centerX.toInt(), box.centerY.toInt(), 0, false)
-        below.mouseMotionListeners.forEach { it.mouseMoved(event) }
-        assertEquals(listOf("border"), echoedAbove())
-        assertEquals(1, middle.highlighter.highlights.count {
-            (it.painter as? javax.swing.text.DefaultHighlighter.DefaultHighlightPainter)?.color == TraceStyle.ECHO_WORD
-        })
-        assertEquals(emptyList<String>(), echoed())
-        assertTrue(state.echo!!.reaches(parent.identity))
-        assertFalse(state.echo!!.reaches(sibling.identity))
-    }
-
-    fun testSelectedSummaryTextSearchesWithoutScoring() =ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
-        val files = listOf("ui/canvas/Canvas.kt", "ui/canvas/Paint.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val file = tree.nodes.single { it.path == "ui/canvas/Paint.kt" }
-        val launcher = FakeTraceLauncher()
-        val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
-            .apply {
-                setSize(1600, 900); summariesView.mode = mode
-                if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse(tree[file.parent!!].identity, tree)
-            }
-        fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun area(identity: String, path: String): javax.swing.text.JTextComponent {
-            val component = named("summary:${if (mode == ReviewSummariesMode.DOCUMENT) path else identity}").single()
-            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
-        }
-        fun fileArea() = area(file.identity, file.path)
-        fun status() = (named("trace-status").single() as JLabel).text
-        fun search(area: javax.swing.text.JTextComponent, text: String) {
-            area.select(area.text.indexOf(text), area.text.indexOf(text) + text.length)
-            val item = selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-selection" }
-            assertTrue(item.isEnabled)
-            item.doClick()
-            layoutTree(canvas)
+    fun testSearchShowsTheCitedSummariesAndAFileOpensItsCitedLines() {
+        val summaries = linkedSummaries()
+        val tree = summaries.tree
+        val opened = mutableListOf<Pair<String, LineTrace>>()
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openLines = { node, lines -> opened += node.path to lines })).apply {
+            setSize(1600, 900)
+            summariesView.mode = ReviewSummariesMode.OUTLINE
+            summariesView.expanded += tree.nodes.map { it.identity }
         }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
-            if (mode == ReviewSummariesMode.DOCUMENT) canvas.summariesView.expanded.clear()
-            assertTrue((named("scoring-status").single() as JLabel).text.contains("right-click Search"))
-            assertEquals("The caret word can be searched without scoring", listOf("score-summary", "search-word"),
-                selectionMenu(fileArea())!!.components.mapNotNull { it.name }.filter { it == "score-summary" || it.startsWith("search-") })
+            // A left click on a linked word places the caret; only the menu searches.
+            pointAtWord(canvas, summaryText(canvas, "root"), "guide", MouseEvent.MOUSE_CLICKED)
+            assertNull(canvas.summariesView.tracing?.trace)
+            chooseOnWord(canvas, summaryText(canvas, "root"), "guide", "search-segment")
+            val trace = canvas.summariesView.tracing!!.trace!!
+            // docs/ only repeats its file, so the guide itself is the match one level below.
+            assertEquals(listOf("file:docs/Guide.md"), trace.related.map { it.identity })
+            assertEquals(4, trace.candidates)
+            assertEquals("file:docs/Guide.md", canvas.summariesView.selected)
+            val status = descendants(canvas).single { it.name == "trace-status" } as JLabel
+            assertTrue(status.text, status.text.contains("cites 1 of 4 summaries"))
 
-            // A right click neither folds nor selects the row.
-            val expanded = canvas.summariesView.expanded.toSet()
-            fileArea().dispatchEvent(MouseEvent(fileArea(), MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON3))
-            layoutTree(canvas)
-            assertEquals(expanded, canvas.summariesView.expanded)
-            assertNull(canvas.summariesView.selected)
-
-            // A file summary's selection searches its lines and opens the best, with nothing scored.
-            search(fileArea(), "canvas border")
-            assertTrue(launcher.scoredWords.isEmpty())
-            assertEquals("canvas border", launcher.searchedLines.single().query)
-            assertTrue(status(), status().contains("Searching the lines of Paint.kt"))
-            assertTrue(fileArea().highlighter.highlights.isNotEmpty())
-            val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
-            launcher.finishLines!!(Result.success(LineTrace(file.identity, file.path, "canvas border", listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
-            layoutTree(canvas)
-            assertEquals(file.identity, opened.single().first.identity)
-            assertTrue(status(), status().contains("Best match at Paint.kt:1 · 80%"))
-
-            // A summary with summaries below searches them instead.
-            if (mode == ReviewSummariesMode.OUTLINE) {
-                search(area("root", tree.root.path), "Paints")
-                assertEquals("Paints", launcher.searched.single().query)
-                assertTrue(status(), status().contains("Searching the summaries"))
-                assertTrue(launcher.scoredWords.isEmpty())
-            }
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testTopicFileSummaryHighlightsSearchAndOpenTheFileLines() = ChangeTopicsMode.entries.forEach { mode ->
-        val source = ReviewFile("ui/Paint.kt", "/repo/ui/Paint.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        val tree = buildSummaryTree(listOf(source))
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Paints the canvas border." })
-        val card = TopicsCard(ReviewTopics(listOf(source)).assign(source.path, "UI>Painting"), summaries, canRun = true)
-        val launcher = FakeTraceLauncher()
-        val opened = mutableListOf<Pair<SummaryNode, LineTrace>>()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher, openLines = { node, lines -> opened += node to lines }))
-            .apply { setSize(1600, 900); topicsView.mode = mode; topicsView.visibleOnly = true }
-        fun named(name: String) = descendants(canvas).single { it.name == name }
-        fun area(): javax.swing.text.JTextComponent {
-            val component = named("summary:${source.path}")
-            return component as? javax.swing.text.JTextComponent ?: descendants(component as Container).filterIsInstance<javax.swing.text.JTextComponent>().first()
-        }
-        try {
-            canvas.showNotes(CanvasState(emptyList(), topics = card))
-            layoutTree(canvas)
-            if (mode == ChangeTopicsMode.DOCUMENT) canvas.topicsView.selectLevel(0, topicOutline(card.topics))
-            (named("topics-score") as javax.swing.JButton).doClick()
-            layoutTree(canvas)
-            assertTrue(launcher.scoredWords.any { (id, _) -> card.reading.tree[id].kind == SummaryKind.FILE })
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_MOVED)
-            assertEquals(source.path, canvas.topicsView.tracing!!.file)
-            assertEquals(3, area().highlighter.highlights.size)
-            assertTrue(launcher.searchedLines.isEmpty())
-            pointAtWord(canvas, area(), "border", MouseEvent.MOUSE_CLICKED)
-            assertTrue("Clicking a scored word must not search its lines", launcher.searchedLines.isEmpty())
-            searchScoredWord(canvas, area(), "border")
-            val context = launcher.searchedLines.single()
-            assertTrue(launcher.searched.isEmpty())
-            val line = EvidenceLine(LineSide.AFTER, 1, "new", '+', 0, diff = true)
-            launcher.finishLines!!(Result.success(LineTrace(context.identity, source.path, context.query,
-                listOf(LineMatch(listOf(line), 0.8)), listOf(line))))
-            layoutTree(canvas)
-            assertEquals(context.identity, opened.single().first.identity)
-            assertEquals(listOf(1), opened.single().second.after)
-            assertTrue((named("trace-status") as JLabel).text.contains("Best match at Paint.kt:1"))
-            searchScoredWord(canvas, area(), "border")
-            assertEquals(2, opened.size)
-            assertEquals(1, launcher.searchedLines.size)
+            chooseOnWord(canvas, summaryText(canvas, "file:ui/Canvas.kt"), "canvas", "search-segment")
+            val (path, lines) = opened.single()
+            assertEquals("ui/Canvas.kt", path)
+            assertEquals(listOf(1), lines.before)
+            assertTrue(lines.after.isEmpty())
+            assertTrue(status.text, status.text.contains("Canvas.kt:removed 1"))
         } finally { canvas.dispose() }
     }
 
-    fun testTopicsHierarchyScoresAndTracesFoldedTopicSummaries() {
-        val files = listOf("src/wallet.kt", "src/auth.kt", "ui/form.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val topics = ReviewTopics(files)
-            .assign("src/wallet.kt", "Storage>User>Wallet")
-            .assign("src/auth.kt", "Storage>User>Auth")
-            .assign("ui/form.kt", "UI>Checkout")
-        val topicTree = buildTopicSummaryTree(topics)
-        val topicSummaries = ReviewSummaries(topicTree).summarize(topicTree.nodes.associate { node ->
-            node.id to if (node.identity == "topic:storage") "Adds user wallets and token auth." else "Changes ${node.label}."
-        })
-        val shared = ReviewSummaries(buildSummaryTree(files))
-        val launcher = FakeTraceLauncher()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = launcher)).apply { setSize(1600, 900) }
-        fun panel() = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
-        fun named(name: String) = descendants(canvas).filter { it.name == name }
-        fun note(name: String) = panel().components.single { it.name == "summary:$name" } as javax.swing.text.JTextComponent
-        fun badges(identity: String) = descendants(panel().anchors.getValue(identity) as Container)
-            .filterIsInstance<javax.swing.text.JTextComponent>().filter { it.name == "match" }.map { it.text }
-        fun click(component: Component) {
-            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-            layoutTree(canvas)
+    fun testSearchTabKeepsOnlyTheCitedSummaries() {
+        val summaries = linkedSummaries()
+        val tree = summaries.tree
+        val canvas = NoteCanvas({}, {}).apply {
+            setSize(1600, 900)
+            summariesView.mode = ReviewSummariesMode.OUTLINE
+            summariesView.expanded += tree.nodes.map { it.identity }
         }
         try {
-            val card = TopicsCard(topics, shared, canRun = true, topicSummaries)
-            canvas.showNotes(CanvasState(emptyList(), topics = card))
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
-            assertTrue("Scoring is available in the document too", named("topics-score").isNotEmpty())
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
-            layoutTree(canvas)
-            click(descendants(panel()).single { it.name == "toggle:0:storage" })
-            assertEquals("Adds user wallets and token auth.", note("0:storage").text)
-
-            (named("topics-score").single() as javax.swing.JButton).doClick()
-            layoutTree(canvas)
-            // The hidden root is not scored; topics and their subtopics are, through the hierarchy's own tree.
-            val reading = card.reading
-            assertTrue(launcher.scoredWords.none { (id, _) -> reading.tree[id].kind == SummaryKind.ROOT })
-            assertTrue(launcher.scoredWords.any { (id, _) -> reading.tree[id].identity == "topic:storage" })
-            pointAtWord(canvas, note("0:storage"), "auth", MouseEvent.MOUSE_MOVED)
-            assertEquals("auth", canvas.topicsView.tracing!!.word.text)
-            assertEquals(3, note("0:storage").highlighter.highlights.size)
-            searchScoredWord(canvas, note("0:storage"), "auth")
-            val context = launcher.searched.single()
-            fun match(identity: String, probability: Double, levels: Int) =
-                SummaryMatch(reading.tree.nodes.single { it.identity == identity }.id, identity, probability, levels)
-            launcher.finish(context, 3, match("topic:storage > user > auth", 0.8, 2), match("topic:storage > user > wallet", 0.1, 2))
-            layoutTree(canvas)
-
-            // Storage and its user topic open down to the match two levels below; the match folds to show its summary.
-            val outline = panel().outline
-            fun topic(identity: String) = outline.nodes.single { it.identity == identity }
-            assertFalse(canvas.topicsView.isCollapsed(topic("storage")))
-            assertFalse(canvas.topicsView.isCollapsed(topic("storage > user")))
-            assertTrue(canvas.topicsView.isCollapsed(topic("storage > user > auth")))
-            assertEquals("Changes Auth.", note("2:storage > user > auth").text)
-            assertEquals(TraceStyle.BEST_MATCH, note("2:storage > user > auth").background)
-            assertEquals(listOf("● Best match · 80%"), badges("topic:storage > user > auth"))
-            assertTrue(badges("topic:storage > user > wallet").isEmpty())
-            assertTrue(canvas.topicsView.isSelected(topic("storage > user > auth")))
-            assertTrue((named("trace-status").single() as JLabel).text.contains("1 of 3 summaries"))
-
-            // A new snapshot that changes the traced summary drops the trace.
-            val rewritten = topicSummaries.summarize(mapOf(topicTree.nodes.single { it.identity == "topic:storage" }.id to "Rewritten."))
-            canvas.updateTopics(TopicsCard(topics, shared, canRun = true, rewritten))
-            layoutTree(canvas)
-            assertNull(canvas.topicsView.tracing)
-            assertTrue(badges("topic:storage > user > auth").isEmpty())
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testSummaryHoverAndClearPreserveScrolledPositionWithLongQueries() {
-        val files = (0..14).flatMap { folder -> (0..1).map { file ->
-            val path = "pkg/folder${folder.toString().padStart(2, '0')}/File$file.kt"
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        } }
-        val tree = buildSummaryTree(files)
-        val summary = ("Handles important requests. " + "Additional explanation of the behavior. ".repeat(24)).trim()
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to summary })
-        val target = tree.nodes.single { it.path == "pkg/folder13" }
-        val words = SummaryWord.split(summary)
-        val word = words.single { it.text == "important" }
-        val nextWord = words.first { it.text == "Additional" }
-        val query = "A long hover query that must never wrap into extra status rows. ".repeat(30)
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
-            val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = FakeTraceLauncher())).apply { setSize(1000, 700) }
-            canvas.summariesView.apply {
-                this.mode = mode
-                update(tree)
-                selectLevel(99, tree)
-                if (mode == ReviewSummariesMode.HIERARCHY) toggle(target.identity)
-                if (mode == ReviewSummariesMode.DOCUMENT) selected = target.identity
-                if (mode == ReviewSummariesMode.EXPLORER) browse(tree[target.parent!!].identity, tree)
-                scored[target.identity to word.index] = SummaryContext(target.identity, summary, word, listOf(word), query)
-                scored[target.identity to nextWord.index] = SummaryContext(target.identity, summary, nextWord, listOf(nextWord), "Another query")
-            }
-            fun area(): javax.swing.text.JTextComponent {
-                val row = descendants(canvas).single {
-                    it.name == if (mode == ReviewSummariesMode.DOCUMENT) "card-summary:${target.identity}" else "summary:${target.identity}"
-                }
-                return if (row is javax.swing.text.JTextComponent) row else descendants(row as Container).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == summary }
-            }
-            fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, area()) as javax.swing.JScrollPane
-            fun bounds() = javax.swing.SwingUtilities.convertRectangle(area().parent, area().bounds, canvas)
-            try {
-                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-                layoutTree(canvas)
-                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-                area().scrollRectToVisible(java.awt.Rectangle(0, 0, area().width, area().height))
-                assertTrue("The test must hover a scrolled summary in $mode", scroll().viewport.viewPosition.y > 0)
-                val position = Point(scroll().viewport.viewPosition)
-                val originalArea = area()
-                val originalScroll = scroll()
-                val page = canvas.tabs.selectedComponent as javax.swing.JScrollPane
-                val pagePosition = Point(page.viewport.viewPosition)
-                val before = bounds()
-                val size = canvas.preferredSize
-                pointAtWord(canvas, area(), "important", MouseEvent.MOUSE_MOVED)
-                // Check before queued scroll restoration can conceal a temporary jump.
-                assertSame("Hover must retain the text component in $mode", originalArea, area())
-                assertSame("Hover must retain the scroll pane in $mode", originalScroll, scroll())
-                assertEquals(position, scroll().viewport.viewPosition)
-                assertEquals(pagePosition, page.viewport.viewPosition)
-                assertNotNull("Hover must select a scored word in $mode (${area().text})", canvas.summariesView.tracing)
-                assertEquals("Hover must paint the scored word in $mode", 1, area().highlighter.highlights.size)
-                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-                assertEquals("Hover must preserve the viewport in $mode", position, scroll().viewport.viewPosition)
-                assertEquals("Hover must keep the text under the pointer in $mode", before, bounds())
-                assertEquals(size, canvas.preferredSize)
-                val status = descendants(canvas).single { it.name == "trace-status" } as JLabel
-                assertTrue(status.text.contains(query))
-                assertEquals(status.text, status.toolTipText)
-                pointAtWord(canvas, area(), "Additional", MouseEvent.MOUSE_MOVED)
-                assertSame(originalArea, area())
-                assertEquals(position, scroll().viewport.viewPosition)
-                assertEquals(nextWord.start, area().highlighter.highlights.single().startOffset)
-                assertTrue(status.text.contains("Another query"))
-                (descendants(canvas).single { it.name == "trace-clear" } as com.intellij.ui.components.ActionLink).doClick()
-                layoutTree(canvas)
-                assertSame("Clear must retain the text component in $mode", originalArea, area())
-                assertSame(originalScroll, scroll())
-                assertEquals(position, scroll().viewport.viewPosition)
-                assertEquals(0, area().highlighter.highlights.size)
-                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-                assertEquals(position, scroll().viewport.viewPosition)
-                assertEquals(before, bounds())
-                assertEquals(size, canvas.preferredSize)
-                pointAtWord(canvas, area(), "important", MouseEvent.MOUSE_MOVED)
-                assertEquals("The same word can be hovered again after Clear", 1, area().highlighter.highlights.size)
-                assertEquals(position, scroll().viewport.viewPosition)
-            } finally { canvas.dispose() }
-        }
-    }
-
-    fun testSummariesShowOnlyFileNamesWithMetadataInTooltipsAndSummaryClicksToggleChildren() {
-        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-        val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
-        fun texts(identity: String) = descendants(descendants(canvas).single { it.name == "summary:$identity" } as Container)
-            .filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
-        fun header(identity: String) = descendants(canvas).single { it.name == "summary-name:$identity" } as JLabel
-        fun click(component: Component) {
-            component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
-            layoutTree(canvas)
-        }
-        try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            assertEquals(listOf("Summary of file:ui/canvas/Canvas.kt."), texts("file:ui/canvas/Canvas.kt"))
-            assertTrue(descendants(canvas).none { it.name == "summaries-show-names" })
-            assertEquals("./ · All changes · 2 files", header("root").text)
-            assertTrue(header("root").toolTipText.contains("/repo/"))
-            val fileHeader = header("file:ui/canvas/Canvas.kt")
-            assertEquals("Canvas.kt", fileHeader.text)
-            assertTrue(fileHeader.toolTipText.contains("modified file"))
-            assertTrue(fileHeader.toolTipText.contains("ui/canvas/Canvas.kt"))
-            assertTrue(fileHeader.toolTipText.contains("/repo/ui/canvas/Canvas.kt"))
-            val rootSummary = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == "Summary of root." }
-            click(rootSummary)
-            assertFalse("root" in canvas.summariesView.expanded)
-            assertTrue(descendants(canvas).none { it.name == "summary:file:ui/canvas/Canvas.kt" })
-            assertTrue(descendants(canvas).none { it.name?.startsWith("details:") == true })
-            click(header("root"))
-            assertTrue("root" in canvas.summariesView.expanded)
-            val fileRow = descendants(canvas).single { it.name == "summary:file:ui/canvas/Canvas.kt" } as Container
-            descendants(fileRow).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "View diff" }.doClick()
-            assertEquals(listOf("ui/canvas/Canvas.kt"), opened)
-            canvas.updateSummaries(SummariesCard(summaries, running = true, canRun = false))
-            layoutTree(canvas)
-            assertEquals(fileHeader.text, header("file:ui/canvas/Canvas.kt").text)
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testExplainLinksAskTheChatAboutEveryEntryInEverySummariesView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
-        val files = listOf("ui/canvas/Canvas.kt", "ui/hierarchy/Hierarchy.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
-        }
-        val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-        val explained = mutableListOf<String>()
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(explainNode = { explained += it.identity })).apply { setSize(1600, 900) }
-        // The split view keeps entry actions in each tree row's context menu.
-        fun links(): List<javax.swing.AbstractButton> = (descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>() +
-            descendants(canvas).mapNotNull { (it as? JComponent)?.componentPopupMenu }.distinct()
-                .flatMap { it.components.filterIsInstance<javax.swing.JMenuItem>() }).filter { it.text == "Explain" }
-        try {
-            canvas.summariesView.mode = mode
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
-            layoutTree(canvas)
-            assertTrue(mode.name, links().isNotEmpty())
-            assertTrue(mode.name, links().all { it.isEnabled })
-            links().forEach { it.doClick() }
-            assertTrue(mode.name, explained.isNotEmpty())
-            assertTrue(mode.name, explained.all { identity -> tree.nodes.any { it.identity == identity } })
-            if (mode != ReviewSummariesMode.EXPLORER) assertTrue(mode.name, "file:ui/canvas/Canvas.kt" in explained)
-            canvas.updateSummaries(SummariesCard(summaries, running = true, canRun = false))
-            layoutTree(canvas)
-            assertTrue(mode.name, links().none { it.isEnabled })
-        } finally {
-            canvas.dispose()
-        }
-    }
-
-    fun testExplanationRemainsAccessibleAcrossCanvasUpdatesAndOpensItsChart() {
-        var chartOpened = 0
-        val chart = dev.insight.callgraph.ExplainChartResult.Ready(
-            dev.insight.callgraph.ExplainChart(emptyList(), "{}") { chartOpened++ })
-        val result = ExplainResult("/explain src/a.kt", "The cache avoids repeated reads.", running = false, chart)
-        val canvas = canvas()
-        try {
-            canvas.showNotes(CanvasState(listOf(note), explanation = result))
-            canvas.focusExplanation()
-            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            assertTrue(descendants(canvas.tabs.selectedComponent as Container)
-                .filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == result.text })
-            descendants(canvas).filterIsInstance<javax.swing.JButton>().single { it.text == "Open Flow Chart" }.doClick()
-            assertEquals(1, chartOpened)
-            canvas.showNotes(CanvasState(listOf(note.copy(text = "Updated note")), explanation = result))
-            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            canvas.updateSummaries(null)
-            canvas.updateTopics(null)
-            canvas.updateFileView(null)
-            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            canvas.focusNote(note)
-            assertEquals("Note · a.kt", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            canvas.focusExplanation()
-            assertEquals("Explanation", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            canvas.showNotes(CanvasState(listOf(note)))
-            assertEquals(1, canvas.tabs.tabCount)
-            assertEquals("Note · a.kt", canvas.tabs.getTitleAt(0))
-        } finally { canvas.dispose() }
-    }
-
-    fun testExplanationShowsProgressAndWhyTheChartIsUnavailable() {
-        val canvas = canvas()
-        try {
-            val result = ExplainResult("/explain", "Explaining…", running = true)
-            canvas.showNotes(CanvasState(emptyList(), explanation = result))
-            assertEquals("Explaining…", canvas.tabs.getTitleAt(0))
-            canvas.showNotes(CanvasState(emptyList(), explanation = result.copy(text = "Stopped.", running = false,
-                chart = dev.insight.callgraph.ExplainChartResult.Unavailable("the graph is building."))))
-            assertEquals("Explanation", canvas.tabs.getTitleAt(0))
-            val texts = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().map { it.text }
-            assertTrue("Stopped." in texts)
-            assertTrue("Flow Chart unavailable: the graph is building." in texts)
-            assertTrue(descendants(canvas).filterIsInstance<javax.swing.JButton>().none { it.text == "Open Flow Chart" })
+            chooseOnWord(canvas, summaryText(canvas, "root"), "hierarchy", "search-tab")
+            assertEquals(2, canvas.tabs.tabCount)
+            val tab = canvas.tabs.getComponentAt(1) as Container
+            val rows = descendants(tab).mapNotNull { it.name }.filter { it.startsWith("summary:") }
+            assertEquals(listOf("summary:root", "summary:directory:ui", "summary:file:ui/Canvas.kt", "summary:file:ui/Hierarchy.kt"), rows)
+            val crumbs = descendants(tab).filter { it.name?.startsWith("summaries-crumb:") == true }
+            assertEquals(listOf("Summaries", "“Removes the canvas and hierarchy views”"), crumbs.map { (it as? JLabel)?.text ?: (it as com.intellij.ui.components.ActionLink).text })
         } finally { canvas.dispose() }
     }
 

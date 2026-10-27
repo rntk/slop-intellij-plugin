@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import dev.insight.review.SummaryNode
+import dev.insight.review.SummarySource
 
 /** The side of a diff a line opens on; a source file has only [AFTER]. */
 enum class LineSide { BEFORE, AFTER }
@@ -21,12 +22,11 @@ data class EvidenceLine(
     val candidate: Boolean get() = if (diff) marker != ' ' else text.isNotBlank()
 }
 
-/** A block of consecutive lines with the Decisions API's probability that it does what the query says. */
-data class LineMatch(val lines: List<EvidenceLine>, val probability: Double)
+/** A block of consecutive lines a summary cites. */
+data class LineMatch(val lines: List<EvidenceLine>)
 
 /**
- * What a word of a file's summary refers to in the file. [blocks] are every searched block, most probable first; [lines] are
- * the lines of the best block that do what [query] says, or all of its candidate lines when none stands out.
+ * What a segment of a file's summary cites in the file: [blocks] holds the lines of each citation, [lines] all of them.
  */
 data class LineTrace(
     val identity: String,
@@ -34,10 +34,8 @@ data class LineTrace(
     val query: String,
     val blocks: List<LineMatch>,
     val lines: List<EvidenceLine>,
-    /** Blocks left out because the file has more than the search covers. */
-    val skipped: Int = 0,
 ) {
-    val related: List<LineMatch> get() = blocks.filter { it.probability >= SummaryTrace.MATCH_THRESHOLD }
+    val related: List<LineMatch> get() = blocks
     val best: LineMatch? get() = related.firstOrNull()
     val before: List<Int> get() = lines.filter { it.side == LineSide.BEFORE }.map { it.number }
     val after: List<Int> get() = lines.filter { it.side == LineSide.AFTER }.map { it.number }
@@ -101,30 +99,16 @@ internal fun patchLines(patch: String, inPatch: Boolean = false): List<EvidenceL
     return if (lines.lastOrNull()?.let { it.marker == ' ' && it.text.isEmpty() } == true) lines.dropLast(1) else lines
 }
 
-/**
- * Consecutive lines in blocks of at most [maxLines], each starting and ending on a candidate line. A block ends at a gap
- * (a blank source line, or unchanged diff lines) once it has [minLines] candidates, and always between hunks, so a block
- * reads as one statement or change rather than a fixed window.
- */
-internal fun lineBlocks(lines: List<EvidenceLine>, minLines: Int = 3, maxLines: Int = 12): List<List<EvidenceLine>> {
-    val blocks = mutableListOf<List<EvidenceLine>>()
-    var block = mutableListOf<EvidenceLine>()
-    fun flush() {
-        val trimmed = block.dropWhile { !it.candidate }.dropLastWhile { !it.candidate }
-        if (trimmed.isNotEmpty()) blocks += trimmed
-        block = mutableListOf()
-    }
-    for (line in lines) {
-        val last = block.lastOrNull()
-        if (last != null && (last.hunk != line.hunk || block.size >= maxLines ||
-                !line.candidate && block.count { it.candidate } >= minLines)) flush()
-        if (block.isNotEmpty() || line.candidate) block += line
-    }
-    flush()
-    return blocks
-}
 
-/** `+12| text`: question IDs are not sent to the model, so each line carries its marker and number. */
-internal fun numberedLines(lines: List<EvidenceLine>): String = lines.joinToString("\n") { line ->
-    (if (line.diff) "${line.marker}" else "") + "${line.number}| ${line.text}"
+/**
+ * The lines of [node]'s evidence that [rows] cite: file lines of a source, or for a diff the lines of its patch, numbered
+ * from 1 as its summary saw them, each opening on its side of the diff. Hunk headers are not lines of the file.
+ */
+internal fun citedLines(node: SummaryNode, rows: List<SummarySource.Rows>): List<EvidenceLine> {
+    fun cited(number: Int) = rows.any { number in it.first..it.last }
+    val lines = evidenceLines(node)
+    val diff = node.file as? ReviewFile
+    if (node.file?.text != null || diff == null) return lines.filter { cited(it.number) }
+    val numbered = patchLines(diff.patch, inPatch = true)
+    return lines.filterIndexed { index, _ -> numbered.getOrNull(index)?.let { cited(it.number) } == true }
 }

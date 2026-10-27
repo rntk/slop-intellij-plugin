@@ -1,5 +1,10 @@
 package dev.insight.diff
 
+import dev.insight.review.Summary
+import dev.insight.review.SummaryNode
+import dev.insight.review.SummarySegment
+import dev.insight.review.SummarySource
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.review.ChatFocus
 import dev.insight.review.ContextSummaryLauncher
@@ -25,7 +30,14 @@ class ContextSummariesTest : BasePlatformTestCase() {
     }
     private val tree = buildSummaryTree(files)
     private val app = tree.nodes.single { it.location == "app/" }
-    private val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })
+    /** Files cite their patch, folders their files, and the root only app/, so searching the root finds app/ and its files. */
+    private val original = run {
+        fun summary(node: SummaryNode, vararg sources: SummarySource) = Summary(listOf(SummarySegment("Original ${node.location}", sources.toList())))
+        val docs = tree.nodes.single { it.location == "docs/" }
+        ReviewSummaries(tree).summarize(tree.nodes.filter { it.children.isEmpty() }.associate { it.id to summary(it, SummarySource.Rows(1, 2)) })
+            .summarize(listOf(app, docs).associate { node -> node.id to summary(node, *node.children.indices.map { SummarySource.Claim(it, 0) }.toTypedArray()) })
+            .summarize(mapOf(tree.root.id to summary(tree.root, SummarySource.Claim(0, 0))))
+    }
 
     private class ContextLauncher : ContextSummaryLauncher {
         lateinit var start: ReviewSummaries
@@ -39,24 +51,14 @@ class ContextSummariesTest : BasePlatformTestCase() {
             return Job().also { job = it }
         }
         fun finish() {
-            val rewritten = start.summarize(request.nodeIds.associateWith { "Context ${start.tree[it].location}" }, reuseSingleChildren = false)
+            val rewritten = start.summarize(request.nodeIds.associateWith { Summary.plain("Context ${start.tree[it].location}") }, reuseSingleChildren = false)
             updated(rewritten)
             done(Result.success(ReviewSummaryRun(rewritten, 2, null)))
         }
     }
 
     private fun canvas(launcher: ContextLauncher): NoteCanvas {
-        val tracer = object : SummaryTraceLauncher {
-            override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
-                                  scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job = Job()
-            override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job {
-                done(Result.success(SummaryTrace(context.identity, context.summary, context.word, context.context, context.query,
-                    listOf(SummaryMatch(app.id, app.identity, 0.9, 1)), 2)))
-                return Job()
-            }
-            override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job = Job()
-        }
-        return NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(traceSummaries = tracer, contextSummaries = launcher)).apply {
+        return NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher)).apply {
             showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, running = false, canRun = true)))
         }
     }

@@ -1,5 +1,7 @@
 package dev.insight.codereview
 
+import dev.insight.review.summarizeTopics
+import dev.insight.review.summarize
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange

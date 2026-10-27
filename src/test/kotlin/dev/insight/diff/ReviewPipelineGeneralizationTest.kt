@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.chat.ChatTool
@@ -52,6 +53,7 @@ class ReviewPipelineGeneralizationTest {
     private class FakeEvidence(val sizes: Map<String, Int> = emptyMap()) : SummaryEvidence {
         val described = mutableListOf<String>()
         override fun size(node: SummaryNode): Int = sizes[node.location] ?: 10
+        override fun rows(node: SummaryNode): IntRange = 1..1
         override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
             described += node.location
             item.addProperty("code", "code of ${node.location}".take(limit))
@@ -70,7 +72,7 @@ class ReviewPipelineGeneralizationTest {
             requests += request
             val nodes = nodes(request)
             return Completion(reviewJson.toJson(mapOf("summaries" to nodes.map {
-                mapOf("id" to it["id"].asInt, "summary" to "${it["kind"].asString} ${it["location"].asString}")
+                mapOf("id" to it["id"].asInt, "segments" to listOf(mapOf("text" to "${it["kind"].asString} ${it["location"].asString}", "from" to listOf("1"))))
             })))
         }
     }
@@ -119,8 +121,8 @@ class ReviewPipelineGeneralizationTest {
         assertNull(fileItem["code"])
         assertEquals(1, fileItem["files"].asInt)
         assertEquals(listOf("Lines 1–30", "Lines 31–50"), fileItem["children"].asJsonArray.map { it.asJsonObject["label"].asString })
-        assertEquals(listOf("chunk lib/big.kt:1-30", "chunk lib/big.kt:31-50"),
-            fileItem["children"].asJsonArray.map { it.asJsonObject["summary"].asString })
+        assertEquals(listOf("C1.S1" to "chunk lib/big.kt:1-30", "C2.S1" to "chunk lib/big.kt:31-50"),
+            fileItem["children"].asJsonArray.map { it.asJsonObject["claims"].asJsonArray.single().asJsonObject.let { claim -> claim["cite"].asString to claim["text"].asString } })
         assertEquals("file lib/big.kt", run.summaries.text(file.id))
     }
 

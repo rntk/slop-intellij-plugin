@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.review.Summary
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.components.ActionLink
@@ -112,7 +114,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             CodeFile("docs/empty.txt", "/repo/docs/empty.txt", ""))
         val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName, chunks = { (it as CodeFile).chunks })
         val bigNode = tree.nodes.single { it.identity == "file:src/Big.kt" }
-        val summaries = ReviewSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { "Explains the complete file." })
+        val summaries = ReviewSummaries(tree).summarize((bigNode.children + bigNode.id).associateWith { Summary.plain("Explains the complete file.") })
         val opened = mutableListOf<SummaryNode>()
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
@@ -341,28 +343,6 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val smallState = ChangeTopicsViewState(foldLargeOutline = true)
         smallState.update(small)
         assertNull(smallState.level)
-    }
-
-    fun testScoringOnlyVisibleNodesIsCachedPerSummariesAndCacheSize() {
-        val files = listOf(Source("a/x.kt"), Source("a/y.kt"), Source("b/z.kt"), Source("b/w.kt"))
-        val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Handles ${it.identity.length} careful requests." })
-        val state = ChangeSummariesViewState()
-        state.update(tree)
-        val all = state.pending(summaries)
-        assertTrue(all.map { it.first }.toSet().size > 1)
-        // The same summaries and cache give the same list without recomputing.
-        assertSame(all, state.pending(summaries))
-        state.visibleOnly = true
-        assertEquals(all, state.pending(summaries))
-        state.selectLevel(0, tree)
-        assertEquals(setOf(tree.root.id), state.pending(summaries).map { it.first }.toSet())
-        state.selectLevel(1, tree)
-        val shown = state.pending(summaries).map { it.first }.toSet()
-        assertTrue(tree.root.id in shown)
-        assertTrue(tree.root.children.all { it in shown })
-        // An explicit filter wins.
-        assertEquals(setOf(tree.root.id), state.pending(summaries) { it.id == tree.root.id }.map { it.first }.toSet())
     }
 
     fun testHugeOutlinesStopAtTheRowCapWithANote() {

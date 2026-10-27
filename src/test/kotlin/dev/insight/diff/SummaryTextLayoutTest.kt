@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode

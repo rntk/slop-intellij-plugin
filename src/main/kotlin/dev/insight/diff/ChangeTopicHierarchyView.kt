@@ -9,7 +9,7 @@ import dev.insight.review.topicReadingSummaries
 /**
  * The topic hierarchy read left to right, like the article hierarchy: broad topics in the first column, each card as tall as
  * the rows beneath it, and the changed files as leaves with their summary beside them. A folded topic takes a single row and
- * shows its summary, whose scored words can be traced as in the summaries outline.
+ * shows its summary, whose cited parts can be traced as in the summaries outline.
  */
 internal class ChangeTopicHierarchyPanel(
     card: TopicsCard,

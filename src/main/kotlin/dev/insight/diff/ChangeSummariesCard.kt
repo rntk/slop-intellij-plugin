@@ -38,9 +38,9 @@ internal class ChangeSummaryActions(
     val select: (String) -> Unit,
     val openFile: (String) -> Unit,
     val showDiffCard: (String) -> Unit,
-    /** Scores word [Int]; with `true`, Search from a scored word's context menu requests a search and selects the best match. */
+    /** Shows the context of word [Int]; with `true`, also searches what its segment cites and selects the best match. */
     val trace: (String, Int, Boolean) -> Unit = { _, _, _ -> },
-    /** Searches the selected characters of a summary like Search on a scored word; null hides the selection's context menu. */
+    /** Searches what the segments holding the selected characters of a summary cite; null hides the selection's context menu. */
     val searchSelection: ((String, Int, Int) -> Unit)? = null,
     /** Searches a summary with children in a new tab that keeps only the related summaries; null hides Search tab. */
     val searchTab: ((SummaryContext) -> Unit)? = null,
@@ -52,8 +52,6 @@ internal class ChangeSummaryActions(
     val showNode: ((SummaryNode) -> Unit)? = { showDiffCard(it.path) },
     val openWholeFile: ((ReviewFile) -> Unit)? = null,
     val openDirectory: ((SummaryNode) -> Unit)? = null,
-    /** Score only the summary with this identity; null hides Score in its context menu. */
-    val score: ((String) -> Unit)? = null,
     /** Ask the review chat to explain a summary entry (/explain); null hides Explain. */
     val explain: ((SummaryNode) -> Unit)? = null,
     val review: SummaryReviewPresentation? = null,

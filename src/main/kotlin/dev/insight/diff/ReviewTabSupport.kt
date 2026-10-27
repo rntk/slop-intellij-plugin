@@ -13,15 +13,12 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.ChatPanel
-import dev.insight.chat.ChatSettings
 import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ContextSummaryRequest
-import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSummaryRun
 import java.awt.BorderLayout
-import java.time.Duration
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -30,9 +27,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -57,86 +51,6 @@ internal fun highlightLines(project: Project, editor: Editor, lines: List<Int>) 
         manager.addRangeHighlight(editor, document.getLineStartOffset(sorted[start] - 1), document.getLineEndOffset(sorted[index] - 1),
             EditorColors.SEARCH_RESULT_ATTRIBUTES, true, null)
         start = index + 1
-    }
-}
-
-/**
- * Prescoring and searching summaries for one review, with a background progress each. One tracer per review, so its cached
- * judgments serve every word traced in it. Results arrive on the EDT; [scope] should run on it and ends the tasks with the tab.
- */
-internal class ReviewTraceLauncher(private val project: Project, private val scope: CoroutineScope) : SummaryTraceLauncher {
-    private val summaryTracer by lazy {
-        SummaryTracer(ChatSettings.getInstance().createDecisionsClient(requestTimeout = Duration.ofMinutes(5), maxRetries = 2)::evaluate,
-            cache = ReviewDiskCache.forProject(project))
-    }
-
-    override fun prescore(summaries: ReviewSummaries, words: List<Pair<Int, Int>>,
-                          scored: (SummaryContext) -> Unit, done: (Result<Unit>) -> Unit): Job =
-        launchSummaryTask<Unit>("Scoring summary words", done) {
-            // Four workers bound the number of words in flight; each word's question batches run in parallel.
-            coroutineScope {
-                words.chunked(((words.size + 3) / 4).coerceAtLeast(1)).map { chunk ->
-                    async {
-                        for ((id, word) in chunk) {
-                            val context = summaryTracer.score(summaries, id, word)
-                            withContext(Dispatchers.EDT) { scored(context) }
-                        }
-                    }
-                }.awaitAll()
-            }
-        }
-
-    override fun search(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<SummaryTrace>) -> Unit): Job =
-        launchSummaryTask("Searching related summaries", done) { summaryTracer.search(summaries, id, context) }
-
-    override fun searchLines(summaries: ReviewSummaries, id: Int, context: SummaryContext, done: (Result<LineTrace>) -> Unit): Job =
-        launchSummaryTask("Searching related lines", done) { summaryTracer.searchLines(summaries, id, context) }
-
-    private fun <T> launchSummaryTask(title: String, done: (Result<T>) -> Unit, task: suspend () -> T): Job = scope.launch {
-        val result = try {
-            Result.success(withBackgroundProgress(project, title) {
-                withContext(Dispatchers.IO) { task() }
-            })
-        } catch (e: CancellationException) {
-            // A replaced word or closed tab must not publish a stale result. Cancelling only the
-            // IDE progress task still completes the callback so the card stops showing a pending request.
-            currentCoroutineContext().ensureActive()
-            Result.failure(e)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-        done(result)
-    }
-}
-
-/** Resolves semantic review links off the EDT, using the review's existing Decisions configuration. */
-internal class ReviewSummaryLinkLauncher(private val project: Project, private val scope: CoroutineScope) : SummaryReviewLauncher {
-    private val linker by lazy {
-        SummaryReviewLinker(ChatSettings.getInstance().createDecisionsClient(requestTimeout = Duration.ofMinutes(5), maxRetries = 2)::evaluate,
-            ReviewDiskCache.forProject(project))
-    }
-
-    override fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job = scope.launch {
-        val result = try {
-            Result.success(withBackgroundProgress(project, "Linking reviewed summaries", cancellable = true) {
-                withContext(Dispatchers.IO) {
-                    reportRawProgress { reporter ->
-                        reporter.text("Linking reviewed summaries…")
-                        linker.dimming(summaries, reviewed) { count, total ->
-                            reporter.details("$count of $total summaries")
-                            reporter.fraction(if (total > 0) count.toDouble() / total else null)
-                        }
-                    }
-                }
-            })
-        } catch (e: CancellationException) {
-            // Progress-only cancellation completes the card; tab/job cancellation must propagate.
-            currentCoroutineContext().ensureActive()
-            Result.failure(e)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-        done(result)
     }
 }
 

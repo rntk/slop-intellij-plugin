@@ -262,11 +262,10 @@ internal abstract class HierarchyColumnsPanel(
 
     /** The short label of a match on its card; the query is in the status above the hierarchy. */
     protected fun matchBadge(match: SummaryMatch, trace: SummaryTrace): String {
-        val percent = (match.probability * 100).roundToInt()
-        return if (match.identity == trace.best?.identity) "● Best match · $percent%" else "● Related · $percent%"
+        return (if (match.identity == trace.best?.identity) "● Best match · " else "● Related · ") + levelsBelow(match)
     }
 
-    /** A match's probability under its title, in the outline's match color. */
+    /** A match's badge under its title, in the outline's match color. */
     private fun badge(value: String, width: Int): JComponent {
         val label = text(value, width.coerceAtLeast(scaled(40)), font(JBFont.small()), TraceStyle.MATCH_TEXT).apply { name = "match" }
         return JPanel(BorderLayout()).apply {

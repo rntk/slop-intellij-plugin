@@ -23,8 +23,6 @@ internal data class SourceCanvasActions(
 internal data class SummaryCanvasActions(
     val summarize: () -> Unit = {},
     val removeSummaries: () -> Unit = {},
-    /** Launch summary word scoring and search; null hides tracing actions. */
-    val traceSummaries: SummaryTraceLauncher? = null,
     /** Open a summary node at its source; null opens its file by path. */
     val openNode: ((SummaryNode) -> Unit)? = null,
     /** Put a summary node on the canvas; null shows its file by path. */
@@ -40,7 +38,6 @@ internal data class SummaryCanvasActions(
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */
     val chatNode: ((SummaryNode, ReviewSummaries) -> Unit)? = null,
     val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
-    val reviewSummaries: SummaryReviewLauncher? = null,
 )
 
 /** Topic classification and summary updates supplied by the review hosting the canvas. */

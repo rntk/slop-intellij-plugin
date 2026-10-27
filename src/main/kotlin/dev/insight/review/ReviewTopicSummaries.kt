@@ -58,14 +58,15 @@ internal fun buildTopicSummaryTree(topics: ReviewTopics, chunks: (ReviewSource) 
  * The topic tree as the hierarchy shows it, for reading and word tracing. Groups are dropped, so a topic's children are the
  * entries beside it and "two levels below" means two hierarchy columns. Parts of large files are dropped too: the hierarchy
  * shows files, and tracing must not match a part. Files read their shared summary; topics read their own, else the summary
- * of exactly their files.
+ * of exactly their files. Citations of dropped nodes are carried through to what they cite, so a topic links to the files
+ * beneath its groups and a file to the lines beneath its parts.
  */
 internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummaries): ReviewSummaries {
     val tree = topics.tree
-    val fileTexts = shared.tree.nodes.filter { it.kind == SummaryKind.FILE }.mapNotNull { node -> shared.text(node.id)?.let { node.path to it } }.toMap()
+    val fileNodes = shared.tree.nodes.filter { it.kind == SummaryKind.FILE }.associateBy { it.path }
     val byFiles = summariesByFiles(shared)
     val nodes = mutableListOf<SummaryNode>()
-    val texts = mutableMapOf<Int, String>()
+    val texts = mutableMapOf<Int, Summary>()
     fun shown(id: Int): List<Int> = tree[id].children.flatMap { child ->
         when (tree[child].kind) {
             SummaryKind.GROUP -> shown(child)
@@ -77,9 +78,13 @@ internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummar
         val node = tree[old]
         val id = nodes.size
         nodes += node.copy(id = id, parent = parent, children = emptyList())
-        val text = if (node.kind == SummaryKind.FILE) fileTexts[node.path] ?: topics.text(old) else topics.text(old) ?: byFiles[node.files.toSet()]?.first
+        val kept = shown(old)
+        val text = if (node.kind == SummaryKind.FILE)
+            fileNodes[node.path]?.let { file -> shared.flattened(file.id) { null } } ?: topics.flattened(old) { null }
+        else topics.flattened(old) { child -> kept.indexOf(child.id).takeIf { it >= 0 } }
+            ?: byFiles[node.files.toSet()]?.summary?.unlinked()
         text?.let { texts[id] = it }
-        val children = shown(old).map { visit(it, id) }
+        val children = kept.map { visit(it, id) }
         nodes[id] = nodes[id].copy(children = children)
         return id
     }
@@ -90,25 +95,44 @@ internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummar
 /**
  * Existing exact-file-set summaries are valid evidence too; never overwrite a saved topic summary. A part of a large file
  * covers only some of its file, so parts never stand for a file set; a part takes the shared summary of the same part.
+ * A seed's citations are moved to the topic's children with the same files; a topic with one child relays that child.
  */
 internal fun seedTopicSummaries(topics: ReviewSummaries, shared: ReviewSummaries): ReviewSummaries {
     val byFiles = summariesByFiles(shared)
     val parts = shared.tree.nodes.filter { it.kind == SummaryKind.CHUNK }.mapNotNull { node ->
-        shared.text(node.id)?.let { node.key to (it to (node.id in shared.cachedIds)) }
+        shared.summary(node.id)?.let { node.key to Seed(node, it, node.id in shared.cachedIds) }
     }.toMap()
     val cached = hashSetOf<Int>()
-    val texts = topics.tree.nodes.mapNotNull { node ->
-        val seed = if (node.kind == SummaryKind.CHUNK) parts[node.key] else byFiles[node.files.toSet()]
-        val existing = topics.text(node.id)?.let { it to (node.id in topics.cachedIds) }
+    val texts = mutableMapOf<Int, Summary>()
+    for (node in topics.tree.nodes.asReversed()) {
+        val existing = topics.summary(node.id)?.let { it to (node.id in topics.cachedIds) }
+        val seed = (if (node.kind == SummaryKind.CHUNK) parts[node.key] else byFiles[node.files.toSet()])
+            ?.let { source ->
+                if (node.isTopicBranch && node.children.size == 1) {
+                    // A topic's evidence is its child, even when the seed came directly from that child's file.
+                    val child = node.children.single()
+                    texts[child]?.relay()?.let { it to (child in cached) }
+                } else retarget(
+                    source.summary,
+                    shared.tree,
+                    source.node,
+                    topics.tree,
+                    node,
+                    shared,
+                    ReviewSummaries(topics.tree, texts, cached),
+                ) to source.cached
+            }
         (existing ?: seed)?.let { (text, fromCache) ->
             if (fromCache) cached += node.id
-            node.id to text
+            texts[node.id] = text
         }
-    }.toMap()
+    }
     return ReviewSummaries(topics.tree, texts, cached)
 }
 
+private data class Seed(val node: SummaryNode, val summary: Summary, val cached: Boolean)
+
 /** Summaries by the exact set of files beneath their node, deepest last; parts of files are left out. */
-private fun summariesByFiles(summaries: ReviewSummaries): Map<Set<String>, Pair<String, Boolean>> = summaries.tree.nodes
+private fun summariesByFiles(summaries: ReviewSummaries): Map<Set<String>, Seed> = summaries.tree.nodes
     .filter { it.kind != SummaryKind.CHUNK }
-    .mapNotNull { node -> summaries.text(node.id)?.let { node.files.toSet() to (it to (node.id in summaries.cachedIds)) } }.toMap()
+    .mapNotNull { node -> summaries.summary(node.id)?.let { node.files.toSet() to Seed(node, it, node.id in summaries.cachedIds) } }.toMap()

@@ -12,6 +12,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
+import dev.insight.review.Summary
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewCodeLocation
@@ -74,9 +75,7 @@ internal class DiffReviewTab(
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },
             removeSummaries = { state.hideSummaries(); renderCanvas() },
-            traceSummaries = ReviewTraceLauncher(project, scope),
             markReviewed = state::setReviewed,
-            reviewSummaries = ReviewSummaryLinkLauncher(project, scope),
             contextSummaries = ReviewContextSummaryLauncher(project, scope) {
                 val context = captureContext()
                 val files = state.snapshot.files
@@ -85,7 +84,7 @@ internal class DiffReviewTab(
                 diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
-            // The scored lines are those of the snapshot file, so its diff opens rather than the current one.
+            // The cited lines are those of the snapshot file, so its diff opens rather than the current one.
             openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
             openWholeFile = { file ->
                 WriteIntentReadAction.run {
@@ -403,7 +402,7 @@ internal class DiffReviewTab(
                 live.startTopicSummaries(capturedRevision).also { summariesChanged() }
             }
 
-            override suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarizeTopics(capturedRevision, entries).also { summariesChanged() }
             }
@@ -429,7 +428,7 @@ internal class DiffReviewTab(
                 changeSummariesJson(live.summaries, offset)
             }
 
-            override suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarize(capturedRevision, entries).also { summariesChanged() }
             }

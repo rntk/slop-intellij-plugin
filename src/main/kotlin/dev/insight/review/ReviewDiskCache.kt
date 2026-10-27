@@ -115,7 +115,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     fun restoreSummaries(name: String, current: ReviewSummaries): ReviewSummaries {
         val saved = saved(name) ?: return current
         val restored = current.tree.summarizable.filter { current.text(it.id) == null && it.key.isNotEmpty() }
-            .mapNotNull { node -> saved[node.key]?.let { node.id to it } }.toMap(HashMap())
+            .mapNotNull { node -> saved[node.key]?.let(Summary::decode)?.let { node.id to it } }.toMap(HashMap())
         // Pre-order reversed visits children first, so a dropped child also drops every ancestor restored above it.
         for (node in current.tree.nodes.asReversed()) {
             if (node.id in restored && node.children.any { it !in restored && current.text(it) == null }) restored.remove(node.id)
@@ -123,7 +123,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         if (restored.isEmpty()) return current
         thisLogger().debug("Restored ${restored.size} of ${current.tree.summarizable.size} $name from the review cache")
         return ReviewSummaries(current.tree,
-            current.tree.nodes.mapNotNull { node -> current.text(node.id)?.let { node.id to it } }.toMap() + restored,
+            current.tree.nodes.mapNotNull { node -> current.summary(node.id)?.let { node.id to it } }.toMap() + restored,
             current.cachedIds + restored.keys)
     }
 
@@ -159,7 +159,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
 
     fun save(summaries: ReviewSummaries, topics: ReviewTopics, filled: ReviewSummaries) {
         if (disk == null || slot.isEmpty()) return
-        fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.text(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it } }
+        fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.summary(node.id)?.takeIf { node.key.isNotEmpty() }?.let { node.key to it.encode() } }
         disk.results(slot, save = true) { results ->
             merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
             merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })

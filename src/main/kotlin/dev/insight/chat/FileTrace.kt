@@ -16,6 +16,7 @@ import java.util.Locale
 
 private val clippedLine = Regex("… \\[\\d+ more characters]$")
 private val numberedLine = Regex("^\\s*(\\d+)\\| (.*)$")
+private val numberedRow = Regex("^(\\d+)\\|(.*)$")
 private val changedLine = Regex("^([ +\\-])\\s*(\\d+) (.*)$")
 private val hunkHeader = Regex("^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@.*")
 private val projectReadHeader = Regex("^(.+) \\(lines \\d+-\\d+ of \\d+\\)$")
@@ -150,7 +151,11 @@ internal class FileTrace(val question: String, private val changed: suspend () -
                 val key = TraceKey(path, "Source")
                 val startLine = obj.integer("start_line") ?: 1
                 for (field in listOf("code", "excerpt")) obj.string(field)?.let { code ->
-                    documents[key]?.starts?.getOrNull(startLine - 1)?.let { add(key, it, code) }
+                    // Summary evidence numbers each code line with its file line; other tools send the raw code.
+                    val rows = code.split('\n').map { numberedRow.matchEntire(it) }
+                    if (field == "code" && code.isNotEmpty() && rows.none { it == null })
+                        rows.forEach { match -> line(key, match!!.groupValues[1].toInt(), match.groupValues[2]) }
+                    else documents[key]?.starts?.getOrNull(startLine - 1)?.let { add(key, it, code) }
                 }
                 obj.string("text")?.let { text ->
                     if (obj.has("line")) line(key, obj.integer("line") ?: 0, text, trimmed = true)
@@ -159,7 +164,19 @@ internal class FileTrace(val question: String, private val changed: suspend () -
                         line(key, match.groupValues[1].toIntOrNull() ?: 0, match.groupValues[2])
                     }
                 }
-                obj.string("patch")?.let { patch -> add(TraceKey(path, "Diff"), obj.integer("offset") ?: 0, patch.removeSuffix("\n")) }
+                obj.string("patch")?.let { patch ->
+                    val diff = TraceKey(path, "Diff")
+                    val offset = obj.integer("offset") ?: 0
+                    // Summary evidence and read_diff_files number each patch line; other tools send the raw patch.
+                    val rows = patch.split('\n').map { numberedRow.matchEntire(it) }
+                    if (patch.isEmpty() || rows.any { it == null }) add(diff, offset, patch.removeSuffix("\n"))
+                    else rows.forEachIndexed { index, match ->
+                        val content = match!!.groupValues[2]
+                        // The rest of a line split by the previous page starts at the raw offset, not at its line's start.
+                        if (index == 0 && obj.get("first_line_continues")?.takeIf { it.isJsonPrimitive }?.asString == "true") add(diff, offset, content)
+                        else line(diff, match.groupValues[1].toInt(), content)
+                    }
+                }
                 // read_change_nodes returns numbered changed lines, not a complete function body.
                 obj.get("diff")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { row ->
                     if (row.isJsonPrimitive) changedLine.matchEntire(row.asString)?.let { match ->

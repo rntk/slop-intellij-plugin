@@ -106,7 +106,7 @@ internal class ChangeSummariesPanel(
                 .also { area ->
                     actions.review?.decorate(area, node)
                     if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
-                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.score, actions.follow, select = activate)
+                        actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.follow, select = activate)
                 }
             else text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
@@ -147,7 +147,7 @@ internal class ChangeSummariesPanel(
             toolTipText = node.location
             add(gutterPanel, BorderLayout.WEST)
             add(content, BorderLayout.CENTER)
-            // Scored words keep their trace action; the rest of the row opens the entry or toggles the outline.
+            // Linked words keep their trace action; the rest of the row opens the entry or toggles the outline.
             val click = object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) {
                 if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) activate()
             } }
@@ -203,7 +203,7 @@ internal class ChangeSummariesPanel(
             })
             matches[node.identity]?.let { match ->
                 val badge = if (node.identity == best) "● Best match" else "● Related"
-                add(label("$badge · ${(match.probability * 100).roundToInt()}%", font(JBFont.small()), TraceStyle.MATCH_TEXT).apply {
+                add(label("$badge · ${levelsBelow(match)}", font(JBFont.small()), TraceStyle.MATCH_TEXT).apply {
                     name = "match:${node.identity}"
                     toolTipText = matchLabel(match, trace!!)
                     installTraceDecorationReset(this) {

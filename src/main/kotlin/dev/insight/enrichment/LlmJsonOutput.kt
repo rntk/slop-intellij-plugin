@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
+import dev.insight.llm.DEFAULT_OUTPUT_TOKENS
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
@@ -29,7 +30,8 @@ internal const val CODE_AS_DATA =
  * Runs a completion that must answer with one JSON object and parses it leniently (code fences and text around the
  * object are ignored). With a [schema], llama.cpp constrains the answer by `response_format: json_schema`; otherwise
  * by `json_object`. Unparsable output is retried; truncation doubles the token budget for the next attempt, since
- * reasoning models spend part of [maxTokens] on reasoning. Throws [IOException] when no attempt yields an object.
+ * reasoning models spend part of the output budget on reasoning. The initial budget is at least 10,000 tokens.
+ * Throws [IOException] when no attempt yields an object.
  */
 suspend fun completeJson(
     complete: suspend (CompletionRequest) -> Completion,
@@ -47,7 +49,7 @@ suspend fun completeJson(
             add("json_schema", JsonObject().apply { add("schema", schema) })
         }
     }
-    var budget = maxTokens
+    var budget = maxTokens.coerceAtLeast(DEFAULT_OUTPUT_TOKENS)
     var failure: IOException? = null
     repeat(attempts) {
         val request = CompletionRequest(

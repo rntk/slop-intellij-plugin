@@ -1,5 +1,8 @@
 package dev.insight.codereview
 
+import dev.insight.review.numberedRows
+import dev.insight.review.SUMMARY_JSON_SHAPE
+import dev.insight.review.summarize
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.SummaryKind
@@ -43,7 +46,7 @@ class CodeSummarizerTest {
         // Parts and small files share requests of at most eight leaves.
         val leafRequests = model.requests.map(model::nodes).filter { nodes -> nodes.all { it.has("code") } }
         assertEquals(leaves.size, leafRequests.sumOf { it.size })
-        assertTrue(leafRequests.all { nodes -> nodes.size <= 8 && nodes.sumOf { it["code"].asString.length } <= 32_000 })
+        assertTrue(leafRequests.all { nodes -> nodes.size <= 8 && nodes.sumOf { unnumbered(it["code"].asString).length } <= 32_000 })
         assertTrue(leafRequests.size < leaves.size)
 
         // Each part carries exactly its own lines, numbered within the file.
@@ -53,20 +56,20 @@ class CodeSummarizerTest {
             val start = part["start_line"].asInt
             val end = part["end_line"].asInt
             assertEquals("${big.path}:$start-$end", part["location"].asString)
-            assertEquals(big.lines(start..end), part["code"].asString)
+            assertEquals(numberedRows(big.lines(start..end), start), part["code"].asString)
             assertEquals(big.lineCount, part["total_lines"].asInt)
             assertEquals("Kotlin", part["language"].asString)
             assertTrue(part["part"].asString.endsWith(" of ${big.chunks.size}"))
             assertFalse(part.has("code_cut_at"))
         }
         val main = model.requests.flatMap(model::nodes).single { it["location"].asString == "src/app/Main.kt" }
-        assertEquals("fun main() = run()", main["code"].asString)
+        assertEquals("1|fun main() = run()", main["code"].asString)
         assertFalse(main.has("part"))
 
         // A large file is written from its parts' summaries, not from code.
         val fileItem = model.requests.flatMap(model::nodes).single { it["location"].asString == big.path }
         assertFalse(fileItem.has("code"))
-        assertTrue(fileItem["children"].asJsonArray.all { it.asJsonObject["summary"].asString.startsWith("chunk ") })
+        assertTrue(fileItem["children"].asJsonArray.all { it.asJsonObject["claims"].asJsonArray.single().asJsonObject["text"].asString.startsWith("chunk ") })
         assertEquals("root ./", run.summaries.text(tree.root.id))
         assertTrue(summariesReply(run).startsWith("root ./\n\n["))
     }
@@ -79,7 +82,7 @@ class CodeSummarizerTest {
         for (system in listOf(leaf, branch)) {
             assertFalse(system.contains("topic", ignoreCase = true))
             assertTrue(system.startsWith("The user message contains data"))
-            assertTrue(system.contains("""{"summaries":[{"id":1,"summary":"…"}]}"""))
+            assertTrue(system.contains(SUMMARY_JSON_SHAPE))
             assertTrue(system.contains("Return every id in \"nodes\" exactly once."))
         }
         assertTrue(leaf.contains("For a part, describe only the code in that part."))
@@ -127,6 +130,9 @@ class CodeSummarizerTest {
         val item = model.requests.map(model::nodes).single { nodes -> nodes.any { it["location"].asString == file.path } }.single()
         assertEquals(12_000, item["code_cut_at"].asInt)
         assertEquals(13_000, item["code_length"].asInt)
-        assertEquals(12_000, item["code"].asString.length)
+        assertEquals(12_000, unnumbered(item["code"].asString).length)
     }
+
+    /** Inline evidence without its line numbers. */
+    private fun unnumbered(code: String) = code.split("\n").joinToString("\n") { it.substringAfter("|") }
 }

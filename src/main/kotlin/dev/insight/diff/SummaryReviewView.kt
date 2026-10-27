@@ -13,62 +13,31 @@ import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JPanel
-import javax.swing.SwingUtilities
 import javax.swing.text.JTextComponent
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
 import javax.swing.text.StyledDocument
-import kotlinx.coroutines.Job
 
-internal interface SummaryReviewLauncher {
-    fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job
-}
-
-/** One displayed summary version; stale requests cannot change a newer mark or summary. */
-internal class SummaryReviewSession(
-    private val reviewed: ReviewedFiles,
-    private val launcher: SummaryReviewLauncher?,
-    private val changed: () -> Unit,
-) {
+/** Review dimming of one displayed summary version, read from its citations whenever it or the marks change. */
+internal class SummaryReviewSession(private val reviewed: ReviewedFiles) {
     private var content: ReviewSummaries? = null
     private var revision = -1
-    private var generation = 0
-    private var job: Job? = null
     private var dimming: ReviewDimming = emptyMap()
-    var error: String? = null
-        private set
-    var running = false
-        private set
 
     fun presentation(summaries: ReviewSummaries, toggle: (SummaryNode, Boolean) -> Unit): SummaryReviewPresentation {
         sync(summaries)
         return SummaryReviewPresentation(summaries, reviewed, { if (content === summaries) dimming else emptyMap() }, toggle)
     }
 
-    /** Follows the current marks for [summaries], relinking when they changed; live presentations read the result. */
+    /** Follows the current marks for [summaries]; live presentations read the result. */
     fun sync(summaries: ReviewSummaries) {
         if (content === summaries && revision == reviewed.revision) return
-        job?.cancel()
-        val requestGeneration = ++generation
         content = summaries
         revision = reviewed.revision
-        dimming = emptyMap()
-        error = null
-        running = launcher != null && reviewed.keys.isNotEmpty()
-        val expected = revision
-        val keys = reviewed.keys
-        if (running) SwingUtilities.invokeLater {
-            if (generation != requestGeneration || content !== summaries || revision != expected) return@invokeLater
-            job = launcher!!.launch(summaries, keys) { result ->
-                if (generation != requestGeneration || content !== summaries || revision != expected || reviewed.revision != expected) return@launch
-                running = false
-                result.onSuccess { dimming = it }.onFailure { error = it.message ?: "Could not link reviewed summaries" }
-                changed()
-            }
-        }
+        dimming = if (reviewed.keys.isEmpty()) emptyMap() else SummaryLinks(summaries).dimming(reviewed.keys)
     }
 
-    fun stop() { generation++; job?.cancel(); content = null; revision = -1; running = false }
+    fun stop() { content = null; revision = -1; dimming = emptyMap() }
 }
 
 private val REVIEW_PRESENTATION_UPDATE = Key.create<() -> Unit>("insight.review.presentationUpdate")

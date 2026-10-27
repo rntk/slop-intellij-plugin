@@ -30,7 +30,6 @@ import dev.insight.diff.NOTES_CHANGED
 import dev.insight.diff.NoteCanvas
 import dev.insight.diff.ReviewContextSummaryLauncher
 import dev.insight.diff.ReviewTab
-import dev.insight.diff.ReviewTraceLauncher
 import dev.insight.diff.SYMBOLS_CHANGED
 import dev.insight.diff.SourceCanvasActions
 import dev.insight.diff.SummaryCanvasActions
@@ -41,6 +40,7 @@ import dev.insight.diff.readPsiThen
 import dev.insight.diff.withCountProgress
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
+import dev.insight.review.Summary
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewNote
@@ -135,9 +135,7 @@ internal class CodeReviewTab(
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },
             removeSummaries = { state.hideSummaries(); renderCanvas() },
-            traceSummaries = ReviewTraceLauncher(project, scope),
             markReviewed = state::setReviewed,
-            reviewSummaries = dev.insight.diff.ReviewSummaryLinkLauncher(project, scope),
             contextSummaries = ReviewContextSummaryLauncher(project, scope) {
                 val snapshot = state.snapshot
                 val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
@@ -571,7 +569,7 @@ internal class CodeReviewTab(
                 live.startSummaries(capturedRevision).also { renderCanvas() }
             }
 
-            override suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarize(capturedRevision, entries).also { scheduleCanvasRefresh() }
             }
@@ -591,7 +589,7 @@ internal class CodeReviewTab(
                 live.startTopicSummaries(capturedRevision).also { summariesChanged() }
             }
 
-            override suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = withContext(Dispatchers.EDT) {
+            override suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
                 current()
                 live.summarizeTopics(capturedRevision, entries).also { scheduleCanvasRefresh() }
             }

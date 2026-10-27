@@ -1,5 +1,8 @@
 package dev.insight.diff
 
+import dev.insight.review.SummarySource.Rows
+import dev.insight.review.SummarySource.Claim
+import dev.insight.review.summarize
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.chat.ChatTool
@@ -239,7 +242,7 @@ class ChangeSummaryTest {
             requests += request
             val nodes = nodes(request)
             return Completion(answer(nodes) ?: reviewJson.toJson(mapOf("summaries" to nodes.map {
-                mapOf("id" to it["id"].asInt, "summary" to "${it["kind"].asString} ${it["location"].asString}")
+                mapOf("id" to it["id"].asInt, "segments" to listOf(mapOf("text" to "${it["kind"].asString} ${it["location"].asString}", "from" to listOf("1"))))
             })))
         }
     }
@@ -270,7 +273,8 @@ class ChangeSummaryTest {
         assertEquals("file app/a.kt", result.summaries.text(tree.byLocation("app/a.kt").id))
         // A folder is written from its children's summaries, never from their patches.
         val app = model.nodes(model.requests[1]).single { it["location"].asString == "app/" }
-        assertEquals(listOf("file app/a.kt", "file app/b.kt"), app["children"].asJsonArray.map { it.asJsonObject["summary"].asString })
+        assertEquals(listOf("""[{"cite":"C1.S1","text":"file app/a.kt"}]""", """[{"cite":"C2.S1","text":"file app/b.kt"}]"""),
+            app["children"].asJsonArray.map { it.asJsonObject["claims"].toString() })
         assertFalse(model.requests[1].messages.last().content.contains("+new"))
         assertTrue(model.requests[0].messages.last().content.contains("+new"))
         assertEquals("root ./\n\n[7 summaries · 3 requests]", summariesReply(result))
@@ -387,7 +391,7 @@ class ChangeSummaryTest {
 
     @Test fun `incomplete runs do not report full progress`() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt")))
-        val model = Model { """{"summaries":[{"id":1,"summary":"Only one answer."}]}""" }
+        val model = Model { """{"summaries":[{"id":1,"segments":[{"text":"Only one answer.","from":["1"]}]}]}""" }
         var saved = ReviewSummaries(tree)
         val progress = mutableListOf<Int>()
         val result = diffSummarizer(model::complete, null, ReviewSummaryOptions(attempts = 1)).run(
@@ -402,7 +406,7 @@ class ChangeSummaryTest {
         val tree = buildSummaryTree(listOf(file("a.kt"), file("b.kt")))
         // The model never answers for b.kt, so the root can never be written.
         val model = Model { nodes -> reviewJson.toJson(mapOf("summaries" to nodes.filter { it["location"].asString != "b.kt" }
-            .map { mapOf("id" to it["id"].asInt, "summary" to "Summary.") })) }
+            .map { mapOf("id" to it["id"].asInt, "segments" to listOf(mapOf("text" to "Summary.", "from" to listOf("1")))) })) }
         val (result, _) = run(model, ReviewSummaries(tree))
         assertEquals(5, result.requests)
         assertEquals(listOf(tree.root.id, tree.byLocation("b.kt").id), result.summaries.missing().sorted())
@@ -437,38 +441,24 @@ class ChangeSummaryTest {
         assertEquals(2, saved.count)
     }
 
-    @Test fun `large batches split by patch size and a cut patch alone gets the read tool`() {
+    @Test fun `large patches are fully paged and reduced without model directed reads`() {
         val big = ReviewFile("app/big.kt", "/repo/app/big.kt", null, "modified", "+" + "x".repeat(200), "1")
         val tree = buildSummaryTree(listOf(big) + (1..5).map { file("app/f$it.kt") })
-        val reads = mutableListOf<JsonObject>()
-        val read = object : ChatTool {
-            override val definition = LlmTool("read_diff_files", "Read diffs.", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
-            override suspend fun call(arguments: JsonObject): String { reads += arguments; return "{\"files\":[]}" }
-        }
         val model = Model()
-        val tooling: suspend (CompletionRequest) -> Completion = { request ->
-            if (request.tools.isNotEmpty() && reads.isEmpty()) {
-                model.requests += request
-                Completion("", toolCalls = listOf(LlmToolCall("r1", "read_diff_files", JsonParser.parseString("""{"paths":["app/big.kt"]}""").asJsonObject)))
-            } else model.complete(request)
-        }
         var saved = ReviewSummaries(tree)
         val result = runBlocking {
-            diffSummarizer(tooling, read, ReviewSummaryOptions(patchChars = 100, filesPerRequest = 3))
+            diffSummarizer(model::complete, null, ReviewSummaryOptions(patchChars = 100, filesPerRequest = 3))
                 .run(saved, "", { saved.summarize(it).also { next -> saved = next } })
         }
         assertTrue(result.summaries.complete)
-        assertEquals(1, reads.size)
-        val fileRequests = model.requests.filter { request -> model.nodes(request).all { it["kind"].asString == "file" } }
-        val withTools = fileRequests.filter { it.tools.isNotEmpty() }
-        assertTrue(withTools.isNotEmpty())
-        assertTrue(withTools.all { request -> model.nodes(request).map { it["location"].asString } == listOf("app/big.kt") })
-        val cut = model.nodes(withTools.first()).single()
-        assertEquals(100, cut["patch_cut_at"].asInt)
-        assertEquals(100, cut["patch"].asString.length)
-        // Five small files in batches of at most three, without tools, dispatched before the tool-bearing cut patch.
-        assertEquals(listOf(false, false, true, true), fileRequests.map { it.tools.isNotEmpty() })
-        assertEquals(listOf(3, 2), fileRequests.filter { it.tools.isEmpty() }.map { model.nodes(it).size })
+        assertTrue(model.requests.all { it.tools.isEmpty() && it.responseFormat != null })
+        val fileRequests = model.requests.filter { request -> model.nodes(request).all { it["kind"].asString == "file" && it.has("patch") } }
+        assertEquals(listOf(3, 2), fileRequests.map { model.nodes(it).size })
+        val pages = model.requests.flatMap { model.nodes(it) }.filter { it["kind"].asString == "chunk" }
+        assertEquals(listOf(100, 100, 1), pages.map { it["patch"].asString.substringAfter("|").length })
+        assertEquals(big.patch, pages.joinToString("") { it["patch"].asString.substringAfter("|") })
+        assertEquals(listOf(false, true, true), pages.map { it["first_line_continues"].asBoolean })
+        assertEquals(listOf(Rows(1, 1)), result.summaries.summary(tree.byLocation(big.path).id)!!.segments.single().sources)
 
         // Focus is appended after the overview so the instructions and overview prefix stay cacheable across focus changes.
         val focused = Model()
@@ -483,16 +473,57 @@ class ChangeSummaryTest {
         assertTrue(focusedSystem.endsWith("\n\nThe user asked to focus on: security"))
     }
 
-    @Test fun `decoding drops unknown duplicate and empty entries and preserves long summaries`() {
-        val answer = JsonParser.parseString("""{"summaries":[{"id":1,"summary":"One."},{"id":2,"summary":"a"},{"id":2,"summary":"b"},""" +
-            """{"id":3,"summary":" "},{"id":9,"summary":"Unknown."},{"id":4,"summary":"${"x".repeat(500)}"}]}""").asJsonObject
-        val decoded = ReviewSummarizer.decode(answer, 4)
-        assertEquals(setOf(1, 4), decoded.keys)
-        assertEquals("x".repeat(500), decoded.getValue(4))
-        val tree = buildSummaryTree(listOf(file("app/a.kt")))
-        val fileId = tree.byLocation("app/a.kt").id
-        val saved = ReviewSummaries(tree).summarize(mapOf(fileId to decoded.getValue(4)))
-        assertEquals(decoded.getValue(4), saved.text(fileId))
+    @Test fun `decoding keeps valid citations and rejects unknown duplicate empty and uncited entries with reasons`() {
+        val answer = JsonParser.parseString("""{"summaries":[
+            {"id":1,"segments":[{"text":"Adds retries","from":["3"]},{"text":"and","from":[]},{"text":"logs.","from":["2-3"]}]},
+            {"id":2,"segments":[{"text":"a","from":["1"]}]},{"id":2,"segments":[{"text":"b","from":["1"]}]},
+            {"id":3,"segments":[{"text":" ","from":["1"]}]},
+            {"id":4,"segments":[{"text":"Cites nothing it may.","from":["99"]}]},
+            {"id":5,"segments":[{"text":"Condenses","from":["C1.S2","C2","[C1.S1]"]}]},
+            {"id":6,"segments":[{"text":"Adds retries","from":["1"]},{"text":", while it also caches every response.","from":[]}]},
+            {"id":7,"segments":[{"text":" and ","from":[]},{"text":" so that ","from":[]}]}]}""").asJsonObject
+        val lines = ReviewSummarizer.Citations.Lines(1..4)
+        val children = ReviewSummarizer.Citations.Children(listOf(listOf(0, 1), listOf(0), emptyList()))
+        val decoded = ReviewSummarizer.decode(answer, listOf(lines, lines, lines, lines, children, lines, lines))
+        assertEquals(setOf(1, 5), decoded.summaries.keys)
+        // Words of adjacent segments are kept apart and citations retain their evidence rows.
+        val one = decoded.summaries.getValue(1)
+        assertEquals("Adds retries and logs.", one.text)
+        assertEquals(listOf(listOf(Rows(3, 3)), emptyList(), listOf(Rows(2, 3))), one.segments.map { it.sources })
+        assertEquals(listOf(Claim(0, 1), Claim(1, 0), Claim(0, 0)), decoded.summaries.getValue(5).segments.single().sources)
+        // One valid citation does not admit another, uncited claim; each rejection says what to fix.
+        assertEquals(setOf(2, 4, 6, 7), decoded.problems.keys)
+        assertTrue(decoded.problems.getValue(2).contains("more than once"))
+        assertTrue(decoded.problems.getValue(4).contains("\"Cites nothing it may.\" cites 99, which are not lines of this node's evidence"))
+        assertTrue(decoded.problems.getValue(6).contains("\", while it also caches every response.\" cites nothing"))
+        assertTrue(decoded.problems.getValue(7).contains("no segment cites anything"))
+        // A leaf without evidence lines may cite nothing.
+        val empty = ReviewSummarizer.decode(JsonParser.parseString("""{"summaries":[{"id":1,"segments":[{"text":"Binary.","from":[]}]}]}""").asJsonObject,
+            listOf(ReviewSummarizer.Citations.Lines(IntRange.EMPTY)))
+        assertEquals("Binary.", empty.summaries.getValue(1).text)
+    }
+
+    @Test fun `a rejected answer is retried with the reason it failed`() {
+        val tree = buildSummaryTree(listOf(file("a.kt")))
+        val leaf = tree.nodes.single { it.kind == SummaryKind.FILE }
+        var leafRequests = 0
+        val model = Model { nodes ->
+            if (nodes.single()["kind"].asString != "file" || ++leafRequests > 1) null
+            else """{"summaries":[{"id":1,"segments":[{"text":"Replaces old","from":["1-2"]},{"text":" and adds caching.","from":[]}]}]}"""
+        }
+        val (result, _) = run(model, ReviewSummaries(tree))
+        assertEquals("file a.kt", result.summaries.text(leaf.id))
+        val (first, retry) = model.requests.map { model.nodes(it).single() }.filter { it["kind"].asString == "file" }
+        assertFalse(first.has("previous_answer_rejected"))
+        assertEquals("Every claim must cite this node's own evidence lines, but \"and adds caching.\" cites nothing.",
+            retry["previous_answer_rejected"].asString)
+    }
+
+    @Test fun `connectors are a few words that end no sentence`() {
+        listOf(" and ", ", while ", "; it also ", " so that ").forEach { assertTrue(it, ReviewSummarizer.connector(it)) }
+        listOf("Removes dead code.", "Deletes stored data", "Adds retries", " caches every response on disk", "Done!").forEach {
+            assertFalse(it, ReviewSummarizer.connector(it))
+        }
     }
 
     private fun rejected(block: () -> Unit) {

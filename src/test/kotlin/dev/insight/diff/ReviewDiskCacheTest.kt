@@ -1,5 +1,8 @@
 package dev.insight.diff
 
+import dev.insight.review.Summary
+import dev.insight.review.summarizeTopics
+import dev.insight.review.summarize
 import com.google.gson.JsonPrimitive
 import dev.insight.codereview.CodeFile
 import dev.insight.codereview.CodeReviewState
@@ -106,7 +109,7 @@ class ReviewDiskCacheTest {
         assertEquals(0, changed.summaries.count)
         assertTrue(changed.topics.labels.isEmpty())
         assertEquals(0, changed.topicSummaries.count)
-        fill({ changed.summaries }) { changed.summarize(changed.revision, it.mapValues { "Updated summary" }) }
+        fill({ changed.summaries }) { changed.summarize(changed.revision, it.mapValues { Summary.plain("Updated summary") }) }
         assertEquals("Updated summary", code(snapshot("fun a() = 2")).summaries.text(0))
         // Reverting the edit finds the older entries again, since a slot keeps the results of earlier snapshots.
         assertEquals(state.summaries.text(0), code().summaries.text(0))
@@ -169,31 +172,6 @@ class ReviewDiskCacheTest {
         assertNull(ReviewDiskCache(blocked).read("test", "slot", "hash"))
     }
 
-    @Test fun `scores survive tracer restart and changed summary text requires new judgments`() = runBlocking {
-        val files = listOf("a.kt", "b.kt").map { ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash") }
-        val tree = buildSummaryTree(files)
-        var summaries = ReviewSummaries(tree)
-        fill({ summaries }) { summaries = summaries.summarize(it.mapValues { "Adds account token validation" }) }
-        var requests = 0
-        val evaluate: suspend (DecisionRequest) -> DecisionResponse = { request ->
-            requests++
-            DecisionResponse("test", request.questions.mapValues { DecisionAnswer.Noul(0.75) }, DecisionUsage(1, 1))
-        }
-        val tracer = SummaryTracer(evaluate, cache = cache())
-        val context = tracer.score(summaries, 0, 1)
-        tracer.search(summaries, 0, context)
-        val initial = requests
-        assertTrue(initial > 0)
-        val restarted = SummaryTracer(evaluate, cache = cache())
-        val restored = restarted.score(summaries, 0, 1)
-        assertEquals(context, restored)
-        restarted.search(summaries, 0, restored)
-        assertEquals(initial, requests)
-        val changed = summaries.summarize(mapOf(0 to "Adds account email validation"))
-        restarted.score(changed, 0, 1)
-        assertTrue(requests > initial)
-    }
-
     @Test fun `one changed file misses only its own entries and those of every node above it`() {
         fun file(path: String, fingerprint: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "patch $path", fingerprint)
         val files = listOf(file("app/a.kt"), file("app/b.kt"), file("lib/c.kt"))
@@ -240,24 +218,6 @@ class ReviewDiskCacheTest {
         val restored = code()
         assertTrue(restored.summaries.complete)
         assertEquals(mapOf("a.kt" to "Application > Values"), restored.topics.labels)
-    }
-
-    @Test fun `a grown candidate list asks only for the new questions`() = runBlocking {
-        val files = listOf("a.kt", "b.kt", "c.kt").map { ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash") }
-        val tree = buildSummaryTree(files)
-        var questions = 0
-        val evaluate: suspend (DecisionRequest) -> DecisionResponse = { request ->
-            questions += request.questions.size
-            DecisionResponse("test", request.questions.mapValues { DecisionAnswer.Noul(0.5) }, DecisionUsage(1, 1))
-        }
-        val candidates = tree.nodes.drop(1).map { it to "Validates ${it.path}" }
-        SummaryTracer(evaluate, cache = cache()).rank("token validation", "token", tree.root, "Adds validation", candidates.take(2))
-        assertEquals(2, questions)
-        val scores = SummaryTracer(evaluate, cache = cache()).rank("token validation", "token", tree.root, "Adds validation", candidates)
-        assertEquals(3, questions)
-        assertEquals(listOf(0.5, 0.5, 0.5), scores)
-        SummaryTracer(evaluate, cache = cache()).rank("token validation", "token", tree.root, "Adds validation", candidates.map { (node, text) -> node to "$text again" })
-        assertEquals(6, questions)
     }
 
     @Test fun `stale code and diff tabs persist only the targeted review marks`() {

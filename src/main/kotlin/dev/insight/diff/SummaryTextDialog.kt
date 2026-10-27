@@ -63,7 +63,7 @@ internal class SummaryTextDialog(
         // Only install offset-based actions when newline normalization has not changed character positions.
         if (state.traced(node) && this.text == summary) installWordTracing(this, node.identity, summary, state,
             actions.trace, actions.searchSelection, actions.searchTab.takeIf { node.children.isNotEmpty() },
-            actions.score, actions.follow, entryMenu = entryMenu)
+            actions.follow, entryMenu = entryMenu)
         else componentPopupMenu = entryMenu?.invoke()
     }
 

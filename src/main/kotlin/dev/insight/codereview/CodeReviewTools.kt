@@ -11,6 +11,7 @@ import dev.insight.chat.optionalStringArg
 import dev.insight.chat.pathsArg
 import dev.insight.chat.sourcePointTool
 import dev.insight.chat.stringArg
+import dev.insight.review.Summary
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
@@ -40,11 +41,11 @@ interface CodeReviewContext {
     /** Starts a /summaries run, restarting a complete tree, and shows it on the canvas. Not a model tool. */
     suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
     /** Saves summaries written by the summarizer. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
+    suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
     suspend fun startTopics(): ReviewTopics = throw ToolInputException("Code topics are unavailable")
     suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Code topics are unavailable")
     suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
 }
 
 internal const val READ_CODE_TOOL = "read_code"

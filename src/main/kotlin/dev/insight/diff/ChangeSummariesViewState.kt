@@ -33,8 +33,7 @@ private data class SummariesFilter(val summaries: ReviewSummaries, val query: St
  */
 internal class ChangeSummariesViewState(
     val filtering: Boolean = false,
-    scored: MutableMap<Pair<String, Int>, SummaryContext> = mutableMapOf(),
-) : SummaryTraceState(traceLeaves = true, scored = scored) {
+) : SummaryTraceState() {
     var mode = ReviewSummariesMode.OUTLINE
     var tagsCloud = false
     var softWrap = false
@@ -84,7 +83,7 @@ internal class ChangeSummariesViewState(
         if (filtering && crumbs.isNotEmpty()) crumbs[crumbs.lastIndex] = crumbs.last().copy(trace = null)
     }
 
-    /** Returns to unfiltered summaries without dropping scored contexts or the reader's view settings. */
+    /** Returns to unfiltered summaries without dropping the reader's view settings. */
     fun clearSearch() {
         clearTrace()
         crumbs.clear()
@@ -215,21 +214,6 @@ internal class ChangeSummariesViewState(
     fun railDepth(tree: ReviewSummaryTree): Int =
         minOf(branchLevels(tree), (shownLevel(tree) ?: branchLevels(tree)) + 1)
 
-    /** Documents keep every file visible; outlines and hierarchies hide nodes under folded folders. */
-    override fun visibility(tree: ReviewSummaryTree): (SummaryNode) -> Boolean {
-        // The filter of the last rendering; scoring follows what is on screen.
-        val filter = shown.takeIf { filterFor?.summaries?.tree === tree }
-        val explorerEntries = if (mode == ReviewSummariesMode.EXPLORER) {
-            val current = explorerBreadcrumbs(tree).lastOrNull { filter == null || it.identity in filter }
-            current?.let { tree.shownChildren(it).mapTo(hashSetOf(), SummaryNode::id) } ?: setOf(tree.root.id)
-        } else emptySet()
-        return { node ->
-            !tree.isMerged(node.id) && (filter == null || node.identity in filter) && if (mode == ReviewSummariesMode.EXPLORER) node.id in explorerEntries
-            else if (mode == ReviewSummariesMode.DOCUMENT) node.kind == SummaryKind.FILE ||
-                isFolderBranch(node) && tree.shownDepth(node.id) < railDepth(tree)
-            else generateSequence(node.parent) { tree[it].parent }.filterNot(tree::isMerged).all { tree[it].identity in expanded || tree[it].identity in opened && tree[it].identity !in folded }
-        }
-    }
 
     /**
      * The outline only opens the levels down to the matches. The hierarchy shows a branch's summary only while it is folded,
@@ -256,7 +240,7 @@ internal class ChangeSummariesViewState(
             return
         }
         val byIdentity = tree.nodes.associateBy { it.identity }
-        val rejected = trace.matches.filter { it.probability < SummaryTrace.MATCH_THRESHOLD }.mapTo(hashSetOf()) { it.identity }
+        val rejected = trace.matches.filter { !it.related }.mapTo(hashSetOf()) { it.identity }
         val related = hashSetOf<String>()
         val below = trace.related.filter { it.identity in path.path }.mapNotNull { byIdentity[it.identity] }.toCollection(ArrayDeque())
         while (below.isNotEmpty()) {
@@ -276,12 +260,11 @@ internal class ChangeSummariesViewState(
         crumbs += SearchCrumb(trace.identity, trace.query, kept, related, trace)
     }
 
-    /** A search tab's state starting from this one: the same mode, folding, scored words and searches so far. */
-    fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true, scored = scored).also {
+    /** A search tab's state starting from this one: the same mode, folding and searches so far. */
+    fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true).also {
         it.mode = mode
         it.tagsCloud = tagsCloud
         it.softWrap = softWrap
-        it.visibleOnly = visibleOnly
         it.expanded += expanded
         it.seen += seen
         it.level = level

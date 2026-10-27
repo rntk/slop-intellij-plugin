@@ -28,7 +28,7 @@ class LlmJsonOutputTest {
         assertEquals("json_schema", request.responseFormat!!["type"].asString)
         assertEquals(schema, request.responseFormat.getAsJsonObject("json_schema")["schema"])
         assertEquals(listOf("sys", "user"), request.messages.map { it.content })
-        assertEquals(1000, request.maxTokens)
+        assertEquals(10_000, request.maxTokens)
     }
 
     @Test fun `asks for any JSON object without a schema`() = runBlocking {
@@ -36,15 +36,20 @@ class LlmJsonOutputTest {
         assertEquals("""{"type":"json_object"}""", requests.single().responseFormat.toString())
     }
 
+    @Test fun `retains budgets above the default`() = runBlocking {
+        completeJson(replies({ Completion("{}") }), "s", "u", null, 15_000)
+        assertEquals(15_000, requests.single().maxTokens)
+    }
+
     @Test fun `retries garbage once and doubles the budget after truncation`() = runBlocking {
         assertEquals(2, completeJson(replies({ Completion("no json here") }, { Completion("{\"b\":2}") }), "s", "u", null, 500)["b"].asInt)
         requests.clear()
         completeJson(replies({ Completion("{\"b\":", finishReason = FinishReason.TRUNCATED) }, { Completion("{}") }), "s", "u", null, 500)
-        assertEquals(listOf(500, 1000), requests.map { it.maxTokens })
+        assertEquals(listOf(10_000, 20_000), requests.map { it.maxTokens })
         requests.clear()
         completeJson(replies({ throw LlmProtocolException("LLM response was truncated at the output-token limit") }, { Completion("{}") }),
             "s", "u", null, 500)
-        assertEquals(listOf(500, 1000), requests.map { it.maxTokens })
+        assertEquals(listOf(10_000, 20_000), requests.map { it.maxTokens })
     }
 
     @Test fun `fails clearly after the retry, and does not retry HTTP errors`() = runBlocking {

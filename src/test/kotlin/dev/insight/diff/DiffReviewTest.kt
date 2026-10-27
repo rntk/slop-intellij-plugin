@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.callgraph.LineChange
 import dev.insight.chat.ToolChatRunner
@@ -9,6 +10,9 @@ import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmToolCall
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
+import dev.insight.review.ReviewSummaryOptions
+import dev.insight.review.SummaryKind
+import dev.insight.review.buildSummaryTree
 import dev.insight.review.reviewJson
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -209,7 +213,16 @@ class DiffReviewTest {
                 assertEquals("renamed", slice["status"].asString)
                 val received = assembled.getValue(path)
                 assertEquals(received.length, slice["offset"]?.asInt ?: 0)
-                received.append(slice["patch"].asString)
+                val end = slice["next_offset"]?.asInt ?: original.patch.length
+                // Pages end after a complete line, and each row carries its number in the whole patch.
+                assertTrue(end == original.patch.length || original.patch[end - 1] == '\n')
+                val lines = original.patch.split('\n')
+                val rows = slice["patch"].asString.split('\n').map { it.substringBefore("|").toInt() to it.substringAfter("|") }
+                rows.forEach { (number, text) -> assertEquals(lines[number - 1], text) }
+                assertEquals(rows.first().first, slice["first_line"].asInt)
+                assertEquals(rows.last().first, slice["last_line"].asInt)
+                assertEquals(1000, slice["patch_lines"].asInt)
+                received.append(original.patch, received.length, end)
                 slice["next_offset"]?.let {
                     assertTrue(it.asInt > offset)
                     assertEquals(received.length, it.asInt)
@@ -225,6 +238,32 @@ class DiffReviewTest {
         files.forEach { assertEquals(it.patch, assembled.getValue(it.path).toString()) }
     }
 
+    @Test fun `continuation pages are numbered and line aligned and split only a line longer than a page`() {
+        val long = "+" + "x".repeat(7000)
+        val patch = "@@ -1,2 +1,2 @@\n-old\n$long\n same\n"
+        val changed = file("long.kt").copy(patch = patch)
+        fun page(offset: Int) = JsonParser.parseString(diffReadResult(listOf(changed), offset)).asJsonObject["files"].asJsonArray.single().asJsonObject
+        // The inline evidence cuts where the tool continues, after a complete line.
+        val inline = JsonObject().also { DiffSummaryEvidence(ReviewSummaryOptions()).describe(buildSummaryTree(listOf(changed)).nodes.single { node -> node.kind == SummaryKind.FILE }, it, 6000) }
+        assertEquals("1|@@ -1,2 +1,2 @@\n2|-old", inline["patch"].asString)
+        assertEquals(patch.indexOf(long), inline["patch_cut_at"].asInt)
+        assertEquals(4, inline["patch_lines"].asInt)
+
+        val split = page(inline["patch_cut_at"].asInt)
+        assertEquals(3, split["first_line"].asInt)
+        assertEquals(3, split["last_line"].asInt)
+        assertFalse(split.has("first_line_continues"))
+        assertTrue(split["patch"].asString.startsWith("3|+xxx"))
+        val rest = page(split["next_offset"].asInt)
+        // The rest of the split line keeps its number, and the page says it continues that line.
+        assertEquals(3, rest["first_line"].asInt)
+        assertTrue(rest["first_line_continues"].asBoolean)
+        assertEquals(4, rest["last_line"].asInt)
+        assertTrue(rest["patch"].asString.endsWith("x\n4| same"))
+        assertFalse(rest.has("next_offset"))
+        assertEquals(long, split["patch"].asString.removePrefix("3|") + rest["patch"].asString.removePrefix("3|").substringBefore("\n"))
+    }
+
     @Test fun `serialized read budget includes large rename metadata and handles empty patches`() {
         val renamed = file("long/" + "a".repeat(2000)).copy(previousPath = "old/" + "b".repeat(2000), patch = "\t".repeat(6000))
         val response = diffReadResult(listOf(renamed, file("empty").copy(patch = "")), 0)
@@ -232,7 +271,7 @@ class DiffReviewTest {
         val json = JsonParser.parseString(response).asJsonObject
         val first = json["files"].asJsonArray.first().asJsonObject
         assertEquals(renamed.previousPath, first["previous_path"].asString)
-        assertEquals(first["patch"].asString.length, first["next_offset"].asInt)
+        assertEquals(first["patch"].asString.removePrefix("1|").length, first["next_offset"].asInt)
         val empty = JsonParser.parseString(diffReadResult(listOf(file("empty").copy(patch = "")), 0)).asJsonObject
         assertEquals("", empty["files"].asJsonArray.single().asJsonObject["patch"].asString)
         rejected { diffReadResult(listOf(file("x".repeat(16_000))), 0) }

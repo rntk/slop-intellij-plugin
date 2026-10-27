@@ -8,6 +8,7 @@ import dev.insight.chat.objectTool
 import dev.insight.chat.pathsArg
 import dev.insight.chat.sourcePointTool
 import dev.insight.chat.stringArg
+import dev.insight.review.Summary
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
@@ -30,7 +31,7 @@ interface DiffReviewContext {
         throw ToolInputException("Symbol discovery is unavailable")
 
     suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
 
     suspend fun startTopics(): ReviewTopics = throw ToolInputException("Change topics are unavailable")
     suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Change topics are unavailable")
@@ -39,7 +40,7 @@ interface DiffReviewContext {
     suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
     suspend fun summaries(offset: Int): String = throw ToolInputException("Change summaries are unavailable")
     /** Saves summaries written by [ReviewSummarizer] and returns the tree with them. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, String>): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
+    suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
 }
 
 fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
@@ -52,8 +53,9 @@ fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
             """"offset":{"type":"integer","minimum":0,"description":"Start of the page; use next_offset from the previous page."}""") {
             context.state(it.intArg("offset", 0))
         },
-        objectTool("read_diff_files", "Read the unified diffs of 1–$MAX_READ_PATHS files, including removed lines. A long patch returns next_offset: " +
-            "call again with only that path and offset to continue. Files in not_read did not fit in this result; request them again.",
+        objectTool("read_diff_files", "Read the unified diffs of 1–$MAX_READ_PATHS files, including removed lines. Each patch line starts with its " +
+            "number in the whole patch and \"|\"; first_line and last_line give the numbers on this page. A long patch returns next_offset " +
+            "(a character offset): call again with only that path and offset to continue. Files in not_read did not fit in this result; request them again.",
             """"paths":${pathList(MAX_READ_PATHS)},""" +
                 """"offset":{"type":"integer","minimum":0,"description":"Only with a single path: continue its patch from next_offset."}""",
             """"paths"""") {

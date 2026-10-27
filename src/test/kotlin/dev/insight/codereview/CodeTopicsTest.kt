@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.review.summarize
 import com.google.gson.JsonParser
 import dev.insight.llm.Completion
 import dev.insight.review.ReviewSummaries

@@ -2,9 +2,14 @@ package dev.insight.diff
 
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
+import dev.insight.review.numberedRows
 import dev.insight.review.reviewJson
 
-/** Budget the complete wire response, including escaped patches and pagination for deferred files. */
+/**
+ * Budget the complete wire response, including escaped patches and pagination for deferred files. A page's patch lines
+ * carry their numbers in the whole patch, as summary evidence numbers them, and a page ends after a complete line unless
+ * one line alone exceeds it. Offsets stay in characters of the raw patch.
+ */
 internal fun diffReadResult(files: List<ReviewFile>, offset: Int): String {
     val read = linkedMapOf<String, Map<String, Any>>()
     fun result(): String = reviewJson.toJson(buildMap<String, Any> {
@@ -14,13 +19,22 @@ internal fun diffReadResult(files: List<ReviewFile>, offset: Int): String {
     fun fits() = result().length <= ToolChatRunner.DEFAULT_MAX_TOOL_RESULT_CHARS
     if (!fits()) throw ToolInputException("File metadata exceeds the result limit. Request fewer paths.")
     for (file in files) {
+        val firstLine = patchRowAt(file.patch, offset)
         fun slice(size: Int): Map<String, Any> = buildMap {
-            val end = offset + size
+            val end = patchPageEnd(file.patch, offset, offset + size)
+            val text = file.patch.substring(offset, end)
             put("path", file.path)
             file.previousPath?.let { put("previous_path", it) }
             put("status", file.status)
             if (offset > 0) put("offset", offset)
-            put("patch", file.patch.substring(offset, end))
+            if (text.isNotEmpty()) {
+                put("first_line", firstLine)
+                put("last_line", firstLine + text.removeSuffix("\n").count { it == '\n' })
+                put("patch_lines", patchRows(file.patch))
+                // Only a line longer than a page is split; its rest starts the next page under the same number.
+                if (offset > 0 && file.patch[offset - 1] != '\n') put("first_line_continues", true)
+            }
+            put("patch", if (text.isEmpty()) "" else numberedRows(text, firstLine))
             if (end < file.patch.length) put("next_offset", end)
         }
         val wanted = minOf(6000, file.patch.length - offset)

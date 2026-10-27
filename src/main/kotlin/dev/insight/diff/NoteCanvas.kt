@@ -82,7 +82,7 @@ internal class NoteCanvas(
     private val sources: List<ReviewSourceBlock> get() = state.sources
     private val diffs: List<ReviewFile> get() = state.diffs
     private val topics: TopicsCard? get() = state.topics
-    internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics).also { it.visibleOnly = vocabulary.scoreVisibleOnly }
+    internal val topicsView = ChangeTopicsViewState(vocabulary.foldLargeTopics)
     private var topicsScroll = 0
     /** A fill or resummarization of part of the topic hierarchy; one at a time, saved into the review as it goes. */
     private var topicSummaryJob: Job? = null
@@ -94,7 +94,6 @@ internal class NoteCanvas(
     private var summaryVersionCount = 0
     internal val summariesView = ChangeSummariesViewState().also {
         it.mode = vocabulary.summariesMode
-        it.visibleOnly = vocabulary.scoreVisibleOnly
     }
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
@@ -115,7 +114,7 @@ internal class NoteCanvas(
      * field.
      */
     private inner class SummariesTab(val key: CanvasTabKey, val view: ChangeSummariesViewState, val search: Boolean = false) {
-        val review = SummaryReviewSession(reviewed, summaryActions.reviewSummaries) { restyleReview(key) }
+        val review = SummaryReviewSession(reviewed)
         var scroll = 0
         /** The sideways reading position of the split view's one-line summaries. */
         var scrollX = 0
@@ -123,7 +122,7 @@ internal class NoteCanvas(
         var treeWidth: Int? = null
         var diffPanel: ChangeSummaryDiffPanel? = null
         var version: Int? = null
-        val trace = SummaryTraceSession(summaryActions.traceSummaries, view, { reading(this) }, openSummaryLines,
+        val trace = SummaryTraceSession(view, { reading(this) }, openSummaryLines,
             update = { updateTracePresentation(key) }, refresh = { refreshSummaries(this) })
         /** Kept across rebuilds of the card, so typing never loses focus or caret. */
         val searchField = SearchTextField(false).apply {
@@ -180,9 +179,9 @@ internal class NoteCanvas(
                 }
             })
         }
-    private val topicsTrace = SummaryTraceSession(summaryActions.traceSummaries, topicsView, { topics?.reading }, openSummaryLines,
+    private val topicsTrace = SummaryTraceSession(topicsView, { topics?.reading }, openSummaryLines,
         update = { updateTracePresentation(CanvasTabKey.Topics) }) { refreshCard(CanvasTabKey.Topics) }
-    private val topicsReview = SummaryReviewSession(reviewed, summaryActions.reviewSummaries) { restyleReview(CanvasTabKey.Topics) }
+    private val topicsReview = SummaryReviewSession(reviewed)
 
     /** Marks restyle the live cards; rebuilding them would reset both viewports and make the reading position jump. */
     private fun toggleReviewed(node: SummaryNode, value: Boolean) {
@@ -317,10 +316,8 @@ internal class NoteCanvas(
         (listOf("Summaries") + searchPath(tab).map { "“$it”" }).joinToString(" › ")
     } ?: (key as? ReviewNoteKey)?.paths.orEmpty().joinToString(", ").ifEmpty { tabTitle(key) }
 
-    /** A search tab's queries: the finished searches, or the first query while it is still searched. */
-    private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }.ifEmpty {
-        listOfNotNull(tab.view.tracing?.takeIf { it.searchRequested }?.context?.query)
-    }
+    /** A search tab's queries, oldest first. */
+    private fun searchPath(tab: SummariesTab): List<String> = tab.view.crumbs.map { it.query }
 
     private fun tabTitle(key: CanvasTabKey): String = when (key) {
         CanvasTabKey.Topics -> "Topics"
@@ -539,7 +536,6 @@ internal class NoteCanvas(
                     toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
                     addActionListener { topicActions.generateTopics() }
                 })
-                if (topicsTrace.available) add(scoreButton("topics-score", topicsView, content.reading, topicsTrace))
                 if (hierarchy) add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
@@ -569,8 +565,7 @@ internal class NoteCanvas(
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
-                traceStatusLines(topicsView, content.reading, topicsTrace, inner).forEach(::add)
-                reviewStatus(topicsReview)?.let(::add)
+                traceStatusLines(topicsView, topicsTrace, inner).forEach(::add)
                 topicSummaryStatus?.let { status ->
                     add(JLabel(status).apply { name = "topic-summary-status"; foreground = UIUtil.getContextHelpForeground(); toolTipText = status })
                 }
@@ -743,7 +738,6 @@ internal class NoteCanvas(
                         addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
                     })
                 }
-                if (summariesTrace.available) add(scoreButton("summaries-score", summariesView, summaries, summariesTrace))
                 add(JButton(when {
                     version != null -> "Regenerate original"
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
@@ -777,10 +771,9 @@ internal class NoteCanvas(
                 navigate
             },
             trace = summariesTrace::trace,
-            searchSelection = summariesTrace::searchSelection.takeIf { summariesTrace.available },
-            searchTab = { context: SummaryContext -> openSearchTab(tab, context) }.takeIf { summariesTrace.available },
-            follow = summariesTrace::searchContext.takeIf { summariesTrace.available },
-            score = summariesTrace::prescore.takeIf { summariesTrace.available },
+            searchSelection = summariesTrace::searchSelection,
+            searchTab = { context: SummaryContext -> openSearchTab(tab, context) },
+            follow = summariesTrace::searchContext,
             explain = summaryActions.explainNode,
             toChat = summaryActions.chatNode?.let { chat -> { node -> chat(node, content.summaries) } },
             inspect = project?.let { project ->
@@ -813,12 +806,11 @@ internal class NoteCanvas(
                 })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        if (summariesTrace.available || summaryActions.reviewSummaries != null) card.add(JPanel(VerticalLayout(scaled(4))).apply {
+        card.add(JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
-            traceStatusLines(summariesView, content.summaries, summariesTrace, inner, selection = true,
+            traceStatusLines(summariesView, summariesTrace, inner, selection = true,
                 where = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
-            reviewStatus(tab.review)?.let(::add)
         }, BorderLayout.SOUTH)
         if (diff != null) {
             card.add(diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it }, BorderLayout.CENTER)
@@ -887,21 +879,6 @@ internal class NoteCanvas(
         return card
     }
 
-    /** A fixed-height line, so linking starting or finishing never moves the summaries. */
-    private fun reviewStatus(session: SummaryReviewSession): JComponent? {
-        if (summaryActions.reviewSummaries == null) return null
-        fun message() = when {
-            session.running -> "Linking reviewed summary text…"
-            session.error != null -> "Review links unavailable: ${session.error}. Toggle Reviewed to retry."
-            else -> " "
-        }
-        return JLabel(message()).apply {
-            name = "review-link-status"; foreground = UIUtil.getContextHelpForeground()
-            preferredSize = Dimension(preferredSize.width, getFontMetrics(font).height)
-            installReviewPresentationUpdate(this) { text = message() }
-        }
-    }
-
     private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard): JComponent =
         JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
             isOpaque = false
@@ -941,11 +918,10 @@ internal class NoteCanvas(
                 }
             })
             val request = contextSummaryRequest(tab)
-            val pendingSearch = tab.view.tracing?.let { it.searchRequested && it.trace == null && it.error == null } == true
             add(JButton("Resummarize with context").apply {
                 name = "resummarize-with-context"
                 isEnabled = summaryActions.contextSummaries != null && content.canRun && request != null &&
-                    !pendingSearch && !summaryGenerationRunning
+                    !summaryGenerationRunning
                 toolTipText = request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
                     ?: "Search related summaries to choose a query and the summaries to rewrite"
                 addActionListener { startContextSummaries(tab) }
@@ -1141,19 +1117,10 @@ internal class NoteCanvas(
                 if (current) JLabel(text).apply { font = scaledFont(JBFont.small().asBold()) }
                 else ActionLink(text) { backTo(tab, index) }.apply { font = scaledFont(JBFont.small()) }
             ).also { it.name = "summaries-crumb:$index"; (it as JComponent).toolTipText = tooltip }
-            // A search still running shows its query, not yet a step to go back to.
-            val running = tab.view.tracing?.takeIf { it.searchRequested && it.file == null && it.trace == null && it.error == null }
-            crumb("Summaries", 0, crumbs.isEmpty() && running == null, "Every summary")
+            crumb("Summaries", 0, crumbs.isEmpty(), "Every summary")
             crumbs.forEachIndexed { index, it ->
                 separator()
-                crumb("“${it.query}”", index + 1, index == crumbs.lastIndex && running == null, "Summaries related to “${it.query}”")
-            }
-            if (running != null) {
-                separator()
-                add(JLabel("“${running.context?.query ?: running.word.text}”…").apply {
-                    name = "summaries-crumb:searching"
-                    font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                })
+                crumb("“${it.query}”", index + 1, index == crumbs.lastIndex, "Summaries related to “${it.query}”")
             }
         }, BorderLayout.CENTER)
         add(JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -1216,20 +1183,7 @@ internal class NoteCanvas(
         row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height))
     }
 
-    private fun scoreButton(name: String, state: SummaryTraceState, summaries: ReviewSummaries, session: SummaryTraceSession) =
-        JButton("Score").apply {
-            this.name = name
-            font = scaledFont(JBFont.small())
-            cursor = Cursor.getDefaultCursor()
-            isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) {
-                isEnabled = !state.scoring && state.pending(summaries).isNotEmpty()
-            }
-            toolTipText = "Precalculate word contexts for " + scoredSummaries(state) + ". Uses the Decisions API."
-            addActionListener { session.prescore() }
-        }
-
-    /** Hover and scoring updates keep the live components and both viewports intact. */
+    /** Hover and search updates keep the live components and both viewports intact. */
     private fun updateTracePresentation(key: CanvasTabKey) {
         val card = cards[key] ?: return
         val state = summaryTab(key)?.view ?: topicsView
@@ -1246,10 +1200,9 @@ internal class NoteCanvas(
      * became of a search's matches.
      */
     private fun traceStatusLines(
-        state: SummaryTraceState, summaries: ReviewSummaries, session: SummaryTraceSession, width: Int, selection: Boolean = false,
+        state: SummaryTraceState, session: SummaryTraceSession, width: Int, selection: Boolean = false,
         where: String = "highlighted in the view.",
     ): List<JComponent> {
-        if (!session.available) return emptyList()
         fun line(text: String, name: String, lineWidth: Int = width) = JLabel(text).apply {
             this.name = name
             isOpaque = false
@@ -1257,12 +1210,7 @@ internal class NoteCanvas(
             toolTipText = text.takeIf { it.isNotBlank() }
             preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
         }
-        return listOf(line(scoringStatus(state, summaries, selection), "scoring-status").apply {
-            ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) {
-                text = scoringStatus(state, summaries, selection)
-                toolTipText = text
-            }
-        }, JPanel(BorderLayout(scaled(8), 0)).apply {
+        return listOf(line(tracingHint(selection), "tracing-hint"), JPanel(BorderLayout(scaled(8), 0)).apply {
             isOpaque = false
             add(line(" ", "trace-status", width - scaled(56)).apply {
                 val update = {

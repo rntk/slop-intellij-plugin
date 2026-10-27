@@ -192,17 +192,23 @@ internal fun addChunkNodes(
 /** The tree of one snapshot revision with the summaries written so far. Immutable: every change returns a new value. */
 class ReviewSummaries(
     val tree: ReviewSummaryTree,
-    private val texts: Map<Int, String> = emptyMap(),
+    private val texts: Map<Int, Summary> = emptyMap(),
     /** Text restored from disk, rather than written in this tab. Never persisted. */
     internal val cachedIds: Set<Int> = emptySet(),
 ) {
-    fun text(id: Int): String? = texts[id]
-    internal fun generatedText(id: Int): String? = text(id).takeUnless { id in cachedIds }
+    fun summary(id: Int): Summary? = texts[id]
+    fun text(id: Int): String? = texts[id]?.text
+    internal fun generatedSummary(id: Int): Summary? = summary(id).takeUnless { id in cachedIds }
     val count: Int get() = texts.size
     val total: Int get() = tree.summarizable.size
     val complete: Boolean get() = missing().isEmpty()
-    /** Starts a separate version, retaining the text outside the requested nodes. */
-    fun without(ids: Set<Int>): ReviewSummaries = ReviewSummaries(tree, texts.filterKeys { it !in ids }, cachedIds - ids)
+    /** Starts a separate version, retaining other prose but dropping citations that depend on the removed summaries. */
+    fun without(ids: Set<Int>): ReviewSummaries {
+        val next = texts.filterKeys { it !in ids }.toMutableMap()
+        val cached = (cachedIds - ids).toMutableSet()
+        updateParents(next, emptySet(), reuseSingleChildren = false, cached = cached)
+        return ReviewSummaries(tree, next, cached)
+    }
     fun missing(): List<Int> = tree.summarizable.filter { it.id !in texts }.map { it.id }
     /** Missing nodes whose children are all summarized: leaves (files and parts), then the rest from the deepest, which can be written now. */
     fun ready(): List<Int> = tree.summarizable
@@ -218,7 +224,7 @@ class ReviewSummaries(
         val cached = next.nodes.filter { it.id in kept && it.key in cachedKeys }.mapTo(hashSetOf()) { it.id }
         for (node in next.nodes.asReversed()) if (node.id !in kept && node.children.size == 1) {
             val child = node.children.single()
-            kept[child]?.let { kept[node.id] = it; if (child in cached) cached += node.id }
+            kept[child]?.let { kept[node.id] = it.relay(); if (child in cached) cached += node.id }
         }
         return ReviewSummaries(next, kept, cached)
     }
@@ -227,39 +233,54 @@ class ReviewSummaries(
      * Validates the whole batch before anything changes. A folder, group or the root needs every child summarized, before or in
      * the same batch, so summaries are written from the bottom up. A parent with a single child reuses that child's summary.
      */
-    fun summarize(entries: Map<Int, String>): ReviewSummaries = summarize(entries, reuseSingleChildren = true)
+    fun summarize(entries: Map<Int, Summary>): ReviewSummaries = summarize(entries, reuseSingleChildren = true)
 
-    fun summarize(entries: Map<Int, String>, reuseSingleChildren: Boolean): ReviewSummaries =
+    fun summarize(entries: Map<Int, Summary>, reuseSingleChildren: Boolean): ReviewSummaries =
         write(entries, reuseSingleChildren, emptySet())
 
     /** Copies shared summaries without treating cached text as newly generated. */
-    internal fun share(entries: Map<Int, String>, cached: Set<Int>): ReviewSummaries = write(entries, true, cached)
+    internal fun share(entries: Map<Int, Summary>, cached: Set<Int>): ReviewSummaries = write(entries, true, cached)
 
-    private fun write(entries: Map<Int, String>, reuseSingleChildren: Boolean, cached: Set<Int>): ReviewSummaries {
+    private fun write(entries: Map<Int, Summary>, reuseSingleChildren: Boolean, cached: Set<Int>): ReviewSummaries {
         if (tree.summarizable.isEmpty()) throw ToolInputException("There are no files to summarize.")
         if (entries.isEmpty()) throw ToolInputException("Add at least one summary.")
         if (entries.size > MAX_PER_CALL) throw ToolInputException("Add at most $MAX_PER_CALL summaries per call.")
         val next = texts.toMutableMap()
         val nextCached = (cachedIds - entries.keys + cached).toMutableSet()
-        for ((id, text) in entries) {
+        for ((id, summary) in entries) {
             if (id !in tree.nodes.indices) throw ToolInputException("Node $id is not in the summary tree.")
-            val trimmed = text.trim()
-            if (trimmed.isEmpty()) throw ToolInputException("Node $id: provide a nonempty summary.")
-            next[id] = trimmed
+            next[id] = Summary.of(summary.segments) ?: throw ToolInputException("Node $id: provide a nonempty summary.")
         }
         for (id in entries.keys) {
             val waiting = tree[id].children.filter { it !in next }
             if (waiting.isNotEmpty()) throw ToolInputException("Node $id: summarize its children first (ids ${waiting.joinToString()}), " +
                 "then write its summary from theirs. Nothing was saved.")
         }
-        for (node in tree.nodes.asReversed()) if (reuseSingleChildren && node.id !in entries && node.children.size == 1) {
-            val child = node.children.single()
-            next[child]?.let {
-                next[node.id] = it
-                if (child in nextCached) nextCached += node.id else nextCached -= node.id
+        updateParents(next, entries.keys, reuseSingleChildren, nextCached)
+        return ReviewSummaries(tree, next, nextCached)
+    }
+
+    /** Old claim indices cannot be reused after a child changes. Freshly written parents already cite the new children. */
+    private fun updateParents(next: MutableMap<Int, Summary>, rewritten: Set<Int>, reuseSingleChildren: Boolean,
+                              cached: MutableSet<Int>) {
+        for (node in tree.nodes.asReversed()) {
+            if (node.id in rewritten || node.children.isEmpty()) continue
+            if (reuseSingleChildren && node.children.size == 1) {
+                val child = node.children.single()
+                next[child]?.let {
+                    next[node.id] = it.relay()
+                    if (child in cached) cached += node.id else cached -= node.id
+                }
+            } else {
+                val summary = next[node.id] ?: continue
+                next[node.id] = Summary(summary.segments.map { segment ->
+                    // A claim may condense several children; dropping only one source would misrepresent its evidence.
+                    if (segment.sources.filterIsInstance<SummarySource.Claim>().any { source ->
+                            node.children.getOrNull(source.child)?.let { texts[it] != next[it] } == true
+                        }) segment.copy(sources = emptyList()) else segment
+                })
             }
         }
-        return ReviewSummaries(tree, next, nextCached)
     }
 
     companion object {

@@ -46,19 +46,19 @@ internal fun fillSummaryRequest(summaries: ReviewSummaries, node: SummaryNode): 
  * parents, in batches the summary model accepts, and an entry whose children cannot all be saved waits. Empty once the tree beneath the run changed,
  * as a reclassification or refresh replaces it.
  */
-internal fun targetedEntries(current: ReviewSummaries, updated: ReviewSummaries, ids: Set<Int>): List<Map<Int, String>> {
+internal fun targetedEntries(current: ReviewSummaries, updated: ReviewSummaries, ids: Set<Int>): List<Map<Int, Summary>> {
     val tree = current.tree
     if (updated.tree.root.key != tree.root.key || updated.tree.nodes.size != tree.nodes.size) return emptyList()
     val scope = ids.toMutableSet()
     // Include seeded dependencies of the requested entries, but never unrelated branches.
     for (node in tree.nodes) if (node.id in scope) scope.addAll(node.children)
     val saved = HashSet<Int>()
-    val entries = mutableListOf<Pair<Int, String>>()
+    val entries = mutableListOf<Pair<Int, Summary>>()
     // Pre-order: walking backwards visits children before their parents.
     for (node in tree.nodes.asReversed()) {
         if (node.id !in scope) continue
-        val text = updated.text(node.id) ?: continue
-        val old = current.text(node.id)
+        val text = updated.summary(node.id) ?: continue
+        val old = current.summary(node.id)
         if (node.children.any { current.text(it) == null && it !in saved }) continue
         if (old == null || node.id in ids && text != old) { entries += node.id to text; saved += node.id }
     }

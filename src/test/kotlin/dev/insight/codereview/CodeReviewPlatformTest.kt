@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.review.summarize
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
@@ -354,8 +355,9 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val text = original.text(tree.root.id)!!
             val word = dev.insight.diff.SummaryWord.split(text).first()
             val trace = dev.insight.diff.SummaryTrace(tree.root.identity, text, word, listOf(word), "parsing",
-                listOf(dev.insight.diff.SummaryMatch(app.id, app.identity, 0.9, 1)), 2)
-            tab.canvas.summariesView.tracing = dev.insight.diff.SummaryTracing(tree.root.identity, text, word, trace = trace)
+                listOf(dev.insight.diff.SummaryMatch(app.id, app.identity, true, 1)))
+            val context = dev.insight.diff.SummaryContext(tree.root.identity, text, word, listOf(word), "parsing")
+            tab.canvas.summariesView.tracing = dev.insight.diff.SummaryTracing(tree.root.identity, text, word, context, trace = trace)
             tab.canvas.showNotes(CanvasState(emptyList(), summaries = dev.insight.diff.SummariesCard(original, false, true)))
             descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "resummarize-with-context" }.doClick()
             PlatformTestUtil.waitWithEventsDispatching("The contextual version should finish", {

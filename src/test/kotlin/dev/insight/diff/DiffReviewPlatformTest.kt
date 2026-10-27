@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -792,7 +793,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 assertEquals(6000, slices[0]["next_offset"].asInt)
                 assertFalse(read.has("not_read"))
                 val rest = JsonParser.parseString(context.read(listOf("src/c.kt"), 6000)).asJsonObject["files"].asJsonArray.single().asJsonObject
-                assertEquals(big.substring(6000), rest["patch"].asString)
+                // A line longer than a page is split; its rest keeps the line's number.
+                assertEquals("1|" + big.substring(6000).removeSuffix("\n"), rest["patch"].asString)
+                assertTrue(rest["first_line_continues"].asBoolean)
                 assertFalse(rest.has("next_offset"))
 
                 val added = context.addNotes(listOf(ReviewNote(listOf("src/a.kt", "src/b.kt"), "Changes both.")))

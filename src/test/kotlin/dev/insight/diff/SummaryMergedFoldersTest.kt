@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.SummaryKind
@@ -55,15 +56,13 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         val summaries = summaries()
         val tree = summaries.tree
         val insight = tree.nodes.single { it.path == "src/main/kotlin/dev/insight" }
-        val state = ChangeSummariesViewState().apply { visibleOnly = true; update(tree) }
-        fun visible() = state.pending(summaries).map { tree[it.first].identity }.toSet()
+        val state = ChangeSummariesViewState().apply { update(tree) }
         state.selectLevel(1, tree)
         assertEquals(1, state.shownLevel(tree))
-        assertEquals(setOf("root", "directory:src/main/kotlin/dev/insight", "file:README.md"), visible())
-        state.selectLevel(2, tree)
-        assertTrue("file:src/main/kotlin/dev/insight/a.kt" in visible())
-        val candidates = SummaryTracer({ error("No request expected") }).candidates(summaries, tree.root.id)
-        assertEquals(listOf(insight.id to 1), candidates.filter { it.first.kind == SummaryKind.DIRECTORY }.map { (node, level) -> node.id to level })
+        val word = SummaryWord.split(summaries.text(tree.root.id)!!).first()
+        val context = SummaryContext(tree.root.identity, summaries.text(tree.root.id)!!, word, listOf(word), word.text)
+        val candidates = SummaryLinks(summaries).search(tree.root.id, context).matches
+        assertEquals(listOf(insight.id to 1), candidates.filter { tree[it.id].kind == SummaryKind.DIRECTORY }.map { it.id to it.levelsBelow })
     }
 
     fun testFuzzyMatchInMergedAncestorKeepsItsDisplayedFolder() {

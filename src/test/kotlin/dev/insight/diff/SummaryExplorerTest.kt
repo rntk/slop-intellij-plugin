@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import dev.insight.review.ReviewSummaries
@@ -63,13 +64,13 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testFiltersAndSearchResultsChooseAPageAndScoreOnlyItsSummaries() {
+    fun testFiltersAndSearchResultsChooseAPage() {
         val tree = buildSummaryTree(files)
         val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
-        val state = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.EXPLORER; visibleOnly = true; update(tree) }
+        val state = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.EXPLORER; update(tree) }
         val nested = tree.nodes.single { it.identity == "directory:src/nested" }
         val target = tree.nodes.single { it.path == "src/nested/b.kt" }
-        fun visible() = state.pending(summaries).map { tree[it.first].identity }.toSet()
+        fun visible() = state.explorerEntries(summaries).map { it.identity }.toSet()
         assertEquals(setOf("root"), visible())
         state.browse(nested.identity, tree)
         assertEquals(setOf("file:src/nested/b.kt", "file:src/nested/c.kt"), visible())
@@ -90,7 +91,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         val rootText = summaries.text(0)!!
         val word = SummaryWord.split(rootText).first()
         val trace = SummaryTrace("root", rootText, word, listOf(word), "nested",
-            listOf(SummaryMatch(target.id, target.identity, 0.9, tree.depth(target.id))), 1)
+            listOf(SummaryMatch(target.id, target.identity, true, tree.depth(target.id))))
         state.showTrace(tree, trace)
         assertEquals(nested.identity, state.explorerBreadcrumbs(tree).last().identity)
         assertEquals(target.identity, state.selected)

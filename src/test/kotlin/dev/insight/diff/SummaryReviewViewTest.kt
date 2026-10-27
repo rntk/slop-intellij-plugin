@@ -4,6 +4,10 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.Summary
+import dev.insight.review.SummarySegment
+import dev.insight.review.SummarySource
+import dev.insight.review.summarize
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewedFiles
@@ -14,7 +18,6 @@ import java.awt.Container
 import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.text.StyleConstants
-import kotlinx.coroutines.Job
 
 class SummaryReviewViewTest : BasePlatformTestCase() {
     private val files = listOf("src/a.kt", "src/b.kt", "docs/readme.md").map {
@@ -95,48 +98,37 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
         }
     }
 
-    fun testLateLinkResultsCannotOverrideUnmarkedFilesOrNewSummaryVersions() {
+    fun testDimmingFollowsMarksAndSummaryVersions() {
         val tree = buildSummaryTree(files)
-        val summaries = ReviewSummaries(tree, mapOf(0 to "Caching and retries"))
-        val reviewed = ReviewedFiles().apply { restore(files); set(listOf(files[0].path), true) }
-        val callbacks = mutableListOf<(Result<ReviewDimming>) -> Unit>()
-        val jobs = mutableListOf<Job>()
-        val launcher = object : SummaryReviewLauncher {
-            override fun launch(summaries: ReviewSummaries, reviewed: Set<String>, done: (Result<ReviewDimming>) -> Unit): Job {
-                callbacks += done
-                return Job().also { jobs += it }
-            }
+        val src = tree.nodes.single { it.path == "src" }
+        val a = tree.nodes.single { it.path == "src/a.kt" }
+        val b = tree.nodes.single { it.path == "src/b.kt" }
+        val summaries = ReviewSummaries(tree)
+            .summarize(tree.nodes.filter { it.children.isEmpty() }
+                .associate { it.id to Summary(listOf(SummarySegment("Edits ${it.path}.", listOf(SummarySource.Rows(1, 1))))) })
+            .summarize(mapOf(src.id to Summary(listOf(
+                SummarySegment("Caching", listOf(SummarySource.Claim(0, 0))), SummarySegment(" and "),
+                SummarySegment("retries", listOf(SummarySource.Claim(1, 0))),
+            ))))
+        val reviewed = ReviewedFiles().apply { restore(files) }
+        val session = SummaryReviewSession(reviewed)
+        fun dimmed(value: ReviewSummaries): List<String> {
+            val presentation = session.presentation(value) { _, _ -> }
+            val area = javax.swing.JTextPane().apply { text = value.text(src.id) }
+            presentation.decorate(area, src)
+            val doc = area.styledDocument
+            return SummaryWord.split(area.text).filter { word ->
+                doc.getCharacterElement(word.start).attributes.isDefined(StyleConstants.Foreground)
+            }.map { it.text }
         }
-        var updates = 0
-        val session = SummaryReviewSession(reviewed, launcher) { updates++ }
-        try {
-            session.presentation(summaries) { _, _ -> }
-            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            assertEquals(1, callbacks.size)
-            reviewed.set(listOf(files[0].path), false)
-            session.presentation(summaries) { _, _ -> }
-            callbacks[0](Result.success(mapOf(0 to setOf(0))))
-            assertEquals(0, updates)
-            assertTrue(jobs[0].isCancelled)
-            reviewed.set(listOf(files[0].path), true)
-            session.presentation(summaries) { _, _ -> }
-            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            val newer = ReviewSummaries(tree, mapOf(0 to "Different words"))
-            session.presentation(newer) { _, _ -> }
-            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            callbacks[1](Result.success(mapOf(0 to setOf(0))))
-            assertEquals(0, updates)
-            callbacks.last()(Result.failure(IllegalStateException("Service unavailable")))
-            assertEquals(1, updates)
-            assertEquals("Service unavailable", session.error)
-            assertFalse(session.running)
-            val old = callbacks.last()
-            session.stop()
-            session.presentation(newer) { _, _ -> }
-            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            old(Result.success(mapOf(0 to setOf(0))))
-            assertEquals("A closed session must not publish after reopening the same text", 1, updates)
-            assertTrue(session.running)
-        } finally { session.stop() }
+        assertEquals(emptyList<String>(), dimmed(summaries))
+        reviewed.set(listOf(a.path), true)
+        assertEquals(listOf("Caching"), dimmed(summaries))
+        reviewed.set(listOf(b.path), true)
+        assertEquals(listOf("Caching", "and", "retries"), dimmed(summaries))
+        reviewed.set(listOf(a.path), false)
+        assertEquals(listOf("retries"), dimmed(summaries))
+        // A version without citations dims only what is reviewed as a whole.
+        assertEquals(emptyList<String>(), dimmed(ReviewSummaries(tree, mapOf(src.id to "Caching and retries"))))
     }
 }
