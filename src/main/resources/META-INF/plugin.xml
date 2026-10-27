@@ -52,6 +52,7 @@
         <fileEditorProvider implementation="dev.insight.review.ReviewCanvasEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->
@@ -99,6 +100,12 @@
                 icon="/icons/insight.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
+        </action>
+        <action id="Insight.OpenSchematic" class="dev.insight.callgraph.OpenSchematicAction"
+                icon="/icons/insight.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.ShowChanges" class="dev.insight.callgraph.ShowChangesInGraphAction"
                 icon="/icons/insight.svg">

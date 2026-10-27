@@ -40,6 +40,12 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
         known: Map<Int, FunctionSummary> = emptyMap()): SubflowSummaries =
         withContext(Dispatchers.IO) { SubflowSummarizer(llm()::complete, cache).summarize(candidates, facts, known) }
 
+    /** Bottom-up summaries of [input]'s functions (see [FunctionSummarizer]); cached judgments are shared with [enrich]. */
+    suspend fun summarizeFunctions(input: EnrichmentInput, calls: Map<Int, List<dev.insight.callgraph.CallGraphEdge>>,
+        heuristics: Map<Int, Heuristics>, visibility: Map<Int, Double>, options: SummaryOptions,
+        progress: EnrichmentProgress = EnrichmentProgress.NONE): SummaryResult =
+        withContext(Dispatchers.IO) { FunctionSummarizer(llm()::complete, cache, options).summarize(input, calls, heuristics, visibility, progress) }
+
     /** Copies full physical source lines under a read action, then groups and summarizes them off the EDT. */
     suspend fun generateCanvas(result: CallGraphResult, nodeIds: List<Int>? = null, flow: Flow? = null,
         progress: EnrichmentProgress = EnrichmentProgress.NONE): CanvasData {
