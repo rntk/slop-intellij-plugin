@@ -60,12 +60,21 @@ class LlmConfigurationTest {
         }
     }
 
+    @Test fun `default configuration sends 10000 output tokens for each provider`() = runBlocking {
+        for (provider in LlmProvider.entries) {
+            LlmConfiguration(provider, baseUrl, "m").createClient("key")
+                .complete(CompletionRequest(listOf(LlmMessage.user("Hello"))))
+            val key = if (provider == LlmProvider.OPENAI) "max_completion_tokens" else "max_tokens"
+            assertEquals(10_000, requests.last().second[key].asInt)
+        }
+    }
+
     @Test fun `zero leaves the provider token default and llama credentials are optional`() = runBlocking {
         for (provider in LlmProvider.entries) {
-            LlmConfiguration(provider, baseUrl, "m").createClient(if (provider == LlmProvider.LLAMA_CPP) null else "key")
+            LlmConfiguration(provider, baseUrl, "m", maxOutputTokens = 0).createClient(if (provider == LlmProvider.LLAMA_CPP) null else "key")
                 .complete(CompletionRequest(listOf(LlmMessage.user("Hello"))))
             val body = requests.last().second
-            if (provider == LlmProvider.ANTHROPIC) assertEquals(8192, body["max_tokens"].asInt)
+            if (provider == LlmProvider.ANTHROPIC) assertEquals(10_000, body["max_tokens"].asInt)
             else assertFalse(body.has(if (provider == LlmProvider.OPENAI) "max_completion_tokens" else "max_tokens"))
         }
         assertNull(credentials.first())

@@ -5,6 +5,8 @@ import dev.insight.core.Endpoints
 import java.net.URI
 import java.time.Duration
 
+const val DEFAULT_OUTPUT_TOKENS = 10_000
+
 enum class LlmProvider(val displayName: String, val defaultBaseUrl: String) {
     LLAMA_CPP("llama.cpp / OpenAI-compatible", Endpoints.LLM_BASE_URL),
     OPENAI("OpenAI", OpenAiClient.DEFAULT_BASE_URL),
@@ -21,7 +23,7 @@ data class LlmConfiguration(
     val model: String = "",
     val requestTimeoutSeconds: Int = 600,
     val maxRetries: Int = 6,
-    val maxOutputTokens: Int = 0,
+    val maxOutputTokens: Int = DEFAULT_OUTPUT_TOKENS,
     val cachePrompt: Boolean = true,
     val serviceTier: String = "",
     val promptCacheKey: String = "",

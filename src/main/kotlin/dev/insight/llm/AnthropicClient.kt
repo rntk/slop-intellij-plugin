@@ -28,7 +28,7 @@ class AnthropicClient(
     apiKey: String,
     private val model: String,
     baseUrl: String = DEFAULT_BASE_URL,
-    private val defaultMaxTokens: Int = 8192,
+    private val defaultMaxTokens: Int = DEFAULT_OUTPUT_TOKENS,
     private val serviceTier: String? = null,
     requestTimeout: Duration = Duration.ofSeconds(600),
     maxRetries: Int = 6,

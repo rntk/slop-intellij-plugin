@@ -176,7 +176,7 @@ class ProviderClientsTest {
         assertTrue(requests.single().first.keys.none { it.equals("Authorization", true) })
         val body = requests.single().second
         assertEquals("claude-sonnet-4-5", body["model"].asString)
-        assertEquals(8192, body["max_tokens"].asInt)
+        assertEquals(10_000, body["max_tokens"].asInt)
         assertEquals(0.2, body["temperature"].asDouble, 0.0)
         assertEquals("standard_only", body["service_tier"].asString)
         assertEquals(json("""{"type":"text","text":"Be brief.\n\nUse tools.","cache_control":{"type":"ephemeral"}}"""),
