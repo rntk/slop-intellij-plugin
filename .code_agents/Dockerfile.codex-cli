@@ -3,7 +3,7 @@
 # Strategy: A (FROM shared base .code_agents/Dockerfile.code_agent, which
 # reproduces the project Dockerfile's eclipse-temurin:21-jdk-jammy environment)
 # Base image: app-code-agent:latest (override with --build-arg BASE_IMAGE=...)
-# Tech stack: Java 21 / Kotlin, Gradle wrapper (deps pre-installed in base);
+# Tech stack: Java 21 / Kotlin, Gradle wrapper (cached in /app/.gradle/agent-home);
 #   Node.js added here (checksum-verified official tarball) because Codex CLI is an npm package.
 # Required env vars (set at runtime, NOT in image): OPENAI_API_KEY (optional if already logged in)
 #

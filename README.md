@@ -27,7 +27,7 @@ Run tests, package the plugin, and verify its structure:
 ./gradlew test buildPlugin verifyPluginStructure
 ```
 
-For containerized builds and checks without a local toolchain, use the Docker helper:
+For containerized builds and checks without a local toolchain, use the Docker helper (coding agents running in `.code_agents/` containers use `./build.sh` instead; see [AGENTS.md](AGENTS.md)):
 
 ```sh
 ./docker.sh help

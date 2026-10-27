@@ -1,11 +1,11 @@
 # Generated for project: app
 # Strategy: A (extends project Dockerfile: eclipse-temurin:21-jdk-jammy development stage)
 # Tech stack: Java 21 / Kotlin (JVM toolchain 21), Gradle wrapper, IntelliJ Platform plugin
-# (org.jetbrains.intellij.platform 2.10.5, IntelliJ IDEA Community 2025.2.4)
-# Test/quality tools: JUnit 4, ./gradlew test buildPlugin verifyPluginStructure
+# (org.jetbrains.intellij.platform 2.10.5, IntelliJ IDEA Ultimate 2025.2.4)
+# Test/quality tools: JUnit 4, ./build.sh check (test buildPlugin verifyPluginStructure)
 #
-# Shared base image for AI coding agents. Contains system packages, the JDK,
-# and warmed Gradle wrapper cache so agent images rebuild fast.
+# Shared base image for AI coding agents. Contains system packages and the JDK;
+# Gradle, dependencies, and the IntelliJ SDK are cached in the bind-mounted project.
 # This image sets NO entrypoint; each agent Dockerfile sets its own.
 #
 # Build (from project root, build context must stay the project root):
@@ -30,20 +30,14 @@ RUN apt-get update \
 # Non-root user required by agent images (project base image has none).
 RUN useradd -m -u 1000 -s /bin/bash appuser
 
-ENV GRADLE_USER_HOME=/home/appuser/.gradle
+# The project is bind-mounted at /app, so a Gradle home inside it survives
+# container restarts and is shared by every agent image: the IntelliJ IDEA SDK
+# (about 1.4 GB download, several GB unpacked) is fetched once, not on every
+# start. Agents should prefer ./build.sh (see AGENTS.md), which uses the same
+# directory and also isolates the project cache and serializes builds.
+ENV GRADLE_USER_HOME=/app/.gradle/agent-home
 
 WORKDIR /app
 RUN chown -R appuser:appuser /app /home/appuser
 
-# Warm the checksum-verified Gradle wrapper cache (no global Gradle install).
-COPY --chown=appuser:appuser gradlew gradlew.bat ./
-COPY --chown=appuser:appuser gradle/ ./gradle/
-RUN chmod +x gradlew
-
 USER appuser
-RUN ./gradlew --no-daemon --version
-
-# Project dependency manifests: Gradle resolves third-party deps at build
-# time via the wrapper, so no separate install step is needed beyond the
-# wrapper warmup above. Copying manifests keeps the layer cache-friendly.
-COPY --chown=appuser:appuser build.gradle.kts settings.gradle.kts gradle.properties ./

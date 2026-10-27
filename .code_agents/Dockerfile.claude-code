@@ -2,7 +2,7 @@
 # Strategy: A (FROM shared base .code_agents/Dockerfile.code_agent, which
 # reproduces the project Dockerfile's eclipse-temurin:21-jdk-jammy environment)
 # Base image: app-code-agent:latest (override with --build-arg BASE_IMAGE=...)
-# Tech stack: Java 21 / Kotlin, Gradle wrapper (deps pre-installed in base)
+# Tech stack: Java 21 / Kotlin, Gradle wrapper (cached in /app/.gradle/agent-home)
 # Required env vars (set at runtime, NOT in image): ANTHROPIC_API_KEY
 #
 # Build (from project root):

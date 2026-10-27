@@ -101,7 +101,7 @@ container_project_cache=/workspace/.gradle/docker-project
 # Separate containers cannot coordinate Gradle cache locks. Serialize helper
 # invocations on the host, including export, which also accesses build output.
 mkdir -p "$project_dir/.gradle"
-exec 9>"$project_dir/.gradle/docker-build.lock"
+exec 9>"$project_dir/.gradle/build.lock"
 if ! flock -n 9; then
   printf 'Another Docker build is running for this project; waiting...\n'
   flock 9
