@@ -339,7 +339,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testDocumentLevelSwitchersLimitRailsAndKeepDiffsVisible() {
-        val files = listOf("src/feature/one.kt", "src/feature/two.kt", "docs/readme.md").map { path ->
+        val files = listOf("src/feature/one.kt", "src/feature/two.kt", "docs/readme.md", "src/other.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature>One")
@@ -352,27 +352,28 @@ class NoteCanvasTest : BasePlatformTestCase() {
             fun topicLevel() = descendants(canvas).single { it.name == "topic-level-selector" } as javax.swing.JComboBox<*>
             fun topicPanel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             fun folderPanel() = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
-            fun summaryLevel(value: Int, action: String) {
+            fun summaryLevel(value: Int) {
                 (descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>).selectedItem = value
-                (descendants(canvas).single { it.name == "summary-$action" } as javax.swing.JButton).doClick()
             }
+            topicLevel().selectedItem = "Files"
             layoutTree(canvas)
             val topicWidth = topicPanel().preferredSize.width
             val folderWidth = folderPanel().preferredSize.width
             topicLevel().selectedIndex = 0
-            summaryLevel(1, "fold")
+            summaryLevel(1)
             layoutTree(canvas)
             assertEquals(0, topicLevel().selectedIndex)
-            assertEquals(0, canvas.summariesView.shownLevel(summaries.tree))
+            assertEquals(1, canvas.summariesView.shownLevel(summaries.tree))
             assertEquals(setOf("topic:0:product", "topic:pending"), topicPanel().components.mapNotNull { it.name }.filter { it.startsWith("topic:") }.toSet())
-            assertEquals(listOf("node:root"), folderPanel().components.mapNotNull { it.name }.filter { it.startsWith("node:") })
+            assertEquals(setOf("node:root", "node:directory:docs", "node:directory:src"),
+                folderPanel().components.mapNotNull { it.name }.filter { it.startsWith("node:") }.toSet())
             assertTrue(topicPanel().preferredSize.width < topicWidth)
             assertTrue(folderPanel().preferredSize.width < folderWidth)
             for (panel in listOf(topicPanel(), folderPanel())) {
                 assertEquals(files.size, descendants(panel).filterIsInstance<PatchView>().size)
             }
             topicLevel().selectedItem = "Files"
-            summaryLevel(ChangeSummariesViewState.branchLevels(summaries.tree), "unfold")
+            summaryLevel(ChangeSummariesViewState.branchLevels(summaries.tree))
             layoutTree(canvas)
             assertEquals(topicWidth, topicPanel().preferredSize.width)
             assertEquals(folderWidth, folderPanel().preferredSize.width)
@@ -747,7 +748,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val written = listOf("file:src/wallet/Ledger.kt", "file:src/wallet/Wallet.kt", "file:src/auth/Auth.kt", "file:docs/README.md", "directory:src/wallet")
         val summaries = ReviewSummaries(tree).summarize(written.associate { id(it) to "Summary of $it." })
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.OUTLINE }
         fun panel() = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
         fun names() = panel().components.mapNotNull { it.name }
         fun named(name: String) = panel().components.single { it.name == name }
@@ -759,11 +760,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
         fun level() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
-        fun fold(action: String) = (descendants(canvas).single { it.name == "summary-$action" } as javax.swing.JButton).doClick()
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            // The outline stays the default; the hierarchy is a second mode of the same card.
+            // The hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
             toggleButton("Hierarchy").doClick(); layoutTree(canvas)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel })
@@ -810,16 +810,15 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("No summary yet · auth/, wallet/", note("directory:src"))
             assertEquals(named("node:directory:src").y, named("summary:directory:src").y)
 
-            // Picking a level waits for an action; folding level 1 closes the root.
+            // Picking a level immediately opens through it and folds deeper folders.
             assertEquals(listOf(1, 2, 3), (0 until level().itemCount).map { level().getItemAt(it) })
             level().selectedItem = 1
-            fold("fold"); layoutTree(canvas)
-            assertEquals(listOf("node:root", "summary:root"), names().sorted())
-            assertEquals("No summary yet · docs/, src/", note("root"))
+            layoutTree(canvas)
+            assertTrue("node:directory:src" in names())
+            assertFalse("file:src/wallet/Ledger.kt" in names())
             assertEquals(1, level().selectedItem)
             level().selectedItem = 3
-            assertEquals(listOf("node:root", "summary:root"), names().sorted())
-            fold("unfold"); layoutTree(canvas)
+            layoutTree(canvas)
             assertTrue(names().containsAll(files.map { "file:${it.path}" }))
             assertEquals(3, level().selectedItem)
 
@@ -843,7 +842,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testSummaryLevelActionsKeepDeeperFoldersFoldedAcrossModes() {
+    fun testSummaryLevelSelectionKeepsDeeperFoldersFoldedAcrossModes() {
         val paths = listOf("root.kt") + (1..6).map { depth ->
             (1..depth).joinToString("/") { "dir$it" } + "/file$depth.kt"
         }
@@ -853,15 +852,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val canvas = canvas().apply { setSize(1800, 900) }
         fun selector() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
-        fun action(name: String) = (descendants(canvas).single { it.name == "summary-$name" } as javax.swing.JButton).doClick()
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) {
                 (descendants(canvas).single { it.name == "summaries-mode:${mode.name.lowercase()}" } as javax.swing.JToggleButton).doClick()
-                val before = canvas.summariesView.expanded.toSet()
+                assertTrue(descendants(canvas).none { it.name in setOf("summary-fold", "summary-unfold") })
                 selector().selectedItem = 4
-                assertEquals(before, canvas.summariesView.expanded)
-                action("unfold")
                 layoutTree(canvas)
                 assertEquals(4, selector().selectedItem)
                 for (node in tree.nodes.filter(::isFolderBranch)) {
@@ -873,11 +869,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 if (mode == ReviewSummariesMode.OUTLINE) {
                     assertEquals("Level 1", (descendants(canvas).single { it.name == "summary-level-label:root" } as JLabel).text)
                 }
-                action("fold")
+                selector().selectedItem = 3
                 for (node in tree.nodes.filter(::isFolderBranch)) {
                     assertEquals(node.identity, tree.depth(node.id) < 3, node.identity in canvas.summariesView.expanded)
                 }
-                assertEquals(4, selector().selectedItem)
+                assertEquals(3, selector().selectedItem)
             }
         } finally { canvas.dispose() }
     }

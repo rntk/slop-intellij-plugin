@@ -1229,42 +1229,25 @@ internal class NoteCanvas(
         })
     }
 
-    /** Pick a 1-based folder level, then fold from it or unfold through it. */
+    /** Open folders through the picked 1-based level and fold deeper folders. */
     private fun summaryLevels(tab: SummariesTab, tree: ReviewSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
         isOpaque = false
         val summariesView = tab.view
         val selector = JComboBox((1..levels).toList().toTypedArray()).apply {
             name = "summary-level-selector"
             font = scaledFont(JBFont.small())
-            selectedItem = summariesView.selectedLevel.coerceIn(1, levels)
-            toolTipText = "Folder level (root is level 1); choose Fold or Unfold to apply"
-            addActionListener { summariesView.selectedLevel = selectedItem as Int }
+            selectedItem = (summariesView.shownLevel(tree) ?: summariesView.selectedLevel).coerceIn(1, levels)
+            toolTipText = "Unfold folders through this level (root is level 1) and fold deeper folders"
+            addActionListener {
+                summariesView.selectLevel(selectedItem as Int, tree)
+                refreshSummaries(tab)
+            }
         }
         add(JLabel("Level").apply {
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
             labelFor = selector
         })
         add(selector)
-        add(JButton("Fold").apply {
-            name = "summary-fold"
-            font = scaledFont(JBFont.small())
-            cursor = Cursor.getDefaultCursor()
-            toolTipText = "Fold folders at the selected level and deeper"
-            addActionListener {
-                summariesView.foldLevel(selector.selectedItem as Int, tree)
-                refreshSummaries(tab)
-            }
-        })
-        add(JButton("Unfold").apply {
-            name = "summary-unfold"
-            font = scaledFont(JBFont.small())
-            cursor = Cursor.getDefaultCursor()
-            toolTipText = "Unfold folders through the selected level; deeper folders stay folded"
-            addActionListener {
-                summariesView.selectLevel(selector.selectedItem as Int, tree)
-                refreshSummaries(tab)
-            }
-        })
     }
 
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */

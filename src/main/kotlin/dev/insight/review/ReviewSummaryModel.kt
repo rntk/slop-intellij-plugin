@@ -36,7 +36,7 @@ data class SummaryNode(
     }
 }
 
-/** One part of a large file: contiguous 1-based [lines] and a [hash] of their text, so its key survives edits elsewhere. */
+/** One part of a large file: contiguous 1-based [lines] and a [hash] of their text. */
 data class SourceChunk(val index: Int, val lines: IntRange, val hash: String)
 
 /** Pre-order: the root is node 0 and parents precede their children. */
@@ -159,8 +159,9 @@ internal fun <T> balancedGroups(level: List<T>, maxChildren: Int, group: (List<T
 
 /**
  * Adds the parts of [file] beneath [parent] in pre-order and returns the ids of its direct children. More than [maxChildren]
- * parts are grouped like folder entries; every node beneath a file is CHUNK. Keys hold no line numbers, so a part's summary
- * survives edits elsewhere in the file.
+ * parts are grouped like folder entries; every node beneath a file is CHUNK. Keys include the line range because source
+ * citations use absolute file lines. A part's summary survives edits elsewhere only while its position is unchanged,
+ * both when retained in memory and when restored from disk.
  */
 internal fun addChunkNodes(
     nodes: MutableList<SummaryNode>,
@@ -174,7 +175,7 @@ internal fun addChunkNodes(
         val id = nodes.size
         val lines = part.first.lines.first..part.last.lines.last
         val (key, identity) = if (part.members.isEmpty())
-            reviewFingerprint("chunk", file.path, part.first.hash) to "chunk:${file.path}:${part.first.index}"
+            reviewFingerprint("chunk", file.path, part.first.hash, lines.first.toString(), lines.last.toString()) to "chunk:${file.path}:${part.first.index}"
             else "" to "chunk-group:${file.path}:${part.first.index}:${part.last.index}"
         nodes += SummaryNode(id, SummaryKind.CHUNK, file.path, "Lines ${lines.first}–${lines.last}", parent, emptyList(),
             listOf(file.path), key, identity, file, lines)

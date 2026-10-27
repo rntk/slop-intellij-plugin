@@ -42,8 +42,9 @@ internal class ChangeSummariesViewState(
     var selected: String? = null
     /** The last applied unfolding depth; nodes that appear later follow it too. */
     private var level: Int? = null
-    /** The 1-based level picked for the next Fold or Unfold action. Picking it does not change the tree. */
+    /** The last level picked in the dropdown, retained when folders are toggled individually. */
     var selectedLevel = 1
+        private set
     private var tree: ReviewSummaryTree? = null
     /** Open containers, from the root to the current page; an empty path shows only the scope summary. */
     private var explorerPath = emptyList<String>()
@@ -184,6 +185,7 @@ internal class ChangeSummariesViewState(
     /** Level n opens the folders above depth n and folds the rest; [branchLevels] opens every folder down to the files. */
     fun selectLevel(level: Int, tree: ReviewSummaryTree) {
         this.level = level
+        selectedLevel = level
         for (node in levelBranches(tree)) {
             if (tree.shownDepth(node.id) < level) {
                 expanded += node.identity
@@ -193,15 +195,6 @@ internal class ChangeSummariesViewState(
                 folded += node.identity
             }
         }
-    }
-
-    /** Folds the selected 1-based level and everything deeper, keeping shallower folders as they are. */
-    fun foldLevel(level: Int, tree: ReviewSummaryTree) {
-        for (node in levelBranches(tree)) if (tree.shownDepth(node.id) >= level - 1) {
-            expanded -= node.identity
-            folded += node.identity
-        }
-        this.level = minOf(this.level ?: branchLevels(tree), level - 1)
     }
 
     /** The level the current folding matches, if any; folding by hand can leave it between levels. */

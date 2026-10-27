@@ -10,6 +10,8 @@ The Diff view keeps the file tree beside the IDE’s native diff viewer. Select 
 
 The descriptions are generated from the content they summarize, and every claim in one cites what it was written from: a file's claims cite its lines, and a folder's or topic's claims cite the claims of the summaries directly below it. These citations are recorded while the summaries are written, so the views read the links directly instead of matching text afterwards. Hovering or selecting part of a summary highlights what it condenses below and what condenses it above. Searching from it opens the cited summaries, or a file's cited lines. To file and To directory open the levels down to the files or folders it cites at any depth, highlight them, and select and scroll to the chosen one. Use the summaries to find areas worth exploring, then check the source or diff directly.
 
+Choosing a level unfolds folders through that level and folds everything deeper. Readers can also open or close individual entries.
+
 Readers can mark files or directories as reviewed. Their summaries dim, and a claim in a higher summary dims once every file it cites, directly or through the levels between, is reviewed. Review marks follow the underlying evidence.
 
 Summaries favor a short statement of purpose or behavior, with only essential distinctions supported by the evidence. They omit file names, paths, code, and implementation inventories. Simple items need very little text; subtle behavior may need more explanation. Higher levels condense the main themes rather than repeat the details below.

@@ -7,8 +7,11 @@ import dev.insight.review.SummarySource.Claim
 import dev.insight.review.SummarySource.Rows
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 
 class SummaryCitationsTest {
+    @get:Rule val temp = TemporaryFolder()
     private data class Source(override val path: String) : ReviewSource {
         override val absolutePath get() = "/repo/$path"
         override val text get() = "line\n"
@@ -18,6 +21,43 @@ class SummaryCitationsTest {
 
     private fun part(text: String, vararg sources: SummarySource) = SummarySegment(text, sources.toList())
     private fun leaf(text: String) = Summary(listOf(part(text, Rows(1, 1))))
+
+    @Test fun `shifted chunks and their groups are invalidated on refresh and disk restoration`() {
+        val files = listOf(Source("big.kt"))
+        fun tree(shift: Int) = buildSummaryTree(files, chunks = {
+            List(20) { index ->
+                val offset = if (index >= 7) shift else 0
+                SourceChunk(index, (index * 10 + 1 + offset)..(index * 10 + 10 + offset), "content-$index")
+            }
+        })
+        val original = tree(0)
+        val written = ReviewSummaries(original).summarize(original.nodes.associate { node ->
+            node.id to if (node.children.isEmpty()) Summary(listOf(part("Reads data.", Rows(node.lines!!.first, node.lines.last))))
+                else Summary(listOf(part("Reads data.", Claim(0, 0))))
+        }, reuseSingleChildren = false)
+        val directory = temp.root.toPath().resolve("cache")
+        fun session() = ReviewCacheSession(ReviewDiskCache(directory), "code", null).apply { load("scope") }
+        session().save(written, ReviewTopics(files), ReviewSummaries(original))
+
+        for (shift in listOf(-1, 1)) {
+            val next = tree(shift)
+            val retained = written.retainedIn(next)
+            val restored = session().restoreSummaries(ReviewDiskCache.SUMMARIES, ReviewSummaries(next))
+            for (result in listOf(retained, restored)) {
+                for (node in next.nodes) {
+                    if (node.kind == SummaryKind.CHUNK && node.lines!!.last <= 70) {
+                        assertEquals(written.summary(node.id), result.summary(node.id))
+                    } else {
+                        assertNull("Shift $shift must invalidate ${node.identity}", result.summary(node.id))
+                    }
+                }
+            }
+        }
+        // An unchanged snapshot still restores every citation, including the groups above the chunks.
+        val restored = session().restoreSummaries(ReviewDiskCache.SUMMARIES, ReviewSummaries(original))
+        assertTrue(restored.complete)
+        original.nodes.forEach { assertEquals(written.summary(it.id), restored.summary(it.id)) }
+    }
 
     @Test fun `segments round-trip through the cache form and plain text does not decode`() {
         val summary = Summary(listOf(part("Adds \"retries\"", Rows(3, 4)), part(" and "), part("caching.", Claim(1, 0))))

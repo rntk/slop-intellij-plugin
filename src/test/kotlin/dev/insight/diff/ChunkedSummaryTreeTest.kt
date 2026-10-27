@@ -84,7 +84,7 @@ class ChunkedSummaryTreeTest {
         assertEquals(listOf("src/big.kt"), second.files)
         assertEquals("src/big.kt", second.path)
         assertSame(big, second.file)
-        assertEquals(reviewFingerprint("chunk", "src/big.kt", "h1"), second.key)
+        assertEquals(reviewFingerprint("chunk", "src/big.kt", "h1", "11", "20"), second.key)
         assertEquals(listOf("src/big.kt"), file.files)
         assertEquals(reviewFingerprint("file", "src/big.kt", "1", *file.children.map { tree[it].key }.toTypedArray()), file.key)
         assertTrue(tree.byIdentity("file:src/small.kt").children.isEmpty())
