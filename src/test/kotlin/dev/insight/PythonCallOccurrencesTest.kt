@@ -226,10 +226,21 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
             assertEquals(5, choice.size)
             choice[2].doClick()
             PlatformTestUtil.waitWithEventsDispatching("The picked candidate should unfold", {
-                descendants(editor.component).filterIsInstance<javax.swing.JTextArea>().any { visible(it) && it.text.contains("picked 3") }
+                descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
+                    .any { visible(it) && it.editor.document.text.contains("picked 3") }
             }, 10)
             assertTrue(descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("Following your pick") })
             assertTrue(descendants(editor.component).filterIsInstance<ActionLink>().any { it.text.startsWith("▸ run") })
+
+            val previous = descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
+                .single { it.editor.document.text.contains("picked 3") }
+            descendants(editor.component).filterIsInstance<ActionLink>().single { it.text == choice[1].text && visible(it) }.doClick()
+            assertTrue("Replacing a candidate must release its native editor", previous.editor.isDisposed)
+            PlatformTestUtil.waitWithEventsDispatching("The replacement candidate should unfold", {
+                descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
+                    .any { visible(it) && it.editor.document.text.contains("picked 2") }
+            }, 10)
+            assertEquals(2, descendants(editor.component).filterIsInstance<SchematicSourceEditor>().size)
         } finally {
             com.intellij.openapi.util.Disposer.dispose(editor)
         }

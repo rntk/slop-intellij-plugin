@@ -50,6 +50,176 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals((0 until source.lines().size).toList(), schematic.rows.flatMap { (it.first..it.last).toList() })
     }
 
+    fun `test native viewers preserve snapshots line numbers selection fold geometry and editor lifetime`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val fileEditor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        val viewers = mutableListOf<SchematicSourceEditor>()
+        try {
+            val panel = fileEditor.component as SchematicPanel
+            PlatformTestUtil.waitWithEventsDispatching("The native file viewer should load", {
+                descendants(panel).filterIsInstance<SchematicSourceEditor>().size == 1
+            }, 10)
+            val sourceView = descendants(panel).filterIsInstance<SchematicSourceEditor>().single()
+            viewers += sourceView
+            val native = sourceView.editor
+            assertTrue(native.isViewer)
+            assertNotSame(myFixture.editor.document, native.document)
+            assertEquals(source, native.document.text)
+            assertEquals(com.intellij.psi.JavaTokenType.CLASS_KEYWORD, native.highlighter.createIterator(0).tokenType)
+            native.selectionModel.setSelection(0, "class Flow".length)
+            assertEquals("class Flow", native.selectionModel.selectedText)
+
+            panel.setSize(900, 600)
+            val blocks = sourceView.parent.components.filter { it.javaClass.simpleName == "BlockView" }
+            assertEquals(blocks.size, native.foldingModel.allFoldRegions.size)
+            for (zoom in listOf(1.0, 0.5, 2.0)) {
+                panel.zoomTo(zoom)
+                layOut(panel)
+                val folds = native.foldingModel.allFoldRegions.map { it as com.intellij.openapi.editor.CustomFoldRegion }
+                    .sortedBy { it.startOffset }
+                for ((block, fold) in blocks.zip(folds)) {
+                    assertFalse(fold.isExpanded)
+                    assertEquals(sourceView.textOrigin().y + fold.location!!.y, block.y)
+                    assertEquals(fold.heightInPixels, block.height)
+                }
+            }
+
+            val tab = com.intellij.openapi.actionSystem.ex.ActionUtil.getActions(native.contentComponent).single { action ->
+                action.shortcutSet.shortcuts.filterIsInstance<com.intellij.openapi.actionSystem.KeyboardShortcut>()
+                    .any { it.firstKeyStroke == javax.swing.KeyStroke.getKeyStroke("TAB") }
+            }
+            repeat(2) {
+                tab.actionPerformed(com.intellij.openapi.actionSystem.AnActionEvent.createEvent(tab, native.dataContext, null,
+                    "SchematicTest", com.intellij.openapi.actionSystem.ActionUiKind.NONE, null))
+            }
+            panel.zoomTo(1.0)
+            press(panel.canvas, "HOME")
+            layOut(panel)
+            val image = java.awt.image.BufferedImage(panel.width, panel.height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val graphics = image.createGraphics()
+            try { panel.paint(graphics) } finally { graphics.dispose() }
+            val entry = descendants(panel).filterIsInstance<javax.swing.JLabel>().first { it.text.orEmpty().contains("<code>entry(") }
+            click(entry)
+            PlatformTestUtil.waitWithEventsDispatching("The branch should have its own native viewer", {
+                descendants(panel).filterIsInstance<SchematicSourceEditor>().size == 2
+            }, 10)
+            val nested = descendants(panel).filterIsInstance<SchematicSourceEditor>().single { it !== sourceView }
+            viewers += nested
+            assertTrue(nested.editor.document.text.contains("int x = 1;"))
+            val converter = nested.editor.gutterComponentEx.primaryLineNumberConverter
+            assertEquals(source.lines().indexOfFirst { it.contains("void entry") } + 1, converter.convert(nested.editor, 1))
+
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                myFixture.editor.document.insertString(0, "// changed after opening\n")
+            }
+            assertEquals("Project edits must not change the displayed graph snapshot", source, native.document.text)
+        } finally {
+            com.intellij.openapi.util.Disposer.dispose(fileEditor)
+        }
+        assertEquals(2, viewers.size)
+        assertTrue("Closing the schematic must release every native editor", viewers.all { it.editor.isDisposed })
+    }
+
+    fun `test source renderer switches preserve exploration compact mode zoom snapshots and viewport`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            val toggle = descendants(panel).filterIsInstance<javax.swing.JCheckBox>().single { it.name == "schematic-native-editor" }
+            fun viewers() = descendants(canvas).filterIsInstance<SchematicSourceEditor>()
+            fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
+            fun title(name: String) = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .first { it.text.orEmpty().contains("<code>$name(") }
+            fun classicRows() = descendants(canvas).filterIsInstance<javax.swing.JTextArea>()
+            PlatformTestUtil.waitWithEventsDispatching("The file should load", { viewers().size == 1 }, 10)
+            assertTrue(toggle.isSelected)
+            panel.setSize(900, 600)
+            layOut(panel)
+            press(canvas, "TAB")
+            press(canvas, "TAB")
+            click(title("entry"))
+            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { viewers().size == 2 }, 10)
+            val entryCard = generateSequence<java.awt.Component>(title("entry")) { it.parent }
+                .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
+            val compact = descendants(entryCard).filterIsInstance<com.intellij.ui.components.ActionLink>()
+                .single { it.text == "Compact" && it.isShowingInTree() }
+            compact.doClick()
+            panel.zoomTo(0.5)
+            layOut(panel)
+            val viewport = canvas.parent as javax.swing.JViewport
+            val position = java.awt.Point(viewport.viewPosition)
+            val originalCards = cards()
+            val originalViewers = viewers()
+            val trail = descendants(panel).single { it.name == "schematic-breadcrumbs" } as java.awt.Container
+            val path = descendants(trail).filterIsInstance<com.intellij.ui.components.ActionLink>().map { it.text }
+
+            toggle.doClick()
+            layOut(panel)
+            assertTrue(viewers().isEmpty())
+            assertTrue("Classic mode releases native editors, including folded branches", originalViewers.all { it.editor.isDisposed })
+            assertEquals(originalCards, cards())
+            assertEquals(position, viewport.viewPosition)
+            assertEquals(0.5, panel.zoom, 1e-9)
+            assertEquals(path, descendants(trail).filterIsInstance<com.intellij.ui.components.ActionLink>().map { it.text })
+            assertEquals("Full", compact.text)
+            assertTrue(classicRows().any { it.isShowingInTree() && it.text.contains("class Flow") })
+            assertTrue(descendants(entryCard).filterIsInstance<javax.swing.JTextArea>().all { !it.isVisible })
+            compact.doClick()
+            val entryCode = descendants(entryCard).filterIsInstance<javax.swing.JTextArea>().first { it.text.contains("int x = 1;") }
+            assertTrue("Classic code restores common-indent removal", entryCode.text.startsWith("void entry"))
+            assertFalse(entryCode.isFocusable)
+            val fontSize = entryCode.font.size2D
+            panel.zoomTo(0.75)
+            assertEquals(fontSize * 1.5f, entryCode.font.size2D, 0.01f)
+
+            press(canvas, "TAB")
+            click(title("check"))
+            PlatformTestUtil.waitWithEventsDispatching("Classic mode should load new branches", {
+                descendants(canvas).count { it.javaClass.simpleName == "LevelView" } == 3
+            }, 10)
+            assertTrue(viewers().isEmpty())
+            val exploredCards = cards()
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                myFixture.editor.document.insertString(0, "// changed after opening\n")
+            }
+            layOut(panel)
+            val beforeNative = java.awt.Point(viewport.viewPosition)
+            toggle.doClick()
+            layOut(panel)
+            assertEquals(3, viewers().size)
+            assertTrue(classicRows().all { !it.isVisible })
+            assertEquals(exploredCards, cards())
+            assertEquals(beforeNative, viewport.viewPosition)
+            assertEquals(0.75, panel.zoom, 1e-9)
+            assertTrue("Switching renderers must keep the captured source", viewers().any { it.editor.document.text == source })
+            assertTrue(title("entry").isShowingInTree())
+            assertTrue(title("check").isShowingInTree())
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test choosing classic before loading avoids native editors and applies to new branches`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val toggle = descendants(panel).filterIsInstance<javax.swing.JCheckBox>().single { it.name == "schematic-native-editor" }
+            toggle.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Classic source should load", {
+                descendants(panel.canvas).filterIsInstance<javax.swing.JTextArea>().any { it.isShowingInTree() }
+            }, 10)
+            assertTrue(descendants(panel).filterIsInstance<SchematicSourceEditor>().isEmpty())
+            press(panel.canvas, "TAB")
+            press(panel.canvas, "TAB")
+            click(descendants(panel).filterIsInstance<javax.swing.JLabel>().first { it.text.orEmpty().contains("<code>entry(") })
+            PlatformTestUtil.waitWithEventsDispatching("Classic source should unfold", {
+                descendants(panel.canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+            }, 10)
+            assertTrue(descendants(panel).filterIsInstance<SchematicSourceEditor>().isEmpty())
+            assertTrue(descendants(panel).filterIsInstance<javax.swing.JTextArea>().any { it.isShowingInTree() && it.text.contains("int x = 1;") })
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
     fun `test the editor shows the file and unfolds a summary into the next level`() {
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
@@ -83,8 +253,8 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val toggle = descendants(header).filterIsInstance<com.intellij.ui.components.ActionLink>()
                 .single { it.text == "Compact" }
             val card = header.parent
-            val sourceRows = descendants(card).filterIsInstance<javax.swing.JTextArea>()
-            assertTrue(sourceRows.any { it.text.contains("int x = 1;") })
+            val sourceRows = descendants(card).filterIsInstance<SchematicSourceEditor>()
+            assertTrue(sourceRows.any { it.editor.document.text.contains("int x = 1;") })
             val fullHeight = card.preferredSize.height
             val level = sourceRows.first().parent
             val firstBlock = level.components.first { it.javaClass.simpleName == "BlockView" }
@@ -129,18 +299,18 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertSame(canvas, editor.preferredFocusedComponent)
             fun code() = generateSequence(listOf<java.awt.Component>(canvas)) { level ->
                 level.flatMap { (it as? java.awt.Container)?.components.orEmpty().toList() }.ifEmpty { null }
-            }.flatten().filterIsInstance<javax.swing.JTextArea>().firstOrNull()
+            }.flatten().filterIsInstance<SchematicSourceEditor>().firstOrNull()
             PlatformTestUtil.waitWithEventsDispatching("The file should be read", { code() != null }, 10)
             fun press(stroke: String) {
                 val key = canvas.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
                     .get(javax.swing.KeyStroke.getKeyStroke(stroke))
                 canvas.actionMap.get(key).actionPerformed(java.awt.event.ActionEvent(canvas, 0, stroke))
             }
-            val fontSize = code()!!.font.size2D
+            val fontSize = code()!!.editor.colorsScheme.editorFontSize2D
             val width = canvas.preferredSize.width
             press("typed +")
             assertEquals(1.2, panel.zoom, 1e-9)
-            assertEquals(fontSize * 1.2f, code()!!.font.size2D, 0.01f)
+            assertEquals(fontSize * 1.2f, code()!!.editor.colorsScheme.editorFontSize2D, 0.01f)
             assertTrue(canvas.preferredSize.width > width)
             press("typed -")
             press("typed -")
@@ -240,19 +410,25 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             }, 10)
             panel.setSize(500, 300)
             layOut(panel)
-            repeat(3) { press(canvas, "PAGE_DOWN"); press(canvas, "shift PAGE_DOWN") }
+            val native = descendants(canvas).filterIsInstance<SchematicSourceEditor>().single().editor
             val viewport = canvas.parent as javax.swing.JViewport
+            native.contentComponent.dispatchEvent(java.awt.event.MouseWheelEvent(native.contentComponent, java.awt.event.MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), 0, 5, 5, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 2))
+            assertTrue("Wheel input over native source should scroll the canvas", viewport.viewPosition.y > 0)
+            assertEquals("The native viewer must not scroll independently", 0, native.scrollingModel.verticalScrollOffset)
+            press(canvas, "HOME")
+            repeat(3) { press(canvas, "PAGE_DOWN"); press(canvas, "shift PAGE_DOWN") }
             val previous = viewport.viewPosition
             val anchor = java.awt.Point(120, 90)
-            fun wheel() {
-                val point = javax.swing.SwingUtilities.convertPoint(viewport, anchor, canvas)
-                val event = java.awt.event.MouseWheelEvent(canvas, java.awt.event.MouseEvent.MOUSE_WHEEL,
+            fun wheel(target: javax.swing.JComponent = canvas) {
+                val point = javax.swing.SwingUtilities.convertPoint(viewport, anchor, target)
+                val event = java.awt.event.MouseWheelEvent(target, java.awt.event.MouseEvent.MOUSE_WHEEL,
                     System.currentTimeMillis(), java.awt.event.InputEvent.CTRL_DOWN_MASK,
                     point.x, point.y, 0, 0, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, -1, -0.1)
-                canvas.dispatchEvent(event)
+                target.dispatchEvent(event)
                 assertTrue(event.isConsumed)
             }
-            repeat(20) { wheel() }
+            repeat(20) { wheel(if (it % 2 == 0) native.contentComponent else canvas) }
             assertEquals("Wheel events defer layout to the next frame", 1.0, panel.zoom, 1e-9)
             val expected = 1.15 * 1.15
             PlatformTestUtil.waitWithEventsDispatching("The accumulated wheel delta should be applied", {
@@ -287,8 +463,8 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             }, 10)
             val card = generateSequence<java.awt.Component>(title) { it.parent }
                 .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
-            val code = descendants(card).filterIsInstance<javax.swing.JTextArea>().first { it.text.contains("int x = 1;") }
-            val originalFont = code.font.size2D
+            val code = descendants(card).filterIsInstance<SchematicSourceEditor>().first { it.editor.document.text.contains("int x = 1;") }
+            val originalFont = code.editor.colorsScheme.editorFontSize2D
             val explain = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>()
                 .first { it.text == "Explain link" }
             val nestedCard = generateSequence<java.awt.Component>(explain) { it.parent }
@@ -306,10 +482,10 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             // Fold a loaded branch, then change zoom while neither its code nor evidence is visible.
             click(title)
             panel.zoomTo(0.5)
-            assertEquals(originalFont, code.font.size2D, 0.01f)
+            assertEquals(originalFont, code.editor.colorsScheme.editorFontSize2D, 0.01f)
             assertSame(renderer, evidence.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
             click(title)
-            assertEquals(originalFont * 0.5f, code.font.size2D, 0.01f)
+            assertEquals(originalFont * 0.5f, code.editor.colorsScheme.editorFontSize2D, 0.01f)
             hover(block)
             explain.doClick()
             assertEquals(evidenceFont * 0.5f, evidence.font.size2D, 0.01f)
@@ -317,9 +493,9 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val compact = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Compact" }
             compact.doClick()
             panel.zoomTo(0.75)
-            assertEquals("Compact source stays untouched", originalFont * 0.5f, code.font.size2D, 0.01f)
+            assertEquals("Compact source stays untouched", originalFont * 0.5f, code.editor.colorsScheme.editorFontSize2D, 0.01f)
             compact.doClick()
-            assertEquals(originalFont * 0.75f, code.font.size2D, 0.01f)
+            assertEquals(originalFont * 0.75f, code.editor.colorsScheme.editorFontSize2D, 0.01f)
         } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
     }
 

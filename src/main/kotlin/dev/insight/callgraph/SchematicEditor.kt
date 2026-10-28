@@ -21,6 +21,7 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.StatusBar
@@ -67,6 +68,7 @@ import java.awt.event.AWTEventListener
 import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
 import java.beans.PropertyChangeListener
 import javax.swing.*
 import javax.swing.text.DefaultCaret
@@ -141,8 +143,8 @@ private class SchematicEditor(project: Project, private val file: SchematicFile)
  * summary of the symbol it leads to; Enter or a click pins it. A summary unfolds into the same reading
  * of that symbol, so the reader can walk down the graph, keeping several branches open at once.
  *
- * The reading is a canvas: Ctrl/⌘ + wheel or + and − zoom it, dragging moves it, and the arrow, Page Up/Down, Home and
- * End keys scroll it.
+ * Source text supports native selection and copying. Dragging elsewhere (or middle-dragging) pans the canvas;
+ * Ctrl/⌘ + wheel zooms it. With the canvas focused, keys scroll and zoom it too.
  */
 internal class SchematicPanel(private val project: Project, private val file: SchematicFile) : JPanel(null) {
     private val result = file.result
@@ -160,6 +162,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private var failures = 0
     private var error: String? = null
     private var disposed = false
+    private val sourceEditors = mutableSetOf<SchematicSourceEditor>()
+    private var useNativeSource = true
     /** Scale of everything on the canvas; 1.0 is the IDE's own size. */
     internal var zoom = 1.0
         private set
@@ -249,7 +253,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             viewport.isOpaque = false
         }, BorderLayout.CENTER)
     }
+    private val nativeEditorToggle = JCheckBox("IDE editor", true).apply {
+        name = "schematic-native-editor"
+        isOpaque = false
+        isFocusable = false
+        toolTipText = "Use the IDE source editor; turn off to use the original canvas view"
+        addActionListener { switchSourceView(isSelected) }
+    }
     private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        add(nativeEditorToggle)
         add(JButton("Fold all").apply { isFocusable = false; addActionListener { foldAll() } })
         add(JButton("−").apply {
             isFocusable = false
@@ -268,9 +280,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             toolTipText = "<html><div style='width:420px'>Hover a block or use Tab / Shift+Tab to preview its summaries. " +
                 "Enter or a left click on a block pins its cards; Unpin releases a card. " +
                 "Click a summary to unfold or fold the code it leads to. " +
-                "Double-click code, or choose Source on a summary, to open it in the editor. " +
+                "IDE editor enables source selection and copying; turn it off for the original canvas view. " +
+                "Choose Source on a summary to open the file; in the original view, double-click code. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
-                "Drag to move; Ctrl/⌘ + wheel or + and − to zoom; arrows, Page Up/Down, Home and End to scroll.<br><br>" +
+                "Drag outside source text, or middle-drag, to move; Ctrl/⌘ + wheel to zoom. " +
+                "With the canvas focused, + and − zoom; arrows, Page Up/Down, Home and End scroll.<br><br>" +
                 "Source and calls are a snapshot of the application graph; reopen the schematic after edits.</div></html>"
         })
     }
@@ -287,14 +301,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             content.reserve(view.x.toLong() + view.width, view.y.toLong() + view.height)
         }
         installNavigation()
-        content.addMouseWheelListener { e ->
-            if (e.isControlDown || e.isMetaDown) {
-                wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
-                wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
-                if (!zoomFrame.isRunning) zoomFrame.start()
-                e.consume()
-            } else scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
-        }
+        content.addMouseWheelListener(::wheel)
         Toolkit.getDefaultToolkit().addAWTEventListener(dragListener, AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK)
         // Earlier components paint on top, so the floating bars come before the canvas.
         add(controls)
@@ -303,6 +310,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         // Blitting would copy the bars along with the canvas; repaint the viewport instead.
         scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
         refreshBreadcrumbs()
+    }
+
+    private fun wheel(e: MouseWheelEvent) {
+        if (e.isControlDown || e.isMetaDown) {
+            wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
+            wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
+            if (!zoomFrame.isRunning) zoomFrame.start()
+            e.consume()
+        } else scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
     }
 
     override fun doLayout() {
@@ -338,6 +354,34 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         wheelAnchor = null
         Toolkit.getDefaultToolkit().removeAWTEventListener(dragListener)
         scope.cancel()
+        sourceEditors.forEach { Disposer.dispose(it) }
+        sourceEditors.clear()
+    }
+
+    private fun releaseBranch(component: Component) {
+        if (component is LevelSlot) component.cancelLoad()
+        if (component is SchematicSourceEditor) {
+            sourceEditors.remove(component)
+            Disposer.dispose(component)
+        } else if (component is Container) component.components.forEach(::releaseBranch)
+    }
+
+    /** Change only source rendering: loaded levels, cards and the reader's place belong to the same exploration. */
+    private fun switchSourceView(native: Boolean) {
+        if (useNativeSource == native) return
+        val position = Point(scroll.viewport.viewPosition)
+        useNativeSource = native
+        fun visit(component: Component) {
+            if (component is SchematicSourceEditor) return
+            if (component is LevelView) component.switchSourceView()
+            if (component is Container) component.components.forEach(::visit)
+        }
+        visit(content)
+        content.requestFocusInWindow()
+        content.revalidate()
+        scroll.validate()
+        scrollTo(position.x, position.y)
+        content.repaint()
     }
 
     /** Tab moves the reading cursor; Enter pins its cards. Other keys scroll and zoom the canvas. */
@@ -550,7 +594,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** Hidden branches catch up when revealed, instead of rebuilding their HTML and fonts on every wheel event. */
     private fun applyZoom(component: Component) {
-        if (!component.isVisible) return
+        if (!component.isVisible || component is SchematicSourceEditor) return
         if (component is JComponent) (component.getClientProperty(BASE_FONT) as? Font)?.let { component.font = it.zoomed(zoom) }
         (component as? Container)?.components?.forEach(::applyZoom)
         if (component is Zoomable) component.applyZoom()
@@ -603,9 +647,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
+                // Native text keeps its own focus, selection and copy gestures.
+                panned = false
+                if (SwingUtilities.isLeftMouseButton(e) && generateSequence(e.component) { it.parent }
+                        .any { it is SchematicSourceEditor }) return
                 dragStart = e.locationOnScreen
                 dragView = scroll.viewport.viewPosition
-                panned = false
                 if (e.component !is ActionLink) content.requestFocusInWindow()
             }
             MouseEvent.MOUSE_DRAGGED -> {
@@ -700,6 +747,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** Loads the schematic of [id] in the background, then shows it and summarizes what it leads to. */
     private inner class LevelSlot(private val id: Int) : JPanel(BorderLayout()) {
+        private var loading: Job? = null
+        fun cancelLoad() { loading?.cancel() }
+
         var showSource = true
             set(value) {
                 field = value
@@ -716,7 +766,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             add(JLabel("Reading ${graph.nodes[id].name}…").zoomFont())
             revalidate()
             repaint()
-            scope.launch(Dispatchers.EDT) {
+            loading = scope.launch(Dispatchers.EDT) {
                 val schematic = try {
                     withBackgroundProgress(project, "Building schematic: ${graph.nodes[id].name}") {
                         smartReadAction(project) { SchematicBuilder.build(result, hierarchy, calls, id) }
@@ -740,13 +790,17 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     /** The rows of one schematic on the left and a summary card per block target on the right, joined by arrows. */
-    private inner class LevelView(private val schematic: Schematic) : JPanel(null) {
-        private val rows = mutableListOf<JComponent>()
+    private inner class LevelView(private val schematic: Schematic) : JPanel(null), Zoomable {
         private val cards = mutableListOf<SummaryCard>()
+        private val rows = mutableListOf<JComponent>()
         private val indent = schematic.lines.filter { it.isNotBlank() }.minOfOrNull { line -> detab(line).takeWhile { it == ' ' }.length } ?: 0
         private val charWidth get() = getFontMetrics(codeFont).charWidth(' ')
         val blocks get() = rows.filterIsInstance<BlockView>()
+        private var source: SchematicSourceEditor? = null
+        private var showPlainSource = true
         fun cardsFor(block: BlockView) = cards.filter { it.row === block }
+
+        override fun isOptimizedDrawingEnabled() = false
 
         init {
             isOpaque = false
@@ -761,7 +815,32 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     cards += SummaryCard(target, view as BlockView, rows.lastIndex, row.occurrences.filter { target in it.displayTargets }).also(::add)
                 }
             }
+            switchSourceView()
             refreshCards()
+        }
+
+        /** Keep shared blocks and cards in place, and allocate native editors only while that mode is selected. */
+        fun switchSourceView() {
+            blocks.forEach { applyZoom(it) }
+            if (useNativeSource && source == null) {
+                source = SchematicSourceEditor(project, schematic, blocks.map { it.row to it }, ::wheel) { stroke ->
+                    val key = content.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(stroke))
+                    content.actionMap.get(key)?.actionPerformed(ActionEvent(content, 0, stroke))
+                }.also {
+                    sourceEditors += it
+                    // Earlier children paint above the native editor, inside the space reserved by its folds.
+                    add(it)
+                }
+            } else if (!useNativeSource) source?.let {
+                releaseBranch(it)
+                remove(it)
+                source = null
+            }
+            showSource(showPlainSource)
+        }
+
+        override fun applyZoom() {
+            source?.takeIf { it.isVisible }?.applyZoom(zoom)
         }
 
         fun refreshCards() {
@@ -779,12 +858,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         private fun text(line: Int) = detab(schematic.text(line)).drop(indent).trimEnd()
 
-        /** Keep the same blocks and unfolded branches while omitting plain source rows. */
+        /** Compact mode hides plain code in either renderer, preserving the same loaded blocks and branches. */
         fun showSource(show: Boolean) {
+            showPlainSource = show
+            source?.isVisible = show
             rows.filterIsInstance<CodeView>().forEach {
-                it.isVisible = show
-                if (show) applyZoom(it)
+                it.isVisible = show && !useNativeSource
+                if (it.isVisible) applyZoom(it)
             }
+            applyZoom()
             revalidate()
             repaint()
         }
@@ -805,34 +887,47 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
         }
 
-        /** Positions of rows (from the top) and cards (from the top, pushed down so they never overlap). */
         private fun measure(): LevelMeasurement {
-            // Measure each child once. Repeated preferredSize queries multiply the work at every unfolded level.
             val rowSizes = rows.map { if (it.isVisible) it.preferredSize else Dimension() }
-            val cardSizes = cards.map { if (it.isVisible) it.preferredSize else Dimension() }
-            val sourceWidth = maxOf(
+            val native = source?.takeIf { it.isVisible }
+            val sourceSize = native?.preferredSize ?: Dimension()
+            val sourceWidth = if (native != null) maxOf(sourceSize.width, rowSizes.maxOfOrNull { it.width } ?: 0) else maxOf(
                 rowSizes.maxOfOrNull { it.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0,
                 rows.indices.filter { (rows[it] as? BlockView)?.onTrail == true }
                     .maxOfOrNull { rowSizes[it].width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
             )
-            var y = 0
-            val rowTops = rowSizes.map { size -> y.also { y += size.height } }
-            var bottom: Int? = null
+            var bottom = 0
+            val rowTops = if (native != null) rows.map { if (it is BlockView) native.blockY(it.row) else 0 }
+                else rowSizes.map { size -> bottom.also { bottom += size.height } }
+            val sourceHeight = if (native != null) sourceSize.height else bottom
+            val cardSizes = cards.map { if (it.isVisible) it.preferredSize else Dimension() }
+            var cardBottom: Int? = null
             val cardTops = cards.mapIndexed { index, card ->
                 if (!card.isVisible) 0 else
-                    maxOf(rowTops[card.rowIndex], bottom?.plus(scaled(GAP)) ?: 0).also { bottom = it + cardSizes[index].height }
+                    maxOf(rowTops[card.rowIndex], cardBottom?.plus(scaled(GAP)) ?: 0).also { cardBottom = it + cardSizes[index].height }
             }
             val cardsWidth = cardSizes.maxOfOrNull { it.width } ?: 0
             val width = sourceWidth + if (cards.none { it.isVisible }) 0 else scaled(ARROW_WIDTH) + cardsWidth
-            return LevelMeasurement(sourceWidth, rowSizes, rowTops, cardSizes, cardTops, Dimension(width, maxOf(y, bottom ?: 0)))
+            return LevelMeasurement(sourceWidth, rowSizes, rowTops, cardSizes, cardTops, Dimension(width, maxOf(sourceHeight, cardBottom ?: 0)))
         }
 
         override fun doLayout() {
             with(measure()) {
-                rows.forEachIndexed { index, row -> row.setBounds(0, rowTops[index], sourceWidth, rowSizes[index].height) }
+                val native = source?.takeIf { it.isVisible }
+                source?.setBounds(0, 0, sourceWidth, native?.preferredSize?.height ?: 0)
+                // Lay out through the viewport before converting native fold coordinates to canvas coordinates.
+                fun layoutSource(component: Component) {
+                    component.doLayout()
+                    (component as? Container)?.components?.forEach(::layoutSource)
+                }
+                native?.let(::layoutSource)
+                val origin = native?.textOrigin() ?: Point()
+                rows.forEachIndexed { index, row ->
+                    row.setBounds(origin.x, origin.y + rowTops[index], sourceWidth - origin.x, rowSizes[index].height)
+                }
                 val x = sourceWidth + scaled(ARROW_WIDTH)
                 cards.forEachIndexed { index, card ->
-                    if (card.isVisible) card.setBounds(x, cardTops[index], cardSizes[index].width, cardSizes[index].height)
+                    if (card.isVisible) card.setBounds(x, origin.y + cardTops[index], cardSizes[index].width, cardSizes[index].height)
                     else card.setBounds(0, 0, 0, 0)
                 }
             }
@@ -840,8 +935,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         override fun getPreferredSize(): Dimension = measure().size
 
-        override fun paintComponent(g: Graphics) {
-            super.paintComponent(g)
+        override fun paintChildren(g: Graphics) {
+            super.paintChildren(g)
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -854,7 +949,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     val startY = row.y + row.box.y + row.box.height / 2
                     val endX = card.x - 1
                     val endY = card.y + minOf(card.headerCenter, card.height / 2)
-                    val middle = (startX + endX) / 2
+                    val middle = card.x - scaled(ARROW_WIDTH) / 2
                     g2.drawPolyline(intArrayOf(startX, middle, middle, endX), intArrayOf(startY, startY, endY, endY), 4)
                     g2.fillPolygon(intArrayOf(endX, endX - head, endX - head), intArrayOf(endY, endY - head, endY + head), 3)
                 }
@@ -917,12 +1012,13 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             fun refreshTitle() {
                 title.applyZoom()
                 box.revalidate()
+                source?.takeIf { it.isVisible }?.refreshBlocks()
                 cardsFor(this).forEach { it.refreshTitle() }
                 revalidate()
             }
 
             override fun applyZoom() {
-                val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length - indent
+                val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length - if (useNativeSource) 0 else indent
                 border = pixelBorder(0, scaled(4) + charWidth * depth.coerceAtLeast(0), 0, 0)
                 (box.layout as BorderLayout).hgap = scaled(8)
                 repaintBorder()
@@ -1060,7 +1156,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 pinTo(true)
                 if (!graph.nodes[id].inProject) { navigate(id); return }
                 if (open) toggle()
-                level?.let(::remove)
+                level?.let { releaseBranch(it); remove(it) }
                 level = null
                 chosen = id
                 showChoices()
