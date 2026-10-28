@@ -194,6 +194,173 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         (component as? java.awt.Container)?.components?.forEach(::layOut)
     }
 
+    fun `test only titles on the breadcrumb chain stay readable when zoomed out`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            fun title(name: String) = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .firstOrNull { it.text.orEmpty().contains("<code>$name(") }
+            fun renderedSize(label: javax.swing.JLabel, name: String): Float {
+                fun glyphs(view: javax.swing.text.View): List<javax.swing.text.GlyphView> =
+                    if (view is javax.swing.text.GlyphView) listOf(view)
+                    else (0 until view.viewCount).flatMap { glyphs(view.getView(it)) }
+                val html = label.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey) as javax.swing.text.View
+                return glyphs(html).first { view ->
+                    view.document.getText(view.startOffset, view.endOffset - view.startOffset).contains("$name(")
+                }.font.size2D
+            }
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { title("entry") != null }, 10)
+            val entry = title("entry")!!
+            val minimumSize = com.intellij.util.ui.JBUI.scale(14).toFloat()
+            val blockTitle = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .single { it.text == "void entry(int kind) {" }
+            val unclicked = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .single { it.text == "void check(int kind) {}" }
+            val normalBlockSize = blockTitle.font.size2D
+            panel.setSize(700, 600)
+            layOut(panel)
+            panel.zoomTo(0.5)
+            assertEquals(normalBlockSize * 0.5f, blockTitle.font.size2D, 0.1f)
+            assertEquals(entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
+            blockTitle.parent.dispatchEvent(java.awt.event.MouseEvent(blockTitle.parent,
+                java.awt.event.MouseEvent.MOUSE_ENTERED, 0, 0, 1, 1, 0, false))
+            assertEquals("Hover alone must not enlarge a title", entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
+            click(blockTitle.parent)
+            for (zoom in listOf(0.5, 0.25)) {
+                panel.zoomTo(zoom)
+                assertEquals("The clicked card title stays readable", minimumSize, renderedSize(entry, "entry"), 0.1f)
+                assertEquals("Its source block stays readable too", minimumSize, blockTitle.font.size2D, 0.1f)
+                assertEquals("Unclicked blocks scale normally", normalBlockSize * zoom.toFloat(), unclicked.font.size2D, 0.1f)
+                layOut(editor.component)
+                assertTrue("Readable block titles must fit their source column", blockTitle.parent.parent.width >= blockTitle.parent.preferredSize.width)
+            }
+            click(entry)
+            PlatformTestUtil.waitWithEventsDispatching("The method should unfold", {
+                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+            }, 10)
+            val check = title("check")!!
+            val nestedBlock = descendants(canvas).filterIsInstance<javax.swing.JLabel>().single { it.text == "check(" }
+            assertEquals("New calls scale normally until selected", check.font.size.toFloat(), renderedSize(check, "check"), 0.1f)
+            assertEquals(normalBlockSize * 0.25f, nestedBlock.font.size2D, 0.1f)
+            click(check)
+            assertEquals("Following a call enlarges its title", minimumSize, renderedSize(check, "check"), 0.1f)
+            assertEquals(minimumSize, nestedBlock.font.size2D, 0.1f)
+            assertEquals("Ancestors on the chain stay readable", minimumSize, renderedSize(entry, "entry"), 0.1f)
+            panel.zoomTo(2.0)
+            assertEquals(entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
+            assertEquals(check.font.size.toFloat(), renderedSize(check, "check"), 0.1f)
+            panel.zoomTo(0.25)
+            click(unclicked.parent)
+            assertEquals("Switching branches enlarges the new selection", minimumSize, unclicked.font.size2D, 0.1f)
+            assertEquals("Previously clicked blocks outside the chain scale normally", normalBlockSize * 0.25f, blockTitle.font.size2D, 0.1f)
+            assertEquals("Unfolded cards outside the chain scale normally", entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
+            assertEquals(check.font.size.toFloat(), renderedSize(check, "check"), 0.1f)
+            val trail = descendants(editor.component).single { it.name == "schematic-breadcrumbs" } as java.awt.Container
+            descendants(trail).filterIsInstance<com.intellij.ui.components.ActionLink>().first().doClick()
+            assertEquals("Returning to the root clears the title emphasis", normalBlockSize * 0.25f, unclicked.font.size2D, 0.1f)
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test breadcrumbs follow the selected branch stay readable and return to ancestors`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            val trail = descendants(panel).single { it.name == "schematic-breadcrumbs" } as java.awt.Container
+            fun links() = descendants(trail).filterIsInstance<com.intellij.ui.components.ActionLink>()
+            fun path() = links().map { it.text.substringBefore('(') }
+            fun title(name: String) = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .first { it.text.orEmpty().contains("<code>$name(") }
+            fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            val root = result.graph.nodes[schematic.scope].name
+            assertEquals(listOf(root), path())
+            panel.setSize(700, 600)
+            layOut(panel)
+            val viewport = canvas.parent as javax.swing.JViewport
+            val extent = java.awt.Dimension(viewport.extentSize)
+            val trailFont = links().first().font.size2D
+            press(canvas, "TAB")
+            press(canvas, "TAB")
+            click(title("entry"))
+            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { cards().size == 7 }, 10)
+            assertEquals(listOf(root, "entry"), path())
+            press(canvas, "TAB")
+            press(canvas, "ENTER")
+            click(title("check"))
+            assertEquals(listOf(root, "entry", "check"), path())
+
+            // Previewing another branch must not replace the chain the reader selected.
+            val other = descendants(canvas).first { it.javaClass.simpleName == "BlockView" }
+            other.dispatchEvent(java.awt.event.MouseEvent(other, java.awt.event.MouseEvent.MOUSE_ENTERED,
+                0, 0, 1, 1, 0, false))
+            assertEquals(listOf(root, "entry", "check"), path())
+            press(canvas, "ESCAPE")
+            panel.zoomTo(0.5)
+            layOut(panel)
+            assertEquals(listOf(root, "entry", "check"), path())
+            assertTrue(links().all { it.font.size2D == trailFont })
+            assertEquals("The trail must not resize the canvas viewport", extent, viewport.extentSize)
+
+            repeat(5) { press(canvas, "shift PAGE_DOWN") }
+            layOut(panel)
+            links()[1].doClick()
+            layOut(panel)
+            assertEquals(listOf(root, "entry"), path())
+            val header = title("entry").parent
+            assertTrue("An ancestor link brings its header back into view", viewport.viewRect.intersects(
+                javax.swing.SwingUtilities.convertRectangle(header.parent, header.bounds, canvas)))
+            assertTrue("Jumping back preserves the open branch", title("check").isShowingInTree())
+            links().first().doClick()
+            assertEquals(java.awt.Point(), viewport.viewPosition)
+            assertEquals(listOf(root), path())
+
+            click(title("check"))
+            assertEquals(listOf(root, "entry", "check"), path())
+            descendants(title("entry").parent).filterIsInstance<com.intellij.ui.components.ActionLink>()
+                .single { it.text == "Unpin" }.doClick()
+            assertEquals("Unpinning removes hidden descendants from the trail", listOf(root), path())
+            assertFalse(title("check").isShowingInTree())
+            click((other as java.awt.Container).components.single())
+            assertEquals("A sibling starts its own branch", listOf(root, "open"), path())
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test breadcrumbs retain recursive calls as distinct steps`() {
+        val (result, schematic) = build("class Flow { void entry() { step(); } void step() { entry(); } }") {
+            it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry")
+        }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            fun titles() = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .filter { it.text.orEmpty().contains("<code>") }
+            fun count() = descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" }
+            PlatformTestUtil.waitWithEventsDispatching("Entry should load", { count() == 1 }, 10)
+            panel.setSize(260, 600)
+            layOut(panel)
+            val viewport = canvas.parent as javax.swing.JViewport
+            val extent = java.awt.Dimension(viewport.extentSize)
+            val calls = listOf("step", "entry", "step", "entry", "step")
+            calls.forEachIndexed { index, name ->
+                press(canvas, "TAB")
+                click(titles().last { it.text.contains("<code>$name(") })
+                PlatformTestUtil.waitWithEventsDispatching("$name should unfold", { count() == index + 2 }, 10)
+            }
+            val trail = descendants(editor.component).single { it.name == "schematic-breadcrumbs" } as java.awt.Container
+            assertEquals(listOf("entry") + calls, descendants(trail)
+                .filterIsInstance<com.intellij.ui.components.ActionLink>().map { it.text.substringBefore('(') })
+            layOut(panel)
+            val trailScroll = trail.parent.parent as javax.swing.JScrollPane
+            assertTrue("Long paths remain accessible with horizontal scrolling", trailScroll.horizontalScrollBar.isVisible)
+            assertEquals("Long paths must not resize the canvas", extent, viewport.extentSize)
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
     fun `test cards and unfolded branches keep the viewport and explored space stable`() {
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))

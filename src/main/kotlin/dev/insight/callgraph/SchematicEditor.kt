@@ -59,6 +59,7 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.KeyboardFocusManager
+import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.RenderingHints
 import java.awt.Toolkit
@@ -143,7 +144,7 @@ private class SchematicEditor(project: Project, private val file: SchematicFile)
  * The reading is a canvas: Ctrl/⌘ + wheel or + and − zoom it, dragging moves it, and the arrow, Page Up/Down, Home and
  * End keys scroll it.
  */
-internal class SchematicPanel(private val project: Project, private val file: SchematicFile) : JPanel(BorderLayout()) {
+internal class SchematicPanel(private val project: Project, private val file: SchematicFile) : JPanel(null) {
     private val result = file.result
     private val graph = result.graph
     private val lifted by lazy { liftCalls(graph) }
@@ -153,7 +154,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private val scope = project.service<CallGraphService>().scope.let { parent ->
         CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
     }
-    private val status = JLabel(" ")
+    private val status = JLabel().apply { isVisible = false }
     /** Summary runs in progress; changed on the EDT only. */
     private var running = 0
     private var failures = 0
@@ -163,6 +164,13 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     internal var zoom = 1.0
         private set
     private val zoomLevel = JLabel("100%")
+    private val breadcrumbs = JPanel().apply {
+        name = "schematic-breadcrumbs"
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        isOpaque = false
+    }
+    private var trailTarget: JComponent? = null
+    private var breadcrumbPath = emptyList<Pair<String, JComponent>>()
     private val content = object : JPanel(BorderLayout()), Scrollable, Zoomable {
         private val space = Dimension()
         val graphSize: Dimension get() = super.getPreferredSize()
@@ -197,7 +205,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             if (orientation == SwingConstants.VERTICAL) visibleRect.height else visibleRect.width
         override fun getScrollableTracksViewportWidth() = false
         override fun getScrollableTracksViewportHeight() = false
-        override fun applyZoom() { border = pixelBorder(scaled(8), 0, scaled(8), 0) }
+        // The top leaves room for the floating bars, so the first lines are not under them before the reader scrolls.
+        override fun applyZoom() { border = pixelBorder(JBUI.scale(FLOATING_ROW_SPACE) + scaled(8), 0, scaled(8), 0) }
     }
     /** The canvas; it takes the keyboard focus for scrolling and zooming. */
     internal val canvas: JComponent get() = content
@@ -225,35 +234,42 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         drag(it)
     } }
 
-    init {
-        border = JBUI.Borders.empty(8)
-        add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
-                add(JLabel("Schematic of ${graph.nodes[file.root].name}").apply { font = font.deriveFont(Font.BOLD) })
-                add(JButton("Fold all").apply { isFocusable = false; addActionListener { foldAll() } })
-                add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
-                    add(JButton("−").apply {
-                        isFocusable = false
-                        toolTipText = "Zoom out (− or Ctrl/⌘ + wheel)"
-                        addActionListener { zoomTo(zoom / ZOOM_STEP) }
-                    })
-                    add(zoomLevel.apply { toolTipText = "Reset zoom (0)"; onClick(this) { zoomTo(1.0) } })
-                    add(JButton("+").apply {
-                        isFocusable = false
-                        toolTipText = "Zoom in (+ or Ctrl/⌘ + wheel)"
-                        addActionListener { zoomTo(zoom * ZOOM_STEP) }
-                    })
-                })
-                add(status)
-            }, BorderLayout.NORTH)
-            add(JLabel("<html>Hover a block or use Tab / Shift+Tab to preview its summaries. Enter or a left click on a block pins its cards; " +
-                "Unpin releases a card. Click a summary to unfold or fold the code it leads to. " +
+    /** Floats over the canvas, so the whole tab shows it: the trail on the left, the controls on the right. */
+    private val trailBar = FloatingPanel(BorderLayout()).apply {
+        add(JBScrollPane(breadcrumbs, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED).apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+        }, BorderLayout.CENTER)
+    }
+    private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        add(JButton("Fold all").apply { isFocusable = false; addActionListener { foldAll() } })
+        add(JButton("−").apply {
+            isFocusable = false
+            toolTipText = "Zoom out (− or Ctrl/⌘ + wheel)"
+            addActionListener { zoomTo(zoom / ZOOM_STEP) }
+        })
+        add(zoomLevel.apply { toolTipText = "Reset zoom (0)"; onClick(this) { zoomTo(1.0) } })
+        add(JButton("+").apply {
+            isFocusable = false
+            toolTipText = "Zoom in (+ or Ctrl/⌘ + wheel)"
+            addActionListener { zoomTo(zoom * ZOOM_STEP) }
+        })
+        add(status)
+        add(JLabel("?").apply {
+            font = font.deriveFont(Font.BOLD)
+            toolTipText = "<html><div style='width:420px'>Hover a block or use Tab / Shift+Tab to preview its summaries. " +
+                "Enter or a left click on a block pins its cards; Unpin releases a card. " +
+                "Click a summary to unfold or fold the code it leads to. " +
                 "Double-click code, or choose Source on a summary, to open it in the editor. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
-                "Drag to move; Ctrl/⌘ + wheel or + and − to zoom; arrows, Page Up/Down, Home and End to scroll.</html>").apply {
-                foreground = UIUtil.getContextHelpForeground()
-            }, BorderLayout.SOUTH)
-        }, BorderLayout.NORTH)
+                "Drag to move; Ctrl/⌘ + wheel or + and − to zoom; arrows, Page Up/Down, Home and End to scroll.<br><br>" +
+                "Source and calls are a snapshot of the application graph; reopen the schematic after edits.</div></html>"
+        })
+    }
+
+    init {
         content.isFocusable = true
         // Children inherit these empty traversal keys, so Tab reaches our canvas navigation bindings.
         content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
@@ -272,10 +288,38 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             } else scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
         }
         Toolkit.getDefaultToolkit().addAWTEventListener(dragListener, AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK)
-        add(scroll, BorderLayout.CENTER)
-        add(JLabel("Source and calls are a snapshot of the application graph; reopen the schematic after edits.").apply {
-            foreground = UIUtil.getContextHelpForeground()
-        }, BorderLayout.SOUTH)
+        // Earlier components paint on top, so the floating bars come before the canvas.
+        add(controls)
+        add(trailBar)
+        add(scroll)
+        // Blitting would copy the bars along with the canvas; repaint the viewport instead.
+        scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+        refreshBreadcrumbs()
+    }
+
+    override fun doLayout() {
+        scroll.setBounds(0, 0, width, height)
+        scroll.validate()
+        val view = SwingUtilities.convertRectangle(scroll, scroll.viewport.bounds, this)
+        val gap = JBUI.scale(FLOATING_GAP)
+        val controlSize = controls.preferredSize
+        val trailScroll = trailBar.getComponent(0) as JScrollPane
+        val trailPreferred = breadcrumbs.preferredSize.width + JBUI.scale(16)
+        val roomForTrail = view.width - controlSize.width - 3 * gap
+        // Too narrow for both on one row: the controls stay in the corner and the trail drops below them.
+        val sameRow = roomForTrail >= JBUI.scale(MIN_TRAIL_WIDTH)
+        val controlsWidth = minOf(controlSize.width, maxOf(view.width - 2 * gap, 0))
+        controls.setBounds(view.x + view.width - gap - controlsWidth, view.y + gap, controlsWidth, controlSize.height)
+        val trailWidth = minOf(trailPreferred, maxOf(if (sameRow) roomForTrail else view.width - 2 * gap, 0))
+        val trailHeight = breadcrumbs.preferredSize.height + JBUI.scale(8) +
+            if (trailPreferred > trailWidth) trailScroll.horizontalScrollBar.preferredSize.height else 0
+        trailBar.setBounds(view.x + gap, view.y + gap + if (sameRow) 0 else controlSize.height + gap, trailWidth, trailHeight)
+    }
+
+    private fun showStatus(text: String) {
+        status.text = text
+        status.isVisible = text.isNotBlank()
+        controls.revalidate()
     }
 
     fun dispose() {
@@ -349,6 +393,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         hoverExit.stop()
         hoveredBlock = null
         activeBlock = blocks[next]
+        trailTarget = blocks[next]
         refreshCards()
         // Reflow the newly visible card before locating the block in canvas coordinates.
         SwingUtilities.invokeLater {
@@ -388,8 +433,74 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             if (component is Container) component.components.forEach(::visit)
         }
         visit(content)
+        refreshBreadcrumbs()
         content.revalidate()
         content.repaint()
+    }
+
+    /** Follow the actual unfolded branch, including repeated symbols reached through recursion or different callers. */
+    private fun refreshBreadcrumbs() {
+        val root = content.components.firstOrNull() as? JComponent ?: return
+        fun showing(component: Component) = generateSequence(component) { it.parent }
+            .takeWhile { it !== content }.all { it.isVisible }
+        val target = trailTarget?.let { selected ->
+            generateSequence<Component>(selected) { it.parent }.takeWhile { it !== content }
+                .filterIsInstance<JComponent>().firstOrNull { showing(it) }
+        }
+        val path = buildList {
+            add(graph.nodes[file.root].name to root)
+            if (target != null) {
+                generateSequence<Component>(target) { it.parent }.filterIsInstance<LevelView.SummaryCard>()
+                    .toList().asReversed().forEach { add(it.trailName to it) }
+                if (target is LevelView.BlockView) add(target.trailName to target)
+            }
+        }
+        if (path == breadcrumbPath) return
+        val previousPath = breadcrumbPath
+        breadcrumbPath = path
+        (previousPath + path).mapNotNull { (_, component) ->
+            when (component) {
+                is LevelView.BlockView -> component
+                is LevelView.SummaryCard -> component.row
+                else -> null
+            }
+        }.distinct().forEach { it.refreshTitle() }
+        breadcrumbs.removeAll()
+        for ((index, entry) in path.withIndex()) {
+            if (index > 0) breadcrumbs.add(JLabel(" → "))
+            breadcrumbs.add(ActionLink(entry.first) { revealBreadcrumb(entry.second) }.apply {
+                font = font.deriveFont(readableSize(font.size2D))
+                toolTipText = entry.first
+            })
+        }
+        breadcrumbs.revalidate()
+        this.revalidate()
+        breadcrumbs.repaint()
+        SwingUtilities.invokeLater {
+            if (!disposed) breadcrumbs.components.lastOrNull()?.let { last ->
+                breadcrumbs.scrollRectToVisible(last.bounds)
+            }
+        }
+    }
+
+    private fun revealBreadcrumb(target: JComponent) {
+        hoverExit.stop()
+        hoveredBlock = null
+        trailTarget = target
+        activeBlock = when (target) {
+            is LevelView.BlockView -> target
+            is LevelView.SummaryCard -> target.row
+            else -> null
+        }
+        refreshCards()
+        scroll.validate()
+        content.requestFocusInWindow()
+        val anchor = when (target) {
+            is LevelView.BlockView -> target.box
+            is LevelView.SummaryCard -> target.trailAnchor
+            else -> { scrollTo(0, 0); return }
+        }
+        content.scrollRectToVisible(SwingUtilities.convertRectangle(anchor.parent, anchor.bounds, content))
     }
 
     private fun scrollBy(dx: Int, dy: Int) {
@@ -426,8 +537,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     /** Rescales [component] and everything in it to the current zoom. */
     private fun applyZoom(component: Component) {
         if (component is JComponent) (component.getClientProperty(BASE_FONT) as? Font)?.let { component.font = it.zoomed(zoom) }
-        if (component is Zoomable) component.applyZoom()
         (component as? Container)?.components?.forEach(::applyZoom)
+        if (component is Zoomable) component.applyZoom()
     }
 
     /** Shows [base] (this component's own font by default) at the current zoom, now and after every zoom change. */
@@ -437,6 +548,39 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     private fun scaled(value: Int) = zoomScaled(value, zoom)
+
+    private fun readableSize(size: Float) = maxOf(size, JBUI.scale(MIN_CALLABLE_FONT_SIZE).toFloat())
+
+    private fun inBreadcrumbs(component: JComponent) = breadcrumbPath.any { it.second === component }
+
+    /** Only the explored chain keeps readable titles as surrounding code shrinks. */
+    private inner class CallableLabel(text: String, private val onTrail: () -> Boolean) : JLabel(text), Zoomable {
+        init { applyZoom() }
+
+        override fun applyZoom() {
+            val size = code.size2D * zoom.toFloat()
+            font = code.deriveFont(if (onTrail()) readableSize(size) else size)
+        }
+    }
+
+    /** Swing's HTML code style otherwise keeps its own fixed font size, ignoring the label's zoomed font. */
+    private inner class HtmlLabel(private val onTrail: () -> Boolean = { false }) : JLabel(), Zoomable {
+        var body = ""
+            set(value) {
+                if (field == value) return
+                field = value
+                applyZoom()
+            }
+
+        init { zoomFont() }
+
+        override fun applyZoom() {
+            val titleSize = if (onTrail()) readableSize(font.size2D) else font.size2D
+            text = "<html><head><style>code { font-size: ${font.size}pt; } " +
+                ".callable-title code { font-size: ${titleSize.roundToInt()}pt; }</style></head>" +
+                "<div style='width:${scaled(CARD_TEXT_WIDTH)}px'>$body</div></html>"
+        }
+    }
 
     private fun line(color: Color, thickness: Int) = BorderFactory.createLineBorder(color, scaled(thickness))
 
@@ -489,7 +633,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                                 reporter.details("$done / $total functions")
                                 reporter.fraction(if (total > 0) done.toDouble() / total else null)
                                 ApplicationManager.getApplication().invokeLater {
-                                    if (!disposed && running > 0) status.text = "$phase: $done / $total"
+                                    if (!disposed && running > 0) showStatus("$phase: $done / $total")
                                 }
                             }
                         }
@@ -506,12 +650,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     private fun updateStatus() {
-        status.text = when {
+        showStatus(when {
             running > 0 -> "Summarizing…"
             error != null -> "Summaries failed: $error. Check Settings → Tools → Insight Chat."
             failures > 0 -> "$failures functions could not be summarized."
-            else -> " "
-        }
+            else -> ""
+        })
         refreshSummaries(content)
     }
 
@@ -640,7 +784,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         /** Positions of rows (from the top) and cards (from the top, pushed down so they never overlap). */
         private fun measure(): Triple<Int, List<Int>, List<Int>> {
-            val sourceWidth = rows.filter { it.isVisible }.maxOfOrNull { it.preferredSize.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0
+            val sourceWidth = maxOf(
+                rows.filter { it.isVisible }.maxOfOrNull { it.preferredSize.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0,
+                blocks.filter { it.onTrail }.maxOfOrNull { it.preferredSize.width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
+            )
             var y = 0
             val rowTops = rows.map { row -> y.also { if (row.isVisible) y += row.preferredSize.height } }
             var bottom: Int? = null
@@ -717,11 +864,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         /** A block at the code's indentation; clicking pins all of its target cards. */
         inner class BlockView(val row: BlockRow) : JPanel(BorderLayout()), Zoomable {
             val box = JPanel(BorderLayout())
+            val trailName get() = row.targets.joinToString(", ") { graph.nodes[it].name }
+            val onTrail get() = inBreadcrumbs(this) || breadcrumbPath.any { (_, component) ->
+                component is SummaryCard && component.row === this
+            }
+            private val title = CallableLabel(text(row.headline).trimStart()) { onTrail }
 
             init {
                 isOpaque = false
                 box.background = blockBackground
-                box.add(JLabel(text(row.headline).trimStart()).zoomFont(code), BorderLayout.CENTER)
+                box.add(title, BorderLayout.CENTER)
                 if (row.last > row.first) {
                     box.add(JLabel("${row.last - row.first + 1} lines").apply { foreground = UIUtil.getContextHelpForeground() }.zoomFont(),
                         BorderLayout.EAST)
@@ -734,8 +886,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             fun pin() {
                 activeBlock = this
+                trailTarget = this
                 cardsFor(this).forEach { it.pinTo(true) }
                 this@SchematicPanel.refreshCards()
+            }
+
+            fun refreshTitle() {
+                title.applyZoom()
+                box.revalidate()
+                cardsFor(this).forEach { it.refreshTitle() }
+                revalidate()
             }
 
             override fun applyZoom() {
@@ -775,15 +935,20 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
             private var allChoices = false
             private val arrow = JLabel(if (expandable) "▸" else "·").zoomFont()
-            private val text = JLabel().zoomFont()
+            private val text = HtmlLabel { inBreadcrumbs(this) || inBreadcrumbs(row) }
             private val header = JPanel(BorderLayout())
+            val trailName get() = graph.nodes[chosen ?: target].name
+            val trailAnchor get() = header
             private val details = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
                 isVisible = false
             }
             private var level: LevelSlot? = null
-            private val pinToggle = ActionLink("Pin") { pinTo(!pinned) }.zoomFont()
+            private val pinToggle = ActionLink("Pin") {
+                trailTarget = this
+                pinTo(!pinned)
+            }.zoomFont()
             private val sourceToggle = ActionLink("Compact") {
                 level?.let { slot ->
                     slot.showSource = !slot.showSource
@@ -822,8 +987,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 showChoices()
                 add(details, BorderLayout.SOUTH)
                 for (occurrence in occurrences) {
-                    details.add(JLabel("<html><div style='width:${scaled(CARD_TEXT_WIDTH)}px'><code>${escape(occurrence.expression)}</code><br>" +
-                        "${escape(occurrence.explanation)}</div></html>").zoomFont())
+                    details.add(HtmlLabel().apply {
+                        body = "<code>${escape(occurrence.expression)}</code><br>${escape(occurrence.explanation)}"
+                    })
                     details.add(ActionLink("Call site") {
                         OpenFileDescriptor(project, schematic.file, occurrence.startOffset).navigate(true)
                     }.zoomFont())
@@ -865,6 +1031,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             /** Follows [id] as if it were the callee: project code unfolds here, external code opens its source. */
             private fun pick(id: Int) {
+                trailTarget = this
                 pinTo(true)
                 if (!graph.nodes[id].inProject) { navigate(id); return }
                 if (open) toggle()
@@ -881,6 +1048,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 (layout as BorderLayout).vgap = scaled(6)
                 (header.layout as BorderLayout).hgap = scaled(6)
                 update()
+            }
+
+            fun refreshTitle() {
+                text.applyZoom()
+                revalidate()
             }
 
             fun pinTo(value: Boolean) {
@@ -924,11 +1096,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     occurrences.any { it.operation == CallOperation.CALLABLE_REFERENCE } -> "<br><font color='gray'>Callable reference; invocation is not established here.</font>"
                     else -> ""
                 }
-                text.text = "<html><div style='width:${scaled(CARD_TEXT_WIDTH)}px'><code>$name</code> <font color='gray'>$kind</font><br>$body$evidence</div></html>"
+                text.body = "<div class='callable-title'><code>$name</code> <font color='gray'>$kind</font></div>$body$evidence"
             }
 
             fun toggle() {
                 val shown = if (expandable) target else chosen ?: return
+                trailTarget = this
                 open = !open
                 arrow.text = if (open) "▾" else "▸"
                 if (open) {
@@ -966,6 +1139,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val ARROW_WIDTH = 56
         const val GAP = 8
         const val CARD_TEXT_WIDTH = 320
+        const val MIN_CALLABLE_FONT_SIZE = 14
         /** Name-match choices listed before "Show all". */
         const val CHOICES_SHOWN = 8
         const val MIN_ZOOM = 0.25
@@ -976,9 +1150,38 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val DRAG_THRESHOLD = 3
         /** Blank space beyond the graph and the viewport, extended as the reader pans. */
         const val CANVAS_MARGIN = 512
+        const val FLOATING_GAP = 6
+        const val FLOATING_ROW_SPACE = 34
+        const val MIN_TRAIL_WIDTH = 160
         const val BASE_FONT = "insight.schematic.baseFont"
 
         fun detab(line: String) = line.replace("\t", "    ")
         fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    }
+}
+
+/** A translucent plate for controls that float over the canvas; it absorbs the pointer so the canvas below does not pan or scroll. */
+private class FloatingPanel(layout: LayoutManager) : JPanel(layout) {
+    init {
+        isOpaque = false
+        border = JBUI.Borders.empty(4, 8)
+        val absorb = object : MouseAdapter() {}
+        addMouseListener(absorb)
+        addMouseMotionListener(absorb)
+        addMouseWheelListener(absorb)
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val arc = JBUI.scale(10)
+            g2.color = Color(background.red, background.green, background.blue, 225)
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = JBColor.border()
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+        } finally {
+            g2.dispose()
+        }
     }
 }
