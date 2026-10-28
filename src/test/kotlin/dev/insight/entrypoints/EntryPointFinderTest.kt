@@ -194,10 +194,10 @@ class EntryPointFinderTest {
 
     @Test fun `a failed formatting request preserves the original parseable answer`() = runBlocking {
         val incomplete = answer.copy(content = answer.content.replace("\"kind\": \"application\"", "\"kind\": \"frontend\""))
-        val model = FakeModel(incomplete, Completion("unparseable"), Completion("still unparseable"))
+        val model = FakeModel(incomplete, *Array(4) { Completion("unparseable $it") })
         val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
-        assertEquals(3, result.requestCount)
+        assertEquals(5, result.requestCount)
     }
 
     @Test fun `an empty repair cannot erase valid original entries`() = runBlocking {

@@ -5,6 +5,8 @@ import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.CallGraphNode
 import dev.insight.callgraph.SymbolKind
+import dev.insight.callgraph.CallOccurrence
+import dev.insight.callgraph.CallOperation
 import dev.insight.llm.Completion
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -93,5 +95,34 @@ class FunctionSummariesTest {
         assertTrue(requests > 0)
         val decoded = FunctionSummarizer.decode(JsonParser.parseString("""{"functions":[{"id":1,"label":"x","role":"bogus","single":true}]}""").asJsonObject, 1)
         assertEquals(FunctionSummary("x", null, null, true), decoded.getValue(1))
+    }
+
+    @Test fun `unknown and external calls survive short source and invalidate summary caches when resolved`() = runBlocking {
+        val prompts = mutableListOf<String>()
+        val summarizer = FunctionSummarizer({ request ->
+            val user = request.messages.last().content
+            prompts += user
+            Completion(answer(user))
+        }, InMemoryEnrichmentCache())
+        val occurrence = CallOccurrence(0, 0, "/p/Users.kt", 10, 30, "llm.complete", "llm.complete()",
+            CallOperation.INVOKE, emptyList(), unresolvedTarget = 7, receiver = "llm")
+        val boundary = CallGraphNode(7, "llm.complete", "", "Users.kt:2", 0, false, SymbolKind.SYMBOL, unresolved = true)
+        val unknownGraph = graph.copy(nodes = graph.nodes + boundary, edges = setOf(CallGraphEdge(0, 7)))
+        val input = EnrichmentInput("demo", unknownGraph, facts(code = { "llm.complete()" }).filterKeys { it == 0 }, listOf(occurrence))
+        val first = summarizer.summarize(input, unknownGraph.edges.groupBy { it.caller }, emptyMap(), emptyMap())
+        assertEquals(1, first.requests)
+        val evidence = JsonParser.parseString(prompts.single()).asJsonObject.getAsJsonArray("functions")[0]
+            .asJsonObject.getAsJsonArray("callEvidence")[0].asJsonObject
+        assertEquals("unresolved", evidence.get("resolution").asString)
+        assertEquals("llm.complete", evidence.get("expression").asString)
+        assertTrue(evidence.getAsJsonArray("candidates").isEmpty)
+
+        val resolvedGraph = unknownGraph.copy(nodes = graph.nodes + boundary.copy(name = "complete", kind = SymbolKind.FUNCTION, unresolved = false))
+        val resolved = input.copy(graph = resolvedGraph, occurrences = listOf(occurrence.copy(targets = listOf(7), unresolvedTarget = null)))
+        val second = summarizer.summarize(resolved, resolvedGraph.edges.groupBy { it.caller }, emptyMap(), emptyMap())
+        assertEquals("Resolution evidence participates in the cache key", 1, second.requests)
+        assertEquals(2, prompts.size)
+        assertTrue(prompts.last().contains("\"external\":true"))
+        assertEquals(0, summarizer.summarize(resolved, resolvedGraph.edges.groupBy { it.caller }, emptyMap(), emptyMap()).requests)
     }
 }

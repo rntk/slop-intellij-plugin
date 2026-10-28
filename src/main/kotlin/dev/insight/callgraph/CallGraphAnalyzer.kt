@@ -40,10 +40,10 @@ object CallGraphAnalyzer {
             override fun visitElement(element: PsiElement) {
                 // Calls inside local functions belong to those functions.
                 if (element !== function && isFunction(element)) return
-                supports.firstNotNullOfOrNull { it.resolveCall(element) }
-                    ?.let(::unwrap)
-                    ?.takeIf { isFunction(it) && (includeLibraries || isInProject(project, it)) }
-                    ?.let(result::add)
+                supports.firstNotNullOfOrNull { it.callSite(element) }?.targets.orEmpty()
+                    .map(::unwrap)
+                    .filter { isFunction(it) && (includeLibraries || isInProject(project, it)) }
+                    .forEach(result::add)
                 super.visitElement(element)
             }
         })

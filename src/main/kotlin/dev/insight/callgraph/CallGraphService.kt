@@ -21,7 +21,8 @@ data class CallGraphRequest(
  * A graph snapshot plus pointers for navigation. Pointers are indexed by node id and are null
  * for code that was edited during the search.
  */
-class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPointer<PsiElement>?>)
+class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPointer<PsiElement>?>,
+    val occurrences: List<CallOccurrence> = emptyList())
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {

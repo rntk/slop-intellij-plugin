@@ -371,7 +371,7 @@ class FlowChartCanvasTest : BasePlatformTestCase() {
         val canvas = canvas()
         canvas.add(FlowStart(5))
         val viewport = javax.swing.JViewport().apply {
-            size = java.awt.Dimension(220, 180)
+            size = java.awt.Dimension(600, 400)
             view = canvas
             viewSize = canvas.preferredSize
         }

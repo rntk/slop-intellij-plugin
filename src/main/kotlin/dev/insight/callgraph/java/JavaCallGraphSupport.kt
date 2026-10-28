@@ -8,6 +8,9 @@ import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.RelationKind
 import com.intellij.psi.*
+import dev.insight.callgraph.CallResolution
+import dev.insight.callgraph.CallOperation
+import dev.insight.callgraph.resolveTargets
 
 /** Loaded only when the Java plugin is present (see META-INF/call-graph-java.xml). */
 class JavaCallGraphSupport : CallGraphLanguageSupport {
@@ -38,6 +41,15 @@ class JavaCallGraphSupport : CallGraphLanguageSupport {
     override fun resolveCall(element: PsiElement): PsiElement? = when (element) {
         is PsiCall -> element.resolveMethod()
         is PsiMethodReferenceExpression -> element.resolve() as? PsiMethod
+        else -> null
+    }
+
+    override fun callSite(element: PsiElement): CallResolution? = when (element) {
+        is PsiMethodCallExpression -> CallResolution(element.methodExpression,
+            resolveTargets(element.methodExpression), element.methodExpression.qualifierExpression)
+        is PsiNewExpression -> CallResolution(element.classReference ?: element, listOfNotNull(element.resolveConstructor()))
+        is PsiMethodReferenceExpression -> CallResolution(element, resolveTargets(element), element.qualifierExpression,
+            CallOperation.CALLABLE_REFERENCE)
         else -> null
     }
 }

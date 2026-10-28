@@ -45,7 +45,7 @@ class SchematicSummaries(private val project: Project, private val result: CallG
         val depths = reachable(starts.filter(::isFunction), SCHEMATIC_SUMMARY_LIMIT) { id -> calls[id].orEmpty().filter(::isFunction) }
         if (depths.isEmpty()) return 0
         val facts = smartReadAction(project) { SymbolFactsExtractor.extract(project, result, only = depths.keys) }
-        val input = EnrichmentInput(project.name, lifted, facts)
+        val input = EnrichmentInput(project.name, lifted, facts, result.occurrences)
         val summarized = project.service<EnrichmentService>().summarizeFunctions(input, flowCalls(lifted, facts),
             facts.mapValues { Heuristics(HeuristicRules.tags(it.value)) },
             // Nearer functions rank higher, should the summarizer have to leave some out.

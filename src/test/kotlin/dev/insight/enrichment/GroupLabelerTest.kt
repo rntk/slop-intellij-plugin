@@ -74,7 +74,7 @@ class GroupLabelerTest {
         val result = GroupLabeler({ throw IOException("down") }, InMemoryEnrichmentCache()).label(input())
         assertTrue(result.labels.isEmpty())
         assertEquals(3, result.failures)
-        assertEquals(6, result.requests)
+        assertEquals(12, result.requests)
     }
 
     @Test fun `ignores unknown ids and blank labels`() = runBlocking {

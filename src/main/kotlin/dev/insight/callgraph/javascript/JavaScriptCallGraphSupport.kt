@@ -17,6 +17,8 @@ import com.intellij.psi.PsiFile
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
+import dev.insight.callgraph.CallResolution
+import dev.insight.callgraph.resolveTargets
 
 /**
  * Loaded only when the JavaScript plugin is present (see META-INF/call-graph-javascript.xml).
@@ -81,6 +83,19 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         val targets = callee.multiResolve(false).mapNotNull { it.element }
         return targets.firstNotNullOfOrNull { callTarget(it) }
     }
+
+    override fun callSite(element: PsiElement): CallResolution? {
+        val callee = (element as? JSCallExpression)?.methodExpression ?: return null
+        val targets = callee.references.flatMap(::resolveTargets).flatMap(::declarations).mapNotNull(::callTarget)
+            .filter { isFunction(it) || it is JSClass }.distinct()
+        return CallResolution(callee, targets, (callee as? JSReferenceExpression)?.qualifier)
+    }
+
+    private fun declarations(element: PsiElement): List<PsiElement> = when (element) {
+        is ES6ImportedBinding -> element.findReferencedElements().toList()
+        is ES6ImportExportSpecifier -> element.references.flatMap(::resolveTargets)
+        else -> listOf(element)
+    }.filter { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
 
     /** Follows imports to the declaration, then maps classes to their constructor when they have one. */
     private fun callTarget(resolved: PsiElement): PsiElement? {

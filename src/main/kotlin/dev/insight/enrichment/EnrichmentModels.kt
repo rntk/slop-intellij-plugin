@@ -41,6 +41,7 @@ data class EnrichmentInput(
     val graph: CallGraph,
     /** Facts by node id; nodes without facts (parameters, variables, edited code) are not classified. */
     val facts: Map<Int, SymbolFacts>,
+    val occurrences: List<dev.insight.callgraph.CallOccurrence> = emptyList(),
 )
 
 data class ChoiceValue(val choice: String, val probabilities: Map<String, Double>, val confidence: Double)

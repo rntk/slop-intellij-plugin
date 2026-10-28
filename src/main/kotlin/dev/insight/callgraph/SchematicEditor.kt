@@ -472,7 +472,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
                 rows += view
                 add(view)
-                if (row is BlockRow) row.targets.forEach { target -> cards += SummaryCard(target, view as BlockView).also(::add) }
+                if (row is BlockRow) row.targets.forEach { target ->
+                    cards += SummaryCard(target, view as BlockView, row.occurrences.filter { target in it.displayTargets }).also(::add)
+                }
             }
         }
 
@@ -608,13 +610,28 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** The summary of [target]; unfolds into [target]'s own schematic. */
-        inner class SummaryCard(private val target: Int, val row: BlockView) : JPanel(BorderLayout()), Zoomable {
+        inner class SummaryCard(private val target: Int, val row: BlockView,
+            private val occurrences: List<CallOccurrence>) : JPanel(BorderLayout()), Zoomable {
             var open = false
                 private set
             private val node = graph.nodes[target]
-            private val arrow = JLabel("▸").zoomFont()
+            private val expandable = node.inProject && !node.unresolved
+            /** For an unknown callee, declarations sharing its name; the user's [chosen] one unfolds in place of [target]. */
+            private val choices = if (node.unresolved) occurrences.flatMap { it.choices }.distinct() else emptyList()
+            private var chosen: Int? = null
+            private val choiceLinks = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+            }
+            private var allChoices = false
+            private val arrow = JLabel(if (expandable) "▸" else "·").zoomFont()
             private val text = JLabel().zoomFont()
             private val header = JPanel(BorderLayout())
+            private val details = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                isVisible = false
+            }
             private var level: LevelSlot? = null
             private val sourceToggle = ActionLink("Compact") {
                 level?.let { slot ->
@@ -635,14 +652,75 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 header.add(JPanel().apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
-                    add(ActionLink("Source") { navigate(target) }.apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
+                    add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(target) }
+                        .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
+                    if (occurrences.isNotEmpty()) add(ActionLink("Explain link") {
+                        details.isVisible = !details.isVisible
+                        this@LevelView.revalidate()
+                        this@LevelView.repaint()
+                    }.zoomFont())
                     add(sourceToggle)
                 }, BorderLayout.EAST)
-                add(header, BorderLayout.NORTH)
-                onClick(header) { toggle() }
-                onClick(text) { toggle() }
-                onClick(arrow) { toggle() }
+                add(if (choices.isEmpty()) header else JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    isOpaque = false
+                    add(header.apply { alignmentX = LEFT_ALIGNMENT })
+                    add(choiceLinks.apply { alignmentX = LEFT_ALIGNMENT })
+                }, BorderLayout.NORTH)
+                showChoices()
+                add(details, BorderLayout.SOUTH)
+                for (occurrence in occurrences) {
+                    details.add(JLabel("<html><div style='width:${scaled(CARD_TEXT_WIDTH)}px'><code>${escape(occurrence.expression)}</code><br>" +
+                        "${escape(occurrence.explanation)}</div></html>").zoomFont())
+                    details.add(ActionLink("Call site") {
+                        OpenFileDescriptor(project, schematic.file, occurrence.startOffset).navigate(true)
+                    }.zoomFont())
+                    fun links(label: String, ids: List<Int>) {
+                        for (id in ids) details.add(ActionLink("$label: ${graph.nodes[id].name} · ${graph.nodes[id].location}") { navigate(id) }.zoomFont())
+                    }
+                    links("Candidate", occurrence.targets)
+                    links("Receiver ${occurrence.receiver.orEmpty()}", occurrence.receiverTargets)
+                    occurrence.receiverType?.let { details.add(JLabel("Receiver type: $it").zoomFont()) }
+                    links("Binding", occurrence.bindings.filter { it !in occurrence.targets })
+                    if (occurrence.receiver != null && occurrence.receiverTargets.isEmpty()) {
+                        details.add(JLabel("Receiver ${occurrence.receiver}: declaration unknown").zoomFont())
+                    }
+                }
+                if (expandable || choices.isNotEmpty()) {
+                    onClick(header) { toggle() }
+                    onClick(text) { toggle() }
+                    onClick(arrow) { toggle() }
+                }
                 applyZoom()
+            }
+
+            private fun showChoices() {
+                choiceLinks.removeAll()
+                val shown = if (allChoices) choices else choices.take(CHOICES_SHOWN)
+                for (id in shown) {
+                    val choice = graph.nodes[id]
+                    val label = listOf(choice.name.take(60), choice.container.take(60), choice.location).filter { it.isNotEmpty() }
+                        .joinToString(" · ") + if (choice.inProject) "" else " (external)"
+                    choiceLinks.add(ActionLink(if (id == chosen) "▸ $label" else label) { pick(id) }.zoomFont())
+                }
+                if (shown.size < choices.size) choiceLinks.add(ActionLink("Show all ${choices.size}") {
+                    allChoices = true
+                    showChoices()
+                }.zoomFont())
+                choiceLinks.revalidate()
+                choiceLinks.repaint()
+            }
+
+            /** Follows [id] as if it were the callee: project code unfolds here, external code opens its source. */
+            private fun pick(id: Int) {
+                if (!graph.nodes[id].inProject) { navigate(id); return }
+                if (open) toggle()
+                level?.let(::remove)
+                level = null
+                chosen = id
+                showChoices()
+                toggle()
+                update()
             }
 
             override fun applyZoom() {
@@ -661,21 +739,37 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 val name = escape(node.name.take(80))
                 val kind = node.kind.name.lowercase()
                 val body = when {
+                    node.unresolved && choices.isNotEmpty() -> "<font color='gray'>Implementation unknown: ${choices.size} declarations share this " +
+                        "name. Pick one to continue; the IDE did not establish any of them.</font>" + chosen?.let {
+                            "<br>Following your pick: <code>${escape(graph.nodes[it].name.take(80))}</code> · ${escape(graph.nodes[it].location)}"
+                        }.orEmpty()
+                    node.unresolved -> "<font color='gray'>Implementation unknown. Inspect the call site or receiver.</font>"
+                    !node.inProject -> "<font color='gray'>External declaration. Open Source to inspect it.</font>" +
+                        node.signature?.let { "<br><code>${escape(it)}</code>" }.orEmpty()
                     summary != null -> "<b>${escape(summary.label)}</b>" + (summary.role?.let { " <font color='gray'>· ${it.id}</font>" } ?: "") +
                         (summary.description?.let { "<br>${escape(it)}" } ?: "")
-                    node.kind != SymbolKind.FUNCTION -> "<font color='gray'>Unfold to read its functions.</font>"
+                    node.kind != SymbolKind.FUNCTION -> "<font color='gray'>Unfold to inspect its declaration.</font>"
                     running > 0 && !summaries.isCovered(target) -> "<font color='gray'>Summarizing…</font>"
                     summaries.isCovered(target) -> "<font color='gray'>No summary: short, test code, or the request failed.</font>"
                     else -> "<font color='gray'>Not summarized.</font>"
                 }
-                text.text = "<html><div style='width:${scaled(CARD_TEXT_WIDTH)}px'><code>$name</code> <font color='gray'>$kind</font><br>$body</div></html>"
+                val evidence = when {
+                    occurrences.any { it.byName } -> "<br><font color='gray'>Matched by name: the receiver's type is unknown.</font>"
+                    occurrences.any { it.targets.isEmpty() && target in it.heldBy } ->
+                        "<br><font color='gray'>Callable value: the function it holds is assigned elsewhere.</font>"
+                    occurrences.any { it.status == ResolutionStatus.AMBIGUOUS } -> "<br><font color='gray'>Possible target; several candidates.</font>"
+                    occurrences.any { it.operation == CallOperation.CALLABLE_REFERENCE } -> "<br><font color='gray'>Callable reference; invocation is not established here.</font>"
+                    else -> ""
+                }
+                text.text = "<html><div style='width:${scaled(CARD_TEXT_WIDTH)}px'><code>$name</code> <font color='gray'>$kind</font><br>$body$evidence</div></html>"
             }
 
             fun toggle() {
+                val shown = if (expandable) target else chosen ?: return
                 open = !open
                 arrow.text = if (open) "▾" else "▸"
                 if (open) {
-                    val slot = level ?: LevelSlot(target).also { level = it; add(it, BorderLayout.CENTER) }
+                    val slot = level ?: LevelSlot(shown).also { level = it; add(it, BorderLayout.CENTER) }
                     slot.isVisible = true
                 } else level?.isVisible = false
                 sourceToggle.isVisible = open
@@ -706,6 +800,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val ARROW_WIDTH = 56
         const val GAP = 8
         const val CARD_TEXT_WIDTH = 320
+        /** Name-match choices listed before "Show all". */
+        const val CHOICES_SHOWN = 8
         const val MIN_ZOOM = 0.25
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2

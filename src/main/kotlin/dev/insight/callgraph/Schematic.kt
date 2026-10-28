@@ -18,7 +18,8 @@ data class CodeRow(override val first: Int, override val last: Int) : SchematicR
  * Lines that lead further into the graph: a declaration of [declared] folded to its [headline] (the line naming it),
  * or a line that calls [calls].
  */
-data class BlockRow(override val first: Int, override val last: Int, val headline: Int, val declared: Int?, val calls: List<Int>) : SchematicRow {
+data class BlockRow(override val first: Int, override val last: Int, val headline: Int, val declared: Int?, val calls: List<Int>,
+    val occurrences: List<CallOccurrence> = emptyList()) : SchematicRow {
     val targets: List<Int> get() = listOfNotNull(declared) + calls
 }
 
@@ -26,7 +27,7 @@ data class BlockRow(override val first: Int, override val last: Int, val headlin
 data class SchematicDeclaration(val id: Int, val first: Int, val last: Int, val headline: Int)
 
 /** A call of graph symbol [callee] starting on [line]. */
-data class SchematicCall(val callee: Int, val line: Int)
+data class SchematicCall(val callee: Int, val line: Int, val occurrence: CallOccurrence? = null)
 
 /**
  * A lossy reading of the file, class or function [scope]: [lines] are its source lines from document line
@@ -50,7 +51,7 @@ fun schematicRows(first: Int, last: Int, declarations: List<SchematicDeclaration
         }
     }
     val callsByLine = calls.filter { call -> call.line in first..last && folded.none { call.line in it.first..it.last } }
-        .groupBy({ it.line }, { it.callee }).mapValues { it.value.distinct() }
+        .groupBy { it.line }
     val declarationAt = folded.associateBy { it.first }
     val rows = mutableListOf<SchematicRow>()
     var code: Int? = null
@@ -70,7 +71,7 @@ fun schematicRows(first: Int, last: Int, declarations: List<SchematicDeclaration
             }
             called != null -> {
                 endCode(line)
-                rows += BlockRow(line, line, line, null, called)
+                rows += BlockRow(line, line, line, null, called.map { it.callee }.distinct(), called.mapNotNull { it.occurrence }.distinct())
             }
             code == null -> code = line
         }
@@ -105,9 +106,6 @@ fun reachable(roots: Collection<Int>, limit: Int, next: (Int) -> List<Int>): Map
 }
 
 object SchematicBuilder {
-    /** Symbols a schematic opens further: functions, and classes through their constructors. */
-    private val TARGETS = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS)
-
     /**
      * Read action only. The schematic of [scope], or null when its source is gone. [calls] are CALL edges by caller,
      * with calls from locals attributed to their function (see `liftCalls`).
@@ -127,6 +125,7 @@ object SchematicBuilder {
         while (pending.isNotEmpty()) {
             val id = pending.removeFirst()
             if (id !in result.graph.nodes.indices) continue
+            if (result.graph.nodes[id].unresolved) continue
             if (result.graph.nodes[id].kind == SymbolKind.FUNCTION) declared += id
             else { own += id; pending.addAll(hierarchy.children[id]) }
         }
@@ -136,15 +135,19 @@ object SchematicBuilder {
             SchematicDeclaration(id, start, end, document.getLineNumber(declaration.textOffset.coerceIn(0, document.textLength)))
         }
 
-        val callees = own.flatMap { calls[it].orEmpty() }.map { it.callee }
-            .filter { result.graph.nodes.getOrNull(it)?.let { node -> node.inProject && node.kind in TARGETS } == true }.distinct()
-        // Call sites are collected per class too: walking a function or file skips the classes nested in it.
+        // Call sites are collected per class too: calls in methods belong to those methods.
         val callers = listOf(scope) + own.filter { it != scope && result.graph.nodes[it].kind == SymbolKind.CLASS }
-        val sites = if (callees.isEmpty()) emptyList()
-        else CallSiteAnalyzer.collect(result, callers, callees).values.flatten().filterIsInstance<CallSite>().map { site ->
-            // A site ends at [CallSite.offset]; its untruncated text says where it starts, so a multi-line call shows on its first line.
-            val start = site.text?.takeIf { it.length < SITE_TEXT }?.let { site.offset - it.length } ?: site.offset
-            SchematicCall(site.callee, document.getLineNumber(start.coerceIn(0, document.textLength)))
+        val sites = if (result.graph.projectGraph) result.occurrences.filter {
+            it.filePath == virtualFile.path && it.scope in callers && it.startOffset >= element.textRange.startOffset &&
+                it.startOffset < element.textRange.endOffset
+        }.flatMap { occurrence ->
+            occurrence.displayTargets.map { SchematicCall(it, document.getLineNumber(occurrence.startOffset.coerceIn(0, document.textLength)), occurrence) }
+        } else {
+            val callees = own.flatMap { calls[it].orEmpty() }.map { it.callee }.distinct()
+            CallSiteAnalyzer.collect(result, callers, callees).values.flatten().filterIsInstance<CallSite>().map { site ->
+                val start = site.startOffset ?: site.text?.takeIf { it.length < SITE_TEXT }?.let { site.offset - it.length } ?: site.offset
+                SchematicCall(site.callee, document.getLineNumber(start.coerceIn(0, document.textLength)))
+            }
         }
 
         val text = (first..last).map { line ->

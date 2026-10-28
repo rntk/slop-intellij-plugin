@@ -7,7 +7,7 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
-import dev.insight.callgraph.CallGraphAnalyzer
+import dev.insight.callgraph.*
 
 /** Runs the analyzer against real Java PSI using the plugin's registered language support. */
 class JavaCallGraphTest : LightJavaCodeInsightFixtureTestCase() {
@@ -51,6 +51,38 @@ class JavaCallGraphTest : LightJavaCodeInsightFixtureTestCase() {
     fun `test caret inside a body finds the enclosing function`() {
         val offset = myFixture.file.text.indexOf("int x")
         assertEquals("leaf", (CallGraphAnalyzer.findFunction(myFixture.file.findElementAt(offset)) as PsiMethod).name)
+    }
+
+    fun `test external calls retain a shared navigable boundary without analyzing library bodies`() {
+        myFixture.configureByText("External.java", """
+            class External {
+                String run() { return String.valueOf(1) + String.valueOf(2); }
+            }
+        """.trimIndent())
+        val result = ProjectGraphAnalyzer.build(project)
+        val calls = result.occurrences.filter { it.expression == "String.valueOf" }
+        assertEquals(2, calls.size)
+        assertTrue(calls.all { it.status == ResolutionStatus.RESOLVED })
+        val target = calls.first().targets.single()
+        assertEquals(listOf(target), calls.last().targets)
+        val node = result.graph.nodes[target]
+        assertFalse(node.inProject)
+        assertFalse(node.unresolved)
+        assertNotNull(node.signature)
+        assertNotNull(result.pointers[target]?.element)
+        assertTrue(result.occurrences.none { it.filePath == node.filePath })
+        assertTrue(result.graph.edges.none { it.kind == RelationKind.CALL && it.caller == target })
+        val schematic = SchematicBuilder.build(result, result.graph.hierarchy(), emptyMap(), calls.first().scope)!!
+        assertEquals(listOf(target), schematic.targets)
+    }
+
+    fun `test callable references stay distinct from invocation in the project graph`() {
+        val result = ProjectGraphAnalyzer.build(project)
+        val reference = result.occurrences.single { it.operation == CallOperation.CALLABLE_REFERENCE }
+        val target = reference.targets.single()
+        assertEquals("leaf", (result.pointers[target]?.element as PsiMethod).name)
+        assertTrue(CallGraphEdge(reference.owner, target, RelationKind.REFERENCE) in result.graph.edges)
+        assertTrue(CallGraphEdge(reference.owner, target, RelationKind.CALL) !in result.graph.edges)
     }
 }
 

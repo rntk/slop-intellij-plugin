@@ -6,6 +6,8 @@ import com.intellij.psi.PsiFile
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
+import dev.insight.callgraph.CallResolution
+import dev.insight.callgraph.resolveTargets
 
 /**
  * Loaded only when the Go plugin is present (see META-INF/call-graph-go.xml).
@@ -40,5 +42,10 @@ class GoCallGraphSupport : CallGraphLanguageSupport {
     override fun resolveCall(element: PsiElement): PsiElement? {
         val callee = (element as? GoCallExpr)?.expression as? GoReferenceExpression ?: return null
         return callee.reference.resolve()?.takeIf(::isFunction)
+    }
+
+    override fun callSite(element: PsiElement): CallResolution? {
+        val callee = (element as? GoCallExpr)?.expression ?: return null
+        return CallResolution(callee, callee.references.flatMap(::resolveTargets).filter { isFunction(it) || it is GoTypeSpec })
     }
 }

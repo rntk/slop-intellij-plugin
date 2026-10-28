@@ -22,6 +22,10 @@ data class CallGraphNode(
     val hidden: Int = 0,
     /** True for an expanded group of a [DetailGraph]; its members are shown next to it. */
     val expanded: Boolean = false,
+    /** This node represents an unresolved source occurrence, rather than a declaration. */
+    val unresolved: Boolean = false,
+    /** Bounded declaration text for external boundary cards; their bodies are never traversed. */
+    val signature: String? = null,
 )
 
 data class CallGraphEdge(val caller: Int, val callee: Int, val kind: RelationKind = RelationKind.CALL)

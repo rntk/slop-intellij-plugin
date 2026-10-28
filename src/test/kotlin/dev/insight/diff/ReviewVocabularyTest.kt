@@ -95,7 +95,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -121,7 +121,9 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
-            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
+            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:document" }.doClick()
+            layoutTree(canvas)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
             assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
             assertTrue(descendants(canvas).none { it is PatchView })
@@ -214,7 +216,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun names() = panel().components.mapNotNull { it.name }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
             descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.

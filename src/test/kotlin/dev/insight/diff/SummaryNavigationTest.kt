@@ -111,7 +111,7 @@ class SummaryNavigationTest : BasePlatformTestCase() {
         try {
             tab.update(ReviewSnapshot(listOf(reviewed), emptyList()))
             tab.openSummaries()
-            val link = links(tab.canvas).single { it.text == "Open file" }
+            val link = actions(tab.canvas).first { it.text == "Open file" }
             link.doClick()
             val snapshot = editors.selectedFiles.single()
             assertFalse(snapshot.isWritable)

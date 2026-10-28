@@ -32,7 +32,8 @@ class GraphHierarchy(val graph: CallGraph) {
     init {
         val parents = HashMap<Int, Int>()
         for (edge in graph.edges) if (edge.kind == RelationKind.CONTAINS && edge.caller != edge.callee) parents.putIfAbsent(edge.callee, edge.caller)
-        val fileByPath = graph.nodes.filter { it.kind == SymbolKind.FILE && it.filePath != null }.associateBy({ it.filePath!! }, { it.id })
+        // Boundary files remain separate roots; SDK/cache paths must not change the project's directory hierarchy.
+        val fileByPath = graph.nodes.filter { it.kind == SymbolKind.FILE && it.inProject && it.filePath != null }.associateBy({ it.filePath!! }, { it.id })
 
         val segments = fileByPath.keys.associateWith { it.substringBeforeLast('/', "").split('/') }
         val shared = segments.values.reduceOrNull { a, b -> a.zip(b).takeWhile { (x, y) -> x == y }.map { it.first } }.orEmpty()

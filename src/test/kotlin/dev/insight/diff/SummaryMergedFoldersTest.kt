@@ -44,6 +44,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         fun rows() = descendants(canvas).mapNotNull { it.name }.filter { it.startsWith("summary:") }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:outline" }.doClick()
             assertEquals(listOf("summary:root", "summary:directory:src/main/kotlin/dev/insight",
                 "summary:file:src/main/kotlin/dev/insight/a.kt", "summary:file:src/main/kotlin/dev/insight/b.kt", "summary:file:README.md"), rows())
             val name = descendants(canvas).single { it.name == "summary-name:directory:src/main/kotlin/dev/insight" } as JLabel

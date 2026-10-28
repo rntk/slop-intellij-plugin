@@ -83,7 +83,7 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
     suspend fun enrich(result: CallGraphResult, options: EnrichmentOptions = EnrichmentOptions()): EnrichmentSnapshot =
         withBackgroundProgress(project, "Enriching application graph") {
             val facts = smartReadAction(project) { SymbolFactsExtractor.extract(project, result) }
-            val input = EnrichmentInput(project.name, result.graph, facts)
+            val input = EnrichmentInput(project.name, result.graph, facts, result.occurrences)
             withContext(Dispatchers.IO) {
                 val pipeline = EnrichmentPipeline(decisions()::evaluate, llm()::complete, cache, options)
                 val enrichment = reportRawProgress { reporter ->

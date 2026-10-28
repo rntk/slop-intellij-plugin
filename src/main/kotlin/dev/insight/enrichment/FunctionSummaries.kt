@@ -6,6 +6,9 @@ import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
+import dev.insight.callgraph.CallOccurrence
+import dev.insight.callgraph.CallOperation
+import dev.insight.callgraph.ResolutionStatus
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import kotlinx.coroutines.CancellationException
@@ -141,8 +144,10 @@ class FunctionSummarizer(
                 "test" !in heuristics[facts.id]?.tags.orEmpty()
         }.map { it.id }
         val callees = functions.associateWith { id -> callees(calls, id).filter { it in input.facts } }
+        val evidence = input.occurrences.filter { it.operation == CallOperation.INVOKE }.groupBy { it.scope }
         val trivial = functions.filterTo(hashSetOf()) { id ->
             callees.getValue(id).none { it in callees } &&
+                evidence[id].orEmpty().none { it.status != ResolutionStatus.RESOLVED || it.byName || it.targets.any { target -> graph.nodes.getOrNull(target)?.inProject == false } } &&
                 input.facts.getValue(id).code.lines().count { it.isNotBlank() } <= options.trivialLines
         }
         val chosen = (functions - trivial).sortedByDescending { visibility[it] ?: 0.0 }.take(options.maxFunctions).toHashSet()
@@ -168,7 +173,7 @@ class FunctionSummarizer(
             // Only callees of earlier waves: summaries within a cycle would depend on order and destabilize cache keys.
             val lower = summaries.toMap()
             for (id in components.flatten()) {
-                val item = item(graph, input.facts.getValue(id), callees.getValue(id), lower)
+                val item = item(graph, input.facts.getValue(id), callees.getValue(id), lower, evidence[id].orEmpty())
                 val key = generativeCacheKey("function-summary", SYSTEM, SCHEMA.toString(), item.toString())
                 val cached = cache.text(key)?.let(::parseJsonObjectLeniently)?.let(::decodeOne)
                 if (cached != null) { summaries[id] = cached; hits.incrementAndGet(); done.incrementAndGet() }
@@ -211,7 +216,8 @@ class FunctionSummarizer(
     }
 
     /** What the model sees of one function; also the cache identity, so callee summaries chain invalidation upwards. */
-    private fun item(graph: CallGraph, facts: SymbolFacts, callees: List<Int>, known: Map<Int, FunctionSummary>) = JsonObject().apply {
+    private fun item(graph: CallGraph, facts: SymbolFacts, callees: List<Int>, known: Map<Int, FunctionSummary>,
+        evidence: List<CallOccurrence>) = JsonObject().apply {
         addProperty("name", FlowChartLens.title(graph, facts.id, facts))
         addProperty("path", facts.path)
         addProperty("signature", facts.signature.clipLine(300))
@@ -226,6 +232,27 @@ class FunctionSummarizer(
                 add(if (summary == null) name else "$name: ${summary.label}" + (summary.role?.let { " [${it.id}]" } ?: ""))
             }
             if (callees.size > options.maxCallees) add("… ${callees.size - options.maxCallees} more")
+        })
+        if (evidence.isNotEmpty()) add("callEvidence", JsonArray().apply {
+            // Unknown and ambiguous calls must survive even when the caller's source excerpt is truncated.
+            val prioritized = evidence.sortedBy { if (it.status == ResolutionStatus.RESOLVED) 1 else 0 }
+            prioritized.take(options.maxCallees).forEach { occurrence -> add(JsonObject().apply {
+                addProperty("expression", occurrence.expression)
+                addProperty("resolution", if (occurrence.byName) "by-name" else occurrence.status.name.lowercase())
+                occurrence.receiver?.let { addProperty("receiver", it) }
+                occurrence.receiverType?.let { addProperty("receiverType", it) }
+                if (occurrence.targets.isEmpty() && occurrence.heldBy.isNotEmpty())
+                    addProperty("callableValue", occurrence.heldBy.joinToString { FlowChartLens.title(graph, it) })
+                if (occurrence.targets.isEmpty() && occurrence.choices.isNotEmpty()) addProperty("nameMatches", occurrence.choices.size)
+                add("candidates", JsonArray().apply {
+                    occurrence.targets.forEach { id -> add(JsonObject().apply {
+                        val node = graph.nodes[id]
+                        addProperty("name", FlowChartLens.title(graph, id))
+                        addProperty("external", !node.inProject)
+                    }) }
+                })
+            }) }
+            if (prioritized.size > options.maxCallees) add("… ${prioritized.size - options.maxCallees} more occurrences")
         })
     }
 
@@ -245,6 +272,12 @@ class FunctionSummarizer(
             utility (generic reusable helper).
             single: true when callers can read it as one step without seeing inside it.
             Source may be partial; be conservative and never invent behavior that is not in the source or calls.
+            When present, callEvidence records IDE resolution: unresolved means the implementation is unknown;
+            ambiguous candidates are alternatives, not a sequence of calls; by-name candidates only share the member name;
+            the receiver type is unknown. callableValue names the parameter, property or
+            variable called; the function it holds is assigned elsewhere. nameMatches counts unrelated declarations sharing
+            the member name; none of them is known to be called. External declarations have no analyzed body.
+            Preserve these uncertainties in the description when they affect what the function achieves.
             Return every id exactly once. Return only JSON matching the schema.
         """.trimIndent()
 

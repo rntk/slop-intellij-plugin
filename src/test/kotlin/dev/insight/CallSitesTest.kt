@@ -9,7 +9,7 @@ import dev.insight.callgraph.*
 /** `callee: KIND label ?subject / …` for each call site of [caller], outermost frame first; exits are `!keyword`. */
 private fun sites(project: Project, caller: String): List<String> {
     val result = ProjectGraphAnalyzer.build(project)
-    val functions = result.graph.nodes.filter { it.kind == SymbolKind.FUNCTION }
+    val functions = result.graph.nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION }
     val id = functions.single { it.name.substringBefore('(') == caller }.id
     return CallSiteAnalyzer.collect(result, listOf(id), functions.map { it.id }).getValue(id).map { site ->
         val name = when (site) {
@@ -25,7 +25,7 @@ private fun sites(project: Project, caller: String): List<String> {
 /** Constructs of the first frame of `callees`' sites, in order. */
 private fun constructs(project: Project): List<Int?> {
     val result = ProjectGraphAnalyzer.build(project)
-    val functions = result.graph.nodes.filter { it.kind == SymbolKind.FUNCTION }
+    val functions = result.graph.nodes.filter { it.inProject && it.kind == SymbolKind.FUNCTION }
     val id = functions.single { it.name.substringBefore('(') == "run" }.id
     return CallSiteAnalyzer.collect(result, listOf(id), functions.map { it.id }).getValue(id).map { it.frames.firstOrNull()?.construct }
 }

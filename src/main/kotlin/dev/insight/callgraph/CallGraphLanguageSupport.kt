@@ -15,6 +15,9 @@ interface CallGraphLanguageSupport {
     /** The function called by [element], or null when [element] is not a call site. */
     fun resolveCall(element: PsiElement): PsiElement?
 
+    /** A syntactic call or callable reference, including occurrences with no resolvable destination. */
+    fun callSite(element: PsiElement): CallResolution? = resolveCall(element)?.let { CallResolution(element, listOf(it)) }
+
     /** Maps synthetic elements (for example Kotlin light methods seen from Java) to their source declaration. */
     fun unwrap(element: PsiElement): PsiElement? = null
 

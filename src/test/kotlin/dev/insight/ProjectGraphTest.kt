@@ -124,14 +124,15 @@ class ProjectGraphTest : LightJavaCodeInsightFixtureTestCase() {
         """.trimIndent())
         val declarations = ProjectGraphAnalyzer.declarations(myFixture.file)
         val graph = ProjectGraphAnalyzer.build(project).graph
-        assertEquals(1, graph.nodes.count { it.kind == SymbolKind.FILE })
+        assertEquals(1, graph.nodes.count { it.inProject && it.kind == SymbolKind.FILE })
         assertTrue(declarations.size >= 8)
         assertTrue(graph.nodes.any { it.name.startsWith("value") && it.kind == SymbolKind.PROPERTY })
         val run = graph.nodes.single { it.name.startsWith("run") }
         val local = graph.nodes.single { it.name.startsWith("local") }
         assertTrue(CallGraphEdge(run.id, local.id, RelationKind.CONTAINS) in graph.edges)
         assertTrue(CallGraphEdge(run.id, local.id, RelationKind.CALL) in graph.edges)
-        assertEquals(graph.nodes.map { it.id }.toSet(), graph.highlightFile(myFixture.file.virtualFile.path).owned)
+        assertEquals(graph.nodes.filter { it.filePath == myFixture.file.virtualFile.path }.map { it.id }.toSet(),
+            graph.highlightFile(myFixture.file.virtualFile.path).owned)
     }
 
     fun `test application graph includes more than the function exploration limit`() {

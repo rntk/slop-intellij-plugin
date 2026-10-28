@@ -39,7 +39,8 @@ sealed interface SourceSite {
  */
 data class CallSite(val callee: Int, override val offset: Int, override val frames: List<ControlFrame> = emptyList(),
     /** Bounded source at this occurrence, including arguments; useful when the owner's excerpt is truncated. */
-    val text: String? = null) : SourceSite
+    val text: String? = null,
+    val startOffset: Int? = null) : SourceSite
 
 /**
  * A `return`, `throw` or `raise` ([keyword]) ending the innermost branch of [frames]: that branch leaves the function
@@ -63,6 +64,8 @@ object CallSiteAnalyzer {
      * ([exit]), in [sourceOrder]. Calls inside nested functions and classes belong to those and are left out.
      */
     fun collect(result: CallGraphResult, callers: Collection<Int>, callees: Collection<Int>): Map<Int, List<SourceSite>> {
+        // Project snapshots already contain source locations and resolution evidence. Never resolve these calls again.
+        if (result.graph.projectGraph) return collectSnapshot(result, callers, callees.toSet())
         val targets = HashMap<Triple<String, Int, SymbolKind>, Int>()
         for (id in callees) {
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: continue
@@ -86,16 +89,38 @@ object CallSiteAnalyzer {
                     ProgressManager.checkCanceled()
                     if (element is PsiComment) return
                     if (element !== function && ProjectGraphAnalyzer.kind(element).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS }) return
-                    val callee = supports.firstNotNullOfOrNull { it.resolveCall(element) }?.let(::target)
-                    if (callee != null && callee != id) found += CallSite(callee, element.textRange.endOffset, frames(element, function),
-                        element.text.take(600))
-                    else exit(element, function)?.let(found::add)
+                    val callees = supports.firstNotNullOfOrNull { it.callSite(element) }?.targets.orEmpty().mapNotNull(::target).distinct()
+                    for (callee in callees) if (callee != id) found += CallSite(callee, element.textRange.endOffset, frames(element, function),
+                        element.text.take(600), element.textRange.startOffset)
+                    exit(element, function)?.let(found::add)
                     super.visitElement(element)
                 }
             })
             sites[id] = found.sortedWith(sourceOrder)
         }
         return sites
+    }
+
+    private fun collectSnapshot(result: CallGraphResult, callers: Collection<Int>, callees: Set<Int>): Map<Int, List<SourceSite>> {
+        val byScope = result.occurrences.filter { it.operation == CallOperation.INVOKE }.groupBy { it.scope }
+        return callers.distinct().associateWith { id ->
+            val found = byScope[id].orEmpty().flatMap { occurrence ->
+                occurrence.displayTargets.filter { it in callees && it != id }.map { callee ->
+                    CallSite(callee, occurrence.endOffset, occurrence.frames, occurrence.text, occurrence.startOffset)
+                }
+            }.toMutableList<SourceSite>()
+            val function = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
+            function?.accept(object : PsiRecursiveElementWalkingVisitor() {
+                override fun visitElement(element: PsiElement) {
+                    ProgressManager.checkCanceled()
+                    if (element is PsiComment) return
+                    if (element !== function && ProjectGraphAnalyzer.kind(element).let { it == SymbolKind.FUNCTION || it == SymbolKind.CLASS }) return
+                    exit(element, function)?.let(found::add)
+                    super.visitElement(element)
+                }
+            })
+            found.sortedWith(sourceOrder)
+        }
     }
 
     /** Control structures between [call] and [function], outermost first. */

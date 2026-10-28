@@ -15,6 +15,10 @@ import org.jetbrains.kotlin.psi.KtClass
 import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtPropertyAccessor
+import dev.insight.callgraph.CallResolution
+import dev.insight.callgraph.CallOperation
+import dev.insight.callgraph.resolveTargets
+import dev.insight.callgraph.CallGraphAnalyzer
 
 /**
  * Loaded only when the Kotlin plugin is present (see META-INF/call-graph-kotlin.xml).
@@ -64,6 +68,37 @@ class KotlinCallGraphSupport : CallGraphLanguageSupport {
     }
 
     override fun unwrap(element: PsiElement): PsiElement? = (element as? KtLightElement<*, *>)?.kotlinOrigin
+
+    override fun callSite(element: PsiElement): CallResolution? {
+        val callee = when (element) {
+            is KtAnnotationEntry -> null
+            is KtCallElement -> element.calleeExpression
+            is KtCallableReferenceExpression -> element.callableReference
+            // Only resolved overloaded operators are calls; ordinary arithmetic is left as source.
+            is KtBinaryExpression -> element.operationReference.takeIf { resolveCall(element) != null }
+            else -> null
+        } ?: return null
+        // `value(x)` on a value with `operator fun invoke` is resolved by the call expression's own reference, not the callee's.
+        val references = callee.references.toList() + if (element is KtCallExpression) element.references.toList() else emptyList()
+        val targets = references.flatMap(::resolveTargets)
+            .filter { !isFunctionTypeInvoke(it) && (CallGraphAnalyzer.isFunction(it) || it is KtClassOrObject) }.map { target ->
+            if (target is KtClass) target.primaryConstructor ?: target else target
+        }.distinct()
+        val receiver = if (element is KtCallableReferenceExpression) element.receiverExpression
+            else (element.parent as? KtQualifiedExpression)?.takeIf { it.selectorExpression === element }?.receiverExpression
+        return CallResolution(callee, targets, receiver,
+            if (element is KtCallableReferenceExpression) CallOperation.CALLABLE_REFERENCE else CallOperation.INVOKE)
+    }
+
+    /** `invoke` of a built-in function type (`(String) -> Unit`): the binding called is the useful destination, not the stdlib. */
+    private fun isFunctionTypeInvoke(target: PsiElement): Boolean {
+        val owner = when (target) {
+            is KtNamedFunction -> (target.parent?.parent as? KtClassOrObject)?.fqName?.asString()
+            is com.intellij.psi.PsiMethod -> target.containingClass?.qualifiedName
+            else -> null
+        } ?: return false
+        return owner.startsWith("kotlin.jvm.functions.") || owner.matches(Regex("""kotlin\.(reflect\.K|Suspend)?Function\d*"""))
+    }
 
     override fun superMethods(element: PsiElement): List<PsiElement> =
         (element as? KtNamedFunction)?.toLightMethods()?.flatMap { it.findSuperMethods().toList() }.orEmpty()
