@@ -194,6 +194,135 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         (component as? java.awt.Container)?.components?.forEach(::layOut)
     }
 
+    fun `test zoom cost with many unopened summaries`() {
+        val count = 120
+        val text = "class Flow {\n" + (0 until count).joinToString("\n") { "void step$it() {}" } + "\n}"
+        val (result, schematic) = build(text) { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", {
+                descendants(panel.canvas).count { it.javaClass.simpleName == "SummaryCard" } == count
+            }, 20)
+            panel.setSize(1000, 700)
+            layOut(panel)
+            val labels = descendants(panel.canvas).filterIsInstance<javax.swing.JLabel>()
+                .filter { it.text.orEmpty().startsWith("<html><head>") }
+            val renderers = labels.map { it.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey) }
+            val elapsed = (0 until 12).map { index ->
+                val start = System.nanoTime()
+                panel.zoomTo(if (index % 2 == 0) 0.75 else 1.0)
+                (System.nanoTime() - start) / 1_000_000.0
+            }
+            println("Schematic zoom, $count unopened cards: median=${elapsed.sorted()[elapsed.size / 2]} ms, samples=$elapsed")
+            panel.zoomTo(0.6)
+            labels.forEachIndexed { index, label ->
+                assertSame("Zoom must not rebuild hidden HTML", renderers[index],
+                    label.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+            }
+            val originalFont = labels.first().font.size2D
+            press(panel.canvas, "TAB")
+            press(panel.canvas, "ENTER")
+            assertEquals("A revealed card catches up to the current zoom", originalFont * 0.6f, labels.first().font.size2D, 0.01f)
+            assertNotSame(renderers.first(), labels.first().getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+            assertSame("Other cards stay untouched", renderers.last(), labels.last().getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test wheel bursts coalesce without losing zoom delta or cursor anchor`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", {
+                descendants(canvas).any { it.javaClass.simpleName == "SummaryCard" }
+            }, 10)
+            panel.setSize(500, 300)
+            layOut(panel)
+            repeat(3) { press(canvas, "PAGE_DOWN"); press(canvas, "shift PAGE_DOWN") }
+            val viewport = canvas.parent as javax.swing.JViewport
+            val previous = viewport.viewPosition
+            val anchor = java.awt.Point(120, 90)
+            fun wheel() {
+                val point = javax.swing.SwingUtilities.convertPoint(viewport, anchor, canvas)
+                val event = java.awt.event.MouseWheelEvent(canvas, java.awt.event.MouseEvent.MOUSE_WHEEL,
+                    System.currentTimeMillis(), java.awt.event.InputEvent.CTRL_DOWN_MASK,
+                    point.x, point.y, 0, 0, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, -1, -0.1)
+                canvas.dispatchEvent(event)
+                assertTrue(event.isConsumed)
+            }
+            repeat(20) { wheel() }
+            assertEquals("Wheel events defer layout to the next frame", 1.0, panel.zoom, 1e-9)
+            val expected = 1.15 * 1.15
+            PlatformTestUtil.waitWithEventsDispatching("The accumulated wheel delta should be applied", {
+                kotlin.math.abs(panel.zoom - expected) < 1e-9
+            }, 5)
+            assertTrue(kotlin.math.abs((previous.x + anchor.x) * expected - anchor.x - viewport.viewPosition.x) <= 1)
+            assertTrue(kotlin.math.abs((previous.y + anchor.y) * expected - anchor.y - viewport.viewPosition.y) <= 1)
+            repeat(5) { wheel() }
+            press(canvas, "typed 0")
+            assertEquals("Reset clears a pending wheel update", 1.0, panel.zoom, 1e-9)
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test folded source and hidden explanations catch up when revealed after zoom`() {
+        fun hover(component: java.awt.Component) = component.dispatchEvent(java.awt.event.MouseEvent(component,
+            java.awt.event.MouseEvent.MOUSE_ENTERED, 0, 0, 1, 1, 0, false))
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            fun entry() = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
+                .firstOrNull { it.text.orEmpty().contains("<code>entry(") }
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { entry() != null }, 10)
+            press(canvas, "TAB")
+            press(canvas, "TAB")
+            press(canvas, "ENTER")
+            val title = entry()!!
+            click(title)
+            PlatformTestUtil.waitWithEventsDispatching("The method should unfold", {
+                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+            }, 10)
+            val card = generateSequence<java.awt.Component>(title) { it.parent }
+                .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
+            val code = descendants(card).filterIsInstance<javax.swing.JTextArea>().first { it.text.contains("int x = 1;") }
+            val originalFont = code.font.size2D
+            val explain = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>()
+                .first { it.text == "Explain link" }
+            val nestedCard = generateSequence<java.awt.Component>(explain) { it.parent }
+                .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
+            val block = nestedCard.parent.components.first { it.javaClass.simpleName == "BlockView" }
+            // Preview the nested call so its Explain link is accessible.
+            hover(block)
+            explain.doClick()
+            val evidence = descendants(nestedCard).filterIsInstance<javax.swing.JLabel>()
+                .first { it.text.orEmpty().contains("<head>") && it.text.orEmpty().contains("<br>") && it.isShowingInTree() &&
+                    it.parent.layout is javax.swing.BoxLayout }
+            val evidenceFont = evidence.font.size2D
+            explain.doClick()
+            val renderer = evidence.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey)
+            // Fold a loaded branch, then change zoom while neither its code nor evidence is visible.
+            click(title)
+            panel.zoomTo(0.5)
+            assertEquals(originalFont, code.font.size2D, 0.01f)
+            assertSame(renderer, evidence.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+            click(title)
+            assertEquals(originalFont * 0.5f, code.font.size2D, 0.01f)
+            hover(block)
+            explain.doClick()
+            assertEquals(evidenceFont * 0.5f, evidence.font.size2D, 0.01f)
+            assertNotSame(renderer, evidence.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+            val compact = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Compact" }
+            compact.doClick()
+            panel.zoomTo(0.75)
+            assertEquals("Compact source stays untouched", originalFont * 0.5f, code.font.size2D, 0.01f)
+            compact.doClick()
+            assertEquals(originalFont * 0.75f, code.font.size2D, 0.01f)
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
     fun `test only titles on the breadcrumb chain stay readable when zoomed out`() {
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))

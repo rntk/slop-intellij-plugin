@@ -164,6 +164,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     internal var zoom = 1.0
         private set
     private val zoomLevel = JLabel("100%")
+    private var wheelZoom: Double? = null
+    private var wheelAnchor: Point? = null
+    // Trackpads can deliver many events between paints. Keep their full delta, but lay out at most once per frame.
+    private val zoomFrame = Timer(16) {
+        wheelZoom?.let { zoomTo(it, wheelAnchor) }
+    }.apply { isRepeats = false }
     private val breadcrumbs = JPanel().apply {
         name = "schematic-breadcrumbs"
         layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -283,7 +289,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         installNavigation()
         content.addMouseWheelListener { e ->
             if (e.isControlDown || e.isMetaDown) {
-                zoomTo(zoom * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation), SwingUtilities.convertPoint(e.component, e.point, scroll.viewport))
+                wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
+                if (!zoomFrame.isRunning) zoomFrame.start()
                 e.consume()
             } else scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
         }
@@ -325,6 +333,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     fun dispose() {
         disposed = true
         hoverExit.stop()
+        zoomFrame.stop()
+        wheelZoom = null
+        wheelAnchor = null
         Toolkit.getDefaultToolkit().removeAWTEventListener(dragListener)
         scope.cancel()
     }
@@ -519,6 +530,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** Zooms to [requested], keeping the content under [anchor] (in viewport coordinates; the middle by default) in place. */
     internal fun zoomTo(requested: Double, anchor: Point? = null) {
+        zoomFrame.stop()
+        wheelZoom = null
+        wheelAnchor = null
         val next = requested.coerceIn(MIN_ZOOM, MAX_ZOOM)
         if (next == zoom) return
         val viewport = scroll.viewport
@@ -534,8 +548,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         content.repaint()
     }
 
-    /** Rescales [component] and everything in it to the current zoom. */
+    /** Hidden branches catch up when revealed, instead of rebuilding their HTML and fonts on every wheel event. */
     private fun applyZoom(component: Component) {
+        if (!component.isVisible) return
         if (component is JComponent) (component.getClientProperty(BASE_FONT) as? Font)?.let { component.font = it.zoomed(zoom) }
         (component as? Container)?.components?.forEach(::applyZoom)
         if (component is Zoomable) component.applyZoom()
@@ -743,7 +758,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 rows += view
                 add(view)
                 if (row is BlockRow) row.targets.forEach { target ->
-                    cards += SummaryCard(target, view as BlockView, row.occurrences.filter { target in it.displayTargets }).also(::add)
+                    cards += SummaryCard(target, view as BlockView, rows.lastIndex, row.occurrences.filter { target in it.displayTargets }).also(::add)
                 }
             }
             refreshCards()
@@ -751,7 +766,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         fun refreshCards() {
             val preview = hoveredBlock ?: activeBlock
-            cards.forEach { it.isVisible = it.pinned || it.row === preview }
+            cards.forEach {
+                val visible = it.pinned || it.row === preview
+                val revealed = visible && !it.isVisible
+                it.isVisible = visible
+                if (revealed) applyZoom(it)
+            }
             blocks.forEach { it.repaintBorder() }
             revalidate()
             repaint()
@@ -761,7 +781,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         /** Keep the same blocks and unfolded branches while omitting plain source rows. */
         fun showSource(show: Boolean) {
-            rows.filterIsInstance<CodeView>().forEach { it.isVisible = show }
+            rows.filterIsInstance<CodeView>().forEach {
+                it.isVisible = show
+                if (show) applyZoom(it)
+            }
             revalidate()
             repaint()
         }
@@ -783,39 +806,39 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** Positions of rows (from the top) and cards (from the top, pushed down so they never overlap). */
-        private fun measure(): Triple<Int, List<Int>, List<Int>> {
+        private fun measure(): LevelMeasurement {
+            // Measure each child once. Repeated preferredSize queries multiply the work at every unfolded level.
+            val rowSizes = rows.map { if (it.isVisible) it.preferredSize else Dimension() }
+            val cardSizes = cards.map { if (it.isVisible) it.preferredSize else Dimension() }
             val sourceWidth = maxOf(
-                rows.filter { it.isVisible }.maxOfOrNull { it.preferredSize.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0,
-                blocks.filter { it.onTrail }.maxOfOrNull { it.preferredSize.width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
+                rowSizes.maxOfOrNull { it.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0,
+                rows.indices.filter { (rows[it] as? BlockView)?.onTrail == true }
+                    .maxOfOrNull { rowSizes[it].width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
             )
             var y = 0
-            val rowTops = rows.map { row -> y.also { if (row.isVisible) y += row.preferredSize.height } }
+            val rowTops = rowSizes.map { size -> y.also { y += size.height } }
             var bottom: Int? = null
-            val cardTops = cards.map { card ->
+            val cardTops = cards.mapIndexed { index, card ->
                 if (!card.isVisible) 0 else
-                    maxOf(rowTops[rows.indexOf(card.row)], bottom?.plus(scaled(GAP)) ?: 0).also { bottom = it + card.preferredSize.height }
+                    maxOf(rowTops[card.rowIndex], bottom?.plus(scaled(GAP)) ?: 0).also { bottom = it + cardSizes[index].height }
             }
-            return Triple(sourceWidth, rowTops, cardTops)
+            val cardsWidth = cardSizes.maxOfOrNull { it.width } ?: 0
+            val width = sourceWidth + if (cards.none { it.isVisible }) 0 else scaled(ARROW_WIDTH) + cardsWidth
+            return LevelMeasurement(sourceWidth, rowSizes, rowTops, cardSizes, cardTops, Dimension(width, maxOf(y, bottom ?: 0)))
         }
 
         override fun doLayout() {
-            val (sourceWidth, rowTops, cardTops) = measure()
-            rows.forEachIndexed { index, row -> row.setBounds(0, rowTops[index], sourceWidth, row.preferredSize.height) }
-            val x = sourceWidth + scaled(ARROW_WIDTH)
-            cards.forEachIndexed { index, card ->
-                if (card.isVisible) card.setBounds(x, cardTops[index], card.preferredSize.width, card.preferredSize.height)
-                else card.setBounds(0, 0, 0, 0)
+            with(measure()) {
+                rows.forEachIndexed { index, row -> row.setBounds(0, rowTops[index], sourceWidth, rowSizes[index].height) }
+                val x = sourceWidth + scaled(ARROW_WIDTH)
+                cards.forEachIndexed { index, card ->
+                    if (card.isVisible) card.setBounds(x, cardTops[index], cardSizes[index].width, cardSizes[index].height)
+                    else card.setBounds(0, 0, 0, 0)
+                }
             }
         }
 
-        override fun getPreferredSize(): Dimension {
-            val (sourceWidth, rowTops, cardTops) = measure()
-            val sourceHeight = rows.indices.maxOfOrNull { rowTops[it] + if (rows[it].isVisible) rows[it].preferredSize.height else 0 } ?: 0
-            val shown = cards.indices.filter { cards[it].isVisible }
-            val cardsHeight = shown.maxOfOrNull { cardTops[it] + cards[it].preferredSize.height } ?: 0
-            val cardsWidth = shown.maxOfOrNull { cards[it].preferredSize.width } ?: 0
-            return Dimension(sourceWidth + if (shown.isEmpty()) 0 else scaled(ARROW_WIDTH) + cardsWidth, maxOf(sourceHeight, cardsHeight))
-        }
+        override fun getPreferredSize(): Dimension = measure().size
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
@@ -918,7 +941,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** The summary of [target]; unfolds into [target]'s own schematic. */
-        inner class SummaryCard(private val target: Int, val row: BlockView,
+        inner class SummaryCard(private val target: Int, val row: BlockView, val rowIndex: Int,
             private val occurrences: List<CallOccurrence>) : JPanel(BorderLayout()), Zoomable {
             var pinned = false
                 private set
@@ -973,6 +996,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
                     if (occurrences.isNotEmpty()) add(ActionLink("Explain link") {
                         details.isVisible = !details.isVisible
+                        if (details.isVisible) applyZoom(details)
                         this@LevelView.revalidate()
                         this@LevelView.repaint()
                     }.zoomFont())
@@ -1010,6 +1034,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     onClick(arrow) { toggle() }
                 }
                 applyZoom()
+                update()
             }
 
             private fun showChoices() {
@@ -1047,7 +1072,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 border = BorderFactory.createCompoundBorder(line(if (pinned) blockOpen else JBColor.border(), 1), pixelBorder(scaled(6), scaled(8), scaled(6), scaled(8)))
                 (layout as BorderLayout).vgap = scaled(6)
                 (header.layout as BorderLayout).hgap = scaled(6)
-                update()
             }
 
             fun refreshTitle() {
@@ -1108,6 +1132,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     pinTo(true)
                     val slot = level ?: LevelSlot(shown).also { level = it; add(it, BorderLayout.CENTER) }
                     slot.isVisible = true
+                    applyZoom(slot)
                 } else level?.let { slot ->
                     if (activeBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) activeBlock = row
                     if (hoveredBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) hoveredBlock = null
@@ -1133,6 +1158,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private interface Zoomable {
         fun applyZoom()
     }
+
+    private data class LevelMeasurement(
+        val sourceWidth: Int,
+        val rowSizes: List<Dimension>,
+        val rowTops: List<Int>,
+        val cardSizes: List<Dimension>,
+        val cardTops: List<Int>,
+        val size: Dimension,
+    )
 
     private companion object {
         const val MAX_SOURCE_WIDTH = 720
