@@ -672,13 +672,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         if (e.isPopupTrigger && (e.id == MouseEvent.MOUSE_PRESSED || e.id == MouseEvent.MOUSE_RELEASED)) {
             // IDE source text shows its own menu, with the line and selection it knows about.
             if (generateSequence(e.component) { it.parent }.none { it is SchematicSourceEditor }) {
-                val owner = generateSequence(e.component) { it.parent }
-                    .firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView }
-                showContextMenu(e, when (owner) {
-                    is LevelView.BlockView -> owner.describe()
-                    is LevelView.SummaryCard -> owner.describe()
-                    else -> null
-                })
+                showContextMenu(e)
             }
             return
         }
@@ -717,13 +711,25 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     /** Right-click anywhere on the canvas; [pointer] describes the block, card or line under the pointer for the chat. */
-    private fun showContextMenu(e: MouseEvent, pointer: String?, copy: (() -> Unit)? = null) {
+    private fun showContextMenu(e: MouseEvent, pointer: String? = null, copy: (() -> Unit)? = null) {
+        // Stop at the nearest level so unfolded source never inherits its parent card's actions.
+        val owner = generateSequence(e.component) { it.parent }
+            .firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView }
+        val context = pointer ?: when (owner) {
+            is LevelView.BlockView -> owner.describe()
+            is LevelView.SummaryCard -> owner.describe()
+            else -> null
+        }
         JPopupMenu().apply {
             add(JMenuItem("Chat").apply {
                 toolTipText = "Ask about this file and the code it reaches; answers unfold the calls here"
-                addActionListener { openChat(pointer) }
+                addActionListener { openChat(context) }
             })
             copy?.let { action -> add(JMenuItem("Copy").apply { addActionListener { action() } }) }
+            if (owner is LevelView.SummaryCard) {
+                addSeparator()
+                owner.addContextActions(this)
+            }
         }.show(e.component, e.x, e.y)
     }
 
@@ -1323,6 +1329,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             private val arrow = JLabel(if (expandable) "▸" else "·").zoomFont()
             private val text = HtmlLabel { inBreadcrumbs(this) || inBreadcrumbs(row) }
             private val header = JPanel(BorderLayout())
+            private val actions = JPanel()
             val trailName get() = graph.nodes[chosen ?: target].name
             val trailAnchor get() = header
             private val details = JPanel().apply {
@@ -1352,7 +1359,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 header.isOpaque = false
                 header.add(arrow, BorderLayout.WEST)
                 header.add(text, BorderLayout.CENTER)
-                header.add(JPanel().apply {
+                header.add(actions.apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
                     add(pinToggle)
@@ -1399,6 +1406,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
                 applyZoom()
                 update()
+            }
+
+            fun addContextActions(menu: JPopupMenu) {
+                for (link in actions.components.filterIsInstance<ActionLink>().filter { it.isVisible }) {
+                    menu.add(JMenuItem(link.text).apply {
+                        isEnabled = link.isEnabled
+                        toolTipText = link.toolTipText
+                        addActionListener { link.doClick() }
+                    })
+                }
             }
 
             private fun showChoices() {
