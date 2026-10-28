@@ -1,5 +1,6 @@
 package dev.insight.callgraph.rust
 
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
@@ -8,8 +9,10 @@ import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.resolveTargets
+import kotlinx.coroutines.CancellationException
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.superItem
+import org.rust.lang.core.psi.ext.expandedMembers
+import org.rust.lang.core.psi.ext.functions
 
 /** Loaded only with the JetBrains Rust plugin (META-INF/call-graph-rust.xml). */
 class RustCallGraphSupport : CallGraphLanguageSupport {
@@ -40,8 +43,19 @@ class RustCallGraphSupport : CallGraphLanguageSupport {
 
     override fun resolveCall(element: PsiElement): PsiElement? = callSite(element)?.targets?.firstOrNull()
 
-    override fun superMethods(element: PsiElement): List<PsiElement> =
-        (element as? RsFunction)?.superItem?.let(::listOf).orEmpty()
+    override fun superMethods(element: PsiElement): List<PsiElement> = try {
+        val function = element as? RsFunction ?: return emptyList()
+        val name = function.name ?: return emptyList()
+        val implItem = (function.parent as? RsMembers)?.parent as? RsImplItem ?: return emptyList()
+        val traitRef = implItem.traitRef ?: return emptyList()
+        val trait = (traitRef.path.references.flatMap(::resolveTargets).firstOrNull { it is RsTraitItem }
+            ?: traitRef.path.reference?.resolve()) as? RsTraitItem ?: return emptyList()
+        val members = trait.members ?: return emptyList()
+        members.expandedMembers.functions.filter { it.name == name }
+    } catch (e: Throwable) {
+        if (e is CancellationException || e is ControlFlowException) throw e
+        emptyList()
+    }
 
     override fun callSite(element: PsiElement): CallResolution? {
         val callee: PsiElement

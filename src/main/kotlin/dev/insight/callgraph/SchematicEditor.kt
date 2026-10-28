@@ -135,7 +135,7 @@ class OpenSchematicAction : AnAction() {
                 log.info("Schematic cancelled for ${file.path}", e)
                 showNotice("Schematic cancelled. Choose Schematic to retry.")
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (e is ProcessCanceledException) {
                     log.info("Schematic cancelled for ${file.path}", e)
                     showNotice("Schematic cancelled. Choose Schematic to retry.")
@@ -972,7 +972,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
                 Logger.getInstance(SchematicEditor::class.java).warn("Schematic summaries failed", e)
                 error = e.message ?: e.javaClass.simpleName
@@ -1048,7 +1048,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             loading = scope.launch(Dispatchers.EDT) {
                 try {
                     build()
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     if (e is CancellationException || e is ControlFlowException) throw e
                     Logger.getInstance(SchematicPanel::class.java).warn("Unable to load schematic for ${graph.nodes[id].name}", e)
                     removeAll()

@@ -1,11 +1,14 @@
 package dev.insight
 
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
 import dev.insight.callgraph.rust.RustCallGraphSupport
+import kotlinx.coroutines.CancellationException
 import org.rust.lang.core.psi.*
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.model.impl.TestCargoProjectsServiceImpl
@@ -65,6 +68,74 @@ class RustCallGraphTest : BasePlatformTestCase() {
         assertTrue(graph.edges.any { it.kind == RelationKind.CALL })
         assertTrue(graph.edges.any { it.kind == RelationKind.IMPORT })
         assertTrue(graph.edges.any { it.kind == RelationKind.INHERITS })
+
+        val allFunctions = PsiTreeUtil.findChildrenOfType(myFixture.file, RsFunction::class.java)
+        val traitMethod = allFunctions.single { (it.parent as? RsMembers)?.parent is RsTraitItem }
+        val implMethod = allFunctions.single { (it.parent as? RsMembers)?.parent is RsImplItem }
+        val freeFunction = function("entry")
+        assertEquals(listOf(traitMethod), support.superMethods(implMethod))
+        assertTrue(support.superMethods(traitMethod).isEmpty())
+        assertTrue(support.superMethods(freeFunction).isEmpty())
+    }
+
+    fun testProgressiveSchematicUnfoldRustFunction() {
+        myFixture.configureByText("main.rs", """
+            fn leaf() {}
+            fn main() {
+                leaf();
+            }
+        """.trimIndent())
+        val initial = ProjectGraphAnalyzer.buildScope(project, myFixture.file, declarationsOnly = true)
+        val mainNode = initial.graph.nodes.single { it.name == "main" }
+        val mainElement = initial.pointers[mainNode.id]!!.element!!
+        val branch = ProjectGraphAnalyzer.buildScope(project, mainElement)
+        assertTrue(branch.occurrences.any { it.expression == "leaf" })
+        assertEquals(setOf("main.rs", "main", "leaf"), branch.graph.nodes.map { it.name }.toSet())
+    }
+
+    fun testSuperMethodsSelectOnlyActiveCfgDeclaration() {
+        myFixture.configureByText("main.rs", """
+            struct User;
+            trait Named {
+                #[cfg(any())]
+                fn name(&self);
+                #[cfg(all())]
+                fn name(&self);
+            }
+            impl Named for User { fn name(&self) {} }
+        """.trimIndent())
+        (project.cargoProjects as TestCargoProjectsServiceImpl).configure(myFixture.file.virtualFile)
+        val methods = PsiTreeUtil.findChildrenOfType(myFixture.file, RsFunction::class.java)
+        val implMethod = methods.single { (it.parent as? RsMembers)?.parent is RsImplItem }
+        val traitMethods = methods.filter { (it.parent as? RsMembers)?.parent is RsTraitItem }
+        val activeMethod = traitMethods.single { it.text.contains("cfg(all())") }
+        assertEquals(listOf(activeMethod), support.superMethods(implMethod))
+        val inheritedMethods = mutableListOf<PsiElement>()
+        ProjectGraphAnalyzer.relations(myFixture.file) { source, target, kind ->
+            if (source == implMethod && kind == RelationKind.INHERITS) inheritedMethods += target
+        }
+        assertEquals(listOf(activeMethod), inheritedMethods)
+    }
+
+    fun testSuperMethodLookupPreservesCancellation() {
+        myFixture.configureByText("main.rs", "fn entry() {}")
+        val function = function("entry")
+        val controlFlow = object : RuntimeException(), ControlFlowException {}
+        for (failure in listOf(CancellationException("Cancelled"), ProcessCanceledException(), controlFlow)) {
+            val brokenFunction = object : RsFunction by function {
+                override fun getName(): String = throw failure
+            }
+            try {
+                support.superMethods(brokenFunction)
+                fail("Cancellation and control flow must propagate")
+            } catch (actual: RuntimeException) {
+                assertSame(failure, actual)
+            }
+        }
+        val brokenFunction = object : RsFunction by function {
+            override fun getName(): String = throw IllegalStateException("Broken PSI")
+        }
+        assertTrue(support.superMethods(brokenFunction).isEmpty())
     }
 
     fun testMethodsConstructorsAndUnresolvedOccurrences() {
