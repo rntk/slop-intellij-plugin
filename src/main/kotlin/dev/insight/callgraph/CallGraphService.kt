@@ -2,13 +2,17 @@ package dev.insight.callgraph
 
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.PsiElement
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.psi.util.PsiModificationTracker
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 
 data class CallGraphRequest(
     val direction: CallDirection = CallDirection.BOTH,
@@ -26,13 +30,35 @@ class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPo
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
+    private val log = Logger.getInstance(CallGraphService::class.java)
     /** The last application graph and the PSI modification count it was built at. */
     @Volatile private var latestProject: Pair<Long, CallGraphResult>? = null
 
     suspend fun buildProject(): CallGraphResult = withBackgroundProgress(project, "Building application graph") {
-        smartReadAction(project) {
-            val stamp = PsiModificationTracker.getInstance(project).modificationCount
-            ProjectGraphAnalyzer.build(project).also { latestProject = stamp to it }
+        val started = System.nanoTime()
+        var stage = "Waiting for project indexes"
+        log.info("Building application graph for ${project.name}")
+        try {
+            reportRawProgress { reporter ->
+                reporter.text(stage)
+                smartReadAction(project) {
+                    val stamp = PsiModificationTracker.getInstance(project).modificationCount
+                    ProjectGraphAnalyzer.build(project) {
+                        stage = it
+                        reporter.text(it)
+                        log.debug(it)
+                    }.also { latestProject = stamp to it }
+                }
+            }.also {
+                log.info("Built application graph: ${it.graph.nodes.size} symbols, ${it.graph.edges.size} edges in ${(System.nanoTime() - started) / 1_000_000} ms")
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException || e is ControlFlowException) {
+                log.info("Application graph interrupted at: $stage", e)
+            } else {
+                log.warn("Application graph failed at: $stage", e)
+            }
+            throw e
         }
     }
 

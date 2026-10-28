@@ -1,6 +1,9 @@
 package dev.insight.callgraph
 
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.Logger
+import kotlinx.coroutines.CancellationException
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiPolyVariantReference
 import com.intellij.psi.PsiReference
@@ -27,7 +30,10 @@ internal fun resolveTargets(reference: PsiReference): List<PsiElement> = try {
     else listOfNotNull(reference.resolve())
 } catch (e: ProcessCanceledException) {
     throw e
-} catch (_: Exception) {
+} catch (e: Exception) {
+    if (e is CancellationException || e is ControlFlowException) throw e
+    Logger.getInstance("dev.insight.callgraph.CallOccurrences")
+        .warn("Call graph reference resolution failed (${reference.javaClass.name})", e)
     emptyList()
 }
 

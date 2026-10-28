@@ -1,6 +1,7 @@
 package dev.insight.callgraph
 
-import com.intellij.codeInsight.hint.HintManager
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -10,6 +11,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.fileEditor.FileEditor
@@ -20,13 +22,13 @@ import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
-import com.intellij.openapi.wm.StatusBar
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.testFramework.LightVirtualFile
@@ -93,6 +95,7 @@ fun openSchematic(project: Project, result: CallGraphResult, root: Int) {
 
 /** Opens the schematic of the selected file. */
 class OpenSchematicAction : AnAction() {
+    private val log = Logger.getInstance(OpenSchematicAction::class.java)
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
@@ -105,22 +108,38 @@ class OpenSchematicAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
-        val editor = e.getData(CommonDataKeys.EDITOR)
         val service = project.service<CallGraphService>()
-        fun showNotice(text: String) {
+        fun showNotice(text: String, type: NotificationType = NotificationType.WARNING) {
             if (project.isDisposed) return
-            if (editor != null && !editor.isDisposed) HintManager.getInstance().showInformationHint(editor, text)
-            else StatusBar.Info.set(text, project)
+            NotificationGroupManager.getInstance().getNotificationGroup("Insight Schematic")
+                .createNotification("Schematic: ${file.name}", text, type).notify(project)
         }
         service.scope.launch(Dispatchers.EDT) {
             try {
+                log.info("Opening schematic for ${file.path}")
                 val built = service.currentProject()
                 val node = built.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path }
-                if (node == null) showNotice("This file is not in the application graph.")
-                else openSchematic(project, built, node.id)
+                if (node == null) {
+                    log.warn("Schematic file is absent from the application graph: ${file.path}")
+                    showNotice("This file is not in the application graph. Check that its language plugin is enabled and the file is included in project content.")
+                } else {
+                    openSchematic(project, built, node.id)
+                    log.info("Opened schematic for ${file.path}")
+                }
             } catch (e: CancellationException) {
+                log.info("Schematic cancelled for ${file.path}", e)
                 showNotice("Schematic cancelled. Choose Schematic to retry.")
                 throw e
+            } catch (e: Exception) {
+                if (e is ProcessCanceledException) {
+                    log.info("Schematic cancelled for ${file.path}", e)
+                    showNotice("Schematic cancelled. Choose Schematic to retry.")
+                    throw e
+                }
+                if (e is ControlFlowException) throw e
+                log.warn("Unable to open schematic for ${file.path}", e)
+                showNotice("Unable to open schematic: ${e.message ?: e.javaClass.simpleName}. See the IDE log for details.",
+                    NotificationType.ERROR)
             }
         }
     }
@@ -1007,7 +1026,17 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             if (ready.isCompleted) ready = CompletableDeferred()
             val loaded = ready
             loading = scope.launch(Dispatchers.EDT) {
-                try { build() } finally { loaded.complete(components.firstOrNull() as? LevelView) }
+                try {
+                    build()
+                } catch (e: Exception) {
+                    if (e is CancellationException || e is ControlFlowException) throw e
+                    Logger.getInstance(SchematicPanel::class.java).warn("Unable to load schematic for ${graph.nodes[id].name}", e)
+                    removeAll()
+                    add(JLabel("Unable to load schematic: ${e.message ?: e.javaClass.simpleName}. See the IDE log.").zoomFont())
+                    add(ActionLink("Retry") { load() }.zoomFont())
+                    revalidate()
+                    repaint()
+                } finally { loaded.complete(components.firstOrNull() as? LevelView) }
             }
         }
 

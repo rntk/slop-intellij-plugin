@@ -1,17 +1,27 @@
 # Schematic flow
 
-Schematic is a lossy reading of one file through the call graph. It starts from a file chosen in the editor or project view. Source can use the original canvas rendering or a read-only IDE editor with syntax highlighting, line numbers, and text selection. The controls switch the whole exploration between them without discarding open branches or pinned cards. In either view, declared functions fold into blocks, and lines with calls or callable references become blocks too.
+A schematic is a lossy, explorable reading of one file through the application's call graph. The reader starts from a file and opens its declarations and the calls they make, one level at a time, reading a summary of each symbol as it opens.
 
-Summary cards stay hidden until a block is focused or hovered. Tab and Shift+Tab move the cursor through clickable blocks; Enter or a left click on a block pins its cards so they stay visible when the cursor moves away. Cards can be unpinned individually. Summaries are written bottom-up, so each condenses the tree below its symbol. Unfolding a summary pins it and shows the same reading of that function or class beneath it, so a reader can keep several branches open. Show whole file, available on project cards and in their context menus, expands the card to its containing file so exploration can continue from another declaration; Show symbol returns to the original scope. Deeper levels are summarized as they are opened.
+## Opening
 
-The canvas fills the whole tab; the controls and the breadcrumb trail float over its top edge instead of taking rows of their own, and the help text lives in a tooltip. Drag to move the canvas; in IDE source text, dragging selects text instead, and middle-dragging moves the canvas. Zoom with Ctrl/⌘ + wheel; when the canvas has focus, + and − zoom, and the arrow, Page Up/Down, Home and End keys scroll. Zoom scales the code and cards while keeping titles on the selected breadcrumb chain large enough to read in an overview. Other callable titles scale normally. A floating breadcrumb trail stays readable at every zoom, follows the selected branch from its root, and lets the reader return to earlier symbols. Showing, hiding, or unfolding cards keeps the current view in place. The canvas preserves explored space and lets the reader move beyond the graph; new content can appear off screen without moving the view. Tab brings the selected block into view, while Home and End return to the start and end of the reading.
+Opening builds or reuses the project's call graph. If the file cannot be shown, the reader gets a notification; details go to the IDE log. Analysis runs locally.
 
-Calls come from static analysis and summaries from a model; use the source links to check them. External and unresolved calls remain visible. “Explain link” shows candidate declarations and receiver bindings, so readers can inspect the evidence even when the implementation is unknown.
+## Exploring
 
-Right-clicking a card also offers its link actions, such as Source and Compact. Right-clicking the canvas offers Chat, which opens a conversation that floats over the right side of the canvas. The conversation lasts as long as the schematic; hiding the chat keeps it. If the reader right-clicks a block, card, line, or selection, the chat is told about it, so a question can just say "this". Each question comes with the file and its clickable blocks, each listed with the symbols it leads to, and with the chains already shown on the canvas. The assistant works in two steps. First it investigates, and the reader sees none of it: it can follow calls and callers through the graph, read a declaration's source, find the shortest static call chains, and search or read any project file. Then it shows the answer by unfolding one or two call chains from a block of this file, as if the reader had clicked them, selects the last card, and writes a short reply. The prompt explains what static edges can and cannot prove. Unfolded cards are ordinary cards, so the reader can keep exploring from them or fold them away.
+- Declarations and calls appear as clickable blocks, shown on a canvas or in a read-only IDE editor. Switching views keeps the exploration.
+- Summaries appear on demand and can be pinned. Each summary condenses the tree below its symbol, and unfolding one shows that reading beneath it, so several branches stay open at once.
+- A breadcrumb trail shows the path from the root and lets the reader return to earlier symbols.
+- Exploration is never discarded; the reader can move freely beyond the initial graph.
 
-Entry points for further exploration:
+## Trust
 
-- [Schematic.kt](../src/main/kotlin/dev/insight/callgraph/Schematic.kt) — rows and blocks of one level
-- [SchematicEditor.kt](../src/main/kotlin/dev/insight/callgraph/SchematicEditor.kt) — the view and its action
-- [SchematicChat.kt](../src/main/kotlin/dev/insight/callgraph/SchematicChat.kt) — the chat's prompt, graph tools and canvas tools
+Calls come from static analysis and summaries from a model, so source links are the way to verify them. External and unresolved calls stay visible rather than being hidden.
+
+## Chat
+
+A chat is attached to the canvas and lasts as long as the schematic. It investigates the graph and project on its own, then answers by unfolding call chains as ordinary cards the reader can keep exploring or fold away.
+
+## Entry points
+
+- [Schematic.kt](../src/main/kotlin/dev/insight/callgraph/Schematic.kt) — the model of rows and blocks
+- [SchematicEditor.kt](../src/main/kotlin/dev/insight/callgraph/SchematicEditor.kt) — the view and its actions

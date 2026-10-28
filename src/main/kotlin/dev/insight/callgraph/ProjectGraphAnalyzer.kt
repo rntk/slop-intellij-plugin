@@ -79,7 +79,8 @@ object ProjectGraphAnalyzer {
         })
     }
 
-    fun build(project: Project): CallGraphResult {
+    fun build(project: Project, progress: (String) -> Unit = {}): CallGraphResult {
+        progress("Finding supported project files")
         val manager = PsiManager.getInstance(project)
         val files = mutableListOf<PsiFile>()
         ProjectFileIndex.getInstance(project).iterateContent { virtualFile ->
@@ -90,7 +91,10 @@ object ProjectGraphAnalyzer {
             }
             true
         }
-        val elements = files.sortedBy { it.virtualFile.path }.flatMap(::declarations).toMutableList()
+        val elements = files.sortedBy { it.virtualFile.path }.flatMap { file ->
+            progress("Reading declarations: ${file.virtualFile.path}")
+            declarations(file)
+        }.toMutableList()
         val ids = elements.mapIndexedNotNull { id, element -> key(element)?.let { it to id } }.toMap().toMutableMap()
         val filesByDirectory = files.groupBy({ it.virtualFile.parent?.path }) { key(it)?.let(ids::get) }
             .mapValues { (_, fileIds) -> fileIds.filterNotNull() }
@@ -121,7 +125,8 @@ object ProjectGraphAnalyzer {
             }
             return id
         }
-        files.forEach { file ->
+        files.forEachIndexed { index, file ->
+            progress("Resolving references (${index + 1}/${files.size}): ${file.virtualFile.path}")
             relations(file, occurrence = { from, site, resolution ->
                 val owner = key(from)?.let(ids::get) ?: return@relations
                 val scopeElement = generateSequence(site.parent) { it.parent }.firstOrNull {
@@ -160,6 +165,7 @@ object ProjectGraphAnalyzer {
                 if (fromId != null) toIds.forEach { edges += CallGraphEdge(fromId, it, relation) }
             }
         }
+        progress("Finalizing graph: ${elements.size} symbols")
         val calls = edges.filter { it.kind == RelationKind.CALL }.mapTo(hashSetOf()) { it.caller to it.callee }
         edges.removeIf { it.kind == RelationKind.REFERENCE && (it.caller to it.callee) in calls }
         val pointers = SmartPointerManager.getInstance(project)

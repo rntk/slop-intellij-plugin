@@ -32,6 +32,7 @@
                         interface="dev.insight.diff.ReviewDiffProvider" dynamic="true"/>
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Insight Schematic" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"

@@ -10,6 +10,21 @@ import dev.insight.callgraph.*
 
 /** Runs the analyzers against real JavaScript and TypeScript PSI; both share one language support class. */
 class JavaScriptCallGraphTest : BasePlatformTestCase() {
+    fun testJavaScriptFileProducesSchematicWithBuildProgress() {
+        val file = configureFile("js")
+        val stages = mutableListOf<String>()
+        val result = ProjectGraphAnalyzer.build(project, stages::add)
+        val root = result.graph.nodes.single { it.kind == SymbolKind.FILE && it.filePath == file.virtualFile.path }
+        val calls = dev.insight.enrichment.liftCalls(result.graph).edges
+            .filter { it.kind == RelationKind.CALL }.groupBy { it.caller }
+        val schematic = SchematicBuilder.build(result, result.graph.hierarchy(), calls, root.id)
+        assertNotNull(schematic)
+        assertTrue(schematic!!.rows.filterIsInstance<BlockRow>().isNotEmpty())
+        assertTrue(stages.any { it.startsWith("Reading declarations:") && it.endsWith("main.js") })
+        assertTrue(stages.any { it.startsWith("Resolving references (") && it.endsWith("main.js") })
+        assertTrue(stages.last().startsWith("Finalizing graph:"))
+    }
+
     private val library = """
         export function leaf() {}
         export const arrow = () => { leaf() }
