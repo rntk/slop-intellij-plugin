@@ -1270,10 +1270,20 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 box.toolTipText = "<html>" + row.targets.joinToString("<br>") { escape(graph.nodes[it].name) } + "<br><i>Click or Enter to pin summaries</i></html>"
             }
 
+            /** Pins this block's cards; on a block that is already pinned it releases them and drops focus, like Esc. */
             fun pin() {
+                val mine = cardsFor(this)
+                if (mine.isNotEmpty() && mine.all { it.pinned } && this === (hoveredBlock ?: activeBlock)) {
+                    hoverExit.stop()
+                    activeBlock = null
+                    hoveredBlock = null
+                    mine.forEach { it.pinTo(false) }
+                    this@SchematicPanel.refreshCards()
+                    return
+                }
                 activeBlock = this
                 trailTarget = this
-                cardsFor(this).forEach { it.pinTo(true) }
+                mine.forEach { it.pinTo(true) }
                 this@SchematicPanel.refreshCards()
             }
 
@@ -1498,6 +1508,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 val summary = summaries[target]
                 val name = escape(node.name.take(80))
                 val kind = node.kind.name.lowercase()
+                val file = node.location.takeIf { ':' in it }?.substringBefore(':')?.let { " · ${escape(it)}" }.orEmpty()
                 val body = when {
                     node.unresolved && choices.isNotEmpty() -> "<font color='gray'>Implementation unknown: ${choices.size} declarations share this " +
                         "name. Pick one to continue; the IDE did not establish any of them.</font>" + chosen?.let {
@@ -1521,7 +1532,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     occurrences.any { it.operation == CallOperation.CALLABLE_REFERENCE } -> "<br><font color='gray'>Callable reference; invocation is not established here.</font>"
                     else -> ""
                 }
-                text.body = "<div class='callable-title'><code>$name</code> <font color='gray'>$kind</font></div>$body$evidence"
+                text.body = "<div class='callable-title'><code>$name</code> <font color='gray'>$kind$file</font></div>$body$evidence"
             }
 
             fun toggle() {
