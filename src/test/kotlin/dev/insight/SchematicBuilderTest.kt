@@ -160,7 +160,8 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             press("PAGE_DOWN")
             assertTrue(viewport.viewPosition.y > 0)
             press("END")
-            assertEquals(canvas.height - viewport.height, viewport.viewPosition.y)
+            assertEquals(maxOf(0, canvas.components.single().height + canvas.insets.top + canvas.insets.bottom - viewport.height),
+                viewport.viewPosition.y)
             press("HOME")
             assertEquals(java.awt.Point(0, 0), viewport.viewPosition)
             press("shift TAB")
@@ -186,6 +187,100 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
     private fun click(component: java.awt.Component) {
         component.mouseListeners.forEach { it.mouseClicked(java.awt.event.MouseEvent(component, java.awt.event.MouseEvent.MOUSE_CLICKED,
             0, 0, 1, 1, 1, false, java.awt.event.MouseEvent.BUTTON1)) }
+    }
+
+    private fun layOut(component: java.awt.Component) {
+        component.doLayout()
+        (component as? java.awt.Container)?.components?.forEach(::layOut)
+    }
+
+    fun `test cards and unfolded branches keep the viewport and explored space stable`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            panel.setSize(700, 600)
+            layOut(panel)
+            val viewport = canvas.parent as javax.swing.JViewport
+            val block = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }[1]
+            fun hover(target: java.awt.Component = block) = target.dispatchEvent(java.awt.event.MouseEvent(target, java.awt.event.MouseEvent.MOUSE_ENTERED,
+                0, 0, 1, 1, 0, false))
+            hover()
+            layOut(panel)
+            val card = cards()[1] as java.awt.Container
+            val entry = descendants(card).filterIsInstance<javax.swing.JLabel>()
+                .single { it.text.orEmpty().contains("<code>entry(") }
+            viewport.viewPosition = java.awt.Point(canvas.width - viewport.width, canvas.height - viewport.height)
+            layOut(panel)
+            val position = java.awt.Point(viewport.viewPosition)
+            val sourcePosition = javax.swing.SwingUtilities.convertPoint(block, 0, 0, viewport)
+            var space = java.awt.Dimension(canvas.size)
+            fun assertStable() {
+                layOut(panel)
+                assertEquals("Card changes must preserve the camera", position, viewport.viewPosition)
+                assertEquals("The source must stay at the same screen position", sourcePosition,
+                    javax.swing.SwingUtilities.convertPoint(block, 0, 0, viewport))
+                assertTrue("Explored canvas space must not shrink", canvas.width >= space.width && canvas.height >= space.height)
+                space = java.awt.Dimension(canvas.size)
+            }
+            press(canvas, "ESCAPE")
+            assertFalse(card.isVisible)
+            assertStable()
+            hover()
+            assertTrue(card.isVisible)
+            assertStable()
+            click(entry)
+            assertStable()
+            PlatformTestUtil.waitWithEventsDispatching("The branch should load without moving the view", { cards().size == 7 }, 10)
+            assertStable()
+            val compact = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>()
+                .single { it.text == "Compact" && it.isShowingInTree() }
+            compact.doClick()
+            assertStable()
+            compact.doClick()
+            assertStable()
+            click(entry) // Fold the loaded branch.
+            assertStable()
+            click(entry)
+            descendants(panel).filterIsInstance<javax.swing.JButton>().single { it.text == "Fold all" }.doClick()
+            assertStable()
+            press(canvas, "ESCAPE")
+            descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Unpin" }.doClick()
+            assertFalse(card.isVisible)
+            assertStable()
+
+            hover(descendants(canvas).first { it.javaClass.simpleName == "BlockView" })
+            val details = descendants(cards().first() as java.awt.Container)
+                .filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Explain link" }
+            details.doClick()
+            assertStable()
+            details.doClick()
+            assertStable()
+            press(canvas, "ESCAPE")
+
+            // Navigation extends blank canvas space even when all cards are hidden.
+            val previousBottom = canvas.height
+            repeat(12) { press(canvas, "PAGE_DOWN"); layOut(panel) }
+            assertTrue("Panning can continue beyond the old canvas bounds", viewport.viewPosition.y > previousBottom)
+            val explored = java.awt.Dimension(canvas.size)
+            press(canvas, "HOME")
+            layOut(panel)
+            assertEquals(java.awt.Point(), viewport.viewPosition)
+            assertEquals("Returning home preserves explored space", explored, canvas.size)
+
+            repeat(5) { press(canvas, "PAGE_DOWN"); press(canvas, "shift PAGE_DOWN") }
+            val beforeZoom = java.awt.Point(viewport.viewPosition)
+            val anchor = java.awt.Point(100, 50)
+            panel.zoomTo(0.5, anchor)
+            layOut(panel)
+            assertEquals("Zoom keeps the horizontal anchor", (beforeZoom.x + anchor.x) * 0.5 - anchor.x,
+                viewport.viewPosition.x.toDouble(), 1.0)
+            assertEquals("Zoom keeps the vertical anchor", (beforeZoom.y + anchor.y) * 0.5 - anchor.y,
+                viewport.viewPosition.y.toDouble(), 1.0)
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
     }
 
     fun `test tab previews one block at a time and enter pins cards until unpinned`() {

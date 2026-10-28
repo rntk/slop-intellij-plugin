@@ -164,6 +164,33 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         private set
     private val zoomLevel = JLabel("100%")
     private val content = object : JPanel(BorderLayout()), Scrollable, Zoomable {
+        private val space = Dimension()
+        val graphSize: Dimension get() = super.getPreferredSize()
+
+        // The graph can shrink, but the space the reader has visited must remain scrollable.
+        override fun getPreferredSize(): Dimension {
+            val graph = graphSize
+            reserve(graph.width.toLong(), graph.height.toLong())
+            return Dimension(space)
+        }
+
+        fun reserve(right: Long, bottom: Long) {
+            val margin = scaled(CANVAS_MARGIN)
+            val width = (right + margin).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val height = (bottom + margin).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            if (width > space.width || height > space.height) {
+                space.setSize(maxOf(space.width, width), maxOf(space.height, height))
+                revalidate()
+            }
+        }
+
+        override fun doLayout() {
+            // Lay out the graph at its own size, independently of the surrounding blank canvas.
+            val graph = components.firstOrNull() ?: return
+            val size = graph.preferredSize
+            graph.setBounds(insets.left, insets.top, size.width, size.height)
+        }
+
         override fun getPreferredScrollableViewportSize() = preferredSize
         override fun getScrollableUnitIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) = scaled(24)
         override fun getScrollableBlockIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) =
@@ -174,7 +201,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
     /** The canvas; it takes the keyboard focus for scrolling and zooming. */
     internal val canvas: JComponent get() = content
-    private val scroll = JBScrollPane(content)
+    private val scroll = JBScrollPane(content, ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS,
+        ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS)
     private val code: Font = EditorColorsManager.getInstance().globalScheme.getFont(EditorFontType.PLAIN)
     private val codeFont get() = code.zoomed(zoom)
     private val blockBackground = JBColor(Color(235, 240, 255), Color(47, 57, 77))
@@ -232,6 +260,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         content.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
         content.applyZoom()
         content.add(LevelSlot(file.root), BorderLayout.NORTH)
+        scroll.viewport.addChangeListener {
+            val view = scroll.viewport.viewRect
+            content.reserve(view.x.toLong() + view.width, view.y.toLong() + view.height)
+        }
         installNavigation()
         content.addMouseWheelListener { e ->
             if (e.isControlDown || e.isMetaDown) {
@@ -284,7 +316,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         bind("shift PAGE_DOWN") { scrollBy(scroll.viewport.width, 0) }
         for (modifier in listOf("", "ctrl ", "meta ")) {
             bind("${modifier}HOME") { scrollTo(0, 0) }
-            bind("${modifier}END") { scrollTo(0, Int.MAX_VALUE) }
+            bind("${modifier}END") { scrollTo(0, maxOf(0, content.graphSize.height - scroll.viewport.height)) }
         }
         // Typed keys follow the keyboard layout, and the numeric keypad types the same characters.
         bind("typed +") { zoomTo(zoom * ZOOM_STEP) }
@@ -367,9 +399,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     private fun scrollTo(x: Number, y: Number) {
         val viewport = scroll.viewport
-        val view = viewport.view ?: return
-        viewport.viewPosition = Point(x.toLong().coerceIn(0L, maxOf(0, view.width - viewport.width).toLong()).toInt(),
-            y.toLong().coerceIn(0L, maxOf(0, view.height - viewport.height).toLong()).toInt())
+        val left = x.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.width).toLong())
+        val top = y.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.height).toLong())
+        content.reserve(left + viewport.width, top + viewport.height)
+        viewport.viewSize = content.preferredSize
+        viewport.viewPosition = Point(left.toInt(), top.toInt())
     }
 
     /** Zooms to [requested], keeping the content under [anchor] (in viewport coordinates; the middle by default) in place. */
@@ -940,6 +974,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val WHEEL_ZOOM_STEP = 1.15
         const val SCROLL_LINES = 3
         const val DRAG_THRESHOLD = 3
+        /** Blank space beyond the graph and the viewport, extended as the reader pans. */
+        const val CANVAS_MARGIN = 512
         const val BASE_FONT = "insight.schematic.baseFont"
 
         fun detab(line: String) = line.replace("\t", "    ")
