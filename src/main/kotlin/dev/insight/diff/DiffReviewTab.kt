@@ -40,6 +40,8 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import kotlinx.coroutines.*
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewTab")
+
 /** Owns one conversation and canvas. File selection never changes this tab's scope. */
 internal class DiffReviewTab(
     project: Project,
@@ -276,6 +278,8 @@ internal class DiffReviewTab(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is VirtualMachineError) throw e
+                LOG.warn("Semantic change analysis failed", e)
                 SemanticResult.Failed(e.message ?: e.javaClass.simpleName)
             }
             if (semanticCounting === files) semanticCounting = null

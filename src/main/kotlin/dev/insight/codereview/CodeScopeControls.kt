@@ -16,6 +16,8 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeScopeControls")
+
 /**
  * The scope of a code review: a project folder typed or chosen, the project root, or an entry file whose dependencies make up
  * the scope, and the patterns of files and folders to exclude from it. A draft is applied explicitly with Load; applying the
@@ -87,6 +89,7 @@ internal class CodeScopeControls(
             val excludes = CodeExclusions.parse(excludeField.text)
             ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, field.text) }.copy(excludes = excludes)
         } catch (e: IllegalArgumentException) {
+            LOG.debug("Invalid code review scope", e)
             onError(e.message ?: "Choose a project folder or file.")
             return
         }
@@ -100,7 +103,8 @@ internal class CodeScopeControls(
     }
 
     /** The draft patterns; null while they are invalid. */
-    private fun draftExcludes(): List<String>? = runCatching { CodeExclusions.parse(excludeField.text) }.getOrNull()
+    private fun draftExcludes(): List<String>? = runCatching { CodeExclusions.parse(excludeField.text) }
+        .onFailure { LOG.debug("Exclude draft is invalid", it) }.getOrNull()
 
     private fun draftIs(scope: CodeScope): Boolean = pathIs(scope) && draftExcludes() == scope.excludes
 

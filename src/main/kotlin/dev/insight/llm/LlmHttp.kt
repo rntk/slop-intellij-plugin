@@ -101,6 +101,7 @@ internal class LlmHttp(
                 }
             } catch (e: IOException) {
                 if (attempt >= maxRetries) throw e
+                com.intellij.openapi.diagnostic.Logger.getInstance(LlmHttp::class.java).info("LLM request failed (attempt ${attempt + 1}); retrying", e)
                 delay(retryDelay(null, attempt++))
                 continue
             }
@@ -119,6 +120,7 @@ internal class LlmHttp(
             call?.respond(response)
             val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
             if (!(status == 408 || status == 429 || status in 500..599) || attempt >= maxRetries) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(LlmHttp::class.java).warn("LLM request to ${httpRequest.uri().host} failed with HTTP $status")
                 throw LlmApiException(status, response.body(), retryAfter)
             }
             delay(retryDelay(retryAfter, attempt++))

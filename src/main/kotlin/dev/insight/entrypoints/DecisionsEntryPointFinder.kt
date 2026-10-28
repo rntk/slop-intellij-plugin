@@ -34,6 +34,9 @@ class EntryPointDecisionException(
         val value = if (error?.isJsonObject == true) error.asJsonObject.get("message")
             else root.get("detail") ?: error
         value?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+    }.onFailure {
+        if (it is com.intellij.openapi.diagnostic.ControlFlowException || it is java.util.concurrent.CancellationException) throw it
+        com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointDecisionException::class.java).debug("Decisions API error body is not structured JSON", it)
     }.getOrNull()
     detail?.trim()?.takeIf { it.isNotEmpty() }?.let { append(": ${it.take(300)}") }
 }, cause)

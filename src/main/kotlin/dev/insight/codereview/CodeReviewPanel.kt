@@ -63,6 +63,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeReviewPanel")
+
 internal const val CODE_REVIEW_TOOL_WINDOW = "Code Review"
 
 class CodeReviewToolWindowFactory : ToolWindowFactory, DumbAware {
@@ -102,7 +104,15 @@ class ReviewDirectoryAction : DumbAwareAction() {
             e.presentation.description = "Open Code Review for this file and the project files it depends on"
         }
         e.presentation.isEnabled = target != null && e.project?.let { project ->
-            ReadAction.compute<Boolean, RuntimeException> { runCatching { codeScope(project, target) }.isSuccess }
+            ReadAction.compute<Boolean, RuntimeException> {
+                try {
+                    codeScope(project, target)
+                    true
+                } catch (e: IllegalArgumentException) {
+                    LOG.debug("No code review scope for the target", e)
+                    false
+                }
+            }
         } == true
     }
 
@@ -293,6 +303,7 @@ internal class CodeReviewPanel(
         try {
             setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, "") })
         } catch (e: IllegalArgumentException) {
+            LOG.debug("Invalid code review scope", e)
             status.text = "Choose a folder or an entry file to review: ${e.message}"
         }
     }
@@ -302,6 +313,7 @@ internal class CodeReviewPanel(
         try {
             setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, file) }.copy(excludes = scope?.excludes.orEmpty()))
         } catch (e: IllegalArgumentException) {
+            LOG.debug("Invalid code review scope", e)
             status.text = e.message ?: "Choose a project folder."
             status.toolTipText = status.text
         }
@@ -390,6 +402,7 @@ internal class CodeReviewPanel(
                 status.text = "Loading ${scope.displayName} cancelled. Click Load to retry."
                 throw e
             } catch (e: Exception) {
+                LOG.warn("Could not load ${scope.displayName}", e)
                 status.text = "Could not load ${scope.displayName}: ${e.message ?: e.javaClass.simpleName}"
                 status.toolTipText = status.text
             } finally {

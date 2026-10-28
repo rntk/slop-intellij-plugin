@@ -54,6 +54,8 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.NoteCanvas")
+
 /** Review artifacts, each in its own normally scrollable IDE editor. */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
@@ -1117,6 +1119,8 @@ internal class NoteCanvas(
                 }
             })
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || e is com.intellij.openapi.progress.ProcessCanceledException) throw e
+            LOG.warn("Could not start context summaries", e)
             version.running = false
             version.error = e.message ?: e.javaClass.simpleName
             summaryTabs().forEach { refreshSummaries(it) }

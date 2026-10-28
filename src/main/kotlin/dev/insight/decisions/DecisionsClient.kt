@@ -81,6 +81,7 @@ class DecisionsClient(
                 }
             } catch (e: IOException) {
                 if (attempt >= maxRetries) throw e
+                com.intellij.openapi.diagnostic.Logger.getInstance(DecisionsClient::class.java).info("Decisions request failed (attempt ${attempt + 1}); retrying", e)
                 delay(retryDelay(null, attempt++))
                 continue
             }
@@ -97,6 +98,7 @@ class DecisionsClient(
             call?.respond(response)
             val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
             if (!(response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() in 500..599) || attempt >= maxRetries) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(DecisionsClient::class.java).warn("Decisions request failed with HTTP ${response.statusCode()}")
                 throw DecisionApiException(response.statusCode(), response.body(), retryAfter)
             }
             delay(retryDelay(retryAfter, attempt++))

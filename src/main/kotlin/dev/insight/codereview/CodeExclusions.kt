@@ -2,6 +2,8 @@ package dev.insight.codereview
 
 import com.intellij.openapi.util.SystemInfo
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeExclusions")
+
 /**
  * Patterns that leave files and folders out of a scope, like a `.gitignore` without negation:
  * - a pattern without `/`, such as `*.js`, `test` or `generated/`, matches the name of a file or folder at any depth;
@@ -99,7 +101,8 @@ internal class CodeExclusions(val patterns: List<String>, private val base: Stri
             val name = '/' !in body
             val regex = try {
                 Regex(globRegex(body.removePrefix("/")), if (SystemInfo.isFileSystemCaseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE))
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                LOG.debug("Invalid exclude pattern $pattern", e)
                 throw IllegalArgumentException("$pattern is not a valid exclude pattern.")
             }
             return Pattern(regex, name, folderOnly)

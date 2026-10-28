@@ -48,6 +48,8 @@ class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntr
     private val ids = AtomicLong()
     private var persisted = 0
     private var clearedThroughId = 0L
+    /** Whether the last write failed, so an unwritable log is reported once rather than on every exchange. */
+    private var writeFailed = false
 
     init {
         require(maxEntries > 0) { "maxEntries must be positive" }
@@ -73,7 +75,7 @@ class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntr
         synchronized(this) {
             clearedThroughId = ids.get()
             entries.clear()
-            file?.let { runCatching { Files.deleteIfExists(it) } }
+            file?.let { try { Files.deleteIfExists(it) } catch (e: IOException) { LOG.warn("Could not delete API traffic log $it", e) } }
             persisted = 0
         }
         notifyListeners()
@@ -109,21 +111,38 @@ class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntr
                 Files.writeString(path, toJsonLine(exchange) + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                 persisted++
             }
-        } catch (_: IOException) {
+            writeFailed = false
+        } catch (e: IOException) {
             // Debug logging must never break an API call.
+            if (writeFailed) LOG.debug("Could not write API traffic log $path", e)
+            else LOG.warn("Could not write API traffic log $path; further failures are logged at debug level", e)
+            writeFailed = true
         }
     }
 
     private fun load(path: Path) {
         if (!Files.isRegularFile(path)) return
-        val lines = runCatching { Files.readAllLines(path) }.getOrDefault(emptyList())
-        val loaded = lines.mapNotNull { line -> runCatching { fromJson(JsonParser.parseString(line).asJsonObject) }.getOrNull() }
+        val lines = try {
+            Files.readAllLines(path)
+        } catch (e: IOException) {
+            LOG.warn("Could not read API traffic log $path", e)
+            emptyList()
+        }
+        val loaded = lines.mapNotNull { line ->
+            try {
+                fromJson(JsonParser.parseString(line).asJsonObject)
+            } catch (e: RuntimeException) {
+                LOG.debug("Skipping unreadable API traffic log line in $path", e)
+                null
+            }
+        }
         entries += loaded.sortedBy { it.id }.takeLast(maxEntries)
         persisted = lines.size
         ids.set(loaded.maxOfOrNull { it.id } ?: 0)
     }
 
     companion object {
+        private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(ApiTrafficLog::class.java)
         private val gson = GsonBuilder().disableHtmlEscaping().create()
         private val prettyGson = GsonBuilder().disableHtmlEscaping().setPrettyPrinting().serializeNulls().create()
 

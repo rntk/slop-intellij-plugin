@@ -18,6 +18,8 @@ import java.nio.file.Path
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewLoader")
+
 /** Runs on IO. Inclusion of untracked files is review-local and never changes the VCS index. */
 internal class DiffReviewLoader(private val project: Project) {
     suspend fun load(includedUntracked: Set<String>, request: ReviewDiffRequest = ReviewDiffRequest()): ReviewSnapshot {
@@ -66,7 +68,7 @@ internal class DiffReviewLoader(private val project: Project) {
     private fun revisionText(revision: ContentRevision): String? {
         if (revision is BinaryContentRevision || revision.file.fileType.isBinary) return null
         return try { revision.content?.let(StringUtil::convertLineSeparators) }
-        catch (_: VcsException) { null }
+        catch (e: VcsException) { LOG.warn("Could not read revision content of ${revision.file.path}", e); null }
     }
 
     /**
@@ -85,7 +87,7 @@ internal class DiffReviewLoader(private val project: Project) {
             readAction { FileDocumentManager.getInstance().getCachedDocument(file)?.immutableCharSequence?.toString() }
                 ?.let { return StringUtil.convertLineSeparators(it) }
         }
-        return try { fallback() } catch (_: IOException) { null }
+        return try { fallback() } catch (e: IOException) { LOG.warn("Could not read working text of ${file?.path}", e); null }
     }
 
     private fun file(path: String, previous: String?, status: String, before: String?, after: String?, unavailableVersion: String, comparison: ReviewComparison): ReviewFile {

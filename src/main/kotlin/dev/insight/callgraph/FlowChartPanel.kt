@@ -438,6 +438,8 @@ internal class FlowChartPanel(
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            if (e is ControlFlowException) throw e
+                            thisLogger().warn("Could not export chart tour", e)
                             if (!disposed) status.text = "Could not export tour: ${e.message ?: e.javaClass.simpleName}"
                         }
                     }

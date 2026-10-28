@@ -22,7 +22,10 @@ import dev.insight.callgraph.ProjectGraphAnalyzer
 import dev.insight.callgraph.SymbolKind
 import java.util.BitSet
 import java.util.IdentityHashMap
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.SemanticMetrics")
 
 /**
  * Counts [Metric]s on whole parsed sides of review files. Constructs are recognized language-agnostically, like
@@ -455,7 +458,9 @@ internal class SemanticMetrics(private val project: Project) {
     private inline fun <T> safely(block: () -> T): T? = try {
         block()
     } catch (e: Throwable) {
-        if (e is ControlFlowException || e is VirtualMachineError) throw e
+        if (e is ControlFlowException || e is CancellationException || e is VirtualMachineError) throw e
+        // Expected for constructs a language plugin cannot resolve; this runs per call site, so a warning would flood the log.
+        LOG.debug("Semantic metric calculation failed", e)
         null
     }
 

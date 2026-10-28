@@ -4,6 +4,8 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.Summary")
+
 /**
  * A summary as consecutive segments whose texts join into the prose a reader sees. Each segment cites what it was written
  * from, so every part of a summary links to the summaries below it, and a file's summary to its lines, without any matching
@@ -58,6 +60,9 @@ data class Summary(val segments: List<SummarySegment>) {
                 SummarySegment(pair[0].asString, pair[1].asJsonArray.map { SummarySource.decode(it.asString) ?: error("bad source") })
             }
             Summary(segments).takeIf { it.text.isNotBlank() }
+        }.onFailure {
+            if (it is kotlinx.coroutines.CancellationException || it is com.intellij.openapi.progress.ProcessCanceledException) throw it
+            LOG.debug("Saved summary is not in the segment format", it)
         }.getOrNull()
 
         /**

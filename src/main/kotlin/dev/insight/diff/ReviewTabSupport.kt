@@ -32,6 +32,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.ReviewTabSupport")
+
 /** Opens [file] with [lines] centered and highlighted like search results, until Escape or an edit. */
 internal fun openHighlightedLines(project: Project, file: VirtualFile, lines: List<Int>) {
     val first = lines.minOrNull() ?: return
@@ -88,6 +90,7 @@ internal class ReviewContextSummaryLauncher(
                 currentCoroutineContext().ensureActive()
                 Result.failure(e)
             } catch (e: Exception) {
+                LOG.warn("Summary generation failed", e)
                 Result.failure(e)
             }
             done(result)

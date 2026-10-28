@@ -210,7 +210,9 @@ class FunctionSummarizer(
             decode(completeJson(complete, SYSTEM, user, SCHEMA, maxTokens = 200 + 120 * batch.size, temperature = 0.0), batch.size)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            com.intellij.openapi.diagnostic.Logger.getInstance(FunctionSummarizer::class.java)
+                .warn("Function summary request for ${batch.size} functions failed", e)
             null
         }
     }

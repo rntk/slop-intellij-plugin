@@ -40,6 +40,8 @@ import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewPanel")
+
 class DiffReviewToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = DiffReviewPanel(project)
@@ -89,6 +91,7 @@ internal class DiffReviewPanel(
             invalidateDiff()
             refresh()
         } catch (e: IllegalArgumentException) {
+            LOG.debug("Invalid diff review source", e)
             status.text = e.message
         }
     }
@@ -222,6 +225,7 @@ internal class DiffReviewPanel(
                 sourceControls.setRepositoryError("Repository discovery cancelled. Refresh to retry.")
                 throw e
             } catch (e: Exception) {
+                LOG.warn("Repository discovery failed", e)
                 sourceControls.setRepositoryError(e.message ?: e.javaClass.simpleName)
             }
         }
@@ -269,6 +273,7 @@ internal class DiffReviewPanel(
                 status.text = "Diff loading cancelled. Refresh to retry."
                 throw e
             } catch (e: Exception) {
+                LOG.warn("Could not load diff", e)
                 status.text = "Could not load diff: ${e.message ?: e.javaClass.simpleName}"
                 status.toolTipText = status.text
                 // Affected tabs stay blocked until a successful refresh.

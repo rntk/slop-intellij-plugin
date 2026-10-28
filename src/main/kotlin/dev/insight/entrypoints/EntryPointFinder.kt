@@ -78,9 +78,11 @@ class EntryPointFinder(
             if (unchanged && run.searches.all { search ->
                 if (searchTool == null) false else try {
                     digest(searchTool.call(search.arguments.deepCopy())) == search.resultHash
-                } catch (_: ToolInputException) {
+                } catch (e: ToolInputException) {
+                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Cached entry point search no longer runs", e)
                     false
-                } catch (_: IOException) {
+                } catch (e: IOException) {
+                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Cached entry point search could not be replayed", e)
                     false
                 }
             }) {
@@ -137,6 +139,7 @@ class EntryPointFinder(
                 throw e
             } catch (e: IOException) {
                 // A failed repair must not erase a parseable analysis from the tool loop.
+                com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).warn("Entry point answer repair failed", e)
                 if (json == null) throw e
             }
         }
@@ -272,7 +275,8 @@ class EntryPointFinder(
             if (value == null || !value.isJsonPrimitive) return null
             return try {
                 value.asString.trim().toBigDecimalOrNull()?.intValueExact()?.takeIf { it > 0 }
-            } catch (_: ArithmeticException) {
+            } catch (e: ArithmeticException) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Ignoring out-of-range line number", e)
                 null
             }
         }

@@ -252,9 +252,17 @@ internal object TourJson {
 
     fun read(text: String?): List<SavedTour> {
         if (text.isNullOrBlank()) return emptyList()
-        val root = try { JsonParser.parseString(text).asJsonObject } catch (_: Exception) { return emptyList() }
+        val root = try { JsonParser.parseString(text).asJsonObject } catch (e: Exception) {
+            if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is java.util.concurrent.CancellationException) throw e
+            com.intellij.openapi.diagnostic.Logger.getInstance(TourJson::class.java).warn("Ignoring unreadable saved chart tours", e)
+            return emptyList()
+        }
         return root.getAsJsonArray("tours")?.mapNotNull { item ->
-            try { tour(item.asJsonObject) } catch (_: RuntimeException) { null }
+            try { tour(item.asJsonObject) } catch (e: RuntimeException) {
+                if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is java.util.concurrent.CancellationException) throw e
+                com.intellij.openapi.diagnostic.Logger.getInstance(TourJson::class.java).warn("Skipping unreadable saved chart tour", e)
+                null
+            }
         }.orEmpty()
     }
 

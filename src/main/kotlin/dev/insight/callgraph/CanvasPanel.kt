@@ -173,6 +173,8 @@ internal class CanvasPanel(
                 if (!disposed && revision == requestRevision) status.text = "Canvas generation cancelled."
                 throw e
             } catch (e: Exception) {
+                if (e is com.intellij.openapi.diagnostic.ControlFlowException) throw e
+                com.intellij.openapi.diagnostic.Logger.getInstance(CanvasPanel::class.java).warn("Canvas generation failed", e)
                 if (!disposed && revision == requestRevision) status.text = "Canvas failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
                 if (!disposed && revision == requestRevision) generateAction.text = "Generate canvas"

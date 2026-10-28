@@ -155,6 +155,7 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
                 .map { LineChange(it.startLine1, it.endLine1, it.startLine2, it.endLine2) }
         } catch (e: Throwable) {
             if (e is ControlFlowException || e is CancellationException || e is VirtualMachineError) throw e
+            com.intellij.openapi.diagnostic.Logger.getInstance(DiffService::class.java).warn("Line comparison failed; treating the file as entirely changed", e)
             listOf(LineChange(0, lineCount(before), 0, lineCount(after)))
         }
     }

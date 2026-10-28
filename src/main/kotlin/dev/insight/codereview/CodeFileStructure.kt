@@ -1,6 +1,6 @@
 package dev.insight.codereview
 
-import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -21,6 +21,9 @@ import dev.insight.callgraph.SymbolKind
 import dev.insight.diff.FileBlock
 import dev.insight.diff.FileStructure
 import dev.insight.review.ReviewDiskCache
+import java.util.concurrent.CancellationException
+
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeFileStructure")
 
 /**
  * Splits one snapshot file into blocks and maps each call line to the next files in the call graph.
@@ -176,9 +179,11 @@ internal class CodeFileStructureBuilder(private val project: Project, snapshot: 
             found.size < MAX_IMPLEMENTATIONS
         })
         found
-    } catch (e: ProcessCanceledException) {
+    } catch (e: CancellationException) {
         throw e
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        if (e is ControlFlowException) throw e
+        LOG.warn("Could not search implementations of the function", e)
         emptyList()
     }
 

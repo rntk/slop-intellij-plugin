@@ -82,6 +82,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeReviewTab")
+
 /**
  * Owns one conversation and canvas about the code in scope. File selection never changes this tab's scope. While a
  * /summaries, /topic-summaries or /topics run is in progress, snapshot updates are held and applied when the chat is idle
@@ -348,7 +350,7 @@ internal class CodeReviewTab(
     private fun showSourceBlock(path: String, lines: IntRange?) {
         val file = state.snapshot.byPath[path] ?: return
         val range = sourceBlockRange(file, lines) ?: return
-        val block = try { state.showSource(state.revision, range) } catch (_: ToolInputException) { return }
+        val block = try { state.showSource(state.revision, range) } catch (e: ToolInputException) { LOG.debug("Source range not available", e); return }
         renderCanvas()
         showCanvas { canvas.focusSource(block.range) }
     }
@@ -412,6 +414,7 @@ internal class CodeReviewTab(
                 currentCoroutineContext().ensureActive()
                 Result.failure(e)
             } catch (e: Exception) {
+                LOG.warn("Could not follow calls in ${file.path}", e)
                 Result.failure(e)
             }
             if (disposed || fileViewPath != file.path || state.revision != revision) return@launch

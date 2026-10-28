@@ -138,6 +138,9 @@ class ApplicationFlowSplitter(
                         }
                         require(members.isNotEmpty() && members.distinct().size == members.size && members.all { it in batch && it !in used })
                         Group(title, obj.jsonText("description")?.clipLine(300).orEmpty(), members, true)
+                    }.onFailure {
+                        if (it is com.intellij.openapi.diagnostic.ControlFlowException || it is java.util.concurrent.CancellationException) throw it
+                        com.intellij.openapi.diagnostic.Logger.getInstance(ApplicationFlowSplitter::class.java).debug("Ignoring malformed flow group from the model", it)
                     }.getOrNull()
                     if (group != null) { groups += group; used += group.seeds }
                 }

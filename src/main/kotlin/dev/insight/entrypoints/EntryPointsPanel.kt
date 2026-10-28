@@ -112,6 +112,8 @@ internal class EntryPointsPanel(
                     if (!disposed) status.text = "Search cancelled. Previous results retained."
                     throw e
                 } catch (e: Exception) {
+                    if (e is com.intellij.openapi.diagnostic.ControlFlowException) throw e
+                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointsPanel::class.java).warn("Entry point search failed", e)
                     if (!disposed) {
                         val message = "${api.label} failed: ${describeChatFailure(e)}"
                         status.text = message

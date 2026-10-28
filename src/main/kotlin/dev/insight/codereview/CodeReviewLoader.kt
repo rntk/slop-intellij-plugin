@@ -21,6 +21,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeReviewLoader")
+
 /**
  * Loads the text files under a scope directory, or an entry file and the project files it depends on: project content only (excluded folders are skipped by the index, VCS- and
  * IDE-ignored folders and those matching the scope's exclude patterns are pruned and counted), without binary, too large,
@@ -167,7 +169,7 @@ internal class CodeReviewLoader(private val project: Project) {
         val unchanged = previous?.takeIf { it.absolutePath == file.path }
         if (unsaved == null && unchanged != null && unchanged.stamp == stamp && unchanged.length == length)
             return LoadResult.Loaded(unchanged)
-        val raw = unsaved ?: try { VfsUtilCore.loadText(file) } catch (_: IOException) { return LoadResult.Skipped(SkipReason.UNREADABLE) }
+        val raw = unsaved ?: try { VfsUtilCore.loadText(file) } catch (e: IOException) { LOG.warn("Could not read ${file.path}", e); return LoadResult.Skipped(SkipReason.UNREADABLE) }
         val text = StringUtil.convertLineSeparators(raw)
         if (text.length > limits.maxFileChars) return LoadResult.Skipped(SkipReason.TOO_LARGE)
         if (isMinified(text, limits.chunk)) return LoadResult.Skipped(SkipReason.MINIFIED)

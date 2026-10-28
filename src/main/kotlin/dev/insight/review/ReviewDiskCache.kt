@@ -11,6 +11,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewDiskCache")
+
 /** Review marks and generated results keyed by evidence. A damaged or unwritable cache never prevents a review. */
 class ReviewDiskCache(private val directory: Path) {
     /** Results per slot, shared by every tab of the scope so one tab's save never drops another's entries. */
@@ -19,6 +21,9 @@ class ReviewDiskCache(private val directory: Path) {
     fun read(category: String, slot: String, fingerprint: String): JsonElement? = runCatching {
         val root = JsonParser.parseString(Files.readString(file(category, slot))).asJsonObject
         if (root["version"].asInt == VERSION && root["fingerprint"].asString == fingerprint) root["value"] else null
+    }.onFailure {
+        rethrowCancellation(it)
+        if (it is java.nio.file.NoSuchFileException) LOG.debug("No cached review at $category/$slot") else LOG.warn("Could not read cached review $category/$slot", it)
     }.getOrNull()
 
     fun write(category: String, slot: String, fingerprint: String, value: JsonElement) {
@@ -29,7 +34,7 @@ class ReviewDiskCache(private val directory: Path) {
             val ignore = directory.resolve(".gitignore")
             if (!Files.exists(ignore)) runCatching {
                 Files.writeString(ignore, "*\n", java.nio.file.StandardOpenOption.CREATE_NEW)
-            }
+            }.onFailure { rethrowCancellation(it); LOG.debug("Could not create $ignore", it) }
             val temp = Files.createTempFile(file.parent, "review-", ".tmp")
             try {
                 val root = JsonObject().apply {
@@ -40,13 +45,14 @@ class ReviewDiskCache(private val directory: Path) {
                 Files.writeString(temp, reviewJson.toJson(root))
                 try {
                     Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                } catch (_: AtomicMoveNotSupportedException) {
+                } catch (e: AtomicMoveNotSupportedException) {
+                    LOG.debug("Atomic move not supported; falling back to a plain move", e)
                     Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING)
                 }
             } finally {
                 Files.deleteIfExists(temp)
             }
-        }
+        }.onFailure { rethrowCancellation(it); LOG.warn("Could not write cached review $category/$slot", it) }
     }
 
     /** Reads, transforms and writes one entry under the cache's lock, so concurrent tabs merge rather than overwrite each other. */
@@ -146,7 +152,9 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         for (file in current.files) {
             if (file.path in restored.labels) continue
             val label = saved[topicKey(file)]?.let(::normalizeTopic) ?: continue
-            restored = runCatching { restored.assign(file.path, label) }.getOrDefault(restored)
+            restored = runCatching { restored.assign(file.path, label) }
+                .onFailure { rethrowCancellation(it); LOG.debug("Saved topic for ${file.path} no longer applies", it) }
+                .getOrDefault(restored)
         }
         return restored
     }
@@ -189,4 +197,8 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         /** Per kind and slot; enough for several snapshots of a large scope, while keeping each save small. */
         const val MAX_ENTRIES = 4_000
     }
+}
+
+private fun rethrowCancellation(e: Throwable) {
+    if (e is kotlinx.coroutines.CancellationException || e is com.intellij.openapi.progress.ProcessCanceledException) throw e
 }

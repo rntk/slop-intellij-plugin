@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.currentCoroutineContext
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewTopics")
+
 /** One hierarchical subject per reviewed file. File boundaries and coverage belong to code. */
 data class ReviewTopics(val files: List<ReviewSource>, val labels: Map<String, String> = emptyMap()) {
     val complete: Boolean get() = files.all { it.path in labels }
@@ -219,10 +221,12 @@ class ReviewTopicGenerator internal constructor(
             } catch (e: LlmApiException) {
                 throw e
             } catch (e: IOException) {
+                LOG.warn("Topic request failed", e)
                 error.set(e.message ?: e.javaClass.simpleName)
                 if ("truncated" in e.message.orEmpty()) outputBudget = (outputBudget * 2).coerceAtMost(32768)
                 null
             } catch (e: Exception) {
+                LOG.warn("Topic request failed", e)
                 error.set(e.message ?: e.javaClass.simpleName)
                 null
             }

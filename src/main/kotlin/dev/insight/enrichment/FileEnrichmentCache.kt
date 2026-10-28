@@ -80,7 +80,11 @@ class FileEnrichmentCache(private val file: Path) : EnrichmentCache {
             }
             fun <T> read(name: String, parse: (JsonElement) -> T?, into: MutableMap<String, T>) {
                 for ((key, value) in root.getAsJsonObject(name).entrySet()) {
-                    runCatching { parse(value) }.getOrNull()?.let { into[key] = it }
+                    try {
+                        parse(value)?.let { into[key] = it }
+                    } catch (e: RuntimeException) {
+                        LOG.debug("Skipping unreadable enrichment cache entry $key", e)
+                    }
                 }
             }
             read("nodes", ::nodeValue, loaded.nodes)

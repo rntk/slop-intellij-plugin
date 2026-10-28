@@ -105,7 +105,9 @@ class EnrichmentPipeline(
         repeat(options.timeoutRetries) { attempt ->
             try {
                 return evaluate(request)
-            } catch (_: HttpTimeoutException) {
+            } catch (e: HttpTimeoutException) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(EnrichmentPipeline::class.java)
+                    .info("Decision request timed out (attempt ${attempt + 1}); retrying", e)
                 delay(2_000L shl attempt)
             }
         }

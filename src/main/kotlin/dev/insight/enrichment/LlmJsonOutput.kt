@@ -126,7 +126,8 @@ internal suspend fun cachedJson(
         completeJson(counted, system, user, schema, maxTokens).also { cache.putText(key, it.toString()) }
     } catch (e: CancellationException) {
         throw e
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.enrichment.LlmJsonOutput").warn("Generative request '$kind' failed", e)
         null
     }
 }

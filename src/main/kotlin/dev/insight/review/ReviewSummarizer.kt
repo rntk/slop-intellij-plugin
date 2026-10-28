@@ -21,6 +21,8 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewSummarizer")
+
 data class ReviewSummaryOptions(
     /** Evidence characters per page; diff pages are all summarized before reducing the whole file. */
     val patchChars: Int = 6_000,
@@ -196,7 +198,8 @@ class ReviewSummarizer internal constructor(
             suspend fun processBatch(batch: List<SummaryNode>, system: String) {
                 val texts = try {
                     request(system, branchSystem, batch, current, requests, feedback, onToolCall)
-                } catch (_: JsonOutputTruncatedException) {
+                } catch (e: JsonOutputTruncatedException) {
+                    LOG.debug("Summary output truncated; retrying in halves", e)
                     // Save each successful half immediately, even if a later half fails or is cancelled.
                     for (part in batch.chunked((batch.size + 1) / 2)) processBatch(part, system)
                     return
@@ -206,6 +209,7 @@ class ReviewSummarizer internal constructor(
                     // The server rejected the request; the next one would fail the same way.
                     throw e
                 } catch (e: Exception) {
+                    LOG.warn("Summary request failed", e)
                     mutex.withLock { error = e.message ?: e.javaClass.simpleName }
                     emptyMap()
                 }

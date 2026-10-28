@@ -974,6 +974,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
             } catch (e: Exception) {
                 if (e is CancellationException || e is ControlFlowException) throw e
+                Logger.getInstance(SchematicEditor::class.java).warn("Schematic summaries failed", e)
                 error = e.message ?: e.javaClass.simpleName
             } finally {
                 running--
