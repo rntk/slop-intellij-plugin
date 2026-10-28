@@ -220,6 +220,7 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("Choices should be listed", {
                 descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("5 declarations share this name") }
             }, 10)
+            focusFirstBlock(editor)
             val choice = descendants(editor.component).filterIsInstance<ActionLink>()
                 .filter { it.text.startsWith("run") && visible(it) }
             assertEquals(5, choice.size)
@@ -319,8 +320,9 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
                 generateSequence<java.awt.Component>(label) { it.parent }.all { it.isVisible }
             }
             PlatformTestUtil.waitWithEventsDispatching("Unresolved call should be visible", {
-                labels().any { it.text.orEmpty().contains("Implementation unknown") }
+                descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("Implementation unknown") }
             }, 10)
+            focusFirstBlock(editor)
             val cardText = labels().single { it.text.orEmpty().contains("Implementation unknown") }
             assertTrue(cardText.text.contains("llm.complete"))
             assertTrue(cardText.mouseListeners.isEmpty())
@@ -331,5 +333,12 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
         } finally {
             com.intellij.openapi.util.Disposer.dispose(editor)
         }
+    }
+
+    private fun focusFirstBlock(editor: com.intellij.openapi.fileEditor.FileEditor) {
+        val canvas = (editor.component as SchematicPanel).canvas
+        val key = canvas.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
+            .get(javax.swing.KeyStroke.getKeyStroke("TAB"))
+        canvas.actionMap.get(key).actionPerformed(java.awt.event.ActionEvent(canvas, 0, "TAB"))
     }
 }

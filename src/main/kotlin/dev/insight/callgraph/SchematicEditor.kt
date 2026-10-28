@@ -58,6 +58,7 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.RenderingHints
 import java.awt.Toolkit
@@ -135,8 +136,8 @@ private class SchematicEditor(project: Project, private val file: SchematicFile)
 
 /**
  * A lossy reading of a file through the call graph. Its source is shown line by line, but the functions it declares
- * fold into blocks, and lines that call project code become blocks too. Next to each block is a summary of the
- * symbol it leads to, written bottom-up from everything that symbol calls. A summary unfolds into the same reading
+ * fold into blocks, and lines that call project code become blocks too. Focusing or hovering a block previews the
+ * summary of the symbol it leads to; Enter or a click pins it. A summary unfolds into the same reading
  * of that symbol, so the reader can walk down the graph, keeping several branches open at once.
  *
  * The reading is a canvas: Ctrl/⌘ + wheel or + and − zoom it, dragging moves it, and the arrow, Page Up/Down, Home and
@@ -177,6 +178,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private val code: Font = EditorColorsManager.getInstance().globalScheme.getFont(EditorFontType.PLAIN)
     private val codeFont get() = code.zoomed(zoom)
     private val blockBackground = JBColor(Color(235, 240, 255), Color(47, 57, 77))
+    private val blockFocusedBackground = JBColor(Color(215, 228, 255), Color(62, 80, 112))
     private val blockOpen = JBColor(Color(76, 112, 220), Color(110, 150, 240))
     /** Where the current left-button gesture started, on screen, and the view position then. */
     private var dragStart: Point? = null
@@ -185,8 +187,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private var panned = false
     private var dragCursorOwner: Component? = null
     private var dragCursor: Cursor? = null
+    private var activeBlock: LevelView.BlockView? = null
+    private var hoveredBlock: LevelView.BlockView? = null
+    // Allow the pointer to cross the arrow between a block and its card without losing the preview.
+    private val hoverExit = Timer(200) { hover(null) }.apply { isRepeats = false }
     /** Sees mouse events before the components under the pointer, so dragging moves the canvas over code and blocks too. */
-    private val dragListener = AWTEventListener { event -> (event as? MouseEvent)?.let(::drag) }
+    private val dragListener = AWTEventListener { event -> (event as? MouseEvent)?.let {
+        trackHover(it)
+        drag(it)
+    } }
 
     init {
         border = JBUI.Borders.empty(8)
@@ -209,14 +218,18 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 })
                 add(status)
             }, BorderLayout.NORTH)
-            add(JLabel("<html>Blocks are declared functions and lines calling project code. Click a block or its summary to unfold " +
-                "the code it leads to; click again to fold it. Double-click code, or choose Source on a summary, to open it in the editor. " +
+            add(JLabel("<html>Hover a block or use Tab / Shift+Tab to preview its summaries. Enter or a left click on a block pins its cards; " +
+                "Unpin releases a card. Click a summary to unfold or fold the code it leads to. " +
+                "Double-click code, or choose Source on a summary, to open it in the editor. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
                 "Drag to move; Ctrl/⌘ + wheel or + and − to zoom; arrows, Page Up/Down, Home and End to scroll.</html>").apply {
                 foreground = UIUtil.getContextHelpForeground()
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         content.isFocusable = true
+        // Children inherit these empty traversal keys, so Tab reaches our canvas navigation bindings.
+        content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
+        content.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
         content.applyZoom()
         content.add(LevelSlot(file.root), BorderLayout.NORTH)
         installNavigation()
@@ -235,11 +248,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     fun dispose() {
         disposed = true
+        hoverExit.stop()
         Toolkit.getDefaultToolkit().removeAWTEventListener(dragListener)
         scope.cancel()
     }
 
-    /** Arrows scroll by a few lines, Page Up/Down by a screen, Home and End to either end; +, − and 0 zoom. */
+    /** Tab moves the reading cursor; Enter pins its cards. Other keys scroll and zoom the canvas. */
     private fun installNavigation() {
         val line = { content.getFontMetrics(codeFont).height }
         val page = { scroll.viewport.height - line() }
@@ -248,6 +262,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             content.actionMap.put(stroke, object : AbstractAction() {
                 override fun actionPerformed(e: ActionEvent?) = action()
             })
+        }
+        bind("TAB") { focusNext(false) }
+        bind("shift TAB") { focusNext(true) }
+        bind("ENTER") { (hoveredBlock ?: activeBlock)?.pin() }
+        bind("ESCAPE") {
+            hoverExit.stop()
+            activeBlock = null
+            hoveredBlock = null
+            refreshCards()
         }
         for (prefix in listOf("", "KP_")) {
             bind("${prefix}UP") { scrollBy(0, -SCROLL_LINES * line()) }
@@ -268,6 +291,73 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         bind("typed =") { zoomTo(zoom * ZOOM_STEP) }
         bind("typed -") { zoomTo(zoom / ZOOM_STEP) }
         bind("typed 0") { zoomTo(1.0) }
+    }
+
+    /** Source order, descending into unfolded cards directly after their owning block. */
+    private fun visibleBlocks(): List<LevelView.BlockView> = buildList {
+        fun visit(component: Component) {
+            if (!component.isVisible) return
+            if (component is LevelView) {
+                for (block in component.blocks) {
+                    add(block)
+                    component.cardsFor(block).forEach(::visit)
+                }
+            } else if (component is Container) component.components.forEach(::visit)
+        }
+        visit(content)
+    }
+
+    private fun focusNext(backwards: Boolean) {
+        val blocks = visibleBlocks()
+        if (blocks.isEmpty()) return
+        val index = blocks.indexOf(hoveredBlock ?: activeBlock)
+        val next = if (index < 0) {
+            if (backwards) blocks.lastIndex else 0
+        } else Math.floorMod(index + if (backwards) -1 else 1, blocks.size)
+        hoverExit.stop()
+        hoveredBlock = null
+        activeBlock = blocks[next]
+        refreshCards()
+        // Reflow the newly visible card before locating the block in canvas coordinates.
+        SwingUtilities.invokeLater {
+            if (!disposed && activeBlock === blocks[next]) {
+                scroll.validate()
+                val box = blocks[next].box
+                content.scrollRectToVisible(SwingUtilities.convertRectangle(box.parent, box.bounds, content))
+            }
+        }
+    }
+
+    private fun hover(block: LevelView.BlockView?) {
+        if (hoveredBlock === block) return
+        hoveredBlock = block
+        refreshCards()
+    }
+
+    private fun trackHover(e: MouseEvent) {
+        if (e.id !in listOf(MouseEvent.MOUSE_ENTERED, MouseEvent.MOUSE_EXITED, MouseEvent.MOUSE_MOVED)) return
+        if (!SwingUtilities.isDescendingFrom(e.component, content)) return
+        val owner = if (e.id == MouseEvent.MOUSE_EXITED) null else
+            generateSequence(e.component) { it.parent }.firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard }
+        val block = when (owner) {
+            is LevelView.BlockView -> owner
+            is LevelView.SummaryCard -> owner.row
+            else -> null
+        }
+        if (block != null) {
+            hoverExit.stop()
+            hover(block)
+        } else if (!hoverExit.isRunning) hoverExit.start()
+    }
+
+    private fun refreshCards() {
+        fun visit(component: Component) {
+            if (component is LevelView) component.refreshCards()
+            if (component is Container) component.components.forEach(::visit)
+        }
+        visit(content)
+        content.revalidate()
+        content.repaint()
     }
 
     private fun scrollBy(dx: Int, dy: Int) {
@@ -462,6 +552,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         private val cards = mutableListOf<SummaryCard>()
         private val indent = schematic.lines.filter { it.isNotBlank() }.minOfOrNull { line -> detab(line).takeWhile { it == ' ' }.length } ?: 0
         private val charWidth get() = getFontMetrics(codeFont).charWidth(' ')
+        val blocks get() = rows.filterIsInstance<BlockView>()
+        fun cardsFor(block: BlockView) = cards.filter { it.row === block }
 
         init {
             isOpaque = false
@@ -476,6 +568,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     cards += SummaryCard(target, view as BlockView, row.occurrences.filter { target in it.displayTargets }).also(::add)
                 }
             }
+            refreshCards()
+        }
+
+        fun refreshCards() {
+            val preview = hoveredBlock ?: activeBlock
+            cards.forEach { it.isVisible = it.pinned || it.row === preview }
+            blocks.forEach { it.repaintBorder() }
+            revalidate()
+            repaint()
         }
 
         private fun text(line: Int) = detab(schematic.text(line)).drop(indent).trimEnd()
@@ -510,7 +611,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val rowTops = rows.map { row -> y.also { if (row.isVisible) y += row.preferredSize.height } }
             var bottom: Int? = null
             val cardTops = cards.map { card ->
-                maxOf(rowTops[rows.indexOf(card.row)], bottom?.plus(scaled(GAP)) ?: 0).also { bottom = it + card.preferredSize.height }
+                if (!card.isVisible) 0 else
+                    maxOf(rowTops[rows.indexOf(card.row)], bottom?.plus(scaled(GAP)) ?: 0).also { bottom = it + card.preferredSize.height }
             }
             return Triple(sourceWidth, rowTops, cardTops)
         }
@@ -519,15 +621,19 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val (sourceWidth, rowTops, cardTops) = measure()
             rows.forEachIndexed { index, row -> row.setBounds(0, rowTops[index], sourceWidth, row.preferredSize.height) }
             val x = sourceWidth + scaled(ARROW_WIDTH)
-            cards.forEachIndexed { index, card -> card.setBounds(x, cardTops[index], card.preferredSize.width, card.preferredSize.height) }
+            cards.forEachIndexed { index, card ->
+                if (card.isVisible) card.setBounds(x, cardTops[index], card.preferredSize.width, card.preferredSize.height)
+                else card.setBounds(0, 0, 0, 0)
+            }
         }
 
         override fun getPreferredSize(): Dimension {
             val (sourceWidth, rowTops, cardTops) = measure()
             val sourceHeight = rows.indices.maxOfOrNull { rowTops[it] + if (rows[it].isVisible) rows[it].preferredSize.height else 0 } ?: 0
-            val cardsHeight = cards.indices.maxOfOrNull { cardTops[it] + cards[it].preferredSize.height } ?: 0
-            val cardsWidth = cards.maxOfOrNull { it.preferredSize.width } ?: 0
-            return Dimension(sourceWidth + if (cards.isEmpty()) 0 else scaled(ARROW_WIDTH) + cardsWidth, maxOf(sourceHeight, cardsHeight))
+            val shown = cards.indices.filter { cards[it].isVisible }
+            val cardsHeight = shown.maxOfOrNull { cardTops[it] + cards[it].preferredSize.height } ?: 0
+            val cardsWidth = shown.maxOfOrNull { cards[it].preferredSize.width } ?: 0
+            return Dimension(sourceWidth + if (shown.isEmpty()) 0 else scaled(ARROW_WIDTH) + cardsWidth, maxOf(sourceHeight, cardsHeight))
         }
 
         override fun paintComponent(g: Graphics) {
@@ -537,9 +643,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.stroke = BasicStroke(scaled(1).toFloat())
                 val head = scaled(5)
-                for (card in cards) {
+                for (card in cards.filter { it.isVisible }) {
                     val row = card.row
-                    g2.color = if (card.open) blockOpen else JBColor.border()
+                    g2.color = if (card.pinned || card.open) blockOpen else JBColor.border()
                     val startX = row.x + row.box.x + row.box.width
                     val startY = row.y + row.box.y + row.box.height / 2
                     val endX = card.x - 1
@@ -574,10 +680,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
         }
 
-        /** A block at the code's indentation; clicking it unfolds or folds its first card. */
+        /** A block at the code's indentation; clicking pins all of its target cards. */
         inner class BlockView(val row: BlockRow) : JPanel(BorderLayout()), Zoomable {
             val box = JPanel(BorderLayout())
-            private var open = false
 
             init {
                 isOpaque = false
@@ -589,21 +694,30 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
                 add(box, BorderLayout.WEST)
                 applyZoom()
-                onClick(box) { cards.firstOrNull { it.row === this }?.toggle() }
-                box.toolTipText = "<html>" + row.targets.joinToString("<br>") { escape(graph.nodes[it].name) } + "<br><i>Click to unfold or fold</i></html>"
+                onClick(box) { pin() }
+                box.toolTipText = "<html>" + row.targets.joinToString("<br>") { escape(graph.nodes[it].name) } + "<br><i>Click or Enter to pin summaries</i></html>"
+            }
+
+            fun pin() {
+                activeBlock = this
+                cardsFor(this).forEach { it.pinTo(true) }
+                this@SchematicPanel.refreshCards()
             }
 
             override fun applyZoom() {
                 val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length - indent
                 border = pixelBorder(0, scaled(4) + charWidth * depth.coerceAtLeast(0), 0, 0)
                 (box.layout as BorderLayout).hgap = scaled(8)
-                repaintBorder(open)
+                repaintBorder()
             }
 
-            fun repaintBorder(open: Boolean) {
-                this.open = open
-                box.border = BorderFactory.createCompoundBorder(line(if (open) blockOpen else JBColor.border(), if (open) 2 else 1),
+            fun repaintBorder() {
+                val focused = this === (hoveredBlock ?: activeBlock)
+                val marked = focused || cardsFor(this).any { it.pinned || it.open }
+                // A constant inset keeps focusing a block from moving the source under the pointer.
+                box.border = BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 2),
                     pixelBorder(scaled(1), scaled(6), scaled(1), scaled(6)))
+                box.background = if (focused) blockFocusedBackground else blockBackground
             }
 
             override fun getMaximumSize(): Dimension = preferredSize
@@ -612,6 +726,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         /** The summary of [target]; unfolds into [target]'s own schematic. */
         inner class SummaryCard(private val target: Int, val row: BlockView,
             private val occurrences: List<CallOccurrence>) : JPanel(BorderLayout()), Zoomable {
+            var pinned = false
+                private set
             var open = false
                 private set
             private val node = graph.nodes[target]
@@ -633,6 +749,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 isVisible = false
             }
             private var level: LevelSlot? = null
+            private val pinToggle = ActionLink("Pin") { pinTo(!pinned) }.zoomFont()
             private val sourceToggle = ActionLink("Compact") {
                 level?.let { slot ->
                     slot.showSource = !slot.showSource
@@ -652,6 +769,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 header.add(JPanel().apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
+                    add(pinToggle)
                     add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(target) }
                         .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
                     if (occurrences.isNotEmpty()) add(ActionLink("Explain link") {
@@ -713,6 +831,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             /** Follows [id] as if it were the callee: project code unfolds here, external code opens its source. */
             private fun pick(id: Int) {
+                pinTo(true)
                 if (!graph.nodes[id].inProject) { navigate(id); return }
                 if (open) toggle()
                 level?.let(::remove)
@@ -724,10 +843,20 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
 
             override fun applyZoom() {
-                border = BorderFactory.createCompoundBorder(line(JBColor.border(), 1), pixelBorder(scaled(6), scaled(8), scaled(6), scaled(8)))
+                border = BorderFactory.createCompoundBorder(line(if (pinned) blockOpen else JBColor.border(), 1), pixelBorder(scaled(6), scaled(8), scaled(6), scaled(8)))
                 (layout as BorderLayout).vgap = scaled(6)
                 (header.layout as BorderLayout).hgap = scaled(6)
                 update()
+            }
+
+            fun pinTo(value: Boolean) {
+                if (pinned == value) return
+                pinned = value
+                pinToggle.text = if (value) "Unpin" else "Pin"
+                // Releasing an unfolded card also folds its branch, so hidden descendants cannot retain the cursor.
+                if (!value && open) toggle()
+                applyZoom()
+                this@SchematicPanel.refreshCards()
             }
 
             private fun sourceToggleText() {
@@ -769,14 +898,17 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 open = !open
                 arrow.text = if (open) "▾" else "▸"
                 if (open) {
+                    pinTo(true)
                     val slot = level ?: LevelSlot(shown).also { level = it; add(it, BorderLayout.CENTER) }
                     slot.isVisible = true
-                } else level?.isVisible = false
+                } else level?.let { slot ->
+                    if (activeBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) activeBlock = row
+                    if (hoveredBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) hoveredBlock = null
+                    slot.isVisible = false
+                }
                 sourceToggle.isVisible = open
                 sourceToggleText()
-                row.repaintBorder(cards.any { it.row === row && it.open })
-                this@LevelView.revalidate()
-                this@LevelView.repaint()
+                this@SchematicPanel.refreshCards()
             }
         }
     }
