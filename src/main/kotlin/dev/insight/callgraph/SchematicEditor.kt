@@ -23,7 +23,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
@@ -33,11 +35,18 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.chat.ChatBackend
+import dev.insight.chat.ChatPanel
+import dev.insight.chat.ChatSession
+import dev.insight.chat.ChatSettings
+import dev.insight.chat.LlmChatBackend
+import dev.insight.chat.ToolInputException
 import dev.insight.diff.pixelBorder
 import dev.insight.diff.zoomScaled
 import dev.insight.diff.zoomed
 import dev.insight.enrichment.liftCalls
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,6 +56,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.AWTEvent
 import java.awt.BasicStroke
 import java.awt.BorderLayout
@@ -181,6 +191,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
     private var trailTarget: JComponent? = null
     private var breadcrumbPath = emptyList<Pair<String, JComponent>>()
+    /** The file's own level, the start of every chain the chat shows. */
+    private val rootSlot: LevelSlot
+    /** The floating chat, created on the first Chat; hiding it keeps the conversation. */
+    private var chat: SchematicChatBlock? = null
     private val content = object : JPanel(BorderLayout()), Scrollable, Zoomable {
         private val space = Dimension()
         val graphSize: Dimension get() = super.getPreferredSize()
@@ -295,7 +309,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
         content.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
         content.applyZoom()
-        content.add(LevelSlot(file.root), BorderLayout.NORTH)
+        rootSlot = LevelSlot(file.root)
+        content.add(rootSlot, BorderLayout.NORTH)
         scroll.viewport.addChangeListener {
             val view = scroll.viewport.viewRect
             content.reserve(view.x.toLong() + view.width, view.y.toLong() + view.height)
@@ -338,6 +353,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         val trailHeight = breadcrumbs.preferredSize.height + JBUI.scale(8) +
             if (trailPreferred > trailWidth) trailScroll.horizontalScrollBar.preferredSize.height else 0
         trailBar.setBounds(view.x + gap, view.y + gap + if (sameRow) 0 else controlSize.height + gap, trailWidth, trailHeight)
+        // The chat floats on the right, below the bars, so the trail and controls stay usable.
+        chat?.takeIf { it.isVisible }?.let { block ->
+            val top = maxOf(controls.y + controls.height, if (sameRow) 0 else trailBar.y + trailBar.height) + gap
+            val chatWidth = minOf(JBUI.scale(CHAT_WIDTH), maxOf(view.width - 2 * gap, 0))
+            block.setBounds(view.x + view.width - gap - chatWidth, top, chatWidth, maxOf(view.y + view.height - gap - top, 0))
+        }
     }
 
     private fun showStatus(text: String) {
@@ -353,6 +374,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         wheelZoom = null
         wheelAnchor = null
         Toolkit.getDefaultToolkit().removeAWTEventListener(dragListener)
+        chat?.dispose()
+        chat = null
         scope.cancel()
         sourceEditors.forEach { Disposer.dispose(it) }
         sourceEditors.clear()
@@ -538,7 +561,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
     }
 
-    private fun revealBreadcrumb(target: JComponent) {
+    /** Selects [target] and scrolls to it; the chat passes [focus] false so its input keeps the keyboard. */
+    private fun revealBreadcrumb(target: JComponent, focus: Boolean = true) {
         hoverExit.stop()
         hoveredBlock = null
         trailTarget = target
@@ -549,7 +573,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
         refreshCards()
         scroll.validate()
-        content.requestFocusInWindow()
+        if (focus) content.requestFocusInWindow()
         val anchor = when (target) {
             is LevelView.BlockView -> target.box
             is LevelView.SummaryCard -> target.trailAnchor
@@ -645,6 +669,19 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     private fun drag(e: MouseEvent) {
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
+        if (e.isPopupTrigger && (e.id == MouseEvent.MOUSE_PRESSED || e.id == MouseEvent.MOUSE_RELEASED)) {
+            // IDE source text shows its own menu, with the line and selection it knows about.
+            if (generateSequence(e.component) { it.parent }.none { it is SchematicSourceEditor }) {
+                val owner = generateSequence(e.component) { it.parent }
+                    .firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView }
+                showContextMenu(e, when (owner) {
+                    is LevelView.BlockView -> owner.describe()
+                    is LevelView.SummaryCard -> owner.describe()
+                    else -> null
+                })
+            }
+            return
+        }
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                 // Native text keeps its own focus, selection and copy gestures.
@@ -676,6 +713,190 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 dragCursorOwner = null
                 dragCursor = null
             }
+        }
+    }
+
+    /** Right-click anywhere on the canvas; [pointer] describes the block, card or line under the pointer for the chat. */
+    private fun showContextMenu(e: MouseEvent, pointer: String?, copy: (() -> Unit)? = null) {
+        JPopupMenu().apply {
+            add(JMenuItem("Chat").apply {
+                toolTipText = "Ask about this file and the code it reaches; answers unfold the calls here"
+                addActionListener { openChat(pointer) }
+            })
+            copy?.let { action -> add(JMenuItem("Copy").apply { addActionListener { action() } }) }
+        }.show(e.component, e.x, e.y)
+    }
+
+    private fun openChat(pointer: String?) {
+        if (disposed) return
+        val block = chat ?: SchematicChatBlock().also {
+            chat = it
+            // Earlier components paint on top: the chat floats over the bars and the canvas.
+            add(it, 0)
+        }
+        block.point(pointer)
+        block.isVisible = true
+        revalidate()
+        repaint()
+        block.chat.input.requestFocusInWindow()
+    }
+
+    private fun relativePath(path: String): String = project.basePath?.let { base -> path.removePrefix("$base/") } ?: path
+
+    /** Read action: the current source of [id] with 1-based line numbers. */
+    private suspend fun readSource(id: Int): String = smartReadAction(project) {
+        val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
+            ?: throw ToolInputException("The source of #$id is no longer available.")
+        val psiFile = element.containingFile ?: throw ToolInputException("#$id has no source file.")
+        val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+            ?: throw ToolInputException("#$id has no readable source.")
+        val range = element.textRange
+        val first = document.getLineNumber(range.startOffset.coerceIn(0, document.textLength))
+        val last = document.getLineNumber((range.endOffset - 1).coerceIn(range.startOffset, document.textLength).coerceAtLeast(0))
+        val shown = minOf(last, first + MAX_READ_LINES - 1)
+        val path = psiFile.virtualFile?.path?.let(::relativePath) ?: psiFile.name
+        val width = (shown + 1).toString().length
+        "$path (lines ${first + 1}-${shown + 1})\n" + (first..shown).joinToString("\n") { line ->
+            "${(line + 1).toString().padStart(width)}| " +
+                document.getText(TextRange(document.getLineStartOffset(line), document.getLineEndOffset(line)))
+        } + if (shown < last) "\n[${last - shown} more lines; use read_file with path $path from line ${shown + 2}.]" else ""
+    }
+
+    /** The canvas as the chat sees and drives it; everything runs on the EDT, waiting for levels without blocking it. */
+    private inner class ChatCanvas : SchematicCanvas {
+        suspend fun roots(): List<Int> = rootSlot.awaitLevel()?.targets.orEmpty()
+
+        override suspend fun snapshot(): String {
+            val level = rootSlot.awaitLevel()
+            return withContext(Dispatchers.EDT) {
+                val root = graph.nodes[file.root]
+                buildString {
+                    append("File: ${root.filePath?.let(::relativePath) ?: root.name} (schematic of #${file.root} ${root.name})\n")
+                    if (level == null) append("The file's schematic could not be read; reading tools still work.\n")
+                    else {
+                        append("Blocks of this file (line: code → symbols it leads to; * shown on the canvas):\n")
+                        append(level.describeBlocks())
+                        val chains = level.branches(emptyList())
+                        append("\nShown on the canvas: ")
+                        append(if (chains.isEmpty()) "no cards" else chains.joinToString("; ") { chain ->
+                            chain.joinToString(" → ") { "#$it ${graph.nodes[it].name}" }
+                        })
+                    }
+                    chat?.pointer?.let { append("\nThe user opened the chat from: $it") }
+                }
+            }
+        }
+
+        override suspend fun showChain(chain: List<Int>, openLast: Boolean): String = withContext(Dispatchers.EDT) {
+            val steps = chain.dropWhile { it == file.root }
+            if (steps.isEmpty()) throw ToolInputException("symbol_ids must start with a symbol a block of this file leads to")
+            steps.firstOrNull { it !in graph.nodes.indices }?.let { throw ToolInputException("No symbol #$it") }
+            var slot = rootSlot
+            val shown = mutableListOf<Int>()
+            var last: LevelView.SummaryCard? = null
+            fun done(problem: String?): String {
+                last?.let { revealBreadcrumb(it, focus = false) }
+                val names = shown.joinToString(" → ") { "#$it ${graph.nodes[it].name}" }
+                return if (problem == null) "Shown on the canvas: $names. The last card is selected."
+                else (if (shown.isEmpty()) "Nothing was shown. " else "Shown on the canvas: $names. ") +
+                    "Stopped at step ${shown.size + 1}: $problem"
+            }
+            for ((index, id) in steps.withIndex()) {
+                val level = slot.awaitLevel()
+                if (disposed) return@withContext "The schematic was closed."
+                if (level == null) return@withContext done("the schematic of ${graph.nodes[slot.id].name} could not be read.")
+                val card = level.cardFor(id) ?: return@withContext done("#$id ${graph.nodes[id].name} is not among the blocks of " +
+                    "${if (slot === rootSlot) "this file" else "#${slot.id} ${graph.nodes[slot.id].name}"}. Its blocks lead to: " +
+                    level.targets.take(60).joinToString { "#$it ${graph.nodes[it].name}" }.ifEmpty { "nothing" })
+                card.follow(id)
+                shown += id
+                last = card
+                if (index < steps.lastIndex || openLast) {
+                    slot = card.unfold() ?: return@withContext done(
+                        if (index < steps.lastIndex) "#$id ${graph.nodes[id].name} cannot be unfolded: it is external or unresolved."
+                        else null)
+                }
+            }
+            // Let the last unfolded level appear before reporting, so a following get_canvas sees it.
+            if (openLast) slot.awaitLevel()
+            done(null)
+        }
+
+        override suspend fun reset(): String = withContext(Dispatchers.EDT) {
+            fun cards(component: Component): List<LevelView.SummaryCard> =
+                (if (component is LevelView.SummaryCard && (component.pinned || component.open)) listOf(component) else emptyList()) +
+                    ((component as? Container)?.components.orEmpty().flatMap(::cards))
+            cards(content).forEach { it.pinTo(false) }
+            hoverExit.stop()
+            activeBlock = null
+            hoveredBlock = null
+            trailTarget = null
+            refreshCards()
+            scrollTo(0, 0)
+            "The canvas shows the plain file again."
+        }
+    }
+
+    /** A chat about this schematic, floating over the canvas's right side. */
+    private inner class SchematicChatBlock : FloatingPanel(BorderLayout(0, JBUI.scale(4))) {
+        private val canvasAccess = ChatCanvas()
+        private val tools by lazy {
+            val graphTools = SchematicGraph(lifted, result.occurrences, summaries::get, ::relativePath, ::readSource)
+            schematicChatTools(project, graphTools, canvasAccess, canvasAccess::roots)
+        }
+        private val session = object : ChatSession(project, scope, welcome = "Ask about ${graph.nodes[file.root].name} and the code " +
+            "it reaches. I read the code in the background and show the answer here as a chain of unfolded calls.") {
+            override fun replyProgressTitle(text: String) = "Schematic chat: ${graph.nodes[file.root].name}"
+
+            override fun createBackend(): ChatBackend = LlmChatBackend(ChatSettings.getInstance().createClient()::complete, tools,
+                schematicChatPrompt, maxContextChars = 120_000, maxToolRounds = 60, context = canvasAccess::snapshot,
+                contextLabel = "Current schematic", evictionTarget = 0.7)
+        }
+        val chat = ChatPanel(project, session, title = "Schematic Chat", showDashboard = false, compactTools = true)
+        /** What the user right-clicked to open the chat; the next questions are likely about it. */
+        var pointer: String? = null
+            private set
+        private val pointerLabel = JLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+        private val pointerRow = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            add(pointerLabel, BorderLayout.CENTER)
+            add(ActionLink("Forget") { point(null) }.apply { toolTipText = "Stop telling the chat about this place" }, BorderLayout.EAST)
+        }
+
+        init {
+            add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+                isOpaque = false
+                add(pointerRow, BorderLayout.CENTER)
+                add(JButton("Hide").apply {
+                    isFocusable = false
+                    toolTipText = "Hide the chat; Chat in the canvas menu shows it again with the same conversation"
+                    addActionListener {
+                        this@SchematicChatBlock.isVisible = false
+                        content.requestFocusInWindow()
+                    }
+                }, BorderLayout.EAST)
+            }, BorderLayout.NORTH)
+            add(chat, BorderLayout.CENTER)
+        }
+
+        fun point(value: String?) {
+            pointer = value
+            pointerLabel.text = value?.let { "About: ${it.lineSequence().first().take(80)}" }
+            pointerLabel.toolTipText = value
+            pointerRow.isVisible = value != null
+            revalidate()
+        }
+
+        // The panel behind is translucent; the conversation needs a solid background to stay readable.
+        override fun paintComponent(g: Graphics) {
+            g.color = UIUtil.getPanelBackground()
+            g.fillRect(0, 0, width, height)
+            super.paintComponent(g)
+        }
+
+        fun dispose() {
+            chat.dispose()
+            session.discard()
         }
     }
 
@@ -746,9 +967,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     /** Loads the schematic of [id] in the background, then shows it and summarizes what it leads to. */
-    private inner class LevelSlot(private val id: Int) : JPanel(BorderLayout()) {
+    private inner class LevelSlot(val id: Int) : JPanel(BorderLayout()) {
         private var loading: Job? = null
+        /** Completes with the loaded level, or null when it could not be read; replaced by a retry. */
+        @Volatile private var ready = CompletableDeferred<LevelView?>()
         fun cancelLoad() { loading?.cancel() }
+
+        /** The level once loaded, or null when it failed or took too long. */
+        suspend fun awaitLevel(): LevelView? = withTimeoutOrNull(LOAD_TIMEOUT_MS) { ready.await() }
 
         var showSource = true
             set(value) {
@@ -766,26 +992,32 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             add(JLabel("Reading ${graph.nodes[id].name}…").zoomFont())
             revalidate()
             repaint()
+            if (ready.isCompleted) ready = CompletableDeferred()
+            val loaded = ready
             loading = scope.launch(Dispatchers.EDT) {
-                val schematic = try {
-                    withBackgroundProgress(project, "Building schematic: ${graph.nodes[id].name}") {
-                        smartReadAction(project) { SchematicBuilder.build(result, hierarchy, calls, id) }
-                    }
-                } catch (e: CancellationException) {
-                    currentCoroutineContext().ensureActive()
-                    removeAll()
-                    add(ActionLink("Schematic loading cancelled. Retry") { load() }.zoomFont())
-                    revalidate()
-                    repaint()
-                    return@launch
+                try { build() } finally { loaded.complete(components.firstOrNull() as? LevelView) }
+            }
+        }
+
+        private suspend fun build() {
+            val schematic = try {
+                withBackgroundProgress(project, "Building schematic: ${graph.nodes[id].name}") {
+                    smartReadAction(project) { SchematicBuilder.build(result, hierarchy, calls, id) }
                 }
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
                 removeAll()
-                if (schematic == null) add(JLabel("Source of ${graph.nodes[id].name} is no longer available. Reopen the schematic.").zoomFont())
-                else add(LevelView(schematic).apply { showSource(this@LevelSlot.showSource) })
+                add(ActionLink("Schematic loading cancelled. Retry") { load() }.zoomFont())
                 revalidate()
                 repaint()
-                if (schematic != null) summarize(listOf(id) + schematic.targets)
+                return
             }
+            removeAll()
+            if (schematic == null) add(JLabel("Source of ${graph.nodes[id].name} is no longer available. Reopen the schematic.").zoomFont())
+            else add(LevelView(schematic).apply { showSource(this@LevelSlot.showSource) })
+            revalidate()
+            repaint()
+            if (schematic != null) summarize(listOf(id) + schematic.targets)
         }
     }
 
@@ -799,6 +1031,32 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         private var source: SchematicSourceEditor? = null
         private var showPlainSource = true
         fun cardsFor(block: BlockView) = cards.filter { it.row === block }
+        /** Symbols this level's blocks lead to, in source order. */
+        val targets: List<Int> get() = schematic.targets
+
+        /** The first card showing [id], or else one whose unknown callee may be [id]. */
+        fun cardFor(id: Int): SummaryCard? = cards.firstOrNull { it.shown == id } ?: cards.firstOrNull { id in it.choices }
+
+        /** For the chat: one line per block, with 1-based lines; `*` marks symbols with a card on the canvas. */
+        fun describeBlocks(): String = blocks.take(MAX_DESCRIBED_BLOCKS).joinToString("\n") { block ->
+            "${block.row.headline + 1}: ${text(block.row.headline).trim().take(120)} → " +
+                cardsFor(block).joinToString(", ") { card ->
+                    "#${card.shown} ${graph.nodes[card.shown].name}" + if (card.pinned || card.open) "*" else ""
+                }
+        } + if (blocks.size > MAX_DESCRIBED_BLOCKS) "\n[${blocks.size - MAX_DESCRIBED_BLOCKS} more blocks]" else ""
+
+        /** The chains of pinned or unfolded cards from this level down, each prefixed by [prefix]. */
+        fun branches(prefix: List<Int>): List<List<Int>> = cards.filter { it.pinned || it.open }.flatMap { card ->
+            val path = prefix + card.shown
+            card.level?.takeIf { card.open }?.let { it.components.firstOrNull() as? LevelView }?.branches(path)
+                ?.ifEmpty { null } ?: listOf(path)
+        }
+
+        /** For the chat: [line] (0-based) of this level and the [selection] the user made on it. */
+        private fun describeLine(line: Int, selection: String?): String =
+            "${relativePath(schematic.file.path)}:${line + 1} ${schematic.text(line).trim().take(160)}" +
+                (if (schematic.scope != file.root) " (in the unfolded #${schematic.scope} ${graph.nodes[schematic.scope].name})" else "") +
+                selection?.takeIf { it.isNotBlank() }?.let { "\nSelected text:\n${it.take(MAX_SELECTION)}" }.orEmpty()
 
         override fun isOptimizedDrawingEnabled() = false
 
@@ -823,10 +1081,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         fun switchSourceView() {
             blocks.forEach { applyZoom(it) }
             if (useNativeSource && source == null) {
-                source = SchematicSourceEditor(project, schematic, blocks.map { it.row to it }, ::wheel) { stroke ->
+                source = SchematicSourceEditor(project, schematic, blocks.map { it.row to it }, ::wheel, onNavigate = { stroke ->
                     val key = content.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(stroke))
                     content.actionMap.get(key)?.actionPerformed(ActionEvent(content, 0, stroke))
-                }.also {
+                }, onContextMenu = { event, line, selection ->
+                    val editor = source?.editor
+                    showContextMenu(event, describeLine(line, selection),
+                        if (selection.isNullOrEmpty() || editor == null) null else { { editor.selectionModel.copySelectionToClipboard() } })
+                }).also {
                     sourceEditors += it
                     // Earlier children paint above the native editor, inside the space reserved by its folds.
                     add(it)
@@ -1009,6 +1271,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 this@SchematicPanel.refreshCards()
             }
 
+            fun describe(): String = describeLine(row.headline, null) + " → " +
+                row.targets.joinToString(", ") { "#$it ${graph.nodes[it].name}" }
+
             fun refreshTitle() {
                 title.applyZoom()
                 box.revalidate()
@@ -1037,7 +1302,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** The summary of [target]; unfolds into [target]'s own schematic. */
-        inner class SummaryCard(private val target: Int, val row: BlockView, val rowIndex: Int,
+        inner class SummaryCard(val target: Int, val row: BlockView, val rowIndex: Int,
             private val occurrences: List<CallOccurrence>) : JPanel(BorderLayout()), Zoomable {
             var pinned = false
                 private set
@@ -1046,8 +1311,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             private val node = graph.nodes[target]
             private val expandable = node.inProject && !node.unresolved
             /** For an unknown callee, declarations sharing its name; the user's [chosen] one unfolds in place of [target]. */
-            private val choices = if (node.unresolved) occurrences.flatMap { it.choices }.distinct() else emptyList()
+            val choices = if (node.unresolved) occurrences.flatMap { it.choices }.distinct() else emptyList()
             private var chosen: Int? = null
+            /** The symbol this card shows: the callee, or the declaration the user picked for an unknown one. */
+            val shown: Int get() = chosen ?: target
             private val choiceLinks = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
@@ -1063,7 +1330,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 isOpaque = false
                 isVisible = false
             }
-            private var level: LevelSlot? = null
+            var level: LevelSlot? = null
+                private set
             private val pinToggle = ActionLink("Pin") {
                 trailTarget = this
                 pinTo(!pinned)
@@ -1163,6 +1431,26 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 toggle()
                 update()
             }
+
+            /**
+             * Shows [id] on this card for the chat: pinned, and for an unknown callee its project declaration picked.
+             * External code stays a card; opening its source would leave the schematic.
+             */
+            fun follow(id: Int) {
+                trailTarget = this
+                if (id != shown && id in choices && graph.nodes[id].inProject) pick(id) else pinTo(true)
+            }
+
+            /** Unfolds the card unless it is open already; its level, or null when it cannot unfold. */
+            fun unfold(): LevelSlot? {
+                if (!open) toggle()
+                return level.takeIf { open }
+            }
+
+            fun describe(): String = "the card of ${symbolText(shown)} beside ${row.describe()}"
+
+            private fun symbolText(id: Int) = "#$id ${graph.nodes[id].name}" +
+                graph.nodes[id].location.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
 
             override fun applyZoom() {
                 border = BorderFactory.createCompoundBorder(line(if (pinned) blockOpen else JBColor.border(), 1), pixelBorder(scaled(6), scaled(8), scaled(6), scaled(8)))
@@ -1284,6 +1572,13 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val FLOATING_ROW_SPACE = 34
         const val MIN_TRAIL_WIDTH = 160
         const val BASE_FONT = "insight.schematic.baseFont"
+        const val CHAT_WIDTH = 440
+        /** Blocks of the file listed in the chat context; the rest are counted. */
+        const val MAX_DESCRIBED_BLOCKS = 200
+        const val MAX_SELECTION = 2_000
+        const val MAX_READ_LINES = 400
+        /** How long the chat waits for a level to load before giving up on it. */
+        const val LOAD_TIMEOUT_MS = 120_000L
 
         fun detab(line: String) = line.replace("\t", "    ")
         fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1291,7 +1586,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 }
 
 /** A translucent plate for controls that float over the canvas; it absorbs the pointer so the canvas below does not pan or scroll. */
-private class FloatingPanel(layout: LayoutManager) : JPanel(layout) {
+private open class FloatingPanel(layout: LayoutManager) : JPanel(layout) {
     init {
         isOpaque = false
         border = JBUI.Borders.empty(4, 8)

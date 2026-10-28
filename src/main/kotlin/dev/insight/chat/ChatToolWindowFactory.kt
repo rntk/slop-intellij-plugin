@@ -55,6 +55,8 @@ class ChatPanel(
     private val title: String? = null,
     private val showDashboard: Boolean = !chartMode,
     showFileTrace: Boolean = false,
+    /** Show tool calls as one line each, without their results; for small floating chats. */
+    private val compactTools: Boolean = false,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))), Disposable {
     // Chart replies are wrapping HTML panes, so the chart transcript follows the viewport width.
     private val transcript = (if (chartMode) WidthTrackingPanel() else JPanel()).apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
@@ -154,7 +156,7 @@ class ChatPanel(
                     add(JBLabel("Tool · ${message.text}", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER).apply {
                         toolTipText = message.toolCall?.let { "${it.name}(${it.arguments})" }
                     }, BorderLayout.NORTH)
-                    message.toolCall?.let { event ->
+                    message.toolCall?.takeUnless { compactTools }?.let { event ->
                         add(JBScrollPane(JBTextArea(event.result).apply {
                             isEditable = false
                             lineWrap = true

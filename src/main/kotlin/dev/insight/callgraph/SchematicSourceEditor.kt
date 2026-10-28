@@ -18,6 +18,7 @@ import java.awt.Dimension
 import java.awt.Graphics2D
 import java.awt.KeyboardFocusManager
 import java.awt.Point
+import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.event.MouseWheelListener
 import java.awt.geom.Rectangle2D
@@ -33,6 +34,8 @@ internal class SchematicSourceEditor(
     blocks: List<Pair<BlockRow, JComponent>>,
     onWheel: (MouseWheelEvent) -> Unit,
     onNavigate: (String) -> Unit,
+    /** Right-click on source: the mouse event, the 0-based document line, and the selected text, if any. */
+    onContextMenu: (MouseEvent, Int, String?) -> Unit,
 ) : JPanel(BorderLayout()), Disposable {
     internal val editor = EditorFactory.getInstance().createViewer(
         EditorFactory.getInstance().createDocument(schematic.lines.joinToString("\n")), project,
@@ -77,6 +80,10 @@ internal class SchematicSourceEditor(
             object : DumbAwareAction() {
                 override fun actionPerformed(e: AnActionEvent) = onNavigate(stroke)
             }.registerCustomShortcutSet(CustomShortcutSet(KeyStroke.getKeyStroke(stroke)), editor.contentComponent, this)
+        }
+        editor.installPopupHandler { event ->
+            onContextMenu(event.mouseEvent, schematic.firstLine + event.logicalPosition.line, editor.selectionModel.selectedText)
+            true
         }
         add(editor.component, BorderLayout.CENTER)
 
