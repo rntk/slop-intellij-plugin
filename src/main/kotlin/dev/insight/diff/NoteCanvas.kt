@@ -797,7 +797,7 @@ internal class NoteCanvas(
             add(JPanel(VerticalLayout(0)).apply {
                 isOpaque = false
                 add(summaryVersionRow(tab, original))
-                add(searchRow(tab))
+                if (tab.search) add(searchRow(tab))
                 if (explorer) add(summaryExplorerNavigation(tab, tree))
                 if (split != null) add(JLabel(summariesStatus(content, vocabulary.noFiles) +
                     " · Click a summary to read it. Double-click to ${if (vocabulary == ReviewVocabulary.DIFF) "open the diff" else "open the file"}. Drag the divider to resize.").apply {
@@ -925,6 +925,17 @@ internal class NoteCanvas(
                 toolTipText = request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
                     ?: "Search related summaries to choose a query and the summaries to rewrite"
                 addActionListener { startContextSummaries(tab) }
+            })
+            add(tab.searchField.apply {
+                preferredSize = Dimension(scaled(260), preferredSize.height)
+                if (text != tab.view.fuzzy) text = tab.view.fuzzy
+            })
+            add(JButton("Cancel search").apply {
+                name = "summaries-cancel-search"
+                font = scaledFont(JBFont.small())
+                cursor = Cursor.getDefaultCursor()
+                toolTipText = "Cancel the current search and clear highlights, selected words and all filters in this tab"
+                addActionListener { cancelSearch(tab) }
             })
             version(tab)?.let { selected ->
                 val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
@@ -1101,8 +1112,8 @@ internal class NoteCanvas(
         reading(tab)?.let(tab.view::resummaryRequest) ?: version(tab)?.request?.takeIf { it.nodeIds.isNotEmpty() }
 
     /**
-     * A search tab's queries as breadcrumbs, each going back to the summaries left after it, and the search field. The typed
-     * filter stays out of the breadcrumbs: the field itself shows it.
+     * A search tab's queries as breadcrumbs, each going back to the summaries left after it. The typed filter stays out
+     * of the breadcrumbs: the search field itself shows it.
      */
     private fun searchRow(tab: SummariesTab): JComponent = JPanel(BorderLayout(scaled(8), 0)).apply {
         isOpaque = false
@@ -1123,20 +1134,6 @@ internal class NoteCanvas(
                 crumb("“${it.query}”", index + 1, index == crumbs.lastIndex, "Summaries related to “${it.query}”")
             }
         }, BorderLayout.CENTER)
-        add(JPanel(BorderLayout(scaled(8), 0)).apply {
-            isOpaque = false
-            add(tab.searchField.apply {
-                preferredSize = Dimension(scaled(260), preferredSize.height)
-                if (text != tab.view.fuzzy) text = tab.view.fuzzy
-            }, BorderLayout.CENTER)
-            add(JButton("Cancel search").apply {
-                name = "summaries-cancel-search"
-                font = scaledFont(JBFont.small())
-                cursor = Cursor.getDefaultCursor()
-                toolTipText = "Cancel the current search and clear highlights, selected words and all filters in this tab"
-                addActionListener { cancelSearch(tab) }
-            }, BorderLayout.EAST)
-        }, BorderLayout.EAST)
     }
 
     private fun cancelSearch(tab: SummariesTab) {
