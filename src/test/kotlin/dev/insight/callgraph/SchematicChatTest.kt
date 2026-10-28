@@ -10,6 +10,31 @@ import org.junit.Test
 
 class SchematicChatTest {
     @Test
+    fun `queries reuse edge indexes until the snapshot changes`() {
+        var scans = 0
+        fun counted(edges: Set<CallGraphEdge>) = object : AbstractSet<CallGraphEdge>() {
+            override val size get() = edges.size
+            override fun iterator(): Iterator<CallGraphEdge> {
+                scans++
+                return edges.iterator()
+            }
+        }
+        var current = graph.copy(edges = counted(graph.edges))
+        val occurrences = emptyList<CallOccurrence>()
+        val chat = SchematicGraph(current, occurrences, { null }, snapshot = { current to occurrences })
+        repeat(3) {
+            assertTrue(chat.paths(1, emptyList(), 4, 8).contains("#4 register"))
+            chat.inspect(2)
+            assertEquals(listOf(4, 5), chat.callees(2))
+        }
+        assertEquals(1, scans)
+        current = current.copy(edges = counted(setOf(CallGraphEdge(1, 4))))
+        assertEquals(emptyList<Int>(), chat.callees(2))
+        assertEquals(listOf(4), chat.callees(1))
+        assertEquals(2, scans)
+    }
+
+    @Test
     fun `shortest call paths are breadth first and bounded`() {
         val calls = mapOf(0 to listOf(1, 2), 1 to listOf(3), 2 to listOf(3), 3 to listOf(4), 5 to listOf(4))
         val next = { id: Int -> calls[id].orEmpty() }

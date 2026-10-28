@@ -41,6 +41,8 @@ object ProjectGraphAnalyzer {
     /** References are attributed to the nearest declaration, including property initializers and local functions. */
     fun relations(file: PsiFile,
         occurrence: (PsiElement, PsiElement, CallResolution) -> Unit = { _, _, _ -> },
+        scope: PsiElement = file,
+        foldFunctions: Boolean = false,
         emit: (PsiElement, PsiElement, RelationKind) -> Unit) {
         fun owner(element: PsiElement?): PsiElement {
             var current = element
@@ -50,10 +52,14 @@ object ProjectGraphAnalyzer {
             }
             return file
         }
-        file.accept(object : PsiRecursiveElementWalkingVisitor() {
+        scope.accept(object : PsiRecursiveElementWalkingVisitor() {
             override fun visitElement(element: PsiElement) {
                 ProgressManager.checkCanceled()
                 if (element is PsiComment) return
+                if (foldFunctions && element !== scope && kind(element) == SymbolKind.FUNCTION) {
+                    headlineReferences(element) { target -> emit(element, source(target), RelationKind.REFERENCE) }
+                    return
+                }
                 if (element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS)
                 for (method in supports.flatMap { it.superMethods(element) }) {
                     emit(element, source(method), RelationKind.INHERITS)
@@ -79,11 +85,41 @@ object ProjectGraphAnalyzer {
         })
     }
 
-    fun build(project: Project, progress: (String) -> Unit = {}): CallGraphResult {
+    /** Only the line displayed for a folded declaration; never resolve calls or visit hidden body lines. */
+    private fun headlineReferences(declaration: PsiElement, emit: (PsiElement) -> Unit) {
+        val document = PsiDocumentManager.getInstance(declaration.project).getDocument(declaration.containingFile) ?: return
+        val line = document.getLineNumber(declaration.textOffset.coerceIn(0, document.textLength))
+        val start = document.getLineStartOffset(line)
+        val end = document.getLineEndOffset(line)
+        declaration.accept(object : PsiRecursiveElementWalkingVisitor() {
+            override fun visitElement(element: PsiElement) {
+                ProgressManager.checkCanceled()
+                if (element is PsiComment || element.textRange.endOffset <= start || element.textRange.startOffset >= end) return
+                for (reference in element.references) {
+                    val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
+                    if (range.startOffset < start || range.endOffset > end) continue
+                    resolveTargets(reference).filter {
+                        kind(source(it)) in setOf(SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
+                    }.forEach(emit)
+                }
+                super.visitElement(element)
+            }
+        })
+    }
+
+    fun build(project: Project, progress: (String) -> Unit = {}): CallGraphResult = buildFiles(project, null, progress = progress)
+
+    /** A file-local snapshot; folded functions and target bodies are never resolved. Read action only. */
+    internal fun buildScope(project: Project, scope: PsiElement, declarationsOnly: Boolean = false): CallGraphResult =
+        buildFiles(project, listOf(scope.containingFile), scope, declarationsOnly)
+
+    private fun buildFiles(project: Project, selectedFiles: List<PsiFile>?, scope: PsiElement? = null,
+        declarationsOnly: Boolean = false, progress: (String) -> Unit = {}): CallGraphResult {
         progress("Finding supported project files")
         val manager = PsiManager.getInstance(project)
         val files = mutableListOf<PsiFile>()
-        ProjectFileIndex.getInstance(project).iterateContent { virtualFile ->
+        if (selectedFiles != null) files.addAll(selectedFiles.filter { file -> supports.any { it.supportsFile(file) } })
+        else ProjectFileIndex.getInstance(project).iterateContent { virtualFile ->
             ProgressManager.checkCanceled()
             // Each language support decides which parsed files it covers; binary files are never parsed.
             if (!virtualFile.isDirectory && !virtualFile.fileType.isBinary) {
@@ -125,7 +161,16 @@ object ProjectGraphAnalyzer {
             }
             return id
         }
-        files.forEachIndexed { index, file ->
+        // Containment is available before any branch needs reference resolution.
+        if (selectedFiles != null) elements.toList().forEach { element ->
+            if (element !is PsiFile) {
+                val parent = generateSequence(element.parent) { it.parent }.firstOrNull { kind(it) != null }
+                val from = parent?.let(::key)?.let(ids::get)
+                val to = key(element)?.let(ids::get)
+                if (from != null && to != null) edges += CallGraphEdge(from, to, RelationKind.CONTAINS)
+            }
+        }
+        if (!declarationsOnly) files.forEachIndexed { index, file ->
             progress("Resolving references (${index + 1}/${files.size}): ${file.virtualFile.path}")
             relations(file, occurrence = { from, site, resolution ->
                 val owner = key(from)?.let(ids::get) ?: return@relations
@@ -158,10 +203,11 @@ object ProjectGraphAnalyzer {
                 occurrences += record
                 val relation = if (resolution.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                 record.displayTargets.forEach { edges += CallGraphEdge(owner, it, relation) }
-            }) { from, to, relation ->
+            }, scope = scope ?: file, foldFunctions = selectedFiles != null) { from, to, relation ->
                 val fromId = key(from)?.let(ids::get)
                 // Package imports (for example Go) resolve to a directory: link every graph file directly inside it.
-                val toIds = if (to is PsiDirectory) filesByDirectory[to.virtualFile.path].orEmpty() else listOfNotNull(targetId(to))
+                val toIds = if (to is PsiDirectory) filesByDirectory[to.virtualFile.path].orEmpty()
+                    else listOfNotNull(targetId(to, boundary = selectedFiles != null))
                 if (fromId != null) toIds.forEach { edges += CallGraphEdge(fromId, it, relation) }
             }
         }

@@ -7,7 +7,7 @@
         The chat answers with a llama.cpp (or other OpenAI-compatible) server configured in Settings → Tools → Insight Chat,
         using read-only tools to list, search, and read project files; without a server it uses local demo responses.
         The dashboard shows explicitly labeled sample data.
-        <br/>Application Graph shows Java, Kotlin, Python, Go, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
+        <br/>Application Graph shows Java, Kotlin, Python, Go, Rust, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
         <br/>Entry Points (an Application Graph tab) compares application entry points found with the LLM API and Decisions API.
         <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
         <br/>Code Review (Tools menu, or Review Code in Directory in the Project view) reviews the code in the project, a folder, or an entry file and the files it depends on, with a chat, summaries from the whole scope down to each file, and topics.
@@ -19,6 +19,7 @@
     <!-- PyCharm (Community/Professional) and the Python plugins all provide the python module. -->
     <depends optional="true" config-file="call-graph-python.xml">com.intellij.modules.python</depends>
     <depends optional="true" config-file="call-graph-go.xml">org.jetbrains.plugins.go</depends>
+    <depends optional="true" config-file="call-graph-rust.xml">com.jetbrains.rust</depends>
     <!-- The JavaScript plugin covers both JavaScript and TypeScript. -->
     <depends optional="true" config-file="call-graph-javascript.xml">JavaScript</depends>
     <!-- Comparing with a named revision (the Changes "vs" field) uses Git; local changes vs HEAD work with any VCS. -->

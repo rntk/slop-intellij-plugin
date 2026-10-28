@@ -87,7 +87,9 @@ import javax.swing.text.DefaultCaret
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-class SchematicFile(val result: CallGraphResult, val root: Int) : LightVirtualFile("Schematic: ${result.graph.nodes[root].name}")
+class SchematicFile(val result: CallGraphResult, val root: Int) : LightVirtualFile("Schematic: ${result.graph.nodes[root].name}") {
+    internal var exploration: ProgressiveSchematic? = null
+}
 
 fun openSchematic(project: Project, result: CallGraphResult, root: Int) {
     FileEditorManager.getInstance(project).openFile(SchematicFile(result, root), true)
@@ -117,13 +119,16 @@ class OpenSchematicAction : AnAction() {
         service.scope.launch(Dispatchers.EDT) {
             try {
                 log.info("Opening schematic for ${file.path}")
-                val built = service.currentProject()
-                val node = built.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path }
+                val exploration = ProgressiveSchematic.open(project, file)
+                val built = exploration?.result
+                val node = built?.graph?.nodes?.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path }
                 if (node == null) {
-                    log.warn("Schematic file is absent from the application graph: ${file.path}")
-                    showNotice("This file is not in the application graph. Check that its language plugin is enabled and the file is included in project content.")
+                    log.warn("Schematic source is unavailable or unsupported: ${file.path}")
+                    showNotice("This file cannot be shown. Check that its language plugin is enabled and the file is included in project content.")
                 } else {
-                    openSchematic(project, built, node.id)
+                    FileEditorManager.getInstance(project).openFile(SchematicFile(built, node.id).apply {
+                        this.exploration = exploration
+                    }, true)
                     log.info("Opened schematic for ${file.path}")
                 }
             } catch (e: CancellationException) {
@@ -176,16 +181,27 @@ private class SchematicEditor(project: Project, private val file: SchematicFile)
  * Ctrl/⌘ + wheel zooms it. With the canvas focused, keys scroll and zoom it too.
  */
 internal class SchematicPanel(private val project: Project, private val file: SchematicFile) : JPanel(null) {
-    private val result = file.result
-    private val graph = result.graph
-    private val lifted by lazy { liftCalls(graph) }
-    private val calls by lazy { lifted.edges.filter { it.kind == RelationKind.CALL }.groupBy { it.caller } }
-    private val hierarchy by lazy { graph.hierarchy() }
-    private val filesByPath by lazy {
-        graph.nodes.filter { it.kind == SymbolKind.FILE && it.inProject && !it.unresolved && it.filePath != null }
-            .associateBy { it.filePath }
+    private val result get() = file.exploration?.result ?: file.result
+    private val graph get() = result.graph
+    @Volatile private var analysis = Analysis(file.result)
+    private val currentAnalysis: Analysis get() {
+        val snapshot = result
+        return analysis.takeIf { it.result === snapshot } ?: Analysis(snapshot).also { analysis = it }
     }
-    private val summaries by lazy { SchematicSummaries(project, result, lifted) }
+    private val lifted get() = currentAnalysis.lifted
+    private val calls get() = currentAnalysis.calls
+    private val hierarchy get() = currentAnalysis.hierarchy
+    private val filesByPath get() = currentAnalysis.filesByPath
+    private class Analysis(val result: CallGraphResult) {
+        val lifted by lazy { liftCalls(result.graph) }
+        val calls by lazy { lifted.edges.filter { it.kind == RelationKind.CALL }.groupBy { it.caller } }
+        val hierarchy by lazy { result.graph.hierarchy() }
+        val filesByPath by lazy {
+            result.graph.nodes.filter { it.kind == SymbolKind.FILE && it.inProject && !it.unresolved && it.filePath != null }
+                .associateBy { it.filePath }
+        }
+    }
+    private val summaries by lazy { SchematicSummaries(project) { result } }
     private val scope = project.service<CallGraphService>().scope.let { parent ->
         CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
     }
@@ -315,7 +331,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         add(JLabel("?").apply {
             font = font.deriveFont(Font.BOLD)
             toolTipText = "<html><div style='width:420px'>Hover a block or use Tab / Shift+Tab to preview its summaries. " +
-                "Enter or a left click on a block pins its cards; Unpin releases a card. " +
+                "Enter or a left click on a block pins its cards and requests summaries of those functions. Unpin releases a card. " +
                 "Click a summary to unfold or fold the code it leads to. " +
                 "Choose Show whole file to explore other declarations in its file. " +
                 "IDE editor enables source selection and copying; turn it off for the original canvas view. " +
@@ -323,7 +339,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
                 "Drag outside source text, or middle-drag, to move; Ctrl/⌘ + wheel to zoom. " +
                 "With the canvas focused, + and − zoom; arrows, Page Up/Down, Home and End scroll.<br><br>" +
-                "Source and calls are a snapshot of the application graph; reopen the schematic after edits.</div></html>"
+                "Calls load as you unfold scopes; summaries describe each function's own source. Reopen the schematic after edits.</div></html>"
         })
     }
 
@@ -872,7 +888,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private inner class SchematicChatBlock : FloatingPanel(BorderLayout(0, JBUI.scale(4))) {
         private val canvasAccess = ChatCanvas()
         private val tools by lazy {
-            val graphTools = SchematicGraph(lifted, result.occurrences, summaries::get, ::relativePath, ::readSource)
+            val graphTools = SchematicGraph(lifted, result.occurrences, summaries::get, ::relativePath, ::readSource,
+                snapshot = { currentAnalysis.let { it.lifted to it.result.occurrences } },
+                expand = { file.exploration?.expand(it) })
             schematicChatTools(project, graphTools, canvasAccess, canvasAccess::roots)
         }
         private val session = object : ChatSession(project, scope, welcome = "Ask about ${graph.nodes[file.root].name} and the code " +
@@ -931,7 +949,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
     }
 
-    /** Summarizes what [roots] reach unless every function in them was already included in a run. */
+    /** Summarizes only the functions explicitly requested by the reader. */
     private fun summarize(roots: List<Int>) {
         if (disposed || !summaries.needs(roots)) return
         running++
@@ -948,6 +966,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                                 reporter.fraction(if (total > 0) done.toDouble() / total else null)
                                 ApplicationManager.getApplication().invokeLater {
                                     if (!disposed && running > 0) showStatus("$phase: $done / $total")
+                                    if (!disposed) refreshSummaries(content)
                                 }
                             }
                         }
@@ -997,7 +1016,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         OpenFileDescriptor(project, target.first, target.second).navigate(true)
     }
 
-    /** Loads the schematic of [id] in the background, then shows it and summarizes what it leads to. */
+    /** Resolves only [id]'s visible scope, then shows it without requesting descendant summaries. */
     private inner class LevelSlot(val id: Int) : JPanel(BorderLayout()) {
         private var loading: Job? = null
         /** Completes with the loaded level, or null when it could not be read; replaced by a retry. */
@@ -1043,6 +1062,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         private suspend fun build() {
             val schematic = try {
                 withBackgroundProgress(project, "Building schematic: ${graph.nodes[id].name}") {
+                    file.exploration?.expand(id)
                     smartReadAction(project) { SchematicBuilder.build(result, hierarchy, calls, id) }
                 }
             } catch (e: CancellationException) {
@@ -1058,7 +1078,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             else add(LevelView(schematic).apply { showSource(this@LevelSlot.showSource) })
             revalidate()
             repaint()
-            if (schematic != null) summarize(listOf(id) + schematic.targets)
         }
     }
 
@@ -1594,6 +1613,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 level = null
                 wholeFile = null
                 chosen = id
+                summarize(listOf(id))
                 showChoices()
                 toggle()
                 update()
@@ -1646,6 +1666,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             fun pinTo(value: Boolean) {
                 if (pinned == value) return
                 pinned = value
+                if (value) summarize(listOf(symbol))
                 pinToggle.text = if (value) "Unpin" else "Pin"
                 // Releasing an unfolded card also folds its branch, so hidden descendants cannot retain the cursor.
                 if (!value && open) toggle()
@@ -1681,9 +1702,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         (summary.description?.let { "<br>${escape(it)}" } ?: "")
                     node.kind != SymbolKind.FUNCTION -> schematic.excerpts[node.id]?.let { "<code>${escape(it)}</code><br>" }.orEmpty() +
                         "<font color='gray'>Unfold to inspect its declaration.</font>"
-                    running > 0 && !summaries.isCovered(target) -> "<font color='gray'>Summarizing…</font>"
-                    summaries.isCovered(target) -> "<font color='gray'>No summary: short, test code, or the request failed.</font>"
-                    else -> "<font color='gray'>Not summarized.</font>"
+                    summaries.isPending(target) -> "<font color='gray'>Summarizing…</font>"
+                    summaries.isCovered(target) -> "<font color='gray'>No summary: test code, unavailable source, or the request failed.</font>"
+                    else -> "<font color='gray'>Pin or unfold to summarize this function.</font>"
                 }
                 val evidence = when {
                     row.link.reference -> "<br><font color='gray'>Named on this line, not called.</font>"

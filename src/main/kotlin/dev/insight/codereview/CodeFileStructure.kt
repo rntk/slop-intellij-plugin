@@ -45,7 +45,7 @@ internal class CodeFileStructureBuilder(private val project: Project, snapshot: 
         val virtual = findSourceFile(project, file.path, file.absolutePath) ?: throw IllegalStateException("${file.path} no longer exists.")
         val psi = PsiManager.getInstance(project).findFile(virtual) ?: throw IllegalStateException("${file.path} cannot be parsed.")
         if (supports.none { it.supportsFile(psi) })
-            throw IllegalStateException("File view follows calls in Java, Kotlin, Python, JavaScript/TypeScript and Go; ${file.path.substringAfterLast('/')} is not one of them.")
+            throw IllegalStateException("File view follows calls in Java, Kotlin, Python, JavaScript/TypeScript, Go and Rust; ${file.path.substringAfterLast('/')} is not one of them.")
         val text = psi.viewProvider.document?.text ?: psi.text
         if (text != file.text) throw IllegalStateException("${file.path} differs from the review snapshot. Save it, or wait for the review to reload it.")
         if (file.lineCount == 0) return FileStructure(file.path, file.fingerprint, emptyList())

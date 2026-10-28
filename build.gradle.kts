@@ -28,6 +28,7 @@ dependencies {
         bundledPlugin("Git4Idea")
         // Marketplace plugins matching the target build (IU-252.27397.103).
         plugins("PythonCore:252.27397.103", "org.jetbrains.plugins.go:252.27397.103")
+        plugins("com.jetbrains.rust:252.27397.133")
         testFramework(TestFrameworkType.Platform)
         testFramework(TestFrameworkType.Plugin.Java)
     }

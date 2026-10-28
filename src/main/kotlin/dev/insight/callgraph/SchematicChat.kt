@@ -33,28 +33,40 @@ internal interface SchematicCanvas {
 
 /**
  * Read-only questions about the application graph for a schematic chat. [graph] has calls from locals lifted to their
- * function (see `liftCalls`); [summaries] are the bottom-up summaries written so far; [relative] shortens file paths;
+ * function (see `liftCalls`); [summaries] describe functions requested so far; [relative] shortens file paths;
  * [source] reads a declaration's current text with line numbers (read action).
  */
 internal class SchematicGraph(
-    private val graph: CallGraph,
-    private val occurrences: List<CallOccurrence>,
+    graph: CallGraph,
+    occurrences: List<CallOccurrence>,
     private val summaries: (Int) -> FunctionSummary?,
     private val relative: (String) -> String = { it },
     private val source: suspend (Int) -> String = { throw ToolInputException("Source is unavailable") },
+    private val snapshot: () -> Pair<CallGraph, List<CallOccurrence>> = { graph to occurrences },
+    private val expand: suspend (Int) -> Unit = {},
 ) {
-    private val nodes get() = graph.nodes
-    private val callees = graph.edges.filter { it.kind == RelationKind.CALL && it.caller != it.callee }
-        .groupBy({ it.caller }, { it.callee }).mapValues { it.value.distinct() }
-    private val callers = graph.edges.filter { it.kind == RelationKind.CALL && it.caller != it.callee }
-        .groupBy({ it.callee }, { it.caller }).mapValues { it.value.distinct() }
-    private val members = graph.edges.filter { it.kind == RelationKind.CONTAINS && it.caller != it.callee }
-        .groupBy({ it.caller }, { it.callee })
-    private val owner = graph.edges.filter { it.kind == RelationKind.CONTAINS && it.caller != it.callee }
-        .associate { it.callee to it.caller }
-    private val calls = occurrences.groupBy { it.scope }
+    @Volatile private var cached: Indexes? = null
+    private val indexes: Indexes get() {
+        val (graph, occurrences) = snapshot()
+        return cached?.takeIf { it.graph === graph && it.occurrences === occurrences }
+            ?: Indexes(graph, occurrences).also { cached = it }
+    }
+    private class Indexes(val graph: CallGraph, val occurrences: List<CallOccurrence>) {
+        private val edges by lazy { graph.edges.filter { it.caller != it.callee } }
+        val callees by lazy { edges.filter { it.kind == RelationKind.CALL }
+            .groupBy({ it.caller }, { it.callee }).mapValues { it.value.distinct() } }
+        val callers by lazy { edges.filter { it.kind == RelationKind.CALL }
+            .groupBy({ it.callee }, { it.caller }).mapValues { it.value.distinct() } }
+        val members by lazy { edges.filter { it.kind == RelationKind.CONTAINS }.groupBy({ it.caller }, { it.callee }) }
+        val owner by lazy { edges.filter { it.kind == RelationKind.CONTAINS }.associate { it.callee to it.caller } }
+        val calls by lazy { occurrences.groupBy { it.scope } }
+    }
+    private val nodes get() = indexes.graph.nodes
+    suspend fun load(id: Int) {
+        if (nodes.getOrNull(id)?.let { it.inProject && !it.unresolved } == true) expand(id)
+    }
 
-    fun callees(id: Int): List<Int> = callees[id].orEmpty()
+    fun callees(id: Int): List<Int> = indexes.callees[id].orEmpty()
 
     /** One line naming [id] for the model: id, kind, name, container, location and how far it can be followed. */
     fun line(id: Int): String {
@@ -80,18 +92,20 @@ internal class SchematicGraph(
     }
 
     fun inspect(id: Int): String {
+        val index = indexes
+        val nodes = index.graph.nodes
         val node = nodes.getOrNull(id) ?: throw ToolInputException("No symbol #$id")
         fun list(title: String, ids: List<Int>) = if (ids.isEmpty()) "" else "\n$title (${ids.size}):\n" +
             ids.take(LIST_LIMIT).joinToString("\n") { "  ${line(it)}" } + if (ids.size > LIST_LIMIT) "\n  [${ids.size - LIST_LIMIT} more]" else ""
         val summary = summaries(id)?.let { "\nSummary: ${it.label}" + it.description?.let { text -> " — $text" }.orEmpty() }.orEmpty()
-        val sites = calls[id].orEmpty().take(LIST_LIMIT).joinToString("\n") { site ->
+        val sites = index.calls[id].orEmpty().take(LIST_LIMIT).joinToString("\n") { site ->
             val targets = site.displayTargets.joinToString(", ") { "#$it ${nodes[it].name}" }.ifEmpty { "none" }
             "  ${site.expression.lineSequence().first().take(120)} → $targets (${site.status.name.lowercase()})"
         }
         return line(id) + node.signature?.let { "\nSignature: $it" }.orEmpty() + summary +
-            owner[id]?.let { "\nDeclared in: ${line(it)}" }.orEmpty() +
-            list("Declares", members[id].orEmpty().filter { nodes[it].kind !in setOf(SymbolKind.PARAMETER, SymbolKind.VARIABLE) }) +
-            list("Calls", callees(id)) + list("Called by", callers[id].orEmpty()) +
+            index.owner[id]?.let { "\nDeclared in: ${line(it)}" }.orEmpty() +
+            list("Declares", index.members[id].orEmpty().filter { nodes[it].kind !in setOf(SymbolKind.PARAMETER, SymbolKind.VARIABLE) }) +
+            list("Calls", index.callees[id].orEmpty()) + list("Called by", index.callers[id].orEmpty()) +
             (if (sites.isEmpty()) "" else "\nCall sites in its body:\n$sites") +
             when {
                 node.unresolved -> "\nThe IDE found no declaration for this call; search_text for the name to look further."
@@ -108,11 +122,13 @@ internal class SchematicGraph(
 
     /** Shortest static call chains to [target], from [from] or else from the symbols the file's blocks lead to. */
     fun paths(from: Int?, roots: List<Int>, target: Int, maxDepth: Int): String {
+        val index = indexes
+        val nodes = index.graph.nodes
         if (target !in nodes.indices) throw ToolInputException("No symbol #$target")
         if (from != null && from !in nodes.indices) throw ToolInputException("No symbol #$from")
         val starts = from?.let(::listOf) ?: roots
         val found = shortestCallPaths(starts, target, maxDepth, MAX_PATHS) { id ->
-            if (nodes[id].inProject && !nodes[id].unresolved) callees(id) else emptyList()
+            if (nodes[id].inProject && !nodes[id].unresolved) index.callees[id].orEmpty() else emptyList()
         }
         if (found.isEmpty()) return "No static call chain of at most $maxDepth calls reaches ${line(target)}. " +
             "It may be called through an interface, callback, reflection or framework wiring; check its callers with inspect_symbol."
@@ -176,6 +192,11 @@ internal val schematicChatPrompt = """
     receiver may be ambiguous, unresolved or missing, and external library code is a boundary without a body. A static
     edge is evidence, not proof of runtime behavior; read the source when it matters.
 
+    The graph grows on demand. find_symbols searches discoveries so far; inspect_symbol resolves only that symbol's
+    scope and discovers its direct calls without opening them on the canvas. Inspect successive callees to follow a
+    branch. call_path uses discovered edges only: a missing path or caller list is incomplete, not proof of absence.
+    Summaries describe a function's own source, not an exhaustive reading of its descendants.
+
     Investigate first; this is invisible to the user. Use find_symbols, inspect_symbol, read_symbol and call_path to
     follow calls, and search_text, list_files and read_file for anything the graph misses. When you have the answer, show
     it on the canvas with show_call_chain: the ids from a symbol of this file down to the code that matters, each called
@@ -192,7 +213,7 @@ internal fun schematicChatTools(project: Project, graph: SchematicGraph, canvas:
     projectContextTools(project) + schematicGraphTools(graph, roots) + schematicCanvasTools(canvas)
 
 internal fun schematicGraphTools(graph: SchematicGraph, roots: suspend () -> List<Int>): List<ChatTool> = listOf(
-    objectTool("find_symbols", "Find classes and functions of the call graph by name (fuzzy, project code first). Returns #id lines. " +
+    objectTool("find_symbols", "Find classes and functions discovered so far by name (fuzzy, project code first). Returns #id lines. " +
         "Does not change the canvas.",
         """"query":{"type":"string","description":"Name or part of it, such as addHandler or HttpServer."},
            "kind":{"type":"string","enum":["file","class","function","property"]},
@@ -202,17 +223,19 @@ internal fun schematicGraphTools(graph: SchematicGraph, roots: suspend () -> Lis
         }
         graph.find(args.stringArg("query"), kind, args.intArg("max_results", 30).coerceIn(1, 100))
     },
-    objectTool("inspect_symbol", "A symbol's location, summary, declaring class, members, the symbols it calls, its callers, and the " +
+    objectTool("inspect_symbol", "Resolve this symbol's scope on demand, returning its location, summary, declaring class, members, direct calls, discovered callers, and the " +
         "call expressions in its body with their resolved targets. Does not change the canvas.",
         """"id":{"type":"integer","description":"Symbol id, without #."}""", "\"id\"") { args ->
-        graph.inspect(args.idArg("id")!!)
+        val id = args.idArg("id")!!
+        graph.load(id)
+        graph.inspect(id)
     },
     objectTool("read_symbol", "Current source of a declaration with 1-based line numbers and its file path. Use read_file for the " +
         "surrounding file. Does not change the canvas.",
         """"id":{"type":"integer","description":"Symbol id, without #."}""", "\"id\"") { args ->
         graph.read(args.idArg("id")!!)
     },
-    objectTool("call_path", "Shortest static call chains (up to 3) to a symbol, from another symbol or, by default, from the symbols " +
+    objectTool("call_path", "Shortest static call chains in the explored graph (up to 3) to a symbol, from another symbol or, by default, from the symbols " +
         "this file's blocks lead to. Chains from this file can be passed to show_call_chain. Does not change the canvas.",
         """"to":{"type":"integer","description":"Target symbol id."},
            "from":{"type":"integer","description":"Start symbol id; omit to start from this file."},

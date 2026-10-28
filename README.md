@@ -11,6 +11,8 @@ A Kotlin plugin for JetBrains IDEs that combines interactive codebase visualizat
 - **LLM Chat & Tooling**: Configurable local and hosted LLM integration equipped with read-only project tools for codebase Q&A, enrichment, and guided chart navigation.
 - **Dashboard & Utilities**: Native editor dashboard views and standalone API clients for structured evaluation.
 
+Code analysis supports Java, Kotlin, Python, Go, Rust, JavaScript and TypeScript when the corresponding IDE language plugin is installed. Rust support uses the JetBrains Rust plugin (`com.jetbrains.rust`), including functions, methods, trait declarations, structs, enums, fields, bindings, imports and call sites.
+
 ## Build & Run
 
 Settings → Tools → Insight Chat includes separate maximum concurrent request limits for the LLM and Decisions APIs. Each limit is shared across jobs and projects in the IDE. Excess requests wait without blocking the UI, and applying a new limit also affects existing clients. Individual jobs may use fewer requests than the configured maximum.
