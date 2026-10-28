@@ -1039,7 +1039,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         private val rows = mutableListOf<JComponent>()
         private val indent = schematic.lines.filter { it.isNotBlank() }.minOfOrNull { line -> detab(line).takeWhile { it == ' ' }.length } ?: 0
         private val charWidth get() = getFontMetrics(codeFont).charWidth(' ')
-        val blocks get() = rows.filterIsInstance<BlockView>()
+        /** Links of this level in source order; a split line has several. */
+        val blocks get() = rows.filterIsInstance<LineView>().flatMap { it.blocks }
         private var source: SchematicSourceEditor? = null
         private var showPlainSource = true
         fun cardsFor(block: BlockView) = cards.filter { it.row === block }
@@ -1080,12 +1081,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             for (row in schematic.rows) {
                 val view = when (row) {
                     is CodeRow -> codeView(row)
-                    is BlockRow -> BlockView(row)
+                    is BlockRow -> LineView(row)
                 }
                 rows += view
                 add(view)
-                if (row is BlockRow) row.targets.forEach { target ->
-                    cards += SummaryCard(target, view as BlockView, rows.lastIndex, row.occurrences.filter { target in it.displayTargets }).also(::add)
+                if (view is LineView) view.blocks.forEach { block ->
+                    block.link.targets.forEach { target ->
+                        cards += SummaryCard(target, block, rows.lastIndex, block.link.occurrences.filter { target in it.displayTargets }).also(::add)
+                    }
                 }
             }
             switchSourceView()
@@ -1094,9 +1097,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         /** Keep shared blocks and cards in place, and allocate native editors only while that mode is selected. */
         fun switchSourceView() {
-            blocks.forEach { applyZoom(it) }
+            val lines = rows.filterIsInstance<LineView>()
+            lines.forEach { applyZoom(it) }
             if (useNativeSource && source == null) {
-                source = SchematicSourceEditor(project, schematic, blocks.map { it.row to it }, ::wheel, onNavigate = { stroke ->
+                source = SchematicSourceEditor(project, schematic, lines.map { it.row to it }, ::wheel, onNavigate = { stroke ->
                     val key = content.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(stroke))
                     content.actionMap.get(key)?.actionPerformed(ActionEvent(content, 0, stroke))
                 }, onContextMenu = { event, line, selection ->
@@ -1128,7 +1132,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 it.isVisible = visible
                 if (revealed) applyZoom(it)
             }
-            blocks.forEach { it.repaintBorder() }
+            rows.filterIsInstance<LineView>().forEach { it.repaintBorder() }
             revalidate()
             repaint()
         }
@@ -1170,11 +1174,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val sourceSize = native?.preferredSize ?: Dimension()
             val sourceWidth = if (native != null) maxOf(sourceSize.width, rowSizes.maxOfOrNull { it.width } ?: 0) else maxOf(
                 rowSizes.maxOfOrNull { it.width }?.coerceAtMost(scaled(MAX_SOURCE_WIDTH)) ?: 0,
-                rows.indices.filter { (rows[it] as? BlockView)?.onTrail == true }
+                rows.indices.filter { (rows[it] as? LineView)?.onTrail == true }
                     .maxOfOrNull { rowSizes[it].width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
             )
             var bottom = 0
-            val rowTops = if (native != null) rows.map { if (it is BlockView) native.blockY(it.row) else 0 }
+            val rowTops = if (native != null) rows.map { if (it is LineView) native.blockY(it.row) else 0 }
                 else rowSizes.map { size -> bottom.also { bottom += size.height } }
             val sourceHeight = if (native != null) sourceSize.height else bottom
             val cardSizes = cards.map { if (it.isVisible) it.preferredSize else Dimension() }
@@ -1220,10 +1224,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 g2.stroke = BasicStroke(scaled(1).toFloat())
                 val head = scaled(5)
                 for (card in cards.filter { it.isVisible }) {
-                    val row = card.row
+                    // Links of a split line share its right edge, so the arrow never crosses the rest of the line.
+                    val box = card.row.line.box
+                    val from = SwingUtilities.convertRectangle(box.parent, box.bounds, this@LevelView)
                     g2.color = if (card.pinned || card.open) blockOpen else JBColor.border()
-                    val startX = row.x + row.box.x + row.box.width
-                    val startY = row.y + row.box.y + row.box.height / 2
+                    val startX = from.x + from.width
+                    val startY = from.y + from.height / 2
                     val endX = card.x - 1
                     val endY = card.y + minOf(card.headerCenter, card.height / 2)
                     val middle = card.x - scaled(ARROW_WIDTH) / 2
@@ -1256,27 +1262,113 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
         }
 
-        /** A block at the code's indentation; clicking pins all of its target cards. */
-        inner class BlockView(val row: BlockRow) : JPanel(BorderLayout()), Zoomable {
+        /**
+         * A block row at the code's indentation. Its only link is the whole row, or on a split line each call is a link
+         * of its own between the line's plain text.
+         */
+        inner class LineView(val row: BlockRow) : JPanel(BorderLayout()), Zoomable {
+            private val links = mutableListOf<BlockView>()
+            /** Titles and plain text of the line, scaled together so a split line stays one readable line. */
+            val labels = mutableListOf<CallableLabel>()
+            val blocks: List<BlockView> get() = links
+            /** The line's frame; for a whole-row link, that link's box. */
+            val box: JPanel
+            val onTrail get() = links.any { it.onTrail }
+
+            init {
+                isOpaque = false
+                if (!row.split) {
+                    val block = BlockView(this, row.links.single(), text(row.headline).trimStart())
+                    links += block
+                    box = block.box
+                    add(block, BorderLayout.WEST)
+                } else {
+                    box = JPanel().apply {
+                        layout = BoxLayout(this, BoxLayout.X_AXIS)
+                        background = blockBackground
+                    }
+                    fun plain(text: String) {
+                        box.add(CallableLabel(detab(text)) { onTrail }.also { labels += it; it.alignmentY = CENTER_ALIGNMENT })
+                    }
+                    fun link(link: SchematicLink, label: String) {
+                        box.add(BlockView(this, link, label).also { links += it; it.alignmentY = CENTER_ALIGNMENT })
+                    }
+                    val raw = schematic.text(row.headline)
+                    val end = raw.trimEnd().length
+                    var at = raw.length - raw.trimStart().length
+                    for (link in row.links.filter { it.columns != null }) {
+                        val columns = link.columns!!
+                        val start = columns.first.coerceIn(at, end)
+                        val stop = (columns.last + 1).coerceIn(start, end)
+                        if (start > at) plain(raw.substring(at, start))
+                        link(link, if (stop > start) detab(raw.substring(start, stop)) else names(link))
+                        at = stop
+                    }
+                    if (end > at) plain(raw.substring(at, end))
+                    // Calls whose place on the line is unknown follow it, named.
+                    row.links.filter { it.columns == null }.forEach { link ->
+                        plain("  ")
+                        link(link, "→ ${names(link)}")
+                    }
+                    if (row.last > row.first) box.add(JLabel("  ${row.last - row.first + 1} lines").apply {
+                        foreground = UIUtil.getContextHelpForeground()
+                        alignmentY = CENTER_ALIGNMENT
+                    }.zoomFont())
+                    box.toolTipText = "<html>Calls, types and properties on this line are separate links<br>" +
+                        "<i>Click one, or reach it with Tab</i></html>"
+                    add(box, BorderLayout.WEST)
+                }
+                applyZoom()
+            }
+
+            private fun names(link: SchematicLink) = link.targets.joinToString(", ") { graph.nodes[it].name.substringBefore('(') }
+
+            fun refreshTitle() {
+                labels.forEach { it.applyZoom() }
+                box.revalidate()
+                source?.takeIf { it.isVisible }?.refreshBlocks()
+                links.forEach { block -> cardsFor(block).forEach { it.refreshTitle() } }
+                revalidate()
+            }
+
+            override fun applyZoom() {
+                val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length - if (useNativeSource) 0 else indent
+                border = pixelBorder(0, scaled(4) + charWidth * depth.coerceAtLeast(0), 0, 0)
+                repaintBorder()
+            }
+
+            fun repaintBorder() {
+                links.forEach { it.repaintBorder() }
+                // Each link of a split line marks itself; the line keeps a neutral frame.
+                if (row.split) box.border = BorderFactory.createCompoundBorder(line(JBColor.border(), 2),
+                    pixelBorder(scaled(1), scaled(4), scaled(1), scaled(4)))
+            }
+
+            override fun getMaximumSize(): Dimension = preferredSize
+        }
+
+        /** A link of a block row, showing [label]; clicking pins the cards of its targets. */
+        inner class BlockView(val line: LineView, val link: SchematicLink, private val label: String) : JPanel(BorderLayout()), Zoomable {
+            val row get() = line.row
             val box = JPanel(BorderLayout())
-            val trailName get() = row.targets.joinToString(", ") { graph.nodes[it].name }
+            val trailName get() = link.targets.joinToString(", ") { graph.nodes[it].name }
             val onTrail get() = inBreadcrumbs(this) || breadcrumbPath.any { (_, component) ->
                 component is SummaryCard && component.row === this
             }
-            private val title = CallableLabel(text(row.headline).trimStart()) { onTrail }
+            private val title = CallableLabel(label) { line.onTrail }.also { line.labels += it }
 
             init {
                 isOpaque = false
                 box.background = blockBackground
                 box.add(title, BorderLayout.CENTER)
-                if (row.last > row.first) {
+                if (!row.split && row.last > row.first) {
                     box.add(JLabel("${row.last - row.first + 1} lines").apply { foreground = UIUtil.getContextHelpForeground() }.zoomFont(),
                         BorderLayout.EAST)
                 }
                 add(box, BorderLayout.WEST)
                 applyZoom()
                 onClick(box) { pin() }
-                box.toolTipText = "<html>" + row.targets.joinToString("<br>") { escape(graph.nodes[it].name) } + "<br><i>Click or Enter to pin summaries</i></html>"
+                box.toolTipText = "<html>" + link.targets.joinToString("<br>") { escape(graph.nodes[it].name) } + "<br><i>Click or Enter to pin summaries</i></html>"
             }
 
             /** Pins this block's cards; on a block that is already pinned it releases them and drops focus, like Esc. */
@@ -1296,20 +1388,18 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 this@SchematicPanel.refreshCards()
             }
 
-            fun describe(): String = describeLine(row.headline, null) + " → " +
-                row.targets.joinToString(", ") { "#$it ${graph.nodes[it].name}" }
+            fun describe(): String = describeLine(row.headline, null) +
+                when {
+                    !row.split -> ""
+                    link.reference -> " (the reference to `${label.trim()}`)"
+                    row.declared != null && row.declared in link.targets -> " (the declared name `${label.trim()}`)"
+                    else -> " (the call at `${label.trim()}`)"
+                } + " → " +
+                link.targets.joinToString(", ") { "#$it ${graph.nodes[it].name}" }
 
-            fun refreshTitle() {
-                title.applyZoom()
-                box.revalidate()
-                source?.takeIf { it.isVisible }?.refreshBlocks()
-                cardsFor(this).forEach { it.refreshTitle() }
-                revalidate()
-            }
+            fun refreshTitle() = line.refreshTitle()
 
             override fun applyZoom() {
-                val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length - if (useNativeSource) 0 else indent
-                border = pixelBorder(0, scaled(4) + charWidth * depth.coerceAtLeast(0), 0, 0)
                 (box.layout as BorderLayout).hgap = scaled(8)
                 repaintBorder()
             }
@@ -1318,7 +1408,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 val focused = this === (hoveredBlock ?: activeBlock)
                 val marked = focused || cardsFor(this).any { it.pinned || it.open }
                 // A constant inset keeps focusing a block from moving the source under the pointer.
-                box.border = BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 2),
+                box.border = if (row.split) BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 1),
+                    pixelBorder(0, scaled(2), 0, scaled(2)))
+                else BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 2),
                     pixelBorder(scaled(1), scaled(6), scaled(1), scaled(6)))
                 box.background = if (focused) blockFocusedBackground else blockBackground
             }
@@ -1558,12 +1650,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         node.signature?.let { "<br><code>${escape(it)}</code>" }.orEmpty()
                     summary != null -> "<b>${escape(summary.label)}</b>" + (summary.role?.let { " <font color='gray'>· ${it.id}</font>" } ?: "") +
                         (summary.description?.let { "<br>${escape(it)}" } ?: "")
-                    node.kind != SymbolKind.FUNCTION -> "<font color='gray'>Unfold to inspect its declaration.</font>"
+                    node.kind != SymbolKind.FUNCTION -> schematic.excerpts[node.id]?.let { "<code>${escape(it)}</code><br>" }.orEmpty() +
+                        "<font color='gray'>Unfold to inspect its declaration.</font>"
                     running > 0 && !summaries.isCovered(target) -> "<font color='gray'>Summarizing…</font>"
                     summaries.isCovered(target) -> "<font color='gray'>No summary: short, test code, or the request failed.</font>"
                     else -> "<font color='gray'>Not summarized.</font>"
                 }
                 val evidence = when {
+                    row.link.reference -> "<br><font color='gray'>Named on this line, not called.</font>"
                     occurrences.any { it.byName } -> "<br><font color='gray'>Matched by name: the receiver's type is unknown.</font>"
                     occurrences.any { it.targets.isEmpty() && target in it.heldBy } ->
                         "<br><font color='gray'>Callable value: the function it holds is assigned elsewhere.</font>"

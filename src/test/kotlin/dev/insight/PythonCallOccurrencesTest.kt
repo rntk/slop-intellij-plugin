@@ -156,7 +156,10 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
         assertEquals(call.toString(), ResolutionStatus.AMBIGUOUS, call.status)
         assertEquals(2, call.targets.size)
         assertTrue(call.targets.all { result.graph.nodes[it].name.startsWith("complete") })
-        val row = result.schematic(call.scope).rows.filterIsInstance<BlockRow>().single()
+        val rows = result.schematic(call.scope).rows.filterIsInstance<BlockRow>()
+        assertEquals("The annotated parameter types are links of their own", listOf("First", "Second"),
+            rows.first().links.flatMap { it.targets }.map { result.graph.nodes[it].name })
+        val row = rows.single { it.calls.isNotEmpty() }
         assertEquals(call.targets, row.calls)
         assertEquals(listOf(call), row.occurrences)
     }

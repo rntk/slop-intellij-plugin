@@ -70,7 +70,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals("class Flow", native.selectionModel.selectedText)
 
             panel.setSize(900, 600)
-            val blocks = sourceView.parent.components.filter { it.javaClass.simpleName == "BlockView" }
+            val blocks = sourceView.parent.components.filter { it.javaClass.simpleName == "LineView" }
             assertEquals(blocks.size, native.foldingModel.allFoldRegions.size)
             for (zoom in listOf(1.0, 0.5, 2.0)) {
                 panel.zoomTo(zoom)
@@ -209,11 +209,10 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
                 descendants(panel.canvas).filterIsInstance<javax.swing.JTextArea>().any { it.isShowingInTree() }
             }, 10)
             assertTrue(descendants(panel).filterIsInstance<SchematicSourceEditor>().isEmpty())
-            press(panel.canvas, "TAB")
-            press(panel.canvas, "TAB")
+            repeat(4) { press(panel.canvas, "TAB") } // Store, Store, open, entry
             click(descendants(panel).filterIsInstance<javax.swing.JLabel>().first { it.text.orEmpty().contains("<code>entry(") })
             PlatformTestUtil.waitWithEventsDispatching("Classic source should unfold", {
-                descendants(panel.canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+                descendants(panel.canvas).count { it.javaClass.simpleName == "SummaryCard" } == 12
             }, 10)
             assertTrue(descendants(panel).filterIsInstance<SchematicSourceEditor>().isEmpty())
             assertTrue(descendants(panel).filterIsInstance<javax.swing.JTextArea>().any { it.isShowingInTree() && it.text.contains("int x = 1;") })
@@ -230,11 +229,11 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             }
             fun cards() = labels(editor.component).filter { it.text.orEmpty().contains("<code>") }
             PlatformTestUtil.waitWithEventsDispatching("The file should be read", {
-                descendants(editor.component).count { it.javaClass.simpleName == "SummaryCard" } == 5
+                descendants(editor.component).count { it.javaClass.simpleName == "SummaryCard" } == 9
             }, 10)
             assertTrue("Cards start hidden", cards().isEmpty())
             val canvas = (editor.component as SchematicPanel).canvas
-            press(canvas, "TAB") // Store.open field initializer
+            repeat(3) { press(canvas, "TAB") } // The field line: its type, the class it calls, and open
             press(canvas, "TAB") // entry declaration
             press(canvas, "ENTER")
             assertEquals(1, cards().size)
@@ -243,7 +242,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
                 0, 0, 1, 1, 1, false, java.awt.event.MouseEvent.BUTTON1)) }
             // The unfolded method loads its own calls, whose cards still start hidden.
             PlatformTestUtil.waitWithEventsDispatching("The method should unfold", {
-                descendants(editor.component).count { it.javaClass.simpleName == "SummaryCard" } == 7
+                descendants(editor.component).count { it.javaClass.simpleName == "SummaryCard" } == 12
             }, 10)
             assertEquals(1, cards().size)
             fun descendants(component: java.awt.Container): List<java.awt.Component> = component.components.flatMap {
@@ -257,7 +256,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertTrue(sourceRows.any { it.editor.document.text.contains("int x = 1;") })
             val fullHeight = card.preferredSize.height
             val level = sourceRows.first().parent
-            val firstBlock = level.components.first { it.javaClass.simpleName == "BlockView" }
+            val firstBlock = level.components.first { it.javaClass.simpleName == "LineView" }
             level.doLayout()
             val fullBlockY = firstBlock.y
             toggle.doClick()
@@ -564,13 +563,12 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             fun entry() = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
                 .firstOrNull { it.text.orEmpty().contains("<code>entry(") }
             PlatformTestUtil.waitWithEventsDispatching("The file should be read", { entry() != null }, 10)
-            press(canvas, "TAB")
-            press(canvas, "TAB")
+            repeat(4) { press(canvas, "TAB") } // Store, Store, open, entry
             press(canvas, "ENTER")
             val title = entry()!!
             click(title)
             PlatformTestUtil.waitWithEventsDispatching("The method should unfold", {
-                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 12
             }, 10)
             val card = generateSequence<java.awt.Component>(title) { it.parent }
                 .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
@@ -580,7 +578,8 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
                 .first { it.text == "Explain link" }
             val nestedCard = generateSequence<java.awt.Component>(explain) { it.parent }
                 .first { it.javaClass.simpleName == "SummaryCard" } as java.awt.Container
-            val block = nestedCard.parent.components.first { it.javaClass.simpleName == "BlockView" }
+            val block = descendants(nestedCard.parent.components.first { it.javaClass.simpleName == "LineView" } as java.awt.Container)
+                .first { it.javaClass.simpleName == "BlockView" }
             // Preview the nested call so its Explain link is accessible.
             hover(block)
             explain.doClick()
@@ -654,7 +653,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             }
             click(entry)
             PlatformTestUtil.waitWithEventsDispatching("The method should unfold", {
-                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 7
+                descendants(canvas).count { it.javaClass.simpleName == "SummaryCard" } == 12
             }, 10)
             val check = title("check")!!
             val nestedBlock = descendants(canvas).filterIsInstance<javax.swing.JLabel>().single { it.text == "check(" }
@@ -691,7 +690,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             fun title(name: String) = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
                 .first { it.text.orEmpty().contains("<code>$name(") }
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
-            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
             val root = result.graph.nodes[schematic.scope].name
             assertEquals(listOf(root), path())
             panel.setSize(700, 600)
@@ -699,10 +698,9 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val viewport = canvas.parent as javax.swing.JViewport
             val extent = java.awt.Dimension(viewport.extentSize)
             val trailFont = links().first().font.size2D
-            press(canvas, "TAB")
-            press(canvas, "TAB")
+            repeat(4) { press(canvas, "TAB") } // Store, Store, open, entry
             click(title("entry"))
-            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { cards().size == 7 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { cards().size == 12 }, 10)
             assertEquals(listOf(root, "entry"), path())
             press(canvas, "TAB")
             press(canvas, "ENTER")
@@ -710,7 +708,9 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(listOf(root, "entry", "check"), path())
 
             // Previewing another branch must not replace the chain the reader selected.
-            val other = descendants(canvas).first { it.javaClass.simpleName == "BlockView" }
+            val other = descendants(canvas).first { block ->
+                block.javaClass.simpleName == "BlockView" && descendants(block as java.awt.Container).any { (it as? javax.swing.JLabel)?.text == "open" }
+            }
             other.dispatchEvent(java.awt.event.MouseEvent(other, java.awt.event.MouseEvent.MOUSE_ENTERED,
                 0, 0, 1, 1, 0, false))
             assertEquals(listOf(root, "entry", "check"), path())
@@ -784,16 +784,16 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val panel = editor.component as SchematicPanel
             val canvas = panel.canvas
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
-            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
             panel.setSize(700, 600)
             layOut(panel)
             val viewport = canvas.parent as javax.swing.JViewport
-            val block = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }[1]
+            val block = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }[3]
             fun hover(target: java.awt.Component = block) = target.dispatchEvent(java.awt.event.MouseEvent(target, java.awt.event.MouseEvent.MOUSE_ENTERED,
                 0, 0, 1, 1, 0, false))
             hover()
             layOut(panel)
-            val card = cards()[1] as java.awt.Container
+            val card = cards()[3] as java.awt.Container
             val entry = descendants(card).filterIsInstance<javax.swing.JLabel>()
                 .single { it.text.orEmpty().contains("<code>entry(") }
             viewport.viewPosition = java.awt.Point(canvas.width - viewport.width, canvas.height - viewport.height)
@@ -817,7 +817,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertStable()
             click(entry)
             assertStable()
-            PlatformTestUtil.waitWithEventsDispatching("The branch should load without moving the view", { cards().size == 7 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The branch should load without moving the view", { cards().size == 12 }, 10)
             assertStable()
             val compact = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>()
                 .single { it.text == "Compact" && it.isShowingInTree() }
@@ -835,8 +835,9 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertFalse(card.isVisible)
             assertStable()
 
-            hover(descendants(canvas).first { it.javaClass.simpleName == "BlockView" })
-            val details = descendants(cards().first() as java.awt.Container)
+            // The call to open; the two Store links before it are references with no call evidence.
+            hover(descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }[2])
+            val details = descendants(cards()[2] as java.awt.Container)
                 .filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Explain link" }
             details.doClick()
             assertStable()
@@ -873,7 +874,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val canvas = (editor.component as SchematicPanel).canvas
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
             fun shown() = cards().filter { it.isShowingInTree() }
-            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
             assertTrue(shown().isEmpty())
             val level = cards().first().parent
             val sourceSize = level.preferredSize
@@ -903,7 +904,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(listOf(cards().last()), shown())
             press(canvas, "TAB") // Wrap to the first block.
             assertEquals(listOf(cards().first()), shown())
-            repeat(5) { press(canvas, "TAB") }
+            repeat(9) { press(canvas, "TAB") }
             assertEquals(listOf(cards().first()), shown())
         } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
     }
@@ -914,7 +915,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             val canvas = (editor.component as SchematicPanel).canvas
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
-            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
             val blocks = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }
             fun hover(component: java.awt.Component, event: Int = java.awt.event.MouseEvent.MOUSE_ENTERED) {
                 component.dispatchEvent(java.awt.event.MouseEvent(component, event, 0, 0, 1, 1, 0, false))
@@ -934,33 +935,88 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             click((blocks[1] as java.awt.Container).components.single())
             hover(blocks[2])
             assertEquals(listOf(cards()[1], cards()[2]), cards().filter { it.isShowingInTree() })
-            assertEquals("Pinning does not unfold source", 5, cards().size)
+            assertEquals("Pinning does not unfold source", 9, cards().size)
         } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
     }
 
-    fun `test a block previews and pins all targets while each card can be unpinned separately`() {
+    fun `test calls on one line are independent links with their own cards`() {
         val (result, schematic) = build(source.replace("store.save(x);", "check(kind); store.save(x);")) {
             it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry")
         }
+        val row = schematic.rows.filterIsInstance<BlockRow>().single { it.split }
+        val text = schematic.text(row.headline)
+        assertEquals(listOf("check", "store", "save"), row.links.map { link -> text.substring(link.columns!!.first, link.columns!!.last + 1) })
+        assertEquals(listOf("check", "store", "save"), row.links.map { result.name(it.targets.single()) })
+        assertEquals("The field is a reference, not a call", listOf(false, true, false), row.links.map { it.reference })
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
         try {
             val canvas = (editor.component as SchematicPanel).canvas
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
             fun shown() = cards().filter { it.isShowingInTree() }
-            PlatformTestUtil.waitWithEventsDispatching("The method should be read", { cards().size == 3 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("The method should be read", { cards().size == 4 }, 10)
+            val line = descendants(canvas).filter { it.javaClass.simpleName == "LineView" }[1] as java.awt.Container
+            assertEquals(listOf("check", "(kind); ", "store", ".", "save", "(x);"),
+                descendants(line).filterIsInstance<javax.swing.JLabel>().map { it.text })
             press(canvas, "TAB")
             assertEquals(1, shown().size)
             press(canvas, "TAB")
-            assertEquals(listOf(cards()[1], cards()[2]), shown())
+            assertEquals("Each call previews only its own card", listOf(cards()[1]), shown())
             press(canvas, "ENTER")
             press(canvas, "TAB")
-            assertEquals(3, shown().size)
-            press(canvas, "ESCAPE")
             assertEquals(listOf(cards()[1], cards()[2]), shown())
+            press(canvas, "ESCAPE")
+            assertEquals("Only the pinned call stays", listOf(cards()[1]), shown())
+            click(descendants(line).filterIsInstance<javax.swing.JLabel>().single { it.text == "save" }.parent)
+            assertEquals(listOf(cards()[1], cards()[3]), shown())
             val unpin = descendants(cards()[1] as java.awt.Container)
                 .filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Unpin" }
             unpin.doClick()
-            assertEquals(listOf(cards()[2]), shown())
+            assertEquals(listOf(cards()[3]), shown())
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test types and constants are links whose cards show their declarations`() {
+        val text = """
+            import java.util.List;
+
+            class Flow {
+                static final int LIMIT = 3;
+
+                void entry(Store store, int kind) {
+                    int n = LIMIT + kind;
+                    store.save(n);
+                }
+            }
+
+            class Store {
+                void save(int x) {}
+            }
+        """.trimIndent()
+        fun Schematic.mentions(result: CallGraphResult) = rows.filterIsInstance<BlockRow>().flatMap { row ->
+            row.links.filter { it.reference }.map { link ->
+                text(row.headline).substring(link.columns!!.first, link.columns!!.last + 1) to result.name(link.targets.single())
+            }
+        }
+        val (fileResult, file) = build(text) { it.kind == SymbolKind.FILE }
+        assertEquals("A parameter type on a folded headline is a link", listOf("Store" to "Store"), file.mentions(fileResult))
+        val entry = file.rows.filterIsInstance<BlockRow>().single { it.declared?.let { id -> fileResult.name(id) } == "entry" }
+        assertEquals(listOf("entry", "Store"), entry.links.map { file.text(entry.headline).substring(it.columns!!.first, it.columns!!.last + 1) })
+        assertFalse("Types are linked, not summarized", file.targets.any { fileResult.name(it) == "Store" })
+
+        val (result, schematic) = build(text) { it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry") }
+        assertEquals("Parameters and locals stay plain", listOf("Store" to "Store", "LIMIT" to "LIMIT"), schematic.mentions(result))
+        val limit = result.graph.nodes.single { it.name == "LIMIT" }.id
+        assertEquals("static final int LIMIT = 3;", schematic.excerpts[limit])
+
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val canvas = (editor.component as SchematicPanel).canvas
+            fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
+            PlatformTestUtil.waitWithEventsDispatching("The method should be read", { cards().size == 3 }, 10)
+            click(descendants(canvas).filterIsInstance<javax.swing.JLabel>().single { it.text == "LIMIT" }.parent)
+            val shown = cards().filter { it.isShowingInTree() }.flatMap { descendants(it as java.awt.Container) }
+                .filterIsInstance<javax.swing.JLabel>().map { it.text.orEmpty() }
+            assertTrue(shown.toString(), shown.any { "static final int LIMIT = 3;" in it && "not called" in it })
         } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
     }
 
@@ -972,15 +1028,16 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
             fun shownNames() = descendants(canvas).filterIsInstance<javax.swing.JLabel>()
                 .filter { it.isShowingInTree() && it.text.orEmpty().contains("<code>") }.map { it.text }
-            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 5 }, 10)
-            press(canvas, "TAB")
-            press(canvas, "TAB")
-            val entry = descendants(cards()[1] as java.awt.Container).filterIsInstance<javax.swing.JLabel>()
+            PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
+            repeat(4) { press(canvas, "TAB") } // Store, Store, open, entry
+            val entry = descendants(cards()[3] as java.awt.Container).filterIsInstance<javax.swing.JLabel>()
                 .single { it.text.orEmpty().contains("<code>entry(") }
             click(entry)
-            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { cards().size == 7 }, 10)
+            PlatformTestUtil.waitWithEventsDispatching("Entry should unfold", { cards().size == 12 }, 10)
             press(canvas, "TAB")
             assertTrue(shownNames().any { it.contains("<code>check(") })
+            press(canvas, "TAB")
+            assertTrue(shownNames().any { it.contains("<code>store</code>") })
             press(canvas, "TAB")
             assertTrue(shownNames().any { it.contains("<code>save(") })
             click(entry) // Folding returns the cursor from the hidden call to entry.

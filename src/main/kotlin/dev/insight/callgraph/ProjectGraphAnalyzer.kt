@@ -28,6 +28,8 @@ object ProjectGraphAnalyzer {
     internal fun kind(element: PsiElement): SymbolKind? = if (element is PsiFile) SymbolKind.FILE
         else supports.firstNotNullOfOrNull { it.symbolKind(element) }
 
+    internal fun relationKind(element: PsiElement): RelationKind? = supports.firstNotNullOfOrNull { it.relationKind(element) }
+
     internal fun source(element: PsiElement): PsiElement =
         supports.firstNotNullOfOrNull { it.unwrap(element) } ?: element.navigationElement
 
