@@ -6,7 +6,6 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupManager
@@ -94,10 +93,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
                 info.setText(renamed)
                 info.setTooltipText("$renamed · Double-click to rename")
                 showSelectedChat()
-                tabOf(info)?.canvasFile?.let { file ->
-                    file.renameReview(renamed)
-                    FileEditorManager.getInstance(project).updateFilePresentation(file)
-                }
+                tabOf(info)?.rename(renamed)
             }
         })
         project.messageBus.connect(this).subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
@@ -156,7 +152,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         reviewTabs += tab
         prepare(tab)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
-        tab.canvasFile.renameReview(name)
+        tab.rename(name)
         tab.onCanvasSelected = {
             if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {
                 selectingFromCanvas = true

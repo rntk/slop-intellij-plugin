@@ -43,6 +43,49 @@ import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
+    fun testSummariesAndTopicsUseIndependentNativeEditorTabs() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
+            tab.state.summarize(tab.state.revision, tab.state.summaries.tree.nodes.associate { it.id to "Summary" })
+            tab.state.assignTopic(tab.state.revision, "native-tabs.kt", "Review>Editors")
+            tab.openSummaries()
+            val summariesEditor = manager.getEditors(tab.canvasFile).single()
+            tab.canvas.summariesView.fuzzy = "preserve this filter"
+            tab.openTopics()
+            val topicsFile = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Topics") }
+            val topicsEditor = manager.getEditors(topicsFile).single()
+            assertTrue(topicsEditor.preferredFocusedComponent!!.isVisible)
+            assertNotSame(tab.canvasFile, topicsFile)
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+            assertFalse(descendants(summariesEditor.component).any { it is javax.swing.JTabbedPane })
+            assertFalse(descendants(topicsEditor.component).any { it is javax.swing.JTabbedPane })
+            assertSame(tab.canvas.editorPage(dev.insight.review.CanvasTabKey.Topics), topicsEditor.preferredFocusedComponent)
+
+            // Rebuilding the review updates both open editors without moving their pages into each other.
+            tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
+            assertTrue(descendants(summariesEditor.component).any { it.name == "summary-split-panels" })
+            assertTrue(descendants(topicsEditor.component).filterIsInstance<JLabel>().any { it.text.startsWith("Change topics ·") })
+            tab.rename("Focused review")
+            assertEquals("Diff Review: Focused review · Summaries", tab.canvasFile.name)
+            assertEquals("Diff Review: Focused review · Topics", topicsFile.name)
+
+            manager.closeFile(topicsFile)
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+            tab.openTopics()
+            assertTrue(manager.isFileOpen(topicsFile))
+            assertEquals("preserve this filter", tab.canvas.summariesView.fuzzy)
+            assertFalse(tab.session.busy)
+            tab.state.hideTopics()
+            tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
+            assertFalse(manager.isFileOpen(topicsFile))
+            assertFalse(topicsFile.isValid)
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+        } finally { Disposer.dispose(tab) }
+        assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
+    }
+
     fun testWordChartsOpenAndCloseIndependently() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         try {
@@ -129,8 +172,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             tab.openCanvas()
             assertEquals(1, manager.getEditors(tab.canvasFile).size)
             val editor = manager.getEditors(tab.canvasFile).single()
-            assertEquals(listOf(tab.canvas), editor.component.components.toList())
-            assertSame(tab.canvas, editor.preferredFocusedComponent)
+            assertEquals(listOf(tab.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries)), editor.component.components.toList())
+            assertSame(tab.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries), editor.preferredFocusedComponent)
             assertFalse(descendants(tab).any { it is NoteCanvas })
             assertFalse(descendants(editor.component).any { it is ChatPanel })
 
@@ -172,7 +215,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             val second = tabs.selectedInfo!!.component as DiffReviewTab
             assertTrue(manager.isFileOpen(second.canvasFile))
-            assertNotSame(first.canvas.parent, second.canvas.parent)
+            assertNotSame(first.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries).parent,
+                second.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries).parent)
             manager.openFile(first.canvasFile, true)
             PlatformTestUtil.waitWithEventsDispatching("Canvas selection should select the matching review controls", {
                 tabs.selectedInfo === firstInfo
@@ -248,7 +292,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertFalse("Detached window must no longer hold the canvas tab", orphaned.isFileOpen(first.canvasFile))
             assertTrue("Visible editor window must own the reopened canvas tab", visible.isFileOpen(first.canvasFile))
             assertSame(visible, manager.currentWindow)
-            assertTrue(javax.swing.SwingUtilities.isDescendingFrom(first.canvas, visible.tabbedPane.component))
+            assertTrue(javax.swing.SwingUtilities.isDescendingFrom(
+                first.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries), visible.tabbedPane.component))
         } finally { Disposer.dispose(panel) }
     }
 
@@ -847,7 +892,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         try { action(); fail("Expected a rejected tool call") } catch (_: ToolInputException) { }
     }
 
-    private fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
+    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.diff.NoteCanvas)
+        container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }
 }

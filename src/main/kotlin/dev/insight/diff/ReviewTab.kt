@@ -15,6 +15,7 @@ import dev.insight.chat.ChatTool
 import dev.insight.chat.SourcePoints
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ChatFocus
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.ExplainDialog
 import dev.insight.review.ExplainResults
 import dev.insight.review.ExplainTarget
@@ -36,7 +37,6 @@ import dev.insight.review.textOf
 import dev.insight.review.typedExplainTarget
 import java.awt.BorderLayout
 import javax.swing.JPanel
-import javax.swing.SwingUtilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -69,27 +69,81 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     abstract val session: ChatSession
     /** Shown by the panel's Chat page, so it is not part of the tab's controls. */
     abstract val chat: ChatPanel
-    val canvasFile = ReviewCanvasFile(this)
+    private var reviewName = ""
+    private val artifactFiles = mutableMapOf<CanvasTabKey, ReviewCanvasFile>()
+    private var knownPages = emptySet<CanvasTabKey>()
+    val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
+
+    private fun artifactFile(key: CanvasTabKey): ReviewCanvasFile = artifactFiles.getOrPut(key) {
+        ReviewCanvasFile(object : ReviewCanvasOwner {
+            override val canvas get() = this@ReviewTab.canvas.editorPage(key)
+            override val isDisposed get() = disposed
+            override val canvasTitle get() = this@ReviewTab.canvasTitle
+            override fun canvasSelected() {
+                this@ReviewTab.canvas.selectPage(key)
+                this@ReviewTab.canvasSelected()
+            }
+        })
+    }
+
+    fun rename(name: String) {
+        reviewName = name
+        updateArtifactFiles()
+    }
+
+    private fun updateArtifactFiles() {
+        val manager = FileEditorManager.getInstance(project)
+        artifactFiles.entries.removeIf { (key, file) ->
+            if (key in canvas.pageKeys) {
+                val name = listOf(reviewName, canvas.pageTitle(key)).filter { it.isNotEmpty() }.joinToString(" · ")
+                if (file.name != "$canvasTitle: $name") {
+                    file.renameReview(name)
+                    manager.updateFilePresentation(file)
+                }
+                false
+            } else {
+                manager.closeFile(file)
+                if (file !== canvasFile) file.setValid(false)
+                file !== canvasFile
+            }
+        }
+    }
+
+    private fun openArtifact(key: CanvasTabKey, focus: Boolean = true) {
+        if (disposed || key !in canvas.pageKeys) return
+        val file = artifactFile(key)
+        updateArtifactFiles()
+        openReviewCanvas(project, file, focus)
+    }
 
     protected abstract fun renderCanvas()
     /** Empties the state's snapshot when the tab is disposed. */
     protected abstract fun clearSnapshot()
 
     /** Follows the chat: [before] runs first on every change, then the controls, cards and explanation are updated. */
-    protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit) = session.subscribe {
-        before()
-        updateControls()
-        summariesChanged()
-        if (explanations.update(session.messages, session.busy)) {
-            renderCanvas()
-            if (explanations.result != null) showCanvas { canvas.focusExplanation() }
+    protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
+        canvas.onPageFocused = { openArtifact(it) }
+        canvas.onPagesChanged = {
+            val added = canvas.pageKeys - knownPages - CanvasTabKey.Summaries
+            knownPages = canvas.pageKeys.toSet()
+            updateArtifactFiles()
+            added.forEach { openArtifact(it, focus = false) }
+        }
+        return session.subscribe {
+            before()
+            updateControls()
+            summariesChanged()
+            if (explanations.update(session.messages, session.busy)) {
+                renderCanvas()
+                if (explanations.result != null) showCanvas { canvas.focusExplanation() }
+            }
         }
     }
 
     fun openCanvas(focus: Boolean = false) {
         if (disposed) return
-        openReviewCanvas(project, canvasFile, focus)
+        openArtifact(canvas.selectedKey ?: CanvasTabKey.Summaries, focus)
     }
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
@@ -155,10 +209,9 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         if (!state.topics.complete && canSummarize) session.send("/topics")
     }
 
-    /** Opens the canvas editor and centers a card once the canvas has its size; a newly opened editor lays it out later. */
+    /** Focusing a page opens its regular IDE editor tab. */
     protected fun showCanvas(focus: () -> Unit) {
-        openCanvas(true)
-        SwingUtilities.invokeLater { if (!disposed) focus() }
+        if (!disposed) focus()
     }
 
     protected fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
@@ -177,8 +230,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override fun dispose() {
         disposed = true
         onCanvasSelected = {}
-        FileEditorManager.getInstance(project).closeFile(canvasFile)
-        canvasFile.setValid(false)
+        canvas.onPageFocused = {}
+        canvas.onPagesChanged = {}
+        artifactFiles.values.forEach {
+            FileEditorManager.getInstance(project).closeFile(it)
+            it.setValid(false)
+        }
+        artifactFiles.clear()
         session.discard()
         scope.cancel()
         clearSnapshot()

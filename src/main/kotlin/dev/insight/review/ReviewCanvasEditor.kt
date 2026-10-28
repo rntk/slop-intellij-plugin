@@ -55,6 +55,7 @@ internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserData
     internal fun attachCanvas() {
         val canvas = file.review.canvas
         canvas.isFocusable = true
+        canvas.isVisible = true
         if (canvas.parent !== panel) {
             val previous = canvas.parent
             previous?.remove(canvas)

@@ -14,7 +14,6 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -55,7 +54,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 
-/** Review artifacts, each in its own normally scrollable tab. */
+/** Review artifacts, each in its own normally scrollable IDE editor. */
 internal class NoteCanvas(
     private val open: (String) -> Unit,
     private val remove: (ReviewNote) -> Unit,
@@ -72,7 +71,15 @@ internal class NoteCanvas(
     private val openSummaryNode: (SummaryNode) -> Unit = summaryActions.openNode ?: { node -> open(node.path) }
     private val showSummaryNode: (SummaryNode) -> Unit = summaryActions.showNode ?: { node -> sourceActions.showDiffCard(node.path) }
     private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = summaryActions.openLines ?: { node, _ -> openSummaryNode(node) }
-    internal val tabs = JBTabbedPane().apply { tabLayoutPolicy = JBTabbedPane.SCROLL_TAB_LAYOUT }
+    internal val tabs = ReviewPages()
+    internal var onPageFocused: (CanvasTabKey) -> Unit = {}
+    internal var onPagesChanged: () -> Unit = {}
+    private val editorPages = mutableMapOf<CanvasTabKey, JPanel>()
+    internal val pageKeys: Set<CanvasTabKey> get() = pages.keys
+    internal val selectedKey: CanvasTabKey? get() = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
+    internal fun editorPage(key: CanvasTabKey): JPanel = editorPages.getOrPut(key) { JPanel(BorderLayout()) }
+    internal fun pageTitle(key: CanvasTabKey) = tabTitle(key)
+    internal fun selectPage(key: CanvasTabKey) { pages[key]?.let { tabs.selectedComponent = it } }
     private val pages = mutableMapOf<CanvasTabKey, JScrollPane>()
     private val cards = mutableMapOf<CanvasTabKey, JPanel>()
     private val stickyTargets = mutableMapOf<CanvasTabKey, JComponent>()
@@ -259,7 +266,13 @@ internal class NoteCanvas(
             val page = page(card)
             pages[key] = page
             installStickyScrolling(key, page, card)
-            tabs.addTab(tabTitle(key), page)
+            val host = if (project == null) page else editorPage(key).apply {
+                removeAll()
+                add(page, BorderLayout.CENTER)
+                revalidate()
+                repaint()
+            }
+            tabs.addTab(tabTitle(key), page, host)
             tabs.setToolTipTextAt(tabs.tabCount - 1, tabTooltip(key))
             bodyScrolls[key]?.let { position -> SwingUtilities.invokeLater {
                 if (cards[key] === card) bodyScroll(card)?.viewport?.viewPosition = position
@@ -270,6 +283,8 @@ internal class NoteCanvas(
         }
         pages[selected]?.let { tabs.selectedComponent = it }
         if (built.isEmpty()) tabs.addTab("Review", JBScrollPane(emptyState()))
+        editorPages.keys.retainAll(pages.keys)
+        onPagesChanged()
         highlight(highlighted)
         revalidate(); repaint()
     }
@@ -310,6 +325,7 @@ internal class NoteCanvas(
         tabs.selectedComponent = page
         focused = key
         highlight(highlighted)
+        onPageFocused(key)
     }
 
     private fun tabTooltip(key: CanvasTabKey): String = summaryTab(key)?.takeIf { it.search }?.let { tab ->
@@ -1272,6 +1288,7 @@ internal class NoteCanvas(
             tabs.setTitleAt(index, tabTitle(tab.key))
             tabs.setToolTipTextAt(index, tabTooltip(tab.key))
         }
+        onPagesChanged()
     }
 
     private fun fileViewCard(content: FileViewCard): JPanel = fileViewCardBuilder.card(

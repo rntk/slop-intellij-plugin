@@ -38,6 +38,28 @@ import org.junit.Assert
 import org.junit.Test
 
 class CodeReviewPlatformTest : FileEditorManagerTestCase() {
+    fun testTopicsOpenBesideSummariesInTheEditor() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            tab.update(codeSnapshot(codeFile("native-tabs.kt", "fun a() = 1\n")))
+            tab.state.summarize(tab.state.revision, tab.state.summaries.tree.nodes.associate { it.id to "Summary" })
+            tab.state.assignTopic(tab.state.revision, "native-tabs.kt", "Review>Editors")
+            tab.openSummaries()
+            tab.openTopics()
+            val topics = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Topics") }
+            assertEquals("Code Review: Topics", topics.name)
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+            assertFalse(descendants(manager.getEditors(topics).single().component).any { it is javax.swing.JTabbedPane })
+            manager.closeFile(tab.canvasFile)
+            assertTrue(manager.isFileOpen(topics))
+            tab.openSummaries()
+            assertEquals(2, manager.openFiles.filterIsInstance<ReviewCanvasFile>().size)
+            assertFalse(tab.session.busy)
+        } finally { Disposer.dispose(tab) }
+        assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
+    }
+
     fun `test chat points stay in the code scope and omit diff and flow tools`() {
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
         val manager = FileEditorManager.getInstance(project)
@@ -88,13 +110,14 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
                 tab.captureContext().addNotes(listOf(ReviewNote(listOf(file.path), "Keep this card")))
                 tab.captureContext().showSource(ReviewSourceRange(file.path, 1, 2))
             }
+            tab.canvas.selectPage(dev.insight.review.CanvasTabKey.Summaries)
             tab.openCanvas()
             tab.openCanvas()
             assertEquals(1, manager.getEditors(tab.canvasFile).size)
             val editor = manager.getEditors(tab.canvasFile).single()
             assertEquals("Code Review", editor.name)
             assertTrue(tab.canvasFile.name.startsWith("Code Review"))
-            assertSame(tab.canvas, editor.preferredFocusedComponent)
+            assertSame(tab.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries), editor.preferredFocusedComponent)
             manager.closeFile(tab.canvasFile)
             assertFalse(manager.isFileOpen(tab.canvasFile))
             assertEquals("Keep this card", tab.state.notes.single().text)
@@ -141,7 +164,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
             val first = tabs.selectedInfo!!.component as CodeReviewTab
             assertEquals("Whole scope", tabs.selectedInfo!!.text)
-            assertEquals("Code Review: Whole scope", first.canvasFile.name)
+            assertEquals("Code Review: Whole scope · Summaries", first.canvasFile.name)
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertEquals(listOf("review/a.kt", "review/sub/b.kt"), first.state.snapshot.files.map { it.path })
 
@@ -321,7 +344,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             tab.update(codeSnapshot(codeFile("src/a.kt", "fun a() = 1\n")))
             assertFalse(manager.isFileOpen(tab.canvasFile))
             tab.session.send("/explain src/a.kt")
-            assertTrue(manager.isFileOpen(tab.canvasFile))
+            assertTrue(manager.openFiles.filterIsInstance<ReviewCanvasFile>().any { it.name.endsWith("Explaining…") })
             PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
             assertEquals("Explaining…", tab.canvas.tabs.getTitleAt(tab.canvas.tabs.selectedIndex))
 
@@ -391,7 +414,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { scope.cancel() }
     }
 
-    private fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
+    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.diff.NoteCanvas)
+        container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }
 }
