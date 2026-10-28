@@ -290,6 +290,117 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun `test a constructor card promotes to its file and continues through another method`() {
+        val worker = """
+            class Worker {
+                Worker() { setup(); }
+                void setup() {}
+                void run() { algorithm(); }
+                void algorithm() {}
+            }
+        """.trimIndent()
+        myFixture.addFileToProject("Worker.java", worker)
+        val (result, schematic) = build("class Entry { void entry() { new Worker(); } }") {
+            it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry")
+        }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            fun viewers() = descendants(canvas).filterIsInstance<SchematicSourceEditor>()
+            fun cards() = descendants(canvas).filterIsInstance<java.awt.Container>().filter { it.javaClass.simpleName == "SummaryCard" }
+            fun links(card: java.awt.Container) = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>()
+            fun title(card: java.awt.Container) = descendants(card).filterIsInstance<javax.swing.JLabel>()
+                .first { it.text.orEmpty().contains("<code>") }
+            PlatformTestUtil.waitWithEventsDispatching("The constructor call should load", { cards().size == 1 }, 10)
+            val card = cards().single()
+            val rootViewer = viewers().single()
+            press(canvas, "TAB")
+            click(title(card))
+            PlatformTestUtil.waitWithEventsDispatching("Only the constructor should unfold", { viewers().size == 2 }, 10)
+            val constructorViewer = viewers().single { it !== rootViewer }
+            assertEquals("    Worker() { setup(); }", constructorViewer.editor.document.text)
+            links(card).single { it.text == "Compact" && it.isShowingInTree() }.doClick()
+            press(canvas, "TAB") // The selected constructor call will be replaced by file declarations.
+            val menu = javax.swing.JPopupMenu()
+            card.javaClass.getMethod("addContextActions", javax.swing.JPopupMenu::class.java).apply {
+                isAccessible = true
+                invoke(card, menu)
+            }
+            menu.components.filterIsInstance<javax.swing.JMenuItem>().single { it.text == "Show whole file" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The card should show the whole target file", {
+                viewers().any { it.editor.document.text == worker }
+            }, 10)
+            assertTrue("The caller stays in place", rootViewer in viewers())
+            assertTrue("Replaced native editors must be released", constructorViewer.editor.isDisposed)
+            val fileViewer = viewers().single { it.editor.document.text == worker }
+            assertTrue("Promotion restores plain source even from compact mode", fileViewer.isVisible)
+            assertTrue(title(card).text.contains("<code>Worker.java</code>"))
+            assertTrue(title(card).text.contains("Whole file expanded from"))
+            val trail = descendants(panel).single { it.name == "schematic-breadcrumbs" } as java.awt.Container
+            assertEquals(listOf(result.graph.nodes[schematic.scope].name, "Worker.java"),
+                descendants(trail).filterIsInstance<com.intellij.ui.components.ActionLink>().map { it.text })
+
+            // Tab walks the new file's declarations, including methods unreachable from the constructor.
+            press(canvas, "TAB") // constructor
+            press(canvas, "TAB") // setup
+            press(canvas, "TAB") // run
+            val run = descendants(card).filterIsInstance<javax.swing.JLabel>().single { it.text.orEmpty().contains("<code>run(") }
+            assertTrue(run.isShowingInTree())
+            click(run)
+            PlatformTestUtil.waitWithEventsDispatching("Exploration should continue through run", {
+                viewers().any { it.editor.document.text.contains("void run()") && it.editor.document.text != worker }
+            }, 10)
+            press(canvas, "TAB")
+            assertTrue(descendants(card).filterIsInstance<javax.swing.JLabel>().any {
+                it.text.orEmpty().contains("<code>algorithm(") && it.isShowingInTree()
+            })
+
+            links(card).first { it.text == "Show symbol" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The constructor scope should return", {
+                viewers().size == 2 && viewers().any { it.editor.document.text == "    Worker() { setup(); }" }
+            }, 10)
+            assertTrue(fileViewer.editor.isDisposed)
+            assertTrue(title(card).text.contains("<code>Worker("))
+            assertTrue(links(card).first { it.text == "Show whole file" }.isVisible)
+            press(canvas, "TAB") // A removed descendant must not retain keyboard focus.
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
+    fun `test an unopened class card can show its whole file in classic mode`() {
+        val worker = "class Worker { void run() {} }\nclass Helper { void help() {} }"
+        myFixture.addFileToProject("Worker.java", worker)
+        val (result, schematic) = build("class Entry { void entry() { new Worker(); } }") {
+            it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry")
+        }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val canvas = panel.canvas
+            descendants(panel).filterIsInstance<javax.swing.JCheckBox>().single { it.name == "schematic-native-editor" }.doClick()
+            fun cards() = descendants(canvas).filterIsInstance<java.awt.Container>().filter { it.javaClass.simpleName == "SummaryCard" }
+            PlatformTestUtil.waitWithEventsDispatching("The implicit constructor should lead to its class", { cards().size == 1 }, 10)
+            val card = cards().single()
+            press(canvas, "TAB")
+            descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Show whole file" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Both classes' declarations should be available", { cards().size == 3 }, 10)
+            assertTrue(descendants(canvas).filterIsInstance<SchematicSourceEditor>().isEmpty())
+            assertTrue(descendants(card).filterIsInstance<javax.swing.JLabel>().first { it.text.orEmpty().contains("<code>") }
+                .text.contains("<code>Worker.java</code>"))
+            // Folding and reopening keeps the promoted scope and loaded declarations.
+            val title = descendants(card).filterIsInstance<javax.swing.JLabel>().first { it.text.orEmpty().contains("<code>") }
+            val declarations = cards().drop(1)
+            click(title)
+            click(title)
+            assertEquals(declarations, cards().drop(1))
+            press(canvas, "TAB")
+            press(canvas, "TAB")
+            assertTrue(descendants(card).filterIsInstance<javax.swing.JLabel>().any {
+                it.text.orEmpty().contains("<code>help(") && it.isShowingInTree()
+            })
+        } finally { com.intellij.openapi.util.Disposer.dispose(editor) }
+    }
+
     fun `test the canvas zooms with keys and scrolls with page and end keys`() {
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))

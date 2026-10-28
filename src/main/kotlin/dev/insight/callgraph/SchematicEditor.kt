@@ -162,6 +162,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private val lifted by lazy { liftCalls(graph) }
     private val calls by lazy { lifted.edges.filter { it.kind == RelationKind.CALL }.groupBy { it.caller } }
     private val hierarchy by lazy { graph.hierarchy() }
+    private val filesByPath by lazy {
+        graph.nodes.filter { it.kind == SymbolKind.FILE && it.inProject && !it.unresolved && it.filePath != null }
+            .associateBy { it.filePath }
+    }
     private val summaries by lazy { SchematicSummaries(project, result, lifted) }
     private val scope = project.service<CallGraphService>().scope.let { parent ->
         CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
@@ -294,6 +298,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             toolTipText = "<html><div style='width:420px'>Hover a block or use Tab / Shift+Tab to preview its summaries. " +
                 "Enter or a left click on a block pins its cards; Unpin releases a card. " +
                 "Click a summary to unfold or fold the code it leads to. " +
+                "Choose Show whole file to explore other declarations in its file. " +
                 "IDE editor enables source selection and copying; turn it off for the original canvas view. " +
                 "Choose Source on a summary to open the file; in the original view, double-click code. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
@@ -782,6 +787,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     else {
                         append("Blocks of this file (line: code → symbols it leads to; * shown on the canvas):\n")
                         append(level.describeBlocks())
+                        append("\nA whole-file card is a containing file expanded from a symbol, not a call to that file.\n")
                         val chains = level.branches(emptyList())
                         append("\nShown on the canvas: ")
                         append(if (chains.isEmpty()) "no cards" else chains.joinToString("; ") { chain ->
@@ -1041,13 +1047,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         val targets: List<Int> get() = schematic.targets
 
         /** The first card showing [id], or else one whose unknown callee may be [id]. */
-        fun cardFor(id: Int): SummaryCard? = cards.firstOrNull { it.shown == id } ?: cards.firstOrNull { id in it.choices }
+        fun cardFor(id: Int): SummaryCard? = cards.firstOrNull { it.shown == id || it.symbol == id }
+            ?: cards.firstOrNull { id in it.choices }
 
         /** For the chat: one line per block, with 1-based lines; `*` marks symbols with a card on the canvas. */
         fun describeBlocks(): String = blocks.take(MAX_DESCRIBED_BLOCKS).joinToString("\n") { block ->
             "${block.row.headline + 1}: ${text(block.row.headline).trim().take(120)} → " +
                 cardsFor(block).joinToString(", ") { card ->
-                    "#${card.shown} ${graph.nodes[card.shown].name}" + if (card.pinned || card.open) "*" else ""
+                    "#${card.symbol} ${graph.nodes[card.symbol].name}" +
+                        (if (card.shown != card.symbol) " (whole file #${card.shown} ${graph.nodes[card.shown].name})" else "") +
+                        if (card.pinned || card.open) "*" else ""
                 }
         } + if (blocks.size > MAX_DESCRIBED_BLOCKS) "\n[${blocks.size - MAX_DESCRIBED_BLOCKS} more blocks]" else ""
 
@@ -1329,8 +1338,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             /** For an unknown callee, declarations sharing its name; the user's [chosen] one unfolds in place of [target]. */
             val choices = if (node.unresolved) occurrences.flatMap { it.choices }.distinct() else emptyList()
             private var chosen: Int? = null
-            /** The symbol this card shows: the callee, or the declaration the user picked for an unknown one. */
-            val shown: Int get() = chosen ?: target
+            /** The callee, or the declaration the user picked for an unknown one. */
+            val symbol: Int get() = chosen ?: target
+            private var wholeFile: Int? = null
+            /** The scope shown by the card, including a containing file the reader expanded to. */
+            val shown: Int get() = wholeFile ?: symbol
+            private val containingFile: Int? get() = graph.nodes[symbol].takeIf {
+                it.inProject && !it.unresolved && it.kind != SymbolKind.FILE
+            }?.filePath?.let { filesByPath[it]?.id }
             private val choiceLinks = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
@@ -1340,7 +1355,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             private val text = HtmlLabel { inBreadcrumbs(this) || inBreadcrumbs(row) }
             private val header = JPanel(BorderLayout())
             private val actions = JPanel()
-            val trailName get() = graph.nodes[chosen ?: target].name
+            val trailName get() = graph.nodes[shown].name
             val trailAnchor get() = header
             private val details = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -1361,6 +1376,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     this@LevelView.repaint()
                 }
             }.apply { isVisible = false; verticalAlignment = SwingConstants.TOP }.zoomFont()
+            private val fileToggle = ActionLink("Show whole file") { showWholeFile(wholeFile == null) }
+                .apply { verticalAlignment = SwingConstants.TOP }.zoomFont()
             val headerCenter get() = header.y + header.height / 2
 
             init {
@@ -1373,7 +1390,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
                     add(pinToggle)
-                    add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(target) }
+                    add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(if (node.unresolved) target else shown) }
                         .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
                     if (occurrences.isNotEmpty()) add(ActionLink("Explain link") {
                         details.isVisible = !details.isVisible
@@ -1382,6 +1399,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         this@LevelView.repaint()
                     }.zoomFont())
                     add(sourceToggle)
+                    add(fileToggle)
                 }, BorderLayout.EAST)
                 add(if (choices.isEmpty()) header else JPanel().apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -1453,6 +1471,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 if (open) toggle()
                 level?.let { releaseBranch(it); remove(it) }
                 level = null
+                wholeFile = null
                 chosen = id
                 showChoices()
                 toggle()
@@ -1465,7 +1484,19 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
              */
             fun follow(id: Int) {
                 trailTarget = this
+                if (id == symbol && wholeFile != null) showWholeFile(false)
                 if (id != shown && id in choices && graph.nodes[id].inProject) pick(id) else pinTo(true)
+            }
+
+            /** Replace this branch with the containing file's normal schematic, keeping its caller in place. */
+            private fun showWholeFile(show: Boolean) {
+                val scope = if (show) containingFile ?: return else null
+                if (open) toggle()
+                level?.let { releaseBranch(it); remove(it) }
+                level = null
+                wholeFile = scope
+                update()
+                toggle()
             }
 
             /** Unfolds the card unless it is open already; its level, or null when it cannot unfold. */
@@ -1474,7 +1505,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 return level.takeIf { open }
             }
 
-            fun describe(): String = "the card of ${symbolText(shown)} beside ${row.describe()}"
+            fun describe(): String = "the card of ${symbolText(shown)}" +
+                (if (wholeFile != null) " (whole file expanded from ${symbolText(symbol)})" else "") + " beside ${row.describe()}"
 
             private fun symbolText(id: Int) = "#$id ${graph.nodes[id].name}" +
                 graph.nodes[id].location.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
@@ -1505,11 +1537,18 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
 
             fun update() {
+                fileToggle.isVisible = wholeFile != null || containingFile != null
+                fileToggle.text = if (wholeFile != null) "Show symbol" else "Show whole file"
+                fileToggle.toolTipText = if (wholeFile != null) "Return to ${graph.nodes[symbol].name}"
+                    else "Explore the containing file here, with clickable declarations and calls"
+                val node = wholeFile?.let { graph.nodes[it] } ?: this.node
                 val summary = summaries[target]
                 val name = escape(node.name.take(80))
                 val kind = node.kind.name.lowercase()
                 val file = node.location.takeIf { ':' in it }?.substringBefore(':')?.let { " · ${escape(it)}" }.orEmpty()
                 val body = when {
+                    wholeFile != null -> "<font color='gray'>Whole file expanded from <code>${escape(graph.nodes[symbol].name)}</code>. " +
+                        "Unfold a declaration to continue exploring.</font>"
                     node.unresolved && choices.isNotEmpty() -> "<font color='gray'>Implementation unknown: ${choices.size} declarations share this " +
                         "name. Pick one to continue; the IDE did not establish any of them.</font>" + chosen?.let {
                             "<br>Following your pick: <code>${escape(graph.nodes[it].name.take(80))}</code> · ${escape(graph.nodes[it].location)}"
@@ -1536,7 +1575,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
 
             fun toggle() {
-                val shown = if (expandable) target else chosen ?: return
+                if (!expandable && chosen == null) return
                 trailTarget = this
                 open = !open
                 arrow.text = if (open) "▾" else "▸"
