@@ -17,6 +17,7 @@ import dev.insight.review.SummaryEvidencePage
 import dev.insight.review.SummaryNode
 import dev.insight.review.numberedRows
 import dev.insight.review.summaryFocusLine
+import dev.insight.prompts.PromptTemplates
 
 /** Supplies VCS patch evidence to the shared summary pipeline. */
 internal fun diffSummarizer(
@@ -92,44 +93,15 @@ internal class DiffSummaryEvidence : SummaryEvidence {
 
     /** Fixed instructions stay cacheable across files and focus changes; each node supplies its own context. */
     override fun leafSystem(tree: ReviewSummaryTree, focus: String): String {
-        return "$SYSTEM_PREFIX\n" + """
-            Every node in "nodes" is a changed file or a patch part (kind "chunk") with its evidence inline.
-            For a part, summarize only the shown changes. Other parts are processed separately and combined by the application.
-            first_line_continues and last_line_continues mean a long line crosses a page boundary; do not infer its unseen text.
-            Use the supplied patch row numbers, which continue across pages. hunk_header is navigation context only.
-            After the "N|" line-number prefix, "-" marks removed text and "+" marks added text; a space marks unchanged
-            context. Context may explain a change but is not itself a change. Hunk headers are navigation, not changes.
-            Each change claim must cite at least one added or removed row establishing that change, even when also citing context.
-            added_lines and removed_lines count changed rows in this page, including a continued row's original sign.
-            When added_lines is zero and removed_lines is positive, describe removals, even in a modified file.
-            For example, "7|-fun rank() = askModel()" means "Removes model-based ranking", not "Ranks using a model".
-            A file with status "deleted" no longer exists; describe what was removed. Preserve qualifications and exceptions.
-            For evidence_kind "test", describe added, updated or removed coverage. A removed test is not new coverage.
-            Test setup selecting an existing mode does not add that mode. Keep fixture values scoped to their assertion;
-            an assertion for selected level 1 does not mean every selection resets the level to 1.
-            For evidence_kind "documentation", describe what the documentation adds, changes or removes.
-            Neither tests nor documentation alone establish a new runtime feature. Omit unchanged assertions and prose.
-            Cite only numbered patch rows shown, never character offsets or hunk_header text.
-        """.trimIndent() + "\n" + LEAF_CITATION_GUIDANCE + summaryFocusLine(focus)
+        return "$SYSTEM_PREFIX\n" + PromptTemplates.load("diff-summary-leaf.md") + "\n" + LEAF_CITATION_GUIDANCE + summaryFocusLine(focus)
     }
 
-    override fun branchSystem(focus: String): String = "$SYSTEM_PREFIX\n" + """
-        Every node in "nodes" is a branch of the tree, listed with its children's
-        summaries. Using only those summaries, condense each node's changes into their main themes without
-        listing the children or repeating subordinate details. Preserve meaningful qualifications and do not
-        force unrelated changes into a shared purpose or infer broader guarantees.
-        If a node has kind "root", summarize the overall change.
-        For a file assembled from parts, preserve which behavior or tests were removed versus added or updated.
-        For folders and the root, select the main behavioral themes instead of repeating implementation inventories.
-        Preserve each child's evidence_kind: test coverage and documentation updates remain such when condensed.
-    """.trimIndent() + "\n" + BRANCH_CITATION_GUIDANCE + summaryFocusLine(focus)
+    override fun branchSystem(focus: String): String = "$SYSTEM_PREFIX\n" + PromptTemplates.load("diff-summary-branch.md") + "\n" + BRANCH_CITATION_GUIDANCE + summaryFocusLine(focus)
 
     private companion object {
-        val SYSTEM_PREFIX = """
-            $CODE_AS_DATA
-            You write concise summaries for a code change shown as a tree.
-            Return exactly required_output_ids, one summary per node, never one per child. Return only JSON matching $SUMMARY_JSON_SHAPE.
-        """.trimIndent() + "\n" + SUMMARY_WRITING_GUIDANCE + "\n" + SUMMARY_SEGMENT_GUIDANCE
+        val SYSTEM_PREFIX = PromptTemplates.render(
+            "diff-summary-prefix.md", mapOf("CODE_AS_DATA" to CODE_AS_DATA, "SUMMARY_JSON_SHAPE" to SUMMARY_JSON_SHAPE),
+        ) + "\n" + SUMMARY_WRITING_GUIDANCE + "\n" + SUMMARY_SEGMENT_GUIDANCE
     }
 }
 

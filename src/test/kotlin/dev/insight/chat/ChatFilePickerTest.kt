@@ -36,7 +36,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
         myFixture.addFileToProject("test/ChatPanelTest.kt", "class ChatPanelTest")
         for (chartMode in listOf(false, true)) {
             val scope = CoroutineScope(SupervisorJob())
-            val panel = ChatPanel(project, ChatSession(project, scope), chartMode = chartMode)
+            val panel = ChatPanel(project, ChatSession(project, scope, ProjectChatBackendFactory(project)), chartMode = chartMode)
             try {
                 val picker = controls(panel).filterIsInstance<ChatFilePicker>().single()
                 val query = controls(picker).filterIsInstance<JBTextField>().single()
@@ -75,7 +75,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
     fun `test escape close button selection and no results preserve the draft`() {
         myFixture.addFileToProject("src/One.kt", "class One")
         val scope = CoroutineScope(SupervisorJob())
-        val panel = ChatPanel(project, ChatSession(project, scope))
+        val panel = ChatPanel(project, ChatSession(project, scope, ProjectChatBackendFactory(project)))
         try {
             val picker = controls(panel).filterIsInstance<ChatFilePicker>().single()
             val query = controls(picker).filterIsInstance<JBTextField>().single()
@@ -126,7 +126,7 @@ class ChatFilePickerTest : BasePlatformTestCase() {
     fun `test path cache follows file creation rename and deletion`() {
         val file = myFixture.addFileToProject("src/Original.kt", "class Original").virtualFile
         val scope = CoroutineScope(SupervisorJob())
-        val panel = ChatPanel(project, ChatSession(project, scope))
+        val panel = ChatPanel(project, ChatSession(project, scope, ProjectChatBackendFactory(project)))
         try {
             val picker = controls(panel).filterIsInstance<ChatFilePicker>().single()
             val query = controls(picker).filterIsInstance<JBTextField>().single()

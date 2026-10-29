@@ -35,6 +35,7 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.google.gson.Gson
+import dev.insight.chat.ChartChatBackendFactory
 import dev.insight.chat.ChartChatContext
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
@@ -262,7 +263,8 @@ internal class FlowChartPanel(
         return FlowChartChatContext(host) to Gson().toJson(mapOf("revision" to chatRevision, "functions" to functions,
             "omitted" to (nodes.size - functions.size)))
     }
-    private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
+    private val chatPanel = ChatPanel(project,
+        ChatSession(project, chatScope, ChartChatBackendFactory(project, chatContext)), chartMode = true)
     private val chatTabs = JBTabbedPane().apply { addTab("Chart", chatPanel) }
     private var chatSection: CollapsibleControls.Section
     private var searchSection: CollapsibleControls.Section
@@ -316,7 +318,8 @@ internal class FlowChartPanel(
                 }
             }
             val scope = CoroutineScope(chatScope.coroutineContext + SupervisorJob(chatScope.coroutineContext[Job]))
-            val panel = ChatPanel(project, ChatSession(project, scope, context), chartMode = true,
+            val panel = ChatPanel(project,
+                ChatSession(project, scope, ChartChatBackendFactory(project, context)), chartMode = true,
                 scopeLabel = "${target.kind}: ${target.label.orEmpty().take(100)}")
             scopedChats[panel] = scope
             val title = target.label?.take(25)?.ifBlank { null } ?: target.kind

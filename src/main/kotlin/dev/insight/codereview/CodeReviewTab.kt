@@ -173,71 +173,73 @@ internal class CodeReviewTab(
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
-    override val session = object : ChatSession(project, scope, onClear = sourcePoints::clear, welcome = if (focus != null)
+    override val session = object : ChatSession(project, scope, backendFactory = { _ -> createBackend() },
+        onClear = sourcePoints::clear, welcome = if (focus != null)
         "Ask about ${focus.label}. Its summaries and source are in this chat's context; other project files are read when a " +
             "question needs them." else
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility. " +
             "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
         override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "code")
+    }
 
-        override fun createBackend(): ChatBackend = object : ChatBackend {
-            override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-                val (context, scopeName, turnFocus) = withContext(Dispatchers.EDT) {
-                    Triple(captureContext(), codePromptScope(state.snapshot.scope, state.scopePaths),
-                        focus?.current(state.snapshot.byPath.keys, state.summaries, state.topicSummaries))
-                }
-                val question = messages.lastOrNull()?.text.orEmpty()
-                val rawComplete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
-                val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
-                    rawComplete)
-                val command = ReviewCommand.parse(question)
-                if (command == ReviewCommand.TOPICS) {
-                    val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
-                    if (!confirm(requests, "topics")) return cancelledReply(requests)
-                    val run = pipeline {
-                        withCountProgress("Classifying files in scope…", "files classified") { onProgress ->
-                            ReviewTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
-                                system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
-                                concurrency = CODE_TOPIC_CONCURRENCY)
-                                .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
-                        }
-                    }
-                    return topicsReply(run, empty = "There are no files in scope to classify.")
-                }
-                if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
-                    val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
-                    val evidence = CodeSummaryEvidence(context.snapshot)
-                    val requests = withContext(Dispatchers.EDT) {
-                        if (topicSummaries) estimateSummaryRequests(seedTopicSummaries(state.topicSummaries, state.summaries),
-                            CODE_SUMMARY_OPTIONS, evidence::size, restartComplete = false)
-                        else estimateSummaryRequests(state.summaries, CODE_SUMMARY_OPTIONS, evidence::size)
-                    }
-                    if (!confirm(requests, if (topicSummaries) "topic summaries" else "summaries")) return cancelledReply(requests)
-                    // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
-                    val run = pipeline {
-                        withCountProgress("Summarizing the code…", "summaries") { onProgress ->
-                            ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
-                                .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                                    if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
-                        }
-                    }
-                    val empty = "There are no files in scope to summarize."
-                    return if (topicSummaries) summariesReply(run, empty, TOPIC_SUMMARIES_MISSING) else summariesReply(run, empty)
-                }
-                val turn = chatTurn(messages, context.snapshot.files, diff = false) ?: return "There are no files in scope to explain."
-                // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                return LlmChatBackend(rawComplete,
-                    chatTools(context) + turn.chartTools,
-                    turn.prompt(codeReviewPrompt(scopeName)) + codeFocusPrompt(context.snapshot, turnFocus),
-                    maxContextChars = 160_000, maxToolRounds = 100,
-                    context = if (turnFocus == null) { { context.overview() } }
-                        else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
-                    contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)
-                    .reply(turn.request, onToolCall)
+    private fun createBackend(): ChatBackend = object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val (context, scopeName, turnFocus) = withContext(Dispatchers.EDT) {
+                Triple(captureContext(), codePromptScope(state.snapshot.scope, state.scopePaths),
+                    focus?.current(state.snapshot.byPath.keys, state.summaries, state.topicSummaries))
             }
+            val question = messages.lastOrNull()?.text.orEmpty()
+            val rawComplete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
+                rawComplete)
+            val command = ReviewCommand.parse(question)
+            if (command == ReviewCommand.TOPICS) {
+                val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
+                if (!confirm(requests, "topics")) return cancelledReply(requests)
+                val run = pipeline {
+                    withCountProgress("Classifying files in scope…", "files classified") { onProgress ->
+                        ReviewTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
+                            system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
+                            concurrency = CODE_TOPIC_CONCURRENCY)
+                            .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
+                    }
+                }
+                return topicsReply(run, empty = "There are no files in scope to classify.")
+            }
+            if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
+                val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
+                val evidence = CodeSummaryEvidence(context.snapshot)
+                val requests = withContext(Dispatchers.EDT) {
+                    if (topicSummaries) estimateSummaryRequests(seedTopicSummaries(state.topicSummaries, state.summaries),
+                        CODE_SUMMARY_OPTIONS, evidence::size, restartComplete = false)
+                    else estimateSummaryRequests(state.summaries, CODE_SUMMARY_OPTIONS, evidence::size)
+                }
+                if (!confirm(requests, if (topicSummaries) "topic summaries" else "summaries")) return cancelledReply(requests)
+                // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
+                val run = pipeline {
+                    withCountProgress("Summarizing the code…", "summaries") { onProgress ->
+                        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
+                            .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
+                                if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
+                    }
+                }
+                val empty = "There are no files in scope to summarize."
+                return if (topicSummaries) summariesReply(run, empty, TOPIC_SUMMARIES_MISSING) else summariesReply(run, empty)
+            }
+            val turn = chatTurn(messages, context.snapshot.files, diff = false) ?: return "There are no files in scope to explain."
+            // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
+            return LlmChatBackend(rawComplete,
+                chatTools(context) + turn.chartTools,
+                turn.prompt(codeReviewPrompt(scopeName)) + codeFocusPrompt(context.snapshot, turnFocus),
+                maxContextChars = 160_000, maxToolRounds = 100,
+                context = if (turnFocus == null) { { context.overview() } }
+                    else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
+                contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)
+                .reply(turn.request, onToolCall)
         }
     }
+
     override val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
 
     init {

@@ -897,14 +897,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 expand = { file.exploration?.expand(it) })
             schematicChatTools(project, graphTools, canvasAccess, canvasAccess::roots)
         }
-        private val session = object : ChatSession(project, scope, welcome = "Ask about ${graph.nodes[file.root].name} and the code " +
+        private val session = object : ChatSession(project, scope, backendFactory = { _ -> createBackend() },
+            welcome = "Ask about ${graph.nodes[file.root].name} and the code " +
             "it reaches. I read the code in the background and show the answer here as a chain of unfolded calls.") {
             override fun replyProgressTitle(text: String) = "Schematic chat: ${graph.nodes[file.root].name}"
-
-            override fun createBackend(): ChatBackend = LlmChatBackend(ChatSettings.getInstance().createClient()::complete, tools,
-                schematicChatPrompt, maxContextChars = 120_000, maxToolRounds = 60, context = canvasAccess::snapshot,
-                contextLabel = "Current schematic", evictionTarget = 0.7)
         }
+
+        private fun createBackend(): ChatBackend = LlmChatBackend(ChatSettings.getInstance().createClient()::complete, tools,
+            schematicChatPrompt, maxContextChars = 120_000, maxToolRounds = 60, context = canvasAccess::snapshot,
+            contextLabel = "Current schematic", evictionTarget = 0.7)
+
         val chat = ChatPanel(project, session, title = "Schematic Chat", showDashboard = false, compactTools = true)
         /** What the user right-clicked to open the chat; the next questions are likely about it. */
         var pointer: String? = null

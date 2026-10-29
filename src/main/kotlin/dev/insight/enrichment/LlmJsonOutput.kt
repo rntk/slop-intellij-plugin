@@ -17,7 +17,7 @@ import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
 import dev.insight.core.Hashing
 
-/** Bump when a generative prompt or its output handling changes, so cached labels, taxonomies and flow names are redone. */
+/** Bump when output handling changes. Prompt text and schemas are already hashed into each answer cache key. */
 internal const val GENERATIVE_VERSION = 2
 
 /** Shared evidence boundary; only system-designated application preferences may carry task instructions. */

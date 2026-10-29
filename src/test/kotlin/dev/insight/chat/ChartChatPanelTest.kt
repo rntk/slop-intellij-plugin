@@ -18,6 +18,15 @@ class ChartChatPanelTest : BasePlatformTestCase() {
         val opened = mutableListOf<Pair<Int, Int>>()
         val hovered = mutableListOf<Int?>()
         val openedBeats = mutableListOf<Triple<Int, Int, Int?>>()
+        var repliesStarted = 0
+        var restores = 0
+        override fun beginReply() { repliesStarted++ }
+        override val restorable: Boolean get() = repliesStarted > restores
+        override fun restore(): Boolean {
+            if (!restorable) return false
+            restores++
+            return true
+        }
         override suspend fun snapshot() = "{}"
         override fun referenceName(revision: Int, node: Int) = if (revision == this.revision && node == 1) "loadData" else null
         override fun openReference(revision: Int, node: Int): String? {
@@ -45,20 +54,26 @@ class ChartChatPanelTest : BasePlatformTestCase() {
         val context = Context()
         val scope = CoroutineScope(SupervisorJob())
         val replies = ArrayDeque(listOf("Starts at [[node:1]], see [[beat:2|Stage 2]], then <b>[[node:7|Store]]</b>.", "Second [[beat:2|New Stage 2]]"))
-        val session = object : ChatSession(project, scope, context) {
-            override fun createBackend() = object : ChatBackend {
+        val session = ChatSession(project, scope, backendFactory = object : ChatBackendFactory {
+            override fun chartContext(): ChartChatContext = context
+            override fun create(suggestFollowups: (List<String>) -> Unit): ChatBackend = object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-                    if (replies.size == 2) sessionChartTools(context).single { it.definition.name == "suggest_followups" }
+                    if (replies.size == 2) chartTools(context, suggestFollowups).single { it.definition.name == "suggest_followups" }
                         .call(JsonParser.parseString("""{"questions":["Where is it stored?","Who calls it?"]}""").asJsonObject)
                     else context.storyId = 11
                     return replies.removeFirst()
                 }
             }
-        }
+        })
         val panel = ChatPanel(project, session, chartMode = true)
         try {
+            assertTrue(session.messages.single().text.contains("flow chart"))
+            assertSame(context, session.chartReferences)
+            assertFalse(session.chartRestorable)
             session.send("How does loading work?")
             PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5 /* seconds */)
+            assertEquals(1, context.repliesStarted)
+            assertTrue(session.chartRestorable)
             assertEquals(3, session.messages.last().revision)
             assertEquals(10, session.messages.last().storyId)
             assertEquals(listOf("Where is it stored?", "Who calls it?"), session.followups)
@@ -103,6 +118,9 @@ class ChartChatPanelTest : BasePlatformTestCase() {
             assertTrue("Node link in first reply remains active at same revision", panes[0].text.contains("node:3:1"))
             assertFalse("Beat link in first reply is invalidated when story changes", panes[0].text.contains("beat:3:2"))
             assertTrue("Beat link in second reply resolves against new story", panes[1].text.contains("beat:3:2"))
+            session.restoreChart()
+            assertEquals(1, context.restores)
+            assertEquals("Chart restored to before the last reply.", session.messages.last().text)
         } finally {
             panel.dispose()
             scope.cancel()
@@ -114,11 +132,12 @@ class ChartChatPanelTest : BasePlatformTestCase() {
         val context = object : ChartChatContext {
             override suspend fun snapshot() = "{}"
         }
-        val session = object : ChatSession(project, scope, context) {
-            override fun createBackend() = object : ChatBackend {
+        val session = ChatSession(project, scope, backendFactory = object : ChatBackendFactory {
+            override fun chartContext(): ChartChatContext = context
+            override fun create(suggestFollowups: (List<String>) -> Unit): ChatBackend = object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit) = "See [[node:1]]"
             }
-        }
+        })
         val panel = ChatPanel(project, session, chartMode = true)
         try {
             session.send("Explain")
@@ -135,11 +154,11 @@ class ChartChatPanelTest : BasePlatformTestCase() {
 
     fun `test project chat keeps plain text replies`() {
         val scope = CoroutineScope(SupervisorJob())
-        val session = object : ChatSession(project, scope) {
-            override fun createBackend() = object : ChatBackend {
+        val session = ChatSession(project, scope, backendFactory = { _ ->
+            object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit) = "See [[node:1]] <b>"
             }
-        }
+        })
         val panel = ChatPanel(project, session)
         try {
             session.send("Hi")

@@ -15,6 +15,7 @@ import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmTruncatedException
+import dev.insight.prompts.PromptTemplates
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,48 +71,19 @@ internal interface SummaryEvidence {
 internal data class SummaryEvidencePage(val evidence: JsonObject, val rows: IntRange, val changedRows: Set<Int>? = null)
 
 /** Shared writing policy for source and diff summaries at every level of the tree. */
-internal val SUMMARY_WRITING_GUIDANCE = """
-    State the main purpose, responsibility, or behavioral change in plain text and plain language.
-    Select the one or two dominant behaviors or changes, not every edit. Write at most two short sentences, normally
-    under 50 words. A phrase suffices for a trivial item. Omit subordinate implementation details even when citable.
-    Omit file names, paths, code snippets, and inventories of symbols or steps. Keep only details that materially
-    clarify behavior, scope, or constraints; subtle inputs may need more explanation than their size suggests.
-    Ground every claim in supplied evidence; do not invent intent, benefits, or guarantees. Stop when the meaning is clear.
-""".trimIndent()
+internal val SUMMARY_WRITING_GUIDANCE = PromptTemplates.load("review-summary-writing.md")
 
 /** The answer shape of every summary request, for the instructions; [ReviewSummarizer.SCHEMA] enforces it where supported. */
 internal const val SUMMARY_JSON_SHAPE = """{"summaries":[{"id":1,"segments":[{"text":"…","from":["…"]}]}]}"""
 
 /** How a summary is split into segments, shared by every request. */
-internal val SUMMARY_SEGMENT_GUIDANCE = """
-    Return one to three cited segments whose texts join into one brief summary, including spaces and punctuation.
-    Split only where the supporting evidence changes. Keep conjunctions and punctuation inside cited clauses.
-    Substantive claims need citations; connecting words or punctuation alone may have empty "from".
-""".trimIndent()
+internal val SUMMARY_SEGMENT_GUIDANCE = PromptTemplates.load("review-summary-segments.md")
 
 /** Citations of a leaf's own evidence lines. */
-internal val LEAF_CITATION_GUIDANCE = """
-    Evidence lines start with their number and "|". Each claim's "from" must cite supporting line numbers or
-    "first-last" ranges, not the whole node. Describe and cite only the node's own evidence; other nodes are separate
-    items, even when related.
-    Always return the complete response envelope, even for one node. Example:
-    {"summaries":[{"id":1,"segments":[{"text":"Retries failed uploads up to three times","from":["12-18"]},
-    {"text":" and logs each failure.","from":["20"]}]}]}
-""".trimIndent()
+internal val LEAF_CITATION_GUIDANCE = PromptTemplates.load("review-leaf-citations.md")
 
 /** Citations of the children's claims, which link a summary to the summaries it condenses. */
-internal val BRANCH_CITATION_GUIDANCE = """
-    Return exactly the ids in "required_output_ids", one answer per object directly inside "nodes".
-    Children are evidence, never output nodes. Their source labels C1, C2, etc. are local to their enclosing node.
-    Cite a supplied claim label such as "C1.S2" for a specific claim, or "C1" only when condensing that child's
-    whole summary. Every substantive segment needs support; it need not cover or cite every child.
-    Copy labels exactly from the input. Never invent labels, fill gaps, or expand a numbered sequence.
-    Cite only the claims needed to support the selected themes; do not enumerate all sources.
-    Select one or two dominant themes. Omit helpers, imports, renames and routine test updates unless they are
-    the only changes. Preserve whether tests are added, updated or removed; do not infer comprehensive coverage.
-    Test evidence describes coverage, and documentation evidence describes documentation; neither establishes a new
-    runtime feature. A folder label names a location, not the component that performs the described behavior.
-""".trimIndent()
+internal val BRANCH_CITATION_GUIDANCE = PromptTemplates.load("review-branch-citations.md")
 
 /** The focus line after cacheable summary instructions, before optional query context; empty without a focus. */
 internal fun summaryFocusLine(focus: String): String = if (focus.isEmpty()) "" else "\n\nThe user asked to focus on: ${focus.clipLine(300)}"
@@ -154,13 +126,9 @@ class ReviewSummarizer internal constructor(
         val requests = AtomicInteger()
         var error: String? = null
         val mutex = Mutex()
-        val context = if (queryContext.isBlank()) "" else "\n\n" + """
-            The reader is exploring this query: ${queryContext.clipLine(2_000)}
-            Use the query as context to ground these summaries in the responsibilities and behavior relevant to it.
-            Keep writing summaries of the supplied evidence, rather than answering the query as a question.
-            Include query-relevant details only when essential to understanding the main behavior; keep the
-            summary brief and do not invent a connection.
-        """.trimIndent()
+        val context = if (queryContext.isBlank()) "" else "\n\n" + PromptTemplates.render(
+            "review-summary-query.md", mapOf("query" to queryContext.clipLine(2_000)),
+        )
         val custom = instructions.trim().takeIf { it.isNotEmpty() }
             ?.let { "\n\nUser instructions for this summary generation:\n$it" }.orEmpty()
         val leafSystem = evidence.leafSystem(start.tree, focus) + context + custom
@@ -525,14 +493,7 @@ class ReviewSummarizer internal constructor(
 private val SummaryNode.requestKind: String
     get() = if (isTopicBranch && kind == SummaryKind.DIRECTORY) "topic" else kind.id
 
-private val TOPIC_SUMMARY_GUIDANCE = """
-    This request describes an existing topic hierarchy. A topic (kind "topic") groups files by code
-    responsibility or subject. topic_path gives its levels from broad to specific, separated by >;
-    groups within a topic carry that topic_path too. An empty topic_path denotes the top level:
-    the root covers all topics, while groups there cover only their listed children.
-    Summarize the children's main responsibilities or changes using their summaries as evidence.
-    Topic labels provide context, not additional evidence. Do not create or assign topics.
-""".trimIndent()
+private val TOPIC_SUMMARY_GUIDANCE = PromptTemplates.load("review-topic-summary.md")
 
 internal fun summariesFocus(text: String): String = text.trim().substringAfter(" ", "").trim()
 

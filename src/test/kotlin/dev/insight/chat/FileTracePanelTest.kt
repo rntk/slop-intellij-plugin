@@ -117,8 +117,8 @@ class FileTracePanelTest : BasePlatformTestCase() {
 
     fun `test Files tab combines accepted reads by turn and clears with chat`() {
         val scope = CoroutineScope(SupervisorJob())
-        val session = object : ChatSession(project, scope) {
-            override fun createBackend() = object : ChatBackend {
+        val session = ChatSession(project, scope, backendFactory = { _ ->
+            object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                     val complete = tracedFileCompletion(listOf(TraceFile("a.kt", source = "first\nsecond\n"))) { Completion("Answer") }
                     complete(CompletionRequest(listOf(LlmMessage.user("""{"path":"a.kt","excerpt":"first"}"""))))
@@ -126,7 +126,7 @@ class FileTracePanelTest : BasePlatformTestCase() {
                     return "Answer"
                 }
             }
-        }
+        })
         val panel = ChatPanel(project, session, showDashboard = false, showFileTrace = true)
         try {
             session.send("Explain first")
@@ -162,23 +162,21 @@ class FileTracePanelTest : BasePlatformTestCase() {
     fun `test project tool output is visible in chat and read ranges appear in Files`() {
         myFixture.addFileToProject("flows/AGENTS.md", "Keep it brief.\nUse a couple of links.")
         val scope = CoroutineScope(SupervisorJob())
-        val session = object : ChatSession(project, scope) {
-            override fun createBackend(): ChatBackend {
-                var round = 0
-                return LlmChatBackend({
-                    when (round++) {
-                        0 -> Completion("", toolCalls = listOf(LlmToolCall("read", "read_file", JsonObject().apply {
-                            addProperty("path", "flows/AGENTS.md")
-                            addProperty("end_line", 200)
-                        })))
-                        1 -> Completion("", toolCalls = listOf(LlmToolCall("missing", "read_file", JsonObject().apply {
-                            addProperty("path", "missing.md")
-                        })))
-                        else -> Completion("Done")
-                    }
-                }, projectContextTools(project), projectChatSystemPrompt())
-            }
-        }
+        val session = ChatSession(project, scope, backendFactory = { _ ->
+            var round = 0
+            LlmChatBackend({
+                when (round++) {
+                    0 -> Completion("", toolCalls = listOf(LlmToolCall("read", "read_file", JsonObject().apply {
+                        addProperty("path", "flows/AGENTS.md")
+                        addProperty("end_line", 200)
+                    })))
+                    1 -> Completion("", toolCalls = listOf(LlmToolCall("missing", "read_file", JsonObject().apply {
+                        addProperty("path", "missing.md")
+                    })))
+                    else -> Completion("Done")
+                }
+            }, projectContextTools(project), projectChatSystemPrompt())
+        })
         val panel = ChatPanel(project, session, showDashboard = false, showFileTrace = true)
         try {
             session.send("Check the rules")

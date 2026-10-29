@@ -107,6 +107,17 @@ class EntryPointFinderTest {
         assertTrue(EntryPointFinder(model::complete, project, listOf(ReadTool(project)), cache).find(emptyList()).cached)
     }
 
+    @Test fun `changed read budgets invalidate the whole answer cache`() = runBlocking {
+        val project = setup()
+        val cache = EntryPointCache()
+        val model = FakeModel(answer, answer)
+        EntryPointFinder(model::complete, project, emptyList(), cache).find(emptyList())
+        val changed = EntryPointFinder(model::complete, project, emptyList(), cache, maxFileReads = 10).find(emptyList())
+        assertFalse(changed.cached)
+        assertEquals(2, model.requests.size)
+        assertTrue(model.requests.last().messages.first().content.contains("at most 10 files"))
+    }
+
     @Test fun `after a change only changed files are read again and unchanged notes are passed on`() = runBlocking {
         val project = setup()
         val cache = EntryPointCache()
