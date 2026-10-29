@@ -310,6 +310,18 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val hierarchy = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
             assertEquals(listOf(files[0].path), hierarchy.outline.files.map { it.path })
             assertEquals("balances", field("topics-summary-search").text)
+            val summaryField = field("topics-summary-search")
+            // Incoming review updates and rebuilding the page list must keep the topic card's own view state.
+            val updated = TopicsCard(topics, summaries, canRun = true)
+            canvas.updateTopics(updated)
+            canvas.showNotes(CanvasState(notes = listOf(note), topics = updated))
+            layoutTree(canvas)
+            assertSame(topicField, field("topics-topic-search"))
+            assertSame(summaryField, field("topics-summary-search"))
+            assertEquals("balances", summaryField.text)
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
+            assertEquals(listOf(files[0].path), descendants(canvas)
+                .filterIsInstance<ChangeTopicHierarchyPanel>().single().outline.files.map { it.path })
         } finally { canvas.dispose() }
     }
 
