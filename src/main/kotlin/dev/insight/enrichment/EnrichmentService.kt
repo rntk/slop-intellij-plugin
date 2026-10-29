@@ -12,6 +12,7 @@ import dev.insight.callgraph.CallGraphResult
 import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.callgraph.SymbolKind
 import dev.insight.chat.ChatSettings
+import dev.insight.core.withPhaseProgress
 import dev.insight.llm.LlmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -86,12 +87,8 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
             val input = EnrichmentInput(project.name, result.graph, facts, result.occurrences)
             withContext(Dispatchers.IO) {
                 val pipeline = EnrichmentPipeline(decisions()::evaluate, llm()::complete, cache, options)
-                val enrichment = reportRawProgress { reporter ->
-                    pipeline.run(input) { phase, done, total ->
-                        reporter.text(phase)
-                        reporter.details("$done / $total")
-                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                    }
+                val enrichment = withPhaseProgress("Enriching application graph", "") { onProgress ->
+                    pipeline.run(input) { phase, done, total -> onProgress(phase, done, total) }
                 }
                 val report = reportPath
                 Files.createDirectories(report.parent)

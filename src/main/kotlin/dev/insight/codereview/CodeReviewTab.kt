@@ -36,7 +36,7 @@ import dev.insight.diff.SummaryCanvasActions
 import dev.insight.diff.TopicCanvasActions
 import dev.insight.diff.openHighlightedLines
 import dev.insight.diff.readPsiThen
-import dev.insight.diff.withCountProgress
+import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand

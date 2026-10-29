@@ -10,7 +10,7 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
+import dev.insight.core.withCountProgress
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.ChatPanel
 import dev.insight.review.ContextSummaryLauncher
@@ -70,17 +70,13 @@ internal class ReviewContextSummaryLauncher(
                 val summarizer = create()
                 Result.success(withBackgroundProgress(project, if (request.regenerate) "Resummarizing" else "Filling summaries", cancellable = true) {
                     withContext(Dispatchers.IO) {
-                        reportRawProgress { reporter ->
+                        withCountProgress(if (request.regenerate) "Resummarizing summaries…" else "Filling missing summaries…", "summaries") { onProgress ->
                             var current = start
                             summarizer.run(start, "", save = { entries ->
                                 current = current.summarize(entries, reuseSingleChildren = false)
                                 withContext(Dispatchers.EDT) { updated(current) }
                                 current
-                            }, onProgress = { count, total ->
-                                reporter.text(if (request.regenerate) "Resummarizing summaries…" else "Filling missing summaries…")
-                                reporter.details("$count of $total summaries")
-                                reporter.fraction(if (total > 0) count.toDouble() / total else null)
-                            }, nodeIds = request.nodeIds, queryContext = request.query,
+                            }, onProgress = onProgress, nodeIds = request.nodeIds, queryContext = request.query,
                                 instructions = request.instructions, reuseSingleChildren = !request.regenerate)
                         }
                     }

@@ -5,7 +5,6 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
-import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.util.PsiModificationTracker
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.ChatMessage
@@ -245,16 +244,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.showNotes(CanvasState(emptyList()))
         canvas.removeAll()
         removeAll()
-    }
-}
-
-/** Runs a pipeline that reports "[done] of [total] [unit]" under [text] as it goes. */
-internal suspend fun <R> withCountProgress(text: String, unit: String,
-                                           run: suspend (onProgress: suspend (Int, Int) -> Unit) -> R): R = reportRawProgress { reporter ->
-    reporter.text(text)
-    run { done, total ->
-        reporter.details("$done of $total $unit")
-        reporter.fraction(if (total > 0) done.toDouble() / total else null)
     }
 }
 

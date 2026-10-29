@@ -7,7 +7,7 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
+import dev.insight.core.withPhaseProgress
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.insight.enrichment.CanvasLine
@@ -153,13 +153,10 @@ internal class CanvasPanel(
             try {
                 runCatchingReported(com.intellij.openapi.diagnostic.Logger.getInstance(CanvasPanel::class.java), "Canvas generation failed") {
                     val data = withBackgroundProgress(project, "Generating canvas") {
-                        reportRawProgress { reporter ->
-                            reporter.text("Grouping source into topics…")
+                        withPhaseProgress("Grouping source into topics…", "") { onProgress ->
                             enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
                                 progress = { phase, done, total ->
-                                    reporter.text(phase)
-                                    reporter.details("$done / $total")
-                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                    onProgress(phase, done, total)
                                     SwingUtilities.invokeLater {
                                         if (!disposed && revision == requestRevision && job?.isActive == true) status.text = "$phase · $done / $total"
                                     }

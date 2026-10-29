@@ -30,7 +30,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
+import dev.insight.core.withPhaseProgress
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
@@ -960,12 +960,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             try {
                 failures += withBackgroundProgress(project, "Summarizing schematic: ${graph.nodes[file.root].name}") {
                     withContext(Dispatchers.Default) {
-                        reportRawProgress { reporter ->
-                            reporter.text("Reading source facts…")
+                        withPhaseProgress("Reading source facts…", "functions") { onProgress ->
                             summaries.summarize(roots) { phase, done, total ->
-                                reporter.text(phase)
-                                reporter.details("$done / $total functions")
-                                reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                onProgress(phase, done, total)
                                 ApplicationManager.getApplication().invokeLater {
                                     if (!disposed && running > 0) showStatus("$phase: $done / $total")
                                     if (!disposed) refreshSummaries(content)

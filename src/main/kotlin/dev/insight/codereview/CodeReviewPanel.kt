@@ -27,7 +27,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
+import dev.insight.core.withPhaseProgress
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -388,12 +388,8 @@ internal class CodeReviewPanel(
             try {
                 runCatchingReported(LOG, "Could not load ${scope.displayName}") {
                     val loaded = withBackgroundProgress(project, "Loading code review: ${scope.displayName}") {
-                        reportRawProgress { reporter ->
-                            CodeReviewLoader(project).load(scope, previous, progress = { phase, done, total ->
-                                reporter.text(phase)
-                                reporter.details(if (total > 0) "$done / $total files" else null)
-                                reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                            })
+                        withPhaseProgress("Loading code review…", "files") { onProgress ->
+                            CodeReviewLoader(project).load(scope, previous, progress = onProgress)
                         }
                     }
                     snapshot = loaded

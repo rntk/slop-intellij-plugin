@@ -12,6 +12,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
+import dev.insight.core.withCountProgress
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
 import dev.insight.review.reviewProgressTitle
