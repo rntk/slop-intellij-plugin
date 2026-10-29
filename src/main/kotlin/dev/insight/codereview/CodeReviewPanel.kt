@@ -34,6 +34,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import dev.insight.InsightBundle
 import dev.insight.diff.ReviewSidePages
 import dev.insight.diff.ReviewTabsController
 import dev.insight.diff.openFilesOnActivate
@@ -100,12 +101,16 @@ class ReviewDirectoryAction : DumbAwareAction() {
         val target = target(e)
         e.presentation.isVisible = target != null
         if (target != null && !target.isDirectory) {
-            e.presentation.text = "Review Code from This File"
-            e.presentation.description = "Open Code Review for this file and the project files it depends on"
+            e.presentation.text = InsightBundle.message("action.Insight.ReviewDirectory.file.text")
+            e.presentation.description = InsightBundle.message("action.Insight.ReviewDirectory.file.description")
+        } else {
+            e.presentation.text = InsightBundle.message("action.Insight.ReviewDirectory.text")
+            e.presentation.description = InsightBundle.message("action.Insight.ReviewDirectory.description")
         }
         e.presentation.isEnabled = target != null && e.project?.let { project ->
             ReadAction.compute<Boolean, RuntimeException> {
                 try {
+                    // Metadata validation only; file loading and dependency traversal happen after invocation.
                     codeScope(project, target)
                     true
                 } catch (e: IllegalArgumentException) {

@@ -47,6 +47,7 @@ import dev.insight.diff.pixelBorder
 import dev.insight.diff.zoomScaled
 import dev.insight.diff.zoomed
 import dev.insight.enrichment.liftCalls
+import dev.insight.ui.ComponentMouseEvents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -59,7 +60,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.awt.AWTEvent
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -75,8 +75,6 @@ import java.awt.KeyboardFocusManager
 import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.RenderingHints
-import java.awt.Toolkit
-import java.awt.event.AWTEventListener
 import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -291,11 +289,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private var hoveredBlock: LevelView.BlockView? = null
     // Allow the pointer to cross the arrow between a block and its card without losing the preview.
     private val hoverExit = Timer(200) { hover(null) }.apply { isRepeats = false }
-    /** Sees mouse events before the components under the pointer, so dragging moves the canvas over code and blocks too. */
-    private val dragListener = AWTEventListener { event -> (event as? MouseEvent)?.let {
+    /** Tracks just this canvas, including source editors and branches added as the graph unfolds. */
+    private val mouseEvents = ComponentMouseEvents(content) {
         trackHover(it)
         drag(it)
-    } }
+    }
 
     /** Floats over the canvas, so the whole tab shows it: the trail on the left, the controls on the right. */
     private val trailBar = FloatingPanel(BorderLayout()).apply {
@@ -357,7 +355,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
         installNavigation()
         content.addMouseWheelListener(::wheel)
-        Toolkit.getDefaultToolkit().addAWTEventListener(dragListener, AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK)
         // Earlier components paint on top, so the floating bars come before the canvas.
         add(controls)
         add(trailBar)
@@ -413,7 +410,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         zoomFrame.stop()
         wheelZoom = null
         wheelAnchor = null
-        Toolkit.getDefaultToolkit().removeAWTEventListener(dragListener)
+        mouseEvents.dispose()
+        endDrag()
         chat?.dispose()
         chat = null
         scope.cancel()
@@ -741,13 +739,17 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 scrollTo(view.x + start.x - now.x, view.y + start.y - now.y)
             }
             MouseEvent.MOUSE_RELEASED -> {
-                dragStart = null
-                dragView = null
-                dragCursorOwner?.cursor = dragCursor
-                dragCursorOwner = null
-                dragCursor = null
+                endDrag()
             }
         }
+    }
+
+    private fun endDrag() {
+        dragStart = null
+        dragView = null
+        dragCursorOwner?.cursor = dragCursor
+        dragCursorOwner = null
+        dragCursor = null
     }
 
     /** Right-click anywhere on the canvas; [pointer] describes the block, card or line under the pointer for the chat. */

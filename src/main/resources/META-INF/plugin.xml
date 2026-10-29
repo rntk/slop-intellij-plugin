@@ -10,6 +10,9 @@
         <br/>Application Graph shows Java, Kotlin, Python, Go, Rust, JavaScript and TypeScript project symbols and relationships, highlighting the active file.
         <br/>Entry Points (an Application Graph tab) compares application entry points found with the LLM API and Decisions API.
         <br/>Show Call Graph (editor context menu, Tools menu) draws the callers and callees of a function in any of those languages.
+        <br/>Diff Review provides a canvas for reviewing working-tree or historical VCS changes, with scoped tabs, summaries and notes.
+        <br/>Prompt Constructor searches Markdown prompt and appendix libraries and composes drafts for preview, copying and export.
+        <br/>Insight API Logs shows LLM and Decisions API requests and responses, with copying, export and persistent history for debugging.
         <br/>Code Review (Tools menu, or Review Code in Directory in the Project view) reviews the code in the project, a folder, or an entry file and the files it depends on, with a chat, summaries from the whole scope down to each file, and topics.
     ]]></description>
     <depends>com.intellij.modules.platform</depends>
@@ -34,18 +37,19 @@
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Insight Schematic" displayType="BALLOON" isLogByDefault="true"/>
-        <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/insight.svg"
+        <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
-        <toolWindow id="Insight Chat" anchor="right" icon="/icons/insight.svg"
+        <toolWindow id="Insight Chat" anchor="right" icon="/icons/chat.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
-        <toolWindow id="Diff Review" anchor="right" icon="/icons/insight.svg"
+        <toolWindow id="Diff Review" anchor="right" icon="/icons/diff-review.svg"
                     factoryClass="dev.insight.diff.DiffReviewToolWindowFactory"/>
-        <toolWindow id="Code Review" anchor="right" icon="/icons/insight.svg"
+        <toolWindow id="Code Review" anchor="right" icon="/icons/code-review.svg"
                     factoryClass="dev.insight.codereview.CodeReviewToolWindowFactory"/>
         <!-- Raw request/response traffic of the LLM and Decisions APIs, for debugging. -->
-        <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/insight.svg"
+        <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/api-logs.svg"
+                    secondary="true" doNotActivateOnStart="true"
                     factoryClass="dev.insight.apilog.ApiLogToolWindowFactory"/>
         <applicationConfigurable parentId="tools" id="dev.insight.chat"
                                  bundle="messages.InsightBundle" key="configurable.insight.chat.display.name"

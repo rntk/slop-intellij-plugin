@@ -469,6 +469,13 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             0, 0, 1, 1, 1, false, java.awt.event.MouseEvent.BUTTON1)) }
     }
 
+    private fun hoverMouse(component: java.awt.Component, event: Int = java.awt.event.MouseEvent.MOUSE_ENTERED) {
+        // Real Swing events target an interactive descendant, rather than a passive BlockView or SummaryCard.
+        val target = if (component.mouseListeners.isNotEmpty()) component else
+            descendants(component as java.awt.Container).first { it.mouseListeners.isNotEmpty() }
+        target.dispatchEvent(java.awt.event.MouseEvent(target, event, 0, 0, 1, 1, 0, false))
+    }
+
     private fun layOut(component: java.awt.Component) {
         component.doLayout()
         (component as? java.awt.Container)?.components?.forEach(::layOut)
@@ -553,8 +560,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
     }
 
     fun `test folded source and hidden explanations catch up when revealed after zoom`() {
-        fun hover(component: java.awt.Component) = component.dispatchEvent(java.awt.event.MouseEvent(component,
-            java.awt.event.MouseEvent.MOUSE_ENTERED, 0, 0, 1, 1, 0, false))
+        fun hover(component: java.awt.Component) = hoverMouse(component)
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
         try {
@@ -639,8 +645,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             panel.zoomTo(0.5)
             assertEquals(normalBlockSize * 0.5f, blockTitle.font.size2D, 0.1f)
             assertEquals(entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
-            blockTitle.parent.dispatchEvent(java.awt.event.MouseEvent(blockTitle.parent,
-                java.awt.event.MouseEvent.MOUSE_ENTERED, 0, 0, 1, 1, 0, false))
+            hoverMouse(blockTitle.parent)
             assertEquals("Hover alone must not enlarge a title", entry.font.size.toFloat(), renderedSize(entry, "entry"), 0.1f)
             click(blockTitle.parent)
             for (zoom in listOf(0.5, 0.25)) {
@@ -711,8 +716,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             val other = descendants(canvas).first { block ->
                 block.javaClass.simpleName == "BlockView" && descendants(block as java.awt.Container).any { (it as? javax.swing.JLabel)?.text == "open" }
             }
-            other.dispatchEvent(java.awt.event.MouseEvent(other, java.awt.event.MouseEvent.MOUSE_ENTERED,
-                0, 0, 1, 1, 0, false))
+            hoverMouse(other)
             assertEquals(listOf(root, "entry", "check"), path())
             press(canvas, "ESCAPE")
             panel.zoomTo(0.5)
@@ -789,8 +793,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             layOut(panel)
             val viewport = canvas.parent as javax.swing.JViewport
             val block = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }[3]
-            fun hover(target: java.awt.Component = block) = target.dispatchEvent(java.awt.event.MouseEvent(target, java.awt.event.MouseEvent.MOUSE_ENTERED,
-                0, 0, 1, 1, 0, false))
+            fun hover(target: java.awt.Component = block) = hoverMouse(target)
             hover()
             layOut(panel)
             val card = cards()[3] as java.awt.Container
@@ -917,9 +920,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             fun cards() = descendants(canvas).filter { it.javaClass.simpleName == "SummaryCard" }
             PlatformTestUtil.waitWithEventsDispatching("The file should be read", { cards().size == 9 }, 10)
             val blocks = descendants(canvas).filter { it.javaClass.simpleName == "BlockView" }
-            fun hover(component: java.awt.Component, event: Int = java.awt.event.MouseEvent.MOUSE_ENTERED) {
-                component.dispatchEvent(java.awt.event.MouseEvent(component, event, 0, 0, 1, 1, 0, false))
-            }
+            fun hover(component: java.awt.Component, event: Int = java.awt.event.MouseEvent.MOUSE_ENTERED) = hoverMouse(component, event)
             hover(blocks[0])
             assertTrue(cards()[0].isVisible)
             hover(blocks[0], java.awt.event.MouseEvent.MOUSE_EXITED)
