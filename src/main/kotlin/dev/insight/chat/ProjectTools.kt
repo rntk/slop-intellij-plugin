@@ -124,20 +124,6 @@ private abstract class ProjectTool(name: String, description: String, parameters
         return value.asString.takeIf { it.isNotBlank() }
     }
 
-    /** Local models sometimes quote numbers, so numeric strings are accepted. */
-    protected fun JsonObject.int(name: String): Int? {
-        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
-        val number = if (value.isJsonPrimitive) value.asString.trim().toIntOrNull() else null
-        return number ?: throw ToolInputException("$name must be an integer")
-    }
-
-    /** Accepts "true"/"false" strings for the same reason as [int]. */
-    protected fun JsonObject.boolean(name: String): Boolean? {
-        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
-        val flag = if (value.isJsonPrimitive) value.asString.trim().lowercase().toBooleanStrictOrNull() else null
-        return flag ?: throw ToolInputException("$name must be true or false")
-    }
-
     protected fun JsonObject.glob(): PathMatcher? = string("glob")?.let {
         try {
             FileSystems.getDefault().getPathMatcher("glob:$it")
@@ -161,7 +147,7 @@ private class ListFilesTool(private val files: ProjectFiles) : ProjectTool(
     },"additionalProperties":false}""",
 ) {
     override suspend fun call(arguments: JsonObject): String {
-        val limit = (arguments.int("max_results") ?: 200).coerceIn(1, 500)
+        val limit = (arguments.lenientInt("max_results") ?: 200).coerceIn(1, 500)
         val matcher = arguments.glob()
         return readAction {
             val found = files.contentFiles(directory(files, arguments.string("directory")), matcher)
@@ -184,8 +170,8 @@ private class ReadFileTool(private val files: ProjectFiles) : ProjectTool(
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")
         val trace = currentCoroutineContext()[FileTraceContext]?.trace
-        val start = arguments.int("start_line") ?: 1
-        val end = arguments.int("end_line") ?: (start + 79)
+        val start = arguments.lenientInt("start_line") ?: 1
+        val end = arguments.lenientInt("end_line") ?: (start + 79)
         if (start < 1 || end < start) throw ToolInputException("start_line must be at least 1 and not after end_line")
         return readAction {
             val file = files.resolve(path)
@@ -221,9 +207,9 @@ private class SearchTextTool(private val files: ProjectFiles) : ProjectTool(
     override suspend fun call(arguments: JsonObject): String {
         val query = arguments.string("query") ?: throw ToolInputException("query is required")
         val trace = currentCoroutineContext()[FileTraceContext]?.trace
-        val limit = (arguments.int("max_results") ?: 50).coerceIn(1, 200)
+        val limit = (arguments.lenientInt("max_results") ?: 50).coerceIn(1, 200)
         val matcher = arguments.glob()
-        val matches: (String) -> Boolean = if (arguments.boolean("regex") == true) {
+        val matches: (String) -> Boolean = if (arguments.lenientBoolean("regex") == true) {
             val pattern = try {
                 Regex(query, RegexOption.IGNORE_CASE)
             } catch (e: PatternSyntaxException) {
@@ -289,9 +275,9 @@ private class OpenFileTool(private val files: ProjectFiles) : ProjectTool(
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")
-        val line = arguments.int("line") ?: 1
-        val endLine = arguments.int("end_line")
-        val column = arguments.int("column") ?: 1
+        val line = arguments.lenientInt("line") ?: 1
+        val endLine = arguments.lenientInt("end_line")
+        val column = arguments.lenientInt("column") ?: 1
         if (line < 1 || column < 1) throw ToolInputException("line and column must be at least 1")
         if (endLine != null && endLine < line) throw ToolInputException("end_line must not be before line")
         // Validate before opening, so a bad call does not switch the user's editor and then fail.

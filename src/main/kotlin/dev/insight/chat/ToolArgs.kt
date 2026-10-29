@@ -35,9 +35,12 @@ internal fun JsonObject.stringArg(name: String, prefix: String = ""): String {
 internal fun JsonObject.optionalStringArg(name: String, prefix: String = ""): String? =
     if (has(name) && !this[name].isJsonNull) stringArg(name, prefix) else null
 
-/** False when missing. */
-internal fun JsonObject.booleanArg(name: String): Boolean {
-    val value = this[name] ?: return false
+/** False when missing or null. */
+internal fun JsonObject.booleanArg(name: String): Boolean = optionalBooleanArg(name) ?: false
+
+/** Null when missing or null. */
+internal fun JsonObject.optionalBooleanArg(name: String): Boolean? {
+    val value = this[name]?.takeUnless { it.isJsonNull } ?: return null
     if (!value.isJsonPrimitive || !value.asJsonPrimitive.isBoolean) throw ToolInputException("$name must be true or false")
     return value.asBoolean
 }
@@ -64,4 +67,33 @@ internal fun <T> objectsArg(value: JsonElement?, name: String, item: String, max
         if (!element.isJsonObject) throw ToolInputException("${prefix}each $item must be an object")
         decode(element.asJsonObject, prefix)
     }
+}
+
+// Lenient decoding for tools that local models call. They sometimes quote numbers and booleans, so numeric and
+// "true"/"false" strings are accepted, and null counts as missing. A label names the array item, such as "nodes[2].id".
+
+/** Null when missing or null. */
+internal fun JsonObject.lenientInt(name: String, label: String = name, nonnegative: Boolean = false): Int? {
+    val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+    val number = if (value.isJsonPrimitive) value.asString.trim().toIntOrNull() else null
+    return number?.takeIf { !nonnegative || it >= 0 }
+        ?: throw ToolInputException(if (nonnegative) "$label must be a nonnegative integer" else "$label must be an integer")
+}
+
+/** Null when missing or null. */
+internal fun JsonObject.lenientBoolean(name: String): Boolean? {
+    val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+    val flag = if (value.isJsonPrimitive) value.asString.trim().lowercase().toBooleanStrictOrNull() else null
+    return flag ?: throw ToolInputException("$name must be true or false")
+}
+
+/** Distinct nonnegative integer IDs; the array must hold [count] of them before duplicates are removed. */
+internal fun JsonObject.lenientIds(name: String, count: IntRange, label: String = name): List<Int> {
+    val array = get(name)?.takeIf { it.isJsonArray }?.asJsonArray
+        ?: throw ToolInputException("$label must be an array of ${count.first} to ${count.last} IDs")
+    if (array.size() !in count) throw ToolInputException("$label must contain ${count.first} to ${count.last} IDs")
+    return array.map { value ->
+        (if (value.isJsonPrimitive) value.asString.trim().toIntOrNull() else null)?.takeIf { it >= 0 }
+            ?: throw ToolInputException("$label must contain nonnegative integers")
+    }.distinct()
 }

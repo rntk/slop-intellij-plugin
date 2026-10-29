@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
+import dev.insight.chat.lenientInt
 import dev.insight.enrichment.CODE_AS_DATA
 import dev.insight.enrichment.JsonSchemas
 import dev.insight.enrichment.clipLine
@@ -108,7 +109,7 @@ class EntryPointFinder(
                 })
                 override suspend fun call(arguments: JsonObject): String {
                     budget.checkAvailable()
-                    val limit = integerArgument(arguments, "max_results", 50).coerceIn(1, 80)
+                    val limit = (arguments.lenientInt("max_results") ?: 50).coerceIn(1, 80)
                     val bounded = arguments.deepCopy().apply { addProperty("max_results", minOf(limit, maxSourceLines - budget.lines)) }
                     val result = tool.call(bounded)
                     searches += EntryPointCache.Search(bounded.deepCopy(), digest(result))
@@ -228,11 +229,6 @@ class EntryPointFinder(
         }
     }
 
-    private fun integerArgument(arguments: JsonObject, name: String, default: Int): Int = arguments.get(name)?.let {
-        if (!it.isJsonPrimitive) throw ToolInputException("$name must be an integer")
-        it.asString.trim().toIntOrNull() ?: throw ToolInputException("$name must be an integer")
-    } ?: default
-
     private fun recording(tool: ChatTool, reads: MutableMap<String, FileId>, budget: ReadBudget): ChatTool =
         if (tool.definition.name != READ_TOOL) tool else object : ChatTool {
             override val definition = tool.definition.copy(parameters = tool.definition.parameters.deepCopy().apply {
@@ -245,8 +241,8 @@ class EntryPointFinder(
                     throw ToolInputException("The limit of $maxFileReads files is reached. Do not read more files; answer now with what you know.")
                 }
                 budget.checkAvailable()
-                val start = integerArgument(arguments, "start_line", 1)
-                val end = integerArgument(arguments, "end_line", start + 79)
+                val start = arguments.lenientInt("start_line") ?: 1
+                val end = arguments.lenientInt("end_line") ?: (start + 79)
                 if (start < 1 || end < start) throw ToolInputException("Invalid source line range")
                 val last = minOf(end.toLong(), start.toLong() + 79, start.toLong() + maxSourceLines - budget.lines - 1).toInt()
                 val bounded = arguments.deepCopy().apply { addProperty("start_line", start); addProperty("end_line", last) }

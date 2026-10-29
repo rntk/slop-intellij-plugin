@@ -144,7 +144,7 @@ fun chartChatSystemPrompt(): String = visualCodeAssistantPrompt + "\n\n" + """
 /** [followups] receives validated suggest_followups questions for the session's latest reply. */
 fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> Unit = {}): List<ChatTool> {
     val offset = """"offset":{"type":"integer","minimum":0,"description":"Pagination offset; defaults to 0."}"""
-    val mutation = """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"maxItems":20}"""
+    val mutation = """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":20}"""
     fun enum(values: Array<out Enum<*>>) = values.joinToString(",", "[", "]") { "\"${it.name.lowercase()}\"" }
     val sceneProperties = """
         "title":{"type":"string","maxLength":${ChartScene.MAX_TITLE},"description":"Short caption shown on the chart."},
@@ -203,55 +203,20 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             """"revision":{"type":"integer"},"region_keys":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","maxLength":${ChartCallGroup.MAX_KEY}}},"expanded":{"type":"boolean"}""",
             "\"revision\",\"region_keys\",\"expanded\"") { args ->
             val keys = groupingStrings(args, "region_keys", 1, 20, ChartCallGroup.MAX_KEY)
-            val expanded = args.get("expanded")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
-                ?: throw ToolInputException("expanded must be a boolean")
+            val expanded = args.optionalBooleanArg("expanded") ?: throw ToolInputException("expanded must be true or false")
             context.setRegionExpansion(args.nonnegativeInt("revision"), keys.distinct(), expanded)
         },
         objectTool("find_chart_nodes", "Find in-project functions by name, container, source path or semantic filters (role, effect, entry_point) and enriched summaries (paged).",
-            """"query":{"type":"string","description":"Substring of function name, container, path or enriched summary."},"role":{"type":"string","enum":["core","validation","error-handling","logging","plumbing","utility"]},"effect":{"type":"string","enum":["storage","network","throws"]},"entry_point":{"type":"boolean"},$offset""", "") { args ->
-            val query = if (args.has("query") && !args.get("query").isJsonNull) {
-                val qElem = args.get("query")
-                val text = qElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()
-                    ?: throw ToolInputException("query must be a nonempty string")
-                if (text.isEmpty()) throw ToolInputException("query must be a nonempty string")
-                text.take(200)
-            } else null
-
-            val validRoles = setOf("core", "validation", "error-handling", "logging", "plumbing", "utility")
-            val role = if (args.has("role") && !args.get("role").isJsonNull) {
-                val rElem = args.get("role")
-                val rText = rElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()?.lowercase()
-                if (rText == null || rText !in validRoles) {
-                    throw ToolInputException("role must be one of core, validation, error-handling, logging, plumbing, utility")
-                }
-                rText
-            } else null
-
-            val validEffects = setOf("storage", "network", "throws")
-            val effect = if (args.has("effect") && !args.get("effect").isJsonNull) {
-                val eElem = args.get("effect")
-                val eText = eElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString?.trim()?.lowercase()
-                if (eText == null || eText !in validEffects) {
-                    throw ToolInputException("effect must be one of storage, network, throws")
-                }
-                eText
-            } else null
-
-            val entryPoint = if (args.has("entry_point") && !args.get("entry_point").isJsonNull) {
-                val epElem = args.get("entry_point")
-                epElem.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isBoolean }?.asBoolean
-                    ?: throw ToolInputException("entry_point must be a boolean")
-            } else null
-
-            if (query == null && role == null && effect == null && entryPoint == null) {
-                throw ToolInputException("query or a semantic filter (role, effect, entry_point) is required")
-            }
-
+            """"query":{"type":"string","description":"Substring of function name, container, path or enriched summary."},"role":{"type":"string","enum":${strings(FIND_ROLES)}},"effect":{"type":"string","enum":${strings(FIND_EFFECTS)}},"entry_point":{"type":"boolean"},$offset""", "") { args ->
+            val query = args.optionalStringArg("query")?.trim()?.take(200)
+            val role = args.optionalChoice("role", FIND_ROLES)
+            val effect = args.optionalChoice("effect", FIND_EFFECTS)
+            val entryPoint = args.optionalBooleanArg("entry_point")
             val off = args.nonnegativeInt("offset", 0)
-            if (role == null && effect == null && entryPoint == null && query != null) {
-                context.find(query, off)
-            } else {
-                context.findNodes(query, off, role, effect, entryPoint)
+            when {
+                role != null || effect != null || entryPoint != null -> context.findNodes(query, off, role, effect, entryPoint)
+                query != null -> context.find(query, off)
+                else -> throw ToolInputException("query or a semantic filter (role, effect, entry_point) is required")
             }
         },
         objectTool("get_chart_node_details", "Inspect a function and its static callers/callees, including hidden nodes (paged).",
@@ -260,14 +225,7 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         },
         objectTool("get_function_flow_outline", "Structured control-flow and call-site outline for 1 to 5 functions: ordered call occurrences with their enclosing conditions/loops, return/throw exits, dispatch implementations, compact subflows and groupable_blocks with exact block_key/occurrence_id strings for group_chart_calls.",
             """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":5}""", "\"revision\",\"node_ids\"") { args ->
-            val revision = args.nonnegativeInt("revision")
-            val array = args.get("node_ids")?.takeIf { it.isJsonArray }?.asJsonArray ?: throw ToolInputException("node_ids must be an array")
-            if (array.size() !in 1..5) throw ToolInputException("Give 1 to 5 node IDs")
-            val nodes = array.map { value ->
-                value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
-                    ?: throw ToolInputException("node_ids must contain nonnegative integers")
-            }.distinct()
-            context.functionOutline(revision, nodes)
+            context.functionOutline(args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..5))
         },
         objectTool("get_flow_catalog", "Catalog of named flows from enrichment and discovered/enriched entry points, with their spine steps, summaries and reached rule effects (paged, optional query filter).",
             """"revision":{"type":"integer"},"query":{"type":"string"},$offset""", "\"revision\"") { args ->
@@ -338,12 +296,7 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             "(with the matched imports, or the nearest callees that have the effect when only reached) and throws.",
             """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":${ChartScene.MAX_NODES}}""",
             "\"revision\",\"node_ids\"") { args ->
-            val array = args.get("node_ids")?.takeIf { it.isJsonArray }?.asJsonArray ?: throw ToolInputException("node_ids must be an array")
-            if (array.size() !in 1..ChartScene.MAX_NODES) throw ToolInputException("Give 1 to ${ChartScene.MAX_NODES} node IDs")
-            context.suggestExternals(args.nonnegativeInt("revision"), array.map { value ->
-                value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
-                    ?: throw ToolInputException("node_ids must contain nonnegative integers")
-            }.distinct())
+            context.suggestExternals(args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..ChartScene.MAX_NODES))
         },
     ) + listOf(
         "add_chart_nodes" to "Add existing project functions, connected to visible steps they call or are called by; unconnected ones become new columns. Does not create code or invented nodes.",
@@ -353,16 +306,7 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         "collapse_chart_callers" to "Hide callers for visible function IDs to reduce chart clutter.",
     ).map { (name, description) ->
         objectTool(name, description, mutation, "\"revision\",\"node_ids\"") { args ->
-            val revision = args.nonnegativeInt("revision")
-            val array = args.get("node_ids")?.takeIf { it.isJsonArray }?.asJsonArray
-                ?: throw ToolInputException("node_ids must be an array")
-            if (array.size() > 20) throw ToolInputException("Use at most 20 node IDs per call")
-            val nodes = array.map { value ->
-                value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
-                    ?: throw ToolInputException("node_ids must contain nonnegative integers")
-            }.distinct()
-            if (nodes.isEmpty()) throw ToolInputException("node_ids must not be empty")
-            context.apply(name, revision, nodes)
+            context.apply(name, args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..20))
         }
     }
 }
@@ -437,9 +381,7 @@ internal fun parseScene(args: JsonObject): ChartScene {
             ?: throw ToolInputException("notes[$i].text must not be empty"))
     }
     notes.groupBy { it.node }.filterValues { it.size > 1 }.keys.firstOrNull()?.let { throw ToolInputException("Node $it has two notes; merge them") }
-    val dim = args.get("dim_others")?.let { value ->
-        value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean ?: throw ToolInputException("dim_others must be a boolean")
-    } ?: true
+    val dim = args.optionalBooleanArg("dim_others") ?: true
     val columns = objects("columns", ChartScene.MAX_COLUMNS).mapIndexed { i, item ->
         SceneColumn(item.nonnegativeInt("node", where = "columns[$i]"),
             item.text("title", ChartScene.MAX_TITLE, "columns[$i]"),
@@ -448,20 +390,13 @@ internal fun parseScene(args: JsonObject): ChartScene {
     columns.groupBy { it.node }.filterValues { it.size > 1 }.keys.firstOrNull()?.let {
         throw ToolInputException("Column node $it is listed twice")
     }
-    val resetBoard = args.get("reset_board")?.let { value ->
-        value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
-            ?: throw ToolInputException("reset_board must be a boolean")
-    } ?: false
+    val resetBoard = args.booleanArg("reset_board")
     val camera = args.get("camera")?.takeIf { !it.isJsonNull }?.let {
         args.choice("camera", SceneCamera.entries.toTypedArray(), "scene")
     } ?: SceneCamera.FOCUS_FIRST
-    fun JsonObject.ids(name: String, where: String) = get(name)?.takeIf { it.isJsonArray }?.asJsonArray?.map { value ->
-        value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
-            ?: throw ToolInputException("$where.$name must contain nonnegative integers")
-    }?.distinct()?.takeIf { it.isNotEmpty() } ?: throw ToolInputException("$where.$name must be a nonempty array of function IDs")
     val groups = objects("groups", ChartScene.MAX_GROUPS).mapIndexed { i, item ->
         SceneGroup(item.text("label", ChartScene.MAX_SHORT_LABEL, "groups[$i]") ?: throw ToolInputException("groups[$i].label must not be empty"),
-            item.ids("nodes", "groups[$i]"), item.get("kind")?.takeIf { !it.isJsonNull }?.let {
+            item.lenientIds("nodes", 1..ChartScene.MAX_NODES, "groups[$i].nodes"), item.get("kind")?.takeIf { !it.isJsonNull }?.let {
                 item.choice("kind", SceneGroupKind.entries.toTypedArray(), "groups[$i]") })
     }
     groups.flatMap { it.nodes }.groupBy { it }.filterValues { it.size > 1 }.keys.firstOrNull()?.let {
@@ -529,7 +464,16 @@ internal fun parseFollowups(args: JsonObject): List<String> {
 
 private fun JsonObject.nonnegativeInt(name: String, default: Int? = null, where: String? = null): Int {
     val label = where?.let { "$it.$name" } ?: name
-    val value = get(name) ?: return default ?: throw ToolInputException("$label is required")
-    return value.takeIf { it.isJsonPrimitive }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
-        ?: throw ToolInputException("$label must be a nonnegative integer")
+    return lenientInt(name, label, nonnegative = true) ?: default ?: throw ToolInputException("$label is required")
 }
+
+private val FIND_ROLES = listOf("core", "validation", "error-handling", "logging", "plumbing", "utility")
+private val FIND_EFFECTS = listOf("storage", "network", "throws")
+
+private fun strings(values: List<String>) = values.joinToString(",", "[", "]") { "\"$it\"" }
+
+/** Null when missing or null; otherwise one of [values], ignoring case. */
+private fun JsonObject.optionalChoice(name: String, values: List<String>): String? =
+    optionalStringArg(name)?.trim()?.lowercase()?.also {
+        if (it !in values) throw ToolInputException("$name must be one of ${values.joinToString()}")
+    }

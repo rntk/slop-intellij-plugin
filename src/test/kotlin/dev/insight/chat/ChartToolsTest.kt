@@ -390,7 +390,7 @@ class ChartToolsTest {
         catch (e: ToolInputException) { assertTrue(e.message!!.contains("effect must be one of")) }
 
         try { tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"entry_point":"yes"}""").asJsonObject); fail() }
-        catch (e: ToolInputException) { assertTrue(e.message!!.contains("entry_point must be a boolean")) }
+        catch (e: ToolInputException) { assertTrue(e.message!!.contains("entry_point must be true or false")) }
 
         // find_chart_nodes dispatches valid filters to context.findNodes
         tools.getValue("find_chart_nodes").call(JsonParser.parseString("""{"role":"VALIDATION","effect":"storage","entry_point":true,"offset":5}""").asJsonObject)
