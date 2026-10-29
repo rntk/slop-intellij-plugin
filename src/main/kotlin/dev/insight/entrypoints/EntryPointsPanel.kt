@@ -18,6 +18,7 @@ import dev.insight.callgraph.CallGraphResult
 import dev.insight.chat.ProjectFiles
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.describeChatFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -95,30 +96,30 @@ internal class EntryPointsPanel(
                 status.text = "Finding entry points…"
                 status.toolTipText = null
                 try {
-                    val result = withBackgroundProgress(project, "Finding entry points with ${api.label}") {
-                        reportRawProgress { reporter ->
-                            val running = currentCoroutineContext()[Job]
-                            service.find(graph(), { message ->
-                                reporter.text(message)
-                                SwingUtilities.invokeLater {
-                                    if (!disposed && running?.isActive == true) status.text = message
-                                }
-                            }, api)
+                    runCatchingReported(com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointsPanel::class.java), "Entry point search failed") {
+                        val result = withBackgroundProgress(project, "Finding entry points with ${api.label}") {
+                            reportRawProgress { reporter ->
+                                val running = currentCoroutineContext()[Job]
+                                service.find(graph(), { message ->
+                                    reporter.text(message)
+                                    SwingUtilities.invokeLater {
+                                        if (!disposed && running?.isActive == true) status.text = message
+                                    }
+                                }, api)
+                            }
+                        }
+                        ensureActive()
+                        show(result)
+                    }.onFailure {
+                        if (!disposed) {
+                            val message = "${api.label} failed: ${describeChatFailure(it)}"
+                            status.text = message
+                            status.toolTipText = message
                         }
                     }
-                    ensureActive()
-                    show(result)
                 } catch (e: CancellationException) {
                     if (!disposed) status.text = "Search cancelled. Previous results retained."
                     throw e
-                } catch (e: Exception) {
-                    if (e is com.intellij.openapi.diagnostic.ControlFlowException) throw e
-                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointsPanel::class.java).warn("Entry point search failed", e)
-                    if (!disposed) {
-                        val message = "${api.label} failed: ${describeChatFailure(e)}"
-                        status.text = message
-                        status.toolTipText = message
-                    }
                 } finally {
                     if (!disposed) button.text = findLabel
                 }

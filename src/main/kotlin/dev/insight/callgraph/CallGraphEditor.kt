@@ -27,7 +27,8 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.insight.ui.heading
 import dev.insight.entrypoints.EntryPointService
-import kotlinx.coroutines.CancellationException
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -145,18 +146,15 @@ private class CallGraphPanel(private val project: Project, private var root: Sma
         val service = project.service<CallGraphService>()
         status.text = "Searching…"
         job = service.scope.launch(Dispatchers.EDT) {
-            try {
+            runCatchingReported(thisLogger(), "Call graph failed") {
                 val built = service.build(root, request)
                 result = built
                 canvas.show(built?.graph)
                 decorateEntryPoints()
                 status.text = built?.let(::summary) ?: "The function no longer exists."
                 built?.graph?.root?.let { title.text = "${it.name}  ${it.container}" }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Call graph failed", e)
-                status.text = "The call graph could not be built: ${e.message}"
+            }.onFailure {
+                status.text = "The call graph could not be built: ${describeFailure(it)}"
             }
         }
     }

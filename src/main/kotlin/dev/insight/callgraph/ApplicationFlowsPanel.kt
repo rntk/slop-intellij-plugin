@@ -17,6 +17,8 @@ import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointService
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.*
 import java.awt.*
 import java.awt.event.MouseWheelEvent
@@ -196,19 +198,20 @@ internal class ApplicationFlowsPanel(
         status.text = "Splitting entrypoint flows…"
         job = service.scope.launch(Dispatchers.EDT) {
             try {
-                val computed = enrichment.splitFlows(built, entries) { message ->
-                    SwingUtilities.invokeLater { if (!disposed && request == generation && job?.isActive == true) status.text = message }
+                runCatchingReported(thisLogger(), "Flow splitting failed") {
+                    val computed = enrichment.splitFlows(built, entries) { message ->
+                        SwingUtilities.invokeLater { if (!disposed && request == generation && job?.isActive == true) status.text = message }
+                    }
+                    if (disposed || request != generation) return@launch
+                    split = Split(built, entries, computed)
+                    job = null
+                    showFlows()
+                }.onFailure {
+                    if (!disposed && request == generation) status.text = "Could not split flows: ${describeFailure(it)}"
                 }
-                if (disposed || request != generation) return@launch
-                split = Split(built, entries, computed)
-                job = null
-                showFlows()
             } catch (e: CancellationException) {
                 if (!disposed && request == generation) status.text = "Flow splitting cancelled."
                 throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Flow splitting failed", e)
-                if (!disposed && request == generation) status.text = "Could not split flows: ${e.message ?: e.javaClass.simpleName}"
             } finally {
                 if (!disposed && request == generation) {
                     job = null

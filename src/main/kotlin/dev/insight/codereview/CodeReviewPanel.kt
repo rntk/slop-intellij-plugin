@@ -40,6 +40,8 @@ import dev.insight.diff.ReviewTabsController
 import dev.insight.diff.openFilesOnActivate
 import dev.insight.diff.selectedFilePaths
 import dev.insight.review.ReviewDiskCache
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import java.awt.BorderLayout
 import java.util.Locale
 import javax.swing.DefaultListModel
@@ -384,32 +386,33 @@ internal class CodeReviewPanel(
         val previous = snapshot
         refreshJob = coroutines.launch(start = CoroutineStart.LAZY) {
             try {
-                val loaded = withBackgroundProgress(project, "Loading code review: ${scope.displayName}") {
-                    reportRawProgress { reporter ->
-                        CodeReviewLoader(project).load(scope, previous, progress = { phase, done, total ->
-                            reporter.text(phase)
-                            reporter.details(if (total > 0) "$done / $total files" else null)
-                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                        })
+                runCatchingReported(LOG, "Could not load ${scope.displayName}") {
+                    val loaded = withBackgroundProgress(project, "Loading code review: ${scope.displayName}") {
+                        reportRawProgress { reporter ->
+                            CodeReviewLoader(project).load(scope, previous, progress = { phase, done, total ->
+                                reporter.text(phase)
+                                reporter.details(if (total > 0) "$done / $total files" else null)
+                                reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                            })
+                        }
                     }
+                    snapshot = loaded
+                    if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
+                    val removed = tabs.all.sumOf { it.update(loaded) }
+                    renderFiles(loaded)
+                    updateSkipped(loaded)
+                    status.text = codeStatusText(loaded) + if (removed > 0) " · $removed outdated notes removed" else ""
+                    status.toolTipText = "${loaded.scope.absolutePath}\n${status.text}" +
+                        (if (loaded.ignoredCount > 0) "\n${loaded.ignoredCount} ignored files and folders were not read." else "") +
+                        if (loaded.scope.excludes.isNotEmpty()) "\nExcluded: ${CodeExclusions.format(loaded.scope.excludes)}" else ""
+                }.onFailure {
+                    status.text = "Could not load ${scope.displayName}: ${describeFailure(it)}"
+                    status.toolTipText = status.text
                 }
-                snapshot = loaded
-                if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
-                val removed = tabs.all.sumOf { it.update(loaded) }
-                renderFiles(loaded)
-                updateSkipped(loaded)
-                status.text = codeStatusText(loaded) + if (removed > 0) " · $removed outdated notes removed" else ""
-                status.toolTipText = "${loaded.scope.absolutePath}\n${status.text}" +
-                    (if (loaded.ignoredCount > 0) "\n${loaded.ignoredCount} ignored files and folders were not read." else "") +
-                    if (loaded.scope.excludes.isNotEmpty()) "\nExcluded: ${CodeExclusions.format(loaded.scope.excludes)}" else ""
             } catch (e: CancellationException) {
                 coroutineContext.ensureActive()
                 status.text = "Loading ${scope.displayName} cancelled. Click Load to retry."
                 throw e
-            } catch (e: Exception) {
-                LOG.warn("Could not load ${scope.displayName}", e)
-                status.text = "Could not load ${scope.displayName}: ${e.message ?: e.javaClass.simpleName}"
-                status.toolTipText = status.text
             } finally {
                 if (refreshJob === coroutineContext[Job]) {
                     refreshJob = null

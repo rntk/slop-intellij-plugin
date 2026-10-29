@@ -41,6 +41,8 @@ import dev.insight.chat.ChatSession
 import dev.insight.chat.ToolInputException
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -431,16 +433,12 @@ internal class FlowChartPanel(
                         .save(tour.name.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "tour" } + ".md") ?: return@item
                     val text = tourMarkdown(tour, project.basePath)
                     chatScope.launch(Dispatchers.EDT) {
-                        try {
+                        runCatchingReported(thisLogger(), "Could not export chart tour") {
                             withBackgroundProgress(project, "Exporting chart tour", cancellable = false) {
                                 withContext(Dispatchers.IO) { java.nio.file.Files.writeString(target.file.toPath(), text) }
                             }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            if (e is ControlFlowException) throw e
-                            thisLogger().warn("Could not export chart tour", e)
-                            if (!disposed) status.text = "Could not export tour: ${e.message ?: e.javaClass.simpleName}"
+                        }.onFailure {
+                            if (!disposed) status.text = "Could not export tour: ${describeFailure(it)}"
                         }
                     }
                 })
@@ -495,22 +493,23 @@ internal class FlowChartPanel(
         ) }
         chatScope.launch(Dispatchers.EDT) {
             val captured = try {
-                withBackgroundProgress(project, "Opening scoped chart chat") {
-                    smartReadAction(project) {
-                        if (PsiModificationTracker.getInstance(project).modificationCount != sourceStamp)
-                            throw ToolInputException("Source changed while opening scoped chat; choose To chat again")
-                        scopedChartContext(project, built, revision, target)
+                runCatchingReported(thisLogger(), "Could not capture chart chat context") {
+                    withBackgroundProgress(project, "Opening scoped chart chat") {
+                        smartReadAction(project) {
+                            if (PsiModificationTracker.getInstance(project).modificationCount != sourceStamp)
+                                throw ToolInputException("Source changed while opening scoped chat; choose To chat again")
+                            scopedChartContext(project, built, revision, target)
+                        }
                     }
+                }.getOrElse {
+                    status.text = "Could not capture chart context; try again."
+                    return@launch
                 }
             } catch (e: CancellationException) {
                 ensureActive()
                 if (!disposed && result === built && chatRevision == revision)
                     status.text = "Opening scoped chat cancelled. Choose To chat to retry."
                 throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Could not capture chart chat context", e)
-                status.text = "Could not capture chart context; try again."
-                return@launch
             }
             if (disposed) return@launch
             val context = object : ChartChatContext by SessionChartContext() {
@@ -820,7 +819,7 @@ internal class FlowChartPanel(
         val missing = chart.steps.map { it.node }.filter { it !in stepsRead }
         if (missing.isEmpty()) return
         flowJob = service.scope.launch(Dispatchers.EDT) {
-            val (sites, facts) = try {
+            val (sites, facts) = runCatchingReported(thisLogger(), "Reading call sites failed") {
                 // Automatic source loading must finish for branch conditions to appear. Rebuild/dispose still cancel its job.
                 withBackgroundProgress(project, "Reading flow chart steps", cancellable = false) {
                     smartReadAction(project) {
@@ -828,13 +827,7 @@ internal class FlowChartPanel(
                         CallSiteAnalyzer.collect(built, missing, callees) to SymbolFactsExtractor.extract(project, built, only = missing.toSet())
                     }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Without call sites the calls keep the graph's order and have no branches.
-                thisLogger().warn("Reading call sites failed", e)
-                emptyMap<Int, List<SourceSite>>() to emptyMap()
-            }
+            }.getOrDefault(emptyMap<Int, List<SourceSite>>() to emptyMap()) // Without call sites the calls keep the graph's order and have no branches.
             if (result !== built || disposed) return@launch
             stepsRead += missing
             callSites += sites
@@ -861,41 +854,42 @@ internal class FlowChartPanel(
         summarizeButton.text = "Stop summary"
         summaryJob = service.scope.launch(Dispatchers.EDT) {
             try {
-                withBackgroundProgress(project, "Summarizing subflows") {
-                    val ids = batch.flatMap { listOf(it.owner) + it.sites.map(CallSite::callee) }.toSet()
-                    val (facts, currentSites, stamp) = smartReadAction(project) {
-                        val owners = batch.map { it.owner }.distinct()
-                        val callees = owners.flatMap { lens.calls[it].orEmpty().map(CallGraphEdge::callee) }
-                        Triple(SymbolFactsExtractor.extract(project, built, only = ids),
-                            CallSiteAnalyzer.collect(built, owners, callees), PsiModificationTracker.getInstance(project).modificationCount)
+                runCatchingReported(thisLogger(), "Summarizing subflows failed") {
+                    withBackgroundProgress(project, "Summarizing subflows") {
+                        val ids = batch.flatMap { listOf(it.owner) + it.sites.map(CallSite::callee) }.toSet()
+                        val (facts, currentSites, stamp) = smartReadAction(project) {
+                            val owners = batch.map { it.owner }.distinct()
+                            val callees = owners.flatMap { lens.calls[it].orEmpty().map(CallGraphEdge::callee) }
+                            Triple(SymbolFactsExtractor.extract(project, built, only = ids),
+                                CallSiteAnalyzer.collect(built, owners, callees), PsiModificationTracker.getInstance(project).modificationCount)
+                        }
+                        val folded = if (flowCanvas.board.compact) lens.folded else emptySet()
+                        val current = currentSites.flatMap { (owner, sites) -> flowRegionCandidates(owner, sites, folded) }.toSet()
+                        if (batch.any { it !in current }) {
+                            summaryNotice.text = "Source changed; refresh the chart before summarizing."
+                            return@withBackgroundProgress
+                        }
+                        val summaries = enrichment.summarizeSubflows(batch, facts, lens.freshSummaries(facts))
+                        if (disposed || result !== built) return@withBackgroundProgress
+                        val unchanged = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount == stamp }
+                        if (!unchanged || disposed || result !== built) {
+                            summaryNotice.text = "Source changed during summary; stale interpretations were discarded."
+                            return@withBackgroundProgress
+                        }
+                        regionPlans += summaries.plans
+                        stepFacts += facts
+                        renderFlow()
+                        val accepted = summaries.plans.values.sumOf { it.size }
+                        summaryNotice.text = "$accepted LLM subflows · ${summaries.failedBlocks} regions kept structural" +
+                            (if (summaries.rejectedGroups > 0) " · ${summaries.rejectedGroups} invalid groups rejected" else "") +
+                            (if (pending.size > batch.size) " · summarize again for remaining regions" else "")
                     }
-                    val folded = if (flowCanvas.board.compact) lens.folded else emptySet()
-                    val current = currentSites.flatMap { (owner, sites) -> flowRegionCandidates(owner, sites, folded) }.toSet()
-                    if (batch.any { it !in current }) {
-                        summaryNotice.text = "Source changed; refresh the chart before summarizing."
-                        return@withBackgroundProgress
-                    }
-                    val summaries = enrichment.summarizeSubflows(batch, facts, lens.freshSummaries(facts))
-                    if (disposed || result !== built) return@withBackgroundProgress
-                    val unchanged = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount == stamp }
-                    if (!unchanged || disposed || result !== built) {
-                        summaryNotice.text = "Source changed during summary; stale interpretations were discarded."
-                        return@withBackgroundProgress
-                    }
-                    regionPlans += summaries.plans
-                    stepFacts += facts
-                    renderFlow()
-                    val accepted = summaries.plans.values.sumOf { it.size }
-                    summaryNotice.text = "$accepted LLM subflows · ${summaries.failedBlocks} regions kept structural" +
-                        (if (summaries.rejectedGroups > 0) " · ${summaries.rejectedGroups} invalid groups rejected" else "") +
-                        (if (pending.size > batch.size) " · summarize again for remaining regions" else "")
+                }.onFailure {
+                    if (!disposed && result === built) summaryNotice.text = "Could not summarize; structural groups remain available."
                 }
             } catch (e: CancellationException) {
                 if (!disposed && result === built) summaryNotice.text = "Summary stopped; existing subflows retained."
                 throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Summarizing subflows failed", e)
-                if (!disposed && result === built) summaryNotice.text = "Could not summarize; structural groups remain available."
             } finally {
                 if (summaryJob === coroutineContext.job) summaryJob = null
                 if (!disposed) updateFlowControls()

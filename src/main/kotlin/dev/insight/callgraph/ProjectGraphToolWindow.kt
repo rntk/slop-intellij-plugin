@@ -51,6 +51,8 @@ import dev.insight.entrypoints.EntryPointService
 import com.intellij.util.ui.JBUI
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.Component
@@ -728,23 +730,22 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         canvasPanel.setBusy(true)
         enrichJob = service.scope.launch(Dispatchers.EDT) {
             try {
-                val snapshot = enrichment.enrich(built)
-                val stats = snapshot.enrichment.stats
-                status.text = "Enriched ${snapshot.enrichment.nodes.size} symbols, ${snapshot.enrichment.edges.size} calls, " +
-                    "${snapshot.enrichment.flows.size} flows, ${snapshot.enrichment.domains.size} areas in ${stats.durationMillis / 1000}s " +
-                    "(${stats.cacheHits} cached, ${stats.failures} failed)"
-                reportAction.isEnabled = true
-                refreshLens()
-                flowPanel.refreshLens()
-                canvasPanel.refreshLens()
-                rerender()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Enrichment failed", e)
-                status.text = "Enrichment failed: ${e.message ?: e.javaClass.simpleName}"
-                flowPanel.setStatus(status.text)
-                canvasPanel.setStatus(status.text)
+                runCatchingReported(thisLogger(), "Enrichment failed") {
+                    val snapshot = enrichment.enrich(built)
+                    val stats = snapshot.enrichment.stats
+                    status.text = "Enriched ${snapshot.enrichment.nodes.size} symbols, ${snapshot.enrichment.edges.size} calls, " +
+                        "${snapshot.enrichment.flows.size} flows, ${snapshot.enrichment.domains.size} areas in ${stats.durationMillis / 1000}s " +
+                        "(${stats.cacheHits} cached, ${stats.failures} failed)"
+                    reportAction.isEnabled = true
+                    refreshLens()
+                    flowPanel.refreshLens()
+                    canvasPanel.refreshLens()
+                    rerender()
+                }.onFailure {
+                    status.text = "Enrichment failed: ${describeFailure(it)}"
+                    flowPanel.setStatus(status.text)
+                    canvasPanel.setStatus(status.text)
+                }
             } finally {
                 if (!disposed) { enrichAction.isEnabled = true; flowPanel.setBusy(false); canvasPanel.setBusy(false) }
             }
@@ -806,7 +807,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             status.text = "Building application graph…"
             flowPanel.setStatus(status.text)
             canvasPanel.setBuilding()
-            try {
+            runCatchingReported(thisLogger(), "Application graph failed") {
                 val built = service.buildProject()
                 val tree = built.graph.hierarchy()
                 result = built
@@ -817,10 +818,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 flowPanel.showResult(built)
                 canvasPanel.showResult(built)
                 flowsPanel.graphChanged()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                thisLogger().warn("Application graph failed", e)
+            }.onFailure {
                 status.text = "Could not build graph. Use Refresh to retry."
                 flowPanel.setStatus(status.text)
                 canvasPanel.setStatus(status.text)

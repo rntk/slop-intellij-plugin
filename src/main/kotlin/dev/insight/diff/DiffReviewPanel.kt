@@ -1,6 +1,8 @@
 package dev.insight.diff
 
 import com.intellij.diff.DiffManager
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -213,20 +215,21 @@ internal class DiffReviewPanel(
         repositoriesJob?.cancel()
         repositoriesJob = scope.launch {
             try {
-                val repositories = withBackgroundProgress(project, "Finding review repositories") {
-                    withContext(Dispatchers.IO) {
-                        ReviewDiffProvider.EP_NAME.extensionList.flatMap { it.repositories(project) }.distinctBy { it.path }
+                runCatchingReported(LOG, "Repository discovery failed") {
+                    val repositories = withBackgroundProgress(project, "Finding review repositories") {
+                        withContext(Dispatchers.IO) {
+                            ReviewDiffProvider.EP_NAME.extensionList.flatMap { it.repositories(project) }.distinctBy { it.path }
+                        }
                     }
+                    sourceControls.setRepositories(repositories, preferredReviewRepository(repositories,
+                        FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.path, project.basePath))
+                }.onFailure {
+                    sourceControls.setRepositoryError(describeFailure(it))
                 }
-                sourceControls.setRepositories(repositories, preferredReviewRepository(repositories,
-                    FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.path, project.basePath))
             } catch (e: CancellationException) {
                 ensureActive()
                 sourceControls.setRepositoryError("Repository discovery cancelled. Refresh to retry.")
                 throw e
-            } catch (e: Exception) {
-                LOG.warn("Repository discovery failed", e)
-                sourceControls.setRepositoryError(e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -257,26 +260,26 @@ internal class DiffReviewPanel(
         val selectedRequest = request
         refreshJob = scope.launch {
             try {
-                val snapshot = withBackgroundProgress(project, "Loading diff review: ${selectedRequest.mode.title}") {
-                    withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
+                runCatchingReported(LOG, "Could not load diff") {
+                    val snapshot = withBackgroundProgress(project, "Loading diff review: ${selectedRequest.mode.title}") {
+                        withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
+                    }
+                    state.update(snapshot)
+                    val removed = tabs.all.sumOf { it.update(snapshot) }
+                    if (selectedRequest.mode.usesWorkingTree)
+                        included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
+                    renderFiles()
+                    status.text = "${snapshot.files.size} files" + if (selectedRequest.mode.usesWorkingTree)
+                        " · ${snapshot.untracked.count { it.absolutePath !in included }} untracked outside review" else " · ${snapshot.comparison.summary}"
+                    if (removed > 0) status.text += " · $removed outdated notes removed"
+                }.onFailure {
+                    status.text = "Could not load diff: ${describeFailure(it)}"
+                    // Affected tabs stay blocked until a successful refresh.
                 }
-                state.update(snapshot)
-                val removed = tabs.all.sumOf { it.update(snapshot) }
-                if (selectedRequest.mode.usesWorkingTree)
-                    included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
-                renderFiles()
-                status.text = "${snapshot.files.size} files" + if (selectedRequest.mode.usesWorkingTree)
-                    " · ${snapshot.untracked.count { it.absolutePath !in included }} untracked outside review" else " · ${snapshot.comparison.summary}"
-                if (removed > 0) status.text += " · $removed outdated notes removed"
             } catch (e: CancellationException) {
                 ensureActive()
                 status.text = "Diff loading cancelled. Refresh to retry."
                 throw e
-            } catch (e: Exception) {
-                LOG.warn("Could not load diff", e)
-                status.text = "Could not load diff: ${e.message ?: e.javaClass.simpleName}"
-                status.toolTipText = status.text
-                // Affected tabs stay blocked until a successful refresh.
             } finally { status.toolTipText = status.text; updateControls() }
         }
     }

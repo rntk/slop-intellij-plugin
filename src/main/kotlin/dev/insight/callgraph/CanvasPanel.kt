@@ -14,6 +14,8 @@ import dev.insight.enrichment.CanvasLine
 import dev.insight.enrichment.EnrichmentService
 import dev.insight.ui.CollapsibleControls
 import dev.insight.ui.PanelCommand
+import dev.insight.core.describeFailure
+import dev.insight.core.runCatchingReported
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -149,33 +151,33 @@ internal class CanvasPanel(
             generateAction.text = "Cancel"
             status.text = "Grouping source into topics…"
             try {
-                val data = withBackgroundProgress(project, "Generating canvas") {
-                    reportRawProgress { reporter ->
-                        reporter.text("Grouping source into topics…")
-                        enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
-                            progress = { phase, done, total ->
-                                reporter.text(phase)
-                                reporter.details("$done / $total")
-                                reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                                SwingUtilities.invokeLater {
-                                    if (!disposed && revision == requestRevision && job?.isActive == true) status.text = "$phase · $done / $total"
-                                }
-                            })
+                runCatchingReported(com.intellij.openapi.diagnostic.Logger.getInstance(CanvasPanel::class.java), "Canvas generation failed") {
+                    val data = withBackgroundProgress(project, "Generating canvas") {
+                        reportRawProgress { reporter ->
+                            reporter.text("Grouping source into topics…")
+                            enrichment.generateCanvas(built, nodeIds = ids, flow = flow,
+                                progress = { phase, done, total ->
+                                    reporter.text(phase)
+                                    reporter.details("$done / $total")
+                                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                                    SwingUtilities.invokeLater {
+                                        if (!disposed && revision == requestRevision && job?.isActive == true) status.text = "$phase · $done / $total"
+                                    }
+                                })
+                        }
                     }
-                }
-                ensureActive()
-                if (!disposed && result === built && revision == requestRevision) {
-                    readingView.data = data
-                    status.text = if (data.document.lines.isEmpty()) "No function source is available in this scope." else "${data.topics.size} topics · ${data.document.lines.size} source lines" +
-                        if (data.failures > 0) " · ${data.failures} model requests failed; source remains available. Generate again to retry." else ""
+                    ensureActive()
+                    if (!disposed && result === built && revision == requestRevision) {
+                        readingView.data = data
+                        status.text = if (data.document.lines.isEmpty()) "No function source is available in this scope." else "${data.topics.size} topics · ${data.document.lines.size} source lines" +
+                            if (data.failures > 0) " · ${data.failures} model requests failed; source remains available. Generate again to retry." else ""
+                    }
+                }.onFailure {
+                    if (!disposed && revision == requestRevision) status.text = "Canvas failed: ${describeFailure(it)}"
                 }
             } catch (e: CancellationException) {
                 if (!disposed && revision == requestRevision) status.text = "Canvas generation cancelled."
                 throw e
-            } catch (e: Exception) {
-                if (e is com.intellij.openapi.diagnostic.ControlFlowException) throw e
-                com.intellij.openapi.diagnostic.Logger.getInstance(CanvasPanel::class.java).warn("Canvas generation failed", e)
-                if (!disposed && revision == requestRevision) status.text = "Canvas failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
                 if (!disposed && revision == requestRevision) generateAction.text = "Generate canvas"
             }
