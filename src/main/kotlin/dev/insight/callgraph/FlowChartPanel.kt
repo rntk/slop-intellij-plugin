@@ -36,12 +36,6 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.google.gson.Gson
 import dev.insight.chat.ChartChatContext
-import dev.insight.chat.ChartReader
-import dev.insight.chat.ChartEditor
-import dev.insight.chat.ChartScenes
-import dev.insight.chat.ChartAnalysis
-import dev.insight.chat.ChartTours
-import dev.insight.chat.ChartReferences
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
 import dev.insight.chat.ToolInputException
@@ -121,243 +115,37 @@ internal class FlowChartPanel(
     private val chatScope = CoroutineScope(service.scope.coroutineContext + SupervisorJob(service.scope.coroutineContext[Job]))
     /** The chat sessions of this chart; a restore point only undoes the latest chat change and never across a rebuild. */
     private val restoreGroup = ChartRestorePoint.Group { chatRevision }
-    private data class OutlineCapture(
-        val built: CallGraphResult,
-        val current: Int,
-        val steps: Map<Int, Int>,
-        val lens: FlowChartLens?,
-        val knownSites: Map<Int, List<SourceSite>>,
-        val regions: List<FlowRegion>,
-        val missing: List<Int>,
-    )
 
-    /** Chart tools for one chat session; each session owns its restore point. */
-    private open inner class SessionChartContext : ChartReader, ChartEditor, ChartScenes, ChartAnalysis, ChartTours, ChartReferences {
-        private val restorePoint = ChartRestorePoint(flowCanvas, restoreGroup)
-        private fun graph(): CallGraph {
-            if (disposed) throw ToolInputException("Chart closed")
-            if (building()) throw ToolInputException("Graph is rebuilding; retry after it finishes")
-            return result?.graph ?: throw ToolInputException("Graph is not ready yet")
+    /** What this chart's chat sessions see; see [FlowChartChatContext]. */
+    private val host = object : FlowChartHost {
+        override val project get() = this@FlowChartPanel.project
+        override val canvas get() = flowCanvas
+        override val restoreGroup get() = this@FlowChartPanel.restoreGroup
+        override val disposed get() = this@FlowChartPanel.disposed
+        override val building get() = building()
+        override val result get() = this@FlowChartPanel.result
+        override val revision get() = chatRevision
+        override fun lens(graph: CallGraph) = currentLens(graph)
+        override val stepsRead: Set<Int> get() = this@FlowChartPanel.stepsRead
+        override val callSites: Map<Int, List<SourceSite>> get() = this@FlowChartPanel.callSites
+        override fun storeSteps(built: CallGraphResult, nodes: List<Int>, sites: Map<Int, List<SourceSite>>,
+                                facts: Map<Int, SymbolFacts>) {
+            if (result !== built || disposed) return
+            rememberSteps(nodes, sites, facts)
+            if (flowCanvas.chart?.steps.orEmpty().any { it.node in nodes }) renderFlow()
         }
-
-        private fun semantics(lens: FlowChartLens?): ((Int) -> NodeSemanticInfo?)? = lens?.let { l ->
-            { id: Int ->
-                val summary = l.summaries[id]
-                val effects = l.effectsOf(id)
-                NodeSemanticInfo(
-                    summaryLabel = summary?.label,
-                    summaryDescription = summary?.description,
-                    role = summary?.role?.id,
-                    ownEffects = effects?.own.orEmpty(),
-                    reachedEffects = effects?.reached.orEmpty(),
-                    entryPoint = l.isEntryPoint(id),
-                )
-            }
-        }
-
-        override suspend fun state(offset: Int): String = withContext(Dispatchers.EDT) {
-            if (disposed) throw ToolInputException("Chart closed")
-            val graph = result?.graph
-            if (graph == null || building()) "{\"status\":\"Graph is building; tools will be available when it finishes\"}"
-            else chartChatState(chatRevision, graph, flowCanvas, offset)
-        }
-
-        override suspend fun findNodes(query: String?, offset: Int, role: String?, effect: String?, entryPoint: Boolean?): String =
-            analyze { graph, current, steps, lens -> chartFindNodes(graph, current, query, offset, role, effect, entryPoint, semantics(lens), steps) }
-
-        override suspend fun functionOutline(revision: Int, nodes: List<Int>): String {
-            val (built, current, steps, lens, knownSites, regions, missing) = withContext(Dispatchers.EDT) {
-                val built = built()
-                if (revision != chatRevision) throw ToolInputException("Stale graph revision; refresh and resolve IDs again")
-                if (nodes.size !in 1..5) throw ToolInputException("Give 1 to 5 node IDs")
-                nodes.forEach { validateChatNode(built.graph, chatRevision, revision, it) }
-                val lens = flowLens?.takeIf { it.graph === built.graph }?.lens
-                val steps = flowCanvas.chart?.steps.orEmpty().associate { it.node to it.number }
-                val regions = flowCanvas.chart?.regions.orEmpty()
-                val missing = nodes.filter { it !in stepsRead && built.pointers.getOrNull(it) != null }
-                val knownSites = HashMap(callSites)
-                OutlineCapture(built, chatRevision, steps, lens, knownSites, regions, missing)
-            }
-            val newSites = if (missing.isNotEmpty()) {
-                val (sites, facts) = smartReadAction(project) {
-                    val callees = missing.flatMap { id -> lens?.calls?.get(id).orEmpty().map { it.callee } }
-                    CallSiteAnalyzer.collect(built, missing, callees) to
-                        SymbolFactsExtractor.extract(project, built, only = missing.toSet())
-                }
-                withContext(Dispatchers.EDT) {
-                    if (result === built && !disposed) {
-                        stepsRead += missing
-                        callSites += sites
-                        stepFacts += facts
-                        if (flowCanvas.chart?.steps.orEmpty().any { it.node in missing }) renderFlow()
-                    }
-                }
-                sites
-            } else emptyMap()
-            val combinedSites = knownSites + newSites
-            return withContext(Dispatchers.Default) {
-                chartFunctionOutline(built.graph, current, revision, nodes, combinedSites, regions, semantics(lens), steps,
-                    groupingSource = lens?.source(combinedSites))
-            }
-        }
-
-        override suspend fun flowCatalog(revision: Int, query: String?, offset: Int): String = analyze { graph, current, steps, lens ->
-            val mapData = projectMapData(graph, lens)
-            chartFlowCatalog(graph, current, revision, query, offset,
-                lens?.flows?.map { CatalogFlow(it.id, it.name, it.description, it.entry, it.nodes) },
-                mapData.entryPoints, semantics(lens), steps)
-        }
-
-        override suspend fun apply(action: String, revision: Int, nodes: List<Int>): String = withContext(Dispatchers.EDT) {
-            applyChartChatAction(graph(), flowCanvas, chatRevision, action, revision, nodes, restorePoint::checkpoint)
-        }
-
-        override suspend fun groupCalls(revision: Int, owner: Int, blockKey: String, groups: List<ChartCallGroup>): String =
-            withContext(Dispatchers.EDT) {
-                groupChartCalls(graph(), flowCanvas, chatRevision, revision, owner, blockKey, groups, restorePoint::checkpoint)
-            }
-
-        override suspend fun setRegionExpansion(revision: Int, keys: List<String>, expanded: Boolean): String =
-            withContext(Dispatchers.EDT) {
-                graph()
-                setChartRegionExpansion(flowCanvas, chatRevision, revision, keys, expanded, restorePoint::checkpoint)
-            }
-
-        override suspend fun describe(revision: Int, node: Int, offset: Int): String = withContext(Dispatchers.EDT) {
-            chartNodeDetails(graph(), chatRevision, revision, node, offset)
-        }
-
-        override suspend fun showScene(revision: Int, scene: ChartScene): String {
-            val read = captured(revision, listOf(scene), story = false).single()
-            return withContext(Dispatchers.EDT) {
-                val graph = graph()
-                applyChartScene(graph, flowCanvas, chatRevision, revision, read, effects(graph), restorePoint::checkpoint)
-            }
-        }
-
-        private fun effects(graph: CallGraph) = groundingEffects(graph)
-
-        /**
-         * Checks [scenes] on the EDT, then reads their snippets from source in a background read action. The scenes are
-         * applied afterwards on the EDT, where a rebuild in between fails the revision check.
-         */
-        private suspend fun captured(revision: Int, scenes: List<ChartScene>, story: Boolean): List<ChartScene> {
-            if (scenes.none { it.snippets.isNotEmpty() }) return scenes
-            val built = withContext(Dispatchers.EDT) {
-                val graph = graph()
-                if (revision != chatRevision) throw ToolInputException("Stale graph revision; get_chart_state and resolve node IDs again")
-                if (story) checkStoryBeats(graph, scenes.map { StoryBeat("", it) }, effects(graph), captured = false)
-                else checkChartScene(graph, scenes.single(), effects(graph), captured = false)
-                result ?: throw ToolInputException("Graph is not ready yet")
-            }
-            return smartReadAction(project) {
-                scenes.mapIndexed { i, scene ->
-                    val read = { captureSnippets(scene) { declarationSource(project, built, it) } }
-                    if (story) storyBeat(i, read) else read()
-                }
-            }
-        }
-
-        override suspend fun clearScene(revision: Int): String = withContext(Dispatchers.EDT) {
-            graph()
-            clearChartScene(flowCanvas, chatRevision, revision, restorePoint::checkpoint)
-        }
-
-        /** Captures the immutable graph, lens and visible steps on the EDT; the bounded search runs in the background. */
-        private suspend fun <T> analyze(block: (CallGraph, Int, Map<Int, Int>, FlowChartLens?) -> T): T {
-            val (captured, lens) = withContext(Dispatchers.EDT) {
-                val graph = graph()
-                Triple(graph, chatRevision, flowCanvas.chart?.steps.orEmpty().associate { it.node to it.number }) to
-                    flowLens?.takeIf { it.graph === graph }?.lens
-            }
-            return withContext(Dispatchers.Default) { block(captured.first, captured.second, captured.third, lens) }
-        }
-
-        override suspend fun tracePath(revision: Int, from: Int, to: Int, maxPaths: Int, maxDepth: Int): String =
-            analyze { graph, current, steps, _ -> chartTracePath(graph, current, revision, from, to, maxPaths, maxDepth, steps) }
-
-        override suspend fun reachability(revision: Int, node: Int): String = analyze { graph, current, steps, lens ->
-            val effects = lens?.takeIf { it.effectsOf(node) != null }?.let { l -> { id: Int -> l.effectsOf(id)?.let { it.own to it.reached } } }
-            chartReachability(graph, current, revision, node, lens?.takeIf { it.knowsEntryPoints }?.let { it::isEntryPoint }, effects, steps)
-        }
-
-        override suspend fun suggestExternals(revision: Int, nodes: List<Int>): String = analyze { graph, current, steps, lens ->
-            chartExternalEffects(graph, current, revision, nodes, { id ->
-                lens?.effectsOf(id)?.let { RuleEffects(it.own, it.reached, lens.effectImports(id)) } }, steps)
-        }
-
-        override suspend fun presentStory(revision: Int, title: String, beats: List<StoryBeat>): String {
-            val read = captured(revision, beats.map { it.scene }, story = true)
-            return withContext(Dispatchers.EDT) {
-                val graph = graph()
-                presentChartStory(graph, flowCanvas, chatRevision, revision, title,
-                    beats.zip(read) { beat, scene -> beat.copy(scene = scene) }, effects(graph), restorePoint::checkpoint)
-            }
-        }
-
-        override suspend fun projectMap(offset: Int): String = analyze { graph, current, _, lens ->
-            chartProjectMap(graph, current, offset, projectMapData(graph, lens))
-        }
-
-        override suspend fun listTours(): String = withContext(Dispatchers.EDT) { tourListData(tours.tours) }
-
-        override suspend fun playTour(name: String): String = this@FlowChartPanel.playTour(name, restorePoint::checkpoint)
-
-        override fun beginReply() = restorePoint.begin()
-        override val restorable: Boolean get() = !disposed && restorePoint.available
-        override fun restore(): Boolean = !disposed && !building() && restorePoint.restore()
-
-        override val revision: Int get() = chatRevision
-        override val storyId: Int? get() = flowCanvas.story?.id
-        override fun referenceName(revision: Int, node: Int) =
-            chartReferenceName(result?.graph?.takeIf { !building() }, chatRevision, revision, node)
-        override fun openReference(revision: Int, node: Int): String? {
-            if (disposed) return "Chart closed."
-            val graph = result?.graph?.takeIf { !building() } ?: return "The graph is rebuilding; try again when it finishes."
-            return openChartReference(graph, flowCanvas, chatRevision, revision, node)
-        }
-        override fun beatTitle(revision: Int, beat: Int, storyId: Int?): String? =
-            chartBeatTitle(flowCanvas.takeIf { !disposed && !building() }, chatRevision, revision, beat, storyId)
-
-        override fun openBeat(revision: Int, beat: Int, storyId: Int?): String? {
-            if (disposed) return "Chart closed."
-            if (building() || result == null) return "The graph is rebuilding; try again when it finishes."
-            return openChartBeat(flowCanvas, chatRevision, revision, beat, storyId)
-        }
-        override fun hoverReference(revision: Int, node: Int?) {
-            if (!disposed) flowCanvas.hover(node?.takeIf { revision == chatRevision })
-        }
+        override suspend fun playTour(name: String, beforeChange: () -> Unit) = this@FlowChartPanel.playTour(name, beforeChange)
     }
-    /** Own plus reached rule effects for grounding externals; null without enrichment of the current graph. EDT. */
-    private fun groundingEffects(graph: CallGraph): ((Int) -> Set<String>?)? = flowLens?.takeIf { it.graph === graph }?.lens
-        ?.let { lens -> { id: Int -> lens.effectsOf(id)?.let { it.own + it.reached } } }
 
-    /** Discovery, enrichment and flow selector data for [chartProjectMap]; PSI-free, safe off the EDT. */
-    private fun projectMapData(graph: CallGraph, lens: FlowChartLens?): ProjectMapData {
-        fun function(node: CallGraphNode) = node.inProject && node.kind == SymbolKind.FUNCTION
-        val discovered = entryPoints.entryPoints.value.flatMap { entry ->
-            EntryPointLens.targets(graph, entry, project.basePath).filter(::function)
-                .map { MapEntryPoint(it.id, entry.title, entry.kind.label, "discovery") }
-        }
-        val judged = lens?.takeIf { it.knowsEntryPoints }?.let { l ->
-            graph.nodes.filter { function(it) && l.isEntryPoint(it.id) }.map {
-                MapEntryPoint(it.id, l.summaries[it.id]?.label ?: FlowChartLens.title(graph, it.id), "enrichment judgment", "enrichment")
-            }
-        }
-        val enriched = lens?.flows != null
-        return ProjectMapData(if (discovered.isEmpty() && judged == null) null else (discovered + judged.orEmpty()).distinctBy { it.node },
-            lens?.flows?.map { MapFlow(it.name, it.description, it.entry, it.nodes.size) },
-            lens?.takeIf { enriched }?.let { l -> { id: Int -> l.effectsOf(id)?.own } },
-            lens?.summaries?.takeIf { it.isNotEmpty() }?.let { s -> { id: Int -> s[id]?.label } }, project.basePath)
+    private fun currentLens(graph: CallGraph): FlowChartLens? = flowLens?.takeIf { it.graph === graph }?.lens
+
+    private fun rememberSteps(nodes: List<Int>, sites: Map<Int, List<SourceSite>>, facts: Map<Int, SymbolFacts>) {
+        stepsRead += nodes
+        callSites += sites
+        stepFacts += facts
     }
 
     private val tours = project.service<ChartTourStore>()
-
-    private fun built(): CallGraphResult {
-        if (disposed) throw ToolInputException("Chart closed")
-        if (building()) throw ToolInputException("Graph is rebuilding; retry after it finishes")
-        return result ?: throw ToolInputException("Graph is not ready yet")
-    }
 
     /**
      * Resolves saved tour [name] against the current graph on the EDT, reads its snippets again in a background read
@@ -366,14 +154,14 @@ internal class FlowChartPanel(
     internal suspend fun playTour(name: String, beforeChange: () -> Unit = {}): String {
         val (built, play) = withContext(Dispatchers.EDT) {
             val tour = tours.find(name) ?: throw ToolInputException("No saved tour named \"$name\"; list_tours shows the saved tours")
-            val built = built()
-            built to resolveTour(tour, built.graph, groundingEffects(built.graph))
+            val built = host.built()
+            built to resolveTour(tour, built.graph, groundingEffects(currentLens(built.graph)))
         }
         val read = if (play.beats.none { it.scene.snippets.isNotEmpty() }) play
             else smartReadAction(project) { recaptureTourSnippets(play) { declarationSource(project, built, it) } }
         return withContext(Dispatchers.EDT) {
-            if (built() !== built) throw ToolInputException("The graph was rebuilt while the tour was loading; play it again")
-            playChartTour(built.graph, flowCanvas, chatRevision, read, groundingEffects(built.graph), beforeChange) { notice ->
+            if (host.built() !== built) throw ToolInputException("The graph was rebuilt while the tour was loading; play it again")
+            playChartTour(built.graph, flowCanvas, chatRevision, read, groundingEffects(currentLens(built.graph)), beforeChange) { notice ->
                 tourNotice = flowCanvas.story?.beats to notice
                 updateStoryBar()
             }
@@ -457,7 +245,7 @@ internal class FlowChartPanel(
         }
     }
 
-    internal val chatContext: ChartChatContext = SessionChartContext()
+    internal val chatContext: ChartChatContext = FlowChartChatContext(host)
 
     /** Whether chart tools can act now: a finished graph that is not rebuilding (EDT). */
     internal val chartReady: Boolean get() = !disposed && result != null && !building()
@@ -471,7 +259,7 @@ internal class FlowChartPanel(
         val functions = nodes.take(MAX_EXPLAIN_FUNCTIONS).map { mapOf("id" to it.id, "name" to it.name,
             "kind" to it.kind.name.lowercase(), "container" to it.container, "location" to it.location) }
         activateChart()
-        return SessionChartContext() to Gson().toJson(mapOf("revision" to chatRevision, "functions" to functions,
+        return FlowChartChatContext(host) to Gson().toJson(mapOf("revision" to chatRevision, "functions" to functions,
             "omitted" to (nodes.size - functions.size)))
     }
     private val chatPanel = ChatPanel(project, ChatSession(project, chatScope, chatContext), chartMode = true)
@@ -514,7 +302,7 @@ internal class FlowChartPanel(
                 throw e
             }
             if (disposed) return@launch
-            val context = object : SessionChartContext() {
+            val context = object : FlowChartChatContext(host) {
                 override val scoped = true
                 override suspend fun snapshot(): String {
                     val current = chatContext.snapshot()
@@ -832,9 +620,7 @@ internal class FlowChartPanel(
                 }
             }.getOrDefault(emptyMap<Int, List<SourceSite>>() to emptyMap()) // Without call sites the calls keep the graph's order and have no branches.
             if (result !== built || disposed) return@launch
-            stepsRead += missing
-            callSites += sites
-            stepFacts += facts
+            rememberSteps(missing, sites, facts)
             flowJob = null
             renderFlow()
         }
