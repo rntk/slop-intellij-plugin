@@ -15,7 +15,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -157,8 +157,7 @@ class NodeEnricher(
             LOG.warn("Decisions request failed ($count)$detail", error)
         }
 
-        fun sha256(text: String): String =
-            MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        fun sha256(text: String): String = Hashing.sha256Of(text)
 
         fun describe(container: String, name: String) = if (container.isBlank()) name else "$container.$name"
 

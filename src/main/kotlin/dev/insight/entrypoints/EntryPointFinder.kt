@@ -19,7 +19,7 @@ import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmMessage
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -326,10 +326,6 @@ class EntryPointFinder(
             append("\nFind the entry points.")
         }
 
-        fun digest(vararg parts: String): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            parts.forEach { digest.update(it.toByteArray(Charsets.UTF_8)); digest.update(0) }
-            return digest.digest().joinToString("") { "%02x".format(it) }
-        }
+        fun digest(vararg parts: String): String = Hashing.sha256(*parts)
     }
 }

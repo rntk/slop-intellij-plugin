@@ -1,7 +1,7 @@
 package dev.insight.codereview
 
 import dev.insight.review.SourceChunk
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 
 /**
  * Limits for splitting a large source file into parts. A file of at most [singleChars] characters is read whole. Parts hold
@@ -195,11 +195,5 @@ private fun boundaryHash(lines: List<String>, index: Int): Long {
     return hash
 }
 
-private fun sha256(lines: List<String>, start: Int, end: Int): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    for (i in start until end) {
-        if (i > start) digest.update('\n'.code.toByte())
-        digest.update(lines[i].toByteArray(Charsets.UTF_8))
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
-}
+private fun sha256(lines: List<String>, start: Int, end: Int): String =
+    Hashing.sha256Of(lines.subList(start, end).joinToString("\n"))

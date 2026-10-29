@@ -2,6 +2,7 @@ package dev.insight.callgraph
 
 import com.google.gson.Gson
 import dev.insight.chat.ToolInputException
+import dev.insight.core.Hashing
 
 enum class SceneRole { FOCUS, CONTEXT, SOURCE, SINK, PROBLEM, TRANSFORM, DECISION, ORCHESTRATOR }
 
@@ -232,8 +233,7 @@ internal fun captureSnippets(scene: ChartScene, source: (Int) -> DeclarationSour
                 "declared at ${declaration.path}:${declaration.firstLine}-${declaration.lastLine}; choose lines inside it")
         val lines = declaration.lines.subList(snippet.startLine - declaration.firstLine, snippet.endLine - declaration.firstLine + 1)
             .map { it.trimEnd().take(ChartScene.MAX_SNIPPET_LINE) }
-        snippet.copy(path = declaration.path, lines = lines, hash = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(lines.joinToString("\n").toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) })
+        snippet.copy(path = declaration.path, lines = lines, hash = Hashing.sha256Of(lines.joinToString("\n")))
     })
 }
 

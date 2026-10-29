@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 
 /** Bump when a generative prompt or its output handling changes, so cached labels, taxonomies and flow names are redone. */
 internal const val GENERATIVE_VERSION = 2
@@ -100,9 +100,7 @@ fun parseJsonObjectLeniently(text: String): JsonObject? {
 
 /** Cache key for a generative answer: everything that shapes the request goes into [parts]. */
 internal fun generativeCacheKey(kind: String, vararg parts: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    parts.forEach { digest.update(it.toByteArray(Charsets.UTF_8)); digest.update(0) }
-    return "$kind:v$GENERATIVE_VERSION:" + digest.digest().joinToString("") { "%02x".format(it) }
+    return "$kind:v$GENERATIVE_VERSION:" + Hashing.sha256(*parts)
 }
 
 /**

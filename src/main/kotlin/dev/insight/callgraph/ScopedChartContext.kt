@@ -3,7 +3,7 @@ package dev.insight.callgraph
 import com.google.gson.Gson
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 
 /** Copy source under a background read action; never retain PSI in a conversation snapshot. */
 internal fun scopedChartContext(project: Project, result: CallGraphResult, revision: Int, target: FlowChatTarget): String {
@@ -26,8 +26,7 @@ internal fun scopedChartContext(project: Project, result: CallGraphResult, revis
             "declaration_end_offset" to range?.endOffset,
             "source" to text?.take(limit), "source_truncated" to (text != null && text.length > limit),
             "source_available" to (text != null),
-            "source_hash" to text?.let { code -> MessageDigest.getInstance("SHA-256")
-                .digest(code.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) } },
+            "source_hash" to text?.let(Hashing::sha256Of),
         )
     }
     val calls = result.graph.edges.filter { it.kind == RelationKind.CALL && (it.caller in ids || it.callee in ids) }

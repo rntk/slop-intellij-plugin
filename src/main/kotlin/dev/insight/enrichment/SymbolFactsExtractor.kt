@@ -10,7 +10,7 @@ import com.intellij.psi.PsiWhiteSpace
 import dev.insight.callgraph.CallGraphResult
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
-import java.security.MessageDigest
+import dev.insight.core.Hashing
 
 /** Character and entry limits for the text copied into [SymbolFacts]. */
 data class FactsBudget(
@@ -320,9 +320,5 @@ object SymbolFactsExtractor {
 
     private fun cap(text: String, limit: Int) = if (text.length <= limit) text else text.take(maxOf(0, limit - 1)) + "…"
 
-    private fun hash(signature: String, code: String, doc: String?): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$signature\u0000$code\u0000${doc.orEmpty()}".toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
-    }
+    private fun hash(signature: String, code: String, doc: String?): String = Hashing.sha256(signature, code, doc.orEmpty())
 }
