@@ -12,6 +12,7 @@ import dev.insight.chat.optionalStringArg
 import dev.insight.chat.projectContextTools
 import dev.insight.chat.stringArg
 import dev.insight.enrichment.FunctionSummary
+import dev.insight.enrichment.JsonSchemas
 
 /**
  * What a schematic chat sees and changes on the canvas. Reading the code never touches the canvas; only these calls
@@ -215,9 +216,12 @@ internal fun schematicChatTools(project: Project, graph: SchematicGraph, canvas:
 internal fun schematicGraphTools(graph: SchematicGraph, roots: suspend () -> List<Int>): List<ChatTool> = listOf(
     objectTool("find_symbols", "Find classes and functions discovered so far by name (fuzzy, project code first). Returns #id lines. " +
         "Does not change the canvas.",
-        """"query":{"type":"string","description":"Name or part of it, such as addHandler or HttpServer."},
-           "kind":{"type":"string","enum":["file","class","function","property"]},
-           "max_results":{"type":"integer","description":"Default 30, at most 100."}""", "\"query\"") { args ->
+        JsonSchemas.obj(
+            "query" to JsonSchemas.string(description = "Name or part of it, such as addHandler or HttpServer."),
+            "kind" to JsonSchemas.enum(listOf("file", "class", "function", "property")),
+            "max_results" to JsonSchemas.integer(description = "Default 30, at most 100."),
+            required = listOf("query"), additionalProperties = false,
+        )) { args ->
         val kind = args.optionalStringArg("kind")?.let { value ->
             SymbolKind.entries.firstOrNull { it.name.equals(value, true) } ?: throw ToolInputException("kind must be file, class, function or property")
         }
@@ -225,21 +229,24 @@ internal fun schematicGraphTools(graph: SchematicGraph, roots: suspend () -> Lis
     },
     objectTool("inspect_symbol", "Resolve this symbol's scope on demand, returning its location, summary, declaring class, members, direct calls, discovered callers, and the " +
         "call expressions in its body with their resolved targets. Does not change the canvas.",
-        """"id":{"type":"integer","description":"Symbol id, without #."}""", "\"id\"") { args ->
+        JsonSchemas.obj("id" to JsonSchemas.integer(description = "Symbol id, without #."), additionalProperties = false)) { args ->
         val id = args.idArg("id")!!
         graph.load(id)
         graph.inspect(id)
     },
     objectTool("read_symbol", "Current source of a declaration with 1-based line numbers and its file path. Use read_file for the " +
         "surrounding file. Does not change the canvas.",
-        """"id":{"type":"integer","description":"Symbol id, without #."}""", "\"id\"") { args ->
+        JsonSchemas.obj("id" to JsonSchemas.integer(description = "Symbol id, without #."), additionalProperties = false)) { args ->
         graph.read(args.idArg("id")!!)
     },
     objectTool("call_path", "Shortest static call chains in the explored graph (up to 3) to a symbol, from another symbol or, by default, from the symbols " +
         "this file's blocks lead to. Chains from this file can be passed to show_call_chain. Does not change the canvas.",
-        """"to":{"type":"integer","description":"Target symbol id."},
-           "from":{"type":"integer","description":"Start symbol id; omit to start from this file."},
-           "max_depth":{"type":"integer","description":"Most calls in a chain (default 8, at most 15)."}""", "\"to\"") { args ->
+        JsonSchemas.obj(
+            "to" to JsonSchemas.integer(description = "Target symbol id."),
+            "from" to JsonSchemas.integer(description = "Start symbol id; omit to start from this file."),
+            "max_depth" to JsonSchemas.integer(description = "Most calls in a chain (default 8, at most 15)."),
+            required = listOf("to"), additionalProperties = false,
+        )) { args ->
         graph.paths(args.idArg("from", required = false), roots(), args.idArg("to")!!, args.intArg("max_depth", 8).coerceIn(1, 15))
     },
 )
@@ -249,15 +256,18 @@ internal fun schematicCanvasTools(canvas: SchematicCanvas): List<ChatTool> = lis
         "each symbol's card is pinned and unfolded so the next one appears beside it, and the last card is selected. " +
         "The first id must be a symbol one of this file's blocks leads to (see the schematic context); each next id must be " +
         "called by the previous one. Cards already unfolded stay open; call reset_canvas first to show only this chain.",
-        """"symbol_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":$MAX_CHAIN,
-             "description":"Chain of symbol ids, outermost first."},
-           "open_last":{"type":"boolean","description":"Also unfold the last symbol to show its own code (default false: its summary card only)."}""",
-        "\"symbol_ids\"") { args ->
+        JsonSchemas.obj(
+            "symbol_ids" to JsonSchemas.array(JsonSchemas.integer(), minItems = 1, maxItems = MAX_CHAIN,
+                description = "Chain of symbol ids, outermost first."),
+            "open_last" to JsonSchemas.boolean(description = "Also unfold the last symbol to show its own code (default false: its summary card only)."),
+            required = listOf("symbol_ids"), additionalProperties = false,
+        )) { args ->
         canvas.showChain(idsArg(args["symbol_ids"]), args.booleanArg("open_last"))
     },
     objectTool("get_canvas", "What the user currently sees: the file's clickable blocks with the symbols they lead to, and the chains " +
-        "unfolded on the canvas.", "") { canvas.snapshot() },
-    objectTool("reset_canvas", "Fold and unpin every card, returning the canvas to the plain file.", "") { canvas.reset() },
+        "unfolded on the canvas.", JsonSchemas.obj(additionalProperties = false)) { canvas.snapshot() },
+    objectTool("reset_canvas", "Fold and unpin every card, returning the canvas to the plain file.",
+        JsonSchemas.obj(additionalProperties = false)) { canvas.reset() },
 )
 
 private const val MAX_CHAIN = 15

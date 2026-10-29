@@ -1,7 +1,6 @@
 package dev.insight.chat
 
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
@@ -16,6 +15,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import dev.insight.enrichment.JsonSchemas
 import dev.insight.llm.LlmTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -115,8 +115,8 @@ internal class ProjectFiles(val project: Project) {
     }
 }
 
-private abstract class ProjectTool(name: String, description: String, parameters: String) : ChatTool {
-    final override val definition = LlmTool(name, description, JsonParser.parseString(parameters).asJsonObject)
+private abstract class ProjectTool(name: String, description: String, parameters: JsonObject) : ChatTool {
+    final override val definition = LlmTool(name, description, parameters)
 
     protected fun JsonObject.string(name: String): String? {
         val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
@@ -140,11 +140,12 @@ private abstract class ProjectTool(name: String, description: String, parameters
 private class ListFilesTool(private val files: ProjectFiles) : ProjectTool(
     "list_files",
     "List project source and resource files (build output and excluded folders are skipped). Returns project-relative paths.",
-    """{"type":"object","properties":{
-        "directory":{"type":"string","description":"Project-relative directory to list recursively. Omit for the whole project."},
-        "glob":{"type":"string","description":"File-name pattern such as *.kt or *Test.java."},
-        "max_results":{"type":"integer","description":"Maximum paths to return (default 200, at most 500)."}
-    },"additionalProperties":false}""",
+    JsonSchemas.obj(
+        "directory" to JsonSchemas.string(description = "Project-relative directory to list recursively. Omit for the whole project."),
+        "glob" to JsonSchemas.string(description = "File-name pattern such as *.kt or *Test.java."),
+        "max_results" to JsonSchemas.integer(description = "Maximum paths to return (default 200, at most 500)."),
+        required = emptyList(), additionalProperties = false,
+    ),
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val limit = (arguments.lenientInt("max_results") ?: 200).coerceIn(1, 500)
@@ -161,11 +162,12 @@ private class ListFilesTool(private val files: ProjectFiles) : ProjectTool(
 private class ReadFileTool(private val files: ProjectFiles) : ProjectTool(
     "read_file",
     "Read lines of a project text file. Each line is prefixed with its 1-based line number. Includes unsaved editor changes.",
-    """{"type":"object","properties":{
-        "path":{"type":"string","description":"Project-relative file path, as returned by list_files or search_text."},
-        "start_line":{"type":"integer","description":"First line to read, 1-based (default 1)."},
-        "end_line":{"type":"integer","description":"Last line to read, inclusive (default start_line + 79). At most $MAX_LINES lines per call."}
-    },"required":["path"],"additionalProperties":false}""",
+    JsonSchemas.obj(
+        "path" to JsonSchemas.string(description = "Project-relative file path, as returned by list_files or search_text."),
+        "start_line" to JsonSchemas.integer(description = "First line to read, 1-based (default 1)."),
+        "end_line" to JsonSchemas.integer(description = "Last line to read, inclusive (default start_line + 79). At most $MAX_LINES lines per call."),
+        required = listOf("path"), additionalProperties = false,
+    ),
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")
@@ -196,13 +198,14 @@ private class ReadFileTool(private val files: ProjectFiles) : ProjectTool(
 private class SearchTextTool(private val files: ProjectFiles) : ProjectTool(
     "search_text",
     "Case-insensitive search across project text files, like grep -i. Returns path:line: text for each matching line.",
-    """{"type":"object","properties":{
-        "query":{"type":"string","description":"Text to find; a Java regular expression when regex is true."},
-        "regex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},
-        "directory":{"type":"string","description":"Project-relative directory to search. Omit for the whole project."},
-        "glob":{"type":"string","description":"File-name pattern such as *.kt."},
-        "max_results":{"type":"integer","description":"Maximum matching lines (default 50, at most 200)."}
-    },"required":["query"],"additionalProperties":false}""",
+    JsonSchemas.obj(
+        "query" to JsonSchemas.string(description = "Text to find; a Java regular expression when regex is true."),
+        "regex" to JsonSchemas.boolean(description = "Treat query as a regular expression (default false)."),
+        "directory" to JsonSchemas.string(description = "Project-relative directory to search. Omit for the whole project."),
+        "glob" to JsonSchemas.string(description = "File-name pattern such as *.kt."),
+        "max_results" to JsonSchemas.integer(description = "Maximum matching lines (default 50, at most 200)."),
+        required = listOf("query"), additionalProperties = false,
+    ),
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val query = arguments.string("query") ?: throw ToolInputException("query is required")
@@ -266,12 +269,13 @@ private class OpenFileTool(private val files: ProjectFiles) : ProjectTool(
     "open_file",
     "Open a project file in the user's editor at a line, to show the user the code you are talking about. " +
         "Call it once you have found the relevant location, usually the most important one for your answer.",
-    """{"type":"object","properties":{
-        "path":{"type":"string","description":"Project-relative file path, as returned by list_files or search_text."},
-        "line":{"type":"integer","description":"1-based line to place the caret on (default 1)."},
-        "end_line":{"type":"integer","description":"Last line to highlight, inclusive. Omit to only place the caret."},
-        "column":{"type":"integer","description":"1-based column on line (default 1)."}
-    },"required":["path"],"additionalProperties":false}""",
+    JsonSchemas.obj(
+        "path" to JsonSchemas.string(description = "Project-relative file path, as returned by list_files or search_text."),
+        "line" to JsonSchemas.integer(description = "1-based line to place the caret on (default 1)."),
+        "end_line" to JsonSchemas.integer(description = "Last line to highlight, inclusive. Omit to only place the caret."),
+        "column" to JsonSchemas.integer(description = "1-based column on line (default 1)."),
+        required = listOf("path"), additionalProperties = false,
+    ),
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val path = arguments.string("path") ?: throw ToolInputException("path is required")

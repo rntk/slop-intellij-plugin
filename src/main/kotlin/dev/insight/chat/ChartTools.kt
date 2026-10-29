@@ -1,6 +1,11 @@
 package dev.insight.chat
 
 import com.google.gson.JsonObject
+import dev.insight.enrichment.JsonSchemas
+import dev.insight.enrichment.JsonSchemas.array
+import dev.insight.enrichment.JsonSchemas.boolean
+import dev.insight.enrichment.JsonSchemas.integer
+import dev.insight.enrichment.JsonSchemas.string
 import dev.insight.callgraph.ChartScene
 import dev.insight.callgraph.ChartStory
 import dev.insight.callgraph.ChartCallGroup
@@ -143,43 +148,57 @@ fun chartChatSystemPrompt(): String = visualCodeAssistantPrompt + "\n\n" + """
 
 /** [followups] receives validated suggest_followups questions for the session's latest reply. */
 fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> Unit = {}): List<ChatTool> {
-    val offset = """"offset":{"type":"integer","minimum":0,"description":"Pagination offset; defaults to 0."}"""
-    val mutation = """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":20}"""
-    fun enum(values: Array<out Enum<*>>) = values.joinToString(",", "[", "]") { "\"${it.name.lowercase()}\"" }
-    val sceneProperties = """
-        "title":{"type":"string","maxLength":${ChartScene.MAX_TITLE},"description":"Short caption shown on the chart."},
-        "nodes":{"type":"array","maxItems":${ChartScene.MAX_NODES},"items":{"type":"object","properties":{
-            "id":{"type":"integer"},"role":{"type":"string","enum":${enum(SceneRole.entries.toTypedArray())},"description":"Defaults to focus."},
-            "badge":{"type":"string","maxLength":${ChartScene.MAX_BADGE},"description":"Step number used in your text, e.g. \"1\"."}},
-            "required":["id"],"additionalProperties":false}},
-        "links":{"type":"array","maxItems":${ChartScene.MAX_LINKS},"items":{"type":"object","properties":{
-            "from":{"type":"integer"},"to":{"type":"integer"},"kind":{"type":"string","enum":${enum(SceneLinkKind.entries.toTypedArray())}},
-            "label":{"type":"string","maxLength":${ChartScene.MAX_LABEL}},
-            "payload":{"type":"string","maxLength":${ChartScene.MAX_PAYLOAD},"description":"Optional data contract or payload moving across this link."}},"required":["from","to","kind"],"additionalProperties":false}},
-        "notes":{"type":"array","maxItems":${ChartScene.MAX_NOTES},"items":{"type":"object","properties":{
-            "node":{"type":"integer"},"text":{"type":"string","maxLength":${ChartScene.MAX_NOTE}}},"required":["node","text"],"additionalProperties":false}},
-        "dim_others":{"type":"boolean","description":"Fade steps outside the scene; defaults to true."},
-        "columns":{"type":"array","maxItems":${ChartScene.MAX_COLUMNS},"description":"Optional column roots with custom titles/descriptions to stage side-by-side lanes.","items":{"type":"object","properties":{"node":{"type":"integer"},"title":{"type":"string","maxLength":${ChartScene.MAX_TITLE}},"description":{"type":"string","maxLength":${ChartScene.MAX_COLUMN_DESCRIPTION}}},"required":["node"],"additionalProperties":false}},
-        "reset_board":{"type":"boolean","description":"Clear previous columns before placing this scene; defaults to false."},
-        "camera":{"type":"string","enum":${enum(SceneCamera.entries.toTypedArray())},"description":"Viewport framing: focus_first (default) or fit_scene."},
-        "groups":{"type":"array","maxItems":${ChartScene.MAX_GROUPS},"description":"Labelled boxes behind layers or stages; a function in at most one group.",
-            "items":{"type":"object","properties":{"label":{"type":"string","maxLength":${ChartScene.MAX_SHORT_LABEL}},
-            "nodes":{"type":"array","minItems":1,"items":{"type":"integer"}},"kind":{"type":"string","enum":${enum(SceneGroupKind.entries.toTypedArray())}}},
-            "required":["label","nodes"],"additionalProperties":false}},
-        "externals":{"type":"array","maxItems":${ChartScene.MAX_EXTERNALS},"description":"Systems outside the code where data enters or leaves. database/network ones must match rule effects (see suggest_externals).",
-            "items":{"type":"object","properties":{"id":{"type":"string","pattern":"^[a-z0-9][a-z0-9_-]{0,23}$","description":"Short slug."},
-            "kind":{"type":"string","enum":${enum(ExternalKind.entries.toTypedArray())}},"label":{"type":"string","maxLength":${ChartScene.MAX_SHORT_LABEL}},
-            "connected":{"type":"array","minItems":1,"maxItems":${ChartScene.MAX_EXTERNAL_LINKS},"items":{"type":"object","properties":{
-                "node":{"type":"integer"},"direction":{"type":"string","enum":${enum(ExternalDirection.entries.toTypedArray())},"description":"in: from the external into the function."},
-                "label":{"type":"string","maxLength":${ChartScene.MAX_SHORT_LABEL}}},"required":["node","direction"],"additionalProperties":false}}},
-            "required":["id","kind","label","connected"],"additionalProperties":false}},
-        "snippets":{"type":"array","maxItems":${ChartScene.MAX_SNIPPETS},"description":"Source lines shown beside a function's card; read from source when applied and returned for quoting.",
-            "items":{"type":"object","properties":{"node":{"type":"integer"},"start_line":{"type":"integer","minimum":1,"description":"1-based line in the file, inside the function."},
-            "end_line":{"type":"integer","minimum":1,"description":"At most ${ChartScene.MAX_SNIPPET_LINES} lines after start_line - 1."},
-            "caption":{"type":"string","maxLength":${ChartScene.MAX_SNIPPET_CAPTION}}},"required":["node","start_line","end_line"],"additionalProperties":false}}
-    """.trimIndent()
+    fun obj(vararg properties: Pair<String, JsonObject>, required: List<String> = properties.map { it.first }) =
+        JsonSchemas.obj(*properties, required = required, additionalProperties = false)
+    fun enum(values: List<Enum<*>>, description: String? = null) =
+        JsonSchemas.enum(values.map { it.name.lowercase() }, description)
+    val offset = "offset" to integer(minimum = 0, description = "Pagination offset; defaults to 0.")
+    val mutation = obj("revision" to integer(), "node_ids" to array(integer(), minItems = 1, maxItems = 20))
+    val sceneProperties = arrayOf(
+        "title" to string(maxLength = ChartScene.MAX_TITLE, description = "Short caption shown on the chart."),
+        "nodes" to array(obj(
+            "id" to integer(),
+            "role" to enum(SceneRole.entries, "Defaults to focus."),
+            "badge" to string(maxLength = ChartScene.MAX_BADGE, description = "Step number used in your text, e.g. \"1\"."),
+            required = listOf("id")), maxItems = ChartScene.MAX_NODES),
+        "links" to array(obj(
+            "from" to integer(), "to" to integer(), "kind" to enum(SceneLinkKind.entries),
+            "label" to string(maxLength = ChartScene.MAX_LABEL),
+            "payload" to string(maxLength = ChartScene.MAX_PAYLOAD, description = "Optional data contract or payload moving across this link."),
+            required = listOf("from", "to", "kind")), maxItems = ChartScene.MAX_LINKS),
+        "notes" to array(obj("node" to integer(), "text" to string(maxLength = ChartScene.MAX_NOTE)), maxItems = ChartScene.MAX_NOTES),
+        "dim_others" to boolean(description = "Fade steps outside the scene; defaults to true."),
+        "columns" to array(obj(
+            "node" to integer(), "title" to string(maxLength = ChartScene.MAX_TITLE),
+            "description" to string(maxLength = ChartScene.MAX_COLUMN_DESCRIPTION), required = listOf("node")),
+            maxItems = ChartScene.MAX_COLUMNS,
+            description = "Optional column roots with custom titles/descriptions to stage side-by-side lanes."),
+        "reset_board" to boolean(description = "Clear previous columns before placing this scene; defaults to false."),
+        "camera" to enum(SceneCamera.entries, "Viewport framing: focus_first (default) or fit_scene."),
+        "groups" to array(obj(
+            "label" to string(maxLength = ChartScene.MAX_SHORT_LABEL),
+            "nodes" to array(integer(), minItems = 1), "kind" to enum(SceneGroupKind.entries),
+            required = listOf("label", "nodes")), maxItems = ChartScene.MAX_GROUPS,
+            description = "Labelled boxes behind layers or stages; a function in at most one group."),
+        "externals" to array(obj(
+            "id" to string(pattern = "^[a-z0-9][a-z0-9_-]{0,23}$", description = "Short slug."),
+            "kind" to enum(ExternalKind.entries), "label" to string(maxLength = ChartScene.MAX_SHORT_LABEL),
+            "connected" to array(obj(
+                "node" to integer(),
+                "direction" to enum(ExternalDirection.entries, "in: from the external into the function."),
+                "label" to string(maxLength = ChartScene.MAX_SHORT_LABEL), required = listOf("node", "direction")),
+                minItems = 1, maxItems = ChartScene.MAX_EXTERNAL_LINKS)), maxItems = ChartScene.MAX_EXTERNALS,
+            description = "Systems outside the code where data enters or leaves. database/network ones must match rule effects (see suggest_externals)."),
+        "snippets" to array(obj(
+            "node" to integer(),
+            "start_line" to integer(minimum = 1, description = "1-based line in the file, inside the function."),
+            "end_line" to integer(minimum = 1, description = "At most ${ChartScene.MAX_SNIPPET_LINES} lines after start_line - 1."),
+            "caption" to string(maxLength = ChartScene.MAX_SNIPPET_CAPTION), required = listOf("node", "start_line", "end_line")),
+            maxItems = ChartScene.MAX_SNIPPETS,
+            description = "Source lines shown beside a function's card; read from source when applied and returned for quoting."),
+    )
     return listOf(
-        objectTool("get_chart_state", "Read current chart selection, columns, visible steps, calls, compact regions, expansion state and the current scene (paged).", offset) {
+        objectTool("get_chart_state", "Read current chart selection, columns, visible steps, calls, compact regions, expansion state and the current scene (paged).", obj(offset, required = emptyList())) {
             context.state(it.nonnegativeInt("offset", 0))
         },
         objectTool("group_chart_calls", "Replace one source-backed block with named high-level groups, initially collapsed and clickable " +
@@ -187,27 +206,29 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             "strings in source order, within one block, with no overlaps. Ungrouped calls remain visible; groups:[] removes grouping " +
             "for this block. Enables compact mode. Titles/descriptions are your interpretation; include source citations in descriptions. " +
             "Undoable; cleared on board reset or graph rebuild, not saved in tours.",
-            """"revision":{"type":"integer"},"owner_node_id":{"type":"integer"},
-                "block_key":{"type":"string","maxLength":${ChartCallGroup.MAX_KEY}},
-                "groups":{"type":"array","maxItems":${ChartCallGroup.MAX_GROUPS},"items":{"type":"object","properties":{
-                    "occurrence_ids":{"type":"array","minItems":2,"maxItems":${FlowRegionEvidence.MAX_REGION_CALLS},"items":{"type":"string","maxLength":40}},
-                    "title":{"type":"string","maxLength":${ChartCallGroup.MAX_TITLE}},
-                    "description":{"type":"string","maxLength":${ChartCallGroup.MAX_DESCRIPTION}}},
-                    "required":["occurrence_ids","title"],"additionalProperties":false}}""",
-            "\"revision\",\"owner_node_id\",\"block_key\",\"groups\"") { args ->
+            obj("revision" to integer(), "owner_node_id" to integer(),
+                "block_key" to string(maxLength = ChartCallGroup.MAX_KEY),
+                "groups" to array(obj(
+                    "occurrence_ids" to array(string(maxLength = 40), minItems = 2, maxItems = FlowRegionEvidence.MAX_REGION_CALLS),
+                    "title" to string(maxLength = ChartCallGroup.MAX_TITLE),
+                    "description" to string(maxLength = ChartCallGroup.MAX_DESCRIPTION),
+                    required = listOf("occurrence_ids", "title")), maxItems = ChartCallGroup.MAX_GROUPS))) { args ->
             context.groupCalls(args.nonnegativeInt("revision"), args.nonnegativeInt("owner_node_id"),
                 groupingText(args, "block_key", ChartCallGroup.MAX_KEY), parseChartCallGroups(args))
         },
         objectTool("set_chart_region_expansion", "Show or hide the details of existing compact regions. Use exact region_key strings " +
             "from get_chart_state or group_chart_calls and the latest revision. Idempotent; validates all targets before changing any.",
-            """"revision":{"type":"integer"},"region_keys":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","maxLength":${ChartCallGroup.MAX_KEY}}},"expanded":{"type":"boolean"}""",
-            "\"revision\",\"region_keys\",\"expanded\"") { args ->
+            obj("revision" to integer(),
+                "region_keys" to array(string(maxLength = ChartCallGroup.MAX_KEY), minItems = 1, maxItems = 20),
+                "expanded" to boolean())) { args ->
             val keys = groupingStrings(args, "region_keys", 1, 20, ChartCallGroup.MAX_KEY)
             val expanded = args.optionalBooleanArg("expanded") ?: throw ToolInputException("expanded must be true or false")
             context.setRegionExpansion(args.nonnegativeInt("revision"), keys.distinct(), expanded)
         },
         objectTool("find_chart_nodes", "Find in-project functions by name, container, source path or semantic filters (role, effect, entry_point) and enriched summaries (paged).",
-            """"query":{"type":"string","description":"Substring of function name, container, path or enriched summary."},"role":{"type":"string","enum":${strings(FIND_ROLES)}},"effect":{"type":"string","enum":${strings(FIND_EFFECTS)}},"entry_point":{"type":"boolean"},$offset""", "") { args ->
+            obj("query" to string(description = "Substring of function name, container, path or enriched summary."),
+                "role" to JsonSchemas.enum(FIND_ROLES), "effect" to JsonSchemas.enum(FIND_EFFECTS),
+                "entry_point" to boolean(), offset, required = emptyList())) { args ->
             val query = args.optionalStringArg("query")?.trim()?.take(200)
             val role = args.optionalChoice("role", FIND_ROLES)
             val effect = args.optionalChoice("effect", FIND_EFFECTS)
@@ -220,15 +241,15 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             }
         },
         objectTool("get_chart_node_details", "Inspect a function and its static callers/callees, including hidden nodes (paged).",
-            """"revision":{"type":"integer"},"node_id":{"type":"integer"},$offset""", "\"revision\",\"node_id\"") {
+            obj("revision" to integer(), "node_id" to integer(), offset, required = listOf("revision", "node_id"))) {
             context.describe(it.nonnegativeInt("revision"), it.nonnegativeInt("node_id"), it.nonnegativeInt("offset", 0))
         },
         objectTool("get_function_flow_outline", "Structured control-flow and call-site outline for 1 to 5 functions: ordered call occurrences with their enclosing conditions/loops, return/throw exits, dispatch implementations, compact subflows and groupable_blocks with exact block_key/occurrence_id strings for group_chart_calls.",
-            """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":5}""", "\"revision\",\"node_ids\"") { args ->
+            obj("revision" to integer(), "node_ids" to array(integer(), minItems = 1, maxItems = 5))) { args ->
             context.functionOutline(args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..5))
         },
         objectTool("get_flow_catalog", "Catalog of named flows from enrichment and discovered/enriched entry points, with their spine steps, summaries and reached rule effects (paged, optional query filter).",
-            """"revision":{"type":"integer"},"query":{"type":"string"},$offset""", "\"revision\"") { args ->
+            obj("revision" to integer(), "query" to string(), offset, required = listOf("revision"))) { args ->
             val revision = args.nonnegativeInt("revision")
             val query = args.get("query")?.takeIf { !it.isJsonNull }?.let { value ->
                 value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.trim()
@@ -241,61 +262,60 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
             "draw typed links and short notes, and fade the rest. Replaces the previous scene, places hidden functions as continuations " +
             "of the chart (link and note targets not listed become context), and focuses the first focus node. Validated as a whole; " +
             "kind call links must be static calls from -> to. Optional groups (layers/stages), externals (where data enters or " +
-            "leaves) and snippets (exact source lines).", """"revision":{"type":"integer"},$sceneProperties""", "\"revision\",\"nodes\"") {
+            "leaves) and snippets (exact source lines).", obj("revision" to integer(), *sceneProperties, required = listOf("revision", "nodes"))) {
             context.showScene(it.nonnegativeInt("revision"), parseScene(it))
         },
         objectTool("present_story", "Present a guided tour of a multi-stage flow: ${ChartStory.MIN_BEATS}-${ChartStory.MAX_BEATS} beats " +
             "(3-6 is best), big picture first, each a caption and a scene like show_scene. All beats are validated before " +
             "anything changes; beat 1 is shown and the user steps through the rest on the chart. Replaces the current scene.",
-            """"revision":{"type":"integer"},"title":{"type":"string","maxLength":${ChartScene.MAX_TITLE}},
-               "beats":{"type":"array","minItems":${ChartStory.MIN_BEATS},"maxItems":${ChartStory.MAX_BEATS},"items":{"type":"object","properties":{
-                   "caption":{"type":"string","maxLength":${ChartStory.MAX_CAPTION},"description":"What this beat shows, one or two sentences."},
-                   "scene":{"type":"object","properties":{$sceneProperties},"required":["nodes"],"additionalProperties":false}},
-                   "required":["caption","scene"],"additionalProperties":false}}""", "\"revision\",\"title\",\"beats\"") {
+            obj("revision" to integer(), "title" to string(maxLength = ChartScene.MAX_TITLE),
+                "beats" to array(obj(
+                    "caption" to string(maxLength = ChartStory.MAX_CAPTION, description = "What this beat shows, one or two sentences."),
+                    "scene" to obj(*sceneProperties,
+                        required = listOf("nodes"))), minItems = ChartStory.MIN_BEATS, maxItems = ChartStory.MAX_BEATS))) {
             val (title, beats) = parseStory(it)
             context.presentStory(it.nonnegativeInt("revision"), title, beats)
         },
         objectTool("get_project_map", "The zoomed-out view of the project: areas (directories) with function, entry point and storage/network " +
             "counts and hub functions, static call counts between areas, entry points and named flows (global sections on offset 0; " +
-            "areas paged). Marks what is unavailable until Entry Points search or Enrich runs. Start broad questions here.", offset) {
+            "areas paged). Marks what is unavailable until Entry Points search or Enrich runs. Start broad questions here.", obj(offset, required = emptyList())) {
             context.projectMap(it.nonnegativeInt("offset", 0))
         },
-        objectTool("list_tours", "Saved tours of this project: name, title, beat captions and main functions. Does not change the chart.", "") {
+        objectTool("list_tours", "Saved tours of this project: name, title, beat captions and main functions. Does not change the chart.", obj()) {
             context.listTours()
         },
         objectTool("play_tour", "Replay a saved tour as a story on the current graph. Functions are matched by stable identity; missing ones, " +
             "beats left empty and links, notes, externals or snippets that no longer resolve are skipped and reported.",
-            """"name":{"type":"string","maxLength":${SavedTour.MAX_NAME}}""", "\"name\"") { args ->
+            obj("name" to string(maxLength = SavedTour.MAX_NAME))) { args ->
             val name = args.get("name")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.trim()
                 ?.takeIf(String::isNotEmpty) ?: throw ToolInputException("name must be a nonempty string; list_tours shows the saved tours")
             context.playTour(name.take(SavedTour.MAX_NAME))
         },
         objectTool("suggest_followups", "Offer up to 3 short follow-up questions, shown as buttons under your answer; does not change the chart.",
-            """"questions":{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","maxLength":$MAX_FOLLOWUP}}""", "\"questions\"") {
+            obj("questions" to array(string(maxLength = MAX_FOLLOWUP), minItems = 1, maxItems = 3))) {
             followups(parseFollowups(it))
             """{"ok":true,"note":"Shown under your answer; the user may click one."}"""
         },
-        objectTool("clear_scene", "Remove the current scene's emphasis, badges, notes and links.", """"revision":{"type":"integer"}""", "\"revision\"") {
+        objectTool("clear_scene", "Remove the current scene's emphasis, badges, notes and links.", obj("revision" to integer())) {
             context.clearScene(it.nonnegativeInt("revision"))
         },
         objectTool("trace_path", "Shortest static in-project call paths from one function to another (breadth-first, bounded). Reports a " +
             "reverse path when only to -> from exists. Use it instead of expanding calls step by step.",
-            """"revision":{"type":"integer"},"from":{"type":"integer"},"to":{"type":"integer"},
-               "max_paths":{"type":"integer","minimum":1,"maximum":5,"description":"Defaults to 3."},
-               "max_depth":{"type":"integer","minimum":1,"maximum":12,"description":"Most calls per path; defaults to 8."}""",
-            "\"revision\",\"from\",\"to\"") {
+            obj("revision" to integer(), "from" to integer(), "to" to integer(),
+                "max_paths" to integer(minimum = 1, maximum = 5, description = "Defaults to 3."),
+                "max_depth" to integer(minimum = 1, maximum = 12, description = "Most calls per path; defaults to 8."),
+                required = listOf("revision", "from", "to"))) {
             context.tracePath(it.nonnegativeInt("revision"), it.nonnegativeInt("from"), it.nonnegativeInt("to"),
                 it.nonnegativeInt("max_paths", 3).coerceIn(1, 5), it.nonnegativeInt("max_depth", 8).coerceIn(1, 12))
         },
         objectTool("reachability", "Entry points that statically reach a function (nearest first, with a path), direct and transitive " +
             "caller/callee counts, and rule-derived storage/network/throws effects.",
-            """"revision":{"type":"integer"},"node":{"type":"integer"}""", "\"revision\",\"node\"") {
+            obj("revision" to integer(), "node" to integer())) {
             context.reachability(it.nonnegativeInt("revision"), it.nonnegativeInt("node"))
         },
         objectTool("suggest_externals", "Rule effects of functions for grounding scene externals before drawing them: storage and network " +
             "(with the matched imports, or the nearest callees that have the effect when only reached) and throws.",
-            """"revision":{"type":"integer"},"node_ids":{"type":"array","items":{"type":"integer"},"minItems":1,"maxItems":${ChartScene.MAX_NODES}}""",
-            "\"revision\",\"node_ids\"") { args ->
+            obj("revision" to integer(), "node_ids" to array(integer(), minItems = 1, maxItems = ChartScene.MAX_NODES))) { args ->
             context.suggestExternals(args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..ChartScene.MAX_NODES))
         },
     ) + listOf(
@@ -305,7 +325,7 @@ fun chartTools(context: ChartChatContext, followups: suspend (List<String>) -> U
         "collapse_chart_calls" to "Hide calls for visible function IDs to reduce chart clutter.",
         "collapse_chart_callers" to "Hide callers for visible function IDs to reduce chart clutter.",
     ).map { (name, description) ->
-        objectTool(name, description, mutation, "\"revision\",\"node_ids\"") { args ->
+        objectTool(name, description, mutation) { args ->
             context.apply(name, args.nonnegativeInt("revision"), args.lenientIds("node_ids", 1..20))
         }
     }
@@ -470,7 +490,6 @@ private fun JsonObject.nonnegativeInt(name: String, default: Int? = null, where:
 private val FIND_ROLES = listOf("core", "validation", "error-handling", "logging", "plumbing", "utility")
 private val FIND_EFFECTS = listOf("storage", "network", "throws")
 
-private fun strings(values: List<String>) = values.joinToString(",", "[", "]") { "\"$it\"" }
 
 /** Null when missing or null; otherwise one of [values], ignoring case. */
 private fun JsonObject.optionalChoice(name: String, values: List<String>): String? =

@@ -2,15 +2,12 @@ package dev.insight.chat
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import dev.insight.llm.LlmTool
 
-/** A tool whose arguments are one object of [properties] (JSON schema members) with no others allowed. */
-internal fun objectTool(name: String, description: String, properties: String, required: String = "",
+/** A tool with an object argument schema built with JsonSchemas. */
+internal fun objectTool(name: String, description: String, schema: JsonObject,
                         call: suspend (JsonObject) -> String): ChatTool = object : ChatTool {
-    override val definition = LlmTool(name, description, JsonParser.parseString(
-        """{"type":"object","properties":{$properties},"required":[$required],"additionalProperties":false}"""
-    ).asJsonObject)
+    override val definition = LlmTool(name, description, schema.deepCopy())
     override suspend fun call(arguments: JsonObject): String = call.invoke(arguments)
 }
 

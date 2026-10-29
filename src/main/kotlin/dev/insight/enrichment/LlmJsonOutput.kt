@@ -138,18 +138,53 @@ internal suspend fun <T> forEachConcurrently(items: List<T>, concurrency: Int, b
     items.forEach { item -> launch { semaphore.withPermit { block(item) } } }
 }
 
-/** Small JSON Schema builders for the generative prompts. */
+/** Shared JSON Schema builders for tool arguments and generative output contracts. */
 internal object JsonSchemas {
-    fun obj(vararg properties: Pair<String, JsonObject>): JsonObject = JsonObject().apply {
+    // Generative output schemas remain open by default; tools explicitly disallow additional properties.
+    fun obj(
+        vararg properties: Pair<String, JsonObject>,
+        required: List<String> = properties.map { it.first },
+        additionalProperties: Boolean? = null,
+    ): JsonObject = JsonObject().apply {
         addProperty("type", "object")
-        add("properties", JsonObject().apply { properties.forEach { (name, schema) -> add(name, schema) } })
-        add("required", com.google.gson.JsonArray().apply { properties.forEach { add(it.first) } })
+        add("properties", JsonObject().apply { properties.forEach { (name, schema) -> add(name, schema.deepCopy()) } })
+        add("required", com.google.gson.JsonArray().apply { required.forEach(::add) })
+        additionalProperties?.let { addProperty("additionalProperties", it) }
     }
-    fun array(items: JsonObject): JsonObject = JsonObject().apply { addProperty("type", "array"); add("items", items) }
-    fun string(): JsonObject = JsonObject().apply { addProperty("type", "string") }
-    fun integer(): JsonObject = JsonObject().apply { addProperty("type", "integer") }
-    fun boolean(): JsonObject = JsonObject().apply { addProperty("type", "boolean") }
-    fun enum(values: List<String>): JsonObject = string().apply { add("enum", com.google.gson.JsonArray().apply { values.forEach(::add) }) }
+
+    fun array(items: JsonObject, minItems: Int? = null, maxItems: Int? = null, description: String? = null): JsonObject =
+        JsonObject().apply {
+            addProperty("type", "array")
+            add("items", items.deepCopy())
+            minItems?.let { addProperty("minItems", it) }
+            maxItems?.let { addProperty("maxItems", it) }
+            description?.let { addProperty("description", it) }
+        }
+
+    fun string(minLength: Int? = null, maxLength: Int? = null, description: String? = null, pattern: String? = null): JsonObject =
+        JsonObject().apply {
+            addProperty("type", "string")
+            minLength?.let { addProperty("minLength", it) }
+            maxLength?.let { addProperty("maxLength", it) }
+            description?.let { addProperty("description", it) }
+            pattern?.let { addProperty("pattern", it) }
+        }
+
+    fun integer(minimum: Int? = null, maximum: Int? = null, description: String? = null): JsonObject = JsonObject().apply {
+        addProperty("type", "integer")
+        minimum?.let { addProperty("minimum", it) }
+        maximum?.let { addProperty("maximum", it) }
+        description?.let { addProperty("description", it) }
+    }
+
+    fun boolean(description: String? = null): JsonObject = JsonObject().apply {
+        addProperty("type", "boolean")
+        description?.let { addProperty("description", it) }
+    }
+
+    fun enum(values: List<String>, description: String? = null): JsonObject = string(description = description).apply {
+        add("enum", com.google.gson.JsonArray().apply { values.forEach(::add) })
+    }
 }
 
 internal fun JsonObject.jsonText(key: String): String? =

@@ -1,7 +1,7 @@
 package dev.insight.chat
 
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
+import dev.insight.enrichment.JsonSchemas
 import dev.insight.llm.LlmTool
 
 /** One-based, inclusive coordinates. [side] is present only in a diff review. */
@@ -19,13 +19,18 @@ fun sourcePointTool(diff: Boolean = false, show: suspend (SourcePoint) -> String
         "point_to_code",
         "Show a file at a highlighted line or range in a read-only text editor, with an optional comment. " +
             "Each call adds a separate side-by-side column, including repeated locations. Use paths and line numbers from inspected code.",
-        JsonParser.parseString("""{"type":"object","properties":{
-            "path":{"type":"string","minLength":1,"description":"Project-relative file path. Review files use snapshot source; other project files use current content."},
-            "line":{"type":"integer","minimum":1,"description":"First line to highlight, one-based."},
-            "end_line":{"type":"integer","minimum":1,"description":"Last line to highlight, inclusive. Defaults to line; clamped to the end of the file."},
-            "comment":{"type":"string","maxLength":2000,"description":"Optional explanation shown above this editor."}
-            ${if (diff) """, "side":{"type":"string","enum":["before","after"],"description":"Snapshot side, default after. Use before for removed code."}""" else ""}
-        },"required":["path","line"],"additionalProperties":false}""").asJsonObject,
+        JsonSchemas.obj(
+            "path" to JsonSchemas.string(minLength = 1,
+                description = "Project-relative file path. Review files use snapshot source; other project files use current content."),
+            "line" to JsonSchemas.integer(minimum = 1, description = "First line to highlight, one-based."),
+            "end_line" to JsonSchemas.integer(minimum = 1,
+                description = "Last line to highlight, inclusive. Defaults to line; clamped to the end of the file."),
+            "comment" to JsonSchemas.string(maxLength = 2000, description = "Optional explanation shown above this editor."),
+            required = listOf("path", "line"), additionalProperties = false,
+        ).apply {
+            if (diff) getAsJsonObject("properties").add("side", JsonSchemas.enum(listOf("before", "after"),
+                description = "Snapshot side, default after. Use before for removed code."))
+        },
     )
 
     override suspend fun call(arguments: JsonObject): String {

@@ -80,6 +80,26 @@ class ChartToolsTest {
         }
     }
 
+    @Test fun `scene tools share the same bounded contract without sharing mutable schemas`() {
+        val tools = chartTools(Context()).associate { it.definition.name to it.definition.parameters }
+        val show = tools.getValue("show_scene")
+        val story = tools.getValue("present_story")
+        val showProperties = show.getAsJsonObject("properties")
+        val scene = story.getAsJsonObject("properties").getAsJsonObject("beats")
+            .getAsJsonObject("items").getAsJsonObject("properties").getAsJsonObject("scene")
+        val sceneProperties = scene.getAsJsonObject("properties")
+        val expectedProperties = showProperties.deepCopy().apply { remove("revision") }
+        assertEquals(expectedProperties, sceneProperties)
+        assertEquals(listOf("revision", "nodes"), show.getAsJsonArray("required").map { it.asString })
+        assertEquals(listOf("nodes"), scene.getAsJsonArray("required").map { it.asString })
+        assertFalse(scene.get("additionalProperties").asBoolean)
+        assertEquals(ChartScene.MAX_NODES, sceneProperties.getAsJsonObject("nodes").get("maxItems").asInt)
+        assertEquals("Step number used in your text, e.g. \"1\".", sceneProperties.getAsJsonObject("nodes")
+            .getAsJsonObject("items").getAsJsonObject("properties").getAsJsonObject("badge").get("description").asString)
+        showProperties.getAsJsonObject("nodes").addProperty("maxItems", 0)
+        assertEquals(ChartScene.MAX_NODES, sceneProperties.getAsJsonObject("nodes").get("maxItems").asInt)
+    }
+
     @Test fun `validates full batches and requires revision before dispatch`() = runBlocking {
         val context = Context()
         val tool = chartTools(context).single { it.definition.name == "add_chart_nodes" }

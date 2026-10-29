@@ -8,10 +8,11 @@ import dev.insight.chat.objectTool
 import dev.insight.chat.objectsArg
 import dev.insight.chat.pathsArg
 import dev.insight.chat.stringArg
+import dev.insight.enrichment.JsonSchemas
 
 /** The schema of 1 to [max] file paths, described by [description]. */
 internal fun pathListSchema(max: Int, description: String) =
-    """{"type":"array","minItems":1,"maxItems":$max,"items":{"type":"string"},"description":"$description"}"""
+    JsonSchemas.array(JsonSchemas.string(), minItems = 1, maxItems = max, description = description)
 
 /** The inclusive, one-based start_line..end_line of a source block tool, at most [maxLines] lines. */
 internal fun JsonObject.sourceLinesArg(maxLines: Int): IntRange {
@@ -30,7 +31,7 @@ internal fun addNotesTool(
     name: String,
     findTool: String,
     subject: String,
-    pathList: (Int) -> String,
+    pathList: (Int) -> JsonObject,
     symbolScope: String,
     add: suspend (List<ReviewNote>) -> String,
 ): ChatTool = objectTool(name, "Show 1–$MAX_REVIEW_NOTES_PER_CALL notes on the canvas next to the chat, to explain or illustrate an answer. " +
@@ -38,12 +39,14 @@ internal fun addNotesTool(
     "declaration) from those files. Symbols are validated and get a small diagram of static source relationships. Use $findTool for " +
     "exact selectors or ambiguous names. A note for the same paths and symbol replaces the old one; different symbols coexist. " +
     "Only describe $subject you have read.",
-    """"notes":{"type":"array","minItems":1,"maxItems":$MAX_REVIEW_NOTES_PER_CALL,"items":{"type":"object","properties":{""" +
-        """"paths":${pathList(MAX_NOTE_PATHS)},""" +
-        """"text":{"type":"string","minLength":1,"maxLength":$MAX_NOTE_CHARS,"description":"A short explanation, usually 1–3 sentences."},""" +
-        """"symbol":{"type":"string","minLength":1,"maxLength":$MAX_SYMBOL_CHARS,"description":"Optional declaration name, qualified name, or exact selector from $findTool. Must resolve uniquely within $symbolScope."}""" +
-        """},"required":["paths","text"],"additionalProperties":false}}""",
-    """"notes"""") { args ->
+    JsonSchemas.obj("notes" to JsonSchemas.array(JsonSchemas.obj(
+        "paths" to pathList(MAX_NOTE_PATHS),
+        "text" to JsonSchemas.string(minLength = 1, maxLength = MAX_NOTE_CHARS,
+            description = "A short explanation, usually 1–3 sentences."),
+        "symbol" to JsonSchemas.string(minLength = 1, maxLength = MAX_SYMBOL_CHARS,
+            description = "Optional declaration name, qualified name, or exact selector from $findTool. Must resolve uniquely within $symbolScope."),
+        required = listOf("paths", "text"), additionalProperties = false,
+    ), minItems = 1, maxItems = MAX_REVIEW_NOTES_PER_CALL), additionalProperties = false)) { args ->
     add(objectsArg(args["notes"], "notes", "note", MAX_REVIEW_NOTES_PER_CALL) { note, prefix ->
         val text = note.stringArg("text", prefix)
         if (text.length > MAX_NOTE_CHARS) throw ToolInputException("${prefix}text is too long")

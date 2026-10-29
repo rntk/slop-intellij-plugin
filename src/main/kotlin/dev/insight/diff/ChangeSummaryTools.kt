@@ -5,6 +5,7 @@ import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.intArg
 import dev.insight.chat.objectTool
+import dev.insight.enrichment.JsonSchemas
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewCommand
 import dev.insight.review.ReviewSummarizer
@@ -18,7 +19,8 @@ fun changeSummaryTools(context: DiffReviewContext): List<ChatTool> = listOf(obje
     "Page through the summary tree of the change, written on /summaries: the root, " +
         "folders, groups that split folders with more than ${ReviewSummaryTree.MAX_CHILDREN} entries, and files, " +
         "each with its summary where one exists. If next_offset is present, call again with it.",
-    """"offset":{"type":"integer","minimum":0,"description":"First node of the page; use next_offset."}""") {
+    JsonSchemas.obj("offset" to JsonSchemas.integer(minimum = 0, description = "First node of the page; use next_offset."),
+        required = emptyList(), additionalProperties = false)) {
     context.summaries(it.intArg("offset", 0))
 })
 
