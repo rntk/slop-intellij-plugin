@@ -42,7 +42,7 @@ class ApiRequestLimitsTest {
     private val llmRequest = CompletionRequest(listOf(LlmMessage.user("Hi")))
     private val decisionRequest = DecisionRequest("Hello", mapOf("ok" to DecisionQuestion.Noul("OK?")))
     private val baseUrl = "http://localhost"
-    private val decisionUrl = URI("$baseUrl/v1/systemone")
+    private val decisionUrl = baseUrl
 
     @Before fun limitRequests() {
         ApiRequestLimits.llm.resize(1)
@@ -85,7 +85,7 @@ class ApiRequestLimitsTest {
             }
         }
         val first = transport.sent.receive()
-        assertEquals(decisionUrl, first.request.uri())
+        assertEquals(URI("$decisionUrl/v1/systemone"), first.request.uri())
         assertTrue(transport.sent.tryReceive().isFailure)
         assertEquals(1, log.entries().size)
         jobs[1].cancelAndJoin()

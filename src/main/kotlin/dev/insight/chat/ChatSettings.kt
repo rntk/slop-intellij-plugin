@@ -12,7 +12,9 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 import dev.insight.apilog.ApiLogs
 import dev.insight.core.ApiRequestLimits
-import dev.insight.core.decisionsClient
+import dev.insight.core.ApiTrafficLog
+import dev.insight.core.http.apiUri
+import dev.insight.decisions.DEFAULT_DECISIONS_URL
 import dev.insight.decisions.DecisionsClient
 import dev.insight.llm.LlmClient
 import dev.insight.llm.LlmConfiguration
@@ -31,6 +33,8 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
         var anthropic by property(ProviderState())
         var maxConcurrentLlmRequests by property(ApiRequestLimits.DEFAULT_MAX_CONCURRENT_REQUESTS)
         var maxConcurrentDecisionRequests by property(ApiRequestLimits.DEFAULT_MAX_CONCURRENT_REQUESTS)
+        /** Server address; blank uses [DEFAULT_DECISIONS_URL]. */
+        var decisionsUrl by string("")
 
         fun options(provider: LlmProvider): ProviderState = when (provider) {
             LlmProvider.LLAMA_CPP -> this
@@ -58,16 +62,13 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
 
     /** Reading the password safe can block; call on IO outside settings dialogs. */
     fun createClient(): LlmClient {
-        updateRequestLimits()
         val configuration = state.configuration()
         return configuration.createClient(apiKey(configuration.provider), ApiLogs.llm)
     }
 
-    /** The local Decisions server accepts any bearer token. */
-    fun createDecisionsClient(requestTimeout: Duration = Duration.ofSeconds(120), maxRetries: Int = 4): DecisionsClient {
-        updateRequestLimits()
-        return decisionsClient("local", requestTimeout = requestTimeout, maxRetries = maxRetries, traffic = ApiLogs.decisions)
-    }
+    /** Reading the password safe can block; call on IO outside settings dialogs. */
+    fun createDecisionsClient(requestTimeout: Duration = Duration.ofSeconds(120), maxRetries: Int = 4): DecisionsClient =
+        decisionsClient(state.decisionsUrl.orEmpty(), decisionsApiKey, requestTimeout, maxRetries, ApiLogs.decisions)
 
     override fun loadState(state: State) {
         super.loadState(state)
@@ -89,9 +90,31 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
     fun setApiKey(provider: LlmProvider, value: String?) =
         PasswordSafe.instance.setPassword(credentials(provider), value?.trim()?.takeIf { it.isNotEmpty() })
 
+    var decisionsApiKey: String?
+        get() = PasswordSafe.instance.getPassword(decisionsCredentials)?.takeIf { it.isNotBlank() }
+        set(value) = PasswordSafe.instance.setPassword(decisionsCredentials, value?.trim()?.takeIf { it.isNotEmpty() })
+
     companion object {
         private fun credentials(provider: LlmProvider) = CredentialAttributes(generateServiceName("Insight Workbench",
             if (provider == LlmProvider.LLAMA_CPP) "LLM server API key" else "${provider.name} API key"))
+        private val decisionsCredentials = CredentialAttributes(generateServiceName("Insight Workbench", "Decisions API key"))
+
+        /** Validates without making a request. Also used by the settings dialog on Apply. Blank [url] uses the default. */
+        fun decisionsClient(url: String, apiKey: String?, requestTimeout: Duration = Duration.ofSeconds(120),
+                            maxRetries: Int = 4, traffic: ApiTrafficLog? = null): DecisionsClient {
+            val key = apiKey?.trim()?.ifEmpty { null }
+            val trimmed = url.trim().ifEmpty { DEFAULT_DECISIONS_URL }
+            val baseUrl = if ("://" in trimmed) trimmed else "http://$trimmed"
+            val endpoint = apiUri(baseUrl, "/systemone")
+            // Same rule as LLM keys: a real key only travels over HTTPS or to localhost.
+            require(key == null || endpoint.scheme == "https" || endpoint.host in localHosts) {
+                "Refusing to send an API key to a non-HTTPS server URL"
+            }
+            // DecisionsClient requires a bearer token; local servers accept any, so a blank key sends "local".
+            return DecisionsClient(key ?: "local", baseUrl, requestTimeout, maxRetries, traffic = traffic)
+        }
+        private val localHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1")
+
         fun getInstance(): ChatSettings = service()
     }
 }

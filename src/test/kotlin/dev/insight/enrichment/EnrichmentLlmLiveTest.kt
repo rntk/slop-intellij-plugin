@@ -6,6 +6,7 @@ import dev.insight.callgraph.CallGraphNode
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
 import dev.insight.llm.LlamaCppClient
+import dev.insight.llm.LLAMA_CPP_DEFAULT_BASE_URL
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -94,7 +95,7 @@ class EnrichmentLlmLiveTest {
 
     @Test fun `labels groups, discovers domains and names a flow`() = runBlocking {
         assumeTrue(System.getenv("INSIGHT_LIVE") == "1")
-        val client = LlamaCppClient(System.getenv("INSIGHT_LLM_URL") ?: "http://192.168.0.147:8989", requestTimeout = Duration.ofSeconds(180))
+        val client = LlamaCppClient(System.getenv("INSIGHT_LLM_URL") ?: LLAMA_CPP_DEFAULT_BASE_URL, requestTimeout = Duration.ofSeconds(180))
         val cache = InMemoryEnrichmentCache()
         val input = input()
 

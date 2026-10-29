@@ -19,6 +19,7 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
     private lateinit var settings: ChatSettings
     private lateinit var originalState: ChatSettings.State
     private lateinit var originalKeys: Map<LlmProvider, String?>
+    private var originalDecisionsKey: String? = null
     private lateinit var configurable: ChatSettingsConfigurable
     private lateinit var panel: DialogPanel
 
@@ -27,6 +28,7 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
         settings = ChatSettings.getInstance()
         originalState = settings.state
         originalKeys = LlmProvider.entries.associateWith(settings::apiKey)
+        originalDecisionsKey = settings.decisionsApiKey
         settings.loadState(ChatSettings.State().apply {
             serverUrl = "http://localhost:8080"
             model = "local-model"
@@ -35,6 +37,7 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
         for (provider in LlmProvider.entries) settings.setApiKey(provider, null)
         settings.setApiKey(LlmProvider.LLAMA_CPP, "local-key")
         settings.setApiKey(LlmProvider.OPENAI, "cloud-key")
+        settings.decisionsApiKey = null
         configurable = ChatSettingsConfigurable()
         panel = configurable.createComponent() as DialogPanel
         configurable.reset()
@@ -45,6 +48,7 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
             configurable.disposeUIResources()
             settings.loadState(originalState)
             originalKeys.forEach { (provider, key) -> settings.setApiKey(provider, key) }
+            settings.decisionsApiKey = originalDecisionsKey
         } finally { super.tearDown() }
     }
 
@@ -58,6 +62,39 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
 
     private fun concurrencyField(label: String) = descendants().filterIsInstance<JLabel>()
         .single { it.text == label }.labelFor as JTextField
+
+    // The Decisions group precedes the provider groups, so its "API key:" label comes first.
+    private fun labeledField(label: String) = descendants().filterIsInstance<JLabel>()
+        .first { it.text == label }.labelFor as JTextField
+
+    fun `test Decisions URL and key validate and participate in Apply and Reset`() {
+        val url = labeledField("Server URL:")
+        val key = labeledField("API key:") as JPasswordField
+        assertEquals("", url.text)
+        assertEquals("", String(key.password))
+        url.text = "https://decisions.example"
+        key.text = "decisions-key"
+        assertTrue(configurable.isModified)
+        configurable.reset()
+        assertEquals("", url.text)
+        assertEquals("", String(key.password))
+        assertFalse(configurable.isModified)
+
+        url.text = "ftp://decisions.example"
+        assertFalse(panel.validateAll().isEmpty())
+        url.text = "https://decisions.example"
+        key.text = "decisions-key"
+        assertTrue(panel.validateAll().isEmpty())
+        configurable.apply()
+        assertEquals("https://decisions.example", settings.state.decisionsUrl)
+        assertEquals("decisions-key", settings.decisionsApiKey)
+        assertEquals("local-key", settings.apiKey(LlmProvider.LLAMA_CPP))
+        assertFalse(configurable.isModified)
+
+        key.text = ""
+        configurable.apply()
+        assertNull(settings.decisionsApiKey)
+    }
 
     fun `test concurrency limits validate and participate in Apply and Reset`() {
         val llm = concurrencyField("Max concurrent LLM requests:")

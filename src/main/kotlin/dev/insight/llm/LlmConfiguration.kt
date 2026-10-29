@@ -1,14 +1,17 @@
 package dev.insight.llm
 
 import dev.insight.core.ApiTrafficLog
-import dev.insight.core.Endpoints
+import dev.insight.core.http.apiUri
 import java.net.URI
 import java.time.Duration
 
 const val DEFAULT_OUTPUT_TOKENS = 10_000
 
+/** Default llama-server address. */
+const val LLAMA_CPP_DEFAULT_BASE_URL = "http://localhost:8080"
+
 enum class LlmProvider(val displayName: String, val defaultBaseUrl: String) {
-    LLAMA_CPP("llama.cpp / OpenAI-compatible", Endpoints.LLM_BASE_URL),
+    LLAMA_CPP("llama.cpp / OpenAI-compatible", LLAMA_CPP_DEFAULT_BASE_URL),
     OPENAI("OpenAI", OpenAiClient.DEFAULT_BASE_URL),
     DEEPSEEK("DeepSeek", DeepSeekClient.DEFAULT_BASE_URL),
     ANTHROPIC("Anthropic", AnthropicClient.DEFAULT_BASE_URL);

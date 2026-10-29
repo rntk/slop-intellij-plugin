@@ -11,6 +11,7 @@ import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.layout.selectedValueIs
+import dev.insight.decisions.DEFAULT_DECISIONS_URL
 import dev.insight.llm.LlmConfiguration
 import dev.insight.llm.LlmProvider
 import javax.swing.JTextField
@@ -19,6 +20,8 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
     private val settings = ChatSettings.getInstance()
     private val storedApiKeys = mutableMapOf<LlmProvider, String>()
     private val apiKeys = mutableMapOf<LlmProvider, String>()
+    private var storedDecisionsApiKey = ""
+    private var decisionsApiKey = ""
 
     override fun createPanel(): DialogPanel {
         storedApiKeys.clear()
@@ -42,6 +45,28 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                         .validationOnApply {
                             if (it.text.toIntOrNull()?.let { value -> value > 0 } == true) null
                             else error("Concurrent request limit must be a positive integer")
+                        }
+                }
+            }
+            storedDecisionsApiKey = settings.decisionsApiKey.orEmpty()
+            decisionsApiKey = storedDecisionsApiKey
+            group("Decisions API") {
+                row("Server URL:") {
+                    textField()
+                        .bindText({ state.decisionsUrl.orEmpty() }, { state.decisionsUrl = it.trim() })
+                        .columns(COLUMNS_LARGE)
+                        .comment("host:port or URL. Leave empty to use $DEFAULT_DECISIONS_URL.")
+                        .validationOnApply { field ->
+                            runCatching { ChatSettings.decisionsClient(field.text, null) }.exceptionOrNull()?.message?.let { error(it) }
+                        }
+                }
+                row("API key:") {
+                    passwordField()
+                        .bindText({ decisionsApiKey }, { decisionsApiKey = it })
+                        .columns(COLUMNS_LARGE)
+                        .comment("Optional for local servers. Stored in the IDE password safe.")
+                        .validationOnApply { field ->
+                            runCatching { ChatSettings.decisionsClient("", String(field.password)) }.exceptionOrNull()?.message?.let { error(it) }
                         }
                 }
             }
@@ -147,6 +172,12 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                 apiKeys[provider] = key
             }
         }
+        val decisionsKey = decisionsApiKey.trim()
+        if (decisionsKey != storedDecisionsApiKey) {
+            settings.decisionsApiKey = decisionsKey
+            storedDecisionsApiKey = decisionsKey
+            decisionsApiKey = decisionsKey
+        }
     }
 
     // Don't keep plaintext keys around after the dialog closes.
@@ -154,5 +185,7 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
         super.disposeUIResources()
         storedApiKeys.clear()
         apiKeys.clear()
+        storedDecisionsApiKey = ""
+        decisionsApiKey = ""
     }
 }

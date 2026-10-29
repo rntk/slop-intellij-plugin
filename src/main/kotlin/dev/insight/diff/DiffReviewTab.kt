@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
 import dev.insight.core.withCountProgress
+import dev.insight.llm.CompletionFn
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
 import dev.insight.review.reviewProgressTitle
@@ -39,12 +40,13 @@ import kotlinx.coroutines.*
 
 private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewTab")
 
-/** Owns one conversation and canvas. File selection never changes this tab's scope. */
+/** Owns one conversation and canvas. File selection never changes this tab's scope. [complete] replaces the configured model (tests). */
 internal class DiffReviewTab(
     project: Project,
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     showDiff: (String) -> Unit,
+    private val complete: CompletionFn? = null,
     focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
@@ -78,8 +80,8 @@ internal class DiffReviewTab(
             contextSummaries = ReviewContextSummaryLauncher(project, scope) {
                 val context = captureContext()
                 val files = state.snapshot.files
-                val client = ChatSettings.getInstance().createClient()
-                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
+                val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
                 diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
@@ -146,8 +148,8 @@ internal class DiffReviewTab(
                 }
                 val files = snapshot.files
                 val question = messages.lastOrNull()?.text.orEmpty()
-                val client = ChatSettings.getInstance().createClient()
-                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
+                val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
                 val command = ReviewCommand.parse(question)
                 if (command == ReviewCommand.TOPICS) {
                     val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
@@ -168,7 +170,7 @@ internal class DiffReviewTab(
                 }
                 val turn = chatTurn(messages, files, diff = true) ?: return "There are no changed files to explain."
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
-                return LlmChatBackend(client::complete,
+                return LlmChatBackend(rawComplete,
                     chatTools(context) + turn.chartTools,
                     turn.prompt(diffReviewPrompt()) + diffFocusPrompt(files, turnFocus),
                     maxContextChars = 160_000, maxToolRounds = 100,

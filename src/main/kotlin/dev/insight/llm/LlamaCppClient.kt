@@ -1,6 +1,7 @@
 package dev.insight.llm
 
 import dev.insight.core.ApiTrafficLog
+import dev.insight.core.http.apiUri
 import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient

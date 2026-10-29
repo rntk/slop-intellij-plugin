@@ -8,9 +8,9 @@ import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.ProjectGraphAnalyzer
 import dev.insight.callgraph.RelationKind
-import dev.insight.core.Endpoints
-import dev.insight.core.decisionsClient
+import dev.insight.chat.ChatSettings
 import dev.insight.llm.LlamaCppClient
+import dev.insight.llm.LLAMA_CPP_DEFAULT_BASE_URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
@@ -19,7 +19,8 @@ import java.time.Duration
 
 /**
  * Enriches this plugin's own sources against the live servers and writes `build/enrichment-report.json` for review.
- * Does nothing unless `INSIGHT_LIVE=1`. Judgments are cached in `build/enrichment-cache.json`, so reruns are fast.
+ * Does nothing unless `INSIGHT_LIVE=1`; `INSIGHT_LLM_URL`, `INSIGHT_ENDPOINT`, and `INSIGHT_DECISIONS_KEY` override the local defaults.
+ * Judgments are cached in `build/enrichment-cache.json`, so reruns are fast.
  */
 class EnrichmentLiveTest : LightJavaCodeInsightFixtureTestCase() {
     private val root = System.getProperty("user.dir")
@@ -46,8 +47,9 @@ class EnrichmentLiveTest : LightJavaCodeInsightFixtureTestCase() {
         println("LIVE graph: ${result.graph.nodes.size} nodes, ${calls(result.graph)} calls (${calls(liftCalls(result.graph))} lifted), ${facts.size} facts")
         val input = EnrichmentInput("Insight Workbench (IntelliJ plugin: application graph, LLM chat, dashboard)", result.graph, facts)
         val cache = FileEnrichmentCache(Path.of(root, "build", "enrichment-cache.json"))
-        val llm = LlamaCppClient(Endpoints.LLM_BASE_URL, requestTimeout = Duration.ofSeconds(300))
-        val pipeline = EnrichmentPipeline(decisionsClient("local", Duration.ofSeconds(120), maxRetries = 4)::evaluate, llm::complete, cache)
+        val llm = LlamaCppClient(System.getenv("INSIGHT_LLM_URL") ?: LLAMA_CPP_DEFAULT_BASE_URL, requestTimeout = Duration.ofSeconds(300))
+        val decisions = ChatSettings.decisionsClient(System.getenv("INSIGHT_ENDPOINT").orEmpty(), System.getenv("INSIGHT_DECISIONS_KEY"))
+        val pipeline = EnrichmentPipeline(decisions::evaluate, llm::complete, cache)
         var last = ""
         val enrichment = runBlocking(Dispatchers.IO) {
             pipeline.run(input) { phase, done, total ->

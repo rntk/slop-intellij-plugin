@@ -4,6 +4,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.core.ApiTrafficLog
+import dev.insight.core.http.apiUri
 import java.net.URI
 import java.net.http.HttpClient
 import java.time.Duration

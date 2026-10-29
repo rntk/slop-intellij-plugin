@@ -17,7 +17,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.Timeout
 import java.net.InetSocketAddress
-import java.net.URI
 import java.net.http.HttpTimeoutException
 import java.time.Duration
 import java.util.concurrent.Executors
@@ -28,7 +27,7 @@ class DecisionsClientTest {
 
     private lateinit var server: HttpServer
     private val executor = Executors.newCachedThreadPool()
-    private lateinit var endpoint: URI
+    private lateinit var baseUrl: String
     private val questions = linkedMapOf(
         "urgent" to DecisionQuestion.Noul("Is this urgent?", mapOf(true to JsonPrimitive("Time sensitive"))),
         "team" to DecisionQuestion.Choice("Which team?", linkedMapOf("billing" to null, "tech" to JsonPrimitive("Bugs"))),
@@ -50,7 +49,7 @@ class DecisionsClientTest {
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.executor = executor
         server.start()
-        endpoint = URI("http://127.0.0.1:${server.address.port}/v1/systemone")
+        baseUrl = "http://127.0.0.1:${server.address.port}"
     }
 
     @After fun stopServer() {
@@ -59,7 +58,7 @@ class DecisionsClientTest {
     }
 
     private fun client(retries: Int = 0, timeout: Duration = Duration.ofSeconds(5)) =
-        DecisionsClient("test-secret", endpoint, timeout, retries)
+        DecisionsClient("test-secret", baseUrl, timeout, retries)
 
     private fun respond(status: Int, body: String, retryAfter: String? = null) {
         server.createContext("/v1/systemone") { exchange ->
@@ -243,7 +242,7 @@ class DecisionsClientTest {
             exchange.responseBody.use { it.write(bytes) }
         }
         val traffic = ApiTrafficLog("Decisions")
-        DecisionsClient("test-secret", endpoint, Duration.ofSeconds(5), 2, traffic = traffic).evaluate(request)
+        DecisionsClient("test-secret", baseUrl, Duration.ofSeconds(5), 2, traffic = traffic).evaluate(request)
         val (busy, ok) = traffic.entries()
         assertEquals(listOf(0, 1), listOf(busy.attempt, ok.attempt))
         assertEquals(429, busy.status)
@@ -259,7 +258,7 @@ class DecisionsClientTest {
         val traffic = ApiTrafficLog("Decisions")
         respond(200, "not json")
         assertThrows(DecisionProtocolException::class.java) {
-            runBlocking { DecisionsClient("k", endpoint, maxRetries = 0, traffic = traffic).evaluate(request) }
+            runBlocking { DecisionsClient("k", baseUrl, maxRetries = 0, traffic = traffic).evaluate(request) }
         }
         server.removeContextIfPresent()
         server.createContext("/v1/systemone") { exchange ->
@@ -268,7 +267,7 @@ class DecisionsClientTest {
             exchange.close()
         }
         assertThrows(HttpTimeoutException::class.java) {
-            runBlocking { DecisionsClient("k", endpoint, Duration.ofMillis(100), maxRetries = 0, traffic = traffic).evaluate(request) }
+            runBlocking { DecisionsClient("k", baseUrl, Duration.ofMillis(100), maxRetries = 0, traffic = traffic).evaluate(request) }
         }
         val (rejected, timedOut) = traffic.entries()
         assertEquals("not json", rejected.responseBody)

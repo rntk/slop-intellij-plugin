@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.llm.LLAMA_CPP_DEFAULT_BASE_URL
 import dev.insight.llm.LlamaCppClient
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryOptions
@@ -62,7 +63,7 @@ class SummaryScopeLiveTest {
 
     @Test fun `each file summary stays within its own patch and a deleted file reads as removed`() = runBlocking {
         assumeTrue(System.getenv("INSIGHT_LIVE") == "1")
-        val client = LlamaCppClient(System.getenv("INSIGHT_LLM_URL") ?: "http://192.168.0.147:8989", requestTimeout = Duration.ofSeconds(180))
+        val client = LlamaCppClient(System.getenv("INSIGHT_LLM_URL") ?: LLAMA_CPP_DEFAULT_BASE_URL, requestTimeout = Duration.ofSeconds(180))
         val tree = buildSummaryTree(listOf(scoring, dimming, deleted))
         var saved = ReviewSummaries(tree)
         diffSummarizer(client::complete, null, ReviewSummaryOptions(concurrency = 1))

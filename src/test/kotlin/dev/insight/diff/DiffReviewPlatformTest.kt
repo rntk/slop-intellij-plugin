@@ -587,6 +587,18 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { Disposer.dispose(scoped) }
     }
 
+    fun `test a chat turn uses the injected completion`() {
+        val requests = java.util.concurrent.CopyOnWriteArrayList<dev.insight.llm.CompletionRequest>()
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { requests += it; Completion("Injected reply.") })
+        try {
+            tab.update(ReviewSnapshot(listOf(file("src/a.kt")), emptyList()))
+            tab.session.send("What changed?")
+            PlatformTestUtil.waitWithEventsDispatching("The reply should finish", { !tab.session.busy }, 10 /* seconds */)
+            assertEquals(1, requests.size)
+            assertTrue(tab.session.messages.any { it.text == "Injected reply." })
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test untracked inclusion and exclusion leave unrelated tabs usable during panel refresh`() {
         val panel = DiffReviewPanel(project)
         try {

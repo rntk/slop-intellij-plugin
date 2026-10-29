@@ -4,16 +4,16 @@ import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.CallGraphNode
 import dev.insight.callgraph.SymbolKind
+import dev.insight.decisions.DEFAULT_DECISIONS_URL
 import dev.insight.decisions.DecisionsClient
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
-import java.net.URI
 
 /** Smoke test against a real Jev server; runs only with `INSIGHT_LIVE=1`. */
 class NodeEnricherLiveTest {
-    private val endpoint = System.getenv("INSIGHT_ENDPOINT") ?: "http://192.168.0.147:18989/v1/systemone"
+    private val endpoint = System.getenv("INSIGHT_ENDPOINT") ?: DEFAULT_DECISIONS_URL
 
     private fun facts(id: Int, name: String, container: String, path: String, signature: String, code: String, doc: String? = null) =
         SymbolFacts(id, "$path:$container.$name", SymbolKind.FUNCTION, name, container, path, "kotlin", signature, code, doc,
@@ -67,7 +67,7 @@ class NodeEnricherLiveTest {
         val nodes = symbols.map { CallGraphNode(it.id, it.name, it.container, it.path!!, 0, true, filePath = it.path) } +
             CallGraphNode(3, "main", "App", "src/main/kotlin/app/App.kt", 0, true)
         val graph = CallGraph(nodes, setOf(CallGraphEdge(3, 0)), false, projectGraph = true)
-        val client = DecisionsClient("local", URI.create(endpoint))
+        val client = DecisionsClient("local", endpoint)
         val result = NodeEnricher(client::evaluate, concurrency = 3)
             .enrich(EnrichmentInput("graph-viewer", graph, symbols.associateBy { it.id }), symbols.map { it.id }, emptyList())
 
