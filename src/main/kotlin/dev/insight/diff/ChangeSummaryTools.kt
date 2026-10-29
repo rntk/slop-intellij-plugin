@@ -6,6 +6,7 @@ import dev.insight.chat.ToolInputException
 import dev.insight.chat.intArg
 import dev.insight.chat.objectTool
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewCommand
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.SummaryKind
@@ -61,4 +62,4 @@ internal fun changeSummariesJson(summaries: ReviewSummaries, offset: Int): Strin
 }
 
 internal fun isSummariesRequest(text: String): Boolean =
-    text.trim().lowercase().let { it == "summaries" || it == "/summaries" || it.startsWith("/summaries ") }
+    ReviewCommand.parse(text) == ReviewCommand.SUMMARIES

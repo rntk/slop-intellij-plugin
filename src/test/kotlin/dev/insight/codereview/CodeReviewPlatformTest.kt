@@ -32,6 +32,43 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class CodeReviewPlatformTest : FileEditorManagerTestCase() {
+    fun testCapturedCanvasOperationsRejectRefreshingStaleAndClosedTurns() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        try {
+            val snapshot = codeSnapshot(codeFile("src/a.kt", "fun a() = 1\n"))
+            tab.update(snapshot)
+            val context = tab.captureContext()
+            suspend fun rejectsAll(captured: dev.insight.review.ReviewContext, message: String) {
+                val calls: List<suspend () -> Any> = listOf(
+                    { captured.showSource(ReviewSourceRange("src/a.kt", 1, 1)) },
+                    { captured.startSummaries() }, { captured.summarize(emptyMap()) },
+                    { captured.startTopics() }, { captured.assignTopic("src/a.kt", "Architecture>Review") },
+                    { captured.startTopicSummaries() }, { captured.summarizeTopics(emptyMap()) },
+                )
+                for (call in calls) {
+                    try { call(); fail("Invalid captured context must reject every canvas operation") }
+                    catch (e: dev.insight.chat.ToolInputException) { assertTrue(e.message.orEmpty(), e.message.orEmpty().contains(message)) }
+                }
+            }
+            runWithEvents {
+                context.startSummaries()
+                assertTrue(tab.state.summariesVisible)
+                context.startTopics()
+                context.assignTopic("src/a.kt", "Architecture>Review")
+                assertTrue(tab.state.topics.complete)
+                context.startTopicSummaries()
+                tab.state.refreshing = true
+                rejectsAll(context, "The code is refreshing")
+                tab.state.refreshing = false
+                tab.update(codeSnapshot(codeFile("src/a.kt", "fun a() = 2\n")))
+                rejectsAll(context, "The files changed")
+                val current = tab.captureContext()
+                Disposer.dispose(tab)
+                rejectsAll(current, "This review tab is closed")
+            }
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun testTopicsOpenBesideSummariesInTheEditor() {
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
         val manager = FileEditorManager.getInstance(project)

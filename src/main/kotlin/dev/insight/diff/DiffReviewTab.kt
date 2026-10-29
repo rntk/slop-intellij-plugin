@@ -12,22 +12,19 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
 import dev.insight.chat.*
-import dev.insight.review.Summary
 import dev.insight.review.ChatFocus
+import dev.insight.review.ReviewCommand
+import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewNote
-import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
-import dev.insight.review.ReviewTopics
+import dev.insight.review.CapturedReviewContext
+import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
 import dev.insight.review.current
-import dev.insight.review.isExplainRequest
-import dev.insight.review.isTopicsRequest
-import dev.insight.review.reviewJson
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
 import dev.insight.review.topicsReply
@@ -138,12 +135,7 @@ internal class DiffReviewTab(
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /summaries to read the change from the whole down to each file. " +
             "Use /topics to read every diff as one document grouped by topic. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
-        override fun replyProgressTitle(text: String): String = when {
-            isTopicsRequest(text) -> "Generating change topics"
-            isExplainRequest(text) -> "Explaining the change"
-            isSummariesRequest(text) || text == "/topic-summaries" -> "Generating change summaries"
-            else -> "Insight change review chat"
-        }
+        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change")
 
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
@@ -155,15 +147,16 @@ internal class DiffReviewTab(
                 val question = messages.lastOrNull()?.text.orEmpty()
                 val client = ChatSettings.getInstance().createClient()
                 val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, client::complete)
-                if (isTopicsRequest(question)) {
+                val command = ReviewCommand.parse(question)
+                if (command == ReviewCommand.TOPICS) {
                     val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
                         diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
                             .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
                     }
                     return topicsReply(run)
                 }
-                if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
-                    val topicSummaries = question.trim() == "/topic-summaries"
+                if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
+                    val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
                     // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                     val run = withCountProgress("Summarizing the change…", "summaries") { onProgress ->
                         diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
@@ -326,19 +319,19 @@ internal class DiffReviewTab(
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two diffs. */
     internal fun captureContext(): DiffReviewContext {
-        if (disposed) throw ToolInputException("This review tab is closed")
-        state.check(state.revision)
         val capturedRevision = state.revision
         val snapshot = state.snapshot
         val selected = selectedPaths().filter { path -> snapshot.files.any { it.path == path } }
         val live = this@DiffReviewTab.state
-        fun current() {
-            if (disposed) throw ToolInputException("This review tab is closed")
-            live.check(capturedRevision)
-        }
         fun file(path: String) = snapshot.files.firstOrNull { it.path == path } ?: throw ToolInputException(
             "$path has no diff in this snapshot. Use read_file or point_to_code for current project context.")
-        return object : DiffReviewContext {
+        return object : CapturedReviewContext<ReviewFile>(live, capturedRevision, { disposed }, { change ->
+            when (change) {
+                ReviewContextChange.SOURCE, ReviewContextChange.SUMMARIES_STARTED -> renderCanvas()
+                ReviewContextChange.TOPICS_STARTED, ReviewContextChange.TOPIC_ASSIGNED -> canvas.updateTopics(topicsCard())
+                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.SUMMARIES_SAVED -> summariesChanged()
+            }
+        }), DiffReviewContext {
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 val sourceFile = snapshot.files.firstOrNull { it.path == point.path }
@@ -369,13 +362,6 @@ internal class DiffReviewTab(
                 return readPsiThen(project, ::current, SYMBOLS_CHANGED, { diffSymbols(project, snapshot).find(paths, query, offset) }) { it }
             }
 
-            override suspend fun showSource(range: ReviewSourceRange): String = withContext(Dispatchers.EDT) {
-                current()
-                val block = live.showSource(capturedRevision, range)
-                renderCanvas()
-                reviewJson.toJson(mapOf("shown" to block.range, "characters" to block.text.length))
-            }
-
             override suspend fun addNotes(notes: List<ReviewNote>): String {
                 withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
                 return readPsiThen(project, ::current, NOTES_CHANGED.takeIf { notes.any { it.symbol != null } },
@@ -387,40 +373,9 @@ internal class DiffReviewTab(
                 }
             }
 
-            override suspend fun startTopicSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.startTopicSummaries(capturedRevision).also { summariesChanged() }
-            }
-
-            override suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.summarizeTopics(capturedRevision, entries).also { summariesChanged() }
-            }
-
-            override suspend fun startTopics(): ReviewTopics = withContext(Dispatchers.EDT) {
-                current()
-                live.startTopics().also { canvas.updateTopics(topicsCard()) }
-            }
-
-            override suspend fun assignTopic(path: String, label: String): ReviewTopics = withContext(Dispatchers.EDT) {
-                current()
-                live.assignTopic(capturedRevision, path, label).also { canvas.updateTopics(topicsCard()) }
-            }
-
-            override suspend fun startSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                // An incomplete tree is continued, so an edit only re-summarizes the changed files and the folders above them.
-                live.startSummaries(capturedRevision).also { renderCanvas() }
-            }
-
             override suspend fun summaries(offset: Int): String = withContext(Dispatchers.EDT) {
                 current()
                 changeSummariesJson(live.summaries, offset)
-            }
-
-            override suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.summarize(capturedRevision, entries).also { summariesChanged() }
             }
         }
     }

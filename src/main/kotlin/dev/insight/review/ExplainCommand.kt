@@ -35,7 +35,7 @@ internal data class ExplainTarget(
 internal data class SummaryLevel(val label: String, val text: String)
 
 internal fun isExplainRequest(text: String): Boolean =
-    text.trim().lowercase().let { it == "/explain" || it.startsWith("/explain ") || it.startsWith("/explain\n") }
+    ReviewCommand.parse(text) == ReviewCommand.EXPLAIN
 
 /** The command as the transcript shows it: the entry's location, then the instructions on the following lines. */
 internal fun explainCommand(location: String, instructions: String): String =

@@ -127,9 +127,7 @@ internal fun normalizeTopic(value: String): String? {
     return parts.joinToString(" > ")
 }
 
-internal fun isTopicsRequest(text: String): Boolean = text.trim().lowercase().let {
-    it == "topics" || it == "/topics" || it.startsWith("/topics ")
-}
+internal fun isTopicsRequest(text: String): Boolean = ReviewCommand.parse(text) == ReviewCommand.TOPICS
 
 data class ReviewTopicsRun(val topics: ReviewTopics, val requests: Int, val error: String?)
 

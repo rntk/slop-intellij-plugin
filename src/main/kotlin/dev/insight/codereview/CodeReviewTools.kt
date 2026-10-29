@@ -11,17 +11,14 @@ import dev.insight.chat.optionalStringArg
 import dev.insight.chat.pathsArg
 import dev.insight.chat.sourcePointTool
 import dev.insight.chat.stringArg
-import dev.insight.review.Summary
-import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewContext
 import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
-import dev.insight.review.ReviewTopics
 import dev.insight.review.addNotesTool
 import dev.insight.review.pathListSchema
 import dev.insight.review.sourceLinesArg
 
 /** One reply's view of a code review tab. The captured revision is checked by the context, never echoed by the model. */
-interface CodeReviewContext {
+interface CodeReviewContext : ReviewContext {
     suspend fun pointToCode(point: SourcePoint): String = throw ToolInputException("Source locations are unavailable")
     /** The tab's snapshot captured for this reply. */
     val snapshot: CodeSnapshot
@@ -33,19 +30,8 @@ interface CodeReviewContext {
     suspend fun search(query: String, regex: Boolean, directory: String, glob: String?, offset: Int): String
     suspend fun symbols(paths: List<String>, query: String, offset: Int): String =
         throw ToolInputException("Symbol discovery is unavailable")
-    suspend fun showSource(range: ReviewSourceRange): String = throw ToolInputException("Source blocks are unavailable")
-    suspend fun addNotes(notes: List<ReviewNote>): String
     /** One page of the summary tree, or of the subtree at [path]. */
     suspend fun summaries(offset: Int, path: String?): String
-
-    /** Starts a /summaries run, restarting a complete tree, and shows it on the canvas. Not a model tool. */
-    suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
-    /** Saves summaries written by the summarizer. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Code summaries are unavailable")
-    suspend fun startTopics(): ReviewTopics = throw ToolInputException("Code topics are unavailable")
-    suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Code topics are unavailable")
-    suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
 }
 
 internal const val READ_CODE_TOOL = "read_code"

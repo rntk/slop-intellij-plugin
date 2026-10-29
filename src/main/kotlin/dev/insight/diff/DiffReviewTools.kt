@@ -8,39 +8,22 @@ import dev.insight.chat.objectTool
 import dev.insight.chat.pathsArg
 import dev.insight.chat.sourcePointTool
 import dev.insight.chat.stringArg
-import dev.insight.review.Summary
-import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewContext
 import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
-import dev.insight.review.ReviewSummarizer
-import dev.insight.review.ReviewTopics
 import dev.insight.review.addNotesTool
 import dev.insight.review.pathListSchema
 import dev.insight.review.sourceLinesArg
 
 /** One reply's view of a tab. The captured revision is checked by the context, never echoed by the model. */
-interface DiffReviewContext {
+interface DiffReviewContext : ReviewContext {
     suspend fun pointToCode(point: SourcePoint): String = throw ToolInputException("Source locations are unavailable")
     /** One size-bounded page; [patchBudget] inlines whole patches that also fit the serialized result. */
     suspend fun state(offset: Int, patchBudget: Int = 0): String
     suspend fun read(paths: List<String>, offset: Int): String
-    suspend fun addNotes(notes: List<ReviewNote>): String
-    suspend fun showSource(range: ReviewSourceRange): String =
-        throw ToolInputException("Source blocks are unavailable")
     suspend fun symbols(paths: List<String>, query: String, offset: Int): String =
         throw ToolInputException("Symbol discovery is unavailable")
 
-    suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
-    suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
-
-    suspend fun startTopics(): ReviewTopics = throw ToolInputException("Change topics are unavailable")
-    suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Change topics are unavailable")
-
-    /** Starts a /summaries turn, restarting a complete tree, and shows it on the canvas. Not a model tool. */
-    suspend fun startSummaries(): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
     suspend fun summaries(offset: Int): String = throw ToolInputException("Change summaries are unavailable")
-    /** Saves summaries written by [ReviewSummarizer] and returns the tree with them. Not a model tool. */
-    suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Change summaries are unavailable")
 }
 
 fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {

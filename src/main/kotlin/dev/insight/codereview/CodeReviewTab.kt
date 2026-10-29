@@ -34,30 +34,26 @@ import dev.insight.diff.SYMBOLS_CHANGED
 import dev.insight.diff.SourceCanvasActions
 import dev.insight.diff.SummaryCanvasActions
 import dev.insight.diff.TopicCanvasActions
-import dev.insight.diff.isSummariesRequest
 import dev.insight.diff.openHighlightedLines
 import dev.insight.diff.readPsiThen
 import dev.insight.diff.withCountProgress
 import dev.insight.llm.CompletionFn
-import dev.insight.review.Summary
 import dev.insight.review.ChatFocus
+import dev.insight.review.ReviewCommand
+import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewNote
-import dev.insight.review.ReviewSourceRange
-import dev.insight.review.ReviewSummaries
+import dev.insight.review.CapturedReviewContext
+import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSymbols
 import dev.insight.review.ReviewTopicGenerator
-import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
 import dev.insight.review.current
-import dev.insight.review.isExplainRequest
-import dev.insight.review.isTopicsRequest
-import dev.insight.review.reviewJson
 import dev.insight.review.seedTopicSummaries
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
@@ -182,12 +178,7 @@ internal class CodeReviewTab(
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility. " +
             "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
-        override fun replyProgressTitle(text: String): String = when {
-            isTopicsRequest(text) -> "Generating code topics"
-            isExplainRequest(text) -> "Explaining the code"
-            isSummariesRequest(text) || text == "/topic-summaries" -> "Generating code summaries"
-            else -> "Insight code review chat"
-        }
+        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "code")
 
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
@@ -199,7 +190,8 @@ internal class CodeReviewTab(
                 val rawComplete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
                 val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
                     rawComplete)
-                if (isTopicsRequest(question)) {
+                val command = ReviewCommand.parse(question)
+                if (command == ReviewCommand.TOPICS) {
                     val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                     if (!confirm(requests, "topics")) return cancelledReply(requests)
                     val run = pipeline {
@@ -212,8 +204,8 @@ internal class CodeReviewTab(
                     }
                     return topicsReply(run, empty = "There are no files in scope to classify.")
                 }
-                if (isSummariesRequest(question) || question.trim() == "/topic-summaries") {
-                    val topicSummaries = question.trim() == "/topic-summaries"
+                if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
+                    val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
                     val evidence = CodeSummaryEvidence(context.snapshot)
                     val requests = withContext(Dispatchers.EDT) {
                         if (topicSummaries) estimateSummaryRequests(seedTopicSummaries(state.topicSummaries, state.summaries),
@@ -471,23 +463,24 @@ internal class CodeReviewTab(
 
     /** Captured once per turn; subsequent calls cannot silently mix evidence from two snapshots. */
     internal fun captureContext(): CodeReviewContext {
-        if (disposed) throw ToolInputException("This review tab is closed")
-        state.check(state.revision)
         val capturedRevision = state.revision
         val captured = state.snapshot
         val selected = selectedPaths().filter { it in captured.byPath }
         val live = this@CodeReviewTab.state
-        fun current() {
-            if (disposed) throw ToolInputException("This review tab is closed")
-            live.check(capturedRevision)
-        }
         fun file(path: String) = captured.byPath[path] ?: throw ToolInputException(
             "$path has no source in this snapshot. Use read_file or point_to_code for current project context.")
         fun symbols() = ReviewSymbols(project, captured.files.map { SymbolFile(it.path, it.absolutePath, it.text) },
             stale = { path -> "$path changed since the code snapshot. Wait for the refresh, then retry or use a file note without symbol." },
             missing = { path -> "$path is not a file in this review's scope." },
             findTool = "find_code_symbols")
-        return object : CodeReviewContext {
+        return object : CapturedReviewContext<CodeFile>(live, capturedRevision, { disposed }, { change ->
+            when (change) {
+                ReviewContextChange.SOURCE, ReviewContextChange.SUMMARIES_STARTED -> renderCanvas()
+                ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
+                ReviewContextChange.TOPIC_SUMMARIES_STARTED -> summariesChanged()
+                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED -> scheduleCanvasRefresh()
+            }
+        }), CodeReviewContext {
             override suspend fun pointToCode(point: dev.insight.chat.SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 if (point.side != null) throw ToolInputException("Code review has no diff sides")
@@ -526,13 +519,6 @@ internal class CodeReviewTab(
                 return readPsiThen(project, ::current, SYMBOLS_CHANGED, { symbols().find(paths, query, offset) }) { it }
             }
 
-            override suspend fun showSource(range: ReviewSourceRange): String = withContext(Dispatchers.EDT) {
-                current()
-                val block = live.showSource(capturedRevision, range)
-                renderCanvas()
-                reviewJson.toJson(mapOf("shown" to block.range, "characters" to block.text.length))
-            }
-
             override suspend fun addNotes(notes: List<ReviewNote>): String {
                 withContext(Dispatchers.EDT) { current(); notes.flatMap { it.paths }.forEach(::file) }
                 return readPsiThen(project, ::current, NOTES_CHANGED.takeIf { notes.any { it.symbol != null } },
@@ -546,37 +532,6 @@ internal class CodeReviewTab(
             override suspend fun summaries(offset: Int, path: String?): String = withContext(Dispatchers.EDT) {
                 current()
                 codeSummariesJson(live.summaries, offset, path)
-            }
-
-            override suspend fun startSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                // An incomplete tree is continued, so an edit only re-summarizes the changed files and the folders above them.
-                live.startSummaries(capturedRevision).also { renderCanvas() }
-            }
-
-            override suspend fun summarize(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.summarize(capturedRevision, entries).also { scheduleCanvasRefresh() }
-            }
-
-            override suspend fun startTopics(): ReviewTopics = withContext(Dispatchers.EDT) {
-                current()
-                live.startTopics().also { canvas.updateTopics(topicsCard()) }
-            }
-
-            override suspend fun assignTopic(path: String, label: String): ReviewTopics = withContext(Dispatchers.EDT) {
-                current()
-                live.assignTopic(capturedRevision, path, label).also { scheduleCanvasRefresh() }
-            }
-
-            override suspend fun startTopicSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.startTopicSummaries(capturedRevision).also { summariesChanged() }
-            }
-
-            override suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
-                current()
-                live.summarizeTopics(capturedRevision, entries).also { scheduleCanvasRefresh() }
             }
         }
     }

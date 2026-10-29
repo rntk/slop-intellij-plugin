@@ -4,6 +4,11 @@ This package owns evidence-independent review state: sources, notes, symbol look
 summary trees and generation, topics, persistence, explanation targets, chat focus,
 and the editor wrapper that hosts a review canvas.
 
+Captured review contexts share revision checks and canvas mutations here. Tabs supply
+change callbacks to preserve their redraw policy, and keep evidence reads and PSI note
+resolution in their adapters. The command registry shares recognition and progress titles;
+evidence generation, request confirmation and snapshot holding remain with each tab.
+
 Both `dev.insight.diff` and `dev.insight.codereview` depend on this package.
 Keep this package independent of those callers. Summary and topic generators take
 evidence providers explicitly; they must not cast a source to either caller's model.
