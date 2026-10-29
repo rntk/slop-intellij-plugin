@@ -14,7 +14,6 @@ import java.awt.event.MouseEvent
 import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JMenuItem
-import javax.swing.JToggleButton
 import javax.swing.event.PopupMenuEvent
 
 class SummaryDiffViewTest : BasePlatformTestCase() {
@@ -52,10 +51,10 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
             assertTrue(third.isDisposed)
             val rebuilt = viewer()
             assertEquals(files[2], rebuilt.file)
-            (named(canvas, "summaries-mode:outline") as JToggleButton).doClick()
+            selectSummariesMode(descendants(canvas), "outline")
             assertTrue(rebuilt.isDisposed)
             assertTrue(descendants(canvas).none { it is DiffFileEditor })
-            (named(canvas, "summaries-mode:diff") as JToggleButton).doClick()
+            selectSummariesMode(descendants(canvas), "diff")
             val restored = viewer()
             assertEquals(files[2], restored.file)
             canvas.showNotes(CanvasState())

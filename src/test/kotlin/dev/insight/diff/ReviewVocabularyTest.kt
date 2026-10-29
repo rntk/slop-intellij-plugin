@@ -22,7 +22,6 @@ import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
-import javax.swing.JToggleButton
 import javax.swing.RepaintManager
 import javax.swing.text.JTextComponent
 
@@ -80,7 +79,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             // Without a node callback the canvas shows the file by path, as before.
             buttons.first().doClick()
             assertEquals(1, shown.size)
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            selectTopicsMode(descendants(canvas), "Hierarchy")
             layoutTree(canvas)
             assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
@@ -96,7 +95,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
             assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
+            selectSummariesMode(descendants(canvas), "hierarchy")
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
             val card = panel.components.single { it.name == "file:lib/c.kt" } as Container
@@ -122,7 +121,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
             assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:document" }.doClick()
+            selectSummariesMode(descendants(canvas), "document")
             layoutTree(canvas)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
             assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
@@ -217,7 +216,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
             assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
+            selectSummariesMode(descendants(canvas), "hierarchy")
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.
             assertTrue("node:file:src/Big.kt" in names())
@@ -240,7 +239,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
 
             // Each part always reads "part 2 of 3" in its header and offers its lines.
             click(canvas, leaf)
-            descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == "summaries-mode:outline" }.doClick()
+            selectSummariesMode(descendants(canvas), "outline")
             layoutTree(canvas)
             val header = canvas.named("summary-header:${chunk.identity}") as Container
             val text = (canvas.named("summary-name:${chunk.identity}") as javax.swing.JLabel).text

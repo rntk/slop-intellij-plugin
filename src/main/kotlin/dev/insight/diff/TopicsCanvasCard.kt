@@ -120,17 +120,11 @@ internal class TopicsCanvasCard(
                 isOpaque = false
                 if (document) add(controls)
                 if (outline.depth > 0) add(topicLevels(outline))
-                val group = ButtonGroup()
-                ChangeTopicsMode.entries.forEach { mode ->
-                    add(JToggleButton(if (mode == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy", view.mode == mode).apply {
-                        font = scaledFont(JBFont.small())
-                        cursor = Cursor.getDefaultCursor()
-                        toolTipText = if (mode == ChangeTopicsMode.DOCUMENT) "Every file in topic order, with its summary and the topic rail"
-                            else "Topics broad to specific, left to right, with each file's summary"
-                        group.add(this)
-                        addActionListener { view.mode = mode; scroll = 0; canvasActions.refresh() }
-                    })
-                }
+                add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
+                    { if (it == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy" },
+                    { if (it == ChangeTopicsMode.DOCUMENT) "Every file in topic order, with its summary and the topic rail" else "Topics broad to specific, left to right, with each file's summary" }) {
+                    view.mode = it; scroll = 0; canvasActions.refresh()
+                })
                 add(JButton(when {
                     topics.labels.isEmpty() -> "Classify"
                     topics.complete -> "Regenerate"

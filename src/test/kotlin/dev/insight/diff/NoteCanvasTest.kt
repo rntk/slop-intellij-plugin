@@ -305,7 +305,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             assertEquals(1, descendants(canvas).count { it.name == "topics-no-matches" })
             topicField.text = ""
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            selectTopicsMode(descendants(canvas), "Hierarchy")
             layoutTree(canvas)
             val hierarchy = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
             assertEquals(listOf(files[0].path), hierarchy.outline.files.map { it.path })
@@ -638,7 +638,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(topicHeading.y > topic.insets.top)
             assertTrue(fileHeading.y + fileHeading.height <= file.height - file.insets.bottom)
 
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == "Hierarchy" }.doClick()
+            selectTopicsMode(descendants(canvas), "Hierarchy")
             layoutTree(canvas)
             val hierarchy = descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().single()
             val hierarchyScroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
@@ -664,7 +664,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
-            descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:hierarchy" }.doClick()
+            selectSummariesMode(descendants(canvas), "hierarchy")
             layoutTree(canvas)
             val hierarchy = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
             val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
@@ -707,8 +707,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             // The document stays the default; the hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicsPanel>().size)
-            fun mode(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.text == text }
-            mode("Hierarchy").doClick(); layoutTree(canvas)
+            selectTopicsMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
             assertTrue(descendants(canvas).none { it is ChangeTopicsPanel })
             // Broad topics in the first column; each file is a leaf one column right of its deepest topic.
             val storage = named("topic:0:storage")
@@ -757,9 +756,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             level().selectedIndex = 0; layoutTree(canvas)
             assertEquals(listOf("topic:0:storage", "topic:0:ui"), names().filter { it.startsWith("topic:") && it != "topic:pending" }.sorted())
             assertEquals(0, level().selectedIndex)
-            mode("Document").doClick(); layoutTree(canvas)
+            selectTopicsMode(descendants(canvas), "Document"); layoutTree(canvas)
             assertEquals(0, level().selectedIndex)
-            mode("Hierarchy").doClick(); layoutTree(canvas)
+            selectTopicsMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
             assertEquals(0, level().selectedIndex)
             level().selectedItem = "Files"; layoutTree(canvas)
             assertTrue(names().containsAll(files.map { "file:${it.path}" }))
@@ -776,7 +775,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "auth.kt" }.doClick()
             assertEquals(listOf("src/auth.kt"), opened)
             // Back in the document, the diffs return and the selection carries over.
-            mode("Document").doClick(); layoutTree(canvas)
+            selectTopicsMode(descendants(canvas), "Document"); layoutTree(canvas)
             val document = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             assertTrue(descendants(document).any { it is PatchView })
             assertTrue(canvas.topicsView.isSelected(document.outline.nodes.single { it.identity == "storage > user > auth" }))
@@ -804,14 +803,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
         }
-        fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
         fun level() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
             // The hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
-            toggleButton("Hierarchy").doClick(); layoutTree(canvas)
+            selectSummariesMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel })
             assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
 
@@ -879,7 +877,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
             assertEquals(listOf("src/auth/Auth.kt"), opened)
             // Back in the outline, metadata is already in the header without opening extra rows.
-            toggleButton("Outline").doClick(); layoutTree(canvas)
+            selectSummariesMode(descendants(canvas), "Outline"); layoutTree(canvas)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
             assertTrue(descendants(canvas).none { it.name?.startsWith("details:") == true })
             val folderHeader = descendants(canvas).single { it.name == "summary-name:directory:src" } as JLabel
@@ -901,7 +899,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) {
-                (descendants(canvas).single { it.name == "summaries-mode:${mode.name.lowercase()}" } as javax.swing.JToggleButton).doClick()
+                selectSummariesMode(descendants(canvas), mode.name)
                 assertTrue(descendants(canvas).none { it.name in setOf("summary-fold", "summary-unfold") })
                 selector().selectedItem = 4
                 layoutTree(canvas)
@@ -934,11 +932,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ReviewSummaries(tree).summarize(mapOf(id("file:src/auth/Auth.kt") to "Adds token refresh."))
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
-        fun toggleButton(text: String) = descendants(canvas).filterIsInstance<javax.swing.JToggleButton>().single { it.name == "summaries-mode:${text.lowercase()}" }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            toggleButton("Document").doClick(); layoutTree(canvas)
+            selectSummariesMode(descendants(canvas), "Document"); layoutTree(canvas)
             assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel || it is ChangeSummaryHierarchyPanel })
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
@@ -991,7 +988,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("directory:src", canvas.summariesView.selected)
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
             assertEquals(listOf("src/auth/Auth.kt"), opened)
-            toggleButton("Hierarchy").doClick(); layoutTree(canvas)
+            selectSummariesMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
             assertEquals("directory:src", canvas.summariesView.selected)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().size)
         } finally { canvas.dispose() }

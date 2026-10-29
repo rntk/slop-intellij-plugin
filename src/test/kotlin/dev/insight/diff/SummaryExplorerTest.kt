@@ -14,7 +14,6 @@ import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JButton
-import javax.swing.JToggleButton
 import javax.swing.text.JTextComponent
 
 class SummaryExplorerTest : BasePlatformTestCase() {
@@ -52,7 +51,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
             // Streaming summaries and view switches retain the folder being read.
             canvas.updateSummaries(SummariesCard(summaries.summarize(mapOf(tree.nodes.last().id to "Updated summary.")), true, false))
             assertEquals(listOf("summary:file:src/nested/b.kt", "summary:file:src/nested/c.kt"), rows())
-            for (mode in listOf("outline", "explorer")) (named("summaries-mode:$mode") as JToggleButton).doClick()
+            for (mode in listOf("outline", "explorer")) selectSummariesMode(descendants(canvas), mode)
             assertEquals(listOf("summary:file:src/nested/b.kt", "summary:file:src/nested/c.kt"), rows())
             back()
             assertEquals(listOf("summary:directory:src/nested", "summary:file:src/a.kt"), rows())

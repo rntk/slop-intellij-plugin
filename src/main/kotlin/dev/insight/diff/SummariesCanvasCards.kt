@@ -167,31 +167,9 @@ internal class SummariesCanvasCards(
                     toolTipText = "Size summary words by their importance in the child summaries"
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
-                val group = ButtonGroup()
-                ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }.forEach { mode ->
-                    add(JToggleButton(when (mode) {
-                        ReviewSummariesMode.OUTLINE -> "Outline"
-                        ReviewSummariesMode.HIERARCHY -> "Hierarchy"
-                        ReviewSummariesMode.DOCUMENT -> "Document"
-                        ReviewSummariesMode.EXPLORER -> "Explorer"
-                        ReviewSummariesMode.SPLIT -> "Split"
-                        ReviewSummariesMode.DIFF -> "Diff"
-                    }, summariesView.mode == mode).apply {
-                        name = "summaries-mode:${mode.name.lowercase()}"
-                        font = scaledFont(JBFont.small())
-                        cursor = Cursor.getDefaultCursor()
-                        toolTipText = when (mode) {
-                            ReviewSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
-                            ReviewSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
-                            ReviewSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
-                            ReviewSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
-                            ReviewSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
-                            ReviewSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
-                        }
-                        group.add(this)
-                        addActionListener { summariesView.mode = mode; tab.scroll = 0; refreshSummaries(tab) }
-                    })
-                }
+                add(viewSelector("summaries-mode", summaryModes(), summariesView.mode, scaled(4), scaledFont(JBFont.small()), ::summaryModeLabel, ::summaryModeTooltip) {
+                    summariesView.mode = it; tab.scroll = 0; refreshSummaries(tab)
+                })
                 add(JButton(when {
                     version != null -> "Regenerate original"
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
@@ -520,6 +498,26 @@ internal class SummariesCanvasCards(
         tab.trace.clear()
         tab.view.backTo(count)
         refreshSummaries(tab)
+    }
+
+    private fun summaryModes() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }
+
+    private fun summaryModeLabel(mode: ReviewSummariesMode) = when (mode) {
+        ReviewSummariesMode.OUTLINE -> "Outline"
+        ReviewSummariesMode.HIERARCHY -> "Hierarchy"
+        ReviewSummariesMode.DOCUMENT -> "Document"
+        ReviewSummariesMode.EXPLORER -> "Explorer"
+        ReviewSummariesMode.SPLIT -> "Split"
+        ReviewSummariesMode.DIFF -> "Diff"
+    }
+
+    private fun summaryModeTooltip(mode: ReviewSummariesMode) = when (mode) {
+        ReviewSummariesMode.OUTLINE -> vocabulary.summariesOutlineTooltip
+        ReviewSummariesMode.HIERARCHY -> "Folders broad to specific, left to right, with each file's summary"
+        ReviewSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
+        ReviewSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
+        ReviewSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
+        ReviewSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
     }
 
     /** Open folders through the picked 1-based level and fold deeper folders. */

@@ -5,7 +5,6 @@ import dev.insight.callgraph.SymbolKind
 import java.awt.Container
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
-import javax.swing.AbstractButton
 import javax.swing.JComboBox
 import javax.swing.JLabel
 
@@ -54,8 +53,8 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
-            val modes = descendants(canvas).filterIsInstance<AbstractButton>().filter { it.name?.startsWith("semantic-mode:") == true }
-            assertEquals(listOf("Metrics", "Complexity", "Constructs"), modes.map { it.text })
+            val modes = descendants(canvas).filterIsInstance<javax.swing.JComboBox<*>>().single { it.name == "semantic-mode" }
+            assertEquals(listOf("Metrics", "Complexity", "Constructs"), (0 until modes.itemCount).map { (modes.getItemAt(it) as SemanticMode).label })
             assertEquals("1 file skipped", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-skipped" }.text)
             assertTrue(descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-skipped" }.toolTipText.contains("logo.png"))
 
@@ -70,7 +69,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
             click(Metric.CODE_LINES)
             assertEquals(listOf(listOf("a.kt", "b.kt")), directories)
 
-            modes[1].doClick()
+            selectView(descendants(canvas), "semantic-mode", "COMPLEXITY")
             assertTrue(descendants(canvas).none { it is SemanticMetricsTable })
             assertEquals(Metric.CYCLOMATIC, descendants(canvas).filterIsInstance<SemanticComplexityChart>().single().metric)
             @Suppress("UNCHECKED_CAST")
@@ -80,7 +79,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
             selector.selectedItem = Metric.CODE_LINES
             assertEquals(Metric.CODE_LINES, descendants(canvas).filterIsInstance<SemanticComplexityChart>().single().metric)
 
-            descendants(canvas).filterIsInstance<AbstractButton>().single { it.name == "semantic-mode:CONSTRUCTS" }.doClick()
+            selectView(descendants(canvas), "semantic-mode", "CONSTRUCTS")
             assertEquals(listOf("if", "TODO", "loop"), descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word })
             canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals("the mode survives a rebuild", 1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
@@ -163,7 +162,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
         try {
             canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Ready(data)))
-            descendants(canvas).filterIsInstance<AbstractButton>().single { it.name == "semantic-mode:COMPLEXITY" }.doClick()
+            selectView(descendants(canvas), "semantic-mode", "COMPLEXITY")
             assertTrue(descendants(canvas).none { it is SemanticComplexityChart })
             assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "No functions in the changed files." })
         } finally { canvas.dispose() }

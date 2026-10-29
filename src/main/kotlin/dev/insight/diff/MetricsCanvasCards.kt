@@ -113,20 +113,13 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (changes != null) {
-                    val group = ButtonGroup()
-                    SemanticMode.entries.forEach { mode ->
-                        add(JToggleButton(mode.label, mode == semanticMode).apply {
-                            name = "semantic-mode:${mode.name}"
-                            font = scaledFont(JBFont.small())
-                            toolTipText = when (mode) {
-                                SemanticMode.METRICS -> "Totals of each metric before and after the change; click a row to open the diffs of its files"
-                                SemanticMode.COMPLEXITY -> "Each function's value before and after the change; click a point to open its diff"
-                                SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
-                            }
-                            group.add(this)
-                            addActionListener { if (semanticMode != mode) { semanticMode = mode; actions.refresh(CanvasTabKey.Semantic) } }
-                        })
-                    }
+                    add(viewSelector("semantic-mode", SemanticMode.entries, semanticMode, scaled(4), scaledFont(JBFont.small()), SemanticMode::label, { mode ->
+                        when (mode) {
+                            SemanticMode.METRICS -> "Totals of each metric before and after the change; click a row to open the diffs of its files"
+                            SemanticMode.COMPLEXITY -> "Each function's value before and after the change; click a point to open its diff"
+                            SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
+                        }
+                    }) { semanticMode = it; actions.refresh(CanvasTabKey.Semantic) })
                 } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
             }, BorderLayout.WEST)
             add(JLabel(if (skipped.isEmpty()) "" else "${files(skipped.size)} skipped").apply {
