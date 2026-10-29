@@ -1,7 +1,5 @@
 package dev.insight.callgraph
 
-import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -20,12 +18,8 @@ import com.intellij.openapi.fileEditor.FileEditorPolicy
 import com.intellij.openapi.fileEditor.FileEditorProvider
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.progress.ProcessCanceledException
-import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
@@ -79,97 +73,10 @@ import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
-import java.beans.PropertyChangeListener
 import javax.swing.*
 import javax.swing.text.DefaultCaret
 import kotlin.math.pow
 import kotlin.math.roundToInt
-
-class SchematicFile(val result: CallGraphResult, val root: Int) : LightVirtualFile("Schematic: ${result.graph.nodes[root].name}") {
-    internal var exploration: ProgressiveSchematic? = null
-}
-
-fun openSchematic(project: Project, result: CallGraphResult, root: Int) {
-    FileEditorManager.getInstance(project).openFile(SchematicFile(result, root), true)
-}
-
-/** Opens the schematic of the selected file. */
-class OpenSchematicAction : AnAction() {
-    private val log = logger<OpenSchematicAction>()
-    override fun getActionUpdateThread() = ActionUpdateThread.BGT
-
-    override fun update(e: AnActionEvent) {
-        val project = e.project
-        val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
-        e.presentation.isEnabledAndVisible = project != null && file != null && !file.isDirectory &&
-            ProjectFileIndex.getInstance(project).isInContent(file)
-    }
-
-    override fun actionPerformed(e: AnActionEvent) {
-        val project = e.project ?: return
-        val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
-        val service = project.service<CallGraphService>()
-        fun showNotice(text: String, type: NotificationType = NotificationType.WARNING) {
-            if (project.isDisposed) return
-            NotificationGroupManager.getInstance().getNotificationGroup("Insight Schematic")
-                .createNotification("Schematic: ${file.name}", text, type).notify(project)
-        }
-        service.scope.launch(Dispatchers.EDT) {
-            try {
-                log.info("Opening schematic for ${file.path}")
-                val exploration = ProgressiveSchematic.open(project, file)
-                val built = exploration?.result
-                val node = built?.graph?.nodes?.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path }
-                if (node == null) {
-                    log.warn("Schematic source is unavailable or unsupported: ${file.path}")
-                    showNotice("This file cannot be shown. Check that its language plugin is enabled and the file is included in project content.")
-                } else {
-                    FileEditorManager.getInstance(project).openFile(SchematicFile(built, node.id).apply {
-                        this.exploration = exploration
-                    }, true)
-                    log.info("Opened schematic for ${file.path}")
-                }
-            } catch (e: CancellationException) {
-                log.info("Schematic cancelled for ${file.path}", e)
-                showNotice("Schematic cancelled. Choose Schematic to retry.")
-                throw e
-            } catch (e: Throwable) {
-                if (e is ProcessCanceledException) {
-                    log.info("Schematic cancelled for ${file.path}", e)
-                    showNotice("Schematic cancelled. Choose Schematic to retry.")
-                    throw e
-                }
-                if (e is ControlFlowException) throw e
-                log.warn("Unable to open schematic for ${file.path}", e)
-                showNotice("Unable to open schematic: ${e.message ?: e.javaClass.simpleName}. See the IDE log for details.",
-                    NotificationType.ERROR)
-            }
-        }
-    }
-}
-
-class SchematicEditorProvider : FileEditorProvider, DumbAware {
-    override fun accept(project: Project, file: VirtualFile) = file is SchematicFile
-    override fun createEditor(project: Project, file: VirtualFile): FileEditor = SchematicEditor(project, file as SchematicFile)
-    override fun getEditorTypeId() = "insight-schematic"
-    override fun getPolicy() = FileEditorPolicy.HIDE_DEFAULT_EDITOR
-}
-
-private val EDITOR_LOG = logger<SchematicEditor>()
-
-private class SchematicEditor(project: Project, private val file: SchematicFile) : UserDataHolderBase(), FileEditor {
-    private val panel = SchematicPanel(project, file)
-    override fun getComponent(): JComponent = panel
-    override fun getPreferredFocusedComponent(): JComponent = panel.canvas
-    override fun getName() = "Schematic"
-    override fun getFile(): VirtualFile = file
-    override fun setState(state: FileEditorState) = Unit
-    override fun isModified() = false
-    override fun isValid() = file.isValid
-    override fun addPropertyChangeListener(listener: PropertyChangeListener) = Unit
-    override fun removePropertyChangeListener(listener: PropertyChangeListener) = Unit
-    override fun dispose() = panel.dispose()
-}
 
 /**
  * A lossy reading of a file through the call graph. Its source is shown line by line, but the functions it declares
@@ -977,7 +884,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
-                EDITOR_LOG.warn("Schematic summaries failed", e)
+                LOG.warn("Schematic summaries failed", e)
                 error = e.message ?: e.javaClass.simpleName
             } finally {
                 running--
@@ -1687,39 +1594,23 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 fileToggle.text = if (wholeFile != null) "Show symbol" else "Show whole file"
                 fileToggle.toolTipText = if (wholeFile != null) "Return to ${graph.nodes[symbol].name}"
                     else "Explore the containing file here, with clickable declarations and calls"
-                val node = wholeFile?.let { graph.nodes[it] } ?: this.node
-                val summary = summaries[target]
-                val name = escape(node.name.take(80))
-                val kind = node.kind.name.lowercase()
-                val file = node.location.takeIf { ':' in it }?.substringBefore(':')?.let { " · ${escape(it)}" }.orEmpty()
-                val body = when {
-                    wholeFile != null -> "<font color='gray'>Whole file expanded from <code>${escape(graph.nodes[symbol].name)}</code>. " +
-                        "Unfold a declaration to continue exploring.</font>"
-                    node.unresolved && choices.isNotEmpty() -> "<font color='gray'>Implementation unknown: ${choices.size} declarations share this " +
-                        "name. Pick one to continue; the IDE did not establish any of them.</font>" + chosen?.let {
-                            "<br>Following your pick: <code>${escape(graph.nodes[it].name.take(80))}</code> · ${escape(graph.nodes[it].location)}"
-                        }.orEmpty()
-                    node.unresolved -> "<font color='gray'>Implementation unknown. Inspect the call site or receiver.</font>"
-                    !node.inProject -> "<font color='gray'>External declaration. Open Source to inspect it.</font>" +
-                        node.signature?.let { "<br><code>${escape(it)}</code>" }.orEmpty()
-                    summary != null -> "<b>${escape(summary.label)}</b>" + (summary.role?.let { " <font color='gray'>· ${it.id}</font>" } ?: "") +
-                        (summary.description?.let { "<br>${escape(it)}" } ?: "")
-                    node.kind != SymbolKind.FUNCTION -> schematic.excerpts[node.id]?.let { "<code>${escape(it)}</code><br>" }.orEmpty() +
-                        "<font color='gray'>Unfold to inspect its declaration.</font>"
-                    summaries.isPending(target) -> "<font color='gray'>Summarizing…</font>"
-                    summaries.isCovered(target) -> "<font color='gray'>No summary: test code, unavailable source, or the request failed.</font>"
-                    else -> "<font color='gray'>Pin or unfold to summarize this function.</font>"
-                }
-                val evidence = when {
-                    row.link.reference -> "<br><font color='gray'>Named on this line, not called.</font>"
-                    occurrences.any { it.byName } -> "<br><font color='gray'>Matched by name: the receiver's type is unknown.</font>"
-                    occurrences.any { it.targets.isEmpty() && target in it.heldBy } ->
-                        "<br><font color='gray'>Callable value: the function it holds is assigned elsewhere.</font>"
-                    occurrences.any { it.status == ResolutionStatus.AMBIGUOUS } -> "<br><font color='gray'>Possible target; several candidates.</font>"
-                    occurrences.any { it.operation == CallOperation.CALLABLE_REFERENCE } -> "<br><font color='gray'>Callable reference; invocation is not established here.</font>"
-                    else -> ""
-                }
-                text.body = "<div class='callable-title'><code>$name</code> <font color='gray'>$kind$file</font></div>$body$evidence"
+                val shownNode = wholeFile?.let { graph.nodes[it] } ?: node
+                text.body = SummaryCardText.render(
+                    node = shownNode,
+                    summary = summaries[target],
+                    occurrences = occurrences,
+                    target = target,
+                    progress = when {
+                        summaries.isPending(target) -> SummaryProgress.PENDING
+                        summaries.isCovered(target) -> SummaryProgress.UNAVAILABLE
+                        else -> SummaryProgress.NOT_REQUESTED
+                    },
+                    expandedFrom = wholeFile?.let { graph.nodes[symbol] },
+                    choices = choices.size,
+                    chosen = chosen?.let { graph.nodes[it] },
+                    excerpt = schematic.excerpts[shownNode.id],
+                    reference = row.link.reference,
+                )
             }
 
             fun toggle() {
@@ -1797,7 +1688,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val LOAD_TIMEOUT_MS = 120_000L
 
         fun detab(line: String) = line.replace("\t", "    ")
-        fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        fun escape(text: String) = SummaryCardText.escape(text)
     }
 }
 
