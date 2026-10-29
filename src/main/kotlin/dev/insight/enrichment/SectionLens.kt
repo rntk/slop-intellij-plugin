@@ -1,13 +1,13 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.DetailGraph
-import dev.insight.callgraph.FooterItem
-import dev.insight.callgraph.GraphHierarchy
-import dev.insight.callgraph.GraphSections
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.Section
-import dev.insight.callgraph.SectionFooter
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.DetailGraph
+import dev.insight.graph.FooterItem
+import dev.insight.graph.GraphHierarchy
+import dev.insight.graph.GraphSections
+import dev.insight.graph.RelationKind
+import dev.insight.graph.Section
+import dev.insight.graph.SectionFooter
+import dev.insight.graph.SymbolKind
 import java.awt.Color
 import kotlin.math.roundToInt
 

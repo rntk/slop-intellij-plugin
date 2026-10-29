@@ -6,6 +6,7 @@ import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import org.junit.Assert.*
 import org.junit.Test
+import dev.insight.review.ui.SummaryWordWeights
 
 class SummaryWordWeightsTest {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")

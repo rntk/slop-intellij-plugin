@@ -1,6 +1,6 @@
 package dev.insight.review
 
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 
 /** Evidence-independent canvas operations exposed by a review turn. */
 interface ReviewContext {

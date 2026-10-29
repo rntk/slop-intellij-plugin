@@ -7,7 +7,7 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.CallGraphAnalyzer
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 import org.jetbrains.kotlin.psi.KtNamedFunction
 
 /** Runs the analyzer against real Kotlin PSI, including calls between Kotlin and Java. */

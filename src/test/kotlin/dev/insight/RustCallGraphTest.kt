@@ -8,10 +8,11 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
 import dev.insight.callgraph.rust.RustCallGraphSupport
+import dev.insight.graph.*
 import kotlinx.coroutines.CancellationException
-import org.rust.lang.core.psi.*
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.model.impl.TestCargoProjectsServiceImpl
+import org.rust.lang.core.psi.*
 
 /** Real Rust PSI, with no Rust toolchain or external crates required. */
 class RustCallGraphTest : BasePlatformTestCase() {

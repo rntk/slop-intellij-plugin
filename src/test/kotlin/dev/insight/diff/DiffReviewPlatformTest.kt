@@ -2,7 +2,7 @@ package dev.insight.diff
 
 import dev.insight.review.summarize
 import com.google.gson.JsonParser
-import dev.insight.chat.SourceSide
+import dev.insight.agent.SourceSide
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
@@ -19,11 +19,11 @@ import com.intellij.ui.tabs.TabInfo
 import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.vcsUtil.VcsUtil
 import dev.insight.callgraph.DiffService
-import dev.insight.chat.ChatMessage
-import dev.insight.chat.ChatRole
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import dev.insight.chat.ChatPanel
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmRole
@@ -43,6 +43,10 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
+import dev.insight.review.ui.ChangeSummariesPanel
+import dev.insight.review.ui.DiffSourceEditor
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.ReviewSidePages
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     fun testSummariesAndTopicsUseIndependentNativeEditorTabs() {
@@ -906,7 +910,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         try { action(); fail("Expected a rejected tool call") } catch (_: ToolInputException) { }
     }
 
-    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.diff.NoteCanvas)
+    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }

@@ -6,7 +6,6 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileTypes.FileTypeRegistry
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.roots.GeneratedSourcesFilter
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
@@ -16,6 +15,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.review.ReviewDiskCache
+import dev.insight.agent.codeScopeRoots
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -186,10 +186,6 @@ internal class CodeReviewLoader(private val project: Project) {
         private const val PROJECT_STORE_FOLDER = ".idea"
     }
 }
-
-/** The project directory, then the content roots: project-relative paths are relative to the first root holding a file. */
-internal fun codeScopeRoots(project: Project): List<VirtualFile> =
-    (listOfNotNull(project.guessProjectDir()) + ProjectRootManager.getInstance(project).contentRoots).distinct()
 
 private fun relativePath(roots: List<VirtualFile>, file: VirtualFile): String =
     roots.firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) } ?: file.path

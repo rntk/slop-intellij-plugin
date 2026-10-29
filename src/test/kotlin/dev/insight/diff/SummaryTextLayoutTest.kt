@@ -17,6 +17,10 @@ import javax.swing.text.DefaultStyledDocument
 import javax.swing.text.JTextComponent
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.WrappedSummaryText
 
 class SummaryTextLayoutTest : BasePlatformTestCase() {
     fun testEverySummaryLayoutStopsRequestingWorkWhenIdle() {

@@ -2,8 +2,8 @@ package dev.insight.codereview
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.insight.chat.SourceSide
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.SourceSide
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries

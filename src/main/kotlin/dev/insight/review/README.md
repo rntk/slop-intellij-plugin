@@ -13,15 +13,25 @@ Both `dev.insight.diff` and `dev.insight.codereview` depend on this package.
 Keep this package independent of those callers. Summary and topic generators take
 evidence providers explicitly; they must not cast a source to either caller's model.
 
+`dev.insight.review.ui` holds the shared Swing presentation: the review tab base and
+tabs controller, side pages, the canvas with its summaries, topics, File view, note,
+source and symbol-flow cards, tracing, and PSI/progress helpers. It depends on this
+package, never the reverse, and on neither caller nor `dev.insight.chat`.
+
+Boundaries the callers implement:
+
+- `PatchSource`: a source whose evidence is a patch. Shared views paint, trace and open
+  it; diff's `ReviewFile` implements it.
+- `ui.CanvasExtension`: a review's own canvas pages and the summaries Diff mode. Diff
+  supplies word, overview and metric cards, diff snapshot viewers and native diffs;
+  code review has none.
+- `agent.ChatConversation`: what a review tab follows of its chat. `ChatSession`
+  implements it; each tab supplies its chat panel, input and source points.
+
 Diff-specific evidence adapters and convenience factories (`diffSummarizer`,
 `diffTopicGenerator`, and `diffSymbols`) live in `dev.insight.diff`. VCS snapshots,
-patches, before/after source resolution, comparison selection, change flows, and
-metrics also remain there. Code scope, chunking, and dependency analysis live in
-`dev.insight.codereview`.
-
-The combined canvas renderer, summary views, and tracing launchers still live in
-`dev.insight.diff`. They mix shared presentation with diff cards and metrics, so
-their eventual extraction requires a separate presentation boundary. The neutral
-editor owner exposes only a Swing component and does not depend on that renderer.
+patches, before/after source resolution, comparison selection, native diff viewers,
+word charts and metrics also remain there. Code scope, chunking, and
+dependency analysis live in `dev.insight.codereview`.
 
 The existing editor type ID and cache formats/keys are preserved when types move.

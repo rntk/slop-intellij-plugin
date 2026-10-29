@@ -23,6 +23,16 @@ import javax.swing.JComboBox
 import javax.swing.JMenuItem
 import javax.swing.text.JTextComponent
 import kotlinx.coroutines.Job
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeSummaryActions
+import dev.insight.review.ui.ChangeTopicsMode
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.ResummaryDestination
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.TopicCanvasActions
+import dev.insight.review.ui.TopicsCard
+import dev.insight.review.ui.selectionMenu
 
 class ContextSummariesTest : BasePlatformTestCase() {
     private val files = listOf("app/a.kt", "app/b.kt", "docs/c.kt", "docs/d.kt").map {

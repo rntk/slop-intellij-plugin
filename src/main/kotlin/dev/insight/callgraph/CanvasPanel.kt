@@ -6,22 +6,24 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import dev.insight.core.withPhaseProgress
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import dev.insight.enrichment.CanvasLine
-import dev.insight.enrichment.EnrichmentService
-import dev.insight.ui.CollapsibleControls
-import dev.insight.ui.PanelCommand
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
-import kotlinx.coroutines.*
+import dev.insight.core.withPhaseProgress
+import dev.insight.enrichment.CanvasLine
+import dev.insight.enrichment.EnrichmentService
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.RelationKind
+import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import java.awt.BorderLayout
 import java.awt.FlowLayout
-import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
+import kotlinx.coroutines.*
 
 private val LOG = logger<CanvasPanel>()
 

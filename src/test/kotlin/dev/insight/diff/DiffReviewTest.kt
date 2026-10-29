@@ -3,8 +3,8 @@ package dev.insight.diff
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.callgraph.LineChange
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmToolCall

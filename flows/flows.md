@@ -6,5 +6,5 @@ The groupings are guides to code structure, not guarantees about runtime behavio
 
 Entry points for further exploration:
 
-- [ApplicationFlows.kt](../src/main/kotlin/dev/insight/callgraph/ApplicationFlows.kt) — flow construction
+- [ApplicationFlows.kt](../src/main/kotlin/dev/insight/enrichment/ApplicationFlows.kt) — flow construction
 - [ApplicationFlowsPanel.kt](../src/main/kotlin/dev/insight/callgraph/ApplicationFlowsPanel.kt) — flow browser

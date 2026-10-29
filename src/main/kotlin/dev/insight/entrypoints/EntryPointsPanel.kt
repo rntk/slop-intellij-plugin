@@ -15,12 +15,11 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import dev.insight.callgraph.CallGraphResult
-import dev.insight.chat.ProjectFiles
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.describeChatFailure
+import dev.insight.agent.ProjectFiles
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.describeChatFailure
 import dev.insight.core.runCatchingReported
-import kotlinx.coroutines.*
+import dev.insight.graph.CallGraphResult
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.event.KeyAdapter
@@ -28,6 +27,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
+import kotlinx.coroutines.*
 
 private val LOG = logger<EntryPointsPanel>()
 

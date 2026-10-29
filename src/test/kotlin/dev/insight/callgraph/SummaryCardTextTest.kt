@@ -2,6 +2,10 @@ package dev.insight.callgraph
 
 import dev.insight.enrichment.FunctionRole
 import dev.insight.enrichment.FunctionSummary
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.CallOperation
+import dev.insight.graph.SymbolKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

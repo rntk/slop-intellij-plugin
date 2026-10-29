@@ -7,6 +7,7 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.jetbrains.python.psi.PyFunction
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 /**
  * Runs the analyzer against real Python PSI. PythonCore only loads in the test IDE together with the bundled

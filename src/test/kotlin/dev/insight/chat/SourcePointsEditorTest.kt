@@ -8,6 +8,8 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.FileEditorManagerTestCase
 import java.awt.Container
 import javax.swing.JTextArea
+import dev.insight.agent.SourcePoint
+import dev.insight.agent.ToolInputException
 
 class SourcePointsEditorTest : FileEditorManagerTestCase() {
     fun `test calls append independent editors and comments even for the same file and line`() {

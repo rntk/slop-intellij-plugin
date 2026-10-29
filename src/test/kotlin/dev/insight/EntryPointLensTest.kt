@@ -3,9 +3,11 @@ package dev.insight
 import dev.insight.callgraph.*
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointKind
+import dev.insight.entrypoints.EntryPointLens
+import dev.insight.graph.*
+import java.awt.Color
 import org.junit.Assert.*
 import org.junit.Test
-import java.awt.Color
 
 class EntryPointLensTest {
     private fun node(id: Int, line: Int, path: String = "/p/src/App.kt", name: String = "main()") =

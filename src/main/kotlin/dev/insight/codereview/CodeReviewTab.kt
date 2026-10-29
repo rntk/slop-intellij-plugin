@@ -8,35 +8,21 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.util.ui.JBUI
-import dev.insight.chat.ChatBackend
-import dev.insight.chat.ChatMessage
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
-import dev.insight.chat.ChatSettings
-import dev.insight.chat.ChatTool
+import dev.insight.settings.ChatSettings
+import dev.insight.agent.ChatTool
 import dev.insight.chat.LlmChatBackend
-import dev.insight.chat.ToolCallEvent
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.TraceFile
-import dev.insight.chat.projectContextTools
-import dev.insight.chat.tracedFileCompletion
-import dev.insight.diff.CanvasState
-import dev.insight.diff.FileStructure
-import dev.insight.diff.FileViewCard
-import dev.insight.diff.NOTES_CHANGED
-import dev.insight.diff.NoteCanvas
-import dev.insight.diff.ReviewContextSummaryLauncher
-import dev.insight.diff.ReviewTab
-import dev.insight.diff.SYMBOLS_CHANGED
-import dev.insight.diff.SourceCanvasActions
-import dev.insight.diff.SummaryCanvasActions
-import dev.insight.diff.TopicCanvasActions
-import dev.insight.diff.openHighlightedLines
-import dev.insight.diff.readPsiThen
+import dev.insight.chat.SourcePoints
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.TraceFile
+import dev.insight.agent.projectContextTools
+import dev.insight.agent.tracedFileCompletion
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
 import dev.insight.review.ChatFocus
@@ -54,6 +40,7 @@ import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
+import dev.insight.agent.findSourceFile
 import dev.insight.review.current
 import dev.insight.review.seedTopicSummaries
 import dev.insight.review.summariesFocus
@@ -75,6 +62,19 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.FileStructure
+import dev.insight.review.ui.FileViewCard
+import dev.insight.review.ui.NOTES_CHANGED
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.ReviewContextSummaryLauncher
+import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.SYMBOLS_CHANGED
+import dev.insight.review.ui.SourceCanvasActions
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.TopicCanvasActions
+import dev.insight.review.ui.openHighlightedLines
+import dev.insight.review.ui.readPsiThen
 
 private val LOG = logger<CodeReviewTab>()
 
@@ -94,7 +94,8 @@ internal class CodeReviewTab(
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
 ) : ReviewTab<CodeFile, CodeReviewState>(project, CodeReviewState(paths, ReviewDiskCache.forProject(project)), focus,
-    ReviewVocabulary.CODE, "Code chat") {
+    ReviewVocabulary.CODE) {
+    private val sourcePoints = SourcePoints(project, "Code chat")
 
     /** Pipeline runs in progress (EDT). Updates are held from the start of a run until the chat is idle again. */
     private var pipelineRuns = 0
@@ -241,6 +242,7 @@ internal class CodeReviewTab(
     }
 
     override val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
+    override val chatInput get() = chat.input
 
     init {
         minimumSize = Dimension(300, 200)
@@ -484,7 +486,7 @@ internal class CodeReviewTab(
                 ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED -> scheduleCanvasRefresh()
             }
         }), CodeReviewContext {
-            override suspend fun pointToCode(point: dev.insight.chat.SourcePoint): String = withContext(Dispatchers.EDT) {
+            override suspend fun pointToCode(point: dev.insight.agent.SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 if (point.side != null) throw ToolInputException("Code review has no diff sides")
                 val sourceFile = captured.byPath[point.path]
@@ -555,8 +557,3 @@ internal class CodeReviewTab(
 
 /** Runs estimated above this many model requests ask before they start. */
 internal const val CONFIRM_REQUESTS = 500
-
-/** The file of a code review path: on disk, or under a project root (tests use an in-memory file system). */
-internal fun findSourceFile(project: Project, path: String, absolutePath: String?): VirtualFile? =
-    absolutePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }?.takeIf { it.isValid && !it.isDirectory }
-        ?: codeScopeRoots(project).firstNotNullOfOrNull { it.findFileByRelativePath(path) }?.takeIf { it.isValid && !it.isDirectory }

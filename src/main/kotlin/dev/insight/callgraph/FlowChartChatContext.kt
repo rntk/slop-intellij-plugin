@@ -4,17 +4,19 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
-import dev.insight.chat.ChartAnalysis
-import dev.insight.chat.ChartEditor
-import dev.insight.chat.ChartReader
+import dev.insight.agent.ToolInputException
 import dev.insight.chat.ChartReferences
-import dev.insight.chat.ChartScenes
-import dev.insight.chat.ChartTours
-import dev.insight.chat.ToolInputException
 import dev.insight.enrichment.FlowChartLens
 import dev.insight.enrichment.SymbolFacts
 import dev.insight.enrichment.SymbolFactsExtractor
+import dev.insight.entrypoints.EntryPointLens
 import dev.insight.entrypoints.EntryPointService
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.FlowRegion
+import dev.insight.graph.SourceSite
+import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

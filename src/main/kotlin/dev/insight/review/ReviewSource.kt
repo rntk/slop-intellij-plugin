@@ -11,3 +11,17 @@ interface ReviewSource {
     /** Short dimmed facts for a reader, such as `modified` and `renamed from x`. */
     val facts: List<String>
 }
+
+/**
+ * A source whose evidence is a unified patch instead of its text. Shared views paint, trace and open it through this;
+ * diff's `ReviewFile` implements it.
+ */
+interface PatchSource : ReviewSource {
+    val patch: String
+    val previousPath: String?
+    /** The snapshot's sides; null when unavailable, so lines are numbered in the patch. */
+    val before: String?
+    val after: String?
+    /** The snapshot text a whole-file view opens: before for a deleted file, else after; null when unavailable. */
+    val fullFileText: String?
+}

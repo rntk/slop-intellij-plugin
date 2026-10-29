@@ -1,16 +1,16 @@
 package dev.insight.callgraph.java
 
+import com.intellij.psi.*
 import com.intellij.psi.PsiCall
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiMethodReferenceExpression
 import dev.insight.callgraph.CallGraphLanguageSupport
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.RelationKind
-import com.intellij.psi.*
 import dev.insight.callgraph.CallResolution
-import dev.insight.callgraph.CallOperation
 import dev.insight.callgraph.resolveTargets
+import dev.insight.graph.CallOperation
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /** Loaded only when the Java plugin is present (see META-INF/call-graph-java.xml). */
 class JavaCallGraphSupport : CallGraphLanguageSupport {

@@ -1,7 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.openapi.project.Project
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 
 /** What a semantic metric measures; [group] orders the rows of the metrics table. */
 internal enum class MetricGroup(val label: String) {

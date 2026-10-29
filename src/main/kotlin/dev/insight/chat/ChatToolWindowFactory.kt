@@ -16,7 +16,10 @@ import com.intellij.ui.JBColor
 import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import dev.insight.dashboard.openDashboard
+import dev.insight.settings.ChatSettingsConfigurable
 import dev.insight.ui.heading
 import java.awt.BorderLayout
 import java.awt.Color

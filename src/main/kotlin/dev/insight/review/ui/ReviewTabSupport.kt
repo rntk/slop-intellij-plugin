@@ -1,0 +1,134 @@
+package dev.insight.review.ui
+
+import com.intellij.codeInsight.highlighting.HighlightManager
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.ScrollType
+import com.intellij.openapi.editor.colors.EditorColors
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import dev.insight.core.withCountProgress
+import com.intellij.util.ui.JBUI
+import dev.insight.review.ContextSummaryLauncher
+import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarizer
+import dev.insight.review.ReviewSummaryRun
+import java.awt.BorderLayout
+import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.JTabbedPane
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ui.ReviewTabSupport")
+
+/** Opens [file] with [lines] centered and highlighted like search results, until Escape or an edit. */
+internal fun openHighlightedLines(project: Project, file: VirtualFile, lines: List<Int>) {
+    val first = lines.minOrNull() ?: return
+    val editor = FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file, first - 1, 0), true) ?: return
+    highlightLines(project, editor, lines)
+    editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+}
+
+/** Highlights each run of consecutive 1-based [lines] of [editor]; lines past its end are skipped. */
+internal fun highlightLines(project: Project, editor: Editor, lines: List<Int>) {
+    val document = editor.document
+    val manager = HighlightManager.getInstance(project)
+    val sorted = lines.filter { it in 1..document.lineCount }.distinct().sorted()
+    var start = 0
+    for (index in sorted.indices) {
+        if (index + 1 < sorted.size && sorted[index + 1] == sorted[index] + 1) continue
+        manager.addRangeHighlight(editor, document.getLineStartOffset(sorted[start] - 1), document.getLineEndOffset(sorted[index] - 1),
+            EditorColors.SEARCH_RESULT_ATTRIBUTES, true, null)
+        start = index + 1
+    }
+}
+
+/** Uses the same evidence and prompts as an ordinary run, writing only the requested version's nodes. */
+internal class ReviewContextSummaryLauncher(
+    private val project: Project,
+    private val scope: CoroutineScope,
+    private val create: suspend () -> ReviewSummarizer,
+) : ContextSummaryLauncher {
+    override fun launch(start: ReviewSummaries, request: ContextSummaryRequest,
+                        updated: (ReviewSummaries) -> Unit, done: (Result<ReviewSummaryRun>) -> Unit): Job {
+        return scope.launch {
+            val result = try {
+                // Capture the review's evidence on the EDT, before starting background work.
+                val summarizer = create()
+                Result.success(withBackgroundProgress(project, if (request.regenerate) "Resummarizing" else "Filling summaries", cancellable = true) {
+                    withContext(Dispatchers.IO) {
+                        withCountProgress(if (request.regenerate) "Resummarizing summaries…" else "Filling missing summaries…", "summaries") { onProgress ->
+                            var current = start
+                            summarizer.run(start, "", save = { entries ->
+                                current = current.summarize(entries, reuseSingleChildren = false)
+                                withContext(Dispatchers.EDT) { updated(current) }
+                                current
+                            }, onProgress = onProgress, nodeIds = request.nodeIds, queryContext = request.query,
+                                instructions = request.instructions, reuseSingleChildren = !request.regenerate)
+                        }
+                    }
+                })
+            } catch (e: CancellationException) {
+                // Progress-only cancellation completes the card; tab/job cancellation must propagate.
+                currentCoroutineContext().ensureActive()
+                Result.failure(e)
+            } catch (e: Exception) {
+                LOG.warn("Summary generation failed", e)
+                Result.failure(e)
+            }
+            done(result)
+        }
+    }
+}
+
+/**
+ * A review tool window's two pages: Main holds the scope, files and review tab controls, and Chat gives the selected review
+ * tab's chat the full height. A Swing chat has one parent, so it moves here whenever its review tab is selected.
+ */
+internal class ReviewSidePages(main: JComponent) : JTabbedPane() {
+    private val chatTitle = JLabel().apply { border = JBUI.Borders.empty(4, 12, 0, 12) }
+    private val chatHost = JPanel(BorderLayout())
+    private var chat: JComponent? = null
+    private var input: JComponent? = null
+
+    init {
+        addTab("Main", main)
+        addTab("Chat", JPanel(BorderLayout()).apply {
+            add(chatTitle, BorderLayout.NORTH)
+            add(chatHost, BorderLayout.CENTER)
+        })
+        setToolTipTextAt(CHAT, "The selected review tab's conversation")
+        addChangeListener { if (selectedIndex == CHAT) input?.requestFocusInWindow() }
+    }
+
+    /** Shows [chat], the conversation of the review tab named [name], focusing [input] on selection; null leaves the page empty. */
+    fun showChat(chat: JComponent?, input: JComponent?, name: String) {
+        chatTitle.text = if (chat == null) "" else "Review tab: $name"
+        this.input = input
+        if (this.chat === chat) return
+        this.chat = chat
+        chatHost.removeAll()
+        chat?.let { chatHost.add(it, BorderLayout.CENTER) }
+        chatHost.revalidate()
+        chatHost.repaint()
+    }
+
+    /** Switches to the Chat page, which focuses its input. */
+    fun selectChat() { selectedIndex = CHAT }
+
+    private companion object {
+        const val CHAT = 1
+    }
+}

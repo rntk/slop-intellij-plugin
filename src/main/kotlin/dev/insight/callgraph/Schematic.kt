@@ -9,6 +9,13 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNameIdentifierOwner
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.CallSite
+import dev.insight.graph.GraphHierarchy
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import java.util.BitSet
 
 /** A run of lines of a schematic; lines are 0-based document lines, both ends inclusive. */

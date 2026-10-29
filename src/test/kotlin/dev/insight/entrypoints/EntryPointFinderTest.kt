@@ -2,22 +2,22 @@ package dev.insight.entrypoints
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.SymbolKind
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolInputException
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmRole
 import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmToolCall
+import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.IOException
 
 class EntryPointFinderTest {
     private class FakeProject(val contents: MutableMap<String, String>) : ProjectSnapshot {

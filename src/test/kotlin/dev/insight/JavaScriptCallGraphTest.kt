@@ -7,6 +7,7 @@ import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 /** Runs the analyzers against real JavaScript and TypeScript PSI; both share one language support class. */
 class JavaScriptCallGraphTest : BasePlatformTestCase() {

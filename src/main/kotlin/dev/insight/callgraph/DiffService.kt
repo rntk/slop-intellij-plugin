@@ -18,9 +18,12 @@ import com.intellij.openapi.vcs.changes.BinaryContentRevision
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ContentRevision
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.psi.PsiDocumentManager
 import dev.insight.enrichment.liftCalls
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.hierarchy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

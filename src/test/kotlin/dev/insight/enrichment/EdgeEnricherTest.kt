@@ -1,16 +1,16 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.RelationKind
 import dev.insight.decisions.DecisionRequest
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.RelationKind
+import java.io.IOException
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.IOException
-import java.util.Collections
-import java.util.concurrent.atomic.AtomicInteger
 
 class EdgeEnricherTest {
     private val nodes = (0..3).map { EnricherFakes.node(it, "f$it") }

@@ -45,7 +45,7 @@ class CodeFileStructureTest : BasePlatformTestCase() {
 
         val snapshot = load(ReadAction.compute<CodeScope, Throwable> { codeScope(project, "app") })
         val file = snapshot.byPath.getValue("app/Controller.java")
-        val structure = ReadAction.compute<dev.insight.diff.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(file) }
+        val structure = ReadAction.compute<dev.insight.review.ui.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(file) }
 
         // Every line belongs to exactly one block, top to bottom.
         assertEquals(1, structure.blocks.first().lines.first)
@@ -87,7 +87,7 @@ class CodeFileStructureTest : BasePlatformTestCase() {
         myFixture.addFileToProject("local/Second.java", "package local; class Second { static void work() {} }\n")
         val snapshot = load(ReadAction.compute<CodeScope, Throwable> { codeScope(project, "local") })
         val file = snapshot.byPath.getValue("local/Entry.java")
-        val structure = ReadAction.compute<dev.insight.diff.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(file) }
+        val structure = ReadAction.compute<dev.insight.review.ui.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(file) }
         val run = structure.blocks.single { it.title == "run()" }
         assertEquals(mapOf(
             4 to listOf("local/First.java"),
@@ -104,7 +104,7 @@ class CodeFileStructureTest : BasePlatformTestCase() {
         val file = snapshot.byPath.getValue("stale/A.java")
         val changed = CodeFile(file.path, file.absolutePath, "package stale;\nclass A { void a() {} }\n")
         assertThrows(IllegalStateException::class.java, "differs from the review snapshot") {
-            ReadAction.compute<dev.insight.diff.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(changed) }
+            ReadAction.compute<dev.insight.review.ui.FileStructure, Throwable> { CodeFileStructureBuilder(project, snapshot).build(changed) }
         }
     }
 

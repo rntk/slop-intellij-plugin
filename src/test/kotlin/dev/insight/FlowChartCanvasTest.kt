@@ -2,6 +2,7 @@ package dev.insight
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 import java.awt.Point
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage

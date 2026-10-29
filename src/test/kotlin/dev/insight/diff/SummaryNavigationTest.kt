@@ -10,12 +10,17 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
 
 class SummaryNavigationTest : BasePlatformTestCase() {
     private fun file(path: String, status: String = "modified", before: String? = "old\n", after: String? = "new\n") =
@@ -27,8 +32,8 @@ class SummaryNavigationTest : BasePlatformTestCase() {
         val summaries = ReviewSummaries(tree)
         val folder = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == "src" }
         for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
-            val opened = mutableListOf<ReviewFile>()
-            val directories = mutableListOf<List<ReviewFile>>()
+            val opened = mutableListOf<PatchSource>()
+            val directories = mutableListOf<List<PatchSource>>()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { opened += it }, openDirectoryDiff = { directories += it }))
                 .apply {
                     setSize(1600, 900); summariesView.mode = mode

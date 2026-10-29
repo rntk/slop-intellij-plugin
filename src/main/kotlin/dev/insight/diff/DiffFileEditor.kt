@@ -30,9 +30,8 @@ import java.awt.Dimension
 import javax.swing.JPanel
 import javax.swing.Timer
 import kotlin.math.roundToInt
-
-/** Deleted files have an empty after side; their complete source is on the before side. */
-internal val ReviewFile.fullFileText: String? get() = if (status == "deleted") before else after
+import dev.insight.review.ui.LineTrace
+import dev.insight.review.ui.highlightLines
 
 internal fun createFullFileSnapshot(file: ReviewFile): LightVirtualFile {
     val label = if (file.status == "deleted") file.beforeLabel else file.afterLabel

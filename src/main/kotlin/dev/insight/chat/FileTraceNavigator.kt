@@ -11,7 +11,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
-import dev.insight.codereview.findSourceFile
+import dev.insight.agent.TraceDocument
+import dev.insight.agent.findSourceFile
 import java.util.IdentityHashMap
 
 /** Open live source only when it still matches; historical reads always keep their original coordinates. */

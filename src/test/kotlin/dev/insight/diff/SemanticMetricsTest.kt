@@ -2,7 +2,7 @@ package dev.insight.diff
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 
 class SemanticMetricsTest : BasePlatformTestCase() {
     private fun file(path: String, before: String?, after: String?, status: String = "modified") =

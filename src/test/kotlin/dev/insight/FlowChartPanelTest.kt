@@ -1,25 +1,26 @@
 package dev.insight
 
-import dev.insight.chat.ChartReader
-import dev.insight.chat.ChartReferences
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.openapi.actionSystem.ActionToolbar
-import com.intellij.testFramework.TestActionEvent
-import com.intellij.ui.SearchTextField
+import com.intellij.openapi.application.EDT
 import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.SmartPointerManager
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.TestActionEvent
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.SearchTextField
 import com.intellij.util.ui.UIUtil
 import dev.insight.callgraph.*
+import dev.insight.callgraph.ChartReader
+import dev.insight.chat.ChartReferences
+import dev.insight.chat.ChatPanel
+import dev.insight.graph.*
 import java.awt.Container
+import java.awt.Point
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JMenuItem
 import javax.swing.JTabbedPane
-import dev.insight.chat.ChatPanel
-import com.intellij.testFramework.PlatformTestUtil
-import com.intellij.openapi.application.EDT
 import kotlinx.coroutines.*
-import java.awt.Point
 
 class FlowChartPanelTest : BasePlatformTestCase() {
     private fun result(shift: Int = 0): CallGraphResult {

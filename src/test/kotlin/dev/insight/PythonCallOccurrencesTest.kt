@@ -11,6 +11,7 @@ import com.jetbrains.python.psi.resolve.PyResolveContext
 import com.jetbrains.python.psi.types.TypeEvalContext
 import dev.insight.callgraph.*
 import dev.insight.enrichment.liftCalls
+import dev.insight.graph.*
 import java.awt.Container
 import javax.swing.JLabel
 

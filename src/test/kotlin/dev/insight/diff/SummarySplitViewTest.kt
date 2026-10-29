@@ -4,6 +4,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.UiInterceptors
+import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewVocabulary
@@ -22,6 +23,17 @@ import javax.swing.JTextPane
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.PopupMenuEvent
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.ChangeSummaryActions
+import dev.insight.review.ui.ChangeSummarySplitPanel
+import dev.insight.review.ui.HierarchyColumnsPanel
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.SummaryTextDialog
+import dev.insight.review.ui.WrappedSummaryText
+import dev.insight.review.ui.selectionMenu
 
 class SummarySplitViewTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
@@ -373,7 +385,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             val tree = buildSummaryTree(sources)
             val opened = mutableListOf<String>()
             val whole = mutableListOf<String>()
-            val folders = mutableListOf<List<ReviewFile>>()
+            val folders = mutableListOf<List<PatchSource>>()
             val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
             val canvas = NoteCanvas({}, {}, vocabulary = vocabulary,
                 summaryActions = SummaryCanvasActions(openNode = { opened += it.identity },

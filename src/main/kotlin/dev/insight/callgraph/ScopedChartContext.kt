@@ -4,6 +4,8 @@ import com.google.gson.Gson
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import dev.insight.core.Hashing
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.RelationKind
 
 /** Copy source under a background read action; never retain PSI in a conversation snapshot. */
 internal fun scopedChartContext(project: Project, result: CallGraphResult, revision: Int, target: FlowChatTarget): String {

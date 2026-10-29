@@ -8,9 +8,8 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
-import dev.insight.chat.ChatMessage
-import dev.insight.chat.ChatRole
-import dev.insight.diff.CanvasState
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.review.ReviewCanvasEditorProvider
@@ -31,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import dev.insight.review.ui.CanvasState
 
 class CodeReviewPlatformTest : FileEditorManagerTestCase() {
     fun testCapturedCanvasOperationsRejectRefreshingStaleAndClosedTurns() {
@@ -48,7 +48,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
                 )
                 for (call in calls) {
                     try { call(); fail("Invalid captured context must reject every canvas operation") }
-                    catch (e: dev.insight.chat.ToolInputException) { assertTrue(e.message.orEmpty(), e.message.orEmpty().contains(message)) }
+                    catch (e: dev.insight.agent.ToolInputException) { assertTrue(e.message.orEmpty(), e.message.orEmpty().contains(message)) }
                 }
             }
             runWithEvents {
@@ -107,7 +107,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
                 point.call(com.google.gson.JsonParser.parseString("""{"path":"src/a.kt","line":2,"comment":"Writes to stdout"}""").asJsonObject)
                 for (args in listOf("""{"path":"outside.kt","line":1}""", """{"path":"src/a.kt","line":99}""")) {
                     try { point.call(com.google.gson.JsonParser.parseString(args).asJsonObject); fail("Invalid source point") }
-                    catch (_: dev.insight.chat.ToolInputException) { }
+                    catch (_: dev.insight.agent.ToolInputException) { }
                 }
             }
             val view = manager.openFiles.filterIsInstance<dev.insight.chat.SourcePointsFile>().single()
@@ -127,7 +127,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(view.source.points.isEmpty())
             runWithEvents {
                 try { point.call(com.google.gson.JsonParser.parseString("""{"path":"src/a.kt","line":1}""").asJsonObject); fail("Stale context") }
-                catch (_: dev.insight.chat.ToolInputException) { }
+                catch (_: dev.insight.agent.ToolInputException) { }
             }
         } finally { Disposer.dispose(tab) }
     }
@@ -246,7 +246,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             view.doClick()
             val tab = descendants(panel).filterIsInstance<JBTabs>().single().selectedInfo!!.component as CodeReviewTab
             PlatformTestUtil.waitWithEventsDispatching("File view should follow the calls", {
-                descendants(tab.canvas).any { it is dev.insight.diff.FileStructurePanel }
+                descendants(tab.canvas).any { it is dev.insight.review.ui.FileStructurePanel }
             }, 20)
             assertEquals("File · Main.java", (0 until tab.canvas.tabs.tabCount).map(tab.canvas.tabs::getTitleAt).single { it.startsWith("File") })
             // Worker has no topic yet, so it has a placeholder card on the right rail.
@@ -408,12 +408,12 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val tree = original.tree
             val app = tree.nodes.single { it.location == "app/" }
             val text = original.text(tree.root.id)!!
-            val word = dev.insight.diff.SummaryWord.split(text).first()
-            val trace = dev.insight.diff.SummaryTrace(tree.root.identity, text, word, listOf(word), "parsing",
-                listOf(dev.insight.diff.SummaryMatch(app.id, app.identity, true, 1)))
-            val context = dev.insight.diff.SummaryContext(tree.root.identity, text, word, listOf(word), "parsing")
-            tab.canvas.summariesView.tracing = dev.insight.diff.SummaryTracing(tree.root.identity, text, word, context, trace = trace)
-            tab.canvas.showNotes(CanvasState(emptyList(), summaries = dev.insight.diff.SummariesCard(original, false, true)))
+            val word = dev.insight.review.ui.SummaryWord.split(text).first()
+            val trace = dev.insight.review.ui.SummaryTrace(tree.root.identity, text, word, listOf(word), "parsing",
+                listOf(dev.insight.review.ui.SummaryMatch(app.id, app.identity, true, 1)))
+            val context = dev.insight.review.ui.SummaryContext(tree.root.identity, text, word, listOf(word), "parsing")
+            tab.canvas.summariesView.tracing = dev.insight.review.ui.SummaryTracing(tree.root.identity, text, word, context, trace = trace)
+            tab.canvas.showNotes(CanvasState(emptyList(), summaries = dev.insight.review.ui.SummariesCard(original, false, true)))
             descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "resummarize-with-context" }.doClick()
             PlatformTestUtil.waitWithEventsDispatching("The contextual version should finish", {
                 descendants(tab.canvas).filterIsInstance<javax.swing.JLabel>()
@@ -446,7 +446,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { scope.cancel() }
     }
 
-    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.diff.NoteCanvas)
+    private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }

@@ -1,24 +1,24 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
 import dev.insight.decisions.DecisionUsage
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import java.io.IOException
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.IOException
-import java.util.Collections
-import java.util.concurrent.atomic.AtomicInteger
 
 /** Fakes shared by the enrichment tests: answers every requested question with deterministic values. */
 internal object EnricherFakes {

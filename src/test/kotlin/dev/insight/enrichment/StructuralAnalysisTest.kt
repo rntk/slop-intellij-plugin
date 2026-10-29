@@ -1,12 +1,12 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import kotlin.random.Random
 import org.junit.Assert.*
 import org.junit.Test
-import kotlin.random.Random
 
 class StructuralAnalysisTest {
     @Test fun `betweenness, fan-in, fan-out and roots on a known graph`() {

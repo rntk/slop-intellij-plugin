@@ -9,7 +9,7 @@ import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 
 /**
  * A declaration on one side of a file, PSI-free. [text] is the declaration's own text with nested functions and classes

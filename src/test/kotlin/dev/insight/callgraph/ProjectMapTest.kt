@@ -2,6 +2,10 @@ package dev.insight.callgraph
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 import org.junit.Assert.*
 import org.junit.Test
 

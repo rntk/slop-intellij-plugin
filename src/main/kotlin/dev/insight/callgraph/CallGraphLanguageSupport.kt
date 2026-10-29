@@ -2,6 +2,8 @@ package dev.insight.callgraph
 
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.psi.PsiElement
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /**
  * Language-specific knowledge for the call graph. Implementations are registered from optional

@@ -12,6 +12,16 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.ui.JBUI
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatTool
+import dev.insight.agent.SourcePoint
+import dev.insight.agent.SourceSide
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.TraceFile
+import dev.insight.agent.projectContextTools
+import dev.insight.agent.tracedFileCompletion
 import dev.insight.chat.*
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
@@ -31,6 +41,7 @@ import dev.insight.review.current
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
 import dev.insight.review.topicsReply
+import dev.insight.settings.ChatSettings
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.GridLayout
@@ -38,6 +49,17 @@ import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import kotlinx.coroutines.*
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.NOTES_CHANGED
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.ReviewContextSummaryLauncher
+import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.SYMBOLS_CHANGED
+import dev.insight.review.ui.SourceCanvasActions
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.TopicCanvasActions
+import dev.insight.review.ui.changeFlow
+import dev.insight.review.ui.readPsiThen
 
 private val LOG = logger<DiffReviewTab>()
 
@@ -52,7 +74,18 @@ internal class DiffReviewTab(
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
 ) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
-    ReviewVocabulary.DIFF, "Diff chat") {
+    ReviewVocabulary.DIFF) {
+    private val sourcePoints = SourcePoints(project, "Diff chat")
+    private val openDirectoryDiff: (List<ReviewFile>) -> Unit = { files -> showDirectoryDiff(project, files) }
+    private val diffCards = DiffCanvasCards(showDiff, project,
+        removeDiff = { path -> state.removeDiff(path); renderCanvas() },
+        openDirectoryDiff = openDirectoryDiff,
+        metricActions = MetricCardActions(
+            removeWords = { state.hideWords(); renderCanvas() },
+            removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
+            removeSemantic = { state.hideSemantic(); renderCanvas() },
+        ),
+    )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
         showDiff,
@@ -72,7 +105,6 @@ internal class DiffReviewTab(
                     canvas.focusDiff(path)
                 }
             },
-            removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         ),
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },
@@ -88,7 +120,8 @@ internal class DiffReviewTab(
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             // The cited lines are those of the snapshot file, so its diff opens rather than the current one.
             openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
-            openWholeFile = { file ->
+            openWholeFile = open@{ source ->
+                val file = source as? ReviewFile ?: return@open
                 WriteIntentReadAction.run {
                     val snapshot = fullFileSnapshots.getOrPut(file) { createFullFileSnapshot(file) }
                     FileEditorManager.getInstance(project).openFile(snapshot, true)
@@ -100,7 +133,7 @@ internal class DiffReviewTab(
                         }
                 }
             },
-            openDirectoryDiff = { files -> showDirectoryDiff(project, files) },
+            openDirectoryDiff = { files -> openDirectoryDiff(files.filterIsInstance<ReviewFile>()) },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
         ),
@@ -110,11 +143,7 @@ internal class DiffReviewTab(
             removeTopics = { state.hideTopics(); renderCanvas() },
             saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         ),
-        metricActions = MetricCardActions(
-            removeWords = { state.hideWords(); renderCanvas() },
-            removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
-            removeSemantic = { state.hideSemantic(); renderCanvas() },
-        ),
+        extension = diffCards,
     )
 
     private val summariesButton = JButton("Summaries").apply {
@@ -186,6 +215,7 @@ internal class DiffReviewTab(
     }
 
     override val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
+    override val chatInput get() = chat.input
 
     init {
         minimumSize = Dimension(300, 200)
@@ -311,10 +341,10 @@ internal class DiffReviewTab(
     }
 
     override fun renderCanvas() {
-        canvas.showNotes(CanvasState(state.notes, state.sources, state.diffs, summariesCard(), topicsCard(),
-            words = if (state.wordsVisible) state.words else null, wordFiles = state.snapshot.files,
-            diffOverview = if (state.diffOverviewVisible) state.words else null,
-            semantic = if (state.semanticVisible) state.semantic else null, explanation = explanations.result))
+        diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
+            wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
+            semantic = if (state.semanticVisible) state.semantic else null)
+        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
     }

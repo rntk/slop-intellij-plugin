@@ -1,14 +1,14 @@
 package dev.insight.review
 
 import com.google.gson.JsonObject
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.intArg
-import dev.insight.chat.objectTool
-import dev.insight.chat.objectsArg
-import dev.insight.chat.pathsArg
-import dev.insight.chat.stringArg
-import dev.insight.enrichment.JsonSchemas
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.intArg
+import dev.insight.agent.objectTool
+import dev.insight.agent.objectsArg
+import dev.insight.agent.pathsArg
+import dev.insight.agent.stringArg
+import dev.insight.llm.JsonSchemas
 
 /** The schema of 1 to [max] file paths, described by [description]. */
 internal fun pathListSchema(max: Int, description: String) =

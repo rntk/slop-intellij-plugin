@@ -1,7 +1,7 @@
 package dev.insight.codereview
 
 import com.google.gson.JsonObject
-import dev.insight.chat.ChatTool
+import dev.insight.agent.ChatTool
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmTruncatedException

@@ -1,7 +1,8 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.RelationKind
+import dev.insight.graph.CallGraph
+import dev.insight.graph.RelationKind
+import dev.insight.llm.clipLine
 
 /** One physical line and its exact source origin. Synthetic headers navigate to the declaration. */
 data class CanvasLine(

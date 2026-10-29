@@ -12,7 +12,12 @@ import com.intellij.openapi.components.SimplePersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.diagnostic.logger
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.stableKey
 
 /** A function of a saved tour by the identity [stableKey] uses to follow functions across rebuilds. PSI-free. */
 data class TourFunction(val name: String, val container: String, val path: String?, val location: String = "",

@@ -1,15 +1,16 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.FlowCard
-import dev.insight.callgraph.FlowRegionPlan
-import dev.insight.callgraph.FlowSource
-import dev.insight.callgraph.FlowStart
-import dev.insight.callgraph.GraphDecorations
-import dev.insight.callgraph.SourceSite
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.budgetedOpenCalls
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.FlowCard
+import dev.insight.graph.FlowRegionPlan
+import dev.insight.graph.FlowSource
+import dev.insight.graph.FlowStart
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.SourceSite
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.budgetedOpenCalls
+
 
 /**
  * The calls the flow chart explores, keyed by ids of `graph` (the current build), and the text of its steps from

@@ -3,6 +3,10 @@ package dev.insight.chat
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import kotlinx.coroutines.*
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
+import dev.insight.agent.ToolCallEvent
 
 class ChatSessionTest : BasePlatformTestCase() {
     fun `test clear and discard release the injected factory resources`() {

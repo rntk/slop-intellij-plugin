@@ -1,7 +1,7 @@
 package dev.insight.review
 
 import com.intellij.openapi.application.EDT
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

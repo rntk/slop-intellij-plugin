@@ -1,7 +1,7 @@
 package dev.insight.diff
 
-import dev.insight.chat.ChatTool
-import dev.insight.enrichment.CODE_AS_DATA
+import dev.insight.agent.ChatTool
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewTopicGenerator

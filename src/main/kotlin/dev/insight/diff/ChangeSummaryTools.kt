@@ -1,11 +1,11 @@
 package dev.insight.diff
 
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.intArg
-import dev.insight.chat.objectTool
-import dev.insight.enrichment.JsonSchemas
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.intArg
+import dev.insight.agent.objectTool
+import dev.insight.llm.JsonSchemas
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewCommand
 import dev.insight.review.ReviewSummarizer

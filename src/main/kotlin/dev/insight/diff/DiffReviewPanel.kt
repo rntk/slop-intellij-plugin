@@ -42,6 +42,10 @@ import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
+import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ui.ReviewTabsController
+import dev.insight.review.ui.openFilesOnActivate
+import dev.insight.review.ui.selectedFilePaths
 
 private val LOG = logger<DiffReviewPanel>()
 

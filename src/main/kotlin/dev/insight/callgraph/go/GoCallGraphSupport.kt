@@ -4,10 +4,10 @@ import com.goide.psi.*
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import dev.insight.callgraph.CallGraphLanguageSupport
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /**
  * Loaded only when the Go plugin is present (see META-INF/call-graph-go.xml).

@@ -1,6 +1,5 @@
 package dev.insight.diff
 
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.components.JBScrollPane
@@ -11,10 +10,19 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.ui.zoomScaled
+import dev.insight.ui.zoomed
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.ChangeSummaryActions
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryDiffView
+import dev.insight.review.ui.summaryEntryMenu
+import dev.insight.review.ui.summaryNodeIcon
+import dev.insight.review.ui.summaryNodeTitle
 
 /** A summary tree beside native diff viewers: one for a selected file, or each matching file of a selected directory in turn. */
 internal class ChangeSummaryDiffPanel(
@@ -23,7 +31,7 @@ internal class ChangeSummaryDiffPanel(
     private val zoom: Double,
     private val actions: ChangeSummaryActions,
     private val project: Project? = null,
-) : Disposable {
+) : SummaryDiffView {
     private val tree = card.summaries.tree
     private fun scaled(value: Int) = zoomScaled(value, zoom)
     private val visible = linkedMapOf<Int, SummaryNode>()
@@ -212,7 +220,7 @@ internal class ChangeSummaryDiffPanel(
         inherit(component)
     }
 
-    fun withTree(width: Int, height: Int, treeWidth: Int?, rememberTreeWidth: (Int) -> Unit): JSplitPane =
+    override fun withTree(width: Int, height: Int, treeWidth: Int?, rememberTreeWidth: (Int) -> Unit): JSplitPane =
         JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JBScrollPane(treeRows).apply {
             name = "summary-diff-tree-scroll"
             minimumSize = Dimension(scaled(120), 0)

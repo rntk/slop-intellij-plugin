@@ -7,10 +7,10 @@ import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
-import dev.insight.callgraph.CallGraphResult
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.core.Hashing
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /** Character and entry limits for the text copied into [SymbolFacts]. */
 data class FactsBudget(

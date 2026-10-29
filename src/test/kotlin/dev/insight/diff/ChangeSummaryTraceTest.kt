@@ -11,6 +11,23 @@ import dev.insight.review.SummarySource.Rows
 import dev.insight.review.buildSummaryTree
 import org.junit.Assert.*
 import org.junit.Test
+import dev.insight.review.ui.LineSide
+import dev.insight.review.ui.SegmentRef
+import dev.insight.review.ui.SummaryLinks
+import dev.insight.review.ui.SummaryMatch
+import dev.insight.review.ui.SummaryTrace
+import dev.insight.review.ui.SummaryTraceSession
+import dev.insight.review.ui.SummaryTraceState
+import dev.insight.review.ui.SummaryWord
+import dev.insight.review.ui.TraceMark
+import dev.insight.review.ui.installWordTracing
+import dev.insight.review.ui.patchLines
+import dev.insight.review.ui.selectionContext
+import dev.insight.review.ui.selectionMenu
+import dev.insight.review.ui.traceMarks
+import dev.insight.review.ui.tracePath
+import dev.insight.review.ui.traceStatus
+import dev.insight.review.ui.levelsBelow
 
 class ChangeSummaryTraceTest {
     /** Patch rows: 1 the hunk header, 2 the removed line, 3 the added line, 4 the context line. */

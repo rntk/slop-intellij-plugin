@@ -3,8 +3,8 @@ package dev.insight.review
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import dev.insight.callgraph.ExplainChartResult
-import dev.insight.chat.ChatMessage
-import dev.insight.chat.ChatRole
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import javax.swing.JButton

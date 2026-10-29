@@ -1,9 +1,9 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonParser
-import dev.insight.callgraph.CallSite
-import dev.insight.callgraph.FlowRegionEvidence
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.CallSite
+import dev.insight.graph.FlowRegionEvidence
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.Completion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking

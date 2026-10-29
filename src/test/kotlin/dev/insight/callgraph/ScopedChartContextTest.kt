@@ -1,10 +1,16 @@
 package dev.insight.callgraph
 
 import com.google.gson.JsonParser
-import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.SmartPointerManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.CallSite
+import dev.insight.graph.FlowRegionEvidence
 
 class ScopedChartContextTest : BasePlatformTestCase() {
     fun `test scoped source carries exact location full hash and bounded excerpt`() {
@@ -57,7 +63,7 @@ class ScopedChartContextTest : BasePlatformTestCase() {
         assertTrue(snippet.path!!.endsWith("Orders.java"))
         assertEquals(64, snippet.hash!!.length)
         for (range in listOf(2 to 3, 7 to 8)) {
-            val error = org.junit.Assert.assertThrows(dev.insight.chat.ToolInputException::class.java) {
+            val error = org.junit.Assert.assertThrows(dev.insight.agent.ToolInputException::class.java) {
                 captureSnippets(scene.copy(snippets = listOf(SceneSnippet(0, range.first, range.second)))) { declarationSource(project, result, it) }
             }
             assertTrue(error.message!!, error.message!!.contains(":3-7"))

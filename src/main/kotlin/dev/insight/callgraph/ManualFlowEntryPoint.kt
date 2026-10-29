@@ -2,6 +2,8 @@ package dev.insight.callgraph
 
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointKind
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 import java.nio.file.Path
 
 /** Keep source coordinates, rather than graph ids, so the choice survives graph rebuilds. */

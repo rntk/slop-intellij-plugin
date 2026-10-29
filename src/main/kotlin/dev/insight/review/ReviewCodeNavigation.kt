@@ -11,7 +11,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
-import dev.insight.codereview.findSourceFile
+import dev.insight.agent.findSourceFile
 import java.awt.Point
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent

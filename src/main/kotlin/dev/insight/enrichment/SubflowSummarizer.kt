@@ -1,10 +1,13 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.callgraph.FlowRegionEvidence
-import dev.insight.callgraph.FlowRegionPlan
-import dev.insight.callgraph.validateRegionPlans
+import dev.insight.graph.FlowRegionEvidence
+import dev.insight.graph.FlowRegionPlan
+import dev.insight.graph.validateRegionPlans
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.clipLine
 
 /** Missing keys retain structural fallbacks. Empty lists deliberately leave a block ungrouped. */
 data class SubflowSummaries(

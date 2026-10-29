@@ -1,6 +1,9 @@
 package dev.insight.callgraph
 
 import com.google.gson.Gson
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 
 /** An entry point on the project map: discovered (with its title and kind) or judged by enrichment. */
 data class MapEntryPoint(val node: Int, val title: String, val kind: String, val source: String)

@@ -18,10 +18,12 @@ import com.intellij.psi.search.searches.DefinitionsScopedSearch
 import com.intellij.util.Processor
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SymbolKind
-import dev.insight.diff.FileBlock
-import dev.insight.diff.FileStructure
+import dev.insight.graph.SymbolKind
 import dev.insight.review.ReviewDiskCache
+import dev.insight.agent.codeScopeRoots
+import dev.insight.agent.findSourceFile
+import dev.insight.review.ui.FileBlock
+import dev.insight.review.ui.FileStructure
 import java.util.concurrent.CancellationException
 
 private val LOG = logger<CodeFileStructureBuilder>()

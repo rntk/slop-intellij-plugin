@@ -15,6 +15,15 @@ import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JButton
 import javax.swing.text.JTextComponent
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.SummaryMatch
+import dev.insight.review.ui.SummaryTrace
+import dev.insight.review.ui.SummaryWord
+import dev.insight.review.ui.selectSummariesMode
 
 class SummaryExplorerTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")

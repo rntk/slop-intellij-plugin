@@ -1,9 +1,14 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.clipLine
+import dev.insight.llm.forEachConcurrently
+import dev.insight.llm.jsonText
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -12,7 +17,7 @@ data class GroupLabelResult(val labels: Map<String, GroupLabel>, val requests: I
 /**
  * Names files and directories for the overview with the generative model. Files are labeled from an outline of
  * their top-level declarations, then directories bottom-up from their children's labels. Both are keyed by
- * project-relative path. Directories are those [dev.insight.callgraph.GraphHierarchy] shows: below the deepest
+ * project-relative path. Directories are those [dev.insight.graph.GraphHierarchy] shows: below the deepest
  * directory shared by all files, skipping directories without files that hold only one subdirectory.
  * A failed batch leaves its groups unlabeled.
  */

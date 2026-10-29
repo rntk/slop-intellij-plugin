@@ -10,10 +10,11 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewNote
 import kotlinx.coroutines.*
+import dev.insight.review.ui.changeFlow
 
 class DiffSymbolsTest : BasePlatformTestCase() {
     override fun createTempDirTestFixture() = IdeaTestFixtureFactory.getFixtureFactory().createTempDirTestFixture()

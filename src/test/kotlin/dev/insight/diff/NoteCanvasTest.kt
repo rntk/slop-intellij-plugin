@@ -1,6 +1,6 @@
 package dev.insight.diff
 
-import dev.insight.chat.SourceSide
+import dev.insight.agent.SourceSide
 import dev.insight.review.SummarySource
 import dev.insight.review.SummarySegment
 import dev.insight.review.Summary
@@ -28,6 +28,36 @@ import java.awt.event.MouseEvent
 import javax.swing.JComponent
 import javax.swing.JLabel
 import kotlinx.coroutines.Job
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeFlowDiagram
+import dev.insight.review.ui.ChangeSummariesPanel
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.ChangeSummaryDocumentPanel
+import dev.insight.review.ui.ChangeSummaryHierarchyPanel
+import dev.insight.review.ui.ChangeTopicHierarchyPanel
+import dev.insight.review.ui.ChangeTopicsMode
+import dev.insight.review.ui.ChangeTopicsPanel
+import dev.insight.review.ui.DiffSourceEditor
+import dev.insight.review.ui.DiffSymbolDiagram
+import dev.insight.review.ui.DocumentColumnsPanel
+import dev.insight.review.ui.FileViewCard
+import dev.insight.review.ui.LineTrace
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.PatchView
+import dev.insight.review.ui.SourceCanvasActions
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.SummaryMatch
+import dev.insight.review.ui.SummaryTrace
+import dev.insight.review.ui.TopicsCard
+import dev.insight.review.ui.WrappedSummaryText
+import dev.insight.review.ui.changeFlow
+import dev.insight.review.ui.fuzzyMatches
+import dev.insight.review.ui.isFolderBranch
+import dev.insight.review.ui.selectionContext
+import dev.insight.review.ui.selectionMenu
+import dev.insight.review.ui.selectSummariesMode
+import dev.insight.review.ui.selectTopicsMode
 
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = ReviewNote(listOf("src/a.kt"), "A short explanation.")
@@ -43,10 +73,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val fileCard = FileViewCard(files.first(), null, null, topics, summaries, canRun = false)
         val words = wordChanges(files)
         val explanation = ExplainResult("/explain", "An explanation.", running = false)
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
+        val cards = DiffCanvasCards({})
+        val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(CanvasState(notes = listOf(note), words = words, wordFiles = files,
-                diffOverview = words, semantic = SemanticResult.Counting, explanation = explanation))
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, diffOverview = words, semantic = SemanticResult.Counting),
+                CanvasState(notes = listOf(note), explanation = explanation))
             canvas.focusWords()
             val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
             val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
@@ -79,13 +110,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertRetained()
 
             // The charts' backing files must survive too, so scope selection still counts the intended file.
-            canvas.chooseWordScope(wordScopes(files).single { it.path == files.first().path })
+            cards.chooseWordScope(wordScopes(files).single { it.path == files.first().path })
             val scoped = wordChanges(files.take(1))
             assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
             assertEquals(scoped, descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes)
             canvas.updateSummaries(summaryCard)
             assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
-            canvas.showNotes(CanvasState(notes = listOf(note)))
+            canvas.showNotes(cards, DiffCanvasContent(), CanvasState(notes = listOf(note)))
             assertEquals(1, canvas.tabs.tabCount)
             assertTrue(descendants(canvas).none { it is WordChangeChart || it is DiffOverviewChart || it.name == "semantic-counting" })
         } finally { canvas.dispose() }
@@ -96,13 +127,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(listOf(file))
         val summaries = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Updates important behavior." })
         val words = wordChanges(listOf(file))
-        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions()).apply {
+        val cards = DiffCanvasCards({})
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(), extension = cards).apply {
             setSize(1600, 900)
             summariesView.mode = ReviewSummariesMode.OUTLINE
         }
         try {
-            canvas.showNotes(CanvasState(summaries = SummariesCard(summaries, false, true),
-                words = words, wordFiles = listOf(file), diffOverview = words, semantic = SemanticResult.Counting))
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = listOf(file), diffOverview = words, semantic = SemanticResult.Counting),
+                CanvasState(summaries = SummariesCard(summaries, false, true)))
             canvas.focusSummaries()
             layoutTree(canvas)
             val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
@@ -121,7 +153,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
             assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
             assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
-            canvas.chooseWordScope(wordScopes(listOf(file)).single { it.path == file.path })
+            cards.chooseWordScope(wordScopes(listOf(file)).single { it.path == file.path })
             assertEquals(words, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
         } finally { canvas.dispose() }
     }
@@ -1030,9 +1062,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val file = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
         val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
         val originalToolOrder = settings.diffToolsOrder.toList()
-        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1400, 900) }
+        val cards = DiffCanvasCards({}, project)
+        val canvas = NoteCanvas({}, {}, project = project, extension = cards).apply { setSize(1400, 900) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), diffs = listOf(file)))
+            canvas.showNotes(cards, DiffCanvasContent(diffs = listOf(file)))
             val viewer = descendants(canvas).filterIsInstance<DiffFileEditor>().single()
             val switchTool = com.intellij.diff.impl.DiffRequestProcessor::class.java
                 .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
@@ -1088,7 +1121,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val fileB = ReviewFile("src/b.kt", "/project/src/b.kt", null, "added", "+added\n", "1", "", "val b = 3\n")
         val requested = mutableListOf<String>()
         val removed = mutableListOf<String>()
-        val canvas = NoteCanvas({}, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }, removeDiff = { removed += it }))
+        val cards = DiffCanvasCards({}, project, removeDiff = { removed += it })
+        val canvas = NoteCanvas({}, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }), extension = cards)
             .apply { setSize(1400, 900) }
         try {
             val source = ReviewSourceBlock(ReviewSourceRange("src/b.kt", 1, 1), "val b = 3")
@@ -1099,7 +1133,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             diffButtons.forEach { it.doClick() }
             assertEquals(listOf("src/a.kt", "src/b.kt"), requested)
 
-            canvas.showNotes(CanvasState(listOf(note), listOf(source), listOf(fileA, fileB)))
+            canvas.showNotes(cards, DiffCanvasContent(listOf(fileA, fileB)), CanvasState(listOf(note), listOf(source)))
             assertEquals(4, canvas.tabs.tabCount)
             val diffViewers = descendants(canvas).filterIsInstance<DiffFileEditor>()
             assertEquals(2, diffViewers.size)
@@ -1116,7 +1150,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             removeButtons.first().doClick()
             assertEquals(listOf("src/a.kt"), removed)
 
-            canvas.showNotes(CanvasState(listOf(note), listOf(source), listOf(fileB)))
+            canvas.showNotes(cards, DiffCanvasContent(listOf(fileB)), CanvasState(listOf(note), listOf(source)))
             assertTrue(viewerA.isDisposed && viewerA.editors.all { it.isDisposed })
             assertFalse(viewerB.isDisposed)
             canvas.dispose()
@@ -1125,7 +1159,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testSymbolNotesHaveSeparateTabsAndDiagramBounds() {
-        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.graph.SymbolKind.FUNCTION, 2, 10)
         val evidence = ReviewSymbolEvidence(symbol, listOf(ReviewSymbolLinks("Calls", (1..3).map {
             symbol.copy(name = "callee$it", qualifiedName = "Store.callee$it", offset = 10 + it)
         }, 20)))
@@ -1145,7 +1179,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testDiagramBoundsMixedRelationshipsAndDistinguishesOwners() {
-        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.callgraph.SymbolKind.FUNCTION, 2, 10)
+        val symbol = ReviewSymbol("src/a.kt", "/src/a.kt", "save", "Store.save", dev.insight.graph.SymbolKind.FUNCTION, 2, 10)
         fun neighbors(owner: String) = (1..3).map {
             symbol.copy(qualifiedName = "$owner$it.save", offset = 10 + it)
         }
@@ -1168,7 +1202,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testChangeFlowCardDrawsCallTreeWithRepeatsAndFocusesNotes() {
-        val base = ReviewSymbol("src/a.kt", "/src/a.kt", "a", "A.a", dev.insight.callgraph.SymbolKind.FUNCTION, 1, 0)
+        val base = ReviewSymbol("src/a.kt", "/src/a.kt", "a", "A.a", dev.insight.graph.SymbolKind.FUNCTION, 1, 0)
         fun step(name: String, vararg calls: String) = ReviewNote(listOf("src/a.kt"), "$name does work. More detail.", "s:$name",
             ReviewSymbolEvidence(base.copy(name = name, qualifiedName = "A.$name", offset = name.hashCode()), emptyList(),
                 calls.map { "src/a.kt#A.$it:1@${it.hashCode()}" }.toSet()))

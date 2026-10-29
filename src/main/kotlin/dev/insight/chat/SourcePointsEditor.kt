@@ -25,6 +25,8 @@ import java.awt.Dimension
 import java.awt.Rectangle
 import java.beans.PropertyChangeListener
 import javax.swing.*
+import dev.insight.agent.SourcePoint
+import dev.insight.agent.ToolInputException
 
 internal data class SourcePointView(val point: SourcePoint, val text: String)
 

@@ -2,7 +2,7 @@ package dev.insight.diff
 
 import dev.insight.review.Summary
 import dev.insight.review.summarize
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree

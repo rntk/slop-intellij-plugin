@@ -18,6 +18,20 @@ import java.awt.Container
 import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.text.StyleConstants
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeTopicActions
+import dev.insight.review.ui.ChangeTopicHierarchyPanel
+import dev.insight.review.ui.ChangeTopicsMode
+import dev.insight.review.ui.ChangeTopicsPanel
+import dev.insight.review.ui.ChangeTopicsViewState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.SummaryReviewPresentation
+import dev.insight.review.ui.SummaryReviewSession
+import dev.insight.review.ui.SummaryWord
+import dev.insight.review.ui.TopicsCard
+import dev.insight.review.ui.WrappedSummaryText
 
 class SummaryReviewViewTest : BasePlatformTestCase() {
     private val files = listOf("src/a.kt", "src/b.kt", "docs/readme.md").map {

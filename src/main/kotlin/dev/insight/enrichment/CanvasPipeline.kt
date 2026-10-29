@@ -1,7 +1,11 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.jsonText
+import dev.insight.llm.parseJsonObjectLeniently
 
 /** Source ordering and navigation are deterministic; the model only supplies topic labels and descriptions. */
 class CanvasPipeline(

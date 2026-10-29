@@ -1,6 +1,11 @@
 package dev.insight.callgraph
 
 import dev.insight.enrichment.FunctionSummary
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.CallOperation
+import dev.insight.graph.ResolutionStatus
+import dev.insight.graph.SymbolKind
 
 /** How far the summary of a card's callee has come; it only matters while no summary is known. */
 internal enum class SummaryProgress { NOT_REQUESTED, PENDING, UNAVAILABLE }

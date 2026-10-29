@@ -1,6 +1,6 @@
 package dev.insight.codereview
 
-import dev.insight.enrichment.CODE_AS_DATA
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree

@@ -14,6 +14,7 @@ import dev.insight.review.ChatFocus
 import java.awt.Container
 import javax.swing.JPanel
 import javax.swing.JRootPane
+import dev.insight.review.ui.ReviewTabsController
 
 class CanvasChatActivationPlatformTest : FileEditorManagerTestCase() {
     fun testDiffChatPreservesCanvasWhenWindowShowsImmediately() = checkActivation(DiffReviewPanel(project), "Diff Review", false)

@@ -1,5 +1,6 @@
 package dev.insight.callgraph
 
+import dev.insight.graph.CallGraph
 import java.awt.Dimension
 import java.awt.Rectangle
 

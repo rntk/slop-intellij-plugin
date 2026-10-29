@@ -1,21 +1,21 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.DetailGraph
-import dev.insight.callgraph.EdgeStyle
-import dev.insight.callgraph.Emphasis
-import dev.insight.callgraph.GraphDetail
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.hierarchy
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.DetailGraph
+import dev.insight.graph.EdgeStyle
+import dev.insight.graph.Emphasis
+import dev.insight.graph.GraphDetail
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.hierarchy
+import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.nio.file.Path
 
 class EnrichmentLensTest {
     private val service = "/p/src/app/Service.kt"

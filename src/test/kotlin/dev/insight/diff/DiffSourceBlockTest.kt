@@ -1,8 +1,8 @@
 package dev.insight.diff
 
 import com.google.gson.JsonParser
-import dev.insight.chat.SourceSide
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.SourceSide
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import kotlinx.coroutines.runBlocking

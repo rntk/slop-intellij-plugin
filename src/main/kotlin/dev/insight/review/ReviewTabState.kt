@@ -1,6 +1,6 @@
 package dev.insight.review
 
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 
 /** The words of a review tab's state errors: "diff" or "code" phrasing of the same checks. */
 internal class ReviewStateMessages(

@@ -3,8 +3,7 @@ package dev.insight.callgraph
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
-import dev.insight.chat.ChatTool
-import dev.insight.chat.chartTools
+import dev.insight.agent.ChatTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext

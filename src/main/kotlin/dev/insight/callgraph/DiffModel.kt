@@ -1,6 +1,15 @@
 package dev.insight.callgraph
 
 import com.intellij.ui.JBColor
+import dev.insight.graph.CallGraph
+import dev.insight.graph.DetailGraph
+import dev.insight.graph.Emphasis
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.GraphHierarchy
+import dev.insight.graph.LegendEntry
+import dev.insight.graph.NodeDecoration
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import java.awt.Color
 
 /**

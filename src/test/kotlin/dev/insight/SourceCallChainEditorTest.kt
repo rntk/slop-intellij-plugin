@@ -6,8 +6,9 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.psi.SmartPointerManager
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
-import javax.swing.JButton
+import dev.insight.graph.*
 import java.awt.Container
+import javax.swing.JButton
 
 class SourceCallChainEditorTest : LightJavaCodeInsightFixtureTestCase() {
     fun `test source columns use live documents and native highlighting and dispose editors`() {

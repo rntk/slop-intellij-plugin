@@ -11,7 +11,7 @@ import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.callgraph.git.GitReviewDiffProvider
+import dev.insight.diff.git.GitReviewDiffProvider
 import kotlinx.coroutines.*
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit

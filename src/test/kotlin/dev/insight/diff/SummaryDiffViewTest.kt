@@ -15,6 +15,13 @@ import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.event.PopupMenuEvent
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.ChangeSummaryActions
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryReviewPresentation
+import dev.insight.review.ui.selectSummariesMode
 
 class SummaryDiffViewTest : BasePlatformTestCase() {
     private val files get() = listOf("src/Alpha.kt", "src/Beta.kt", "docs/readme.md").map { path ->
@@ -23,7 +30,7 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
 
     fun testNativeDiffSelectionAndDisposalAcrossRebuildsAndModes() {
         val summaries = ReviewSummaries(buildSummaryTree(files))
-        val canvas = NoteCanvas({}, {}, project = project).apply {
+        val canvas = NoteCanvas({}, {}, project = project, extension = DiffCanvasCards({}, project)).apply {
             setSize(1600, 900)
             summariesView.mode = ReviewSummariesMode.DIFF
             summariesView.selected = "file:src/Alpha.kt"
@@ -68,7 +75,7 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
 
     fun testFilteringUsesOnlyMatchingFilesAndEmptyResultsReleaseTheViewer() {
         val summaries = ReviewSummaries(buildSummaryTree(files))
-        val canvas = NoteCanvas({}, {}, project = project).apply { summariesView.mode = ReviewSummariesMode.DIFF }
+        val canvas = NoteCanvas({}, {}, project = project, extension = DiffCanvasCards({}, project)).apply { summariesView.mode = ReviewSummariesMode.DIFF }
         val content = CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
         try {
             canvas.summariesView.fuzzy = "Beta.kt"
@@ -152,7 +159,7 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
         val many = files + (1..6).map { ReviewFile("lib/Gen$it.kt", "/repo/lib/Gen$it.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "lib/Gen$it.kt", "old\n", "new\n") }
         val summaries = ReviewSummaries(buildSummaryTree(many))
-        val canvas = NoteCanvas({}, {}, project = project).apply {
+        val canvas = NoteCanvas({}, {}, project = project, extension = DiffCanvasCards({}, project)).apply {
             setSize(1600, 900)
             summariesView.mode = ReviewSummariesMode.DIFF
             summariesView.selected = "file:src/Alpha.kt"

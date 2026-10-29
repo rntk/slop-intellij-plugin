@@ -1,12 +1,13 @@
 package dev.insight
 
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
 import dev.insight.enrichment.*
-import java.awt.Container
-import com.intellij.openapi.actionSystem.ActionToolbar
-import com.intellij.testFramework.TestActionEvent
+import dev.insight.graph.*
 import dev.insight.ui.PanelCommand
+import java.awt.Container
 import javax.swing.JComponent
 
 class CanvasPanelTest : BasePlatformTestCase() {

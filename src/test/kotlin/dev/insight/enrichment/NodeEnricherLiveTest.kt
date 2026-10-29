@@ -1,11 +1,11 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.SymbolKind
 import dev.insight.decisions.DEFAULT_DECISIONS_URL
 import dev.insight.decisions.DecisionsClient
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue

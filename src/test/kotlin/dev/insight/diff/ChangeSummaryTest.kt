@@ -5,9 +5,9 @@ import dev.insight.review.SummarySource.Claim
 import dev.insight.review.summarize
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmApiException

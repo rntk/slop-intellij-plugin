@@ -1,13 +1,16 @@
 package dev.insight.chat
 
-import com.google.gson.JsonParser
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.tracedFileCompletion
 import dev.insight.prompts.PromptTemplates
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.FinishReason
-import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
-import java.net.ConnectException
-import java.net.http.HttpTimeoutException
 
 /** Answers with an LLM that can call [tools]. Each reply runs one [ToolChatRunner] turn. */
 class LlmChatBackend(
@@ -50,17 +53,3 @@ class LlmChatBackend(
 internal val visualCodeAssistantPrompt = PromptTemplates.load("visual-code-assistant.md")
 
 fun projectChatSystemPrompt(): String = visualCodeAssistantPrompt + "\n\n" + PromptTemplates.load("project-chat.md")
-
-/** A short, user-facing explanation of a failed reply. */
-fun describeChatFailure(error: Throwable): String = when (error) {
-    is LlmApiException -> {
-        // llama.cpp and OpenAI-compatible servers explain failures in {"error":{"message":…}}.
-        val detail = runCatching {
-            JsonParser.parseString(error.responseBody).asJsonObject.getAsJsonObject("error").get("message").asString
-        }.getOrNull() ?: error.responseBody
-        "the LLM server returned HTTP ${error.statusCode}" + detail.trim().take(300).let { if (it.isEmpty()) "." else ": $it" }
-    }
-    is HttpTimeoutException -> "the LLM server did not answer in time. Increase the timeout in Settings → Tools → Insight Chat."
-    is ConnectException -> "could not connect to the LLM server. Check that it is running and the URL in Settings → Tools → Insight Chat."
-    else -> error.message ?: error.javaClass.simpleName
-}

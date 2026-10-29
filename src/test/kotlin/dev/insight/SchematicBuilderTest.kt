@@ -4,6 +4,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
 import dev.insight.enrichment.liftCalls
+import dev.insight.graph.*
 
 class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
     private val source = """

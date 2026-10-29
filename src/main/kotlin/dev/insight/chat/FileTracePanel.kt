@@ -19,6 +19,13 @@ import javax.swing.ListSelectionModel
 import javax.swing.table.DefaultTableModel
 import javax.swing.table.TableCellEditor
 import javax.swing.table.TableCellRenderer
+import dev.insight.agent.FileTrace
+import dev.insight.agent.TraceDocument
+import dev.insight.agent.TraceKey
+import dev.insight.agent.mergeRanges
+import dev.insight.agent.traceCoverage
+import dev.insight.agent.traceLineRanges
+import dev.insight.agent.traceLines
 
 /** A compact, deterministic view of the source supplied during each chat turn. */
 internal class FileTracePanel(

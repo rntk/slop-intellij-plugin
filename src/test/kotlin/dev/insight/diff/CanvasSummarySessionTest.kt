@@ -10,6 +10,7 @@ import dev.insight.review.summarize
 import kotlinx.coroutines.Job
 import org.junit.Assert.*
 import org.junit.Test
+import dev.insight.review.ui.CanvasSummarySession
 
 class CanvasSummarySessionTest {
     private val file = ReviewFile("a.kt", "/repo/a.kt", null, "modified", "-old\n+new\n", "1")

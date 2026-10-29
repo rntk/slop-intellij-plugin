@@ -1,16 +1,16 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
+import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.IOException
 
 class FlowTracerTest {
     private fun input(names: List<String>, calls: List<Pair<Int, Int>>) = EnrichmentInput("demo", CallGraph(

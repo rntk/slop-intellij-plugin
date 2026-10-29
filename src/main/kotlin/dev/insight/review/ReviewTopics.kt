@@ -2,14 +2,14 @@ package dev.insight.review
 
 import com.google.gson.JsonObject
 import com.intellij.openapi.diagnostic.logger
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolCallEvent
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
-import dev.insight.enrichment.JsonSchemas
-import dev.insight.enrichment.completeJson
-import dev.insight.enrichment.forEachConcurrently
-import dev.insight.enrichment.parseJsonObjectLeniently
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.completeJson
+import dev.insight.llm.forEachConcurrently
+import dev.insight.llm.parseJsonObjectLeniently
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage

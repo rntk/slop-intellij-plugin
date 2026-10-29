@@ -1,7 +1,10 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.selectView
 import java.awt.Container
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -48,9 +51,10 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
         val opened = mutableListOf<String>()
         val directories = mutableListOf<List<String>>()
         val files = listOf(file("a.kt"), file("b.kt"))
-        val canvas = NoteCanvas({ opened += it }, {}, summaryActions = SummaryCanvasActions(openDirectoryDiff = { directories += it.map { f -> f.path } })).apply { setSize(1200, 800) }
+        val cards = DiffCanvasCards({ opened += it }, openDirectoryDiff = { directories += it.map { f -> f.path } })
+        val canvas = NoteCanvas({ opened += it }, {}, extension = cards).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
+            canvas.showNotes(cards, DiffCanvasContent(wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
             val modes = descendants(canvas).filterIsInstance<javax.swing.JComboBox<*>>().single { it.name == "semantic-mode" }
@@ -81,20 +85,21 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
 
             selectView(descendants(canvas), "semantic-mode", "CONSTRUCTS")
             assertEquals(listOf("if", "TODO", "loop"), descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word })
-            canvas.showNotes(CanvasState(emptyList(), wordFiles = files, semantic = SemanticResult.Ready(changes)))
+            canvas.showNotes(cards, DiffCanvasContent(wordFiles = files, semantic = SemanticResult.Ready(changes)))
             assertEquals("the mode survives a rebuild", 1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
         } finally { canvas.dispose() }
     }
 
     fun testCardShowsCountingAndErrorPlaceholders() {
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
+        val cards = DiffCanvasCards({})
+        val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Counting))
+            canvas.showNotes(cards, DiffCanvasContent(semantic = SemanticResult.Counting))
             assertEquals("Counting…", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-counting" }.text)
-            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Failed("boom")))
+            canvas.showNotes(cards, DiffCanvasContent(semantic = SemanticResult.Failed("boom")))
             assertEquals("Could not count semantic changes: boom", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-error" }.text)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
-            canvas.showNotes(CanvasState(emptyList()))
+            canvas.showNotes(cards, DiffCanvasContent())
             assertTrue(descendants(canvas).none { it.name == "semantic-error" })
         } finally { canvas.dispose() }
     }
@@ -159,9 +164,10 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
 
     fun testScatterShowsEmptyStateWithoutFunctions() {
         val data = SemanticChanges(listOf(FileMetrics("a.kt", "modified", null, null, listOf(owner))))
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 800) }
+        val cards = DiffCanvasCards({})
+        val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(CanvasState(emptyList(), semantic = SemanticResult.Ready(data)))
+            canvas.showNotes(cards, DiffCanvasContent(semantic = SemanticResult.Ready(data)))
             selectView(descendants(canvas), "semantic-mode", "COMPLEXITY")
             assertTrue(descendants(canvas).none { it is SemanticComplexityChart })
             assertTrue(descendants(canvas).filterIsInstance<JLabel>().any { it.text == "No functions in the changed files." })

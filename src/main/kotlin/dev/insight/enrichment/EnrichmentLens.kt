@@ -1,18 +1,18 @@
 package dev.insight.enrichment
 
 import com.intellij.ui.JBColor
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.DetailGraph
-import dev.insight.callgraph.Emphasis
-import dev.insight.callgraph.EdgeStyle
-import dev.insight.callgraph.GraphDecorations
-import dev.insight.callgraph.GraphHierarchy
-import dev.insight.callgraph.LegendEntry
-import dev.insight.callgraph.NodeDecoration
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.stableKey
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.DetailGraph
+import dev.insight.graph.EdgeStyle
+import dev.insight.graph.Emphasis
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.GraphHierarchy
+import dev.insight.graph.LegendEntry
+import dev.insight.graph.NodeDecoration
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.stableKey
 import java.awt.Color
 import kotlin.math.roundToInt
 
@@ -68,7 +68,7 @@ object EnrichmentLens {
     internal val importanceNames = listOf("Trivial", "Minor", "Supporting", "Important", "Core")
 
     /**
-     * Ids in `graph` (the current build's [CallGraph], whose ids equal [dev.insight.callgraph.GraphHierarchy] ids for
+     * Ids in `graph` (the current build's [CallGraph], whose ids equal [dev.insight.graph.GraphHierarchy] ids for
      * symbols) to exclude from the view under [options]. The snapshot may come from an earlier build.
      */
     fun hiddenSymbols(snapshot: EnrichmentSnapshot, graph: CallGraph, options: LensOptions): Set<Int> {

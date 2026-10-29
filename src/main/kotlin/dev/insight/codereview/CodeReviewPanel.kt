@@ -36,11 +36,8 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import dev.insight.InsightBundle
-import dev.insight.diff.ReviewSidePages
-import dev.insight.diff.ReviewTabsController
-import dev.insight.diff.openFilesOnActivate
-import dev.insight.diff.selectedFilePaths
 import dev.insight.review.ReviewDiskCache
+import dev.insight.agent.findSourceFile
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
 import java.awt.BorderLayout
@@ -66,6 +63,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ui.ReviewTabsController
+import dev.insight.review.ui.openFilesOnActivate
+import dev.insight.review.ui.selectedFilePaths
 
 private val LOG = logger<CodeReviewPanel>()
 

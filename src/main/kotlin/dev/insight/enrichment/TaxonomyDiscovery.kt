@@ -1,8 +1,12 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.clipLine
+import dev.insight.llm.jsonText
 
 /**
  * Proposes the project's functional areas ([Domain]s) in one generative request, from the group labels when there

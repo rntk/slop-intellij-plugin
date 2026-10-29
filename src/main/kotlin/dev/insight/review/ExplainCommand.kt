@@ -5,8 +5,8 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.components.ActionLink
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.callgraph.explainChart
-import dev.insight.chat.ChatMessage
-import dev.insight.chat.ChatRole
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane

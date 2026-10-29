@@ -1,14 +1,14 @@
 package dev.insight.review
 
-import dev.insight.diff.SegmentRef
-import dev.insight.diff.SummaryLinks
-import dev.insight.diff.SummaryWord
 import dev.insight.review.SummarySource.Claim
 import dev.insight.review.SummarySource.Rows
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
+import dev.insight.review.ui.SegmentRef
+import dev.insight.review.ui.SummaryLinks
+import dev.insight.review.ui.SummaryWord
 
 class SummaryCitationsTest {
     @get:Rule val temp = TemporaryFolder()

@@ -8,6 +8,17 @@ import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import javax.swing.JLabel
+import dev.insight.review.ui.CanvasState
+import dev.insight.review.ui.ChangeSummariesViewState
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.SearchCrumb
+import dev.insight.review.ui.SummariesCard
+import dev.insight.review.ui.SummaryContext
+import dev.insight.review.ui.SummaryLinks
+import dev.insight.review.ui.SummaryWord
+import dev.insight.review.ui.summaryNodeTitle
+import dev.insight.review.ui.levelsBelow
+import dev.insight.review.ui.selectSummariesMode
 
 class SummaryMergedFoldersTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")

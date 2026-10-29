@@ -1,26 +1,26 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.DetailGraph
-import dev.insight.callgraph.GraphDetail
-import dev.insight.callgraph.GraphSections
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.Section
-import dev.insight.callgraph.SectionFooter
 import dev.insight.callgraph.SectionMetrics
 import dev.insight.callgraph.SectionText
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.hierarchy
 import dev.insight.callgraph.layoutSections
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.DetailGraph
+import dev.insight.graph.GraphDetail
+import dev.insight.graph.GraphSections
+import dev.insight.graph.RelationKind
+import dev.insight.graph.Section
+import dev.insight.graph.SectionFooter
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.hierarchy
+import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.nio.file.Path
 
 class SectionLensTest {
     private val service = "/p/src/app/Service.kt"

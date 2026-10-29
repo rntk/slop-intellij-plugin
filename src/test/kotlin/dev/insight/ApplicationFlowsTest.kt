@@ -1,14 +1,17 @@
 package dev.insight
 
 import dev.insight.callgraph.*
+import dev.insight.enrichment.ApplicationFlow
+import dev.insight.enrichment.ApplicationFlowSplitter
+import dev.insight.enrichment.InMemoryEnrichmentCache
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointKind
-import dev.insight.enrichment.InMemoryEnrichmentCache
+import dev.insight.graph.*
 import dev.insight.llm.Completion
+import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.IOException
 
 class ApplicationFlowsTest {
     private fun graph(names: List<String>, links: List<Pair<Int, Int>>) = CallGraph(

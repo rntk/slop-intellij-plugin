@@ -1,8 +1,9 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.SymbolKind
+
 
 /**
  * PSI-free description of one graph node, extracted once inside a read action. Everything after extraction
@@ -41,7 +42,7 @@ data class EnrichmentInput(
     val graph: CallGraph,
     /** Facts by node id; nodes without facts (parameters, variables, edited code) are not classified. */
     val facts: Map<Int, SymbolFacts>,
-    val occurrences: List<dev.insight.callgraph.CallOccurrence> = emptyList(),
+    val occurrences: List<dev.insight.graph.CallOccurrence> = emptyList(),
 )
 
 data class ChoiceValue(val choice: String, val probabilities: Map<String, Double>, val confidence: Double)

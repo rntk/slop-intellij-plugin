@@ -1,12 +1,12 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonParser
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.CallOccurrence
-import dev.insight.callgraph.CallOperation
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.CallOperation
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.Completion
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*

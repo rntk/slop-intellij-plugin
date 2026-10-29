@@ -3,9 +3,12 @@ package dev.insight.callgraph
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallGraphResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 

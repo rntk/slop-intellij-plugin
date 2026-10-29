@@ -1,12 +1,16 @@
 package dev.insight.callgraph.kotlin
 
 import com.intellij.psi.PsiElement
+import dev.insight.callgraph.CallGraphAnalyzer
 import dev.insight.callgraph.CallGraphLanguageSupport
-import dev.insight.callgraph.SymbolKind
-import dev.insight.callgraph.RelationKind
-import org.jetbrains.kotlin.psi.*
+import dev.insight.callgraph.CallResolution
+import dev.insight.callgraph.resolveTargets
+import dev.insight.graph.CallOperation
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import org.jetbrains.kotlin.asJava.elements.KtLightElement
 import org.jetbrains.kotlin.asJava.toLightMethods
+import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.psi.KtAnnotationEntry
 import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallElement
@@ -15,10 +19,6 @@ import org.jetbrains.kotlin.psi.KtClass
 import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtPropertyAccessor
-import dev.insight.callgraph.CallResolution
-import dev.insight.callgraph.CallOperation
-import dev.insight.callgraph.resolveTargets
-import dev.insight.callgraph.CallGraphAnalyzer
 
 /**
  * Loaded only when the Kotlin plugin is present (see META-INF/call-graph-kotlin.xml).

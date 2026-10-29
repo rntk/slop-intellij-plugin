@@ -4,6 +4,13 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.psi.*
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.CallOperation
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /** Builds a complete snapshot of supported project source, including disconnected declarations. Read action only. */
 object ProjectGraphAnalyzer {

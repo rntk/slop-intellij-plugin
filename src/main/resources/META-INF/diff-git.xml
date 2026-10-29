@@ -1,6 +1,6 @@
 <idea-plugin>
     <extensions defaultExtensionNs="dev.insight">
         <diffBaseProvider implementation="dev.insight.callgraph.git.GitDiffBaseProvider"/>
-        <reviewDiffProvider implementation="dev.insight.callgraph.git.GitReviewDiffProvider"/>
+        <reviewDiffProvider implementation="dev.insight.diff.git.GitReviewDiffProvider"/>
     </extensions>
 </idea-plugin>

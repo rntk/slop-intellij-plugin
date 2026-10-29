@@ -12,9 +12,10 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
-import dev.insight.chat.SourceSide
+import dev.insight.agent.SourceSide
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
+import dev.insight.review.ui.DiffSourceEditor
 
 class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
     fun testSnapshotValidationIncludesUnsavedEditsAndInvalidCoordinates() {

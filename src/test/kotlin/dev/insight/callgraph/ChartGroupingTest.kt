@@ -2,7 +2,23 @@ package dev.insight.callgraph
 
 import com.google.gson.JsonParser
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallSite
+import dev.insight.graph.ControlFrame
+import dev.insight.graph.ControlKind
+import dev.insight.graph.ExitSite
+import dev.insight.graph.FlowCard
+import dev.insight.graph.FlowDecision
+import dev.insight.graph.FlowRef
+import dev.insight.graph.FlowRegionEvidence
+import dev.insight.graph.FlowSource
+import dev.insight.graph.FlowStart
+import dev.insight.graph.SourceSite
+import dev.insight.graph.occurrenceId
+import dev.insight.graph.presentation
 
 class ChartGroupingTest : BasePlatformTestCase() {
     private val graph = CallGraph((0..6).map {

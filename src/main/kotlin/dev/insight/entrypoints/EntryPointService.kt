@@ -4,19 +4,19 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
-import dev.insight.callgraph.CallGraphResult
-import dev.insight.chat.ProjectFiles
-import dev.insight.chat.ChatSettings
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ProjectFiles
+import dev.insight.agent.ToolInputException
 import dev.insight.chat.projectTools
-import dev.insight.enrichment.configuredLlmClient
+import dev.insight.graph.CallGraphResult
+import dev.insight.settings.ChatSettings
+import dev.insight.settings.configuredLlmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 /** Finds the project's entry points on the current code, reusing earlier work only where the files are unchanged. */
 @Service(Service.Level.PROJECT)

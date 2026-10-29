@@ -12,10 +12,10 @@ import com.jetbrains.python.psi.resolve.PyResolveContext
 import com.jetbrains.python.psi.types.TypeEvalContext
 import com.jetbrains.python.pyi.PyiUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /**
  * Loaded only when the Python plugin is present (see META-INF/call-graph-python.xml).

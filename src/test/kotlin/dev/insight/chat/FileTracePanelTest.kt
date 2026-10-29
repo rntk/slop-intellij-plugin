@@ -5,6 +5,15 @@ import com.google.gson.JsonObject
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.labels.LinkLabel
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
+import dev.insight.agent.FileTrace
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.TraceFile
+import dev.insight.agent.TraceKey
+import dev.insight.agent.projectContextTools
+import dev.insight.agent.tracedFileCompletion
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmMessage

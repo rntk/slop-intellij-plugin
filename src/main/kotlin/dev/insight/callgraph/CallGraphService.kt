@@ -11,8 +11,12 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.psi.util.PsiModificationTracker
-import kotlinx.coroutines.CoroutineScope
+import dev.insight.graph.CallDirection
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.exploreCalls
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 
 data class CallGraphRequest(
     val direction: CallDirection = CallDirection.BOTH,
@@ -20,13 +24,6 @@ data class CallGraphRequest(
     val includeLibraries: Boolean = false,
     val maxNodes: Int = 150,
 )
-
-/**
- * A graph snapshot plus pointers for navigation. Pointers are indexed by node id and are null
- * for code that was edited during the search.
- */
-class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPointer<PsiElement>?>,
-    val occurrences: List<CallOccurrence> = emptyList())
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {

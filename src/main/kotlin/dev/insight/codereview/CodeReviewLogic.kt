@@ -1,6 +1,6 @@
 package dev.insight.codereview
 
-import dev.insight.chat.SourceSide
+import dev.insight.agent.SourceSide
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries

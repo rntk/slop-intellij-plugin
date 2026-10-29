@@ -1,9 +1,9 @@
 package dev.insight.codereview
 
-import dev.insight.chat.CancellableSearchInput
-import dev.insight.chat.SourceSide
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.CancellableSearchInput
+import dev.insight.agent.SourceSide
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange

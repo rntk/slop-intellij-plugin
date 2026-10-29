@@ -1,16 +1,16 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
-import dev.insight.llm.LlamaCppClient
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.LLAMA_CPP_DEFAULT_BASE_URL
+import dev.insight.llm.LlamaCppClient
+import java.time.Duration
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Test
-import java.time.Duration
 
 /** Runs the generative steps against a live llama.cpp server; set `INSIGHT_LIVE=1` (and optionally `INSIGHT_LLM_URL`). */
 class EnrichmentLlmLiveTest {

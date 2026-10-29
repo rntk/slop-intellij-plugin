@@ -2,7 +2,7 @@ package dev.insight.enrichment
 
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 
 class SymbolFactsExtractorTest : LightJavaCodeInsightFixtureTestCase() {
     private val javaSource = """

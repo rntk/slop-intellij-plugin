@@ -7,6 +7,8 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerKeys
 import com.intellij.testFramework.FileEditorManagerTestCase
+import dev.insight.agent.TraceDocument
+import dev.insight.agent.TraceKey
 
 class FileTraceNavigatorTest : FileEditorManagerTestCase() {
     fun `test navigation acquires read access from an unlocked EDT callback`() {

@@ -3,22 +3,22 @@ package dev.insight.enrichment
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.project.Project
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphResult
-import dev.insight.callgraph.FlowRegionEvidence
-import dev.insight.callgraph.SymbolKind
-import dev.insight.chat.ChatSettings
 import dev.insight.core.withPhaseProgress
-import dev.insight.llm.LlmClient
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.FlowRegionEvidence
+import dev.insight.graph.SymbolKind
+import dev.insight.settings.ChatSettings
+import dev.insight.settings.configuredLlmClient
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.nio.file.Files
-import java.nio.file.Path
 
 /** One enrichment of one graph build. Ids in [enrichment] refer to [graph]. */
 class EnrichmentSnapshot(val graph: CallGraph, val input: EnrichmentInput, val enrichment: Enrichment, val report: Path)
@@ -42,7 +42,7 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
         withContext(Dispatchers.IO) { SubflowSummarizer(llm()::complete, cache).summarize(candidates, facts, known) }
 
     /** Bottom-up summaries of [input]'s functions (see [FunctionSummarizer]); cached judgments are shared with [enrich]. */
-    suspend fun summarizeFunctions(input: EnrichmentInput, calls: Map<Int, List<dev.insight.callgraph.CallGraphEdge>>,
+    suspend fun summarizeFunctions(input: EnrichmentInput, calls: Map<Int, List<dev.insight.graph.CallGraphEdge>>,
         heuristics: Map<Int, Heuristics>, visibility: Map<Int, Double>, options: SummaryOptions,
         progress: EnrichmentProgress = EnrichmentProgress.NONE): SummaryResult =
         withContext(Dispatchers.IO) { FunctionSummarizer(llm()::complete, cache, options).summarize(input, calls, heuristics, visibility, progress) }
@@ -99,13 +99,13 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
 
     /** Splits discovered starts without requiring a full enrichment run. */
     suspend fun splitFlows(result: CallGraphResult, entries: List<dev.insight.entrypoints.EntryPoint>,
-        progress: (String) -> Unit = {}): dev.insight.callgraph.ApplicationFlowResult =
+        progress: (String) -> Unit = {}): dev.insight.enrichment.ApplicationFlowResult =
         withBackgroundProgress(project, "Splitting application flows") {
             reportRawProgress { reporter ->
                 reporter.text("Reading source facts…")
                 val facts = smartReadAction(project) { SymbolFactsExtractor.extract(project, result) }
                 withContext(Dispatchers.IO) {
-                    dev.insight.callgraph.ApplicationFlowSplitter(llm()::complete, cache)
+                    dev.insight.enrichment.ApplicationFlowSplitter(llm()::complete, cache)
                         .split(result.graph, entries, project.basePath, facts, latest) { message ->
                             reporter.text(message)
                             progress(message)
@@ -118,6 +118,3 @@ class EnrichmentService(private val project: Project, val scope: CoroutineScope)
 
     private fun llm() = configuredLlmClient()
 }
-
-/** The LLM client for background analyses. Call on IO: reading the API key from the password safe can block. */
-internal fun configuredLlmClient(): LlmClient = ChatSettings.getInstance().createClient()

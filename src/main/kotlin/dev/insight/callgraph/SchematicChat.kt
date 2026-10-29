@@ -3,16 +3,21 @@ package dev.insight.callgraph
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.intellij.openapi.project.Project
-import dev.insight.chat.ChatTool
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.booleanArg
-import dev.insight.chat.intArg
-import dev.insight.chat.objectTool
-import dev.insight.chat.optionalStringArg
-import dev.insight.chat.projectContextTools
-import dev.insight.chat.stringArg
+import dev.insight.agent.ChatTool
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.booleanArg
+import dev.insight.agent.intArg
+import dev.insight.agent.objectTool
+import dev.insight.agent.optionalStringArg
+import dev.insight.agent.projectContextTools
+import dev.insight.agent.stringArg
 import dev.insight.enrichment.FunctionSummary
-import dev.insight.enrichment.JsonSchemas
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallOccurrence
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.fuzzyNameSearch
+import dev.insight.llm.JsonSchemas
 
 /**
  * What a schematic chat sees and changes on the canvas. Reading the code never touches the canvas; only these calls

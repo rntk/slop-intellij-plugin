@@ -1,6 +1,6 @@
 package dev.insight.review
 
-import dev.insight.chat.SourceSide
+import dev.insight.agent.SourceSide
 
 /** One-based inclusive coordinates in an immutable side of the review snapshot. */
 data class ReviewSourceRange(val path: String, val startLine: Int, val endLine: Int, val side: SourceSide = SourceSide.AFTER)

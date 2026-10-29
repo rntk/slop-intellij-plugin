@@ -5,6 +5,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.pom.Navigatable
@@ -12,19 +13,27 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.insight.enrichment.EnrichmentService
-import dev.insight.entrypoints.EntryPoint
-import dev.insight.entrypoints.EntryPointService
-import dev.insight.ui.CollapsibleControls
-import dev.insight.ui.PanelCommand
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
-import kotlinx.coroutines.*
+import dev.insight.enrichment.ApplicationFlow
+import dev.insight.enrichment.ApplicationFlowResult
+import dev.insight.enrichment.EnrichmentService
+import dev.insight.enrichment.FlowGraph
+import dev.insight.entrypoints.EntryPoint
+import dev.insight.entrypoints.EntryPointService
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.NodeDecoration
+import dev.insight.graph.RelationKind
+import dev.insight.graph.Section
+import dev.insight.graph.SymbolKind
+import dev.insight.ui.CollapsibleControls
+import dev.insight.ui.PanelCommand
 import java.awt.*
 import java.awt.event.MouseWheelEvent
-import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 import kotlin.math.pow
+import kotlinx.coroutines.*
 
 /**
  * The Flows tab: each entrypoint is split into logical flows, and every flow is drawn as its own small graph instead

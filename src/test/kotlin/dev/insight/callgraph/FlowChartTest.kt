@@ -1,8 +1,35 @@
 package dev.insight.callgraph
 
+import dev.insight.graph.BranchKind
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallSite
+import dev.insight.graph.ControlFrame
+import dev.insight.graph.ControlKind
+import dev.insight.graph.ControlText
+import dev.insight.graph.DecisionKind
+import dev.insight.graph.ExitSite
+import dev.insight.graph.FlowBoard
+import dev.insight.graph.FlowBranch
+import dev.insight.graph.FlowCard
+import dev.insight.graph.FlowChart
+import dev.insight.graph.FlowDecision
+import dev.insight.graph.FlowExit
+import dev.insight.graph.FlowItem
+import dev.insight.graph.FlowLane
+import dev.insight.graph.FlowLoop
+import dev.insight.graph.FlowRef
+import dev.insight.graph.FlowRegion
+import dev.insight.graph.FlowSource
+import dev.insight.graph.FlowStart
+import dev.insight.graph.FlowStep
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SourceSite
+import dev.insight.graph.buildFlowChart
+import dev.insight.graph.ends
+import dev.insight.graph.stepsWithin
+import java.awt.Rectangle
 import org.junit.Assert.*
 import org.junit.Test
-import java.awt.Rectangle
 
 class FlowChartTest {
     private fun edges(vararg calls: Pair<Int, Int>) = calls.map { (from, to) -> CallGraphEdge(from, to) }

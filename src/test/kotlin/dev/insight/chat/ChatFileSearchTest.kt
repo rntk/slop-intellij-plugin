@@ -2,6 +2,7 @@ package dev.insight.chat
 
 import org.junit.Assert.*
 import org.junit.Test
+import dev.insight.agent.ProjectFiles
 
 class ChatFileSearchTest {
     @Test fun `file names rank above directory matches and results are bounded`() {

@@ -14,6 +14,7 @@ import com.intellij.openapi.fileEditor.FileEditorProvider
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.pom.Navigatable
@@ -25,21 +26,24 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import dev.insight.ui.heading
-import dev.insight.entrypoints.EntryPointService
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import dev.insight.entrypoints.EntryPointLens
+import dev.insight.entrypoints.EntryPointService
+import dev.insight.graph.CallDirection
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.GraphDecorations
+import dev.insight.ui.heading
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.beans.PropertyChangeListener
 import javax.swing.JButton
-import com.intellij.openapi.ui.ComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 class CallGraphFile(val root: SmartPsiElementPointer<PsiElement>, name: String) : LightVirtualFile("Call Graph: $name")
 

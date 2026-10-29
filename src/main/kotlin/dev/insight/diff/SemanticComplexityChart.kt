@@ -1,12 +1,12 @@
 package dev.insight.diff
 
-import com.intellij.ui.Gray
 import com.intellij.ui.ColorUtil
+import com.intellij.ui.Gray
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
@@ -20,8 +20,8 @@ import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
-import kotlin.math.cos
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt

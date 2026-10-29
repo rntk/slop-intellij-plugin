@@ -1,6 +1,6 @@
 package dev.insight.diff
 
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.SymbolKind
 import org.junit.Assert.*
 import org.junit.Test
 

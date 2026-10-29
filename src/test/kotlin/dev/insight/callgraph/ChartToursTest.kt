@@ -4,7 +4,14 @@ import com.google.gson.JsonParser
 import com.intellij.openapi.components.service
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.FlowCard
+import dev.insight.graph.FlowSource
+import dev.insight.graph.stableKey
 import javax.swing.JMenu
 import javax.swing.JMenuItem
 

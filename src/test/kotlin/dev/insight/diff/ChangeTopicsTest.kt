@@ -2,7 +2,7 @@ package dev.insight.diff
 
 import dev.insight.review.summarize
 import com.google.gson.JsonParser
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
@@ -22,6 +22,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
+import dev.insight.review.ui.ChangeTopicsViewState
+import dev.insight.review.ui.TopicsCard
 
 class ChangeTopicsTest {
     private fun file(path: String, version: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new", version)
@@ -66,7 +68,7 @@ class ChangeTopicsTest {
     @Test fun `large patch reads evict older tool rounds while preserving current evidence`() = runBlocking {
         var topics = ReviewTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
         var calls = 0
-        val reader = object : dev.insight.chat.ChatTool {
+        val reader = object : dev.insight.agent.ChatTool {
             override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch",
                 JsonParser.parseString("""{"type":"object"}""").asJsonObject)
             override suspend fun call(arguments: com.google.gson.JsonObject) = "y".repeat(12_000)
@@ -274,7 +276,7 @@ class ChangeTopicsTest {
         var topics = ReviewTopics(listOf(source))
         var calls = 0
         var reads = 0
-        val reader = object : dev.insight.chat.ChatTool {
+        val reader = object : dev.insight.agent.ChatTool {
             override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch", JsonParser.parseString("""{"type":"object"}""").asJsonObject)
             override suspend fun call(arguments: com.google.gson.JsonObject): String { reads++; return source.patch.drop(10) }
         }

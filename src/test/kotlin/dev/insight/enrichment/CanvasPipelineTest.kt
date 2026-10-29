@@ -1,8 +1,8 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
 import dev.insight.llm.Completion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking

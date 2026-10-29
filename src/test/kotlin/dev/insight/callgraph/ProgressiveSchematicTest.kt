@@ -1,12 +1,16 @@
 package dev.insight.callgraph
 
-import com.intellij.psi.PsiElement
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.enrichment.liftCalls
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.RelationKind
+import dev.insight.graph.hierarchy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async

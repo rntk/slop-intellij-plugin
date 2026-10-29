@@ -1,16 +1,16 @@
 package dev.insight.diff
 
-import dev.insight.chat.ChatTool
-import dev.insight.chat.SourcePoint
-import dev.insight.chat.SourceSide
-import dev.insight.chat.diffSideArg
-import dev.insight.chat.ToolInputException
-import dev.insight.chat.intArg
-import dev.insight.chat.objectTool
-import dev.insight.chat.pathsArg
-import dev.insight.chat.sourcePointTool
-import dev.insight.chat.stringArg
-import dev.insight.enrichment.JsonSchemas
+import dev.insight.agent.ChatTool
+import dev.insight.agent.SourcePoint
+import dev.insight.agent.SourceSide
+import dev.insight.agent.diffSideArg
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.intArg
+import dev.insight.agent.objectTool
+import dev.insight.agent.pathsArg
+import dev.insight.agent.sourcePointTool
+import dev.insight.agent.stringArg
+import dev.insight.llm.JsonSchemas
 import dev.insight.review.ReviewContext
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.addNotesTool
@@ -80,4 +80,4 @@ internal fun diffChatTools(context: DiffReviewContext): List<ChatTool> =
 internal const val DIFF_PAGE_SIZE = 50
 internal const val MAX_READ_PATHS = 10
 
-internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "\n\n" + PromptTemplates.load("diff-review-system.md") + "\n\n" + dev.insight.chat.projectContextPrompt
+internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "\n\n" + PromptTemplates.load("diff-review-system.md") + "\n\n" + dev.insight.agent.projectContextPrompt

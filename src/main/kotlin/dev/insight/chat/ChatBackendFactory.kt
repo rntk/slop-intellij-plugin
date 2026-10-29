@@ -1,6 +1,8 @@
 package dev.insight.chat
 
 import com.intellij.openapi.project.Project
+import dev.insight.agent.ChatBackend
+import dev.insight.settings.ChatSettings
 
 /** Creates a backend for each turn on IO; owned UI resources are cleared/disposed on the EDT. */
 fun interface ChatBackendFactory {
@@ -24,30 +26,4 @@ internal class ProjectChatBackendFactory(private val project: Project) : ChatBac
 
     override fun clear() = sourcePoints.clear()
     override fun dispose() = sourcePoints.dispose()
-}
-
-/** Chart backend policy: chart actions plus the project tools useful for source evidence. */
-internal class ChartChatBackendFactory(
-    private val project: Project,
-    private val chart: ChartChatContext,
-) : ChatBackendFactory {
-    private val sourcePoints = SourcePoints(project, "Chat")
-
-    override fun chartContext(): ChartChatContext = chart
-
-    override fun create(suggestFollowups: (List<String>) -> Unit): ChatBackend {
-        val client = ChatSettings.getInstance().createClient()
-        val tools = chartTools(chart, suggestFollowups) + projectTools(project, sourcePoints)
-            .filter { it.definition.name in SOURCE_TOOLS }
-        return LlmChatBackend(client::complete, tools,
-            chartChatSystemPrompt(tools, references = chart is ChartReferences, scoped = chart.scoped),
-            maxToolRounds = 100, context = chart::snapshot)
-    }
-
-    override fun clear() = sourcePoints.clear()
-    override fun dispose() = sourcePoints.dispose()
-
-    private companion object {
-        val SOURCE_TOOLS = setOf("read_file", "list_files", "search_text", "point_to_code")
-    }
 }

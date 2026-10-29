@@ -6,9 +6,9 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallResolution
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.resolveTargets
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.CancellationException
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.expandedMembers

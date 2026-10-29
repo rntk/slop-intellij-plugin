@@ -10,6 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
+import dev.insight.review.ui.ReviewContextSummaryLauncher
 
 class ReviewLauncherCancellationTest : BasePlatformTestCase() {
     private val start = ReviewSummaries(buildSummaryTree(emptyList<ReviewFile>()))

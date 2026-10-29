@@ -7,15 +7,15 @@ import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.RelationKind
-import dev.insight.chat.ChatSettings
-import dev.insight.llm.LlamaCppClient
+import dev.insight.graph.RelationKind
 import dev.insight.llm.LLAMA_CPP_DEFAULT_BASE_URL
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import dev.insight.llm.LlamaCppClient
+import dev.insight.settings.ChatSettings
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /**
  * Enriches this plugin's own sources against the live servers and writes `build/enrichment-report.json` for review.
@@ -43,7 +43,7 @@ class EnrichmentLiveTest : LightJavaCodeInsightFixtureTestCase() {
         myFixture.copyDirectoryToProject("dev/insight", "dev/insight")
         val result = ProjectGraphAnalyzer.build(project)
         val facts = SymbolFactsExtractor.extract(project, result)
-        val calls = { graph: dev.insight.callgraph.CallGraph -> graph.edges.count { it.kind == RelationKind.CALL } }
+        val calls = { graph: dev.insight.graph.CallGraph -> graph.edges.count { it.kind == RelationKind.CALL } }
         println("LIVE graph: ${result.graph.nodes.size} nodes, ${calls(result.graph)} calls (${calls(liftCalls(result.graph))} lifted), ${facts.size} facts")
         val input = EnrichmentInput("Insight Workbench (IntelliJ plugin: application graph, LLM chat, dashboard)", result.graph, facts)
         val cache = FileEnrichmentCache(Path.of(root, "build", "enrichment-cache.json"))

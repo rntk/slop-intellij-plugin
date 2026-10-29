@@ -10,6 +10,7 @@ import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 /**
  * Runs the analyzer against real Go PSI without a Go SDK. Cross-package imports resolve in GOPATH mode

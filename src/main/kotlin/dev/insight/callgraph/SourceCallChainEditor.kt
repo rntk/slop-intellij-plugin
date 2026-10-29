@@ -22,6 +22,7 @@ import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
@@ -31,6 +32,10 @@ import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
+import dev.insight.graph.CallDirection
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.hierarchy
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
@@ -41,7 +46,6 @@ import java.awt.event.ComponentEvent
 import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import java.beans.PropertyChangeListener
-import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
 
 class SourceCallChainFile(val result: CallGraphResult, val chain: SourceCallChain, val rootName: String) :

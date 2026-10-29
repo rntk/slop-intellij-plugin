@@ -1,0 +1,60 @@
+package dev.insight.agent
+
+import com.google.gson.JsonObject
+import dev.insight.llm.JsonSchemas
+import dev.insight.llm.LlmTool
+
+/** One-based, inclusive coordinates. [side] is present only in a diff review. */
+data class SourcePoint(
+    val path: String,
+    val line: Int,
+    val endLine: Int = line,
+    val comment: String? = null,
+    val side: SourceSide? = null,
+)
+
+/** Shared presentation tool; the caller resolves paths against its own chat context. */
+fun sourcePointTool(diff: Boolean = false, show: suspend (SourcePoint) -> String): ChatTool = object : ChatTool {
+    override val definition = LlmTool(
+        "point_to_code",
+        "Show a file at a highlighted line or range in a read-only text editor, with an optional comment. " +
+            "Each call adds a separate side-by-side column, including repeated locations. Use paths and line numbers from inspected code.",
+        JsonSchemas.obj(
+            "path" to JsonSchemas.string(minLength = 1,
+                description = "Project-relative file path. Review files use snapshot source; other project files use current content."),
+            "line" to JsonSchemas.integer(minimum = 1, description = "First line to highlight, one-based."),
+            "end_line" to JsonSchemas.integer(minimum = 1,
+                description = "Last line to highlight, inclusive. Defaults to line; clamped to the end of the file."),
+            "comment" to JsonSchemas.string(maxLength = 2000, description = "Optional explanation shown above this editor."),
+            required = listOf("path", "line"), additionalProperties = false,
+        ).apply {
+            if (diff) getAsJsonObject("properties").add("side", SourceSide.diffSchema(
+                description = "Snapshot side, default after. Use before for removed code."))
+        },
+    )
+
+    override suspend fun call(arguments: JsonObject): String {
+        val allowed = setOf("path", "line", "end_line", "comment") + if (diff) setOf("side") else emptySet()
+        if (arguments.keySet().any { it !in allowed }) throw ToolInputException("Unknown argument for point_to_code")
+        fun string(name: String): String {
+            val value = arguments[name]
+            if (value == null || !value.isJsonPrimitive || !value.asJsonPrimitive.isString)
+                throw ToolInputException("$name must be a string")
+            return value.asString
+        }
+        fun line(name: String): Int {
+            val value = arguments[name]
+            val number = value?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                ?.asString?.takeIf { it.matches(Regex("[1-9][0-9]*")) }?.toIntOrNull()
+            return number ?: throw ToolInputException("$name must be a positive integer")
+        }
+        val path = string("path").takeIf { it.isNotBlank() } ?: throw ToolInputException("path must not be empty")
+        val start = line("line")
+        val end = if (arguments.has("end_line")) line("end_line") else start
+        if (end < start) throw ToolInputException("end_line must not be before line")
+        val comment = if (arguments.has("comment")) string("comment").takeIf { it.isNotBlank() } else null
+        if (comment != null && comment.length > 2000) throw ToolInputException("comment exceeds 2000 characters")
+        val side = if (diff) arguments.diffSideArg() else null
+        return show(SourcePoint(path, start, end, comment, side))
+    }
+}

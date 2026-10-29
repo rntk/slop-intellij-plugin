@@ -5,6 +5,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import kotlinx.coroutines.*
+import dev.insight.agent.ToolInputException
 
 class ProjectToolsTest : BasePlatformTestCase() {
     private fun call(name: String, arguments: String): String {

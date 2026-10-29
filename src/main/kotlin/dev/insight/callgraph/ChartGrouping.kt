@@ -1,7 +1,13 @@
 package dev.insight.callgraph
 
 import com.google.gson.Gson
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
+import dev.insight.graph.CallGraph
+import dev.insight.graph.FlowRegion
+import dev.insight.graph.FlowRegionEvidence
+import dev.insight.graph.FlowRegionPlan
+import dev.insight.graph.occurrenceId
+import dev.insight.graph.validateRegionPlans
 
 /** Chat can name subsets of source-backed blocks, never invent chart structure. */
 data class ChartCallGroup(val occurrenceIds: List<String>, val title: String, val description: String? = null) {

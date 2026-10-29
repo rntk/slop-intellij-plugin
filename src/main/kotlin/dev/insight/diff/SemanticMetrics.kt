@@ -18,9 +18,9 @@ import com.intellij.psi.PsiWhiteSpace
 import dev.insight.callgraph.CallGraphAnalyzer
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallSiteAnalyzer
-import dev.insight.callgraph.ControlText
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.ControlText
+import dev.insight.graph.SymbolKind
 import java.util.BitSet
 import java.util.IdentityHashMap
 import java.util.concurrent.CancellationException

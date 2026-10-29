@@ -12,6 +12,7 @@ import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
+import dev.insight.graph.CallGraphNode
 
 /** PSI queries used by the call graph. Every function must be called inside a read action. */
 object CallGraphAnalyzer {

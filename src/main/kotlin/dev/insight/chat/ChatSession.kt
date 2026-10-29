@@ -14,6 +14,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CopyOnWriteArrayList
+import dev.insight.agent.ChatConversation
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.describeChatFailure
+import dev.insight.agent.ChatRole
+import dev.insight.agent.FileTrace
+import dev.insight.agent.FileTraceContext
+import dev.insight.agent.ToolCallEvent
+import dev.insight.settings.ChatSettings
 
 /** An independently owned conversation, reusable by the sidebar and chart. */
 open class ChatSession(
@@ -22,7 +30,7 @@ open class ChatSession(
     private val backendFactory: ChatBackendFactory,
     welcome: String? = null,
     private val onClear: () -> Unit = {},
-) {
+) : ChatConversation {
     private val chart = backendFactory.chartContext()
     private val history = mutableListOf(ChatMessage(ChatRole.NOTICE, welcome ?: if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
@@ -30,9 +38,9 @@ open class ChatSession(
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     private var turn: Job? = null
     private var discarded = false
-    var busy: Boolean = false
+    final override var busy: Boolean = false
         private set
-    val messages: List<ChatMessage> get() = history.toList()
+    final override val messages: List<ChatMessage> get() = history.toList()
     internal val fileTraces = mutableListOf<FileTrace>()
     /** Follow-up questions the latest reply suggested; cleared when a message is sent or the chat is cleared. */
     var followups: List<String> = emptyList()
@@ -47,7 +55,7 @@ open class ChatSession(
         get() = ChatSettings.getInstance().state.configuration().label
 
     /** UI callers and notifications run on the EDT; backend work runs on IO. */
-    fun send(text: String) {
+    final override fun send(text: String) {
         if (discarded || busy || text.isBlank()) return
         history += ChatMessage(ChatRole.USER, text.trim())
         val fileTrace = FileTrace(text.trim()) {
@@ -140,7 +148,7 @@ open class ChatSession(
     }
 
     /** Permanently releases an owned conversation, including a turn cancelled before it starts. */
-    internal fun discard() {
+    final override fun discard() {
         discarded = true
         backendFactory.dispose()
         turn?.cancel()
@@ -153,7 +161,7 @@ open class ChatSession(
         listeners.clear()
     }
 
-    fun subscribe(listener: () -> Unit): Disposable {
+    final override fun subscribe(listener: () -> Unit): Disposable {
         listeners += listener
         return Disposable { listeners -= listener }
     }

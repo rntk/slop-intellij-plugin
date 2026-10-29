@@ -2,7 +2,7 @@ package dev.insight.diff
 
 import dev.insight.callgraph.LineChange
 import dev.insight.review.ReviewDiskCache
-import dev.insight.review.ReviewSource
+import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewStateMessages
@@ -15,16 +15,18 @@ import dev.insight.review.diffCardKey
 data class ReviewFile(
     override val path: String,
     override val absolutePath: String,
-    val previousPath: String?,
+    override val previousPath: String?,
     val status: String,
-    val patch: String,
+    override val patch: String,
     override val fingerprint: String,
-    val before: String? = null,
-    val after: String? = null,
+    override val before: String? = null,
+    override val after: String? = null,
     val beforeLabel: String = "Before",
     val afterLabel: String = "Working tree",
-) : ReviewSource {
+) : PatchSource {
     override val facts: List<String> get() = listOfNotNull(status, previousPath?.let { "renamed from $it" })
+    /** Deleted files have an empty after side; their complete source is on the before side. */
+    override val fullFileText: String? get() = if (status == "deleted") before else after
     internal val diffKey get() = diffCardKey(path)
     // Swing tree renderers call toString before applying their custom label.
     override fun toString(): String = path.substringAfterLast('/')

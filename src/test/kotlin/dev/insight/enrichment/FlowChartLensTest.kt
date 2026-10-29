@@ -1,21 +1,21 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.CallGraphNode
-import dev.insight.callgraph.CallSite
-import dev.insight.callgraph.FlowBoard
-import dev.insight.callgraph.FlowStart
-import dev.insight.callgraph.EntryPointLens
-import dev.insight.callgraph.GraphDecorations
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointKind
-import dev.insight.callgraph.buildFlowChart
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
+import dev.insight.entrypoints.EntryPointLens
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallSite
+import dev.insight.graph.FlowBoard
+import dev.insight.graph.FlowStart
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.buildFlowChart
+import java.nio.file.Path
 import org.junit.Assert.*
 import org.junit.Test
-import java.nio.file.Path
 
 class FlowChartLensTest {
     /** 0 handle → 1 load → 2 parse; 0 → 3 format (utility); 0 → 4 report (error path); 1 → 5 panel (local) → 6 render. */

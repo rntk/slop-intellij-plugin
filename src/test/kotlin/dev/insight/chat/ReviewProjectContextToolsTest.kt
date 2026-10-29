@@ -1,5 +1,6 @@
 package dev.insight.chat
 
+import dev.insight.agent.projectContextPrompt
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.command.WriteCommandAction
@@ -8,6 +9,14 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
+import dev.insight.agent.ChatTool
+import dev.insight.agent.FileTrace
+import dev.insight.agent.FileTraceContext
+import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.ToolInputException
+import dev.insight.agent.TraceKey
 import dev.insight.codereview.CodeReviewTab
 import dev.insight.codereview.codeFile
 import dev.insight.codereview.codeReviewPrompt

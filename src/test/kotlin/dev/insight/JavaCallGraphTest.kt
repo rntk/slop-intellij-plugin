@@ -8,6 +8,7 @@ import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 /** Runs the analyzer against real Java PSI using the plugin's registered language support. */
 class JavaCallGraphTest : LightJavaCodeInsightFixtureTestCase() {

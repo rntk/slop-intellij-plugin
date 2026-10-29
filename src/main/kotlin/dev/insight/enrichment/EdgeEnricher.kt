@@ -1,8 +1,6 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.RelationKind
 import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionRequest
@@ -10,15 +8,17 @@ import dev.insight.decisions.DecisionResponse
 import dev.insight.enrichment.NodeEnricher.Companion.logFailure
 import dev.insight.enrichment.NodeEnricher.Companion.put
 import dev.insight.enrichment.NodeEnricher.Companion.sha256
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.RelationKind
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.coroutines.cancellation.CancellationException
 
 data class EdgeEnrichmentResult(
     val annotations: Map<CallGraphEdge, EdgeAnnotation>,

@@ -53,7 +53,7 @@
                     factoryClass="dev.insight.apilog.ApiLogToolWindowFactory"/>
         <applicationConfigurable parentId="tools" id="dev.insight.chat"
                                  bundle="messages.InsightBundle" key="configurable.insight.chat.display.name"
-                                 instance="dev.insight.chat.ChatSettingsConfigurable"/>
+                                 instance="dev.insight.settings.ChatSettingsConfigurable"/>
         <fileEditorProvider implementation="dev.insight.dashboard.DashboardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.review.ReviewCanvasEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>

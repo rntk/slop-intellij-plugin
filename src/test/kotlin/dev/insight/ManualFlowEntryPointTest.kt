@@ -1,6 +1,8 @@
 package dev.insight
 
 import dev.insight.callgraph.*
+import dev.insight.entrypoints.EntryPointLens
+import dev.insight.graph.*
 import org.junit.Assert.*
 import org.junit.Test
 

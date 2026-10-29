@@ -1,6 +1,6 @@
 package dev.insight.review
 
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolInputException
 
 enum class SummaryKind(val id: String) { ROOT("root"), DIRECTORY("directory"), GROUP("group"), FILE("file"), CHUNK("chunk") }
 

@@ -2,6 +2,7 @@ package dev.insight
 
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 class ProjectGraphTest : LightJavaCodeInsightFixtureTestCase() {
     fun `test generic Java overrides resolve substituted signatures without including overloads`() {

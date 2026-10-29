@@ -13,6 +13,9 @@ import dev.insight.enrichment.SummaryOptions
 import dev.insight.enrichment.SymbolFactsExtractor
 import dev.insight.enrichment.flowCalls
 import dev.insight.enrichment.liftCalls
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.SymbolKind
 import java.util.concurrent.ConcurrentHashMap
 
 /** Bounds an explicit request; folded descendants are never added to it. */

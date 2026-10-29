@@ -5,6 +5,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import dev.insight.callgraph.*
+import dev.insight.graph.*
 
 /** `callee: KIND label ?subject / …` for each call site of [caller], outermost frame first; exits are `!keyword`. */
 private fun sites(project: Project, caller: String): List<String> {

@@ -7,12 +7,12 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiNamedElement
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphAnalyzer
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 
 /** Immutable source evidence; the canvas never holds PSI or accepts model-authored edges. */
 data class ReviewSymbol(

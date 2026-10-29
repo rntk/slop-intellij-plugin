@@ -1,8 +1,8 @@
 package dev.insight.enrichment
 
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
+import dev.insight.graph.CallGraph
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import kotlin.math.ln
 import kotlin.random.Random
 

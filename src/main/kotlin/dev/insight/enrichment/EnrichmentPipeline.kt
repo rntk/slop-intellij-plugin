@@ -1,16 +1,16 @@
 package dev.insight.enrichment
 
 import com.intellij.openapi.diagnostic.logger
-import dev.insight.callgraph.CallGraph
-import dev.insight.callgraph.CallGraphEdge
-import dev.insight.callgraph.RelationKind
-import dev.insight.callgraph.SymbolKind
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.CompletionFn
-import kotlinx.coroutines.delay
 import java.net.http.HttpTimeoutException
+import kotlinx.coroutines.delay
 
 data class EnrichmentOptions(
     val labels: Boolean = true,

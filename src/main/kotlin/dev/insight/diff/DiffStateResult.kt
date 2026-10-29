@@ -1,7 +1,7 @@
 package dev.insight.diff
 
-import dev.insight.chat.ToolChatRunner
-import dev.insight.chat.ToolInputException
+import dev.insight.agent.ToolChatRunner
+import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.reviewJson

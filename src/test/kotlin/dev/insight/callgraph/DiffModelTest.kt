@@ -1,5 +1,15 @@
 package dev.insight.callgraph
 
+import dev.insight.graph.CallGraph
+import dev.insight.graph.CallGraphEdge
+import dev.insight.graph.CallGraphNode
+import dev.insight.graph.Emphasis
+import dev.insight.graph.GraphDecorations
+import dev.insight.graph.GraphDetail
+import dev.insight.graph.NodeDecoration
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
+import dev.insight.graph.hierarchy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

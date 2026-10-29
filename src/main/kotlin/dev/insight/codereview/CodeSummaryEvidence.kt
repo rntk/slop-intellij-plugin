@@ -1,7 +1,7 @@
 package dev.insight.codereview
 
 import com.google.gson.JsonObject
-import dev.insight.enrichment.CODE_AS_DATA
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.review.ReviewSummaryOptions
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.BRANCH_CITATION_GUIDANCE

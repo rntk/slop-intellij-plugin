@@ -2,24 +2,24 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
-import dev.insight.callgraph.RelationKind
 import com.intellij.openapi.diagnostic.logger
+import dev.insight.core.Hashing
 import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionApiException
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
+import dev.insight.graph.RelationKind
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import dev.insight.core.Hashing
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.coroutines.cancellation.CancellationException
 
 data class NodeEnrichmentResult(
     val annotations: Map<Int, NodeAnnotation>,

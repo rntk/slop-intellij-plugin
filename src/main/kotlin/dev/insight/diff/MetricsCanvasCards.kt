@@ -11,11 +11,14 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.CanvasTabKey
+import dev.insight.ui.zoomScaled
+import dev.insight.ui.zoomed
 import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import javax.swing.*
+import dev.insight.review.ui.viewSelector
 
 /** Navigation, removal and in-place refresh supplied by the canvas hosting the metric cards. */
 internal data class MetricsCanvasActions(
