@@ -210,10 +210,8 @@ internal object AnthropicJson {
         val finishReason = FinishReason.fromWire(root.string("stop_reason"))
         if (content.isEmpty() && toolCalls.isEmpty()) {
             // Thinking tokens count toward max_tokens, so a response can stop before any text.
-            throw LlmProtocolException(
-                if (finishReason == FinishReason.TRUNCATED) "LLM response was truncated at the output-token limit"
-                else "Empty LLM response"
-            )
+            if (finishReason == FinishReason.TRUNCATED) throw LlmTruncatedException("LLM response was truncated at the output-token limit")
+            throw LlmProtocolException("Empty LLM response")
         }
         Completion(
             content, reasoning.joinToString("\n\n").ifEmpty { null }, toolCalls, finishReason,

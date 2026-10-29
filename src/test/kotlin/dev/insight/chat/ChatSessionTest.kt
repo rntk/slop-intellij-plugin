@@ -28,7 +28,7 @@ class ChatSessionTest : BasePlatformTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("Progress cancellation should end the turn", { !session.busy }, 5)
             assertTrue(scope.isActive)
             assertEquals("Stopped.", session.messages.last().text)
-            assertTrue(session.messages.none { it.role == ChatMessage.ASSISTANT })
+            assertTrue(session.messages.none { it.role == ChatRole.ASSISTANT })
 
             session.send("Second question")
             PlatformTestUtil.waitWithEventsDispatching("The next turn should finish", { !session.busy }, 5)
@@ -57,7 +57,7 @@ class ChatSessionTest : BasePlatformTestCase() {
             session.stop()
             PlatformTestUtil.waitWithEventsDispatching("Stop should finish", { cancelled.isCompleted && !session.busy }, 5)
             assertEquals(1, session.messages.count { it.text == "Stopped." })
-            assertTrue(session.messages.none { it.role == ChatMessage.ASSISTANT })
+            assertTrue(session.messages.none { it.role == ChatRole.ASSISTANT })
         } finally {
             session.discard()
             scope.cancel()

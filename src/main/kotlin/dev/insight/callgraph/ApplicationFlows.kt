@@ -1,5 +1,6 @@
 package dev.insight.callgraph
 
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.enrichment.*
 import dev.insight.llm.CompletionFn
@@ -139,7 +140,7 @@ class ApplicationFlowSplitter(
                         Group(title, obj.jsonText("description")?.clipLine(300).orEmpty(), members, true)
                     }.onFailure {
                         if (it is com.intellij.openapi.diagnostic.ControlFlowException || it is java.util.concurrent.CancellationException) throw it
-                        com.intellij.openapi.diagnostic.Logger.getInstance(ApplicationFlowSplitter::class.java).debug("Ignoring malformed flow group from the model", it)
+                        LOG.debug("Ignoring malformed flow group from the model", it)
                     }.getOrNull()
                     if (group != null) { groups += group; used += group.seeds }
                 }
@@ -187,6 +188,7 @@ class ApplicationFlowSplitter(
     }
 
     private companion object {
+        val LOG = logger<ApplicationFlowSplitter>()
         val SYSTEM = """
             $CODE_AS_DATA
             Group the supplied immediate branches of an entrypoint into separate logical functionalities or pipelines.

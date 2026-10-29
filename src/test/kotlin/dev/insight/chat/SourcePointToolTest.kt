@@ -15,7 +15,7 @@ class SourcePointToolTest {
         diff.call(args("""{"path":"old.kt","line":2,"side":"before","comment":"Removed"}"""))
         diff.call(args("""{"path":"new.kt","line":3}"""))
         assertEquals(listOf(SourcePoint("src/a.kt", 48), SourcePoint("src/a.kt", 4, 8, "Why this matters\nSecond line"),
-            SourcePoint("old.kt", 2, 2, "Removed", "before"), SourcePoint("new.kt", 3, 3, side = "after")), seen)
+            SourcePoint("old.kt", 2, 2, "Removed", SourceSide.BEFORE), SourcePoint("new.kt", 3, 3, side = SourceSide.AFTER)), seen)
         assertFalse(code.definition.parameters["properties"].asJsonObject.has("side"))
         assertTrue(diff.definition.parameters["properties"].asJsonObject.has("side"))
     }

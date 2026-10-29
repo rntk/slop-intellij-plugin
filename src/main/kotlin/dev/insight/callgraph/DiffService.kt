@@ -6,6 +6,7 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -148,6 +149,8 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
     }
 
     companion object {
+        private val LOG = logger<DiffService>()
+
         /** Changed regions between two texts, from the IDE's line comparison. Too large files count as entirely changed. */
         fun lineChanges(before: CharSequence, after: CharSequence): List<LineChange> = try {
             ComparisonManager.getInstance()
@@ -155,7 +158,7 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
                 .map { LineChange(it.startLine1, it.endLine1, it.startLine2, it.endLine2) }
         } catch (e: Throwable) {
             if (e is ControlFlowException || e is CancellationException || e is VirtualMachineError) throw e
-            com.intellij.openapi.diagnostic.Logger.getInstance(DiffService::class.java).warn("Line comparison failed; treating the file as entirely changed", e)
+            LOG.warn("Line comparison failed; treating the file as entirely changed", e)
             listOf(LineChange(0, lineCount(before), 0, lineCount(after)))
         }
     }

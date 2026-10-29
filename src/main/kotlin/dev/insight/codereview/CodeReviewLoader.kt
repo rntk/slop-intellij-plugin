@@ -1,6 +1,7 @@
 package dev.insight.codereview
 
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileTypes.FileTypeRegistry
 import com.intellij.openapi.progress.ProgressManager
@@ -21,7 +22,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeReviewLoader")
+private val LOG = logger<CodeReviewLoader>()
 
 /**
  * Loads the text files under a scope directory, or an entry file and the project files it depends on: project content only (excluded folders are skipped by the index, VCS- and

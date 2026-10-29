@@ -3,6 +3,7 @@ package dev.insight.review
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import java.nio.file.AtomicMoveNotSupportedException
@@ -11,7 +12,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewDiskCache")
+private val LOG = logger<ReviewDiskCache>()
 
 /** Review marks and generated results keyed by evidence. A damaged or unwritable cache never prevents a review. */
 class ReviewDiskCache(private val directory: Path) {

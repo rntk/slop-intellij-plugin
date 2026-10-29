@@ -147,9 +147,9 @@ class ChatPanel(
         hovered = null
         transcript.removeAll()
         val messages = service.messages
-        val lastReply = messages.indexOfLast { it.role == ChatMessage.ASSISTANT }
+        val lastReply = messages.indexOfLast { it.role == ChatRole.ASSISTANT }
         messages.forEachIndexed { index, message ->
-            if (message.role == ChatMessage.TOOL) {
+            if (message.role == ChatRole.TOOL) {
                 transcript.add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
                     border = JBUI.Borders.empty(4, 8)
                     alignmentX = LEFT_ALIGNMENT
@@ -170,17 +170,17 @@ class ChatPanel(
                 })
                 return@forEachIndexed
             }
-            val chart = service.chartReferences?.takeIf { chartMode && message.role == ChatMessage.ASSISTANT }
+            val chart = service.chartReferences?.takeIf { chartMode && message.role == ChatRole.ASSISTANT }
             transcript.add(JPanel(BorderLayout(0, 6)).apply {
                 border = JBUI.Borders.empty(8)
-                add(heading(if (message.role == ChatMessage.USER) "You" else "Insight", 13f), BorderLayout.NORTH)
+                add(heading(if (message.role == ChatRole.USER) "You" else "Insight", 13f), BorderLayout.NORTH)
                 add(if (chart != null) replyPane(message, chart) else JBTextArea(message.text).apply {
                     isEditable = false
                     lineWrap = true
                     wrapStyleWord = true
                     isOpaque = false
                     columns = 24
-                    if (message.role == ChatMessage.NOTICE) foreground = UIUtil.getContextHelpForeground()
+                    if (message.role == ChatRole.NOTICE) foreground = UIUtil.getContextHelpForeground()
                 }, BorderLayout.CENTER)
                 alignmentX = LEFT_ALIGNMENT
             })

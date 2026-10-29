@@ -1,5 +1,6 @@
 package dev.insight.enrichment
 
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
@@ -106,8 +107,7 @@ class EnrichmentPipeline(
             try {
                 return evaluate(request)
             } catch (e: HttpTimeoutException) {
-                com.intellij.openapi.diagnostic.Logger.getInstance(EnrichmentPipeline::class.java)
-                    .info("Decision request timed out (attempt ${attempt + 1}); retrying", e)
+                LOG.info("Decision request timed out (attempt ${attempt + 1}); retrying", e)
                 delay(2_000L shl attempt)
             }
         }
@@ -125,7 +125,8 @@ class EnrichmentPipeline(
             .take(options.maxEdges)
 
     private companion object {
-        val CLASSIFIED = setOf(SymbolKind.FUNCTION, SymbolKind.CLASS)
+        val LOG = logger<EnrichmentPipeline>()
+        val CLASSIFIED =setOf(SymbolKind.FUNCTION, SymbolKind.CLASS)
         val CALLERS = setOf(SymbolKind.FUNCTION, SymbolKind.PROPERTY)
     }
 }

@@ -1,6 +1,7 @@
 package dev.insight.codereview
 
 import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -23,7 +24,7 @@ import dev.insight.diff.FileStructure
 import dev.insight.review.ReviewDiskCache
 import java.util.concurrent.CancellationException
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeFileStructure")
+private val LOG = logger<CodeFileStructureBuilder>()
 
 /**
  * Splits one snapshot file into blocks and maps each call line to the next files in the call graph.

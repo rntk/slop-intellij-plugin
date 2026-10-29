@@ -2,6 +2,7 @@ package dev.insight.entrypoints
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
@@ -82,10 +83,10 @@ class EntryPointFinder(
                 if (searchTool == null) false else try {
                     digest(searchTool.call(search.arguments.deepCopy())) == search.resultHash
                 } catch (e: ToolInputException) {
-                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Cached entry point search no longer runs", e)
+                    LOG.debug("Cached entry point search no longer runs", e)
                     false
                 } catch (e: IOException) {
-                    com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Cached entry point search could not be replayed", e)
+                    LOG.debug("Cached entry point search could not be replayed", e)
                     false
                 }
             }) {
@@ -141,7 +142,7 @@ class EntryPointFinder(
                 throw e
             } catch (e: IOException) {
                 // A failed repair must not erase a parseable analysis from the tool loop.
-                com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).warn("Entry point answer repair failed", e)
+                LOG.warn("Entry point answer repair failed", e)
                 if (json == null) throw e
             }
         }
@@ -229,6 +230,8 @@ class EntryPointFinder(
         const val LIST_TOOL = "list_files"
         const val SEARCH_TOOL = "search_text"
 
+        private val LOG = logger<EntryPointFinder>()
+
         private val KINDS = EntryPointKind.entries.map { it.name.lowercase() }
 
         /** Accept integral JSON numbers such as 12.0, but never round fractional or overflowing locations. */
@@ -237,7 +240,7 @@ class EntryPointFinder(
             return try {
                 value.asString.trim().toBigDecimalOrNull()?.intValueExact()?.takeIf { it > 0 }
             } catch (e: ArithmeticException) {
-                com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointFinder::class.java).debug("Ignoring out-of-range line number", e)
+                LOG.debug("Ignoring out-of-range line number", e)
                 null
             }
         }

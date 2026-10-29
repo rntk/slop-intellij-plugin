@@ -49,7 +49,7 @@ internal fun diffStateResult(
             if (file.path in selectedSet) put("selected", true)
             if (file.path in annotatedPaths) put("has_note", true)
             sources.filter { it.range.path == file.path }.takeIf { it.isNotEmpty() }?.let { blocks ->
-                put("source_blocks", blocks.map { mapOf("side" to it.range.side,
+                put("source_blocks", blocks.map { mapOf("side" to it.range.side.label,
                     "start_line" to it.range.startLine, "end_line" to it.range.endLine) })
             }
         }

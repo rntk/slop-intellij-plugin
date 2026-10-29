@@ -6,7 +6,7 @@ import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.PathManager
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
@@ -152,7 +152,7 @@ class FileEnrichmentCache(private val file: Path) : EnrichmentCache {
     companion object {
         /** Bump when the file layout or the meaning of stored values changes; older files are then discarded. */
         const val VERSION = 1
-        private val LOG = Logger.getInstance(FileEnrichmentCache::class.java)
+        private val LOG = logger<FileEnrichmentCache>()
         private val GSON = GsonBuilder().setPrettyPrinting().create()
         private val instances = ConcurrentHashMap<Path, FileEnrichmentCache>()
 

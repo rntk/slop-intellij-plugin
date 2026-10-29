@@ -2,6 +2,7 @@ package dev.insight.codereview
 
 import dev.insight.chat.ChatTool
 import dev.insight.chat.SourcePoint
+import dev.insight.chat.SourceSide
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.booleanArg
 import dev.insight.chat.intArg
@@ -91,7 +92,7 @@ fun codeReviewTools(context: CodeReviewContext): List<ChatTool> {
                 "start_line" to JsonSchemas.integer(minimum = 1), "end_line" to JsonSchemas.integer(minimum = 1),
                 additionalProperties = false)) {
             val lines = it.sourceLinesArg(CODE_SOURCE_LINES)
-            context.showSource(ReviewSourceRange(it.stringArg("path"), lines.first, lines.last, CODE_SOURCE_SIDE))
+            context.showSource(ReviewSourceRange(it.stringArg("path"), lines.first, lines.last, SourceSide.CURRENT))
         },
         addNotesTool("add_code_notes", "find_code_symbols", "code", ::pathList, "paths", context::addNotes),
         objectTool("get_code_summaries", "Page through the summary tree written on /summaries: the whole scope, folders, " +

@@ -3,6 +3,7 @@ package dev.insight.codereview
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -75,7 +76,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeReviewTab")
+private val LOG = logger<CodeReviewTab>()
 
 /**
  * Owns one conversation and canvas about the code in scope. File selection never changes this tab's scope. While a

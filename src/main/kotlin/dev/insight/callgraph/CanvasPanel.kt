@@ -3,6 +3,7 @@ package dev.insight.callgraph
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -21,6 +22,8 @@ import java.awt.BorderLayout
 import java.awt.FlowLayout
 import com.intellij.openapi.ui.ComboBox
 import javax.swing.*
+
+private val LOG = logger<CanvasPanel>()
 
 /** Independent reading state, sharing the application graph and its configured LLM service. */
 internal class CanvasPanel(
@@ -151,7 +154,7 @@ internal class CanvasPanel(
             generateAction.text = "Cancel"
             status.text = "Grouping source into topics…"
             try {
-                runCatchingReported(com.intellij.openapi.diagnostic.Logger.getInstance(CanvasPanel::class.java), "Canvas generation failed") {
+                runCatchingReported(LOG,"Canvas generation failed") {
                     val data = withBackgroundProgress(project, "Generating canvas") {
                         withPhaseProgress("Grouping source into topics…", "") { onProgress ->
                             enrichment.generateCanvas(built, nodeIds = ids, flow = flow,

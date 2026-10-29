@@ -1,5 +1,10 @@
 package dev.insight.codereview
 
+import com.google.gson.JsonObject
+import dev.insight.chat.ChatTool
+import dev.insight.llm.CompletionFn
+import dev.insight.llm.LlmTool
+import dev.insight.llm.LlmTruncatedException
 import dev.insight.review.numberedRows
 import dev.insight.review.SUMMARY_JSON_SHAPE
 import dev.insight.review.summarize
@@ -21,6 +26,30 @@ class CodeSummarizerTest {
         codeFile("docs/README.md", "# Steps\nComputes steps.\n"),
     )
     private val snapshot = codeSnapshot(*(small + big).toTypedArray())
+
+    @Test fun `truncated singleton tool summaries stop at the attempt budget`() = runBlocking {
+        val snapshot = codeSnapshot(CodeFile("src/data.txt", "/p/data.txt", "x".repeat(13_000)))
+        val options = CODE_SUMMARY_OPTIONS.copy(attempts = 3, concurrency = 1)
+        var calls = 0
+        val complete: CompletionFn = { request ->
+            assertTrue("Large evidence must use the tool path", request.tools.isNotEmpty())
+            calls++
+            assertTrue("Requests must stay within the attempt budget", calls <= options.attempts)
+            throw LlmTruncatedException("Output budget exhausted")
+        }
+        val tool = object : ChatTool {
+            override val definition = LlmTool("read", "Read evidence", JsonObject())
+            override suspend fun call(arguments: JsonObject): String = error("No tool call expected")
+        }
+        val start = ReviewSummaries(codeSummaryTree(snapshot.files))
+        val run = ReviewSummarizer(complete, tool, options, CodeSummaryEvidence(snapshot))
+            .run(start, "", { error("Truncated answers must not be saved") })
+
+        assertEquals(options.attempts, calls)
+        assertEquals(calls, run.requests)
+        assertFalse(run.summaries.complete)
+        assertEquals("Output budget exhausted", run.error)
+    }
 
     @Test fun `waves go from parts and small files through part groups and the large file to folders and the root`() = runBlocking {
         val tree = codeSummaryTree(snapshot.files)

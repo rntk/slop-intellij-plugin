@@ -265,7 +265,7 @@ class ChatContextWindowTest {
     @Test fun `backend retains an omission notice when history is dropped`() = runBlocking {
         var sent: CompletionRequest? = null
         val backend = LlmChatBackend({ sent = it; Completion("Answer") }, emptyList(), "System", maxHistoryChars = 0)
-        backend.reply(listOf(ChatMessage(ChatMessage.USER, "Old"), ChatMessage(ChatMessage.ASSISTANT, "Answer"), ChatMessage(ChatMessage.USER, "Current")))
+        backend.reply(listOf(ChatMessage(ChatRole.USER, "Old"), ChatMessage(ChatRole.ASSISTANT, "Answer"), ChatMessage(ChatRole.USER, "Current")))
         assertEquals(2, sent!!.messages.size)
         assertTrue(sent.messages.last().content.contains("1 earlier conversation turns"))
     }

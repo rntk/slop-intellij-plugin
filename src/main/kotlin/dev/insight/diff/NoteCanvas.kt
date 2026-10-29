@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
@@ -54,7 +55,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.NoteCanvas")
+private val LOG = logger<NoteCanvas>()
 
 /** Review artifacts, each in its own normally scrollable IDE editor. */
 internal class NoteCanvas(
@@ -353,7 +354,7 @@ internal class NoteCanvas(
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
             val source = sources.firstOrNull { it.key == key }
             when {
-                source != null -> "Source · $path · ${source.range.side} · ${source.range.startLine}–${source.range.endLine}"
+                source != null -> "Source · $path · ${source.range.side.label} · ${source.range.startLine}–${source.range.endLine}"
                 diffs.any { it.diffKey == key } -> "Diff · $path"
                 else -> "Note · $path" + (notes.firstOrNull { it.key == key }?.symbol?.let { " · $it" } ?: "")
             }
@@ -1374,7 +1375,7 @@ internal class NoteCanvas(
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(8, 12, 8, 8)
-            add(JLabel("Source snapshot · ${range.side} · Lines ${range.startLine}–${range.endLine}").apply {
+            add(JLabel("Source snapshot · ${range.side.label} · Lines ${range.startLine}–${range.endLine}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
             }, BorderLayout.CENTER)
             add(InplaceButton(IconButton("Remove source block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {

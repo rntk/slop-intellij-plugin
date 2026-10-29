@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.chat.SourceSide
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
@@ -51,7 +52,7 @@ class CodeReviewEstimateTest {
 
     @Test fun `source blocks show a part or the head of a file within the limits`() {
         val part = big.chunks[1].lines
-        Assert.assertEquals(ReviewSourceRange(big.path, part.first, minOf(part.last, part.first + 199), CODE_SOURCE_SIDE), sourceBlockRange(big, part))
+        Assert.assertEquals(ReviewSourceRange(big.path, part.first, minOf(part.last, part.first + 199), SourceSide.CURRENT), sourceBlockRange(big, part))
         val head = sourceBlockRange(big, null)!!
         Assert.assertEquals(1, head.startLine)
         Assert.assertTrue(head.endLine <= 200 && big.lines(1..head.endLine).length <= CODE_SOURCE_CHARS)

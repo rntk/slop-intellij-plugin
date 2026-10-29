@@ -161,7 +161,7 @@ class ToolChatRunnerTest {
         val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
         val model = FakeModel(*(List(100) { looping } + Completion("Done.")).toTypedArray())
         val backend = LlmChatBackend(model::complete, listOf(tool), "SYSTEM", maxToolRounds = 100)
-        assertEquals("Done.", backend.reply(listOf(ChatMessage(ChatMessage.USER, "Hi"))))
+        assertEquals("Done.", backend.reply(listOf(ChatMessage(ChatRole.USER, "Hi"))))
         assertEquals(100, tool.received.size)
         assertEquals(101, model.requests.size)
         assertEquals(ToolChoice.None, model.requests.last().toolChoice)
@@ -185,13 +185,13 @@ class ToolChatRunnerTest {
 
     @Test fun `history keeps recent conversation within the budget and drops tool events and notices`() {
         val history = listOf(
-            ChatMessage(ChatMessage.NOTICE, "Welcome"),
-            ChatMessage(ChatMessage.USER, "old question"),
-            ChatMessage(ChatMessage.ASSISTANT, "old answer"),
-            ChatMessage(ChatMessage.TOOL, "read_file(path=a)"),
-            ChatMessage(ChatMessage.USER, "  "),
-            ChatMessage(ChatMessage.USER, "new question"),
-            ChatMessage(ChatMessage.ASSISTANT, "new answer"),
+            ChatMessage(ChatRole.NOTICE, "Welcome"),
+            ChatMessage(ChatRole.USER, "old question"),
+            ChatMessage(ChatRole.ASSISTANT, "old answer"),
+            ChatMessage(ChatRole.TOOL, "read_file(path=a)"),
+            ChatMessage(ChatRole.USER, "  "),
+            ChatMessage(ChatRole.USER, "new question"),
+            ChatMessage(ChatRole.ASSISTANT, "new answer"),
         )
         assertEquals(
             listOf(LlmMessage.user("old question"), LlmMessage.assistant("old answer"), LlmMessage.user("new question"), LlmMessage.assistant("new answer")),
@@ -205,10 +205,10 @@ class ToolChatRunnerTest {
 
     @Test fun `history clips an oversized latest turn and keeps the start of each message`() {
         val history = listOf(
-            ChatMessage(ChatMessage.USER, "old question"),
-            ChatMessage(ChatMessage.ASSISTANT, "old answer"),
-            ChatMessage(ChatMessage.USER, "x".repeat(1000)),
-            ChatMessage(ChatMessage.ASSISTANT, "short answer"),
+            ChatMessage(ChatRole.USER, "old question"),
+            ChatMessage(ChatRole.ASSISTANT, "old answer"),
+            ChatMessage(ChatRole.USER, "x".repeat(1000)),
+            ChatMessage(ChatRole.ASSISTANT, "short answer"),
         )
         val kept = compactHistory(history, maxChars = 500)
         assertEquals(2, kept.size)
@@ -220,7 +220,7 @@ class ToolChatRunnerTest {
         val model = FakeModel(Completion("Partial", finishReason = FinishReason.TRUNCATED))
         val backend = LlmChatBackend(model::complete, emptyList(), "SYSTEM")
         val reply = backend.reply(listOf(
-            ChatMessage(ChatMessage.USER, "first"), ChatMessage(ChatMessage.ASSISTANT, "answer"), ChatMessage(ChatMessage.USER, "second"),
+            ChatMessage(ChatRole.USER, "first"), ChatMessage(ChatRole.ASSISTANT, "answer"), ChatMessage(ChatRole.USER, "second"),
         ))
         assertTrue(reply.startsWith("Partial\n\n[The reply was cut off"))
         assertEquals(

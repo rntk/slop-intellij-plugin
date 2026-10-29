@@ -1,6 +1,7 @@
 package dev.insight.codereview
 
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
@@ -16,7 +17,7 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeScopeControls")
+private val LOG = logger<CodeScopeControls>()
 
 /**
  * The scope of a code review: a project folder typed or chosen, the project root, or an entry file whose dependencies make up

@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import com.google.gson.JsonParser
+import dev.insight.chat.SourceSide
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
@@ -15,10 +16,10 @@ class DiffSourceBlockTest {
 
     @Test fun `inclusive ranges preserve whitespace and choose the snapshot side`() {
         assertEquals("\tval x = 1\nlast", resolveSourceBlock(snapshot, ReviewSourceRange(file.path, 2, 3)).text)
-        assertEquals("  removed", resolveSourceBlock(snapshot, ReviewSourceRange(file.path, 2, 2, "before")).text)
+        assertEquals("  removed", resolveSourceBlock(snapshot, ReviewSourceRange(file.path, 2, 2, SourceSide.BEFORE)).text)
         for (range in listOf(ReviewSourceRange(file.path, 0, 1), ReviewSourceRange(file.path, 3, 2),
             ReviewSourceRange(file.path, 1, 4), ReviewSourceRange(file.path, 1, Int.MAX_VALUE),
-            ReviewSourceRange(file.path, 1, 1, "current"), ReviewSourceRange("other.kt", 1, 1))) {
+            ReviewSourceRange(file.path, 1, 1, SourceSide.CURRENT), ReviewSourceRange("other.kt", 1, 1))) {
             rejected { resolveSourceBlock(snapshot, range) }
         }
         rejected { resolveSourceBlock(snapshot.copy(files = listOf(file.copy(after = null))), ReviewSourceRange(file.path, 1, 1)) }
@@ -34,14 +35,14 @@ class DiffSourceBlockTest {
         state.showSource(state.revision, range)
         assertEquals(1, state.sources.size)
         state.addNote(state.revision, listOf(file.path), "Explanation")
-        state.showSource(state.revision, range.copy(side = "before"))
+        state.showSource(state.revision, range.copy(side = SourceSide.BEFORE))
         assertEquals(2, state.sources.size)
         val revision = state.revision
         state.update(snapshot.copy(files = snapshot.files + file.copy(path = "b.kt")))
         assertEquals(2, state.sources.size)
         rejected { state.showSource(revision, range) }
         state.removeSource(range)
-        assertEquals("before", state.sources.single().range.side)
+        assertEquals(SourceSide.BEFORE, state.sources.single().range.side)
         assertEquals(1, state.notes.size)
         state.update(snapshot.copy(files = listOf(file.copy(fingerprint = "2"))))
         assertTrue(state.sources.isEmpty())

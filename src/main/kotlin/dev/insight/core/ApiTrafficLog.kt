@@ -3,6 +3,7 @@ package dev.insight.core
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.logger
 import java.io.IOException
 import java.net.http.HttpHeaders
 import java.net.http.HttpRequest
@@ -142,7 +143,7 @@ class ApiTrafficLog(val api: String, val file: Path? = null, private val maxEntr
     }
 
     companion object {
-        private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(ApiTrafficLog::class.java)
+        private val LOG = logger<ApiTrafficLog>()
         private val gson = GsonBuilder().disableHtmlEscaping().create()
         private val prettyGson = GsonBuilder().disableHtmlEscaping().setPrettyPrinting().serializeNulls().create()
 

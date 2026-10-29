@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileTypes.LanguageFileType
 import com.intellij.openapi.progress.ProgressManager
@@ -25,7 +26,7 @@ import java.util.IdentityHashMap
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.SemanticMetrics")
+private val LOG = logger<SemanticMetrics>()
 
 /**
  * Counts [Metric]s on whole parsed sides of review files. Constructs are recognized language-agnostically, like

@@ -22,15 +22,15 @@ class LlmChatBackend(
     private val followUp: (suspend () -> String?)? = null,
 ) : ChatBackend {
     override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-        val question = messages.lastOrNull()?.takeIf { it.role == ChatMessage.USER }
+        val question = messages.lastOrNull()?.takeIf { it.role == ChatRole.USER }
             ?: throw IllegalArgumentException("The conversation must end with a user message")
         // Rebuild bounded text history and attach fresh context only to this question. Historical tool rounds and
         // augmented questions are not retained; cache reuse across turns ends at the first changed message.
         val request = listOf(LlmMessage.system(systemPrompt)) +
             messages.dropLast(1).mapNotNull { message ->
                 when (message.role) {
-                    ChatMessage.USER -> LlmMessage.user(message.text)
-                    ChatMessage.ASSISTANT -> LlmMessage.assistant(message.text)
+                    ChatRole.USER -> LlmMessage.user(message.text)
+                    ChatRole.ASSISTANT -> LlmMessage.assistant(message.text)
                     else -> null
                 }
             } +

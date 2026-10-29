@@ -3,7 +3,7 @@ package dev.insight.callgraph
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.ControlFlowException
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
@@ -30,7 +30,7 @@ class CallGraphResult(val graph: CallGraph, val pointers: List<SmartPsiElementPo
 
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
-    private val log = Logger.getInstance(CallGraphService::class.java)
+    private val log = logger<CallGraphService>()
     /** The last application graph and the PSI modification count it was built at. */
     @Volatile private var latestProject: Pair<Long, CallGraphResult>? = null
 

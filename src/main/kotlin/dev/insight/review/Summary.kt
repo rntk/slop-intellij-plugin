@@ -3,8 +3,9 @@ package dev.insight.review
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.logger
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.Summary")
+private val LOG = logger<Summary>()
 
 /**
  * A summary as consecutive segments whose texts join into the prose a reader sees. Each segment cites what it was written

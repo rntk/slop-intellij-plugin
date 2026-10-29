@@ -5,6 +5,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.decisions.*
 import dev.insight.decisions.DecisionFn
 import java.io.IOException
@@ -17,6 +18,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+
+private val LOG = logger<EntryPointDecisionException>()
 
 /** Identifies the failing batch while keeping the original HTTP response available in the cause. */
 class EntryPointDecisionException(
@@ -37,7 +40,7 @@ class EntryPointDecisionException(
         value?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
     }.onFailure {
         if (it is com.intellij.openapi.diagnostic.ControlFlowException || it is java.util.concurrent.CancellationException) throw it
-        com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointDecisionException::class.java).debug("Decisions API error body is not structured JSON", it)
+        LOG.debug("Decisions API error body is not structured JSON", it)
     }.getOrNull()
     detail?.trim()?.takeIf { it.isNotEmpty() }?.let { append(": ${it.take(300)}") }
 }, cause)

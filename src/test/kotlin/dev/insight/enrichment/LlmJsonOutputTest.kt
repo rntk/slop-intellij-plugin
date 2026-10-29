@@ -5,7 +5,7 @@ import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
-import dev.insight.llm.LlmProtocolException
+import dev.insight.llm.LlmTruncatedException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -47,7 +47,7 @@ class LlmJsonOutputTest {
         completeJson(replies({ Completion("{\"b\":", finishReason = FinishReason.TRUNCATED) }, { Completion("{}") }), "s", "u", null, 500)
         assertEquals(listOf(10_000, 20_000), requests.map { it.maxTokens })
         requests.clear()
-        completeJson(replies({ throw LlmProtocolException("LLM response was truncated at the output-token limit") }, { Completion("{}") }),
+        completeJson(replies({ throw LlmTruncatedException("LLM response was truncated at the output-token limit") }, { Completion("{}") }),
             "s", "u", null, 500)
         assertEquals(listOf(10_000, 20_000), requests.map { it.maxTokens })
     }

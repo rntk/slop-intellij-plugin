@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.chat.SourceSide
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
@@ -82,7 +83,7 @@ internal fun sourceBlockRange(file: CodeFile, lines: IntRange?): ReviewSourceRan
         }
         end = low
     }
-    return ReviewSourceRange(file.path, start, end, CODE_SOURCE_SIDE)
+    return ReviewSourceRange(file.path, start, end, SourceSide.CURRENT)
 }
 
 /** The 1-based [range] of [file], each line prefixed with its number so the model can cite path:line. */

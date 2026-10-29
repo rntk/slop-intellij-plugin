@@ -7,7 +7,10 @@ import com.google.gson.JsonParser
 import java.io.IOException
 
 /** A successful HTTP response was not a usable chat completion. */
-class LlmProtocolException(message: String, cause: Throwable? = null) : IOException(message, cause)
+open class LlmProtocolException(message: String, cause: Throwable? = null) : IOException(message, cause)
+
+/** The output-token limit cut the answer short: a plain retry fails the same way, a larger budget or smaller request may not. */
+class LlmTruncatedException(message: String) : LlmProtocolException(message)
 
 /**
  * OpenAI-compatible `/chat/completions` wire format, as served by llama.cpp's `llama-server`, OpenAI, and DeepSeek.
@@ -114,10 +117,8 @@ internal object LlmJson {
         val finishReason = FinishReason.fromWire(choice.string("finish_reason"))
         if (content.isEmpty() && toolCalls.isEmpty()) {
             // Reasoning tokens count toward the output limit, so a reply can stop before any text.
-            throw LlmProtocolException(
-                if (finishReason == FinishReason.TRUNCATED) "LLM response was truncated at the output-token limit"
-                else "Empty LLM response"
-            )
+            if (finishReason == FinishReason.TRUNCATED) throw LlmTruncatedException("LLM response was truncated at the output-token limit")
+            throw LlmProtocolException("Empty LLM response")
         }
         Completion(content, reasoning, toolCalls, finishReason, root.string("model"), usage(root))
     } catch (e: LlmProtocolException) {

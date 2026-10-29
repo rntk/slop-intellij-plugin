@@ -1,6 +1,7 @@
 package dev.insight.codereview
 
 import dev.insight.chat.CancellableSearchInput
+import dev.insight.chat.SourceSide
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewNote
@@ -357,11 +358,9 @@ internal fun resolveCodeSource(snapshot: CodeSnapshot, range: ReviewSourceRange)
     if (range.endLine > file.lineCount) throw ToolInputException("Range exceeds the ${file.lineCount} lines of ${range.path}.")
     val text = file.lines(range.startLine..range.endLine)
     if (text.length > CODE_SOURCE_CHARS) throw ToolInputException("Source block exceeds $CODE_SOURCE_CHARS characters. Select fewer lines.")
-    return ReviewSourceBlock(range.copy(side = CODE_SOURCE_SIDE), text, file.text, file.absolutePath)
+    return ReviewSourceBlock(range.copy(side = SourceSide.CURRENT), text, file.text, file.absolutePath)
 }
 
-/** The side of every code review source block: the file as it is in the snapshot. */
-internal const val CODE_SOURCE_SIDE = "current"
 
 /**
  * Folders beneath [root] with their file counts, indented, as deep as fits in [chars]. When even the top level does not fit,

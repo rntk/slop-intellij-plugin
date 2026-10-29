@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import dev.insight.review.summarize
 import com.google.gson.JsonParser
+import dev.insight.chat.SourceSide
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
@@ -19,6 +20,7 @@ import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.vcsUtil.VcsUtil
 import dev.insight.callgraph.DiffService
 import dev.insight.chat.ChatMessage
+import dev.insight.chat.ChatRole
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
@@ -131,7 +133,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             }
             val view = manager.openFiles.filterIsInstance<dev.insight.chat.SourcePointsFile>().single()
             assertEquals(listOf(source.before, source.after), view.source.points.map { it.text })
-            assertEquals(listOf("before", "after"), view.source.points.map { it.point.side })
+            assertEquals(listOf(SourceSide.BEFORE, SourceSide.AFTER), view.source.points.map { it.point.side })
             assertEquals("Removed behavior", view.source.points.first().point.comment)
             descendants(tab.chat).filterIsInstance<JButton>().single { it.text == "New chat" }.doClick()
             assertTrue(tab.session.messages.isEmpty())
@@ -211,7 +213,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
             assertFalse(first.session.busy)
-            assertTrue(first.session.messages.none { it.role == ChatMessage.USER })
+            assertTrue(first.session.messages.none { it.role == ChatRole.USER })
             descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             val second = tabs.selectedInfo!!.component as DiffReviewTab
             assertTrue(manager.isFileOpen(second.canvasFile))
@@ -788,7 +790,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             // Stay on the EDT so the queued turn cannot contact a backend during this test.
             descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.doClick()
             assertTrue(tab.session.busy)
-            assertEquals("/summaries", tab.session.messages.last { it.role == ChatMessage.USER }.text)
+            assertEquals("/summaries", tab.session.messages.last { it.role == ChatRole.USER }.text)
             open.doClick()
             assertEquals("Opening while busy must not send another turn", 1, tab.session.messages.count { it.text == "/summaries" })
             tab.session.stop()

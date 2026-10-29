@@ -2,6 +2,7 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
@@ -210,8 +211,7 @@ class FunctionSummarizer(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            com.intellij.openapi.diagnostic.Logger.getInstance(FunctionSummarizer::class.java)
-                .warn("Function summary request for ${batch.size} functions failed", e)
+            LOG.warn("Function summary request for ${batch.size} functions failed", e)
             null
         }
     }
@@ -258,6 +258,8 @@ class FunctionSummarizer(
     }
 
     companion object {
+        private val LOG = logger<FunctionSummarizer>()
+
         private fun callees(calls: Map<Int, List<CallGraphEdge>>, id: Int) =
             calls[id].orEmpty().filter { it.kind == RelationKind.CALL || it.kind == RelationKind.INHERITS }.map { it.callee }
                 .filter { it != id }.distinct()

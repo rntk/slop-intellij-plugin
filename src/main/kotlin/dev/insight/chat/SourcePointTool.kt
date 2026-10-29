@@ -10,7 +10,7 @@ data class SourcePoint(
     val line: Int,
     val endLine: Int = line,
     val comment: String? = null,
-    val side: String? = null,
+    val side: SourceSide? = null,
 )
 
 /** Shared presentation tool; the caller resolves paths against its own chat context. */
@@ -28,7 +28,7 @@ fun sourcePointTool(diff: Boolean = false, show: suspend (SourcePoint) -> String
             "comment" to JsonSchemas.string(maxLength = 2000, description = "Optional explanation shown above this editor."),
             required = listOf("path", "line"), additionalProperties = false,
         ).apply {
-            if (diff) getAsJsonObject("properties").add("side", JsonSchemas.enum(listOf("before", "after"),
+            if (diff) getAsJsonObject("properties").add("side", SourceSide.diffSchema(
                 description = "Snapshot side, default after. Use before for removed code."))
         },
     )
@@ -54,8 +54,7 @@ fun sourcePointTool(diff: Boolean = false, show: suspend (SourcePoint) -> String
         if (end < start) throw ToolInputException("end_line must not be before line")
         val comment = if (arguments.has("comment")) string("comment").takeIf { it.isNotBlank() } else null
         if (comment != null && comment.length > 2000) throw ToolInputException("comment exceeds 2000 characters")
-        val side = if (diff) (if (arguments.has("side")) string("side") else "after") else null
-        if (side != null && side !in setOf("before", "after")) throw ToolInputException("side must be before or after")
+        val side = if (diff) arguments.diffSideArg() else null
         return show(SourcePoint(path, start, end, comment, side))
     }
 }

@@ -12,6 +12,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
+import dev.insight.chat.SourceSide
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 
@@ -42,7 +43,7 @@ class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
         val source = myFixture.addFileToProject("src/read.txt", after)
         val file = ReviewFile("src/read.txt", source.virtualFile.path, null, "modified", "", "v1", before, after)
         for (old in listOf(false, true)) {
-            val range = dev.insight.review.ReviewSourceRange(file.path, 2, 2, if (old) "before" else "after")
+            val range = dev.insight.review.ReviewSourceRange(file.path, 2, 2, if (old) SourceSide.BEFORE else SourceSide.AFTER)
             val block = resolveSourceBlock(ReviewSnapshot(listOf(file), emptyList()), range)
             val view = DiffSourceEditor(block, project)
             try {

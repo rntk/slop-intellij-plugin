@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
@@ -18,7 +19,7 @@ import java.nio.file.Path
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewLoader")
+private val LOG = logger<DiffReviewLoader>()
 
 /** Runs on IO. Inclusion of untracked files is review-local and never changes the VCS index. */
 internal class DiffReviewLoader(private val project: Project) {

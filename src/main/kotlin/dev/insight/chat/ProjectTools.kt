@@ -42,7 +42,7 @@ internal fun projectTools(project: Project, sourcePoints: SourcePoints): List<Ch
 
 /** Shared by project chat and review chats when a location is outside the captured snapshot. */
 internal suspend fun showProjectSource(project: Project, sourcePoints: SourcePoints, point: SourcePoint): String {
-    if (point.side == "before") throw ToolInputException(
+    if (point.side == SourceSide.BEFORE) throw ToolInputException(
         "${point.path} has no before-side in this snapshot. Omit side to show current project content.")
     val files = ProjectFiles(project)
     val (path, text) = readAction {

@@ -187,8 +187,8 @@ fun compactHistory(history: List<ChatMessage>, maxChars: Int = 24_000, maxMessag
         val content = message.text.trim()
         if (content.isEmpty()) return@mapNotNull null
         when (message.role) {
-            ChatMessage.USER -> LlmMessage.user(content)
-            ChatMessage.ASSISTANT -> LlmMessage.assistant(content)
+            ChatRole.USER -> LlmMessage.user(content)
+            ChatRole.ASSISTANT -> LlmMessage.assistant(content)
             else -> null
         }
     }

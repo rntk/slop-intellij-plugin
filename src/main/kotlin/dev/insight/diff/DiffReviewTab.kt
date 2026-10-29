@@ -3,6 +3,7 @@ package dev.insight.diff
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.smartReadAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.TextEditor
@@ -38,7 +39,7 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import kotlinx.coroutines.*
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.diff.DiffReviewTab")
+private val LOG = logger<DiffReviewTab>()
 
 /** Owns one conversation and canvas. File selection never changes this tab's scope. [complete] replaces the configured model (tests). */
 internal class DiffReviewTab(
@@ -340,10 +341,10 @@ internal class DiffReviewTab(
                 val sourceFile = snapshot.files.firstOrNull { it.path == point.path }
                     ?: return@withContext showProjectSource(project, sourcePoints, point)
                 val source = when (point.side) {
-                    "before" -> sourceFile.before
-                    "after" -> sourceFile.after
+                    SourceSide.BEFORE -> sourceFile.before
+                    SourceSide.AFTER -> sourceFile.after
                     else -> throw ToolInputException("side must be before or after")
-                } ?: throw ToolInputException("The ${point.side} source is unavailable for ${point.path}.")
+                } ?: throw ToolInputException("The ${point.side?.label} source is unavailable for ${point.path}.")
                 sourcePoints.show(point, source)
             }
 

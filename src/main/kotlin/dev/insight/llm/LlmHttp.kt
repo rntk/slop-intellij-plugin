@@ -53,7 +53,7 @@ internal class LlmHttp(
     )
 
     suspend fun post(body: String, decode: (String) -> Completion): Completion =
-        transport.post(body, decode) { it is LlmProtocolException && "truncated" !in it.message.orEmpty() }
+        transport.post(body, decode) { it is LlmProtocolException && it !is LlmTruncatedException }
 
     companion object {
         private val localHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1")

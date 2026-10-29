@@ -9,6 +9,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
 import dev.insight.chat.ChatMessage
+import dev.insight.chat.ChatRole
 import dev.insight.diff.CanvasState
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
@@ -173,7 +174,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, tab.canvas.summariesView.mode)
             assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
             assertFalse(tab.session.busy)
-            assertTrue(tab.session.messages.none { it.role == ChatMessage.USER })
+            assertTrue(tab.session.messages.none { it.role == ChatRole.USER })
         } finally { Disposer.dispose(tab) }
     }
 
@@ -311,7 +312,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertNull(tab.pendingSnapshot)
             assertEquals(edited.files, tab.state.snapshot.files)
             assertTrue("A held update must not stop the run", tab.session.messages.none { it.text == "Stopped." })
-            assertTrue(tab.session.messages.last { it.role == ChatMessage.ASSISTANT }.text.contains("[4 summaries · 2 requests]"))
+            assertTrue(tab.session.messages.last { it.role == ChatRole.ASSISTANT }.text.contains("[4 summaries · 2 requests]"))
             // The unchanged file keeps its summary; the edited one and the folder above it are missing again.
             val tree = tab.state.summaries.tree
             assertNotNull(tab.state.summaries.text(tree.nodes.single { it.kind == SummaryKind.FILE && it.path == "src/a.kt" }.id))

@@ -2,11 +2,11 @@ package dev.insight.review
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolChatRunner
 import dev.insight.enrichment.JsonSchemas
-import dev.insight.enrichment.JsonOutputTruncatedException
 import dev.insight.enrichment.clipLine
 import dev.insight.enrichment.completeJson
 import dev.insight.enrichment.forEachConcurrently
@@ -14,13 +14,14 @@ import dev.insight.enrichment.parseJsonObjectLeniently
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
+import dev.insight.llm.LlmTruncatedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewSummarizer")
+private val LOG = logger<ReviewSummarizer>()
 
 data class ReviewSummaryOptions(
     /** Evidence characters per page; diff pages are all summarized before reducing the whole file. */
@@ -197,11 +198,17 @@ class ReviewSummarizer internal constructor(
             suspend fun processBatch(batch: List<SummaryNode>, system: String) {
                 val texts = try {
                     request(system, branchSystem, batch, current, requests, feedback, onToolCall)
-                } catch (e: JsonOutputTruncatedException) {
-                    LOG.debug("Summary output truncated; retrying in halves", e)
-                    // Save each successful half immediately, even if a later half fails or is cancelled.
-                    for (part in batch.chunked((batch.size + 1) / 2)) processBatch(part, system)
-                    return
+                } catch (e: LlmTruncatedException) {
+                    if (batch.size > 1) {
+                        LOG.debug("Summary output truncated; retrying in halves", e)
+                        // Save each successful half immediately, even if a later half fails or is cancelled.
+                        for (part in batch.chunked((batch.size + 1) / 2)) processBatch(part, system)
+                        return
+                    }
+                    // A singleton cannot shrink; let the outer loop consume its remaining attempts.
+                    LOG.warn("Summary request failed", e)
+                    mutex.withLock { error = e.message ?: e.javaClass.simpleName }
+                    emptyMap()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: LlmApiException) {

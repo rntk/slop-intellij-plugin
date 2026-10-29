@@ -1,6 +1,7 @@
 package dev.insight.review
 
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolCallEvent
 import dev.insight.chat.ToolChatRunner
@@ -12,6 +13,7 @@ import dev.insight.enrichment.parseJsonObjectLeniently
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
+import dev.insight.llm.LlmTruncatedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -21,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.currentCoroutineContext
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.review.ReviewTopics")
+private val LOG = logger<ReviewTopics>()
 
 /** One hierarchical subject per reviewed file. File boundaries and coverage belong to code. */
 data class ReviewTopics(val files: List<ReviewSource>, val labels: Map<String, String> = emptyMap()) {
@@ -208,10 +210,10 @@ class ReviewTopicGenerator internal constructor(
                     val reply = ToolChatRunner(budgeted, listOf(readTool), maxToolRounds = 100,
                         maxContextChars = 48_000, evictionTarget = 0.75)
                         .run(listOf(LlmMessage.system(system), LlmMessage.user(user)), onToolCall)
-                    parseJsonObjectLeniently(reply.reply) ?: throw IOException(
-                        if (reply.finishReason == dev.insight.llm.FinishReason.TRUNCATED) "Topic answer was truncated"
-                        else "Topic answer is not JSON")
-                } else completeJson(budgeted, system, user, SCHEMA, maxTokens = outputBudget, attempts = 1)
+                    parseJsonObjectLeniently(reply.reply) ?: throw
+                        if (reply.finishReason == dev.insight.llm.FinishReason.TRUNCATED) LlmTruncatedException("Topic answer was truncated")
+                        else IOException("Topic answer is not JSON")
+                } else completeJson(budgeted, system, user, SCHEMA, maxTokens = outputBudget, attempts = 1, retryTruncated = false)
                 decode(answer) ?: throw IllegalStateException("Topic answer needs a valid 2–5 level path")
             } catch (e: CancellationException) {
                 throw e
@@ -220,7 +222,7 @@ class ReviewTopicGenerator internal constructor(
             } catch (e: IOException) {
                 LOG.warn("Topic request failed", e)
                 error.set(e.message ?: e.javaClass.simpleName)
-                if ("truncated" in e.message.orEmpty()) outputBudget = (outputBudget * 2).coerceAtMost(32768)
+                if (e is LlmTruncatedException) outputBudget = (outputBudget * 2).coerceAtMost(32768)
                 null
             } catch (e: Exception) {
                 LOG.warn("Topic request failed", e)

@@ -100,7 +100,7 @@ class ReviewProjectContextToolsTest : BasePlatformTestCase() {
                         calls.getOrNull(round++)?.let { (name, arguments) ->
                             Completion("", toolCalls = listOf(LlmToolCall("call$round", name, JsonParser.parseString(arguments).asJsonObject)))
                         } ?: Completion("Done")
-                    }, tools, diffReviewPrompt()).reply(listOf(ChatMessage(ChatMessage.USER, "Compare"))) {
+                    }, tools, diffReviewPrompt()).reply(listOf(ChatMessage(ChatRole.USER, "Compare"))) {
                         events += it
                         trace.tool(it)
                     }

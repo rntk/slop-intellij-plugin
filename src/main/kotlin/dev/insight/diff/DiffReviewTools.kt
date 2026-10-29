@@ -2,6 +2,8 @@ package dev.insight.diff
 
 import dev.insight.chat.ChatTool
 import dev.insight.chat.SourcePoint
+import dev.insight.chat.SourceSide
+import dev.insight.chat.diffSideArg
 import dev.insight.chat.ToolInputException
 import dev.insight.chat.intArg
 import dev.insight.chat.objectTool
@@ -62,12 +64,10 @@ fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {
             "use before for removed code. Repeating the same path, side and range reuses its card. Does not count as an explanatory note.",
             JsonSchemas.obj("path" to JsonSchemas.string(minLength = 1),
                 "start_line" to JsonSchemas.integer(minimum = 1), "end_line" to JsonSchemas.integer(minimum = 1),
-                "side" to JsonSchemas.enum(listOf("before", "after")),
+                "side" to SourceSide.diffSchema(),
                 required = listOf("path", "start_line", "end_line"), additionalProperties = false)) {
             val lines = it.sourceLinesArg(200)
-            val side = if (it.has("side")) it.stringArg("side") else "after"
-            if (side !in setOf("before", "after")) throw ToolInputException("side must be before or after")
-            context.showSource(ReviewSourceRange(it.stringArg("path"), lines.first, lines.last, side))
+            context.showSource(ReviewSourceRange(it.stringArg("path"), lines.first, lines.last, it.diffSideArg()))
         },
         addNotesTool("add_diff_notes", "find_diff_symbols", "diffs", ::pathList, "paths in current source", context::addNotes),
     )

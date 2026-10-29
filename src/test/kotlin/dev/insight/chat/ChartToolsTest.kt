@@ -296,10 +296,10 @@ class ChartToolsTest {
             requests += request
             Completion("Answer", finishReason = FinishReason.COMPLETE)
         }, chartTools(context), chartChatSystemPrompt(chartTools(context), references = false, scoped = false), context = context::snapshot)
-        val history = listOf(ChatMessage(ChatMessage.USER, "Explain selection"))
+        val history = listOf(ChatMessage(ChatRole.USER, "Explain selection"))
         backend.reply(history)
         context.revision = 2
-        backend.reply(history + ChatMessage(ChatMessage.ASSISTANT, "Answer") + ChatMessage(ChatMessage.USER, "Now?"))
+        backend.reply(history + ChatMessage(ChatRole.ASSISTANT, "Answer") + ChatMessage(ChatRole.USER, "Now?"))
         assertTrue(requests[0].messages.last().content.contains("revision=1"))
         assertTrue(requests[1].messages.last().content.contains("revision=2"))
         assertFalse(requests[1].messages.dropLast(1).any { it.content.contains("revision=1") })

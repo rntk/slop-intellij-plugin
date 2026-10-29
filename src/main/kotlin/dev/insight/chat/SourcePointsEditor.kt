@@ -54,7 +54,7 @@ internal class SourcePoints(private val project: Project, title: String) : Dispo
         val shown = view.point
         return "Showing ${shown.path}:${shown.line}" +
             (if (shown.endLine == shown.line) "" else "-${shown.endLine}") +
-            (shown.side?.let { " ($it)" } ?: "") + " in side-by-side column ${points.size}."
+            (shown.side?.let { " (${it.label})" } ?: "") + " in side-by-side column ${points.size}."
     }
 
     fun clear() {
@@ -148,7 +148,7 @@ internal class SourcePointsEditor(private val project: Project, private val file
             val point = view.point
             val range = if (point.endLine == point.line) "${point.line}" else "${point.line}-${point.endLine}"
             add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(JLabel("${point.path}:$range${point.side?.let { " ($it)" } ?: ""}").apply {
+                add(JLabel("${point.path}:$range${point.side?.let { " (${it.label})" } ?: ""}").apply {
                     toolTipText = text
                 }, BorderLayout.NORTH)
                 point.comment?.let { comment ->

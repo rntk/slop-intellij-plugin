@@ -6,6 +6,7 @@ import com.intellij.ui.components.ActionLink
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.callgraph.explainChart
 import dev.insight.chat.ChatMessage
+import dev.insight.chat.ChatRole
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -198,7 +199,7 @@ internal fun explainChartPrompt(): String = """
 internal suspend fun explainChartFor(project: Project, explain: ExplainTarget?, messages: List<ChatMessage>,
                                      absolute: (Set<String>) -> List<String>): ExplainChartResult? = when {
     explain != null -> if (explain.diagrams) explainChart(project, absolute(explain.files.toSet()).toSet(), wait = true) else null
-    messages.dropLast(1).any { it.role == ChatMessage.USER && isExplainRequest(it.text) } ->
+    messages.dropLast(1).any { it.role == ChatRole.USER && isExplainRequest(it.text) } ->
         explainChart(project, emptySet(), wait = false) as? ExplainChartResult.Ready
     else -> null
 }

@@ -4,6 +4,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
@@ -27,6 +28,8 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
+
+private val LOG = logger<EntryPointsPanel>()
 
 /** Independent searches and retained results let users compare both APIs side by side. */
 internal class EntryPointsPanel(
@@ -96,7 +99,7 @@ internal class EntryPointsPanel(
                 status.text = "Finding entry points…"
                 status.toolTipText = null
                 try {
-                    runCatchingReported(com.intellij.openapi.diagnostic.Logger.getInstance(EntryPointsPanel::class.java), "Entry point search failed") {
+                    runCatchingReported(LOG,"Entry point search failed") {
                         val result = withBackgroundProgress(project, "Finding entry points with ${api.label}") {
                             reportRawProgress { reporter ->
                                 val running = currentCoroutineContext()[Job]

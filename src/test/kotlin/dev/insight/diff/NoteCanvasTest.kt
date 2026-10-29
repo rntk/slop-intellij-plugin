@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.chat.SourceSide
 import dev.insight.review.SummarySource
 import dev.insight.review.SummarySegment
 import dev.insight.review.Summary
@@ -1063,9 +1064,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             viewer.selectionModel.setSelection(0, 3)
             assertSame(viewer, descendants(canvas).filterIsInstance<DiffSourceEditor>().single().editor)
             assertEquals("val", viewer.selectionModel.selectedText)
-            canvas.showNotes(CanvasState(listOf(note), listOf(source, source.copy(range = source.range.copy(side = "before")))))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source, source.copy(range = source.range.copy(side = SourceSide.BEFORE)))))
             val other = descendants(canvas).filterIsInstance<DiffSourceEditor>().single { it.editor !== viewer }.editor
-            canvas.showNotes(CanvasState(listOf(note), listOf(source.copy(range = source.range.copy(side = "before")))))
+            canvas.showNotes(CanvasState(listOf(note), listOf(source.copy(range = source.range.copy(side = SourceSide.BEFORE)))))
             assertTrue(viewer.isDisposed)
             assertFalse(other.isDisposed)
             canvas.dispose()

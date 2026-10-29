@@ -2,6 +2,7 @@ package dev.insight.codereview
 
 import dev.insight.review.summarizeTopics
 import dev.insight.review.summarize
+import dev.insight.chat.SourceSide
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
@@ -64,8 +65,8 @@ class CodeReviewStateTest {
         val state = state(a, b, c)
         state.addNotes(1, listOf(ReviewNote(listOf(a.path), "a"), ReviewNote(listOf(b.path), "b"), ReviewNote(listOf(a.path, c.path), "ac"),
             ReviewNote(listOf(c.path), "c")))
-        val block = state.showSource(1, ReviewSourceRange(a.path, 1, 2, "after"))
-        assertEquals("current", block.range.side)
+        val block = state.showSource(1, ReviewSourceRange(a.path, 1, 2, SourceSide.AFTER))
+        assertEquals(SourceSide.CURRENT, block.range.side)
         assertEquals("fun a() = 1\nfun a2() = 2", block.text)
         state.showSource(1, ReviewSourceRange(b.path, 1, 1))
         state.update(codeSnapshot(codeFile(a.path, "fun a() = 10\n"), b))

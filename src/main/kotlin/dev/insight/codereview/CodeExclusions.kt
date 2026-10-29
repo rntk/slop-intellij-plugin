@@ -1,8 +1,9 @@
 package dev.insight.codereview
 
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.SystemInfo
 
-private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("dev.insight.codereview.CodeExclusions")
+private val LOG = logger<CodeExclusions>()
 
 /**
  * Patterns that leave files and folders out of a scope, like a `.gitignore` without negation:

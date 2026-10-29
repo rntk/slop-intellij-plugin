@@ -11,7 +11,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.fileEditor.FileEditor
@@ -95,7 +95,7 @@ fun openSchematic(project: Project, result: CallGraphResult, root: Int) {
 
 /** Opens the schematic of the selected file. */
 class OpenSchematicAction : AnAction() {
-    private val log = Logger.getInstance(OpenSchematicAction::class.java)
+    private val log = logger<OpenSchematicAction>()
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
@@ -154,6 +154,8 @@ class SchematicEditorProvider : FileEditorProvider, DumbAware {
     override fun getEditorTypeId() = "insight-schematic"
     override fun getPolicy() = FileEditorPolicy.HIDE_DEFAULT_EDITOR
 }
+
+private val EDITOR_LOG = logger<SchematicEditor>()
 
 private class SchematicEditor(project: Project, private val file: SchematicFile) : UserDataHolderBase(), FileEditor {
     private val panel = SchematicPanel(project, file)
@@ -973,7 +975,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
-                Logger.getInstance(SchematicEditor::class.java).warn("Schematic summaries failed", e)
+                EDITOR_LOG.warn("Schematic summaries failed", e)
                 error = e.message ?: e.javaClass.simpleName
             } finally {
                 running--
@@ -1049,7 +1051,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     build()
                 } catch (e: Throwable) {
                     if (e is CancellationException || e is ControlFlowException) throw e
-                    Logger.getInstance(SchematicPanel::class.java).warn("Unable to load schematic for ${graph.nodes[id].name}", e)
+                    LOG.warn("Unable to load schematic for ${graph.nodes[id].name}", e)
                     removeAll()
                     add(JLabel("Unable to load schematic: ${e.message ?: e.javaClass.simpleName}. See the IDE log.").zoomFont())
                     add(ActionLink("Retry") { load() }.zoomFont())
@@ -1764,6 +1766,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     )
 
     private companion object {
+        val LOG = logger<SchematicPanel>()
         const val MAX_SOURCE_WIDTH = 720
         const val ARROW_WIDTH = 56
         const val GAP = 8

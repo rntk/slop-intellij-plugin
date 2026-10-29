@@ -4,6 +4,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.chat.ChatMessage
+import dev.insight.chat.ChatRole
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import javax.swing.JButton
@@ -28,7 +29,7 @@ internal class ExplainResults {
 
     /** True only when the canvas needs an update; tool progress must not keep selecting the result tab. */
     fun update(messages: List<ChatMessage>, busy: Boolean): Boolean {
-        val index = messages.indexOfLast { it.role == ChatMessage.USER }
+        val index = messages.indexOfLast { it.role == ChatRole.USER }
         if (index < 0) {
             request = null
             chart = null
@@ -43,7 +44,7 @@ internal class ExplainResults {
             return true
         }
         if (busy) return false
-        val outcome = messages.drop(index + 1).lastOrNull { it.role == ChatMessage.ASSISTANT || it.role == ChatMessage.NOTICE }
+        val outcome = messages.drop(index + 1).lastOrNull { it.role == ChatRole.ASSISTANT || it.role == ChatRole.NOTICE }
         val next = ExplainResult(latest.text, outcome?.text?.takeIf { it.isNotBlank() }
             ?: "No explanation was returned. See the review chat for details or try Explain again.", running = false, chart)
         return (next != result).also { result = next }

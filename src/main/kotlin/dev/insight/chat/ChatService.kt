@@ -28,7 +28,7 @@ open class ChatSession(
     private val onClear: () -> Unit = {},
 ) {
     private val sourcePoints = SourcePoints(project, "Chat")
-    private val history = mutableListOf(ChatMessage(ChatMessage.NOTICE, welcome ?: if (chart == null)
+    private val history = mutableListOf(ChatMessage(ChatRole.NOTICE, welcome ?: if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."
         else "Ask about this flow chart. I show the answer on the chart: paths, entry points, data flows and the steps involved."))
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -53,7 +53,7 @@ open class ChatSession(
     /** UI callers and notifications run on the EDT; backend work runs on IO. */
     fun send(text: String) {
         if (discarded || busy || text.isBlank()) return
-        history += ChatMessage(ChatMessage.USER, text.trim())
+        history += ChatMessage(ChatRole.USER, text.trim())
         val fileTrace = FileTrace(text.trim()) {
             withContext(NonCancellable + Dispatchers.EDT) { if (!discarded) notifyViews() }
         }
@@ -63,7 +63,7 @@ open class ChatSession(
         busy = true
         chart?.beginReply()
         notifyViews()
-        val request = messages.filter { it.role == ChatMessage.USER || it.role == ChatMessage.ASSISTANT }
+        val request = messages.filter { it.role == ChatRole.USER || it.role == ChatRole.ASSISTANT }
         turn = scope.launch(Dispatchers.EDT) {
             try {
                 val reply = withBackgroundProgress(project, replyProgressTitle(text.trim())) {
@@ -71,21 +71,21 @@ open class ChatSession(
                         createBackend().reply(request) { event ->
                             withContext(Dispatchers.EDT) {
                                 fileTrace.tool(event)
-                                history += ChatMessage(ChatMessage.TOOL, describe(event), toolCall = event)
+                                history += ChatMessage(ChatRole.TOOL, describe(event), toolCall = event)
                                 notifyViews()
                             }
                         }
                     }
                 }
-                history += ChatMessage(ChatMessage.ASSISTANT, reply, chartReferences?.revision, chartReferences?.storyId)
+                history += ChatMessage(ChatRole.ASSISTANT, reply, chartReferences?.revision, chartReferences?.storyId)
                 followups = proposed
             } catch (e: CancellationException) {
                 // The IDE cancels the progress scope; Stop/discard cancel this entire turn instead.
-                if (coroutineContext.isActive) history += ChatMessage(ChatMessage.NOTICE, "Stopped.")
+                if (coroutineContext.isActive) history += ChatMessage(ChatRole.NOTICE, "Stopped.")
                 throw e
             } catch (e: Exception) {
                 LOG.warn("Chat reply failed", e)
-                history += ChatMessage(ChatMessage.NOTICE, "The response failed: ${describeChatFailure(e)}")
+                history += ChatMessage(ChatRole.NOTICE, "The response failed: ${describeChatFailure(e)}")
             } finally {
                 fileTrace.finish()
                 if (discarded) {
@@ -105,7 +105,7 @@ open class ChatSession(
     fun stop() {
         val running = turn ?: return
         running.cancel()
-        history += ChatMessage(ChatMessage.NOTICE, "Stopped.")
+        history += ChatMessage(ChatRole.NOTICE, "Stopped.")
         notifyViews()
     }
 
@@ -114,7 +114,7 @@ open class ChatSession(
 
     fun restoreChart() {
         if (busy || chart == null) return
-        history += ChatMessage(ChatMessage.NOTICE, if (chart.restore()) "Chart restored to before the last reply."
+        history += ChatMessage(ChatRole.NOTICE, if (chart.restore()) "Chart restored to before the last reply."
             else "Nothing to restore: this chat made no chart change since, or another chat or a rebuild changed the chart after it.")
         notifyViews()
     }
@@ -122,14 +122,14 @@ open class ChatSession(
     /** Shows the function a reply referenced on the chart, or a notice when it is stale or unknown; EDT. */
     fun openReference(revision: Int, node: Int) {
         val notice = chartReferences?.openReference(revision, node) ?: return
-        history += ChatMessage(ChatMessage.NOTICE, notice)
+        history += ChatMessage(ChatRole.NOTICE, notice)
         notifyViews()
     }
 
     /** Steps the active story on the chart to [beat] (1-based), or shows a notice when it cannot; EDT. */
     fun openBeat(revision: Int, beat: Int, storyId: Int? = null) {
         val notice = chartReferences?.openBeat(revision, beat, storyId) ?: return
-        history += ChatMessage(ChatMessage.NOTICE, notice)
+        history += ChatMessage(ChatRole.NOTICE, notice)
         notifyViews()
     }
 

@@ -11,6 +11,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.SimplePersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.chat.ToolInputException
 
 /** A function of a saved tour by the identity [stableKey] uses to follow functions across rebuilds. PSI-free. */
@@ -243,6 +244,7 @@ internal fun tourMarkdown(tour: SavedTour, basePath: String? = null): String = b
 /** Saved tours as JSON, written by hand so a damaged tour never discards the others and defaults survive. */
 internal object TourJson {
     private const val VERSION = 1
+    private val LOG = logger<TourJson>()
     private val gson = GsonBuilder().disableHtmlEscaping().create()
 
     fun write(tours: List<SavedTour>): String = gson.toJson(JsonObject().apply {
@@ -254,13 +256,13 @@ internal object TourJson {
         if (text.isNullOrBlank()) return emptyList()
         val root = try { JsonParser.parseString(text).asJsonObject } catch (e: Exception) {
             if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is java.util.concurrent.CancellationException) throw e
-            com.intellij.openapi.diagnostic.Logger.getInstance(TourJson::class.java).warn("Ignoring unreadable saved chart tours", e)
+            LOG.warn("Ignoring unreadable saved chart tours", e)
             return emptyList()
         }
         return root.getAsJsonArray("tours")?.mapNotNull { item ->
             try { tour(item.asJsonObject) } catch (e: RuntimeException) {
                 if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is java.util.concurrent.CancellationException) throw e
-                com.intellij.openapi.diagnostic.Logger.getInstance(TourJson::class.java).warn("Skipping unreadable saved chart tour", e)
+                LOG.warn("Skipping unreadable saved chart tour", e)
                 null
             }
         }.orEmpty()

@@ -183,7 +183,7 @@ class FileTracePanelTest : BasePlatformTestCase() {
         try {
             session.send("Check the rules")
             PlatformTestUtil.waitWithEventsDispatching("Tool loop should finish", { !session.busy }, 10)
-            val toolMessages = session.messages.filter { it.role == ChatMessage.TOOL }
+            val toolMessages = session.messages.filter { it.role == ChatRole.TOOL }
             assertEquals(2, toolMessages.size)
             assertTrue(controls(panel).filterIsInstance<JTextArea>().any { it.text == toolMessages[0].toolCall!!.result })
             assertTrue(controls(panel).filterIsInstance<JTextArea>().any { it.text == toolMessages[1].toolCall!!.result })

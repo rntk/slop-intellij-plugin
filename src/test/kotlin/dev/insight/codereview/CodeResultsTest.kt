@@ -2,6 +2,7 @@ package dev.insight.codereview
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.insight.chat.SourceSide
 import dev.insight.chat.ToolInputException
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
@@ -163,7 +164,7 @@ class CodeResultsTest {
     @Test fun `source blocks show exact current lines within the limits`() {
         val snapshot = codeSnapshot(numbered, wide)
         val block = resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 3, 4))
-        assertEquals("current", block.range.side)
+        assertEquals(SourceSide.CURRENT, block.range.side)
         assertEquals("line 3\nline 4", block.text)
         rejected("not a file in this review's scope") { resolveCodeSource(snapshot, ReviewSourceRange("x.kt", 1, 1)) }
         rejected("1–200 lines") { resolveCodeSource(snapshot, ReviewSourceRange(numbered.path, 1, 200 + 1)) }
@@ -197,7 +198,7 @@ class CodeResultsTest {
         call("get_code_summaries", """{"path":"src"}""")
         assertEquals(listOf("files  null 0", "read [CodeRange(path=src/Lines.kt, startLine=3, endLine=null), " +
             "CodeRange(path=src/Lines.kt, startLine=1, endLine=null)]", "search x true  *.kt 50",
-            "source ReviewSourceRange(path=src/Lines.kt, startLine=1, endLine=2, side=current)", "summaries 0 src"), calls)
+            "source ReviewSourceRange(path=src/Lines.kt, startLine=1, endLine=2, side=CURRENT)", "summaries 0 src"), calls)
         for ((name, args) in listOf(
             "read_code" to """{"ranges":[]}""",
             "read_code" to """{"ranges":[{"path":"a","start_line":5,"end_line":4}]}""",

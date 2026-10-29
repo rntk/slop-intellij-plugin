@@ -1,5 +1,6 @@
 package dev.insight.core.http
 
+import com.intellij.openapi.diagnostic.logger
 import dev.insight.core.ApiCall
 import dev.insight.core.RequestLimiter
 import dev.insight.core.ApiTrafficLog
@@ -26,7 +27,7 @@ internal class JsonPostTransport(
     private val traffic: ApiTrafficLog?,
     private val apiException: (Int, String, String?) -> IOException,
 ) {
-    private val logger = com.intellij.openapi.diagnostic.Logger.getInstance(JsonPostTransport::class.java)
+    private val logger = logger<JsonPostTransport>()
 
     suspend fun <T> post(body: String, decode: (String) -> T, isRetryableDecodeError: (Throwable) -> Boolean): T {
         val httpRequest = HttpRequest.newBuilder(endpoint)

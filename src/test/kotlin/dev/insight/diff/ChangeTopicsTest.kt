@@ -6,7 +6,7 @@ import dev.insight.chat.ToolInputException
 import dev.insight.llm.Completion
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
-import dev.insight.llm.LlmProtocolException
+import dev.insight.llm.LlmTruncatedException
 import dev.insight.llm.LlmRole
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopicGenerator
@@ -33,7 +33,7 @@ class ChangeTopicsTest {
             val run = diffTopicGenerator({ request ->
                 budgets += request.maxTokens
                 if (budgets.size == 1) {
-                    if (protocolError) throw LlmProtocolException("LLM response was truncated at the output-token limit")
+                    if (protocolError) throw LlmTruncatedException("LLM response was truncated at the output-token limit")
                     Completion("", reasoning = "Still classifying", finishReason = FinishReason.TRUNCATED)
                 } else Completion("""{"topic":"UI>DiffReview>Topics"}""")
             }, null).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
