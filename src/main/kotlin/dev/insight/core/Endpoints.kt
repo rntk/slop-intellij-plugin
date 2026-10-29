@@ -1,6 +1,7 @@
 package dev.insight.core
 
 import dev.insight.decisions.DecisionsClient
+import dev.insight.core.http.Transports
 import java.net.http.HttpClient
 import java.time.Duration
 
@@ -22,13 +23,6 @@ fun decisionsClient(
     apiKey: String,
     requestTimeout: Duration = Duration.ofSeconds(60),
     maxRetries: Int = 2,
-    httpClient: HttpClient = sharedHttpClient,
+    httpClient: HttpClient = Transports.shared(),
     traffic: ApiTrafficLog? = null,
 ): DecisionsClient = DecisionsClient(apiKey, Endpoints.DECISIONS_ENDPOINT, requestTimeout, maxRetries, httpClient, traffic)
-
-private val sharedHttpClient: HttpClient by lazy {
-    HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(10))
-        .followRedirects(HttpClient.Redirect.NEVER)
-        .build()
-}

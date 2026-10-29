@@ -1,21 +1,14 @@
 package dev.insight.decisions
 
-import dev.insight.core.ApiCall
 import dev.insight.core.ApiRequestLimits
+import dev.insight.core.http.JsonPostTransport
+import dev.insight.core.http.RetryPolicy
+import dev.insight.core.http.Transports
 import dev.insight.core.ApiTrafficLog
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.CompletionException
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /** HTTP failure. Inspect body explicitly for API validation details; messages omit sensitive content. */
 class DecisionApiException(
@@ -36,7 +29,7 @@ class DecisionsClient(
     private val endpoint: URI = URI.create("https://api.typesafe.ai/v1/systemone"),
     private val requestTimeout: Duration = Duration.ofSeconds(600),
     private val maxRetries: Int = 6,
-    private val httpClient: HttpClient = sharedHttpClient,
+    private val httpClient: HttpClient = Transports.shared(),
     private val traffic: ApiTrafficLog? = null,
 ) {
     init {
@@ -59,76 +52,12 @@ class DecisionsClient(
                 is DecisionQuestion.Score -> question.copy(criteria = question.criteria.toList())
             }
         }
-        val httpRequest = HttpRequest.newBuilder(endpoint)
-            .timeout(requestTimeout)
-            .header("Authorization", "Bearer $apiKey")
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build()
-        var attempt = 0
-        while (true) {
-            var call: ApiCall? = null
-            val response = try {
-                ApiRequestLimits.decisions.withPermit {
-                    call = traffic?.begin(httpRequest, body, attempt)
-                    try {
-                        send(httpRequest)
-                    } catch (e: Throwable) {
-                        call?.fail(e)
-                        throw e
-                    }
-                }
-            } catch (e: IOException) {
-                if (attempt >= maxRetries) throw e
-                com.intellij.openapi.diagnostic.Logger.getInstance(DecisionsClient::class.java).info("Decisions request failed (attempt ${attempt + 1}); retrying", e)
-                delay(retryDelay(null, attempt++))
-                continue
-            }
-            if (response.statusCode() in 200..299) {
-                return try {
-                    DecisionJson.decode(response.body(), questions).also { call?.respond(response) }
-                } catch (e: Throwable) {
-                    call?.respond(response, e)
-                    if (e !is DecisionProtocolException || attempt >= maxRetries) throw e
-                    delay(retryDelay(null, attempt++))
-                    continue
-                }
-            }
-            call?.respond(response)
-            val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
-            if (!(response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() in 500..599) || attempt >= maxRetries) {
-                com.intellij.openapi.diagnostic.Logger.getInstance(DecisionsClient::class.java).warn("Decisions request failed with HTTP ${response.statusCode()}")
-                throw DecisionApiException(response.statusCode(), response.body(), retryAfter)
-            }
-            delay(retryDelay(retryAfter, attempt++))
-        }
+        return transport.post(body, { DecisionJson.decode(it, questions) }) { it is DecisionProtocolException }
     }
 
-    private suspend fun send(request: HttpRequest): HttpResponse<String> = suspendCancellableCoroutine { continuation ->
-        val future = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-        continuation.invokeOnCancellation { future.cancel(true) }
-        future.whenComplete { response, error ->
-            if (error == null) continuation.resume(response)
-            else continuation.resumeWithException(if (error is CompletionException) error.cause ?: error else error)
-        }
-    }
-
-    private fun retryDelay(header: String?, attempt: Int): Long {
-        val fromHeader = header?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { (it * 1000).toLong() }
-            ?: header?.let {
-                runCatching {
-                    Duration.between(ZonedDateTime.now(), ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME))
-                        .toMillis().coerceAtLeast(0)
-                }.getOrNull()
-            }
-        return fromHeader ?: (500L shl attempt.coerceAtMost(7)).coerceAtMost(60_000)
-    }
-
-    private companion object {
-        val sharedHttpClient: HttpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build()
-    }
+    private val transport = JsonPostTransport(
+        endpoint, mapOf("Authorization" to "Bearer $apiKey"), requestTimeout, httpClient,
+        ApiRequestLimits.decisions, RetryPolicy(maxRetries, 500, retryAfterIsMinimum = false),
+        traffic, ::DecisionApiException,
+    )
 }

@@ -1,22 +1,14 @@
 package dev.insight.llm
 
-import dev.insight.core.ApiCall
 import dev.insight.core.ApiRequestLimits
+import dev.insight.core.http.JsonPostTransport
+import dev.insight.core.http.RetryPolicy
+import dev.insight.core.http.Transports
 import dev.insight.core.ApiTrafficLog
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
-import java.io.IOException
 import java.net.URI
 import java.net.URISyntaxException
 import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.CompletionException
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /** A chat model behind an HTTP API. Implementations translate [CompletionRequest] to their provider's wire format. */
 interface LlmClient {
@@ -78,82 +70,16 @@ internal class LlmHttp(
         require(httpClient.followRedirects() == HttpClient.Redirect.NEVER) { "Transport must disable redirects" }
     }
 
-    suspend fun post(body: String, decode: (String) -> Completion): Completion {
-        val httpRequest = HttpRequest.newBuilder(endpoint)
-            .timeout(requestTimeout)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .apply { headers.forEach { (name, value) -> header(name, value) } }
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build()
-        var attempt = 0
-        while (true) {
-            var call: ApiCall? = null
-            val response = try {
-                ApiRequestLimits.llm.withPermit {
-                    call = traffic?.begin(httpRequest, body, attempt)
-                    try {
-                        send(httpRequest)
-                    } catch (e: Throwable) {
-                        call?.fail(e)
-                        throw e
-                    }
-                }
-            } catch (e: IOException) {
-                if (attempt >= maxRetries) throw e
-                com.intellij.openapi.diagnostic.Logger.getInstance(LlmHttp::class.java).info("LLM request failed (attempt ${attempt + 1}); retrying", e)
-                delay(retryDelay(null, attempt++))
-                continue
-            }
-            val status = response.statusCode()
-            if (status in 200..299) {
-                return try {
-                    decode(response.body()).also { call?.respond(response) }
-                } catch (e: Throwable) {
-                    call?.respond(response, e)
-                    // The caller must increase the output budget after truncation; resending it unchanged cannot help.
-                    if (e !is LlmProtocolException || "truncated" in e.message.orEmpty() || attempt >= maxRetries) throw e
-                    delay(retryDelay(null, attempt++))
-                    continue
-                }
-            }
-            call?.respond(response)
-            val retryAfter = response.headers().firstValue("Retry-After").orElse(null)
-            if (!(status == 408 || status == 429 || status in 500..599) || attempt >= maxRetries) {
-                com.intellij.openapi.diagnostic.Logger.getInstance(LlmHttp::class.java).warn("LLM request to ${httpRequest.uri().host} failed with HTTP $status")
-                throw LlmApiException(status, response.body(), retryAfter)
-            }
-            delay(retryDelay(retryAfter, attempt++))
-        }
-    }
+    private val transport = JsonPostTransport(
+        endpoint, headers, requestTimeout, httpClient, ApiRequestLimits.llm,
+        RetryPolicy(maxRetries, 1000, retryAfterIsMinimum = true), traffic, ::LlmApiException,
+    )
 
-    private suspend fun send(request: HttpRequest): HttpResponse<String> = suspendCancellableCoroutine { continuation ->
-        val future = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-        continuation.invokeOnCancellation { future.cancel(true) }
-        future.whenComplete { response, error ->
-            if (error == null) continuation.resume(response)
-            else continuation.resumeWithException(if (error is CompletionException) error.cause ?: error else error)
-        }
-    }
-
-    private fun retryDelay(header: String?, attempt: Int): Long {
-        val fromHeader = header?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { (it * 1000).toLong() }
-            ?: header?.let {
-                runCatching {
-                    Duration.between(ZonedDateTime.now(), ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME))
-                        .toMillis().coerceAtLeast(0)
-                }.getOrNull()
-            }
-        return maxOf(fromHeader ?: 0, (1000L shl attempt.coerceAtMost(6)).coerceAtMost(60_000))
-    }
+    suspend fun post(body: String, decode: (String) -> Completion): Completion =
+        transport.post(body, decode) { it is LlmProtocolException && "truncated" !in it.message.orEmpty() }
 
     companion object {
         private val localHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1")
-        // llama-server speaks HTTP/1.1; skipping the h2c upgrade attempt avoids confusing plain-HTTP servers.
-        val sharedHttpClient: HttpClient = HttpClient.newBuilder()
-            .version(HttpClient.Version.HTTP_1_1)
-            .connectTimeout(Duration.ofSeconds(10))
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build()
+        val sharedHttpClient: HttpClient = Transports.shared(http1 = true)
     }
 }
