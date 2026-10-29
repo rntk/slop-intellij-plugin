@@ -32,7 +32,12 @@ internal data class WordChanges(
     val addedWords: Int,
     /** Every changed line, including blank lines and lines without words. */
     val lines: ChangedLineCounts = ChangedLineCounts(),
+    /** Words removed and added equally often, counted over every word rather than only the listed ones. */
+    val matchedWords: Int = words.sumOf { minOf(it.removed, it.added) },
 ) {
+    /** Splits the changed words into those that only moved between the sides and those that really left or arrived. */
+    val balance get() = WordBalance(removedWords - matchedWords, matchedWords, addedWords - matchedWords)
+
     /**
      * Below 0.5 when a word is used more in removed lines, above 0.5 when more in added lines, relative to how many words
      * each side has; a word used on one side only always lies on that side. Smoothing keeps rare words nearer the middle
@@ -77,7 +82,8 @@ internal fun wordChanges(files: List<ReviewFile>, limit: Int = 300): WordChanges
     }
     val words = counts.map { (word, count) -> WordChange(word, count.removed, count.added, count.paths) }
         .sortedWith(compareByDescending<WordChange> { it.total }.thenBy { it.word })
-    return WordChanges(words.take(limit), removed, added, ChangedLineCounts(deletedLines, addedLines))
+    val matched = counts.values.sumOf { minOf(it.removed, it.added) }
+    return WordChanges(words.take(limit), removed, added, ChangedLineCounts(deletedLines, addedLines), matched)
 }
 
 /** The changed files the word chart counts: one file, the files beneath a directory, or every file when [path] is empty. */

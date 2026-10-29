@@ -60,7 +60,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(if (overview) "Diff overview · Deleted and added lines"
+            add(JLabel(if (overview) "Diff overview · Deleted and added lines, and word balance"
                 else "Word changes · ${words.words.size} most frequent words of the changed lines").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
@@ -85,6 +85,12 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                     ?: DiffOverviewChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { diffOverviewChart = it }
                 else wordChart?.takeIf { it.changes === words }
                     ?: WordChangeChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { wordChart = it }, BorderLayout.CENTER)
+            if (overview && words.balance.total > 0) {
+                add(JPanel(BorderLayout()).apply {
+                    isOpaque = false; border = JBUI.Borders.emptyTop(8)
+                    add(WordBalanceChart(words.balance, width - scaled(2 * PADDING + 4)), BorderLayout.CENTER)
+                }, BorderLayout.SOUTH)
+            }
         }
         return JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground(); border = cardBorder()
