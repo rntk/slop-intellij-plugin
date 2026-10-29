@@ -1,5 +1,7 @@
 package dev.insight
 
+import dev.insight.chat.ChartReader
+import dev.insight.chat.ChartReferences
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.testFramework.TestActionEvent
@@ -224,7 +226,7 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
             var failure: Throwable? = null
             val job = scope.launch {
-                try { ctx.functionOutline(ctx.revision, listOf(1)) } catch (e: Throwable) { failure = e }
+                try { (ctx as ChartReader).functionOutline((ctx as ChartReferences).revision, listOf(1)) } catch (e: Throwable) { failure = e }
             }
             try {
                 PlatformTestUtil.waitWithEventsDispatching("Function outline should finish", { job.isCompleted }, 5 /* seconds */)

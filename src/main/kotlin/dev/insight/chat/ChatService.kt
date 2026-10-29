@@ -43,8 +43,8 @@ open class ChatSession(
         private set
     /** Written by suggest_followups during a turn, published when the reply succeeds. */
     @Volatile private var proposed: List<String> = emptyList()
-    /** The chart this session explains, for resolving references in replies (EDT); null outside the chart chat. */
-    internal val chartContext: ChartChatContext? get() = chart
+    /** The chart this session explains, for resolving references in replies (EDT); null when references are unsupported. */
+    internal val chartReferences: ChartReferences? get() = chart as? ChartReferences
 
     /** Short description of the active backend for the chat status line. */
     val backendLabel: String
@@ -77,7 +77,7 @@ open class ChatSession(
                         }
                     }
                 }
-                history += ChatMessage(ChatMessage.ASSISTANT, reply, chart?.revision, chart?.storyId)
+                history += ChatMessage(ChatMessage.ASSISTANT, reply, chartReferences?.revision, chartReferences?.storyId)
                 followups = proposed
             } catch (e: CancellationException) {
                 // The IDE cancels the progress scope; Stop/discard cancel this entire turn instead.
@@ -121,14 +121,14 @@ open class ChatSession(
 
     /** Shows the function a reply referenced on the chart, or a notice when it is stale or unknown; EDT. */
     fun openReference(revision: Int, node: Int) {
-        val notice = chart?.openReference(revision, node) ?: return
+        val notice = chartReferences?.openReference(revision, node) ?: return
         history += ChatMessage(ChatMessage.NOTICE, notice)
         notifyViews()
     }
 
     /** Steps the active story on the chart to [beat] (1-based), or shows a notice when it cannot; EDT. */
     fun openBeat(revision: Int, beat: Int, storyId: Int? = null) {
-        val notice = chart?.openBeat(revision, beat, storyId) ?: return
+        val notice = chartReferences?.openBeat(revision, beat, storyId) ?: return
         history += ChatMessage(ChatMessage.NOTICE, notice)
         notifyViews()
     }
@@ -174,8 +174,13 @@ open class ChatSession(
     internal open fun createBackend(): ChatBackend {
         val client = ChatSettings.getInstance().createClient()
         return if (chart == null) LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt())
-        else LlmChatBackend(client::complete, sessionChartTools(chart) + projectTools(project, sourcePoints).filter { it.definition.name in setOf("read_file", "list_files", "search_text", "point_to_code") },
-            chartChatSystemPrompt(), maxToolRounds = 100, context = chart::snapshot)
+        else {
+            val tools = sessionChartTools(chart) + projectTools(project, sourcePoints)
+                .filter { it.definition.name in setOf("read_file", "list_files", "search_text", "point_to_code") }
+            LlmChatBackend(client::complete, tools,
+                chartChatSystemPrompt(tools, references = chart is ChartReferences, scoped = chart.scoped),
+                maxToolRounds = 100, context = chart::snapshot)
+        }
     }
 
     private fun describe(event: ToolCallEvent): String {

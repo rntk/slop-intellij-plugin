@@ -36,6 +36,12 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.google.gson.Gson
 import dev.insight.chat.ChartChatContext
+import dev.insight.chat.ChartReader
+import dev.insight.chat.ChartEditor
+import dev.insight.chat.ChartScenes
+import dev.insight.chat.ChartAnalysis
+import dev.insight.chat.ChartTours
+import dev.insight.chat.ChartReferences
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
 import dev.insight.chat.ToolInputException
@@ -126,7 +132,7 @@ internal class FlowChartPanel(
     )
 
     /** Chart tools for one chat session; each session owns its restore point. */
-    private inner class SessionChartContext : ChartChatContext {
+    private open inner class SessionChartContext : ChartReader, ChartEditor, ChartScenes, ChartAnalysis, ChartTours, ChartReferences {
         private val restorePoint = ChartRestorePoint(flowCanvas, restoreGroup)
         private fun graph(): CallGraph {
             if (disposed) throw ToolInputException("Chart closed")
@@ -155,8 +161,6 @@ internal class FlowChartPanel(
             if (graph == null || building()) "{\"status\":\"Graph is building; tools will be available when it finishes\"}"
             else chartChatState(chatRevision, graph, flowCanvas, offset)
         }
-
-        override suspend fun find(query: String, offset: Int): String = findNodes(query, offset)
 
         override suspend fun findNodes(query: String?, offset: Int, role: String?, effect: String?, entryPoint: Boolean?): String =
             analyze { graph, current, steps, lens -> chartFindNodes(graph, current, query, offset, role, effect, entryPoint, semantics(lens), steps) }
@@ -312,11 +316,9 @@ internal class FlowChartPanel(
             val graph = result?.graph?.takeIf { !building() } ?: return "The graph is rebuilding; try again when it finishes."
             return openChartReference(graph, flowCanvas, chatRevision, revision, node)
         }
-        override fun beatTitle(revision: Int, beat: Int): String? = beatTitle(revision, beat, storyId)
         override fun beatTitle(revision: Int, beat: Int, storyId: Int?): String? =
             chartBeatTitle(flowCanvas.takeIf { !disposed && !building() }, chatRevision, revision, beat, storyId)
 
-        override fun openBeat(revision: Int, beat: Int): String? = openBeat(revision, beat, storyId)
         override fun openBeat(revision: Int, beat: Int, storyId: Int?): String? {
             if (disposed) return "Chart closed."
             if (building() || result == null) return "The graph is rebuilding; try again when it finishes."
@@ -512,7 +514,8 @@ internal class FlowChartPanel(
                 throw e
             }
             if (disposed) return@launch
-            val context = object : ChartChatContext by SessionChartContext() {
+            val context = object : SessionChartContext() {
+                override val scoped = true
                 override suspend fun snapshot(): String {
                     val current = chatContext.snapshot()
                     val stale = withContext(Dispatchers.EDT) {

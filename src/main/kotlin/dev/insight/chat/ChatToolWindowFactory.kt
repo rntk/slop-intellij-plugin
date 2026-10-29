@@ -143,7 +143,7 @@ class ChatPanel(
 
     private fun render() {
         fileTrace?.takeIf { it.isShowing || service.fileTraces.isEmpty() }?.render(service.fileTraces)
-        hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
+        hovered?.let { (revision, _) -> service.chartReferences?.hoverReference(revision, null) }
         hovered = null
         transcript.removeAll()
         val messages = service.messages
@@ -170,7 +170,7 @@ class ChatPanel(
                 })
                 return@forEachIndexed
             }
-            val chart = service.chartContext?.takeIf { chartMode && message.role == ChatMessage.ASSISTANT }
+            val chart = service.chartReferences?.takeIf { chartMode && message.role == ChatMessage.ASSISTANT }
             transcript.add(JPanel(BorderLayout(0, 6)).apply {
                 border = JBUI.Borders.empty(8)
                 add(heading(if (message.role == ChatMessage.USER) "You" else "Insight", 13f), BorderLayout.NORTH)
@@ -217,7 +217,7 @@ class ChatPanel(
      * An assistant reply with [[node:ID|Label]] references as links: everything else is escaped text. Clicking a reference
      * selects its step, hovering emphasises it; references are resolved against the reply's graph revision.
      */
-    internal fun replyPane(message: ChatMessage, chart: ChartChatContext): JEditorPane {
+    internal fun replyPane(message: ChatMessage, chart: ChartReferences): JEditorPane {
         val body = chatReferenceHtml(
             message.text,
             message.revision,
@@ -255,7 +255,7 @@ class ChatPanel(
     override fun dispose() {
         disposed = true
         filePicker.dispose()
-        hovered?.let { (revision, _) -> service.chartContext?.hoverReference(revision, null) }
+        hovered?.let { (revision, _) -> service.chartReferences?.hoverReference(revision, null) }
         subscription.dispose()
         transcript.removeAll()
         input.text = ""

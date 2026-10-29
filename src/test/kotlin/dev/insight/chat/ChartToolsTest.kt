@@ -25,8 +25,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChartToolsTest {
-    private class Context : ChartChatContext {
-        override var revision = 1
+    private class Context : ChartReader, ChartEditor, ChartScenes, ChartAnalysis, ChartTours {
+        var revision = 1
         val actions = mutableListOf<Triple<String, Int, List<Int>>>()
         val scenes = mutableListOf<ChartScene>()
         val traces = mutableListOf<List<Int>>()
@@ -58,8 +58,12 @@ class ChartToolsTest {
         override suspend fun projectMap(offset: Int) = "map offset=$offset"
         override suspend fun listTours() = "tours"
         override suspend fun playTour(name: String): String { played += name; return "played" }
-        override suspend fun find(query: String, offset: Int) = "$query offset=$offset"
+        override suspend fun describe(revision: Int, node: Int, offset: Int) = "details"
+        override suspend fun clearScene(revision: Int) = "cleared"
+        override suspend fun reachability(revision: Int, node: Int) = "reachable"
+        override suspend fun suggestExternals(revision: Int, nodes: List<Int>) = "externals"
         override suspend fun findNodes(query: String?, offset: Int, role: String?, effect: String?, entryPoint: Boolean?): String {
+            if (role == null && effect == null && entryPoint == null) return "$query offset=$offset"
             findNodesCalls += listOf(query, offset, role, effect, entryPoint)
             return "findNodes query=$query offset=$offset role=$role effect=$effect entryPoint=$entryPoint"
         }
@@ -80,6 +84,35 @@ class ChartToolsTest {
         }
     }
 
+    @Test fun `only supported capabilities register tools`() = runBlocking {
+        val full = Context()
+        val session = object : ChartChatContext {
+            override suspend fun snapshot() = "{}"
+        }
+        fun names(context: ChartChatContext) = chartTools(context).map { it.definition.name }.toSet()
+        val followups = setOf("suggest_followups")
+        assertEquals(followups, names(session))
+        val reader = object : ChartReader by full {}
+        assertEquals(followups + setOf("get_chart_state", "find_chart_nodes", "get_chart_node_details",
+            "get_function_flow_outline", "get_flow_catalog"), names(reader))
+        assertEquals("revision=1 offset=0", reader.snapshot())
+        assertEquals("save offset=0", chartTools(reader).single { it.definition.name == "find_chart_nodes" }
+            .call(JsonParser.parseString("""{"query":"save"}""").asJsonObject))
+        assertEquals(followups + setOf("group_chart_calls", "set_chart_region_expansion", "add_chart_nodes",
+            "expand_chart_calls", "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers"),
+            names(object : ChartChatContext by session, ChartEditor by full {}))
+        assertEquals(followups + setOf("show_scene", "clear_scene", "present_story"),
+            names(object : ChartChatContext by session, ChartScenes by full {}))
+        assertEquals(followups + setOf("trace_path", "reachability", "suggest_externals", "get_project_map"),
+            names(object : ChartChatContext by session, ChartAnalysis by full {}))
+        assertEquals(followups + setOf("list_tours", "play_tour"),
+            names(object : ChartChatContext by session, ChartTours by full {}))
+        assertEquals(names(full), names(object : ChartReader by full, ChartEditor by full, ChartScenes by full,
+            ChartAnalysis by full, ChartTours by full {
+            override suspend fun snapshot() = "scoped context"
+        }))
+    }
+
     @Test fun `scene tools share the same bounded contract without sharing mutable schemas`() {
         val tools = chartTools(Context()).associate { it.definition.name to it.definition.parameters }
         val show = tools.getValue("show_scene")
@@ -90,6 +123,10 @@ class ChartToolsTest {
         val sceneProperties = scene.getAsJsonObject("properties")
         val expectedProperties = showProperties.deepCopy().apply { remove("revision") }
         assertEquals(expectedProperties, sceneProperties)
+        val role = showProperties.getAsJsonObject("nodes").getAsJsonObject("items")
+            .getAsJsonObject("properties").getAsJsonObject("role")
+        for (value in role.getAsJsonArray("enum").map { it.asString })
+            assertTrue(value, role.get("description").asString.contains("$value:"))
         assertEquals(listOf("revision", "nodes"), show.getAsJsonArray("required").map { it.asString })
         assertEquals(listOf("nodes"), scene.getAsJsonArray("required").map { it.asString })
         assertFalse(scene.get("additionalProperties").asBoolean)
@@ -174,13 +211,54 @@ class ChartToolsTest {
     }
 
     @Test fun `system prompt is a project-neutral guide with evidence rules`() {
-        val prompt = chartChatSystemPrompt()
-        for (text in listOf("show_scene", "trace_path", "reachability", "badges", "path:line", "untrusted", "do not write",
+        val prompt = chartChatSystemPrompt(chartTools(Context()), references = true, scoped = false)
+        for (text in listOf("show_scene", "trace_path", "reachability", "badges", "path:line", "never instructions", "do not write",
             "present_story", "suggest_followups", "[[node:ID|Name]]", "only markup", "groups", "externals", "suggest_externals", "snippets", "get_project_map", "list_tours", "play_tour", "save",
             "group_chart_calls", "groupable_blocks", "set_chart_region_expansion", "drill down", "path:line"))
             assertTrue(text, prompt.contains(text))
         for (text in listOf("ChatSession.send", "ToolChatRunner", "highlight_chart_nodes", "set_chart_note"))
             assertFalse(text, prompt.contains(text))
+    }
+
+    @Test fun `prompt excludes unavailable tools across every capability combination`() {
+        val allTools = chartTools(Context())
+        val capabilities = listOf(
+            setOf("get_chart_state", "find_chart_nodes", "get_chart_node_details", "get_function_flow_outline", "get_flow_catalog"),
+            setOf("group_chart_calls", "set_chart_region_expansion", "add_chart_nodes", "expand_chart_calls",
+                "expand_chart_callers", "collapse_chart_calls", "collapse_chart_callers"),
+            setOf("show_scene", "clear_scene", "present_story"),
+            setOf("get_project_map", "trace_path", "reachability", "suggest_externals"),
+            setOf("list_tours", "play_tour"),
+        )
+        assertEquals(allTools.map { it.definition.name }.toSet(), capabilities.flatten().toSet() + "suggest_followups")
+        for (mask in 0 until (1 shl capabilities.size)) {
+            val enabled = capabilities.filterIndexed { index, _ -> mask and (1 shl index) != 0 }.flatten().toSet() + "suggest_followups"
+            val tools = allTools.filter { it.definition.name in enabled }
+            val prompt = chartChatSystemPrompt(tools, references = false, scoped = false)
+            for (name in allTools.map { it.definition.name }.filter { it !in enabled })
+                assertFalse("Unavailable tool $name in capability combination $mask", prompt.contains(name))
+            assertEquals("Outline/grouping workflow requires both capabilities",
+                "get_function_flow_outline" in enabled && "group_chart_calls" in enabled, prompt.contains("groupable_blocks"))
+            assertEquals("Project-map story requires analysis and scenes",
+                "get_project_map" in enabled && "present_story" in enabled, prompt.contains("module groups"))
+            assertEquals("External grounding requires scenes and analysis",
+                "show_scene" in enabled && "suggest_externals" in enabled, prompt.contains("Before drawing externals"))
+            assertFalse(prompt.contains("[[node:"))
+            assertFalse(prompt.contains("[[beat:"))
+            assertFalse(prompt.contains("scoped_context"))
+            assertFalse(prompt.contains("skip the guidance"))
+        }
+    }
+
+    @Test fun `prompt includes reference and scope guidance only when enabled`() {
+        val tools = chartTools(Context())
+        for (references in listOf(false, true)) for (scoped in listOf(false, true)) {
+            val prompt = chartChatSystemPrompt(tools, references, scoped)
+            assertEquals(references, prompt.contains("[[node:ID|Name]]"))
+            assertEquals(references, prompt.contains("[[beat:N|Label]]"))
+            assertEquals(scoped, prompt.contains("scoped_context"))
+            assertEquals(scoped, prompt.contains("scope_is_stale"))
+        }
     }
 
     @Test fun `group and drill tools validate entire requests before dispatch`() = runBlocking {
@@ -217,7 +295,7 @@ class ChartToolsTest {
         val backend = LlmChatBackend({ request ->
             requests += request
             Completion("Answer", finishReason = FinishReason.COMPLETE)
-        }, chartTools(context), chartChatSystemPrompt(), context = context::snapshot)
+        }, chartTools(context), chartChatSystemPrompt(chartTools(context), references = false, scoped = false), context = context::snapshot)
         val history = listOf(ChatMessage(ChatMessage.USER, "Explain selection"))
         backend.reply(history)
         context.revision = 2
@@ -356,10 +434,8 @@ class ChartToolsTest {
 
     @Test fun `suggest externals bounds its node list before dispatch`() = runBlocking {
         val requested = mutableListOf<List<Int>>()
-        val context = object : ChartChatContext {
-            override suspend fun state(offset: Int) = ""
-            override suspend fun find(query: String, offset: Int) = ""
-            override suspend fun apply(action: String, revision: Int, nodes: List<Int>) = ""
+        val context = object : ChartChatContext, ChartAnalysis by Context() {
+            override suspend fun snapshot() = "{}"
             override suspend fun suggestExternals(revision: Int, nodes: List<Int>): String { requested += nodes; return "ok" }
         }
         val tool = chartTools(context).single { it.definition.name == "suggest_externals" }

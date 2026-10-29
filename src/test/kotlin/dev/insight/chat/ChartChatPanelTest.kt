@@ -12,15 +12,13 @@ import javax.swing.JEditorPane
 import javax.swing.event.HyperlinkEvent
 
 class ChartChatPanelTest : BasePlatformTestCase() {
-    private class Context : ChartChatContext {
+    private class Context : ChartChatContext, ChartReferences {
         override var revision = 3
         override var storyId: Int? = 10
         val opened = mutableListOf<Pair<Int, Int>>()
         val hovered = mutableListOf<Int?>()
         val openedBeats = mutableListOf<Triple<Int, Int, Int?>>()
-        override suspend fun state(offset: Int) = "{}"
-        override suspend fun find(query: String, offset: Int) = "{}"
-        override suspend fun apply(action: String, revision: Int, nodes: List<Int>) = "{}"
+        override suspend fun snapshot() = "{}"
         override fun referenceName(revision: Int, node: Int) = if (revision == this.revision && node == 1) "loadData" else null
         override fun openReference(revision: Int, node: Int): String? {
             opened += revision to node
@@ -105,6 +103,30 @@ class ChartChatPanelTest : BasePlatformTestCase() {
             assertTrue("Node link in first reply remains active at same revision", panes[0].text.contains("node:3:1"))
             assertFalse("Beat link in first reply is invalidated when story changes", panes[0].text.contains("beat:3:2"))
             assertTrue("Beat link in second reply resolves against new story", panes[1].text.contains("beat:3:2"))
+        } finally {
+            panel.dispose()
+            scope.cancel()
+        }
+    }
+
+    fun `test chart chat without references keeps plain text replies`() {
+        val scope = CoroutineScope(SupervisorJob())
+        val context = object : ChartChatContext {
+            override suspend fun snapshot() = "{}"
+        }
+        val session = object : ChatSession(project, scope, context) {
+            override fun createBackend() = object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit) = "See [[node:1]]"
+            }
+        }
+        val panel = ChatPanel(project, session, chartMode = true)
+        try {
+            session.send("Explain")
+            PlatformTestUtil.waitWithEventsDispatching("Reply should finish", { !session.busy }, 5 /* seconds */)
+            assertNull(session.messages.last().revision)
+            assertNull(session.messages.last().storyId)
+            assertTrue(controls(panel).none { it is JEditorPane })
+            assertTrue(controls(panel).filterIsInstance<com.intellij.ui.components.JBTextArea>().any { it.text == "See [[node:1]]" })
         } finally {
             panel.dispose()
             scope.cancel()
