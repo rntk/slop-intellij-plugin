@@ -3,8 +3,7 @@ package dev.insight.diff
 import com.google.gson.JsonObject
 import dev.insight.chat.ChatTool
 import dev.insight.enrichment.CODE_AS_DATA
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.review.BRANCH_CITATION_GUIDANCE
 import dev.insight.review.LEAF_CITATION_GUIDANCE
 import dev.insight.review.ReviewSummarizer
@@ -21,7 +20,7 @@ import dev.insight.review.summaryFocusLine
 
 /** Supplies VCS patch evidence to the shared summary pipeline. */
 internal fun diffSummarizer(
-    complete: suspend (CompletionRequest) -> Completion,
+    complete: CompletionFn,
     readTool: ChatTool?,
     options: ReviewSummaryOptions = ReviewSummaryOptions(),
     evidence: SummaryEvidence = DiffSummaryEvidence(),

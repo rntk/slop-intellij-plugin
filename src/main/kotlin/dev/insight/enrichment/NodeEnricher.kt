@@ -6,6 +6,7 @@ import dev.insight.callgraph.RelationKind
 import com.intellij.openapi.diagnostic.logger
 import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionApiException
+import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
@@ -34,7 +35,7 @@ data class NodeEnrichmentResult(
  * Answers are cached by everything that shapes the request; a failed request leaves the symbol unannotated.
  */
 class NodeEnricher(
-    private val evaluate: suspend (DecisionRequest) -> DecisionResponse,
+    private val evaluate: DecisionFn,
     private val cache: EnrichmentCache = InMemoryEnrichmentCache(),
     private val concurrency: Int = 4,
     private val maxNeighbours: Int = 12,

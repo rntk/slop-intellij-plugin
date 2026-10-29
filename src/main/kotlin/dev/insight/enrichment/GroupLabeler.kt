@@ -3,8 +3,7 @@ package dev.insight.enrichment
 import com.google.gson.JsonObject
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -18,7 +17,7 @@ data class GroupLabelResult(val labels: Map<String, GroupLabel>, val requests: I
  * A failed batch leaves its groups unlabeled.
  */
 class GroupLabeler(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
     private val concurrency: Int = 2,
     private val batchSize: Int = 15,

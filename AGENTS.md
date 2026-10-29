@@ -41,3 +41,10 @@ Use `./build.sh` for compile, test, and packaging. Don't call `./gradlew` or `./
 - `src/test/kotlin/dev/insight/`: JUnit 4 and IntelliJ Platform tests mirroring the main package structure.
 - `flows/`: design notes for the larger features.
 - `build.gradle.kts`: target platform (built against IU 2025.2.4, `sinceBuild` 252, `untilBuild` 262.*).
+
+## LLM workflow design
+
+- Inject `CompletionFn` and `DecisionFn` and any tools, evidence providers, or caches into workflow constructors. Keep client configuration, IDE reads, and Swing updates in service/UI adapters so workflows can run with fake ports in plain JUnit tests.
+- Pass input and progress callbacks to workflow methods; retain descriptive entry points such as `summarize`, `find`, or `run`.
+- Keep prompt construction, source-range calculations, request estimates, and HTML rendering in non-Swing files. Test these functions without `BasePlatformTestCase`; reserve platform tests for IDE integration.
+- Compose tool policies with named decorators in the `chat` package, alongside `ChatTool`, rather than embedding anonymous wrappers in workflows.

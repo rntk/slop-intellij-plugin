@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
 import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
 import dev.insight.enrichment.NodeEnricher.Companion.logFailure
@@ -33,7 +34,7 @@ data class EdgeEnrichmentResult(
  * have no facts are skipped; a failed request leaves the edge unannotated.
  */
 class EdgeEnricher(
-    private val evaluate: suspend (DecisionRequest) -> DecisionResponse,
+    private val evaluate: DecisionFn,
     private val cache: EnrichmentCache = InMemoryEnrichmentCache(),
     private val concurrency: Int = 4,
 ) {

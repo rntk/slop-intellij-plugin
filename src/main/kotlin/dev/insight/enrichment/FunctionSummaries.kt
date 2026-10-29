@@ -9,8 +9,7 @@ import dev.insight.callgraph.SymbolKind
 import dev.insight.callgraph.CallOccurrence
 import dev.insight.callgraph.CallOperation
 import dev.insight.callgraph.ResolutionStatus
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -127,7 +126,7 @@ data class SummaryResult(val summaries: Map<Int, FunctionSummary>, val requests:
  * writes text and picks from closed vocabularies; ids are validated and nothing structural is taken from it.
  */
 class FunctionSummarizer(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
     private val options: SummaryOptions = SummaryOptions(),
 ) {

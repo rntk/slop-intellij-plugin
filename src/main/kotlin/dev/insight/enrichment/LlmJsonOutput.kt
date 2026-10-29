@@ -2,7 +2,7 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.insight.llm.Completion
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.DEFAULT_OUTPUT_TOKENS
 import dev.insight.llm.FinishReason
@@ -38,7 +38,7 @@ internal class JsonOutputTruncatedException(message: String) : IOException(messa
  * Throws [IOException] when no attempt yields an object.
  */
 suspend fun completeJson(
-    complete: suspend (CompletionRequest) -> Completion,
+    complete: CompletionFn,
     system: String,
     user: String,
     schema: JsonObject?,
@@ -112,7 +112,7 @@ internal fun generativeCacheKey(kind: String, vararg parts: String): String {
 internal suspend fun cachedJson(
     cache: EnrichmentCache,
     kind: String,
-    complete: suspend (CompletionRequest) -> Completion,
+    complete: CompletionFn,
     system: String,
     user: String,
     schema: JsonObject,
@@ -121,7 +121,7 @@ internal suspend fun cachedJson(
 ): JsonObject? {
     val key = generativeCacheKey(kind, system, user, schema.toString())
     cache.text(key)?.let(::parseJsonObjectLeniently)?.let { return it }
-    val counted: suspend (CompletionRequest) -> Completion = { onRequest(); complete(it) }
+    val counted: CompletionFn = { onRequest(); complete(it) }
     return try {
         completeJson(counted, system, user, schema, maxTokens).also { cache.putText(key, it.toString()) }
     } catch (e: CancellationException) {

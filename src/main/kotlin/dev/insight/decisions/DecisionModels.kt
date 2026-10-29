@@ -63,3 +63,6 @@ data class DecisionResponse(
     val answers: Map<String, DecisionAnswer>,
     val usage: DecisionUsage,
 )
+
+/** Injectable decision port for workflows and request decorators. */
+typealias DecisionFn = suspend (DecisionRequest) -> DecisionResponse

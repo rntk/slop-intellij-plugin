@@ -2,15 +2,14 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonObject
 import dev.insight.callgraph.SymbolKind
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 
 /**
  * Proposes the project's functional areas ([Domain]s) in one generative request, from the group labels when there
  * are any and from file paths and their main declarations otherwise. Returns an empty list when the model fails.
  */
 class TaxonomyDiscovery(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
 ) {
     suspend fun discover(input: EnrichmentInput, labels: Map<String, GroupLabel>): List<Domain> {

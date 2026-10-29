@@ -4,10 +4,10 @@ import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
+import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import kotlinx.coroutines.delay
 import java.net.http.HttpTimeoutException
 
@@ -36,8 +36,8 @@ data class EnrichmentOptions(
  * phase degrades on failure instead of failing the run. [complete] may be null to skip the generative phases.
  */
 class EnrichmentPipeline(
-    private val evaluate: suspend (DecisionRequest) -> DecisionResponse,
-    private val complete: (suspend (CompletionRequest) -> Completion)?,
+    private val evaluate: DecisionFn,
+    private val complete: CompletionFn?,
     private val cache: EnrichmentCache,
     private val options: EnrichmentOptions = EnrichmentOptions(),
 ) {

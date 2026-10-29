@@ -11,8 +11,7 @@ import dev.insight.enrichment.clipLine
 import dev.insight.enrichment.completeJson
 import dev.insight.enrichment.forEachConcurrently
 import dev.insight.enrichment.parseJsonObjectLeniently
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
 import kotlinx.coroutines.CancellationException
@@ -124,7 +123,7 @@ internal fun summaryFocusLine(focus: String): String = if (focus.isEmpty()) "" e
  * Other cut evidence may use [readTool]. Branches are written from their children's summaries alone.
  */
 class ReviewSummarizer internal constructor(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val readTool: ChatTool?,
     private val options: ReviewSummaryOptions = ReviewSummaryOptions(),
     internal val evidence: SummaryEvidence,
@@ -233,7 +232,7 @@ class ReviewSummarizer internal constructor(
         branchSystem: String,
         node: SummaryNode,
         pages: List<SummaryEvidencePage>,
-        complete: suspend (CompletionRequest) -> Completion,
+        complete: CompletionFn,
     ): Summary {
         suspend fun ask(prompt: String, item: JsonObject, allowed: Citations): Summary {
             var problem = "No usable summary returned."
@@ -323,7 +322,7 @@ class ReviewSummarizer internal constructor(
         feedback: MutableMap<Int, String>,
         onToolCall: suspend (ToolCallEvent) -> Unit,
     ): Map<Int, Summary> {
-        val counted: suspend (CompletionRequest) -> Completion = { requests.incrementAndGet(); complete(it) }
+        val counted: CompletionFn = { requests.incrementAndGet(); complete(it) }
         if (batch.size == 1 && batch.single().children.isEmpty()) {
             val node = batch.single()
             evidence.pages(node, options.patchChars)?.let { pages ->

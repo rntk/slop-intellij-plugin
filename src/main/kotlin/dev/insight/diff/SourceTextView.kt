@@ -48,7 +48,8 @@ internal class SourceTextView(
         for (index in source.indices) if (source[index] == '\n' && line < count) lineStarts[line++] = index + 1
         numberWidth = metrics.stringWidth("0".repeat(maxOf(3, digits, (firstLine + count - 1).toString().length)))
         font = lineFont
-        preferredSize = Dimension(viewWidth, maxOf(count, 1) * lineHeight + 2 * pad)
+        val contentWidth = (0 until count).maxOfOrNull { metrics.stringWidth(line(it).replace("\t", "    ")) } ?: 0
+        preferredSize = Dimension(maxOf(viewWidth, contentWidth + numberWidth + 4 * pad), maxOf(count, 1) * lineHeight + 2 * pad)
         if (hoverLine != null) {
             val listener = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) = update(e)

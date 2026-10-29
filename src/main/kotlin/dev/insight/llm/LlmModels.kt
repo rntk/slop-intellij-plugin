@@ -103,3 +103,6 @@ data class Completion(
     /** Anthropic thinking blocks; pass them to [LlmMessage.assistant] when continuing a tool loop. */
     val thinkingBlocks: List<JsonObject> = emptyList(),
 )
+
+/** Injectable completion port for workflows and request decorators. */
+typealias CompletionFn = suspend (CompletionRequest) -> Completion

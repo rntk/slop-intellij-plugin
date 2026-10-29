@@ -556,6 +556,39 @@ class NoteCanvasTest : BasePlatformTestCase() {
         assertEquals(901 - PatchView.MAX_LINES, long.hiddenLines)
     }
 
+    fun testDocumentDiffScrollsInsideWiderFileBlock() {
+        val file = ReviewFile("src/wide.kt", "/repo/src/wide.kt", null, "modified",
+            "@@ -1,0 +1,80 @@\n" + ("+" + "wide content ".repeat(100) + "\n").repeat(80), "1")
+        val narrow = ReviewFile("src/narrow.kt", "/repo/src/narrow.kt", null, "modified",
+            "@@ -1,0 +1,80 @@\n" + "+short line\n".repeat(80), "1")
+        val files = listOf(file, narrow)
+        val topics = files.fold(ReviewTopics(files)) { result, entry -> result.assign(entry.path, "Product>Feature") }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 700) }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics,
+                ReviewSummaries(buildSummaryTree(files)), canRun = false)))
+            layoutTree(canvas)
+            val document = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            val section = document.components.single { it.name == "file:${file.path}" }
+            assertTrue("The document reserves roughly twice the old 620px content width",
+                section.width >= com.intellij.util.ui.JBUI.scale(1100))
+            val scroll = descendants(section as Container).single { it.name == "document-source-scroll" } as javax.swing.JScrollPane
+            assertTrue(scroll.height <= com.intellij.util.ui.JBUI.scale(420))
+            assertTrue(scroll.verticalScrollBar.isVisible)
+            assertTrue(scroll.horizontalScrollBar.isVisible)
+            val documentPosition = document.location
+            scroll.verticalScrollBar.value = 100
+            scroll.horizontalScrollBar.value = 200
+            assertEquals(100, scroll.viewport.viewPosition.y)
+            assertEquals(200, scroll.viewport.viewPosition.x)
+            assertEquals(documentPosition, document.location)
+            val narrowSection = document.components.single { it.name == "file:${narrow.path}" } as Container
+            val narrowScroll = descendants(narrowSection).single { it.name == "document-source-scroll" } as javax.swing.JScrollPane
+            assertTrue(narrowScroll.verticalScrollBar.isVisible)
+            assertFalse(narrowScroll.horizontalScrollBar.isVisible)
+        } finally { canvas.dispose() }
+    }
+
     fun testTopicHeadingsStayInViewWhileLongCardsScroll() {
         val files = (1..24).map { index ->
             val path = "src/file$index.kt"

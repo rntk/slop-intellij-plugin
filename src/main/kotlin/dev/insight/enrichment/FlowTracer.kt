@@ -5,8 +5,7 @@ import dev.insight.callgraph.CallGraph
 import dev.insight.callgraph.CallGraphEdge
 import dev.insight.callgraph.RelationKind
 import dev.insight.callgraph.SymbolKind
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -37,7 +36,7 @@ data class FlowResult(val flows: List<Flow>, val llmRequests: Int, val failures:
  * entry symbol when there is no model or it fails.
  */
 class FlowTracer(
-    private val complete: (suspend (CompletionRequest) -> Completion)?,
+    private val complete: CompletionFn?,
     private val cache: EnrichmentCache,
     private val options: FlowOptions = FlowOptions(),
     private val concurrency: Int = 2,
@@ -91,7 +90,7 @@ class FlowTracer(
     private suspend fun name(
         input: EnrichmentInput,
         batch: List<Traced>,
-        complete: suspend (CompletionRequest) -> Completion,
+        complete: CompletionFn,
         requests: AtomicInteger,
         failures: AtomicInteger,
     ): Map<Int, Pair<String, String?>> {

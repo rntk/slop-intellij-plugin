@@ -6,6 +6,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import com.google.gson.JsonParser
 import dev.insight.decisions.*
+import dev.insight.decisions.DecisionFn
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -49,7 +50,7 @@ class EntryPointDecisionException(
  * projects, and the byte budget against the server's context. [concurrency] bounds files evaluated in parallel.
  */
 class DecisionsEntryPointFinder(
-    private val evaluate: suspend (DecisionRequest) -> DecisionResponse,
+    private val evaluate: DecisionFn,
     private val snapshot: ProjectSnapshot,
     private val read: suspend (String) -> String?,
     private val maxFiles: Int = 200,

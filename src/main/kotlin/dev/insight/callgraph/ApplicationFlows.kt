@@ -2,8 +2,7 @@ package dev.insight.callgraph
 
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.enrichment.*
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
@@ -78,7 +77,7 @@ data class FlowGraph(val graph: CallGraph, val sources: List<Int>)
 data class ApplicationFlowResult(val flows: List<ApplicationFlow>, val unmatched: List<EntryPoint>, val failures: Int)
 
 class ApplicationFlowSplitter(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
     // Small bounds keep each flow readable on its own; larger ones are marked partial.
     private val maxNodes: Int = 40,

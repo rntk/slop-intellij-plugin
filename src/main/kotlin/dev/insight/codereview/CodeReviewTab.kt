@@ -38,8 +38,7 @@ import dev.insight.diff.isSummariesRequest
 import dev.insight.diff.openHighlightedLines
 import dev.insight.diff.readPsiThen
 import dev.insight.diff.withCountProgress
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.review.Summary
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewDiskCache
@@ -47,7 +46,6 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
-import dev.insight.review.ReviewSummaryOptions
 import dev.insight.review.ReviewSymbols
 import dev.insight.review.ReviewTopicGenerator
 import dev.insight.review.ReviewTopics
@@ -56,7 +54,6 @@ import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
-import dev.insight.review.chatFocusPrompt
 import dev.insight.review.current
 import dev.insight.review.isExplainRequest
 import dev.insight.review.isTopicsRequest
@@ -95,7 +92,7 @@ internal class CodeReviewTab(
     paths: Set<String>?,
     private val selectedPaths: () -> List<String>,
     private val openFile: (path: String, line: Int?) -> Unit,
-    private val complete: (suspend (CompletionRequest) -> Completion)? = null,
+    private val complete: CompletionFn? = null,
     focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
@@ -195,7 +192,7 @@ internal class CodeReviewTab(
         override fun createBackend(): ChatBackend = object : ChatBackend {
             override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                 val (context, scopeName, turnFocus) = withContext(Dispatchers.EDT) {
-                    Triple(captureContext(), promptScope(),
+                    Triple(captureContext(), codePromptScope(state.snapshot.scope, state.scopePaths),
                         focus?.current(state.snapshot.byPath.keys, state.summaries, state.topicSummaries))
                 }
                 val question = messages.lastOrNull()?.text.orEmpty()
@@ -239,7 +236,7 @@ internal class CodeReviewTab(
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
                 return LlmChatBackend(rawComplete,
                     chatTools(context) + turn.chartTools,
-                    turn.prompt(codeReviewPrompt(scopeName)) + focusPrompt(context.snapshot, turnFocus),
+                    turn.prompt(codeReviewPrompt(scopeName)) + codeFocusPrompt(context.snapshot, turnFocus),
                     maxContextChars = 160_000, maxToolRounds = 100,
                     context = if (turnFocus == null) { { context.overview() } }
                         else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
@@ -430,30 +427,15 @@ internal class CodeReviewTab(
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
     private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
 
-    /** The pinned focus for a turn on [snapshot], numbered like read_code; empty without a focus. */
-    private fun focusPrompt(snapshot: CodeSnapshot, focus: ChatFocus?): String {
-        focus ?: return ""
-        return "\n\n" + chatFocusPrompt(focus, "code", READ_CODE_TOOL) { path, lines ->
-            snapshot.byPath[path]?.let { file -> numberedLines(file, lines ?: 1..file.lineCount) }
-        }
-    }
-
     /**
      * The per-turn overview of a focused chat: only the focused files, with their notes and source blocks. Their source and
-     * summaries are already pinned by [focusPrompt]; the rest of the scope is left to the tools.
+     * summaries are already pinned by [codeFocusPrompt]; the rest of the scope is left to the tools.
      */
     private fun focusOverview(snapshot: CodeSnapshot, focus: ChatFocus): String {
         val paths = focus.files.toSet()
         return codeOverview(snapshot.copy(files = snapshot.files.filter { it.path in paths }), state.scopePaths,
             selectedPaths().filter { it in paths }, state.notes.filter { note -> note.paths.any { it in paths } },
             state.sources.filter { it.range.path in paths }, summaries = null)
-    }
-
-    private fun promptScope(): String {
-        val scope = state.snapshot.scope
-        val name = if (scope.entry) "the entry file ${scope.path} and the project files it depends on (imports, calls and references, " +
-            "transitively)" else scope.path.ifEmpty { "the project root" }
-        return state.scopePaths?.let { "${it.size} selected paths of $name" } ?: name
     }
 
     private fun updateControls() {
@@ -616,76 +598,7 @@ internal class CodeReviewTab(
 /** Runs estimated above this many model requests ask before they start. */
 internal const val CONFIRM_REQUESTS = 500
 
-/**
- * About how many model requests a summary run of [summaries] sends: missing leaves batched like [ReviewSummarizer] (by
- * count, by [size] and alone when cut), then the missing branches wave by wave in batches of [ReviewSummaryOptions.foldersPerRequest].
- * A branch with a single child reuses its summary without a request. A complete tree starts over when [restartComplete].
- */
-internal fun estimateSummaryRequests(
-    summaries: ReviewSummaries,
-    options: ReviewSummaryOptions,
-    size: (SummaryNode) -> Int,
-    restartComplete: Boolean = true,
-): Int {
-    val start = if (restartComplete && summaries.complete) ReviewSummaries(summaries.tree) else summaries
-    val tree = start.tree
-    val missing = start.missing().toHashSet()
-    if (missing.isEmpty()) return 0
-    var requests = 0
-    var batch = 0
-    var chars = 0
-    // Wave of a missing node: 0 when its children are all written, else one after its latest missing child.
-    val wave = HashMap<Int, Int>()
-    for (node in tree.nodes.asReversed()) {
-        if (node.id !in missing) continue
-        wave[node.id] = node.children.filter { it in missing }.maxOfOrNull { wave.getValue(it) + 1 } ?: 0
-        if (node.children.isNotEmpty()) continue
-        val chars1 = size(node)
-        if (chars1 > options.patchChars) { requests++; continue }
-        if (batch > 0 && (batch >= options.filesPerRequest || chars + chars1 > options.batchChars)) { requests++; batch = 0; chars = 0 }
-        batch++; chars += chars1
-    }
-    if (batch > 0) requests++
-    val branches = tree.nodes.filter { it.id in missing && it.children.size > 1 }.groupingBy { wave.getValue(it.id) }.eachCount()
-    branches.values.forEach { requests += (it + options.foldersPerRequest - 1) / options.foldersPerRequest }
-    return requests
-}
-
-/** One request per file that a /topics run classifies: the missing files, or every file when the topics are complete. */
-internal fun estimateTopicRequests(topics: ReviewTopics): Int =
-    if (topics.complete) topics.files.size else topics.files.count { it.path !in topics.labels }
-
-/**
- * The lines a source block shows for [lines] (a part) or a whole file: from its first line, at most [CODE_SOURCE_LINES]
- * lines and [CODE_SOURCE_CHARS] characters. Null when the file is empty or its first line alone is too long.
- */
-internal fun sourceBlockRange(file: CodeFile, lines: IntRange?): ReviewSourceRange? {
-    if (file.lineCount == 0) return null
-    val start = (lines?.first ?: 1).coerceIn(1, file.lineCount)
-    var end = minOf(lines?.last ?: file.lineCount, start + CODE_SOURCE_LINES - 1, file.lineCount).coerceAtLeast(start)
-    if (file.lines(start..start).length > CODE_SOURCE_CHARS) return null
-    if (file.lines(start..end).length > CODE_SOURCE_CHARS) {
-        // The longest prefix that fits: the first line fits, the full range does not.
-        var low = start
-        var high = end
-        while (low < high) {
-            val middle = (low + high + 1) / 2
-            if (file.lines(start..middle).length <= CODE_SOURCE_CHARS) low = middle else high = middle - 1
-        }
-        end = low
-    }
-    return ReviewSourceRange(file.path, start, end, CODE_SOURCE_SIDE)
-}
-
 /** The file of a code review path: on disk, or under a project root (tests use an in-memory file system). */
 internal fun findSourceFile(project: Project, path: String, absolutePath: String?): VirtualFile? =
     absolutePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }?.takeIf { it.isValid && !it.isDirectory }
         ?: codeScopeRoots(project).firstNotNullOfOrNull { it.findFileByRelativePath(path) }?.takeIf { it.isValid && !it.isDirectory }
-
-/** The 1-based [range] of [file], each line prefixed with its number so the model can cite path:line. */
-internal fun numberedLines(file: CodeFile, range: IntRange): String {
-    if (file.lineCount == 0) return ""
-    val first = range.first.coerceIn(1, file.lineCount)
-    return file.lines(first..range.last.coerceIn(first, file.lineCount)).lineSequence()
-        .withIndex().joinToString("\n") { (i, line) -> "${first + i}: $line" }
-}

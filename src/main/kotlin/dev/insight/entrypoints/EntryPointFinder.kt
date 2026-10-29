@@ -5,15 +5,17 @@ import com.google.gson.JsonObject
 import dev.insight.chat.ChatTool
 import dev.insight.chat.ToolChatRunner
 import dev.insight.chat.ToolInputException
-import dev.insight.chat.lenientInt
+import dev.insight.chat.BudgetedTool
+import dev.insight.chat.RecordingTool
+import dev.insight.chat.SchemaOverride
+import dev.insight.chat.SourceReadBudget
 import dev.insight.enrichment.CODE_AS_DATA
 import dev.insight.enrichment.JsonSchemas
 import dev.insight.enrichment.clipLine
 import dev.insight.enrichment.completeJson
 import dev.insight.enrichment.jsonText
 import dev.insight.enrichment.parseJsonObjectLeniently
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmMessage
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
@@ -53,7 +55,7 @@ class EntryPointCache(private val maxRuns: Int = 8) {
  * of reading the codebase. [tools] must include `read_file`; every read is recorded with the file's content hash.
  */
 class EntryPointFinder(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val snapshot: ProjectSnapshot,
     private val tools: List<ChatTool>,
     private val cache: EntryPointCache,
@@ -99,23 +101,22 @@ class EntryPointFinder(
         }
 
         val reads = LinkedHashMap<String, FileId>()
-        val budget = ReadBudget()
+        val budget = SourceReadBudget(maxSourceLines, maxSourceChars)
         val searches = mutableListOf<EntryPointCache.Search>()
         val runner = ToolChatRunner(complete, tools.map { tool ->
-            if (tool.definition.name == SEARCH_TOOL) object : ChatTool {
-                override val definition = tool.definition.copy(parameters = tool.definition.parameters.deepCopy().apply {
-                    getAsJsonObject("properties")?.getAsJsonObject("max_results")?.addProperty("description",
+            when (tool.definition.name) {
+                SEARCH_TOOL -> BudgetedTool(RecordingTool(SchemaOverride(tool) { schema ->
+                    schema.getAsJsonObject("properties")?.getAsJsonObject("max_results")?.addProperty("description",
                         "Maximum matching lines, default 50, at most 80.")
-                })
-                override suspend fun call(arguments: JsonObject): String {
-                    budget.checkAvailable()
-                    val limit = (arguments.lenientInt("max_results") ?: 50).coerceIn(1, 80)
-                    val bounded = arguments.deepCopy().apply { addProperty("max_results", minOf(limit, maxSourceLines - budget.lines)) }
-                    val result = tool.call(bounded)
-                    searches += EntryPointCache.Search(bounded.deepCopy(), digest(result))
-                    return budget.consume(result, SEARCH_LINE)
-                }
-            } else recording(tool, reads, budget)
+                }) { arguments, result ->
+                    searches += EntryPointCache.Search(arguments, digest(result))
+                }, budget, BudgetedTool.Format.SEARCH)
+                READ_TOOL -> RecordingReadTool(BudgetedTool(SchemaOverride(tool) { schema ->
+                    schema.getAsJsonObject("properties")?.getAsJsonObject("end_line")?.addProperty("description",
+                        "Last line, inclusive; default start_line + 79, at most 80 lines.")
+                }, budget, BudgetedTool.Format.READ), reads)
+                else -> tool
+            }
         }, maxToolRounds = maxToolRounds)
         val messages = listOf(
             LlmMessage.system(systemPrompt(maxFileReads, maxSourceLines, maxSourceChars)),
@@ -132,7 +133,7 @@ class EntryPointFinder(
         if (json == null || validationErrors(json).isNotEmpty()) {
             progress.report("Formatting the answer…")
             val errors = json?.let(::validationErrors).orEmpty()
-            val counted: suspend (CompletionRequest) -> Completion = { request -> requests++; complete(request) }
+            val counted: CompletionFn = { request -> requests++; complete(request) }
             try {
                 json = completeJson(counted, CONVERT_PROMPT,
                     "Validation errors: ${errors.joinToString("; ")}\n\nAnalysis:\n${chat.reply.take(12_000)}", SCHEMA, maxTokens = 2048)
@@ -203,55 +204,21 @@ class EntryPointFinder(
         return result
     }
 
-    /** Records each file read with its content hash at read time, and enforces the read budget. */
-    private inner class ReadBudget(var lines: Int = 0, var chars: Int = 0) {
-        fun checkAvailable() {
-            if (lines >= maxSourceLines || chars >= maxSourceChars)
-                throw ToolInputException("Source read budget reached; answer now.")
-        }
-
-        /** Counts source lines from either numbered reads or path:line search matches. */
-        fun consume(result: String, sourceLine: Regex, fallbackLines: Int = 0): String {
-            var matched = 0
-            val limitedLines = result.lineSequence().takeWhile { line ->
-                if (!sourceLine.containsMatchIn(line)) true else ++matched <= maxSourceLines - lines
-            }.joinToString("\n")
-            val remaining = maxSourceChars - chars
-            val shown = if (limitedLines.length <= remaining) limitedLines else limitedLines.take(remaining).substringBeforeLast('\n', "")
-            val numbered = shown.lineSequence().count { sourceLine.containsMatchIn(it) }
-            lines += if (numbered > 0) numbered else fallbackLines
-            chars += if (limitedLines.length > remaining) remaining else shown.length
-            return shown + when {
-                limitedLines.length > remaining -> "\n[Source character budget reached.]"
-                limitedLines != result -> "\n[Source line budget reached.]"
-                else -> ""
+    /** The distinct-file policy and file identities belong to entry-point discovery, rather than source tools. */
+    private inner class RecordingReadTool(
+        private val tool: ChatTool,
+        private val reads: MutableMap<String, FileId>,
+    ) : ChatTool by tool {
+        override suspend fun call(arguments: JsonObject): String {
+            val file = arguments.jsonText("path")?.let { snapshot.identify(it) }
+            if (file != null && file.path !in reads && reads.size >= maxFileReads) {
+                throw ToolInputException("The limit of $maxFileReads files is reached. Do not read more files; answer now with what you know.")
             }
+            val result = tool.call(arguments)
+            if (file != null) reads.putIfAbsent(file.path, file)
+            return result
         }
     }
-
-    private fun recording(tool: ChatTool, reads: MutableMap<String, FileId>, budget: ReadBudget): ChatTool =
-        if (tool.definition.name != READ_TOOL) tool else object : ChatTool {
-            override val definition = tool.definition.copy(parameters = tool.definition.parameters.deepCopy().apply {
-                getAsJsonObject("properties")?.getAsJsonObject("end_line")?.addProperty("description",
-                    "Last line, inclusive; default start_line + 79, at most 80 lines.")
-            })
-            override suspend fun call(arguments: JsonObject): String {
-                val file = arguments.jsonText("path")?.let { snapshot.identify(it) }
-                if (file != null && file.path !in reads && reads.size >= maxFileReads) {
-                    throw ToolInputException("The limit of $maxFileReads files is reached. Do not read more files; answer now with what you know.")
-                }
-                budget.checkAvailable()
-                val start = arguments.lenientInt("start_line") ?: 1
-                val end = arguments.lenientInt("end_line") ?: (start + 79)
-                if (start < 1 || end < start) throw ToolInputException("Invalid source line range")
-                val last = minOf(end.toLong(), start.toLong() + 79, start.toLong() + maxSourceLines - budget.lines - 1).toInt()
-                val bounded = arguments.deepCopy().apply { addProperty("start_line", start); addProperty("end_line", last) }
-                val result = tool.call(bounded)
-                val shown = budget.consume(result, READ_LINE, last - start + 1)
-                if (file != null) reads.putIfAbsent(file.path, file)
-                return shown + if (last < end) "\n[Read limited to $start-$last.]" else ""
-            }
-        }
 
     private fun JsonObject.array(name: String): JsonArray = get(name)?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
 
@@ -263,8 +230,6 @@ class EntryPointFinder(
         const val SEARCH_TOOL = "search_text"
 
         private val KINDS = EntryPointKind.entries.map { it.name.lowercase() }
-        private val READ_LINE = Regex("^\\s*\\d+\\|")
-        private val SEARCH_LINE = Regex("^.+:\\d+: ")
 
         /** Accept integral JSON numbers such as 12.0, but never round fractional or overflowing locations. */
         private fun positiveLine(value: com.google.gson.JsonElement?): Int? {

@@ -24,7 +24,6 @@ import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
-import dev.insight.review.chatFocusPrompt
 import dev.insight.review.current
 import dev.insight.review.isExplainRequest
 import dev.insight.review.isTopicsRequest
@@ -177,7 +176,7 @@ internal class DiffReviewTab(
                 // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
                 return LlmChatBackend(client::complete,
                     chatTools(context) + turn.chartTools,
-                    turn.prompt(diffReviewPrompt()) + focusPrompt(files, turnFocus),
+                    turn.prompt(diffReviewPrompt()) + diffFocusPrompt(files, turnFocus),
                     maxContextChars = 160_000, maxToolRounds = 100,
                     context = if (turnFocus == null) { { context.state(0, INLINE_PATCH_CHARS) } }
                         else { { withContext(Dispatchers.EDT) { focusState(snapshot, turnFocus) } } },
@@ -288,21 +287,8 @@ internal class DiffReviewTab(
     }
 
     /**
-     * The pinned focus for a turn on [files]: each file's patch; empty without a focus. A patch is not split by line, so a
-     * focus on part of a file pins the whole file's diff and says so.
-     */
-    private fun focusPrompt(files: List<ReviewFile>, focus: ChatFocus?): String {
-        focus ?: return ""
-        val byPath = files.associateBy { it.path }
-        val whole = focus.lines?.takeIf { focus.files.isNotEmpty() }?.let {
-            "\n\nThe file's diff covers the whole file; the focus is lines ${it.first}-${it.last} of it."
-        }
-        return "\n\n" + chatFocusPrompt(focus, "change", "read_diff_files") { path, _ -> byPath[path]?.patch } + whole.orEmpty()
-    }
-
-    /**
      * The per-turn state of a focused chat: only the focused files, with their notes and source blocks. Their patches are
-     * already pinned by [focusPrompt], so none are repeated; the rest of the diff is left to the tools.
+     * already pinned by [diffFocusPrompt], so none are repeated; the rest of the diff is left to the tools.
      */
     private fun focusState(snapshot: ReviewSnapshot, focus: ChatFocus): String {
         val paths = focus.files.toSet()

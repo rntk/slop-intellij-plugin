@@ -10,6 +10,7 @@ import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -496,16 +497,26 @@ internal abstract class DocumentColumnsPanel(
         val body = sectionBody(file, inner)
         if (body != null) add(body, BorderLayout.CENTER)
         else if (file is ReviewFile) {
-            val patch = PatchView(file.patch, inner, zoom)
+            val patch = PatchView(file.patch, 0, zoom)
             patch.enableNavigation(project, file)
-            add(patch, BorderLayout.CENTER)
+            add(scrollableSource(patch, inner), BorderLayout.CENTER)
             if (patch.hiddenLines > 0) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
                 isOpaque = false
                 add(JLabel("… ${patch.hiddenLines} more lines").apply { font = font(JBFont.small()); foreground = help })
                 add(ActionLink("View full diff") { openFile(file) }.apply { font = font(JBFont.small()) })
             }, BorderLayout.SOUTH)
-        } else add(SourceTextView(file.text, inner, zoom).apply { enableNavigation(project, file) }, BorderLayout.CENTER)
+        } else add(scrollableSource(SourceTextView(file.text, 0, zoom).apply { enableNavigation(project, file) }, inner), BorderLayout.CENTER)
         preferredSize = Dimension(width, preferredSize.height)
+    }
+
+    private fun scrollableSource(view: JComponent, width: Int): JComponent = JBScrollPane(view).apply {
+        name = "document-source-scroll"
+        border = null
+        verticalScrollBar.unitIncrement = view.getFontMetrics(view.font).height
+        horizontalScrollBar.unitIncrement = scaled(24)
+        val viewportWidth = width - if (view.preferredSize.height > scaled(MAX_SOURCE_HEIGHT)) verticalScrollBar.preferredSize.width else 0
+        val horizontal = if (view.preferredSize.width > viewportWidth) horizontalScrollBar.preferredSize.height else 0
+        preferredSize = Dimension(width, minOf(view.preferredSize.height + horizontal, scaled(MAX_SOURCE_HEIGHT)))
     }
 
     /** A source file's full path, or a diff's file name, followed by its snapshot facts. */
@@ -638,7 +649,8 @@ internal abstract class DocumentColumnsPanel(
     companion object {
         const val SUMMARY_WIDTH = 418
         const val MIN_DOC_WIDTH = 360
-        const val DOC_WIDTH = 620
+        const val DOC_WIDTH = 1240
+        const val MAX_SOURCE_HEIGHT = 420
         const val COLUMN_GAP = 16
         const val SECTION_GAP = 12
         const val RAIL_CARD_WIDTH = 240
@@ -779,7 +791,9 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
         val largest = lines.maxOfOrNull { maxOf(it.old ?: 0, it.new ?: 0) } ?: 0
         numberWidth = if (lines.none { it.old != null || it.new != null }) 0 else metrics.stringWidth("0".repeat(maxOf(3, largest.toString().length)))
         font = lineFont
-        preferredSize = Dimension(viewWidth, maxOf(lines.size, 1) * lineHeight + 2 * pad)
+        val gutter = if (numberWidth == 0) 0 else 2 * numberWidth + 3 * pad
+        val contentWidth = (lines.maxOfOrNull { metrics.stringWidth(it.text) } ?: 0) + gutter + 2 * pad
+        preferredSize = Dimension(maxOf(viewWidth, contentWidth), maxOf(lines.size, 1) * lineHeight + 2 * pad)
     }
 
     val lineCount: Int get() = lines.size
@@ -830,7 +844,7 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
                     Kind.HUNK, Kind.NOTE -> UIUtil.getContextHelpForeground()
                     else -> scheme.defaultForeground
                 }
-                // Long lines are clipped at the column; resizing the card or the full diff shows the rest.
+                // The containing viewport scrolls horizontally to reveal long lines.
                 g2.drawString(line.text, gutter + pad, baseline)
             }
         } finally { g2.dispose() }

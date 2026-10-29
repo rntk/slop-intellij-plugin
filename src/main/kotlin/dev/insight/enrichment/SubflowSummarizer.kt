@@ -4,8 +4,7 @@ import com.google.gson.JsonObject
 import dev.insight.callgraph.FlowRegionEvidence
 import dev.insight.callgraph.FlowRegionPlan
 import dev.insight.callgraph.validateRegionPlans
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 
 /** Missing keys retain structural fallbacks. Empty lists deliberately leave a block ungrouped. */
 data class SubflowSummaries(
@@ -16,7 +15,7 @@ data class SubflowSummaries(
 
 /** LLMs can only label consecutive subsets of precomputed blocks. They never emit edges or control structures. */
 class SubflowSummarizer(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
 ) {
     /**

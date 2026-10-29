@@ -1,12 +1,11 @@
 package dev.insight.enrichment
 
 import com.google.gson.JsonObject
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 
 /** Source ordering and navigation are deterministic; the model only supplies topic labels and descriptions. */
 class CanvasPipeline(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val cache: EnrichmentCache,
     private val chunkChars: Int = 18000,
 ) {

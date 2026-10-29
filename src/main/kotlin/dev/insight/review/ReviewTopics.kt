@@ -9,8 +9,7 @@ import dev.insight.enrichment.JsonSchemas
 import dev.insight.enrichment.completeJson
 import dev.insight.enrichment.forEachConcurrently
 import dev.insight.enrichment.parseJsonObjectLeniently
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
 import kotlinx.coroutines.CancellationException
@@ -145,7 +144,7 @@ internal data class TopicEvidence(val fields: Map<String, Any?>, val cut: Boolea
  * With [concurrency] above one, files are classified in parallel; each request sees the vocabulary saved when it started.
  */
 class ReviewTopicGenerator internal constructor(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val readTool: ChatTool?,
     patchChars: Int = 12_000,
     private val attempts: Int = 5,
@@ -166,7 +165,7 @@ class ReviewTopicGenerator internal constructor(
         val requests = AtomicInteger()
         val error = AtomicReference<String?>()
         val mutex = Mutex()
-        val counted: suspend (CompletionRequest) -> Completion = { requests.incrementAndGet(); complete(it) }
+        val counted: CompletionFn = { requests.incrementAndGet(); complete(it) }
         onProgress(current.labels.size, current.files.size)
         suspend fun visit(file: ReviewSource) {
             // The topics saved so far, including the vocabulary this file's requests offer.
@@ -189,7 +188,7 @@ class ReviewTopicGenerator internal constructor(
         file: ReviewSource,
         seen: ReviewTopics,
         focus: String,
-        counted: suspend (CompletionRequest) -> Completion,
+        counted: CompletionFn,
         onToolCall: suspend (ToolCallEvent) -> Unit,
         error: AtomicReference<String?>,
     ): String? {
@@ -204,7 +203,7 @@ class ReviewTopicGenerator internal constructor(
                     "focus" to focus.take(300),
                     "existing_topics" to topicVocabulary(seen),
                 ) + shown.fields)
-                val budgeted: suspend (CompletionRequest) -> Completion = { request ->
+                val budgeted: CompletionFn = { request ->
                     counted(request.copy(maxTokens = outputBudget))
                 }
                 val answer = if (shown.cut && readTool != null) {

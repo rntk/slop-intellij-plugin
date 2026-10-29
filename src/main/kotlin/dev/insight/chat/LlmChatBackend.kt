@@ -1,8 +1,7 @@
 package dev.insight.chat
 
 import com.google.gson.JsonParser
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
@@ -11,7 +10,7 @@ import java.net.http.HttpTimeoutException
 
 /** Answers with an LLM that can call [tools]. Each reply runs one [ToolChatRunner] turn. */
 class LlmChatBackend(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     private val tools: List<ChatTool>,
     private val systemPrompt: String,
     private val maxHistoryChars: Int = 24_000,

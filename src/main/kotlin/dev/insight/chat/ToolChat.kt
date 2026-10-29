@@ -3,6 +3,7 @@ package dev.insight.chat
 import com.google.gson.JsonObject
 import com.intellij.openapi.diagnostic.logger
 import dev.insight.llm.Completion
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
@@ -43,7 +44,7 @@ data class ToolChatResult(
  * A [followUp] can reject an answer, e.g. when required work is missing, and continue the turn.
  */
 class ToolChatRunner(
-    private val complete: suspend (CompletionRequest) -> Completion,
+    private val complete: CompletionFn,
     tools: List<ChatTool>,
     private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     private val maxToolResultChars: Int = DEFAULT_MAX_TOOL_RESULT_CHARS,

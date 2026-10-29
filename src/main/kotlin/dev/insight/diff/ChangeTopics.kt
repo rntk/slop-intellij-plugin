@@ -2,8 +2,7 @@ package dev.insight.diff
 
 import dev.insight.chat.ChatTool
 import dev.insight.enrichment.CODE_AS_DATA
-import dev.insight.llm.Completion
-import dev.insight.llm.CompletionRequest
+import dev.insight.llm.CompletionFn
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewTopicGenerator
 import dev.insight.review.ReviewTopics
@@ -11,7 +10,7 @@ import dev.insight.review.TopicEvidence
 
 /** Supplies VCS patch evidence and instructions to the shared topic pipeline. */
 internal fun diffTopicGenerator(
-    complete: suspend (CompletionRequest) -> Completion,
+    complete: CompletionFn,
     readTool: ChatTool?,
     patchChars: Int = 12_000,
     attempts: Int = 5,

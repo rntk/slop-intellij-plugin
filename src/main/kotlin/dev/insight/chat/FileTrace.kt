@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import dev.insight.llm.Completion
+import dev.insight.llm.CompletionFn
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmRole
 import kotlinx.coroutines.CancellationException
@@ -97,7 +98,7 @@ internal class FileTrace(val question: String, private val changed: suspend () -
         }
     }
 
-    suspend fun complete(request: CompletionRequest, complete: suspend (CompletionRequest) -> Completion): Completion {
+    suspend fun complete(request: CompletionRequest, complete: CompletionFn): Completion {
         val record = synchronized(this) {
             val extracted = extract(request)
             TraceRequest(requests.size + 1, "Sending", extracted.first, extracted.second).also { requests += it }
@@ -273,7 +274,7 @@ internal class FileTrace(val question: String, private val changed: suspend () -
     }
 }
 
-internal suspend fun tracedFileCompletion(files: List<TraceFile>, complete: suspend (CompletionRequest) -> Completion): suspend (CompletionRequest) -> Completion {
+internal suspend fun tracedFileCompletion(files: List<TraceFile>, complete: CompletionFn): CompletionFn {
     val trace = currentCoroutineContext()[FileTraceContext]?.trace ?: return complete
     trace.register(files)
     return { request -> trace.complete(request, complete) }
