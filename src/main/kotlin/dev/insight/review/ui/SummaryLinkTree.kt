@@ -44,7 +44,47 @@ internal fun summaryLinkTree(summaries: ReviewSummaries, visible: (SummaryNode) 
         return parts + rest
     }
     val root = tree.root
-    val parts = build(root, null, root.identity)
+    val parts = build(root, null, root.identity).map { it.merged() }
     return parts.singleOrNull()
         ?: SummaryLinkNode(root.identity + "/empty", "", root, children = parts)
+}
+
+/**
+ * Folds the repetition of a single-entry path into one node, as the split view merges its folders. A part whose only child
+ * says the same is that child, so a chain of folders over one file reads once; a part of a file over the file's leaf is that
+ * leaf, which then shows the summary as well as the file.
+ */
+private fun SummaryLinkNode.merged(): SummaryLinkNode {
+    val below = children.map { it.merged() }
+    val only = below.singleOrNull() ?: return copy(children = below)
+    return when {
+        only.file && only.children.isEmpty() && !file && (owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK) ->
+            only.copy(text = text.ifEmpty { only.text })
+        text.isNotEmpty() && text == only.text -> only
+        else -> copy(children = below)
+    }
+}
+
+/**
+ * The keys of nodes that read as reviewed: a leaf once its own files are reviewed, and a claim once everything it leads to is,
+ * so a whole branch dims together.
+ */
+internal fun SummaryLinkNode.reviewedKeys(isReviewed: (SummaryNode) -> Boolean): Set<String> {
+    val result = HashSet<String>()
+    fun visit(node: SummaryLinkNode): Boolean {
+        val children = node.children.map(::visit)
+        val done = if (children.isEmpty()) isReviewed(node.owner) else children.all { it }
+        if (done) result += node.key
+        return done
+    }
+    visit(this)
+    return result
+}
+
+/** The place a node names under its text: a file leaf its path, a folder its own, a part of a file its folder. */
+internal fun SummaryLinkNode.directory(): String = when {
+    owner.isTopicBranch -> ""
+    file -> owner.path
+    owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK -> owner.path.substringBeforeLast('/', "")
+    else -> owner.path
 }

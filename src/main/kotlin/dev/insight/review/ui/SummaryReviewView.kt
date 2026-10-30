@@ -63,6 +63,8 @@ internal class SummaryReviewPresentation(
 
     private val nodes = summaries.tree.nodes.associateBy { it.identity }
 
+    fun isReviewed(node: SummaryNode): Boolean = reviewed.isReviewed(node)
+
     fun control(node: SummaryNode, font: Font): JComponent? {
         if (node.files.isEmpty() || node.kind == SummaryKind.CHUNK) return null
         return JCheckBox("Reviewed", reviewed.isReviewed(node)).apply {
