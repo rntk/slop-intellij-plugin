@@ -34,6 +34,8 @@ private data class SummariesFilter(val summaries: ReviewSummaries, val query: St
 internal class ChangeSummariesViewState(
     val filtering: Boolean = false,
 ) : SummaryTraceState() {
+    var treeZoom: Double? = null
+    val treeDiffSizes = hashMapOf<String, java.awt.Dimension>()
     val treeFolded = hashSetOf<String>()
     val treeOpenedFiles = hashSetOf<String>()
     var mode = ReviewSummariesMode.OUTLINE
@@ -257,6 +259,8 @@ internal class ChangeSummariesViewState(
 
     /** A search tab's state starting from this one: the same mode, folding and searches so far. */
     fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true).also {
+        it.treeZoom = treeZoom
+        treeDiffSizes.forEach { (key, size) -> it.treeDiffSizes[key] = java.awt.Dimension(size) }
         it.treeFolded += treeFolded
         it.treeOpenedFiles += treeOpenedFiles
         it.mode = mode
