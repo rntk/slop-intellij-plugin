@@ -701,6 +701,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val level = generateSequence(e.component) { it.parent }.filterIsInstance<LevelView>().firstOrNull()
                 ?: rootSlot.components.firstOrNull() as? LevelView
             level?.let { view ->
+                add(JMenuItem("Open all").apply {
+                    toolTipText = "Pin the cards of every symbol in this file and summarize them, as if each were clicked"
+                    isEnabled = view.canOpenAll()
+                    addActionListener { view.openAll() }
+                })
                 add(JMenuItem("Summarize gaps").apply {
                     isEnabled = view.canSummarizeGaps()
                     addActionListener { view.summarizeGaps() }
@@ -908,11 +913,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 failures += withBackgroundProgress(project, "Summarizing schematic: ${graph.nodes[file.root].name}") {
                     withContext(Dispatchers.Default) {
                         withPhaseProgress("Reading source facts…", "functions") { onProgress ->
-                            summaries.summarize(roots) { phase, done, total ->
-                                onProgress(phase, done, total)
-                                ApplicationManager.getApplication().invokeLater {
-                                    if (!disposed && running > 0) showStatus("$phase: $done / $total")
-                                    if (!disposed) refreshSummaries(content)
+                            // One run is bounded; a larger request, such as opening every symbol, goes in runs of that size.
+                            roots.distinct().filter { summaries.needs(listOf(it)) }.chunked(SCHEMATIC_SUMMARY_LIMIT).sumOf { chunk ->
+                                summaries.summarize(chunk) { phase, done, total ->
+                                    onProgress(phase, done, total)
+                                    ApplicationManager.getApplication().invokeLater {
+                                        if (!disposed && running > 0) showStatus("$phase: $done / $total")
+                                        if (!disposed) refreshSummaries(content)
+                                    }
                                 }
                             }
                         }
@@ -1053,6 +1061,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
             gapSummaryJob?.cancel()
             gapSummaryJob = null
+        }
+
+        fun canOpenAll() = !released && cards.any { !it.pinned }
+
+        /** Pins every card of this level and summarizes their symbols, as if each block had been clicked. */
+        fun openAll() {
+            if (disposed || !canOpenAll()) return
+            cards.forEach { it.pinTo(true, batch = true) }
+            summarize(cards.map { it.symbol })
+            this@SchematicPanel.refreshCards()
         }
 
         fun canSummarizeGaps() = !released && !gapsRunning && rows.filterIsInstance<GapView>().any { it.summary == null && !it.skipped && it.hasText }
@@ -1794,15 +1812,16 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 revalidate()
             }
 
-            fun pinTo(value: Boolean) {
+            /** A [batch] caller summarizes and refreshes the canvas once for all the cards it pins. */
+            fun pinTo(value: Boolean, batch: Boolean = false) {
                 if (pinned == value) return
                 pinned = value
-                if (value) summarize(listOf(symbol))
+                if (value && !batch) summarize(listOf(symbol))
                 pinToggle.text = if (value) "Unpin" else "Pin"
                 // Releasing an unfolded card also folds its branch, so hidden descendants cannot retain the cursor.
                 if (!value && open) toggle()
                 applyZoom()
-                this@SchematicPanel.refreshCards()
+                if (!batch) this@SchematicPanel.refreshCards()
             }
 
             private fun sourceToggleText() {
