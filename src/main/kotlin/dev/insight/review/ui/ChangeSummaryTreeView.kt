@@ -9,6 +9,8 @@ import com.intellij.util.ui.UIUtil
 import com.intellij.xml.util.XmlStringUtil
 import dev.insight.diff.DiffFileEditor
 import dev.insight.diff.ReviewFile
+import dev.insight.review.ReviewSourceBlock
+import dev.insight.review.ReviewSourceRange
 import dev.insight.ui.zoomed
 import dev.insight.ui.zoomScaled
 import java.awt.event.*
@@ -18,7 +20,7 @@ import java.awt.*
 import java.awt.geom.CubicCurve2D
 import javax.swing.*
 
-/** Left-to-right claim tree, with native diff viewers unfolded at file leaves. */
+/** Left-to-right claim tree, with native source or diff viewers unfolded at file leaves. */
 internal class ChangeSummaryTreePanel(
     private val card: SummariesCard,
     private val state: ChangeSummariesViewState,
@@ -30,16 +32,16 @@ internal class ChangeSummaryTreePanel(
     private val root = summaryLinkTree(card.summaries) { state.shows(it, card.summaries) }
     internal var zoom = state.treeZoom ?: zoom
         private set
-    private val editors = mutableMapOf<String, DiffFrame>()
+    private val editors = mutableMapOf<String, EditorFrame>()
     /** Retained while resizing so the native editor and active drag keep their state. */
-    private inner class DiffFrame(val key: String, val editor: DiffFileEditor) : JPanel(BorderLayout()) {
+    private inner class EditorFrame(val key: String, val editor: JComponent) : JPanel(BorderLayout()) {
         init {
             add(editor, BorderLayout.CENTER)
             add(JPanel(BorderLayout()).apply {
                 isOpaque = false
                 add(JLabel("◢").apply {
                     name = "summary-diff-resize:$key"
-                    toolTipText = "Drag to resize the diff"
+                    toolTipText = "Drag to resize the editor"
                     cursor = Cursor.getPredefinedCursor(Cursor.SE_RESIZE_CURSOR)
                     val resize = object : MouseAdapter() {
                         private var pressed: Point? = null
@@ -47,7 +49,7 @@ internal class ChangeSummaryTreePanel(
                         override fun mousePressed(e: MouseEvent) {
                             if (!SwingUtilities.isLeftMouseButton(e)) return
                             pressed = e.locationOnScreen
-                            initial = Dimension(this@DiffFrame.size)
+                            initial = Dimension(this@EditorFrame.size)
                             e.consume()
                         }
                         override fun mouseDragged(e: MouseEvent) {
@@ -200,8 +202,9 @@ internal class ChangeSummaryTreePanel(
         removeAll(); edges.clear(); entries.clear()
         var bottom = 0
         var right = 0
-        fun place(node: SummaryLinkNode, x: Int, top: Int): Pair<Rectangle, Int> {
-            val folded = if (node.file) node.key !in state.treeOpenedFiles else node.key in state.treeFolded
+        fun place(node: SummaryLinkNode, x: Int, top: Int, depth: Int): Pair<Rectangle, Int> {
+            val folded = if (node.file) node.key !in state.treeOpenedFiles
+                else node.key in state.treeFolded || depth >= INITIAL_LEVELS - 1 && node.key !in state.treeExpanded
             val label = JButton().apply {
                 name = "summary-tree:${node.key}"
                 font = UIUtil.getLabelFont().zoomed(zoom)
@@ -212,12 +215,15 @@ internal class ChangeSummaryTreePanel(
                 installPointer(this)
                 addActionListener {
                     if (panned) return@addActionListener
-                    if (node.file && node.owner.file !is ReviewFile) {
-                        actions.showNode?.invoke(node.owner)
-                        return@addActionListener
+                    if (node.file) {
+                        if (!state.treeOpenedFiles.add(node.key)) state.treeOpenedFiles.remove(node.key)
+                    } else if (folded) {
+                        state.treeFolded.remove(node.key)
+                        state.treeExpanded.add(node.key)
+                    } else {
+                        state.treeExpanded.remove(node.key)
+                        state.treeFolded.add(node.key)
                     }
-                    val set = if (node.file) state.treeOpenedFiles else state.treeFolded
-                    if (!set.add(node.key)) set.remove(node.key)
                     rebuild()
                 }
             }
@@ -229,7 +235,7 @@ internal class ChangeSummaryTreePanel(
             var y = top
             val children = if (folded) emptyList() else node.children
             val childRects = children.map { child ->
-                val (rect, end) = place(child, x + width + scaled(50), y)
+                val (rect, end) = place(child, x + width + scaled(50), y, depth + 1)
                 y = end + scaled(12)
                 rect
             }
@@ -239,9 +245,18 @@ internal class ChangeSummaryTreePanel(
             childRects.forEachIndexed { i, child -> edges += Edge(rect, child, children[i].key) }
             right = maxOf(right, x + width)
             if (node.file && !folded && node.key in state.treeOpenedFiles) {
-                val file = node.owner.file as? ReviewFile
+                val file = node.owner.file
                 if (file != null) {
-                    val editor = editors.getOrPut(node.key) { DiffFrame(node.key, DiffFileEditor(file, project)) }
+                    val editor = editors.getOrPut(node.key) {
+                        val content = if (file is ReviewFile) DiffFileEditor(file, project) else {
+                            val text = file.text.orEmpty()
+                            DiffSourceEditor(ReviewSourceBlock(
+                                ReviewSourceRange(file.path, 1, maxOf(1, text.lines().size)),
+                                text, fullText = text, absolutePath = file.absolutePath,
+                            ), project)
+                        }
+                        EditorFrame(node.key, content)
+                    }
                     unused.remove(node.key)
                     add(editor)
                     val size = state.treeDiffSizes[node.key] ?: Dimension(760, 360)
@@ -253,8 +268,8 @@ internal class ChangeSummaryTreePanel(
             bottom = maxOf(bottom, end)
             return rect to end
         }
-        place(root, scaled(16), scaled(16))
-        unused.forEach { editors.remove(it)?.editor?.let(Disposer::dispose) }
+        place(root, scaled(16), scaled(16), 0)
+        unused.forEach { editors.remove(it)?.editor?.let { editor -> Disposer.dispose(editor as Disposable) } }
         restyle()
         preferredSize = Dimension(right + scaled(20), bottom + scaled(20))
         revalidate(); repaint()
@@ -273,7 +288,10 @@ internal class ChangeSummaryTreePanel(
         }
         graphics.dispose()
     }
-    override fun dispose() { editors.values.forEach { Disposer.dispose(it.editor) }; editors.clear() }
+    override fun dispose() { editors.values.forEach { Disposer.dispose(it.editor as Disposable) }; editors.clear() }
 
-    private companion object { const val MAX_DIRECTORY = 48 }
+    private companion object {
+        const val MAX_DIRECTORY = 48
+        const val INITIAL_LEVELS = 3
+    }
 }

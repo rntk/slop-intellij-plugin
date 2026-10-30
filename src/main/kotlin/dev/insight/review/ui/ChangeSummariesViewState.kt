@@ -36,6 +36,8 @@ internal class ChangeSummariesViewState(
 ) : SummaryTraceState() {
     var treeZoom: Double? = null
     val treeDiffSizes = hashMapOf<String, java.awt.Dimension>()
+    /** Explicitly opened claim branches beyond the Tree view's initial levels. */
+    val treeExpanded = hashSetOf<String>()
     val treeFolded = hashSetOf<String>()
     val treeOpenedFiles = hashSetOf<String>()
     var mode = ReviewSummariesMode.OUTLINE
@@ -261,6 +263,7 @@ internal class ChangeSummariesViewState(
     fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true).also {
         it.treeZoom = treeZoom
         treeDiffSizes.forEach { (key, size) -> it.treeDiffSizes[key] = java.awt.Dimension(size) }
+        it.treeExpanded += treeExpanded
         it.treeFolded += treeFolded
         it.treeOpenedFiles += treeOpenedFiles
         it.mode = mode

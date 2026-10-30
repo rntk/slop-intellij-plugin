@@ -13,6 +13,65 @@ class SummaryTreeViewTest : BasePlatformTestCase() {
         listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())
     }
 
+    fun testDeepBranchesOpenOneLevelAtATimeAndKeepTheirState() {
+        val file = ReviewFile("a/b/c/d.kt", "/repo/a/b/c/d.kt", null, "modified", "", "1")
+        val tree = buildSummaryTree(listOf(file))
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { node ->
+            node.id to Summary(listOf(SummarySegment("Level ${node.id}", listOf(
+                if (node.kind == SummaryKind.FILE) SummarySource.Rows(1, 1) else SummarySource.Claim(0, 0),
+            ))))
+        })
+        val state = ChangeSummariesViewState()
+        fun panel(state: ChangeSummariesViewState) = ChangeSummaryTreePanel(SummariesCard(summaries, false, false),
+            state, 1.0, ChangeSummaryActions({}, {}, {}, {}), project)
+        fun buttons(panel: Container) = descendants(panel).filterIsInstance<JButton>().filter { it.name?.startsWith("summary-tree:") == true }
+        val panel = panel(state)
+        try {
+            assertEquals(3, buttons(panel).size)
+            buttons(panel).single { it.text.contains("Level 2") }.doClick()
+            assertEquals(4, buttons(panel).size)
+            panel.zoomTo(1.2)
+            assertEquals(4, buttons(panel).size)
+            val restored = panel(state.fork())
+            try { assertEquals(4, buttons(restored).size) } finally { restored.dispose() }
+            buttons(panel).single { it.text.contains("Level 2") }.doClick()
+            assertEquals(3, buttons(panel).size)
+        } finally { panel.dispose() }
+    }
+
+    fun testSourceLeavesKeepMultipleSnapshotEditorsOnCanvas() {
+        val files = listOf("a.kt", "b.kt").map { path -> object : ReviewSource {
+            override val path = path
+            override val absolutePath = "/repo/$path"
+            override val text = "fun example() = 1\n"
+            override val fingerprint = path
+            override val facts = emptyList<String>()
+        } }
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        var separateOpens = 0
+        val state = ChangeSummariesViewState()
+        val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false), state, 1.0,
+            ChangeSummaryActions({}, {}, {}, {}, showNode = { separateOpens++ }), project)
+        fun button(path: String) = descendants(panel).filterIsInstance<JButton>().single { it.text.contains(path) }
+        try {
+            assertTrue(descendants(panel).filterIsInstance<DiffSourceEditor>().isEmpty())
+            button("a.kt").doClick()
+            val first = descendants(panel).filterIsInstance<DiffSourceEditor>().single()
+            button("b.kt").doClick()
+            assertEquals(2, descendants(panel).filterIsInstance<DiffSourceEditor>().size)
+            assertTrue(descendants(panel).contains(first))
+            assertEquals(files[0].text, first.editor.document.text)
+            assertTrue(first.editor.isViewer)
+            val key = state.treeOpenedFiles.first { it.endsWith("/0/file") }
+            panel.resizeDiff(key, 1000, 500)
+            assertTrue(descendants(panel).contains(first))
+            button("a.kt").doClick()
+            assertTrue(first.editor.isDisposed)
+            assertEquals(1, descendants(panel).filterIsInstance<DiffSourceEditor>().size)
+            assertEquals(0, separateOpens)
+        } finally { panel.dispose() }
+    }
+
     fun testNodesShowTheirDirectoryAndReviewedBranchesDim() {
         val files = listOf("src/a.kt", "src/b.kt").map { ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1", "old\n", "new\n") }
         val tree = buildSummaryTree(files)
