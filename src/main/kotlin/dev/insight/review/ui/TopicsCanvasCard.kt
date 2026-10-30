@@ -118,7 +118,7 @@ internal class TopicsCanvasCard(
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.topicsTooltip
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (document) add(controls)
                 if (outline.depth > 0) add(topicLevels(outline))
@@ -155,7 +155,7 @@ internal class TopicsCanvasCard(
                 })
                 add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() }
                     .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
+            }, BorderLayout.WEST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false

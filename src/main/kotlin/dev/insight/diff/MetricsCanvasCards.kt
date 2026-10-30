@@ -71,14 +71,14 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                     else "A word's position compares its share of removed and added words, its size how often it occurs. ") +
                     "Click a word to open its files' diffs."
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 add(wordScopeButton(scopes))
                 add(InplaceButton(IconButton(if (overview) "Remove diff overview" else "Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
                     if (overview) actions.removeDiffOverview() else actions.removeWords()
                 }
                     .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
+            }, BorderLayout.WEST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -124,7 +124,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                         }
                     }) { semanticMode = it; actions.refresh(CanvasTabKey.Semantic) })
                 } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-            }, BorderLayout.WEST)
+            }, BorderLayout.EAST)
             add(JLabel(if (skipped.isEmpty()) "" else "${files(skipped.size)} skipped").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 horizontalAlignment = SwingConstants.CENTER
@@ -133,7 +133,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                     "${escapeHtml(it.path)} · ${escapeHtml(it.skipped.orEmpty())}"
                 } + (if (skipped.size > 20) "<br>… ${skipped.size - 20} more" else "") + "</html>"
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (changes != null && semanticMode == SemanticMode.COMPLEXITY) add(JComboBox(COMPLEXITY_METRICS.toTypedArray()).apply {
                     name = "semantic-metric"
@@ -145,7 +145,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                 })
                 add(InplaceButton(IconButton("Remove semantic changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeSemantic() }
                     .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
+            }, BorderLayout.WEST)
         }
         val chartWidth = width - scaled(2 * PADDING + 4)
         fun note(text: String) = JLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }

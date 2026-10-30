@@ -68,7 +68,7 @@ internal class FileViewCanvasCard(
                     "to the next project file, following local helpers. Hover a source line or topic card for its neighbors' summaries. " +
                     "Calls are static, not runtime order. Topics and summaries are the assistant's interpretation."
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (structure != null) add(controls)
                 if (content.missingTopics > 0) add(JButton("Classify").apply {
@@ -87,7 +87,7 @@ internal class FileViewCanvasCard(
                 })
                 add(InplaceButton(IconButton("Close file view", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.close() }
                     .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
+            }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val body = JPanel(VerticalLayout(scaled(8))).apply {

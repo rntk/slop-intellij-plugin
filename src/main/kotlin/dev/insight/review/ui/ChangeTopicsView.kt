@@ -545,7 +545,7 @@ internal abstract class DocumentColumnsPanel(
                 minimumSize = Dimension(0, preferredSize.height)
             })
         }, BorderLayout.CENTER)
-        add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
+        add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), 0)).apply {
             isOpaque = false
             resultBadge("file:${file.path}")?.let(::add)
             wholeFileAction(file)?.let { open ->
@@ -556,7 +556,7 @@ internal abstract class DocumentColumnsPanel(
                 add(InplaceButton(IconButton(label, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) { showFile(file) }
                     .apply { cursor = Cursor.getDefaultCursor(); toolTipText = label })
             }
-        }, BorderLayout.EAST)
+        }, BorderLayout.WEST)
         markResult(this, "file:${file.path}")
     }
 

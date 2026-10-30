@@ -151,7 +151,7 @@ internal class SummariesCanvasCards(
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.summariesTooltip
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, scaled(4), 0)).apply {
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (document) add(actions.zoomControls(key))
                 val summaries = content.summaries
@@ -192,7 +192,7 @@ internal class SummariesCanvasCards(
                         .apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() }
                     else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { summaryActions.removeSummaries() }
                         .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.EAST)
+            }, BorderLayout.WEST)
         }
         val panelActions = ChangeSummaryActions(
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
