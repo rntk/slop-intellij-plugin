@@ -31,7 +31,7 @@ import javax.swing.SwingUtilities
 internal class SchematicSourceEditor(
     project: Project,
     private val schematic: Schematic,
-    blocks: List<Pair<BlockRow, JComponent>>,
+    blocks: List<Pair<SchematicRow, JComponent>>,
     onWheel: (MouseWheelEvent) -> Unit,
     onNavigate: (String) -> Unit,
     /** Right-click on source: the mouse event, the 0-based document line, and the selected text, if any. */
@@ -41,7 +41,7 @@ internal class SchematicSourceEditor(
         EditorFactory.getInstance().createDocument(schematic.lines.joinToString("\n")), project,
     ) as EditorEx
     private val baseFontSize = editor.colorsScheme.editorFontSize2D
-    private val folds = linkedMapOf<BlockRow, CustomFoldRegion>()
+    private val folds = linkedMapOf<SchematicRow, CustomFoldRegion>()
 
     init {
         editor.highlighter = EditorHighlighterFactory.getInstance().createEditorHighlighter(project, schematic.file)
@@ -115,7 +115,7 @@ internal class SchematicSourceEditor(
         revalidate()
     }
 
-    fun blockY(row: BlockRow): Int = folds.getValue(row).location?.y ?: 0
+    fun blockY(row: SchematicRow): Int = folds.getValue(row).location?.y ?: 0
 
     /** Editor text and gutter origins are measured after layout; the outer canvas owns all scrolling. */
     fun textOrigin(): Point = SwingUtilities.convertPoint(editor.contentComponent, 0, 0, this)

@@ -12,6 +12,7 @@ Opening builds or reuses the project's call graph. If the file cannot be shown, 
 - Summaries appear on demand and can be pinned. Each summary condenses the tree below its symbol, and unfolding one shows that reading beneath it, so several branches stay open at once.
 - A breadcrumb trail shows the path from the root and lets the reader return to earlier symbols.
 - Exploration is never discarded; the reader can move freely beyond the initial graph.
+- Summarize gaps describes meaningful source between known symbols on demand, leaving verified structural fragments as source. Original code stays visible in a clickable block linked by an arrow to an external summary card with a source link, alongside known-symbol cards; summaries have no generated title; the model uses relevant IDE facts and bounded surrounding source, and can read and search the file.
 
 ## Trust
 
