@@ -48,12 +48,12 @@ internal class DiffCanvasCards(
         open = open, openDirectoryDiff = openDirectoryDiff, removeWords = metricActions.removeWords,
         removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
         removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
-    ))
+    ), project)
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) { this.refresh = refresh }
 
     override fun update() {
-        metricsCards.update(content.wordFiles, content.semantic)
+        metricsCards.update(content.wordFiles, content.semantic, content.moves)
         val diffsByKey = content.diffs.associateBy { it.diffKey }
         diffEditors.entries.removeIf { (key, editor) ->
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }
@@ -104,5 +104,6 @@ internal class DiffCanvasCards(
         content = DiffCanvasContent()
         diffEditors.values.forEach { Disposer.dispose(it) }
         diffEditors.clear()
+        metricsCards.dispose()
     }
 }

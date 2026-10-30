@@ -10,6 +10,8 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import dev.insight.review.CanvasTabKey
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -32,7 +34,7 @@ internal data class MetricsCanvasActions(
 )
 
 /** Word changes, diff overview, semantic metrics and moved code, including their cached charts and view choices. */
-internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
+internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, private val project: Project? = null) {
     private var wordFiles = emptyList<ReviewFile>()
     private var semantic: SemanticResult? = null
     /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
@@ -49,10 +51,14 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
     private var scopedWords: ScopedWords? = null
     /** The source file the moved-code chart shows alone, or null for all of them; kept while it still has moves. */
     private var moveFocus: String? = null
+    /** The move whose diffs sit beside the chart, and their viewers, kept across rebuilds while the moves are the same. */
+    private var moveSelection: MoveSelection? = null
+    private var moveDetail: Pair<CodeMoves, CodeMoveDetail>? = null
 
-    fun update(files: List<ReviewFile>, semantic: SemanticResult?) {
+    fun update(files: List<ReviewFile>, semantic: SemanticResult?, moves: CodeMoves?) {
         wordFiles = files
         this.semantic = semantic
+        if (moveDetail?.first !== moves) releaseMoveDetail()
     }
 
     /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
@@ -183,9 +189,12 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
         }
     }
 
-    /** Code removed from one file and added to another; all source files at once, or one of them fanning out by share. */
+    /**
+     * Code removed from one file and added to another; all source files at once, or one of them fanning out by share.
+     * Beside the chart, the diffs of the chosen move show the code where it left and where it arrived.
+     */
     fun movesCard(moves: CodeMoves): JPanel {
-        val width = scaled(WORDS_WIDTH)
+        val width = scaled(MOVES_WIDTH)
         if (moves.sources.none { it.path == moveFocus }) moveFocus = null
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -194,14 +203,15 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                 "${moves.blocks.sumOf { it.lines }} lines to ${files(moves.destinations.size)}").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = "Runs of lines removed from one file and added to another, compared without indentation. Blank, " +
-                    "brace-only and import lines are not counted. Percentages are shares of each file's lines before the change."
+                    "brace-only and import lines are not counted. Percentages are shares of each file's lines before the change. " +
+                    "Click a line or a destination to compare the moved code in both files beside the chart."
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 if (moves.sources.isNotEmpty()) add(JComboBox((listOf<String?>(null) + moves.sources.map { it.path }).toTypedArray()).apply {
                     name = "move-focus"
                     font = scaledFont(JBFont.small())
-                    renderer = SimpleListCellRenderer.create("") { it ?: "All files" }
+                    renderer = SimpleListCellRenderer.create<String?>("All files") { it }
                     toolTipText = "Show where the code of one file went"
                     selectedItem = moveFocus
                     addActionListener { chooseMoveFocus(selectedItem as String?) }
@@ -210,15 +220,32 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.WEST)
         }
-        val chartWidth = width - scaled(2 * PADDING + 4)
-        val body = JPanel(BorderLayout()).apply {
+        val body = JPanel(BorderLayout(scaled(PADDING), 0)).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(if (moves.sources.isEmpty()) JLabel("No code was moved between the changed files.").apply {
-                    foreground = UIUtil.getContextHelpForeground()
-                }
-                else scrollBody(CodeMoveChart(moves, moveFocus, chartWidth, { openPaths(it.toSet()) }, ::chooseMoveFocus),
-                    chartWidth, scaled(WORDS_HEIGHT)), BorderLayout.CENTER)
+            if (moves.sources.isEmpty()) {
+                add(JLabel("No code was moved between the changed files.").apply { foreground = UIUtil.getContextHelpForeground() }, BorderLayout.CENTER)
+                return@apply
+            }
+            val chartWidth = scaled(MOVES_CHART_WIDTH)
+            val height = scaled(MOVES_HEIGHT)
+            val slot = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                name = "move-detail"
+                preferredSize = Dimension(width - chartWidth - scaled(3 * PADDING + 4), height)
+            }
+            lateinit var chart: CodeMoveChart
+            fun show(selection: MoveSelection) {
+                moveSelection = selection
+                chart.selected = selection
+                slot.removeAll()
+                slot.add(moveDetail(moves, selection), BorderLayout.CENTER)
+                slot.revalidate(); slot.repaint()
+            }
+            chart = CodeMoveChart(moves, moveFocus, chartWidth, ::show, ::chooseMoveFocus)
+            add(scrollBody(chart, chartWidth, height), BorderLayout.WEST)
+            add(slot, BorderLayout.CENTER)
+            show(validSelection(moves))
         }
         return JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground(); border = cardBorder()
@@ -226,6 +253,37 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
             add(body, BorderLayout.CENTER)
         }
     }
+
+    /** The kept selection while it is still a move of the shown files; otherwise the largest move of the focused or first file. */
+    private fun validSelection(moves: CodeMoves): MoveSelection {
+        val kept = moveSelection?.takeIf { selection ->
+            (moveFocus == null || selection.source == moveFocus) && moves.sources.any { file ->
+                file.path == selection.source && (selection.target == null || file.targets.any { it.path == selection.target })
+            }
+        }
+        if (kept != null) return kept
+        val file = moves.sources.firstOrNull { it.path == moveFocus } ?: moves.sources.first()
+        return MoveSelection(file.path, file.targets.firstOrNull()?.path)
+    }
+
+    /** The diffs of [selection], reusing the open viewers when it is already shown. */
+    private fun moveDetail(moves: CodeMoves, selection: MoveSelection): JComponent {
+        moveDetail?.takeIf { it.first === moves && it.second.selection == selection }?.let { return it.second }
+        releaseMoveDetail()
+        val source = wordFiles.firstOrNull { it.path == selection.source }
+            ?: return JLabel("${selection.source} is not in this diff.").apply { foreground = UIUtil.getContextHelpForeground() }
+        val target = selection.target?.let { path -> wordFiles.firstOrNull { it.path == path } }
+        val blocks = if (target == null) emptyList() else moves.blocks.filter { it.from == source.path && it.to == target.path }
+        return CodeMoveDetail(project, selection, source, target, blocks) { paths -> openPaths(paths.toSet()) }
+            .also { moveDetail = moves to it }
+    }
+
+    private fun releaseMoveDetail() {
+        moveDetail?.second?.let(Disposer::dispose)
+        moveDetail = null
+    }
+
+    fun dispose() = releaseMoveDetail()
 
     fun chooseMoveFocus(path: String?) {
         if (path == moveFocus) return
@@ -299,5 +357,8 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
         const val PADDING = 12
         const val WORDS_WIDTH = 1100
         const val WORDS_HEIGHT = 640
+        const val MOVES_WIDTH = 1500
+        const val MOVES_CHART_WIDTH = 560
+        const val MOVES_HEIGHT = 760
     }
 }

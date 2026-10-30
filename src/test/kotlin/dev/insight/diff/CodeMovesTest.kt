@@ -103,18 +103,29 @@ class CodeMovesTest : TestCase() {
         val before = listOf(keep, validate, map).joinToString("\n")
         val moves = codeMoves(listOf(modified("src/OrderService.kt", before, 3 until 3 + validate.lines().size + map.lines().size),
             added("src/OrderValidator.kt", validate), added("src/OrderMapper.kt", map)))
-        val opened = mutableListOf<List<String>>()
+        val selected = mutableListOf<MoveSelection>()
         val focused = mutableListOf<String>()
-        val all = CodeMoveChart(moves, null, 900, { opened += it }, { focused += it }).apply { setSize(preferredSize) }
+        val all = CodeMoveChart(moves, null, 900, { selected += it }, { focused += it }).apply { setSize(preferredSize) }
         assertEquals(1, all.nodes.count { it.left })
         assertEquals(2, all.links.size)
-        assertEquals("src/OrderService.kt", all.nodes.single { it.left }.source)
-        val fan = CodeMoveChart(moves, "src/OrderService.kt", 900, { opened += it }, { focused += it }).apply { setSize(preferredSize) }
+        val mapper = MoveSelection("src/OrderService.kt", "src/OrderMapper.kt")
+        assertEquals(mapper, all.nodes.single { it.label.startsWith("OrderMapper.kt") }.selection)
+        click(all, all.nodes.single { it.left }.bounds.let { java.awt.Point(it.centerX.toInt(), it.centerY.toInt()) })
+        assertEquals(listOf("src/OrderService.kt"), focused)
+        val link = all.links.single { it.selection == mapper }
+        click(all, java.awt.Point(all.width / 2, (link.from.y + link.to.y) / 2))
+        assertEquals(listOf(mapper), selected)
+        val fan = CodeMoveChart(moves, "src/OrderService.kt", 900, { selected += it }, { focused += it }).apply { setSize(preferredSize) }
         assertEquals(listOf("OrderValidator.kt", "OrderMapper.kt", "Stayed"), fan.nodes.filterNot { it.left }.map { it.label.substringAfter("  ") })
         assertTrue(fan.nodes.filterNot { it.left }.first().label.startsWith("50%"))
+        assertEquals(MoveSelection("src/OrderService.kt", null), fan.nodes.single { it.label.endsWith("Stayed") }.selection)
+        fan.selected = mapper
         listOf(all, fan).forEach { chart ->
             val graphics = BufferedImage(chart.width, chart.height, BufferedImage.TYPE_INT_ARGB).createGraphics()
             try { chart.paint(graphics) } finally { graphics.dispose() }
         }
     }
+
+    private fun click(chart: CodeMoveChart, point: java.awt.Point) = chart.dispatchEvent(java.awt.event.MouseEvent(chart,
+        java.awt.event.MouseEvent.MOUSE_CLICKED, 0, 0, point.x, point.y, 1, false, java.awt.event.MouseEvent.BUTTON1))
 }

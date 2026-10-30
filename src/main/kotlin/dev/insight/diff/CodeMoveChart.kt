@@ -22,20 +22,22 @@ import kotlin.math.roundToInt
 /**
  * Files that lost code on the left, the files that received it on the right; a line's width is the number of moved
  * lines. With a [focus] file, only that file fans out to its destinations, to the code that stayed and to the code
- * removed without reappearing elsewhere, each placed by its share of the file.
+ * removed without reappearing elsewhere, each placed by its share of the file. Clicking a line or a destination selects
+ * that move, so its diffs can be shown beside the chart.
  */
 internal class CodeMoveChart(
     internal val moves: CodeMoves,
     internal val focus: String?,
     private val chartWidth: Int,
-    /** Opens the diffs of the given paths. */
-    private val open: (List<String>) -> Unit,
+    /** Shows the diffs of a move, chosen by clicking its line or its destination. */
+    private val select: (MoveSelection) -> Unit,
     /** Shows one source file on its own. */
     private val focusSource: (String) -> Unit,
 ) : JComponent() {
-    internal data class Node(val label: String, val tooltip: String, val paths: List<String>, val color: Color,
+    internal data class Node(val label: String, val tooltip: String, val selection: MoveSelection?, val color: Color,
                              val left: Boolean, val y: Int, val bounds: Rectangle, val source: String? = null)
-    internal data class Link(val from: Node, val to: Node, val lines: Int, val stroke: Float, val color: Color, val tooltip: String)
+    internal data class Link(val from: Node, val to: Node, val selection: MoveSelection, val lines: Int, val stroke: Float,
+                             val color: Color, val tooltip: String)
 
     private val font = JBFont.small()
     private val metrics = getFontMetrics(font)
@@ -46,6 +48,9 @@ internal class CodeMoveChart(
     private val source = focus?.let { path -> moves.sources.firstOrNull { it.path == path } }
     internal val nodes: List<Node>
     internal val links: List<Link>
+    /** The move whose diffs are shown; its line is drawn over the others, which fade. */
+    internal var selected: MoveSelection? = null
+        set(value) { field = value; repaint() }
 
     init {
         val built = if (source != null) fan(source) else flows()
@@ -59,8 +64,8 @@ internal class CodeMoveChart(
                 val node = nodeAt(e)
                 when {
                     node?.source != null -> focusSource(node.source)
-                    node != null -> open(node.paths)
-                    else -> linkAt(e)?.let { open(it.to.paths) }
+                    node?.selection != null -> select(node.selection)
+                    node == null -> linkAt(e)?.let { select(it.selection) }
                 }
             }
         })
@@ -80,19 +85,23 @@ internal class CodeMoveChart(
         val left = moves.sources.mapIndexed { index, file ->
             val share = percent(file.share(file.moved))
             node("${names.getValue(file.path)}  $share moved", left = true, y = rowY(index, moves.sources.size, rows), color = PALETTE[index % PALETTE.size],
-                paths = listOf(file.path), source = file.path,
+                selection = null, source = file.path,
                 tooltip = "<b>${escape(file.path)}</b><br>$share of ${file.lines} lines moved to ${files(file.targets.size)} · click to show this file alone")
         }
+        // A destination shows the move that brought it the most code.
+        val largest = moves.sources.flatMap { file -> file.targets.map { file.path to it } }.groupBy { it.second.path }
+            .mapValues { (_, list) -> list.maxBy { it.second.lines }.first }
         val right = destinations.mapIndexed { index, (path, lines) ->
             node("${names.getValue(path)}  $lines lines", left = false, y = rowY(index, destinations.size, rows), color = UIUtil.getLabelForeground(),
-                paths = listOf(path), tooltip = "<b>${escape(path)}</b><br>Received $lines moved lines · click to open its diff")
+                selection = MoveSelection(largest.getValue(path), path),
+                tooltip = "<b>${escape(path)}</b><br>Received $lines moved lines · click to compare it with the file that gave it the most")
         }
-        val byPath = right.associateBy { it.paths.single() }
+        val byPath = right.associateBy { it.selection?.target }
         val max = moves.sources.flatMap { it.targets }.maxOfOrNull { it.lines } ?: 1
         val links = moves.sources.zip(left).flatMap { (file, from) ->
             file.targets.map { target ->
                 val to = byPath.getValue(target.path)
-                Link(from, to.copy(paths = listOf(file.path, target.path)), target.lines, stroke(target.lines, max), from.color,
+                Link(from, to, MoveSelection(file.path, target.path), target.lines, stroke(target.lines, max), from.color,
                     "${escape(file.path)} → ${escape(target.path)}<br>${target.lines} lines · ${percent(file.share(target.lines))} of the file" + blocks(target))
             }
         }
@@ -101,38 +110,39 @@ internal class CodeMoveChart(
 
     /** One file fanning out to where its code went, ordered by share. */
     private fun fan(file: FileMoves): Pair<List<Node>, List<Link>> {
-        data class Share(val label: String, val lines: Int, val paths: List<String>, val color: Color, val tooltip: String)
+        data class Share(val label: String, val lines: Int, val selection: MoveSelection, val color: Color, val tooltip: String)
         val names = shortNames(listOf(file.path) + file.targets.map { it.path })
+        val alone = MoveSelection(file.path, null)
         val shares = file.targets.mapIndexed { index, target ->
-            Share(names.getValue(target.path), target.lines, listOf(file.path, target.path), PALETTE[index % PALETTE.size],
+            Share(names.getValue(target.path), target.lines, MoveSelection(file.path, target.path), PALETTE[index % PALETTE.size],
                 "${escape(file.path)} → ${escape(target.path)}<br>${target.lines} lines" + blocks(target))
         } + listOfNotNull(
-            Share("Stayed", file.stayed, listOf(file.path), STAYED, "Lines of the file that the change kept").takeIf { file.stayed > 0 },
-            Share("Removed", file.deleted, listOf(file.path), REMOVED, "Lines removed or rewritten without reappearing in another changed file")
+            Share("Stayed", file.stayed, alone, STAYED, "Lines of the file that the change kept").takeIf { file.stayed > 0 },
+            Share("Removed", file.deleted, alone, REMOVED, "Lines removed or rewritten without reappearing in another changed file")
                 .takeIf { file.deleted > 0 },
         )
         val sorted = shares.sortedByDescending { it.lines }
         val rows = maxOf(1, sorted.size)
         val origin = node(names.getValue(file.path), left = true, y = top + rows * row / 2, color = UIUtil.getLabelForeground(),
-            paths = listOf(file.path), tooltip = "<b>${escape(file.path)}</b><br>${file.lines} significant lines before the change · click to open its diff")
+            selection = alone, tooltip = "<b>${escape(file.path)}</b><br>${file.lines} significant lines before the change · click to show its diff")
         val max = sorted.maxOfOrNull { it.lines } ?: 1
         val right = sorted.mapIndexed { index, share ->
             node("${percent(file.share(share.lines))}  ${share.label}", left = false, y = rowY(index, sorted.size, rows), color = share.color,
-                paths = share.paths, tooltip = share.tooltip + "<br>${percent(file.share(share.lines))} of ${file.lines} lines")
+                selection = share.selection, tooltip = share.tooltip + "<br>${percent(file.share(share.lines))} of ${file.lines} lines")
         }
-        val links = sorted.zip(right).map { (share, to) -> Link(origin, to, share.lines, stroke(share.lines, max), share.color, share.tooltip) }
+        val links = sorted.zip(right).map { (share, to) -> Link(origin, to, share.selection, share.lines, stroke(share.lines, max), share.color, share.tooltip) }
         return listOf(origin) + right to links
     }
 
     private fun rowY(index: Int, count: Int, rows: Int): Int = top + ((rows - count) * row) / 2 + index * row + row / 2
 
-    private fun node(label: String, left: Boolean, y: Int, color: Color, paths: List<String>, tooltip: String, source: String? = null): Node {
+    private fun node(label: String, left: Boolean, y: Int, color: Color, selection: MoveSelection?, tooltip: String, source: String? = null): Node {
         val gap = JBUI.scale(8)
         val available = leftX - gap * 2
         val text = clip(label, available)
         val width = metrics.stringWidth(text)
         val x = if (left) leftX - gap - width else rightX + gap
-        return Node(text, tooltip, paths, color, left, y, Rectangle(x, y - metrics.height / 2, width, metrics.height), source)
+        return Node(text, tooltip, selection, color, left, y, Rectangle(x, y - metrics.height / 2, width, metrics.height), source)
     }
 
     private fun clip(text: String, width: Int): String {
@@ -169,8 +179,14 @@ internal class CodeMoveChart(
             g2.color = ColorUtil.withAlpha(UIUtil.getContextHelpForeground(), 0.3)
             g2.drawLine(leftX, top - JBUI.scale(4), leftX, height - JBUI.scale(4))
             g2.drawLine(rightX, top - JBUI.scale(4), rightX, height - JBUI.scale(4))
-            links.sortedByDescending { it.stroke }.forEach {
-                g2.color = ColorUtil.withAlpha(it.color, 0.7)
+            // The selected move is drawn last and opaque; the stayed and removed shares of a file share one selection.
+            val chosen = selected
+            links.sortedWith(compareBy<Link> { it.selection == chosen }.thenByDescending { it.stroke }).forEach {
+                g2.color = ColorUtil.withAlpha(it.color, when {
+                    chosen == null -> 0.7
+                    it.selection == chosen -> 1.0
+                    else -> 0.25
+                })
                 g2.stroke = BasicStroke(it.stroke, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
                 g2.drawLine(leftX, it.from.y, rightX, it.to.y)
             }

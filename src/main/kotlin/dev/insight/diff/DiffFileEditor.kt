@@ -105,9 +105,12 @@ internal fun showDiffLines(project: Project, file: ReviewFile, lines: LineTrace)
     }
 }
 
-/** Embeds the IDE's native read-only diff viewer for a snapshot file inside a canvas card. */
-internal class DiffFileEditor(val file: ReviewFile, project: Project?) : JPanel(BorderLayout()), Disposable {
-    private val request = createDiffRequest(project, file)
+/**
+ * Embeds the IDE's native read-only diff viewer for a snapshot file inside a canvas card, optionally opened at the
+ * zero-based line [scrollTo] of one side.
+ */
+internal class DiffFileEditor(val file: ReviewFile, project: Project?, scrollTo: Pair<Side, Int>? = null) : JPanel(BorderLayout()), Disposable {
+    private val request = createDiffRequest(project, file).apply { scrollTo?.let { putUserData(DiffUserDataKeys.SCROLL_TO_LINE, it) } }
     internal val panel = object : DiffRequestProcessor(project) {
         override fun updateRequest(force: Boolean, scrollToChangePolicy: ScrollToPolicy?) {
             applyRequest(request, force, scrollToChangePolicy)
@@ -117,7 +120,12 @@ internal class DiffFileEditor(val file: ReviewFile, project: Project?) : JPanel(
     }
     internal val editors: List<EditorEx>
         get() = UIUtil.findComponentsOfType(panel.component, EditorComponentImpl::class.java).map { it.editor }.distinct()
-    private val baseFontSize = editors.firstOrNull()?.colorsScheme?.editorFontSize ?: JBUI.Fonts.label().size
+    /** The editors showing one side; none when the viewer merges both sides into one document, as the unified viewer does. */
+    internal fun editors(side: Side): List<EditorEx> {
+        val document = (request.contents[side.index] as? DocumentContent)?.document ?: return emptyList()
+        return editors.filter { it.document == document }
+    }
+    private val baseFontSize =editors.firstOrNull()?.colorsScheme?.editorFontSize ?: JBUI.Fonts.label().size
     private var zoom = 1.0
     internal var isDisposed = false
         private set
