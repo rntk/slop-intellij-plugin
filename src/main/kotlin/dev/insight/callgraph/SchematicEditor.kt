@@ -61,6 +61,7 @@ import java.awt.Graphics2D
 import java.awt.KeyboardFocusManager
 import java.awt.LayoutManager
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
@@ -204,7 +205,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private var dragCursor: Cursor? = null
     private var activeBlock: LevelView.BlockView? = null
     private var hoveredBlock: LevelView.BlockView? = null
-    private var hoveredGap: LevelView.GapView? = null
+    private var hoveredGap: LevelView.GapSpan? = null
     // Allow the pointer to cross the arrow between a block and its card without losing the preview.
     private val hoverExit = Timer(200) { hover(null) }.apply { isRepeats = false }
     /** Tracks just this canvas, including source editors and branches added as the graph unfolds. */
@@ -442,7 +443,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
     }
 
-    private fun hover(block: LevelView.BlockView?, gap: LevelView.GapView? = null) {
+    private fun hover(block: LevelView.BlockView?, gap: LevelView.GapSpan? = null) {
         if (hoveredBlock === block && hoveredGap === gap) return
         hoveredBlock = block
         hoveredGap = gap
@@ -454,17 +455,19 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
         val owner = if (e.id == MouseEvent.MOUSE_EXITED) null else
             generateSequence(e.component) { it.parent }.firstOrNull {
-                it is LevelView.BlockView || it is LevelView.SummaryCard ||
-                    it is LevelView.GapSummaryCard || (it is LevelView.GapView && it.card != null)
+                it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView.GapSummaryCard
             }
         val block = when (owner) {
             is LevelView.BlockView -> owner
             is LevelView.SummaryCard -> owner.row
             else -> null
         }
+        // Any source of a summarized gap previews it, between and around the blocks it holds.
         val gap = when (owner) {
-            is LevelView.GapView -> owner
-            is LevelView.GapSummaryCard -> owner.gap
+            is LevelView.GapSummaryCard -> owner.span
+            null -> if (e.id == MouseEvent.MOUSE_EXITED) null else
+                (e.component as? LevelView ?: SwingUtilities.getAncestorOfClass(LevelView::class.java, e.component) as? LevelView)
+                    ?.summarizedAt(e)
             else -> null
         }
         if (block != null || gap != null) {
@@ -1040,9 +1043,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private inner class LevelView(private val schematic: Schematic) : JPanel(null), Zoomable {
         private val cards = mutableListOf<SummaryCard>()
         private val rows = mutableListOf<JComponent>()
+        private val spans = schematic.gaps.map { GapSpan(it) }
         /** Both kinds share one card column, in source order. */
         private val externalCards: List<ExternalCard> get() =
-            (cards + rows.filterIsInstance<GapView>().mapNotNull { it.card }).sortedBy { it.rowIndex }
+            (cards + spans.mapNotNull { it.card }).sortedBy { it.rowIndex }
         private val indent = schematic.lines.filter { it.isNotBlank() }.minOfOrNull { line -> detab(line).takeWhile { it == ' ' }.length } ?: 0
         private val charWidth get() = getFontMetrics(codeFont).charWidth(' ')
         /** Links of this level in source order; a split line has several. */
@@ -1055,7 +1059,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         fun release() {
             released = true
-            if (hoveredGap?.let { SwingUtilities.isDescendingFrom(it, this) } == true) {
+            if (hoveredGap?.level === this) {
                 hoverExit.stop()
                 hoveredGap = null
             }
@@ -1073,11 +1077,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             this@SchematicPanel.refreshCards()
         }
 
-        fun canSummarizeGaps() = !released && !gapsRunning && rows.filterIsInstance<GapView>().any { it.summary == null && !it.skipped && it.hasText }
+        fun canSummarizeGaps() = !released && !gapsRunning && spans.any { it.summary == null && !it.skipped }
 
         fun summarizeGaps() {
             if (disposed || !canSummarizeGaps()) return
-            val gaps = rows.filterIsInstance<GapView>().filter { it.summary == null && !it.skipped && it.hasText }
+            val gaps = spans.filter { it.summary == null && !it.skipped }
             gapsRunning = true
             running++
             error = null
@@ -1089,21 +1093,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         for (gap in gaps) {
                             currentCoroutineContext().ensureActive()
                             try {
-                                val input = smartReadAction(project) { schematicGapSource(project, schematic, gap.row) }
-                                val summary = withContext(Dispatchers.Default) { workflow.summarize(input, gap.row) }
+                                val input = smartReadAction(project) { schematicGapSource(project, schematic, gap.unit) }
+                                val summary = withContext(Dispatchers.Default) { workflow.summarize(input, gap.unit) }
                                 currentCoroutineContext().ensureActive()
                                 if (released) return@withBackgroundProgress
                                 if (summary == null) {
                                     gap.skipped = true
                                     continue
                                 }
-                                if (!disposed) {
-                                    gap.showSummary(summary)
-                                    source?.let { releaseBranch(it); remove(it); source = null }
-                                    switchSourceView()
-                                    revalidate()
-                                    repaint()
-                                }
+                                if (!disposed) gap.showSummary(summary)
                             } catch (e: Throwable) {
                                 if (e is CancellationException || e is ControlFlowException) throw e
                                 LOG.warn("Schematic gap summary failed", e)
@@ -1179,15 +1177,18 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val lines = rows.filterIsInstance<LineView>()
             lines.forEach { applyZoom(it) }
             if (useNativeSource && source == null) {
-                val folded = lines.map { it.row to it } + rows.filterIsInstance<GapView>().filter { it.summary != null }.map { it.row to it }
-                source = SchematicSourceEditor(project, schematic, folded, ::wheel, onNavigate = { stroke ->
+                // Summarized gaps stay native source, tinted, so the blocks they hold remain folds of their own.
+                source = SchematicSourceEditor(project, schematic, lines.map { it.row to it }, ::wheel, onNavigate = { stroke ->
                     val key = content.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(stroke))
                     content.actionMap.get(key)?.actionPerformed(ActionEvent(content, 0, stroke))
                 }, onContextMenu = { event, line, selection ->
                     val editor = source?.editor
                     showContextMenu(event, describeLine(line, selection),
                         if (selection.isNullOrEmpty() || editor == null) null else { { editor.selectionModel.copySelectionToClipboard() } })
+                }, onLineClick = { line ->
+                    if (!panned) spans.firstOrNull { line in it.unit && it.summary != null }?.toggle()
                 }).also {
+                    spans.filter { it.summary != null }.forEach { span -> it.tint(span.unit.first, span.unit.last, gapBackground) }
                     sourceEditors += it
                     // Earlier children paint above the native editor, inside the space reserved by its folds.
                     add(it)
@@ -1213,17 +1214,32 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 if (revealed) applyZoom(it)
             }
             rows.filterIsInstance<LineView>().forEach { it.repaintBorder() }
-            rows.filterIsInstance<GapView>().forEach { gap ->
-                gap.card?.let { card ->
-                    val visible = card.pinned || hoveredGap === gap
+            spans.forEach { span ->
+                span.card?.let { card ->
+                    val visible = card.pinned || hoveredGap === span
                     val revealed = visible && !card.isVisible
                     card.isVisible = visible
                     if (revealed) applyZoom(card)
                 }
-                gap.repaintBorder()
             }
             revalidate()
             repaint()
+        }
+
+        /** The summarized gap under the pointer: on a row of this level, or on a line of its native source. */
+        fun summarizedAt(e: MouseEvent): GapSpan? {
+            val editor = source?.editor
+            val line = if (editor != null && SwingUtilities.isDescendingFrom(e.component, editor.contentComponent)) {
+                source?.lineAt(SwingUtilities.convertPoint(e.component, e.point, editor.contentComponent))
+            } else generateSequence(e.component) { it.parent }.takeWhile { it !== this }.lastOrNull()?.let(::firstLine)
+            return line?.let { at -> spans.firstOrNull { at in it.unit && it.summary != null } }
+        }
+
+        /** The first document line of a row view of this level. */
+        private fun firstLine(row: Component): Int? = when (row) {
+            is GapView -> row.row.first
+            is LineView -> row.row.first
+            else -> null
         }
 
         private fun text(line: Int) = detab(schematic.text(line)).drop(indent).trimEnd()
@@ -1233,8 +1249,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             showPlainSource = show
             source?.isVisible = show
             rows.filterIsInstance<GapView>().forEach {
-                it.isVisible = (show && !useNativeSource) || it.summary != null
-                it.showCode(show && !useNativeSource)
+                // Native source shows summarized gaps itself; compact mode keeps them as plain code beside their blocks.
+                it.isVisible = if (show) !useNativeSource else it.span?.summary != null
+                it.showCode(it.isVisible)
                 if (it.isVisible) applyZoom(it)
             }
             applyZoom()
@@ -1242,44 +1259,60 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             repaint()
         }
 
-        /** A gap keeps its source in the file and links to a separate summary card. */
+        /** Plain code between blocks; inside a summarized gap, a click pins its summary. */
         inner class GapView(val row: CodeRow) : JPanel(BorderLayout()), Zoomable {
-            var summary: String? = null
-                private set
-            var skipped = false
-            val hasText = (row.first..row.last).any { schematic.text(it).isNotBlank() }
-            var card: GapSummaryCard? = null
-                private set
+            val span get() = spans.firstOrNull { row.first in it.unit }
             private val code = codeView(row)
             val box = JPanel(BorderLayout()).apply { isOpaque = false; add(code, BorderLayout.CENTER) }
-            fun showCode(show: Boolean) { code.isVisible = show || summary != null }
+            fun showCode(show: Boolean) { code.isVisible = show }
             init {
                 isOpaque = false
                 // Register the hover surface before this row joins the observed component tree.
                 box.addMouseListener(object : MouseAdapter() {})
                 add(box, BorderLayout.NORTH)
             }
+            fun summarized() {
+                box.toolTipText = "Summarized gap: hover to preview; click to pin the summary"
+                onClick(box) { span?.toggle() }
+                onClick(code) { span?.toggle() }
+            }
+            override fun applyZoom() {
+                components.forEach { this@SchematicPanel.applyZoom(it) }
+            }
+        }
+
+        /**
+         * Source summarized as one gap, whole statements and declarations with the blocks inside them; its rows stay
+         * where they are and a frame behind them joins them to one card.
+         */
+        inner class GapSpan(val unit: GapUnit) {
+            val level get() = this@LevelView
+            var summary: String? = null
+                private set
+            var skipped = false
+            var card: GapSummaryCard? = null
+                private set
+            private val rowIndices get() = rows.indices.filter { index -> firstLine(rows[index])?.let { it in unit } == true }
+
             fun showSummary(value: String) {
                 if (summary != null) return
                 summary = value
-                card = GapSummaryCard(this, rows.indexOf(this), value).also { this@LevelView.add(it) }
-                box.background = gapBackground
-                box.isOpaque = true
-                box.toolTipText = "Summarized gap: hover to preview; click to pin the summary"
-                onClick(box) { card?.pinTo(card?.pinned != true) }
-                onClick(code) { card?.pinTo(card?.pinned != true) }
-                applyZoom()
-            }
-            override fun applyZoom() {
-                repaintBorder()
-                components.forEach { this@SchematicPanel.applyZoom(it) }
+                card = GapSummaryCard(this, rowIndices.first(), value).also { this@LevelView.add(it) }
+                rowIndices.mapNotNull { rows[it] as? GapView }.forEach { it.summarized() }
+                source?.tint(unit.first, unit.last, gapBackground)
+                showSource(showPlainSource)
             }
 
-            fun repaintBorder() {
-                if (summary == null) return
-                val focused = hoveredGap === this
-                box.background = if (focused) gapFocusedBackground else gapBackground
-                box.border = gapBorder(if (focused || card?.pinned == true) gapAccent else JBColor.border(), 1, 6)
+            fun toggle() { card?.let { it.pinTo(!it.pinned) } }
+
+            /** The frame around this gap's shown source, in level coordinates, or null while none of it is shown. */
+            fun frame(): Rectangle? {
+                source?.takeIf { it.isVisible }?.let { native ->
+                    return SwingUtilities.convertRectangle(native, native.linesBounds(unit.first, unit.last), this@LevelView)
+                }
+                return rowIndices.map { rows[it] }.filter { it.isVisible && it.height > 0 }
+                    .map { Rectangle(it.x, it.y, minOf(it.preferredSize.width, it.width), it.height) }
+                    .reduceOrNull(Rectangle::union)
             }
         }
 
@@ -1291,17 +1324,21 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         /** Geometry shared by symbol and gap summary cards. */
         abstract inner class ExternalCard(val rowIndex: Int) : JPanel(BorderLayout()), Zoomable {
-            abstract val anchor: JComponent
+            /** Where the card's arrow starts, in level coordinates. */
+            abstract fun anchorBounds(): Rectangle
             abstract val marked: Boolean
             abstract val headerCenter: Int
             open val accent: Color get() = blockOpen
         }
 
-        inner class GapSummaryCard(val gap: GapView, rowIndex: Int, summary: String) : ExternalCard(rowIndex) {
+        inner class GapSummaryCard(val span: GapSpan, rowIndex: Int, summary: String) : ExternalCard(rowIndex) {
             var pinned = false
                 private set
-            override val anchor get() = gap.box
-            override val marked get() = pinned || hoveredGap === gap
+            /** A tall gap's arrow leaves from its first line, beside where the card starts. */
+            override fun anchorBounds(): Rectangle = span.frame()?.let {
+                Rectangle(it.x, it.y, it.width, minOf(it.height, getFontMetrics(codeFont).height + scaled(2)))
+            } ?: Rectangle()
+            override val marked get() = pinned || hoveredGap === span
             override val accent: Color get() = gapAccent
             private val header = JPanel(BorderLayout())
             override val headerCenter get() = header.y + header.height / 2
@@ -1317,7 +1354,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
                     add(pinToggle)
-                    add(ActionLink("Source") { navigate(schematic.file, gap.row.first) }.zoomFont())
+                    add(ActionLink("Source") { navigate(schematic.file, span.unit.first) }.zoomFont())
                 }, BorderLayout.EAST)
                 add(header, BorderLayout.NORTH)
                 isVisible = false
@@ -1327,7 +1364,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             fun pinTo(value: Boolean) {
                 pinned = value
                 pinToggle.text = if (value) "Unpin" else "Pin"
-                if (!value && hoveredGap === gap) {
+                if (!value && hoveredGap === span) {
                     hoverExit.stop()
                     hoveredGap = null
                 }
@@ -1367,9 +1404,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     .maxOfOrNull { rowSizes[it].width }?.coerceAtMost(JBUI.scale(MAX_SOURCE_WIDTH)) ?: 0,
             )
             var bottom = 0
-            val rowTops = if (native != null) rows.map { when {
-                it is LineView -> native.blockY(it.row)
-                it is GapView && it.summary != null -> native.blockY(it.row)
+            val rowTops = if (native != null) rows.map { when (it) {
+                is LineView -> native.blockY(it.row)
+                // Code stays native text; its top still places a gap's card.
+                is GapView -> native.lineY(it.row.first)
                 else -> 0
             } }
                 else rowSizes.map { size -> bottom.also { bottom += size.height } }
@@ -1410,17 +1448,35 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         override fun getPreferredSize(): Dimension = measure().size
 
+        /** Summarized gaps fill behind their rows; native source tints its own lines instead. */
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            if (source?.isVisible == true) return
+            for (span in spans.filter { it.summary != null }) {
+                val frame = span.frame() ?: continue
+                g.color = if (hoveredGap === span) gapFocusedBackground else gapBackground
+                g.fillRect(frame.x, frame.y, frame.width, frame.height)
+            }
+        }
+
         override fun paintChildren(g: Graphics) {
             super.paintChildren(g)
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.stroke = BasicStroke(scaled(1).toFloat())
+                // A gap's outline and amber rule enclose the code and blocks it summarizes.
+                for (span in spans.filter { it.summary != null }) {
+                    val frame = span.frame() ?: continue
+                    g2.color = if (span.card?.marked == true) gapAccent else JBColor.border()
+                    g2.drawRect(frame.x, frame.y, frame.width - 1, frame.height - 1)
+                    g2.color = gapAccent
+                    g2.fillRect(frame.x, frame.y, scaled(3), frame.height)
+                }
                 val head = scaled(5)
                 for (card in externalCards.filter { it.isVisible }) {
                     // Links of a split line share its right edge, so the arrow never crosses the rest of the line.
-                    val box = card.anchor
-                    val from = SwingUtilities.convertRectangle(box.parent, box.bounds, this@LevelView)
+                    val from = card.anchorBounds()
                     g2.color = if (card.marked) card.accent else JBColor.border()
                     val startX = from.x + from.width
                     val startY = from.y + from.height / 2
@@ -1616,7 +1672,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         /** The summary of [target]; unfolds into [target]'s own schematic. */
         inner class SummaryCard(val target: Int, val row: BlockView, rowIndex: Int,
             private val occurrences: List<CallOccurrence>) : ExternalCard(rowIndex) {
-            override val anchor get() = row.line.box
+            override fun anchorBounds(): Rectangle = row.line.box.let { SwingUtilities.convertRectangle(it.parent, it.bounds, this@LevelView) }
             override val marked get() = pinned || open
             var pinned = false
                 private set
@@ -1865,7 +1921,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 } else level?.let { slot ->
                     if (activeBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) activeBlock = row
                     if (hoveredBlock?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) hoveredBlock = null
-                    if (hoveredGap?.let { SwingUtilities.isDescendingFrom(it, slot) } == true) hoveredGap = null
+                    if (hoveredGap?.let { SwingUtilities.isDescendingFrom(it.level, slot) } == true) hoveredGap = null
                     slot.isVisible = false
                 }
                 sourceToggle.isVisible = open

@@ -41,9 +41,11 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
 
     fun `test gap context includes PSI knowledge and rejects changed source`() {
         val (_, schematic) = build { it.name.substringBefore('(') == "entry" }
-        val gap = schematic.rows.filterIsInstance<CodeRow>().first { row ->
-            (row.first..row.last).any { schematic.text(it).contains("int x = 1") }
-        }
+        val gap = schematic.gaps.first { unit -> (unit.first..unit.last).any { schematic.text(it).contains("int x = 1") } }
+        // The condition after it is read whole, with the call inside it, rather than as a dangling `if (kind > 0) {`.
+        val condition = schematic.gaps.single { unit -> schematic.text(unit.first).contains("if (kind > 0)") }
+        assertEquals("}", schematic.text(condition.last).trim())
+        assertTrue(condition.symbols.isNotEmpty())
         val context = schematicGapSource(project, schematic, gap)
         assertEquals(source.lines(), context.lines)
         assertTrue(context.facts.contains("Language: Java", ignoreCase = true))
@@ -60,16 +62,20 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
-    fun `test summarized gaps can reserve native fold space beside symbol blocks`() {
+    fun `test summarized gaps tint native source around the symbol blocks they hold`() {
         val (_, schematic) = build { it.kind == SymbolKind.FILE }
-        val gap = schematic.rows.filterIsInstance<CodeRow>().first()
-        val block = schematic.rows.filterIsInstance<BlockRow>().first()
-        val viewer = SchematicSourceEditor(project, schematic, listOf(
-            gap to javax.swing.JLabel("Gap summary"), block to javax.swing.JLabel("Symbol"),
-        ), {}, {}, { _, _, _ -> })
+        val gap = schematic.gaps.first { it.symbols.isNotEmpty() }
+        val block = schematic.rows.filterIsInstance<BlockRow>().first { it.headline in gap.symbols }
+        val viewer = SchematicSourceEditor(project, schematic, listOf(block to javax.swing.JLabel("Symbol")), {}, {}, { _, _, _ -> })
         try {
-            assertEquals(2, viewer.editor.foldingModel.allFoldRegions.size)
-            assertTrue(viewer.blockY(gap) >= 0)
+            viewer.setSize(800, 600)
+            viewer.doLayout()
+            viewer.tint(gap.first, gap.last, java.awt.Color.ORANGE)
+            assertEquals(1, viewer.editor.foldingModel.allFoldRegions.size)
+            assertEquals(1, viewer.editor.markupModel.allHighlighters.size)
+            val frame = viewer.linesBounds(gap.first, gap.last)
+            assertTrue(frame.height > 0 && frame.width > 0)
+            assertTrue("The frame holds the block", viewer.lineY(gap.first) <= viewer.blockY(block))
             viewer.refreshBlocks()
             assertEquals(schematic.lines.joinToString("\n"), viewer.editor.document.text)
         } finally {
@@ -77,49 +83,39 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
-    fun `test gap summaries use external cards across source renderers`() {
+    fun `test gap summaries frame their blocks and use external cards across source renderers`() {
         val (result, schematic) = build { it.kind == SymbolKind.FILE }
         val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
         try {
             val panel = editor.component as SchematicPanel
             val toggle = descendants(panel).filterIsInstance<javax.swing.JCheckBox>().single { it.name == "schematic-native-editor" }
             PlatformTestUtil.waitWithEventsDispatching("File should load", {
-                descendants(panel.canvas).any { it.javaClass.simpleName == "GapView" }
+                descendants(panel.canvas).any { it is SchematicSourceEditor }
             }, 10)
-            toggle.doClick()
-            val gap = descendants(panel.canvas).first { it.javaClass.simpleName == "GapView" } as java.awt.Container
-            gap.javaClass.getMethod("showSummary", String::class.java).apply {
-                isAccessible = true
-                invoke(gap, "Defines the file's surrounding structure.")
-            }
-            val code = descendants(gap).filterIsInstance<javax.swing.JTextArea>().single()
-            val originalCode = code.text
-            fun clickCode() {
-                val event = java.awt.event.MouseEvent(code, java.awt.event.MouseEvent.MOUSE_CLICKED,
-                    System.currentTimeMillis(), 0, 1, 1, 1, false, java.awt.event.MouseEvent.BUTTON1)
-                code.mouseListeners.forEach { it.mouseClicked(event) }
-            }
+            val level = descendants(panel.canvas).first { it.javaClass.simpleName == "LevelView" } as java.awt.Container
+            // The class is one gap: its header, fields and folded methods, rather than `class Flow {` alone.
+            val unit = schematic.gaps.first()
+            assertEquals(0, unit.first)
+            assertTrue(unit.symbols.size > 1)
+            val span = (level.javaClass.getDeclaredField("spans").apply { isAccessible = true }.get(level) as List<*>).first()!!
+            span.javaClass.getMethod("showSummary", String::class.java).invoke(span, "Defines the flow and its store.")
+            val viewer = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
+            val blocks = schematic.rows.filterIsInstance<BlockRow>().size
+            assertEquals("Native source keeps blocks as its only folds", blocks, viewer.editor.foldingModel.allFoldRegions.size)
+            assertEquals("The summarized gap is tinted", 1, viewer.editor.markupModel.allHighlighters.size)
             val card = descendants(panel.canvas).single { it.javaClass.simpleName == "GapSummaryCard" } as java.awt.Container
-            assertSame("Gap cards belong to the external card column", gap.parent, card.parent)
-            assertFalse("Summary text must stay outside the source row", descendants(gap).filterIsInstance<javax.swing.JLabel>()
-                .any { it.text.orEmpty().contains("Defines the file") })
+            assertSame("Gap cards belong to the external card column", level, card.parent)
             val sourceLink = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Source" }
             assertFalse(sourceLink.isShowingInTree())
-            val symbolBox = descendants(panel.canvas).first { it.javaClass.simpleName == "BlockView" }
-                .let { (it as java.awt.Container).components.single() } as javax.swing.JComponent
-            val gapBox = code.parent as javax.swing.JComponent
-            assertFalse("Gaps have a different background from symbols", gapBox.background == symbolBox.background)
-            val gapInsets = gapBox.border.getBorderInsets(gapBox)
-            assertTrue("The gap's left accent rule also distinguishes its shape", gapInsets.left > gapInsets.right)
             fun leave(component: java.awt.Component, visible: Boolean) {
                 hoverMouse(component, java.awt.event.MouseEvent.MOUSE_EXITED)
                 val timer = javax.swing.Timer(300, null).apply { isRepeats = false; start() }
                 PlatformTestUtil.waitWithEventsDispatching("Hover exit should settle", { !timer.isRunning }, 5)
                 assertEquals(visible, sourceLink.isShowingInTree())
             }
-            fun checkHover() {
+            fun checkHover(code: java.awt.Component) {
                 hoverMouse(code)
-                assertTrue("Hovering a gap previews its summary", sourceLink.isShowingInTree())
+                assertTrue("Hovering a gap's source previews its summary", sourceLink.isShowingInTree())
                 hoverMouse(code, java.awt.event.MouseEvent.MOUSE_EXITED)
                 hoverMouse(card)
                 val timer = javax.swing.Timer(300, null).apply { isRepeats = false; start() }
@@ -127,46 +123,60 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
                 assertTrue("Crossing the arrow keeps the preview open", sourceLink.isShowingInTree())
                 leave(card, false)
             }
-            checkHover()
+            // Native lines of the gap preview it like its rows do in classic mode.
+            panel.setSize(1400, 900)
+            layOut(panel)
+            checkHover(viewer.editor.contentComponent)
+
+            toggle.doClick()
+            layOut(panel)
+            val gap = descendants(level).first { it.javaClass.simpleName == "GapView" && it.isVisible } as java.awt.Container
+            val code = descendants(gap).filterIsInstance<javax.swing.JTextArea>().single()
+            assertTrue(code.text.contains("class Flow"))
+            assertFalse("Summary text must stay outside the source row", descendants(gap).filterIsInstance<javax.swing.JLabel>()
+                .any { it.text.orEmpty().contains("Defines the flow") })
+            fun clickCode() {
+                val event = java.awt.event.MouseEvent(code, java.awt.event.MouseEvent.MOUSE_CLICKED,
+                    System.currentTimeMillis(), 0, 1, 1, 1, false, java.awt.event.MouseEvent.BUTTON1)
+                code.mouseListeners.forEach { it.mouseClicked(event) }
+            }
+            checkHover(code)
             hoverMouse(code)
             descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Pin" }.doClick()
             leave(code, true)
             descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Unpin" }.doClick()
             assertFalse(sourceLink.isShowingInTree())
             clickCode()
-            assertTrue(sourceLink.isShowingInTree())
+            assertTrue("Clicking a gap's code pins its summary", sourceLink.isShowingInTree())
             // Keep a known symbol's card visible too, to exercise shared column spacing.
             press(panel.canvas, "TAB")
             fun checkCardColumn() {
                 panel.setSize(1400, 900)
                 layOut(panel)
-                val level = gap.parent
                 val visibleCards = level.components.filter {
                     it.isVisible && it.javaClass.simpleName in listOf("SummaryCard", "GapSummaryCard")
                 }.sortedBy { it.y }
                 assertEquals(2, visibleCards.size)
-                assertTrue("Connector arrows need space outside the file", card.x > gap.x + gap.width)
                 assertEquals("Both summaries share the same column", 1, visibleCards.map { it.x }.distinct().size)
                 assertTrue("External cards must not overlap", visibleCards[0].y + visibleCards[0].height < visibleCards[1].y)
+                val source = level.components.filter { it.javaClass.simpleName in listOf("GapView", "LineView") || it is SchematicSourceEditor }
+                assertTrue("Connector arrows need space outside the file", source.filter { it.isVisible }.all { card.x > it.x + it.preferredSize.width })
             }
             checkCardColumn()
             toggle.doClick()
             checkCardColumn()
-            assertTrue(code.isShowingInTree())
-            assertEquals(originalCode, code.text)
             assertTrue(sourceLink.isShowingInTree())
-            clickCode()
-            assertFalse(sourceLink.isShowingInTree())
-            clickCode()
             descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Unpin" }.doClick()
             assertFalse(sourceLink.isShowingInTree())
-            val viewer = descendants(panel.canvas).filterIsInstance<SchematicSourceEditor>().single()
-            assertEquals(schematic.rows.filterIsInstance<BlockRow>().size + 1, viewer.editor.foldingModel.allFoldRegions.size)
-            assertEquals(schematic.lines.joinToString("\n"), viewer.editor.document.text)
-            checkHover()
-            hoverMouse(code)
+            val native = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
+            assertEquals(blocks, native.editor.foldingModel.allFoldRegions.size)
+            assertEquals("A recreated native editor keeps the tint", 1, native.editor.markupModel.allHighlighters.size)
+            assertEquals(schematic.lines.joinToString("\n"), native.editor.document.text)
+            layOut(panel)
+            checkHover(native.editor.contentComponent)
+            hoverMouse(native.editor.contentComponent)
             press(panel.canvas, "ENTER")
-            leave(code, true)
+            leave(native.editor.contentComponent, true)
             press(panel.canvas, "ESCAPE")
             assertTrue("Pinned gap cards survive clearing the hover", sourceLink.isShowingInTree())
         } finally {

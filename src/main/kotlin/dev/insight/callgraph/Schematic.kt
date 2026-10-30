@@ -62,10 +62,11 @@ data class SchematicReference(val target: Int, val line: Int, val columns: IntRa
 
 /**
  * A lossy reading of the file, class or function [scope]: [lines] are its source lines from document line
- * [firstLine], and [rows] cover them in order. [excerpts] hold the first line of each referenced declaration.
+ * [firstLine], and [rows] cover them in order. [excerpts] hold the first line of each referenced declaration. [gaps] are
+ * the code to summarize on demand; each code row lies in at most one, and a gap may hold blocks.
  */
 class Schematic(val scope: Int, val file: VirtualFile, val firstLine: Int, val lines: List<String>, val rows: List<SchematicRow>,
-    val excerpts: Map<Int, String> = emptyMap()) {
+    val excerpts: Map<Int, String> = emptyMap(), val gaps: List<GapUnit> = emptyList()) {
     fun text(line: Int): String = lines[line - firstLine]
     /** Declared and called symbols; referenced types and properties are only linked, never summarized from here. */
     val targets: List<Int> get() = rows.filterIsInstance<BlockRow>().flatMap { it.targets }.distinct()
@@ -277,7 +278,10 @@ object SchematicBuilder {
         val text = (first..last).map { line ->
             document.getText(TextRange(document.getLineStartOffset(line), document.getLineEndOffset(line)))
         }
-        return Schematic(scope, virtualFile, first, text, schematicRows(first, last, declarations, sites, references), excerpts)
+        // Gaps follow the language's statements and declarations, so code rows are cut where they begin and end.
+        val rows = schematicRows(first, last, declarations, sites, references)
+        val gaps = schematicGapUnits(element, document, rows)
+        return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps)
     }
 
     /** Symbols whose mentions are links: what a type or a property is can be read from its declaration. */

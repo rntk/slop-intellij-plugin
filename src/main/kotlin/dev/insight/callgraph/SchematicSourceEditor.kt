@@ -8,16 +8,22 @@ import com.intellij.openapi.editor.CustomFoldRegionRenderer
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LineNumberConverter
+import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
+import com.intellij.openapi.editor.markup.HighlighterLayer
+import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics2D
 import java.awt.KeyboardFocusManager
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.event.MouseWheelListener
@@ -36,6 +42,8 @@ internal class SchematicSourceEditor(
     onNavigate: (String) -> Unit,
     /** Right-click on source: the mouse event, the 0-based document line, and the selected text, if any. */
     onContextMenu: (MouseEvent, Int, String?) -> Unit,
+    /** A plain left click on source, without a selection: the 0-based document line. */
+    onLineClick: (Int) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     internal val editor = EditorFactory.getInstance().createViewer(
         EditorFactory.getInstance().createDocument(schematic.lines.joinToString("\n")), project,
@@ -85,6 +93,14 @@ internal class SchematicSourceEditor(
             onContextMenu(event.mouseEvent, schematic.firstLine + event.logicalPosition.line, editor.selectionModel.selectedText)
             true
         }
+        editor.addEditorMouseListener(object : EditorMouseListener {
+            override fun mouseClicked(event: EditorMouseEvent) {
+                val mouse = event.mouseEvent
+                if (SwingUtilities.isLeftMouseButton(mouse) && mouse.clickCount == 1 && !editor.selectionModel.hasSelection()) {
+                    onLineClick(schematic.firstLine + event.logicalPosition.line)
+                }
+            }
+        }, this)
         add(editor.component, BorderLayout.CENTER)
 
         editor.foldingModel.runBatchFoldingOperation {
@@ -116,6 +132,44 @@ internal class SchematicSourceEditor(
     }
 
     fun blockY(row: SchematicRow): Int = folds.getValue(row).location?.y ?: 0
+
+    /** The top of document [line] in the text area, like [blockY]. */
+    fun lineY(line: Int): Int =
+        editor.visualLineToY(editor.offsetToVisualLine(editor.document.getLineStartOffset(line - schematic.firstLine), false))
+
+    /** The 0-based document line at [point] of the text area. */
+    fun lineAt(point: Point): Int = schematic.firstLine + editor.xyToLogicalPosition(point).line
+
+    /** Tints document lines [first]..[last], blocks folded among them included. */
+    fun tint(first: Int, last: Int, color: Color) {
+        val document = editor.document
+        editor.markupModel.addRangeHighlighter(document.getLineStartOffset(first - schematic.firstLine),
+            document.getLineEndOffset(last - schematic.firstLine), HighlighterLayer.SELECTION - 1,
+            TextAttributes().apply { backgroundColor = color }, HighlighterTargetArea.LINES_IN_RANGE)
+    }
+
+    /** Document lines [first]..[last] in this component's coordinates, as wide as their text and folded blocks. */
+    fun linesBounds(first: Int, last: Int): Rectangle {
+        val document = editor.document
+        val top = lineY(first)
+        var bottom = top
+        var right = 0
+        for (line in first - schematic.firstLine..last - schematic.firstLine) {
+            val fold = folds.values.firstOrNull { line in document.getLineNumber(it.startOffset)..document.getLineNumber(it.endOffset) }
+            if (fold != null) {
+                fold.location?.let {
+                    bottom = maxOf(bottom, it.y + fold.heightInPixels)
+                    right = maxOf(right, it.x + fold.widthInPixels)
+                }
+                continue
+            }
+            val end = editor.offsetToXY(document.getLineEndOffset(line))
+            bottom = maxOf(bottom, end.y + editor.lineHeight)
+            right = maxOf(right, end.x)
+        }
+        val origin = textOrigin()
+        return Rectangle(origin.x, origin.y + top, right, bottom - top)
+    }
 
     /** Editor text and gutter origins are measured after layout; the outer canvas owns all scrolling. */
     fun textOrigin(): Point = SwingUtilities.convertPoint(editor.contentComponent, 0, 0, this)
