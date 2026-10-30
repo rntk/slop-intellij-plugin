@@ -73,6 +73,18 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
 
+    /** The views of this tab, in the order of its [viewSelector]; the first is the one shown initially. */
+    protected abstract fun viewOptions(): List<ReviewViewOption>
+    /** Opens the page of [key], generating its content where it has none yet. */
+    protected open fun openView(key: CanvasTabKey) {
+        when (key) {
+            CanvasTabKey.Summaries -> openSummaries()
+            CanvasTabKey.Topics -> openTopics()
+            else -> {}
+        }
+    }
+    val viewSelector: ReviewViewSelector by lazy { ReviewViewSelector(viewOptions(), ::openView) }
+
     private fun artifactFile(key: CanvasTabKey): ReviewCanvasFile = artifactFiles.getOrPut(key) {
         ReviewCanvasFile(object : ReviewCanvasOwner {
             override val canvas get() = this@ReviewTab.canvas.editorPage(key)
@@ -80,6 +92,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             override val canvasTitle get() = this@ReviewTab.canvasTitle
             override fun canvasSelected() {
                 this@ReviewTab.canvas.selectPage(key)
+                this@ReviewTab.viewSelector.show(key)
                 this@ReviewTab.canvasSelected()
             }
         })
@@ -121,7 +134,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     /** Follows the chat: [before] runs first on every change, then the controls, cards and explanation are updated. */
     protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
-        canvas.onPageFocused = { openArtifact(it) }
+        canvas.onPageFocused = { viewSelector.show(it); openArtifact(it) }
         canvas.onPagesChanged = {
             val added = canvas.pageKeys - knownPages - CanvasTabKey.Summaries
             knownPages = canvas.pageKeys.toSet()

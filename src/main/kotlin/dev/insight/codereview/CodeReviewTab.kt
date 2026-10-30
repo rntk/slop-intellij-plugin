@@ -25,6 +25,7 @@ import dev.insight.agent.projectContextTools
 import dev.insight.agent.tracedFileCompletion
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
 import dev.insight.review.reviewProgressTitle
@@ -69,6 +70,7 @@ import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.ReviewViewOption
 import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
@@ -164,13 +166,15 @@ internal class CodeReviewTab(
     private var fileViewTarget: CodeFile? = null
     private var fileViewRevision = -1
 
-    private val summariesButton = JButton("Summaries").apply {
-        toolTipText = "Read every source file as one document, with file paths and summaries (/summaries)"
-    }
-    private val topicsButton = JButton("Topics").apply {
-        toolTipText = "Read every source file as one document, grouped by topic, with each file's summary (/topics)"
-    }
     private val scopeLabel = JLabel()
+
+    override fun viewOptions() = listOf(
+        ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
+            "Read every source file as one document, with file paths and summaries (/summaries)"),
+        ReviewViewOption(CanvasTabKey.Topics, "Topics",
+            "Read every source file as one document, grouped by topic, with each file's summary (/topics)"),
+    )
+
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
@@ -251,19 +255,16 @@ internal class CodeReviewTab(
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(JButton("Open review").apply {
-                    toolTipText = "Open this review's tabs in the IDE editor area"
-                    addActionListener { openCanvas(true) }
-                }, BorderLayout.NORTH)
-                add(JPanel(GridLayout(1, 2, JBUI.scale(4), JBUI.scale(4))).apply {
-                    add(summariesButton.apply { addActionListener { openSummaries() } })
-                    add(topicsButton.apply { addActionListener { openTopics() } })
-                }, BorderLayout.CENTER)
-                add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+                add(viewSelector, BorderLayout.NORTH)
+                add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
+                    add(JButton("Open review").apply {
+                        toolTipText = "Open this review's tabs in the IDE editor area"
+                        addActionListener { openCanvas(true) }
+                    })
                     add(JButton("Clear tabs").apply {
                         addActionListener { state.clearNotes(); closeFileView() }
-                    }, BorderLayout.WEST)
-                }, BorderLayout.SOUTH)
+                    })
+                }, BorderLayout.CENTER)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
         Disposer.register(this, chat)
@@ -436,8 +437,9 @@ internal class CodeReviewTab(
     }
 
     private fun updateControls() {
-        topicsButton.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
-        summariesButton.isEnabled = !state.refreshing && state.snapshot.files.isNotEmpty()
+        val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
+        viewSelector.isViewEnabled = { key -> hasFiles && (key != CanvasTabKey.Topics || !session.busy) }
+        viewSelector.isEnabled = hasFiles
         val snapshot = state.snapshot
         val paths = state.scopePaths
         val files = "${snapshot.files.size} ${if (snapshot.files.size == 1) "file" else "files"}"

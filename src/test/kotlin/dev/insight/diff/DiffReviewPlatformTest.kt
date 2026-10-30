@@ -47,6 +47,10 @@ import dev.insight.review.ui.ChangeSummariesPanel
 import dev.insight.review.ui.DiffSourceEditor
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ui.ReviewViewSelector
+import dev.insight.review.ui.chooseView
+import dev.insight.review.ui.shownView
+import dev.insight.review.ui.viewLabels
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     fun testSummariesAndTopicsUseIndependentNativeEditorTabs() {
@@ -92,14 +96,50 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
     }
 
+    fun `test the view dropdown opens each view follows the focused page and leaves Open review working`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val selector = tab.viewSelector
+            assertFalse("No files, nothing to open", selector.isEnabled)
+            tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+newWord\n")), emptyList()))
+            assertTrue(selector.isEnabled)
+            assertEquals("Summaries", shownView(tab))
+
+            chooseView(tab, "Words")
+            assertTrue(tab.state.wordsVisible)
+            assertEquals(dev.insight.review.CanvasTabKey.Words, tab.canvas.selectedKey)
+            chooseView(tab, "Metrics")
+            assertTrue(tab.state.semanticVisible)
+            assertEquals(dev.insight.review.CanvasTabKey.Semantic, tab.canvas.selectedKey)
+            chooseView(tab, "Summaries")
+            assertTrue(tab.state.summariesVisible)
+            assertEquals(dev.insight.review.CanvasTabKey.Summaries, tab.canvas.selectedKey)
+
+            // Focusing a page from the canvas moves the dropdown to it without running its open action.
+            tab.canvas.focusWords()
+            assertEquals("Words", shownView(tab))
+            assertFalse(tab.state.diffOverviewVisible)
+
+            // Open review reopens the page of the shown view once its editor tab is closed.
+            manager.openFiles.filterIsInstance<ReviewCanvasFile>().forEach(manager::closeFile)
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Open review" }.doClick()
+            assertTrue(manager.openFiles.any { it is ReviewCanvasFile })
+
+            // While the files refresh nothing can be chosen.
+            tab.invalidate(false)
+            assertFalse(selector.isEnabled)
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun testWordChartsOpenAndCloseIndependently() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         try {
             tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+newWord\n")), emptyList()))
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "Words" }.doClick()
+            chooseView(tab, "Words")
             assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
             assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart })
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "Diff overview" }.doClick()
+            chooseView(tab, "Diff overview")
             assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
             assertEquals(1, descendants(tab.canvas).filterIsInstance<DiffOverviewChart>().size)
             descendants(tab.canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove diff overview" }.doClick()
@@ -660,7 +700,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val buttons = descendants(panel).filterIsInstance<JButton>()
-            assertFalse(buttons.single { it.text == "Topics" }.isEnabled)
+            assertFalse(descendants(panel).filterIsInstance<ReviewViewSelector>().single().isEnabled)
             assertTrue(buttons.any { it.text == "Send" })
             assertTrue(buttons.any { it.text == "LLM settings" })
             assertFalse(buttons.any { it.text == "Open dashboard" })
@@ -686,7 +726,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertTrue(descendants(first).any { it is JButton && it.text == "Summaries" })
+            assertEquals(listOf("Summaries", "Topics", "Words", "Diff overview", "Metrics"), viewLabels(first))
+            assertTrue(descendants(first).any { it === first.viewSelector })
+            assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })
             assertFalse(descendants(first).any { it is ChatPanel })
             val firstChat = first.chat
             assertSame(firstChat, descendants(chatPage).filterIsInstance<ChatPanel>().single())
@@ -773,7 +815,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val nodes = tab.state.summaries.tree.nodes
             assertEquals(listOf("./", "docs/", "docs/guide.md", "src/", "src/app/", "src/app/a.kt", "src/app/b.kt"), nodes.map { it.location })
             tab.state.summarize(tab.state.revision, nodes.associate { it.id to "Summary of ${it.location} & more" })
-            val open = descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }
+            val open = object { fun doClick() = chooseView(tab, "Summaries") }
             val manager = FileEditorManager.getInstance(project)
             manager.closeFile(tab.canvasFile)
             open.doClick()

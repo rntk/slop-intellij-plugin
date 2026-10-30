@@ -25,6 +25,7 @@ import dev.insight.agent.tracedFileCompletion
 import dev.insight.chat.*
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
 import dev.insight.review.reviewProgressTitle
@@ -54,6 +55,7 @@ import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.ReviewViewOption
 import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
@@ -146,22 +148,30 @@ internal class DiffReviewTab(
         extension = diffCards,
     )
 
-    private val summariesButton = JButton("Summaries").apply {
-        toolTipText = "Read the change as summaries, from the whole change down to each file (/summaries)"
-    }
-    private val topicsButton = JButton("Topics").apply {
-        toolTipText = "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"
-    }
-    private val wordsButton = JButton("Words").apply {
-        toolTipText = "Chart the words of the removed and added lines: removed on the left, added on the right"
-    }
-    private val diffOverviewButton = JButton("Diff overview").apply {
-        toolTipText = "Compare deleted and added line counts with compact word lists filling opposite corners"
-    }
-    private val semanticButton = JButton("Metrics").apply {
-        toolTipText = "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"
-    }
     private val scopeLabel = JLabel()
+
+    override fun viewOptions() = listOf(
+        ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
+            "Read the change as summaries, from the whole change down to each file (/summaries)"),
+        ReviewViewOption(CanvasTabKey.Topics, "Topics",
+            "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"),
+        ReviewViewOption(CanvasTabKey.Words, "Words",
+            "Chart the words of the removed and added lines: removed on the left, added on the right"),
+        ReviewViewOption(CanvasTabKey.DiffOverview, "Diff overview",
+            "Compare deleted and added line counts with compact word lists filling opposite corners"),
+        ReviewViewOption(CanvasTabKey.Semantic, "Metrics",
+            "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"),
+    )
+
+    override fun openView(key: CanvasTabKey) {
+        when (key) {
+            CanvasTabKey.Words -> openWords()
+            CanvasTabKey.DiffOverview -> openDiffOverview()
+            CanvasTabKey.Semantic -> openSemantic()
+            else -> super.openView(key)
+        }
+    }
+
     override val session = object : ChatSession(project, scope, backendFactory = { _ -> createBackend() },
         onClear = sourcePoints::clear, welcome = if (focus != null)
         "Ask about ${focus.label}. Its summaries and diff are in this chat's context; other project files are read when a " +
@@ -224,24 +234,16 @@ internal class DiffReviewTab(
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
             add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(JButton("Open review").apply {
-                    toolTipText = "Open this review's tabs in the IDE editor area"
-                    addActionListener { openCanvas(true) }
-                }, BorderLayout.NORTH)
+                add(viewSelector, BorderLayout.NORTH)
                 add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
-                    add(topicsButton.apply { addActionListener { openTopics() } })
-                    add(summariesButton.apply { addActionListener { openSummaries() } })
-                }, BorderLayout.CENTER)
-                add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+                    add(JButton("Open review").apply {
+                        toolTipText = "Open this review's tabs in the IDE editor area"
+                        addActionListener { openCanvas(true) }
+                    })
                     add(JButton("Clear tabs").apply {
                         addActionListener { state.clearNotes(); renderCanvas() }
-                    }, BorderLayout.WEST)
-                    add(JPanel(GridLayout(1, 3, JBUI.scale(4), 0)).apply {
-                        add(wordsButton.apply { addActionListener { openWords() } })
-                        add(diffOverviewButton.apply { addActionListener { openDiffOverview() } })
-                        add(semanticButton.apply { addActionListener { openSemantic() } })
-                    }, BorderLayout.EAST)
-                }, BorderLayout.SOUTH)
+                    })
+                }, BorderLayout.CENTER)
             }, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
         Disposer.register(this, chat)
@@ -326,11 +328,9 @@ internal class DiffReviewTab(
     }
 
     private fun updateControls() {
-        topicsButton.isEnabled = !state.refreshing && !session.busy && state.snapshot.files.isNotEmpty()
-        summariesButton.isEnabled = !state.refreshing && state.snapshot.files.isNotEmpty()
-        wordsButton.isEnabled = summariesButton.isEnabled
-        diffOverviewButton.isEnabled = wordsButton.isEnabled
-        semanticButton.isEnabled = wordsButton.isEnabled
+        val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
+        viewSelector.isViewEnabled = { key -> hasFiles && (key != CanvasTabKey.Topics || !session.busy) }
+        viewSelector.isEnabled = hasFiles
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"

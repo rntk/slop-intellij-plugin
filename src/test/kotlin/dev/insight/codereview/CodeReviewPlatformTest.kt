@@ -18,6 +18,8 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.SummaryKind
 import dev.insight.review.summarize
+import dev.insight.review.ui.ReviewViewSelector
+import dev.insight.review.ui.viewLabels
 import java.awt.Container
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.JButton
@@ -167,9 +169,11 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         try {
             tab.update(codeSnapshot(codeFile("src/a.kt", "val a = 1\n")))
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
-            assertTrue(buttons.containsAll(listOf("Summaries", "Topics", "Open review", "Clear tabs")))
-            assertFalse(buttons.any { it == "Description" || it == "Flows" })
-            assertTrue(descendants(tab).filterIsInstance<JButton>().single { it.text == "Summaries" }.isEnabled)
+            assertTrue(buttons.containsAll(listOf("Open review", "Clear tabs")))
+            assertFalse(buttons.any { it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
+            assertEquals(listOf("Summaries", "Topics"), viewLabels(tab))
+            assertSame(tab.viewSelector, descendants(tab).filterIsInstance<ReviewViewSelector>().single())
+            assertTrue(tab.viewSelector.isEnabled)
             assertTrue(tab.state.summariesVisible)
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, tab.canvas.summariesView.mode)
             assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
