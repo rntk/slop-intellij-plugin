@@ -129,7 +129,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
                 assertEquals(right.viewport.viewPosition.y, left.viewport.viewPosition.y)
                 assertEquals("wrapped summaries fit the viewport", right.viewport.width, right.viewport.view.width)
                 assertEquals(0, right.viewport.viewPosition.x)
-                for (node in tree.nodes) {
+                for (node in tree.nodes.filterNot { tree.isHidden(it.id) }) {
                     val treeRow = named("summary-tree:${node.identity}")
                     val summaryRow = named("summary:${node.identity}")
                     assertEquals(node.identity, treeRow.height, summaryRow.height)
@@ -285,7 +285,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             assertEquals(300, right.viewport.viewPosition.x)
             panels.dividerLocation = 300
             repeat(3) { layoutTree(canvas) }
-            for (node in tree.nodes) {
+            for (node in tree.nodes.filterNot { tree.isHidden(it.id) }) {
                 val treeRow = named("summary-tree:${node.identity}")
                 val summaryRow = named("summary:${node.identity}")
                 assertEquals(node.identity, SwingUtilities.convertPoint(treeRow, 0, 0, canvas).y,

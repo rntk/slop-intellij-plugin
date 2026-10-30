@@ -277,7 +277,7 @@ internal class ChangeSummariesViewState(
 
         /** The branches that levels fold and unfold; a merged folder shows as the folder it holds. */
         private fun levelBranches(tree: ReviewSummaryTree): List<SummaryNode> =
-            tree.nodes.filter { isFolderBranch(it) && !tree.isMerged(it.id) }
+            tree.nodes.filter { isFolderBranch(it) && !tree.isHidden(it.id) }
     }
 }
 

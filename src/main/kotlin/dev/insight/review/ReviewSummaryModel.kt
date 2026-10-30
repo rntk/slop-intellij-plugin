@@ -57,22 +57,42 @@ class ReviewSummaryTree(val nodes: List<SummaryNode>) {
         return node.kind == SummaryKind.DIRECTORY && child.kind == SummaryKind.DIRECTORY && !node.isTopicBranch && !child.isTopicBranch
     }
 
-    /** A folder whose only entry is a file repeats that file's summary; an open folder can leave its summary to the file. */
+    /**
+     * The folders below the root that are its only entry, down to the first one holding several entries or a file. The root's
+     * summary is theirs too, so views show the root alone, with what the last of them holds directly beneath it.
+     */
+    private val rootChain: List<SummaryNode> by lazy {
+        if (nodes[0].isTopicBranch) emptyList()
+        else generateSequence(nodes[0]) { node -> node.children.singleOrNull()?.let(nodes::get)?.takeIf { it.kind == SummaryKind.DIRECTORY && !it.isTopicBranch } }
+            .drop(1).toList()
+    }
+    private val absorbed: Set<Int> by lazy { rootChain.mapTo(hashSetOf()) { it.id } }
+
+    /** A folder that is the root's only entry, or the only entry of one that is; the root's entry stands for it. */
+    fun isAbsorbed(id: Int): Boolean = id in absorbed
+
+    /** Whether views leave the node out of their rows: folded into the root, or into the folder it holds. */
+    fun isHidden(id: Int): Boolean = isAbsorbed(id) || isMerged(id)
+
+    /** A folder (or the root) whose only entry is a file repeats that file's summary; an open one can leave its summary to the file. */
     fun holdsOnlyFile(id: Int): Boolean {
         val node = nodes[id]
-        val child = node.children.singleOrNull()?.let(nodes::get) ?: return false
-        return node.kind == SummaryKind.DIRECTORY && child.kind == SummaryKind.FILE && !node.isTopicBranch
+        if (node.isTopicBranch || node.kind != SummaryKind.DIRECTORY && node.kind != SummaryKind.ROOT) return false
+        return shownChildren(node).singleOrNull()?.kind == SummaryKind.FILE
     }
 
-    /** The entry [id] shows as: the last folder of its merged chain, else the node itself. */
-    fun shown(id: Int): SummaryNode = generateSequence(nodes[id]) { node -> if (isMerged(node.id)) nodes[node.children.single()] else null }.last()
+    /** The entry [id] shows as: the root for an absorbed folder, else the last folder of its merged chain, else the node itself. */
+    fun shown(id: Int): SummaryNode =
+        if (isAbsorbed(id)) nodes[0]
+        else generateSequence(nodes[id]) { node -> if (isMerged(node.id)) nodes[node.children.single()] else null }.last()
 
-    fun shownChildren(node: SummaryNode): List<SummaryNode> = node.children.map(::shown)
+    fun shownChildren(node: SummaryNode): List<SummaryNode> =
+        (if (node.id == 0) rootChain.lastOrNull() ?: node else node).children.map(::shown)
 
-    fun shownParent(node: SummaryNode): SummaryNode? = generateSequence(node.parent) { nodes[it].parent }.firstOrNull { !isMerged(it) }?.let(nodes::get)
+    fun shownParent(node: SummaryNode): SummaryNode? = generateSequence(node.parent) { nodes[it].parent }.firstOrNull { !isHidden(it) }?.let(nodes::get)
 
-    /** The depth among shown entries, which merged folders do not add to. */
-    fun shownDepth(id: Int): Int = generateSequence(nodes[id].parent) { nodes[it].parent }.count { !isMerged(it) }
+    /** The depth among shown entries, which merged and absorbed folders do not add to. */
+    fun shownDepth(id: Int): Int = generateSequence(nodes[id].parent) { nodes[it].parent }.count { !isHidden(it) }
 
     /** The node's label, prefixed by the folders merged into it: `src/main/kotlin` for `kotlin`. */
     fun shownLabel(node: SummaryNode): String =

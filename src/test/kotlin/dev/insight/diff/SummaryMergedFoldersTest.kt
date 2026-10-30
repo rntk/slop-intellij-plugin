@@ -101,8 +101,8 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
     }
 
     fun testExplorerRefreshNormalizesMergedAndNewlyUnmergedBreadcrumbs() {
-        val initial = buildSummaryTree(listOf(file("src/a.kt"), file("src/nested/b.kt")))
-        val merged = buildSummaryTree(listOf(file("src/nested/b.kt")))
+        val initial = buildSummaryTree(listOf(file("src/a.kt"), file("src/nested/b.kt"), file("README.md")))
+        val merged = buildSummaryTree(listOf(file("src/nested/b.kt"), file("README.md")))
         val state = ChangeSummariesViewState().apply { update(initial); browse("directory:src", initial) }
         state.update(merged)
         assertEquals(listOf("root", "directory:src/nested"), state.explorerBreadcrumbs(merged).map { it.identity })
@@ -110,7 +110,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
 
         state.explorerBack()
         assertEquals(listOf("root"), state.explorerBreadcrumbs(merged).map { it.identity })
-        assertEquals(listOf("directory:src/nested"), state.explorerEntries(ReviewSummaries(merged)).map { it.identity })
+        assertEquals(listOf("directory:src/nested", "file:README.md"), state.explorerEntries(ReviewSummaries(merged)).map { it.identity })
 
         state.browse("directory:src/nested", merged)
         state.update(initial)
@@ -144,5 +144,26 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
 
     private fun descendants(container: Container): List<Component> = container.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
+    }
+
+    fun testRootAbsorbsFoldersThatAreItsOnlyEntry() {
+        val tree = buildSummaryTree(listOf(file("src/main/a.kt"), file("src/main/sub/b.kt")))
+        fun node(path: String) = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == path }
+        val main = node("src/main")
+        val sub = node("src/main/sub")
+        // The root's summary is the chain's, so the chain leaves no rows of its own and its children sit directly under the root.
+        assertEquals(listOf(true, true), listOf("src", "src/main").map { tree.isAbsorbed(node(it).id) })
+        assertFalse(tree.isAbsorbed(sub.id))
+        assertEquals(tree.root, tree.shown(main.id))
+        assertEquals(listOf("directory:src/main/sub", "file:src/main/a.kt"), tree.shownChildren(tree.root).map { it.identity })
+        assertEquals(tree.root, tree.shownParent(sub))
+        assertEquals(1, tree.shownDepth(sub.id))
+        assertEquals("sub", tree.shownLabel(sub))
+        assertEquals(2, ChangeSummariesViewState.branchLevels(tree))
+        assertFalse(tree.holdsOnlyFile(tree.root.id))
+
+        val single = buildSummaryTree(listOf(file("src/only.kt")))
+        assertEquals(listOf("file:src/only.kt"), single.shownChildren(single.root).map { it.identity })
+        assertTrue(single.holdsOnlyFile(single.root.id))
     }
 }
