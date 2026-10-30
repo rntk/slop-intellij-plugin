@@ -296,7 +296,8 @@ internal class ChangeSummaryDocumentPanel(
  * also names the folders merged into it.
  */
 internal fun summaryNodeTitle(node: SummaryNode, tree: ReviewSummaryTree? = null): String = when (node.kind) {
-    SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.ROOT, SummaryKind.CHUNK -> node.label
+    SummaryKind.ROOT -> tree?.rootDirectoryPrefix?.takeIf { it.isNotEmpty() }?.let { "${node.label} · $it/" } ?: node.label
+    SummaryKind.FILE, SummaryKind.GROUP, SummaryKind.CHUNK -> node.label
     SummaryKind.DIRECTORY -> "${tree?.shownLabel(node) ?: node.label}/"
 }
 

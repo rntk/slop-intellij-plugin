@@ -227,7 +227,9 @@ internal class SummariesCanvasCards(
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, panelActions, vocabulary) else null
         val diff = if (diffMode) extension?.summaryDiffView(content, summariesView, zoom, panelActions)?.also { tab.diffPanel = it } else null
-        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        val card = object : JPanel(SummaryOverlayLayout()) {
+            override fun isOptimizedDrawingEnabled(): Boolean = false
+        }.apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         currentCards[key] = card
         card.add(JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -244,13 +246,10 @@ internal class SummariesCanvasCards(
                 })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        card.add(JPanel(VerticalLayout(scaled(4))).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(6, PADDING, 8, PADDING)
-            canvasTraceStatusLines(summariesView, summariesTrace, inner, true, if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view.").forEach(::add)
-        }, BorderLayout.SOUTH)
+        val traceWhere = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view."
         if (diff != null) {
-            card.add(diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it }, BorderLayout.CENTER)
+            installSummariesTraceOverlay(card, diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it },
+                summariesView, summariesTrace, inner, traceWhere)
             return card
         }
         val body = if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
@@ -309,9 +308,9 @@ internal class SummariesCanvasCards(
                 revealCanvasTrace(body, target)
             }
         }
-        card.add(if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
-            rememberTreeWidth = { tab.treeWidth = it }, rememberTreeScrollX = { tab.treeScrollX = it }) else bodyScroll,
-            BorderLayout.CENTER)
+        val readingArea = if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
+            rememberTreeWidth = { tab.treeWidth = it }, rememberTreeScrollX = { tab.treeScrollX = it }) else bodyScroll
+        installSummariesTraceOverlay(card, readingArea, summariesView, summariesTrace, inner, traceWhere)
         return card
     }
 

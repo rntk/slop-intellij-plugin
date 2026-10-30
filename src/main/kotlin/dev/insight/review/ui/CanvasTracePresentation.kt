@@ -68,5 +68,49 @@ internal fun canvasTraceStatusLines(
     })
 }
 
+/** A border layout with a trace block painted over the center component. */
+internal class SummaryOverlayLayout : BorderLayout() {
+    private var overlay: Component? = null
+    override fun addLayoutComponent(comp: Component, constraints: Any?) {
+        if (constraints == "trace-overlay") overlay = comp else super.addLayoutComponent(comp, constraints)
+    }
+    override fun removeLayoutComponent(comp: Component) {
+        if (comp === overlay) overlay = null else super.removeLayoutComponent(comp)
+    }
+    override fun layoutContainer(target: Container) {
+        super.layoutContainer(target)
+        val center = getLayoutComponent(CENTER) ?: return
+        val block = overlay ?: return
+        val left = center.x + ((center as? JSplitPane)?.let { it.dividerLocation + it.dividerSize } ?: 0)
+        val right = center.x + center.width
+        val size = block.preferredSize
+        val w = minOf(size.width, (right - left).coerceAtLeast(0))
+        val h = minOf(size.height, center.height)
+        block.setBounds(right - w, center.y + center.height - h, w, h)
+    }
+}
+
+internal fun installSummariesTraceOverlay(
+    card: JPanel, content: JComponent, state: SummaryTraceState, session: SummaryTraceSession, width: Int, where: String,
+) {
+    val status = canvasTraceStatusLines(state, session, width, true, where)[1]
+    val block = JPanel(BorderLayout()).apply {
+        name = "summaries-trace-overlay"
+        background = UIUtil.getPanelBackground()
+        border = JBUI.Borders.compound(JBUI.Borders.customLine(com.intellij.ui.JBColor.border()), JBUI.Borders.empty(6, 8))
+        add(status, BorderLayout.CENTER)
+        val update = { isVisible = state.tracing != null || state.resultTrace != null }
+        ClientProperty.put(this, TRACE_PRESENTATION_UPDATE, update)
+        update()
+    }
+    card.add(content, BorderLayout.CENTER)
+    card.add(block, "trace-overlay")
+    card.setComponentZOrder(block, 0)
+    (content as? JSplitPane)?.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
+        card.doLayout()
+        card.repaint()
+    }
+}
+
 private fun descendantsOf(component: Container): List<Component> =
     component.components.flatMap { listOf(it) + ((it as? Container)?.let(::descendantsOf) ?: emptyList()) }

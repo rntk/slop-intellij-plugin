@@ -154,6 +154,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         // The root's summary is the chain's, so the chain leaves no rows of its own and its children sit directly under the root.
         assertEquals(listOf(true, true), listOf("src", "src/main").map { tree.isAbsorbed(node(it).id) })
         assertFalse(tree.isAbsorbed(sub.id))
+        assertEquals("${tree.root.label} · src/main/", summaryNodeTitle(tree.root, tree))
         assertEquals(tree.root, tree.shown(main.id))
         assertEquals(listOf("directory:src/main/sub", "file:src/main/a.kt"), tree.shownChildren(tree.root).map { it.identity })
         assertEquals(tree.root, tree.shownParent(sub))

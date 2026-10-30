@@ -66,6 +66,9 @@ class ReviewSummaryTree(val nodes: List<SummaryNode>) {
         else generateSequence(nodes[0]) { node -> node.children.singleOrNull()?.let(nodes::get)?.takeIf { it.kind == SummaryKind.DIRECTORY && !it.isTopicBranch } }
             .drop(1).toList()
     }
+    /** Directory prefix represented by the root row. */
+    val rootDirectoryPrefix: String get() = rootChain.lastOrNull()?.path.orEmpty()
+
     private val absorbed: Set<Int> by lazy { rootChain.mapTo(hashSetOf()) { it.id } }
 
     /** A folder that is the root's only entry, or the only entry of one that is; the root's entry stands for it. */
