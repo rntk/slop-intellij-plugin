@@ -198,6 +198,7 @@ internal class NoteCanvas(
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
     internal fun focusDiffOverview() { focusCard(CanvasTabKey.DiffOverview) }
     internal fun focusSemantic() { focusCard(CanvasTabKey.Semantic) }
+    internal fun focusMoves() { focusCard(CanvasTabKey.Moves) }
     internal fun focusExplanation() { focusCard(CanvasTabKey.Explanation) }
 
     /** Selects the source tab. */
@@ -224,7 +225,7 @@ internal class NoteCanvas(
         CanvasTabKey.Topics -> "Topics"
         CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
-        CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic -> key.toString()
+        CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
         is ReviewNoteKey -> {
@@ -478,7 +479,7 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic -> extension?.card(key, snapshotCards)
+            CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
                 summariesCardBuilder.card(key)

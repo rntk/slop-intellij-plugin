@@ -86,6 +86,7 @@ internal class DiffReviewTab(
             removeWords = { state.hideWords(); renderCanvas() },
             removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
             removeSemantic = { state.hideSemantic(); renderCanvas() },
+            removeMoves = { state.hideMoves(); renderCanvas() },
         ),
     )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
@@ -161,6 +162,8 @@ internal class DiffReviewTab(
             "Compare deleted and added line counts with compact word lists filling opposite corners"),
         ReviewViewOption(CanvasTabKey.Semantic, "Metrics",
             "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"),
+        ReviewViewOption(CanvasTabKey.Moves, "Moves",
+            "Find code removed from one file and added to another, and chart where each file's code went"),
     )
 
     override fun openView(key: CanvasTabKey) {
@@ -168,6 +171,7 @@ internal class DiffReviewTab(
             CanvasTabKey.Words -> openWords()
             CanvasTabKey.DiffOverview -> openDiffOverview()
             CanvasTabKey.Semantic -> openSemantic()
+            CanvasTabKey.Moves -> openMoves()
             else -> super.openView(key)
         }
     }
@@ -294,6 +298,13 @@ internal class DiffReviewTab(
         showCanvas { canvas.focusSemantic() }
     }
 
+    /** Matched from the snapshot patches by code, so the chart needs no chat turn. */
+    fun openMoves() {
+        state.showMoves()
+        renderCanvas()
+        showCanvas { canvas.focusMoves() }
+    }
+
     private var semanticJob: Job? = null
     private var semanticCounting: List<ReviewFile>? = null
 
@@ -343,7 +354,7 @@ internal class DiffReviewTab(
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
-            semantic = if (state.semanticVisible) state.semantic else null)
+            semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null)
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())

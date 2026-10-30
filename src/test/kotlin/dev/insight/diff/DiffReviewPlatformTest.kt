@@ -726,7 +726,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Topics", "Words", "Diff overview", "Metrics"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Topics", "Words", "Diff overview", "Metrics", "Moves"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.viewSelector })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })
             assertFalse(descendants(first).any { it is ChatPanel })

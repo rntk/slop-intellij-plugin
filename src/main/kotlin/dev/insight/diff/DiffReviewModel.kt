@@ -89,6 +89,16 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         semanticVisible = true
     }
     fun hideSemantic() { semanticVisible = false }
+    /** Whether the moved-code chart is on the canvas; found from the current snapshot's patches when first needed. */
+    var movesVisible = false
+        private set
+    private var movesOf: List<ReviewFile>? = null
+    private var found: CodeMoves? = null
+    internal val moves: CodeMoves get() = found?.takeIf { movesOf === snapshot.files } ?: codeMoves(snapshot.files).also {
+        found = it; movesOf = snapshot.files
+    }
+    fun showMoves() { movesVisible = true }
+    fun hideMoves() { movesVisible = false }
 
     fun update(globalSnapshot: ReviewSnapshot) {
         val next = scopePaths?.let { paths -> globalSnapshot.copy(files = globalSnapshot.files.filter { it.path in paths }) } ?: globalSnapshot
@@ -117,7 +127,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun clearNotes() {
         super.clearNotes()
         diffCards.clear()
-        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false
+        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false; movesVisible = false
     }
 }
 

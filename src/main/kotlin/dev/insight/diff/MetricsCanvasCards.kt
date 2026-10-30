@@ -27,10 +27,11 @@ internal data class MetricsCanvasActions(
     val removeWords: () -> Unit = {},
     val removeDiffOverview: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
+    val removeMoves: () -> Unit = {},
     val refresh: (CanvasTabKey) -> Unit,
 )
 
-/** Word changes, diff overview and semantic metrics, including their cached charts and view choices. */
+/** Word changes, diff overview, semantic metrics and moved code, including their cached charts and view choices. */
 internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
     private var wordFiles = emptyList<ReviewFile>()
     private var semantic: SemanticResult? = null
@@ -46,6 +47,8 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
     private var wordScope = WordScope("", true, 0)
     /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
     private var scopedWords: ScopedWords? = null
+    /** The source file the moved-code chart shows alone, or null for all of them; kept while it still has moves. */
+    private var moveFocus: String? = null
 
     fun update(files: List<ReviewFile>, semantic: SemanticResult?) {
         wordFiles = files
@@ -178,6 +181,56 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions) {
             add(header, BorderLayout.NORTH)
             add(body, BorderLayout.CENTER)
         }
+    }
+
+    /** Code removed from one file and added to another; all source files at once, or one of them fanning out by share. */
+    fun movesCard(moves: CodeMoves): JPanel {
+        val width = scaled(WORDS_WIDTH)
+        if (moves.sources.none { it.path == moveFocus }) moveFocus = null
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(JLabel(if (moves.sources.isEmpty()) "Moved code" else "Moved code · ${files(moves.sources.size)} moved " +
+                "${moves.blocks.sumOf { it.lines }} lines to ${files(moves.destinations.size)}").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = "Runs of lines removed from one file and added to another, compared without indentation. Blank, " +
+                    "brace-only and import lines are not counted. Percentages are shares of each file's lines before the change."
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
+                isOpaque = false
+                if (moves.sources.isNotEmpty()) add(JComboBox((listOf<String?>(null) + moves.sources.map { it.path }).toTypedArray()).apply {
+                    name = "move-focus"
+                    font = scaledFont(JBFont.small())
+                    renderer = SimpleListCellRenderer.create("") { it ?: "All files" }
+                    toolTipText = "Show where the code of one file went"
+                    selectedItem = moveFocus
+                    addActionListener { chooseMoveFocus(selectedItem as String?) }
+                })
+                add(InplaceButton(IconButton("Remove moved code", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeMoves() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }, BorderLayout.WEST)
+        }
+        val chartWidth = width - scaled(2 * PADDING + 4)
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            add(if (moves.sources.isEmpty()) JLabel("No code was moved between the changed files.").apply {
+                    foreground = UIUtil.getContextHelpForeground()
+                }
+                else scrollBody(CodeMoveChart(moves, moveFocus, chartWidth, { openPaths(it.toSet()) }, ::chooseMoveFocus),
+                    chartWidth, scaled(WORDS_HEIGHT)), BorderLayout.CENTER)
+        }
+        return JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground(); border = cardBorder()
+            add(header, BorderLayout.NORTH)
+            add(body, BorderLayout.CENTER)
+        }
+    }
+
+    fun chooseMoveFocus(path: String?) {
+        if (path == moveFocus) return
+        moveFocus = path
+        actions.refresh(CanvasTabKey.Moves)
     }
 
     private fun openMetricDiff(metric: Metric) {

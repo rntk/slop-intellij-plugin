@@ -17,6 +17,7 @@ internal data class MetricCardActions(
     val removeWords: () -> Unit = {},
     val removeDiffOverview: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
+    val removeMoves: () -> Unit = {},
 )
 
 /** Content of the diff review's own canvas pages, alongside the shared canvas state. */
@@ -26,10 +27,11 @@ internal data class DiffCanvasContent(
     val wordFiles: List<ReviewFile> = emptyList(),
     val diffOverview: WordChanges? = null,
     val semantic: SemanticResult? = null,
+    val moves: CodeMoves? = null,
 )
 
 /**
- * The diff review's canvas pages: word changes, diff overview and semantic metrics, diff snapshots in native viewers, and
+ * The diff review's canvas pages: word changes, diff overview, semantic metrics and moved code, diff snapshots in native viewers, and
  * the summaries Diff mode. Set [content] before the canvas rebuilds.
  */
 internal class DiffCanvasCards(
@@ -44,7 +46,8 @@ internal class DiffCanvasCards(
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, removeWords = metricActions.removeWords,
-        removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic, refresh = { refresh(it) },
+        removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
+        removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
     ))
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) { this.refresh = refresh }
@@ -61,6 +64,7 @@ internal class DiffCanvasCards(
         content.words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) },
         content.diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
         content.semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) },
+        content.moves?.let { CanvasTabKey.Moves to metricsCards.movesCard(it) },
     ).toMap()
 
     override fun trailingCards(snapshots: SnapshotCanvasCards): Map<CanvasTabKey, JPanel> =
@@ -70,6 +74,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.Words -> content.words?.let { metricsCards.wordsCard(it) }
         CanvasTabKey.DiffOverview -> content.diffOverview?.let { metricsCards.wordsCard(it, overview = true) }
         CanvasTabKey.Semantic -> content.semantic?.let(metricsCards::semanticCard)
+        CanvasTabKey.Moves -> content.moves?.let(metricsCards::movesCard)
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { diffCard(it, snapshots) }
         else -> null
     }
@@ -78,6 +83,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.Words -> "Word changes"
         CanvasTabKey.DiffOverview -> "Diff overview"
         CanvasTabKey.Semantic -> "Semantic changes"
+        CanvasTabKey.Moves -> "Moved code"
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { "Diff · ${it.path.substringAfterLast('/')}" }
         else -> null
     }
