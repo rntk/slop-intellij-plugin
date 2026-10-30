@@ -33,10 +33,43 @@ internal class ChangeSummaryTreePanel(
     internal var zoom = state.treeZoom ?: zoom
         private set
     private val editors = mutableMapOf<String, EditorFrame>()
-    /** Retained while resizing so the native editor and active drag keep their state. */
-    private inner class EditorFrame(val key: String, val editor: JComponent) : JPanel(BorderLayout()) {
+    /** Retained while moving and resizing so the native editor and active drag keep their state. */
+    private inner class EditorFrame(val key: String, val editor: JComponent, title: String) : JPanel(BorderLayout()) {
         init {
             add(editor, BorderLayout.CENTER)
+            add(JLabel(title).apply {
+                name = "summary-diff-move:$key"
+                font = UIUtil.getLabelFont(UIUtil.FontSize.SMALL)
+                foreground = UIUtil.getContextHelpForeground()
+                background = UIUtil.getPanelBackground()
+                isOpaque = true
+                border = JBUI.Borders.empty(2, 6)
+                toolTipText = "Drag to move the editor; double-click to return it beside its file"
+                cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                val move = object : MouseAdapter() {
+                    private var pressed: Point? = null
+                    private var initial = Point()
+                    override fun mousePressed(e: MouseEvent) {
+                        raise(this@EditorFrame)
+                        if (!SwingUtilities.isLeftMouseButton(e)) return
+                        pressed = e.locationOnScreen
+                        initial = this@EditorFrame.location
+                        e.consume()
+                    }
+                    override fun mouseDragged(e: MouseEvent) {
+                        val start = pressed ?: return
+                        moveDiff(key, Point(maxOf(0, initial.x + e.locationOnScreen.x - start.x),
+                            maxOf(0, initial.y + e.locationOnScreen.y - start.y)))
+                        e.consume()
+                    }
+                    override fun mouseReleased(e: MouseEvent) { pressed = null }
+                    override fun mouseClicked(e: MouseEvent) {
+                        if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2) dockDiff(key)
+                    }
+                }
+                addMouseListener(move)
+                addMouseMotionListener(move)
+            }, BorderLayout.NORTH)
             add(JPanel(BorderLayout()).apply {
                 isOpaque = false
                 add(JLabel("◢").apply {
@@ -47,6 +80,7 @@ internal class ChangeSummaryTreePanel(
                         private var pressed: Point? = null
                         private var initial = Dimension()
                         override fun mousePressed(e: MouseEvent) {
+                            raise(this@EditorFrame)
                             if (!SwingUtilities.isLeftMouseButton(e)) return
                             pressed = e.locationOnScreen
                             initial = Dimension(this@EditorFrame.size)
@@ -74,7 +108,183 @@ internal class ChangeSummaryTreePanel(
         rebuild()
     }
 
+    /** Moves without rebuilding the tree; a moved editor no longer takes room beside its file leaf. */
+    private fun moveDiff(key: String, location: Point) {
+        val frame = editors[key] ?: return
+        val moved = key in state.treeDiffPositions
+        state.treeDiffPositions[key] = Point(unscaled(location.x), unscaled(location.y))
+        // The first move frees the leaf's room, which shifts the tree once.
+        if (!moved) rebuild() else { frame.location = location; updateExtent() }
+    }
+
+    private fun dockDiff(key: String) {
+        if (state.treeDiffPositions.remove(key) != null) rebuild()
+    }
+
+    private val blocks = mutableMapOf<String, FullSummaryBlock>()
+    /** Blocks and editors raised by a click, bottom to top. */
+    private val raised = mutableListOf<JComponent>()
+    /** The tree and its editors, without the blocks. */
+    private var treeExtent = Dimension()
+
+    /** Opens the full summary of [node] beside its part, or raises it when it is already open. */
+    internal fun showFullSummary(node: SummaryLinkNode) {
+        val bounds = state.treeSummaryBlocks.remove(node.key) ?: run {
+            val label = entries.firstOrNull { it.node.key == node.key }?.label?.bounds ?: Rectangle()
+            Rectangle(unscaled(label.x + label.width + scaled(50)), unscaled(label.y), FULL_SUMMARY_WIDTH, 0)
+        }
+        state.treeSummaryBlocks[node.key] = bounds
+        rebuild()
+        viewport?.viewSize = preferredSize
+        blocks[node.key]?.let { scrollRectToVisible(it.bounds) }
+    }
+
+    private fun raise(component: JComponent) {
+        if (component.parent !== this) return
+        (component as? FullSummaryBlock)?.key?.let { key ->
+            state.treeSummaryBlocks.remove(key)?.let { state.treeSummaryBlocks[key] = it }
+        }
+        raised.remove(component); raised.add(component)
+        setComponentZOrder(component, 0)
+        repaint()
+    }
+
+    /** Moves without rebuilding the tree, so dragging stays smooth over open editors. */
+    private fun moveBlock(key: String, location: Point) {
+        val bounds = state.treeSummaryBlocks[key] ?: return
+        val block = blocks[key] ?: return
+        bounds.location = Point(unscaled(location.x), unscaled(location.y))
+        block.location = location
+        updateExtent()
+    }
+
+    private fun resizeBlock(key: String, size: Dimension) {
+        val bounds = state.treeSummaryBlocks[key] ?: return
+        bounds.size = Dimension(JBUI.unscale(size.width).coerceAtLeast(240), JBUI.unscale(size.height).coerceAtLeast(120))
+        rebuild()
+    }
+
+    private fun closeBlock(key: String) {
+        state.treeSummaryBlocks.remove(key)
+        rebuild()
+    }
+
     private fun scaled(n: Int) = zoomScaled(n, zoom)
+    private fun unscaled(n: Int) = (n / (scaled(1000) / 1000.0)).roundToInt()
+
+    private fun folded(node: SummaryLinkNode, depth: Int): Boolean =
+        if (node.file) node.key !in state.treeOpenedFiles
+        else node.key in state.treeFolded || depth >= state.treeLevel && node.key !in state.treeExpanded
+
+    private fun levelSelector(): JComboBox<Int>? {
+        val branches = mutableListOf<Pair<SummaryLinkNode, Int>>()
+        fun collect(node: SummaryLinkNode, depth: Int) {
+            if (!node.file && node.children.isNotEmpty()) branches += node to depth
+            node.children.forEach { collect(it, depth + 1) }
+        }
+        collect(root, 0)
+        val levels = branches.maxOfOrNull { it.second + 1 } ?: return null
+        return JComboBox((1..levels).toList().toTypedArray()).apply {
+            name = "summary-tree-level-selector"
+            selectedItem = ((1..levels).firstOrNull { level ->
+                branches.all { (node, depth) -> !folded(node, depth) == (depth < level) }
+            } ?: state.treeLevel).coerceIn(1, levels)
+            toolTipText = "Unfold branches through this level (root is level 1) and fold deeper branches"
+            addActionListener {
+                state.treeLevel = selectedItem as Int
+                state.treeExpanded.clear()
+                state.treeFolded.clear()
+                rebuild()
+            }
+        }
+    }
+
+    private fun unfold(node: SummaryLinkNode, withSource: Boolean) {
+        if (node.file) {
+            if (withSource) state.treeOpenedFiles.add(node.key)
+        } else {
+            state.treeFolded.remove(node.key)
+            state.treeExpanded.add(node.key)
+        }
+        node.children.forEach { unfold(it, withSource) }
+    }
+
+    internal fun navigate(path: String, withSource: Boolean): Boolean {
+        val keys = root.pathKeys(path)
+        if (keys.isEmpty()) return false
+        fun reveal(node: SummaryLinkNode, depth: Int, hidden: Boolean) {
+            if (node.key !in keys) return
+            val childrenHidden = hidden || folded(node, depth)
+            // A level can implicitly open hidden siblings. Revealing this route must not unfold them too.
+            if (childrenHidden) node.children.filter { it.key !in keys && !it.file && it.key !in state.treeExpanded }
+                .forEach { state.treeFolded.add(it.key) }
+            if (node.file) {
+                if (withSource) state.treeOpenedFiles.add(node.key)
+            } else {
+                state.treeFolded.remove(node.key)
+                state.treeExpanded.add(node.key)
+            }
+            node.children.forEach { reveal(it, depth + 1, childrenHidden) }
+        }
+        reveal(root, 0, false)
+        rebuild()
+        viewport?.viewSize = preferredSize
+        entries.firstOrNull { it.node.file && it.node.key in keys }?.label?.let {
+            scrollRectToVisible(it.bounds)
+        }
+        return true
+    }
+
+    internal fun navigationControls(field: JTextField, controlFont: Font = UIUtil.getLabelFont(UIUtil.FontSize.SMALL)): JComponent =
+        JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+            name = "summary-tree-controls"
+            isOpaque = false
+            val leading = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+                val selector = levelSelector()
+                if (selector != null) {
+                    add(JLabel("Level").apply { font = controlFont; labelFor = selector })
+                    add(selector.apply { font = controlFont })
+                }
+                add(JLabel("Navigate").apply { font = controlFont; labelFor = field })
+            }
+            add(leading, BorderLayout.WEST)
+            val status = JLabel().apply {
+                font = controlFont
+                foreground = UIUtil.getContextHelpForeground()
+                isVisible = false
+            }
+            fun go(withSource: Boolean) {
+                val found = navigate(field.text, withSource)
+                status.text = if (found) "" else "Path not found in this tree"
+                status.isVisible = !found
+                revalidate()
+                repaint()
+            }
+            add(field.apply {
+                name = "summary-tree-navigate"
+                font = controlFont
+                columns = 12
+                minimumSize = Dimension(JBUI.scale(80), preferredSize.height)
+                toolTipText = "Paste a relative or absolute file path"
+                addActionListener { go(false) }
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+                add(JButton("Unfold").apply {
+                    name = "summary-tree-navigate-unfold"
+                    font = controlFont
+                    addActionListener { go(false) }
+                })
+                add(JButton("Unfold source/diff").apply {
+                    name = "summary-tree-navigate-source"
+                    font = controlFont
+                    addActionListener { go(true) }
+                })
+            }, BorderLayout.EAST)
+            add(status, BorderLayout.SOUTH)
+        }
+
     private val viewport get() = SwingUtilities.getAncestorOfClass(JViewport::class.java, this) as? JViewport
     private var start: Point? = null
     private var origin: Point? = null
@@ -203,8 +413,7 @@ internal class ChangeSummaryTreePanel(
         var bottom = 0
         var right = 0
         fun place(node: SummaryLinkNode, x: Int, top: Int, depth: Int): Pair<Rectangle, Int> {
-            val folded = if (node.file) node.key !in state.treeOpenedFiles
-                else node.key in state.treeFolded || depth >= INITIAL_LEVELS - 1 && node.key !in state.treeExpanded
+            val folded = folded(node, depth)
             val label = JButton().apply {
                 name = "summary-tree:${node.key}"
                 font = UIUtil.getLabelFont().zoomed(zoom)
@@ -229,7 +438,19 @@ internal class ChangeSummaryTreePanel(
             }
             entries += Entry(node, label, folded)
             style(label, node, folded)
-            label.componentPopupMenu = summaryEntryMenu(node.owner, card, state, actions, vocabulary, "summary-tree-action", canFold = false)
+            label.componentPopupMenu = summaryEntryMenu(node.owner, card, state, actions, vocabulary, "summary-tree-action", canFold = false).apply {
+                for ((index, text) in listOf("Unfold all", "Unfold all source/diff").withIndex()) {
+                    insert(JMenuItem(text).apply {
+                        name = "summary-tree-action:$text"
+                        addActionListener { unfold(node, index == 1); rebuild() }
+                    }, index)
+                }
+                insert(JMenuItem("Full summary").apply {
+                    name = "summary-tree-action:Full summary"
+                    toolTipText = "Open a movable block with every summary from the root down to this part"
+                    addActionListener { showFullSummary(node) }
+                }, 2)
+            }
             val width = if (node.text.isEmpty()) scaled(20) else minOf(scaled(440), maxOf(scaled(110), label.preferredSize.width))
             val height = maxOf(scaled(30), label.preferredSize.height)
             var y = top
@@ -255,14 +476,17 @@ internal class ChangeSummaryTreePanel(
                                 text, fullText = text, absolutePath = file.absolutePath,
                             ), project)
                         }
-                        EditorFrame(node.key, content)
+                        EditorFrame(node.key, content, file.path)
                     }
                     unused.remove(node.key)
                     add(editor)
                     val size = state.treeDiffSizes[node.key] ?: Dimension(760, 360)
-                    editor.bounds = Rectangle(x + width + scaled(50), top, scaled(size.width), scaled(size.height))
+                    val moved = state.treeDiffPositions[node.key]
+                    editor.bounds = Rectangle(moved?.let { scaled(it.x) } ?: (x + width + scaled(50)),
+                        moved?.let { scaled(it.y) } ?: top, scaled(size.width), scaled(size.height))
                     right = maxOf(right, editor.x + editor.width)
-                    end = maxOf(end, top + editor.height)
+                    if (moved == null) end = maxOf(end, top + editor.height)
+                    else bottom = maxOf(bottom, editor.y + editor.height)
                 }
             }
             bottom = maxOf(bottom, end)
@@ -270,10 +494,47 @@ internal class ChangeSummaryTreePanel(
         }
         place(root, scaled(16), scaled(16), 0)
         unused.forEach { editors.remove(it)?.editor?.let { editor -> Disposer.dispose(editor as Disposable) } }
+        placeBlocks()
+        raised.retainAll { it.parent === this }
+        raised.forEach { setComponentZOrder(it, 0) }
         restyle()
+        treeExtent = Dimension(right, bottom)
+        updateExtent()
+    }
+
+    /** Blocks stay open while their part is filtered out, and come back with it. */
+    private fun placeBlocks() {
+        val unused = blocks.keys.toMutableSet()
+        for ((key, bounds) in state.treeSummaryBlocks) {
+            val full = root.fullSummary(card.summaries.tree, key).ifEmpty { null } ?: continue
+            val block = blocks.getOrPut(key) {
+                FullSummaryBlock(key, front = { blocks[key]?.let(::raise) }, onMove = { moveBlock(key, it) },
+                    onResize = { resizeBlock(key, it) }, close = { closeBlock(key) })
+            }
+            unused.remove(key)
+            // Only the position follows the zoom: like the native editors, the text stays readable when zoomed out.
+            val width = JBUI.scale(bounds.width)
+            val fits = block.fill(full, card, width, 1.0, actions, vocabulary)
+            // Later blocks sit on top: Swing paints lower indices last.
+            add(block, 0)
+            block.bounds = Rectangle(scaled(bounds.x), scaled(bounds.y), width,
+                if (bounds.height > 0) JBUI.scale(bounds.height) else minOf(fits, JBUI.scale(FULL_SUMMARY_HEIGHT)))
+            block.revalidate()
+        }
+        unused.forEach { blocks.remove(it) }
+    }
+
+    private fun updateExtent() {
+        var right = treeExtent.width
+        var bottom = treeExtent.height
+        (blocks.values + editors.values).filter { it.parent === this }.forEach { right = maxOf(right, it.x + it.width); bottom = maxOf(bottom, it.y + it.height) }
         preferredSize = Dimension(right + scaled(20), bottom + scaled(20))
+        viewport?.let { if (it.viewSize.width < preferredSize.width || it.viewSize.height < preferredSize.height) it.viewSize = preferredSize }
         revalidate(); repaint()
     }
+
+    /** Blocks and editors may overlap. */
+    override fun isOptimizedDrawingEnabled(): Boolean = false
 
     override fun paintComponent(g: Graphics) {
         super.paintComponent(g)
@@ -292,6 +553,7 @@ internal class ChangeSummaryTreePanel(
 
     private companion object {
         const val MAX_DIRECTORY = 48
-        const val INITIAL_LEVELS = 3
+        const val FULL_SUMMARY_WIDTH = 520
+        const val FULL_SUMMARY_HEIGHT = 560
     }
 }

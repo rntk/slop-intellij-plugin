@@ -138,6 +138,24 @@ class ReviewDirectoryAction : DumbAwareAction() {
     }
 }
 
+/** Project View, editor and editor tabs: read the file's place in the Code Review summaries, in the Tree view. */
+class ShowInSummaryTreeAction : DumbAwareAction() {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
+        e.presentation.isEnabledAndVisible = project != null && file != null && !file.isDirectory &&
+            ProjectFileIndex.getInstance(project).isInContent(file)
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
+        withCodeReviewPanel(project) { it.showInSummaryTree(file) }
+    }
+}
+
 /** A folder of the file tree: [path] is project-relative. */
 private data class FolderEntry(val name: String, val path: String) {
     override fun toString() = name
@@ -442,6 +460,13 @@ internal class CodeReviewPanel(
     }
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
+
+    /** Opens the current tab's summaries in the Tree view on [file]; a file outside the tab's scope is reported. */
+    fun showInSummaryTree(file: VirtualFile) {
+        if (tabs.selected?.showInSummaryTree(file.path) == true) return
+        status.text = "${file.name} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+        status.toolTipText = status.text
+    }
 
     private fun selectedFile(): CodeFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? CodeFile
 

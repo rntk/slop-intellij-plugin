@@ -210,6 +210,12 @@ internal class NoteCanvas(
         focusCard(CanvasTabKey.Summaries)
     }
 
+    /** Selects the summaries in the Tree view and unfolds the route to the file at [path]. */
+    internal fun showSummariesInTree(path: String) {
+        summariesCardBuilder.showInTree(path)
+        focusSummaries()
+    }
+
     private fun focusCard(key: CanvasTabKey) {
         val page = pages[key] ?: return
         tabs.selectedComponent = page

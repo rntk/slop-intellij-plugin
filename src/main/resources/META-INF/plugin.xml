@@ -87,6 +87,12 @@
             <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
         </action>
+        <action id="Insight.ShowInSummaryTree" class="dev.insight.codereview.ShowInSummaryTreeAction"
+                icon="/icons/insight.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+        </action>
         <action id="Insight.OpenDashboard" class="dev.insight.dashboard.OpenDashboardAction"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>

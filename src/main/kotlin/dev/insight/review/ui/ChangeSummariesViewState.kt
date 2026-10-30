@@ -35,7 +35,13 @@ internal class ChangeSummariesViewState(
     val filtering: Boolean = false,
 ) : SummaryTraceState() {
     var treeZoom: Double? = null
+    /** Tree claim levels are independent of the folder levels in the other views. */
+    var treeLevel = 2
     val treeDiffSizes = hashMapOf<String, java.awt.Dimension>()
+    /** Editors moved away from their file leaves, in unzoomed pixels. */
+    val treeDiffPositions = hashMapOf<String, java.awt.Point>()
+    /** Full summary blocks by occurrence, bottom to top, in unzoomed pixels; a zero height fits the content. */
+    val treeSummaryBlocks = linkedMapOf<String, java.awt.Rectangle>()
     /** Explicitly opened claim branches beyond the Tree view's initial levels. */
     val treeExpanded = hashSetOf<String>()
     val treeFolded = hashSetOf<String>()
@@ -262,7 +268,10 @@ internal class ChangeSummariesViewState(
     /** A search tab's state starting from this one: the same mode, folding and searches so far. */
     fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true).also {
         it.treeZoom = treeZoom
+        it.treeLevel = treeLevel
         treeDiffSizes.forEach { (key, size) -> it.treeDiffSizes[key] = java.awt.Dimension(size) }
+        treeDiffPositions.forEach { (key, point) -> it.treeDiffPositions[key] = java.awt.Point(point) }
+        treeSummaryBlocks.forEach { (key, bounds) -> it.treeSummaryBlocks[key] = java.awt.Rectangle(bounds) }
         it.treeExpanded += treeExpanded
         it.treeFolded += treeFolded
         it.treeOpenedFiles += treeOpenedFiles

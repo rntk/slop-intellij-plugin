@@ -9,7 +9,12 @@ internal data class SummaryLinkNode(
     val owner: SummaryNode,
     val file: Boolean = false,
     val children: List<SummaryLinkNode> = emptyList(),
+    /** The summary parts this occurrence reads as; several once a repeating chain merges into it. */
+    val parts: List<SummaryPart> = emptyList(),
 )
+
+/** Segment [segment] of node [node]'s summary. */
+internal data class SummaryPart(val node: Int, val segment: Int)
 
 /** Follow recorded claims, preserving independent parts instead of inferring relationships from words. */
 internal fun summaryLinkTree(summaries: ReviewSummaries, visible: (SummaryNode) -> Boolean = { true }): SummaryLinkNode {
@@ -30,7 +35,7 @@ internal fun summaryLinkTree(summaries: ReviewSummaries, visible: (SummaryNode) 
                     file?.let { listOf(SummaryLinkNode("$key/$index/file", it.label, it, file = true)) }.orEmpty()
                 } else emptyList()
             }
-            SummaryLinkNode("$key/$index", segment.text.trim(), node, children = children)
+            SummaryLinkNode("$key/$index", segment.text.trim(), node, children = children, parts = listOf(SummaryPart(node.id, index)))
         }
         if (selected != null) return parts
         // Missing summaries and uncited children remain reachable while generation is in progress.
@@ -59,8 +64,8 @@ private fun SummaryLinkNode.merged(): SummaryLinkNode {
     val only = below.singleOrNull() ?: return copy(children = below)
     return when {
         only.file && only.children.isEmpty() && !file && (owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK) ->
-            only.copy(text = text.ifEmpty { only.text })
-        text.isNotEmpty() && text == only.text -> only
+            only.copy(text = text.ifEmpty { only.text }, parts = parts + only.parts)
+        text.isNotEmpty() && text == only.text -> only.copy(parts = parts + only.parts)
         else -> copy(children = below)
     }
 }
@@ -87,4 +92,39 @@ internal fun SummaryLinkNode.directory(): String = when {
     file -> owner.path
     owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK -> owner.path.substringBeforeLast('/', "")
     else -> owner.path
+}
+
+/** Every occurrence of a file and its ancestors, so navigation follows all of its cited routes. */
+internal fun SummaryLinkNode.pathKeys(path: String): Set<String> {
+    fun normalize(value: String) = value.trim().removeSurrounding("\"").removeSurrounding("'")
+        .replace('\\', '/').removePrefix("./")
+    val target = normalize(path)
+    if (target.isEmpty()) return emptySet()
+    val keys = HashSet<String>()
+    fun visit(node: SummaryLinkNode): Boolean {
+        val children = node.children.map(::visit)
+        val matches = node.file && (normalize(node.owner.path) == target ||
+            node.owner.file?.absolutePath?.let(::normalize) == target)
+        if (matches || children.any { it }) keys += node.key
+        return node.key in keys
+    }
+    visit(this)
+    return keys
+}
+
+/** One entry of a full summary: a shown summary at [depth], and which of its segments the occurrence's route passes. */
+internal data class FullSummaryEntry(val node: SummaryNode, val depth: Int, val route: Set<Int>)
+
+/**
+ * The shown summaries from the root down to the occurrence [key], as the outline reads them; empty once the tree no longer
+ * holds the occurrence.
+ */
+internal fun SummaryLinkNode.fullSummary(tree: ReviewSummaryTree, key: String): List<FullSummaryEntry> {
+    fun route(node: SummaryLinkNode): List<SummaryLinkNode>? =
+        if (node.key == key) listOf(node) else node.children.firstNotNullOfOrNull(::route)?.let { listOf(node) + it }
+    val nodes = route(this) ?: return emptyList()
+    // Merged and absorbed folders repeat the summary of the entry they show as, segment for segment.
+    val passed = nodes.flatMap { it.parts }.groupBy({ tree.shown(it.node).id }, { it.segment })
+    val chain = generateSequence(tree.shown(nodes.last().owner.id), tree::shownParent).toList().asReversed()
+    return chain.mapIndexed { depth, node -> FullSummaryEntry(node, depth, passed[node.id].orEmpty().toSet()) }
 }

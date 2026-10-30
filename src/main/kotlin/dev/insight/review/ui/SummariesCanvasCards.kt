@@ -90,6 +90,9 @@ internal class SummariesCanvasCards(
         var treeWidth: Int? = null
         var diffPanel: com.intellij.openapi.Disposable? = null
         var version: Int? = null
+        var navigatePath = ""
+        /** A path to unfold in the Tree view as soon as its panel is on the canvas; see [showInTree]. */
+        var pendingNavigate: String? = null
         val trace = SummaryTraceSession(view, { reading(this) }, openSummaryLines,
             update = { currentCards[key]?.let { updateCanvasTracePresentation(it, view) } }, refresh = { refreshSummaries(this) })
         /** Kept across rebuilds of the card, so typing never loses focus or caret. */
@@ -144,7 +147,8 @@ internal class SummariesCanvasCards(
             document -> DocumentColumnsPanel.defaultWidth(ChangeSummaryDocumentPanel.railDepth(tree, summariesView), viewZoom)
             else -> cardWidth(SUMMARIES_WIDTH)
         }
-        val header = JPanel(BorderLayout()).apply {
+        val header = JPanel(BorderLayout(scaled(8), 0)).apply {
+            name = "summaries-controls"
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel(vocabulary.summariesTitle + if (tab.search) " · Search" else "").apply {
@@ -254,6 +258,24 @@ internal class SummariesCanvasCards(
         }
         val linkTree = if (summariesView.mode == ReviewSummariesMode.TREE)
             ChangeSummaryTreePanel(content, summariesView, zoom, panelActions, project, vocabulary).also { tab.diffPanel = it } else null
+        if (linkTree != null) {
+            // Share the existing controls row; the path field takes the remaining header width.
+            header.remove((header.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER))
+            header.add(linkTree.navigationControls(JTextField(tab.navigatePath).apply {
+                this.document.addDocumentListener(object : DocumentAdapter() {
+                    override fun textChanged(e: DocumentEvent) { tab.navigatePath = text }
+                })
+            }, scaledFont(JBFont.small())), BorderLayout.CENTER)
+            tab.pendingNavigate?.let { path ->
+                // The panel needs its parent to scroll; a rebuild before then leaves the request to the next panel.
+                SwingUtilities.invokeLater {
+                    if (tab.diffPanel === linkTree && tab.pendingNavigate == path) {
+                        tab.pendingNavigate = null
+                        linkTree.navigate(path, false)
+                    }
+                }
+            }
+        }
         val body = if (linkTree != null) linkTree else if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -503,6 +525,16 @@ internal class SummariesCanvasCards(
     private fun backTo(tab: SummariesTab, count: Int) {
         tab.trace.clear()
         tab.view.backTo(count)
+        refreshSummaries(tab)
+    }
+
+    /** Reads the summaries in the Tree view with the route to [path] unfolded, once the tree is on the canvas. */
+    fun showInTree(path: String) {
+        val tab = mainSummaries
+        tab.view.mode = ReviewSummariesMode.TREE
+        tab.scroll = 0
+        tab.navigatePath = path
+        tab.pendingNavigate = path
         refreshSummaries(tab)
     }
 

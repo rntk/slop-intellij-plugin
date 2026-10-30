@@ -213,6 +213,19 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         if (!state.summaries.complete) summarize()
     }
 
+    /**
+     * Opens the summaries in the Tree view on the route to [path], a relative or absolute file path; false when the file is not in
+     * this tab's scope. Like [openSummaries], it starts /summaries when the tree is incomplete.
+     */
+    fun showInSummaryTree(path: String): Boolean {
+        if (disposed || state.snapshotFiles.none { it.path == path || it.absolutePath == path }) return false
+        state.showSummaries()
+        renderCanvas()
+        showCanvas { canvas.showSummariesInTree(path) }
+        if (!state.summaries.complete) summarize()
+        return true
+    }
+
     fun openTopics() {
         state.showTopics()
         renderCanvas()
