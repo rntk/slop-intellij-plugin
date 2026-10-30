@@ -88,7 +88,7 @@ internal class SummariesCanvasCards(
         var scrollX = 0
         var treeScrollX = 0
         var treeWidth: Int? = null
-        var diffPanel: SummaryDiffView? = null
+        var diffPanel: com.intellij.openapi.Disposable? = null
         var version: Int? = null
         val trace = SummaryTraceSession(view, { reading(this) }, openSummaryLines,
             update = { currentCards[key]?.let { updateCanvasTracePresentation(it, view) } }, refresh = { refreshSummaries(this) })
@@ -155,7 +155,7 @@ internal class SummariesCanvasCards(
                 isOpaque = false
                 if (document) add(actions.zoomControls(key))
                 val summaries = content.summaries
-                if (branchLevels > 0 && !explorer) add(summaryLevels(tab, tree, branchLevels))
+                if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
                 if (splitMode) add(JCheckBox("Soft-wrap", summariesView.softWrap).apply {
                     name = "summaries-soft-wrap"
                     isOpaque = false
@@ -164,7 +164,7 @@ internal class SummariesCanvasCards(
                     toolTipText = "Wrap summaries to the available width and expand their tree rows to match"
                     addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
                 })
-                add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
+                if (summariesView.mode != ReviewSummariesMode.TREE) add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
                     name = "summaries-tags-cloud"
                     isOpaque = false
                     font = scaledFont(JBFont.small())
@@ -252,7 +252,9 @@ internal class SummariesCanvasCards(
                 summariesView, summariesTrace, inner, traceWhere)
             return card
         }
-        val body = if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
+        val linkTree = if (summariesView.mode == ReviewSummariesMode.TREE)
+            ChangeSummaryTreePanel(content, summariesView, zoom, panelActions, project, vocabulary).also { tab.diffPanel = it } else null
+        val body = if (linkTree != null) linkTree else if (split != null) split.summariesColumn else JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(when {
@@ -512,6 +514,7 @@ internal class SummariesCanvasCards(
         ReviewSummariesMode.DOCUMENT -> "Document"
         ReviewSummariesMode.EXPLORER -> "Explorer"
         ReviewSummariesMode.SPLIT -> "Split"
+        ReviewSummariesMode.TREE -> "Tree"
         ReviewSummariesMode.DIFF -> "Diff"
     }
 
@@ -521,6 +524,7 @@ internal class SummariesCanvasCards(
         ReviewSummariesMode.DOCUMENT -> "Every file in folder order, with its summary and file and folder cards"
         ReviewSummariesMode.EXPLORER -> "Browse one level of summaries at a time, with Back and breadcrumbs"
         ReviewSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
+        ReviewSummariesMode.TREE -> "Follow linked summary parts from left to right; fold branches and unfold file diffs"
         ReviewSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
     }
 

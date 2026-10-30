@@ -62,6 +62,7 @@ import dev.insight.review.ui.selectTopicsMode
 class NoteCanvasTest : BasePlatformTestCase() {
     private val note = ReviewNote(listOf("src/a.kt"), "A short explanation.")
 
+    // Tree renders claim occurrences; its branch and diff interactions are covered by SummaryTreeViewTest.
     fun testPartialCardUpdatesPreserveMetricsAndTheirScopeInputs() {
         val files = listOf("src/a.kt", "other/b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-oldWord\n+newWord\n", "1")
@@ -158,7 +159,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.forEach { mode ->
+    fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }.forEach { mode ->
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
         })
@@ -930,7 +931,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun selector() = descendants(canvas).single { it.name == "summary-level-selector" } as javax.swing.JComboBox<*>
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
-            for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }.filter { it != ReviewSummariesMode.EXPLORER }) {
+            for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }.filter { it != ReviewSummariesMode.EXPLORER }) {
                 selectSummariesMode(descendants(canvas), mode.name)
                 assertTrue(descendants(canvas).none { it.name in setOf("summary-fold", "summary-unfold") })
                 selector().selectedItem = 4

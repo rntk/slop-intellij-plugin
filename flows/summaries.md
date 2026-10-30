@@ -21,3 +21,5 @@ Entry points for further exploration:
 - [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure
 - [Summary.kt](../src/main/kotlin/dev/insight/review/Summary.kt) — segments and their citations
 - [ChangeSummarizer.kt](../src/main/kotlin/dev/insight/diff/ChangeSummarizer.kt) — summary generation
+
+The Tree view follows the recorded citations from summary parts to the parts below them, with curved branches read from left to right. A single shared part forms the root; independent parts branch immediately from an empty root. Parts can be folded individually. File leaves show the file name and unfold the native diff viewer on click.

@@ -26,12 +26,13 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     private fun file(path: String, status: String = "modified", before: String? = "old\n", after: String? = "new\n") =
         ReviewFile(path, "/repo/$path", null, status, "@@ -1 +1 @@\n-old\n+new\n", path, before, after, "base revision", "target revision")
 
+    // Tree renders claim occurrences; its branch and diff interactions are covered by SummaryTreeViewTest.
     fun testAllSummaryLayoutsOpenWholeFilesAndDirectoryChangesWithinTheTreeScope() {
         val files = listOf(file("src/a.kt"), file("src/nested/b.kt"), file("docs/readme.md"))
         val tree = buildSummaryTree(files)
         val summaries = ReviewSummaries(tree)
         val folder = tree.nodes.single { it.kind == SummaryKind.DIRECTORY && it.path == "src" }
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }) {
             val opened = mutableListOf<PatchSource>()
             val directories = mutableListOf<List<PatchSource>>()
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { opened += it }, openDirectoryDiff = { directories += it }))
@@ -67,7 +68,7 @@ class SummaryNavigationTest : BasePlatformTestCase() {
     fun testUnreadableFilesKeepDiffNavigationWithoutOfferingWholeSource() {
         val unavailable = file("src/binary.bin", before = null, after = null)
         val tree = buildSummaryTree(listOf(unavailable))
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }) {
             val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openWholeFile = { fail("No full text") }, openDirectoryDiff = {}))
                 .apply { setSize(1600, 900); summariesView.mode = mode }
             try {

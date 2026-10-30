@@ -41,8 +41,9 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
         listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())
     }
 
+    // Tree renders claim occurrences; its branch and diff interactions are covered by SummaryTreeViewTest.
     fun testReviewControlsDimFilesInEverySummaryModeAndCanUnmark() {
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }) {
             val state = DiffReviewState().apply { update(ReviewSnapshot(files, emptyList())) }
             val tree = state.summaries.tree
             val node = tree.nodes.single { it.path == "docs/readme.md" }
