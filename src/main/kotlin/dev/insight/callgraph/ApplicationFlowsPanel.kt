@@ -22,6 +22,7 @@ import dev.insight.enrichment.FlowGraph
 import dev.insight.entrypoints.EntryPoint
 import dev.insight.entrypoints.EntryPointService
 import dev.insight.graph.CallGraphResult
+import dev.insight.graph.FlowStart
 import dev.insight.graph.GraphDecorations
 import dev.insight.graph.NodeDecoration
 import dev.insight.graph.RelationKind
@@ -41,12 +42,6 @@ import kotlinx.coroutines.*
  */
 internal class ApplicationFlowsPanel(
     private val project: Project,
-    private val latest: () -> CallGraphResult?,
-    private val building: () -> Boolean,
-    private val refresh: () -> Unit,
-    private val showInGraph: (Int) -> Unit,
-    private val addToChart: (Int) -> Unit,
-    private val openInCanvas: (Int) -> Unit,
 ) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
     private val enrichment = project.service<EnrichmentService>()
@@ -59,6 +54,10 @@ internal class ApplicationFlowsPanel(
     private var entryPointJob: Job? = null
     private var generation = 0
     private var disposed = false
+    /** The latest application graph, mirrored from the graph panel via [APPLICATION_GRAPH_TOPIC]. */
+    private var latest: CallGraphResult? = null
+    /** Set while the application graph is rebuilding; mirrors the graph panel's build job via [APPLICATION_GRAPH_TOPIC]. */
+    private var rebuilding = false
     private var manualEntry: EntryPoint? = null
     private val sourceLabel = JLabel("Source: discovered entrypoints")
     private val chooseEntryButton = JButton("Choose entrypoint…").apply {
@@ -83,11 +82,11 @@ internal class ApplicationFlowsPanel(
     }
 
     private fun chooseEntryPoint() {
-        if (building()) {
+        if (rebuilding) {
             status.text = "Wait for the application graph to finish building, then choose an entrypoint."
             return
         }
-        val built = latest()
+        val built = latest
         if (built == null) {
             status.text = "Click Refresh to build the application graph, then choose an entrypoint."
             return
@@ -152,7 +151,7 @@ internal class ApplicationFlowsPanel(
         }
         add(JPanel(BorderLayout(0, 4)).apply {
             add(CollapsibleControls(project, "insight.flows.controls", this@ApplicationFlowsPanel).apply {
-                command(PanelCommand("Refresh", "Rebuild the application graph") { refresh() })
+                command(PanelCommand("Refresh", "Rebuild the application graph") { project.publishGraphEvent { rebuildRequested() } })
                 command(splitAction)
                 separator()
                 controlsSection = section("controls", "Controls", JPanel(BorderLayout(0, 4)).apply {
@@ -181,17 +180,20 @@ internal class ApplicationFlowsPanel(
         entryPointJob = service.scope.launch(Dispatchers.EDT) {
             entryPoints.entryPoints.collect { if (!disposed) updateStatus() }
         }
+        // The latest graph and build state of the graph panel, shared via the tool window's topic.
+        project.messageBus.connect(this).subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun graphBuilding() { rebuilding = true; updateStatus() }
+            override fun graphBuilt(result: CallGraphResult) { rebuilding = false; latest = result; updateStatus() }
+            override fun graphBuildFailed(message: String) { rebuilding = false; updateStatus() }
+        })
     }
 
-    /** Called after every graph build; existing flows stay visible but are marked out of date. */
-    fun graphChanged() = updateStatus()
-
     private fun splitFlows() {
-        if (building()) {
+        if (rebuilding) {
             status.text = "Wait for the application graph to finish building, then click Split flows."
             return
         }
-        val built = latest() ?: run {
+        val built = latest ?: run {
             status.text = "Click Refresh to build the application graph, then click Split flows."
             return
         }
@@ -359,7 +361,7 @@ internal class ApplicationFlowsPanel(
     private fun menu(current: Split, drawn: FlowGraph, id: Int): JPopupMenu {
         val source = drawn.sources[id]
         // Other tabs use the current graph's ids, which match only while the split's graph is still current.
-        val fresh = latest() === current.built
+        val fresh = latest === current.built
         val function = current.built.graph.nodes[source].kind == SymbolKind.FUNCTION
         fun item(text: String, enabled: Boolean = fresh, action: () -> Unit) = JMenuItem(text).apply {
             isEnabled = enabled
@@ -368,9 +370,9 @@ internal class ApplicationFlowsPanel(
         }
         return JPopupMenu().apply {
             add(item("Open source", enabled = current.built.pointers.getOrNull(source) != null) { navigate(current, source) })
-            add(item("Show in application graph") { showInGraph(source) })
-            if (function) add(item("Add to flow chart") { addToChart(source) })
-            if (function) add(item("Open in canvas") { openInCanvas(source) })
+            add(item("Show in application graph") { project.publishGraphEvent { showInGraph(source) } })
+            if (function) add(item("Add to flow chart") { project.publishGraphEvent { addToChart(FlowStart(source)) } })
+            if (function) add(item("Open in canvas") { project.publishGraphEvent { openInCanvas(source) } })
         }
     }
 
@@ -388,7 +390,7 @@ internal class ApplicationFlowsPanel(
         }
         val result = current.result
         val stale = listOfNotNull(
-            "the code changed".takeIf { latest().let { it != null && it !== current.built } },
+            "the code changed".takeIf { latest != null && latest !== current.built },
             "the entrypoints changed".takeIf { selectedEntries() != current.entries },
         )
         status.text = "${result.flows.size} flows from ${result.flows.distinctBy { it.entry }.size} entrypoints" +

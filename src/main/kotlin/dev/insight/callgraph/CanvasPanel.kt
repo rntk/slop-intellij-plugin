@@ -27,12 +27,9 @@ import kotlinx.coroutines.*
 
 private val LOG = logger<CanvasPanel>()
 
-/** Independent reading state, sharing the application graph and its configured LLM service. */
+/** Independent reading state; coordinates with the other graph panels through [APPLICATION_GRAPH_TOPIC]. */
 internal class CanvasPanel(
     private val project: Project,
-    private val activateCanvas: () -> Unit,
-    private val refresh: () -> Unit,
-    private val enrich: () -> Unit,
 ) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
     private val enrichment = project.service<EnrichmentService>()
@@ -49,7 +46,7 @@ internal class CanvasPanel(
     private val generateAction = PanelCommand("Generate canvas", "Group source lines into topics and summarize them using the configured LLM.") {
         if (job?.isActive == true) job?.cancel() else generateCanvas()
     }
-    private val enrichAction = PanelCommand("Enrich") { enrich() }
+    private val enrichAction = PanelCommand("Enrich") { project.publishGraphEvent { enrichRequested() } }
     internal val readingView = CanvasReadingView(::navigate)
     private val mode = JCheckBox("Summary mode")
     private val depth = ComboBox(arrayOf(1, 2, 3, 4, 5, 6)).apply { selectedItem = 3 }
@@ -58,7 +55,7 @@ internal class CanvasPanel(
         border = JBUI.Borders.empty(8)
         add(JPanel(BorderLayout(0, 4)).apply {
             add(CollapsibleControls(project, "insight.canvas.controls", this@CanvasPanel).apply {
-                command(PanelCommand("Refresh") { refresh() })
+                command(PanelCommand("Refresh") { project.publishGraphEvent { rebuildRequested() } })
                 command(enrichAction)
                 command(generateAction)
                 separator()
@@ -88,6 +85,16 @@ internal class CanvasPanel(
         mode.addActionListener { readingView.summaryMode = mode.isSelected }
         generateAction.isEnabled = false
         refreshLens()
+        // State and commands of the application graph panel, shared via the tool window's topic.
+        project.messageBus.connect(this).subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun graphBuilding() = setBuilding()
+            override fun graphBuilt(result: CallGraphResult) = showResult(result)
+            override fun graphBuildFailed(message: String) = setStatus(message)
+            override fun enrichmentChanged() = refreshLens()
+            override fun statusChanged(text: String) = setStatus(text)
+            override fun busyChanged(busy: Boolean) = setBusy(busy)
+            override fun openInCanvas(source: Int) = openFunction(source)
+        })
     }
 
     fun showResult(built: CallGraphResult) {
@@ -130,7 +137,7 @@ internal class CanvasPanel(
         root = id
         scopeLabel.text = "Call path: ${node.name}"
         invalidateReading()
-        activateCanvas()
+        project.activateGraphTab(this)
         status.text = "Generate canvas for ${node.name} and its callees."
     }
 

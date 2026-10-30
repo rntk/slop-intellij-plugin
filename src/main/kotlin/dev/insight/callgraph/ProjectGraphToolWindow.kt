@@ -197,34 +197,24 @@ class OpenSideBySideAction : GraphSymbolAction() {
 
 class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        // The panels coordinate through APPLICATION_GRAPH_TOPIC, so they are created independently of each other.
         val panel = ProjectGraphPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, "Application Graph", false)
         content.setDisposer(panel)
-        val chart = FlowChartPanel(project,
-            activateChart = { toolWindow.contentManager.contents.firstOrNull { it.component is FlowChartPanel }?.let { toolWindow.contentManager.setSelectedContent(it) } },
-            showInGraph = panel::showInGraph, refresh = { panel.rebuild() }, enrich = panel::enrich,
-            openReport = panel::openReport, building = { panel.isBuilding })
-        panel.flowPanel = chart
-        panel.activateGraph = { toolWindow.contentManager.setSelectedContent(content) }
+        toolWindow.contentManager.addContent(content)
+        val chart = FlowChartPanel(project)
         val chartContent = ContentFactory.getInstance().createContent(chart, "Flow Chart", false)
         chartContent.setDisposer(chart)
-        toolWindow.contentManager.addContent(content)
         toolWindow.contentManager.addContent(chartContent)
-        val reading = CanvasPanel(project,
-            activateCanvas = { toolWindow.contentManager.contents.firstOrNull { it.component is CanvasPanel }?.let { toolWindow.contentManager.setSelectedContent(it) } },
-            refresh = { panel.rebuild() }, enrich = panel::enrich)
-        panel.canvasPanel = reading
+        val reading = CanvasPanel(project)
         val canvasContent = ContentFactory.getInstance().createContent(reading, "Canvas", false)
         canvasContent.setDisposer(reading)
         toolWindow.contentManager.addContent(canvasContent)
-        val entryPoints = EntryPointsPanel(project) { panel.latestResult }
+        val entryPoints = EntryPointsPanel(project)
         val entryContent = ContentFactory.getInstance().createContent(entryPoints, "Entry Points", false)
         entryContent.setDisposer(entryPoints)
         toolWindow.contentManager.addContent(entryContent)
-        val flows = ApplicationFlowsPanel(project, latest = { panel.latestResult }, building = { panel.isBuilding },
-            refresh = { panel.rebuild() }, showInGraph = panel::showInGraph,
-            addToChart = { chart.addToChart(FlowStart(it)) }, openInCanvas = reading::openFunction)
-        panel.flowsPanel = flows
+        val flows = ApplicationFlowsPanel(project)
         val flowsContent = ContentFactory.getInstance().createContent(flows, "Flows", false)
         flowsContent.setDisposer(flows)
         toolWindow.contentManager.addContent(flowsContent)
@@ -237,7 +227,6 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     private val entryPoints = project.service<EntryPointService>()
     private var entryPointJob: Job? = null
     private var result: CallGraphResult? = null
-    val latestResult: CallGraphResult? get() = result
     private var hierarchy: GraphHierarchy? = null
     /** Expanded groups by [GraphHierarchy.key], so they survive rebuilds after edits; null until the first build. */
     private var expandedKeys: Set<String>? = null
@@ -258,17 +247,13 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         }
     }
     private var job: Job? = null
-    val isBuilding: Boolean get() = job?.isActive == true
+    private var buildGeneration = 0L
     private var disposed = false
     private val status = JLabel("Building application graph…")
     private val activeFile = JLabel()
     private val selection = JLabel(HINT)
     private val canvas = CallGraphCanvas(onSelect = ::describe, onOpen = ::activate, popup = ::menu, menuOnClick = true)
     private val scroll = JBScrollPane(canvas)
-    lateinit var flowPanel: FlowChartPanel
-    lateinit var canvasPanel: CanvasPanel
-    lateinit var flowsPanel: ApplicationFlowsPanel
-    var activateGraph: () -> Unit = {}
     private val enrichment = project.service<EnrichmentService>()
     private var enrichJob: Job? = null
     private val enrichAction = PanelCommand("Enrich", "Classify symbols, calls and flows with the configured LLM; results are cached by content") { enrich() }
@@ -420,6 +405,13 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             subscribe(PsiModificationTracker.TOPIC, PsiModificationTracker.Listener { SwingUtilities.invokeLater { rebuild(600) } })
             subscribe(ChangeListListener.TOPIC, object : ChangeListListener {
                 override fun changeListUpdateDone() { SwingUtilities.invokeLater { if (!disposed) changesTimer.restart() } }
+            })
+            // Commands from the sibling panels of the Application Graph tool window.
+            subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+                override fun rebuildRequested() = rebuild()
+                override fun enrichRequested() = enrich()
+                override fun reportRequested() = openReport()
+                override fun showInGraph(source: Int) { this@ProjectGraphPanel.showInGraph(source) }
             })
         }
         refreshLens()
@@ -641,7 +633,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
 
     /** Leaves the filter, keeping the query highlighted, and shows [source] expanded in the full graph. */
     fun showInGraph(source: Int) {
-        activateGraph()
+        project.activateGraphTab(this)
         viewChoice.selectedItem = GraphView.GRAPH
         val tree = hierarchy ?: return
         updatingSearch = true
@@ -738,8 +730,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         val built = result ?: return
         enrichJob?.cancel()
         enrichAction.isEnabled = false
-        flowPanel.setBusy(true)
-        canvasPanel.setBusy(true)
+        project.publishGraphEvent { busyChanged(true) }
         enrichJob = service.scope.launch(Dispatchers.EDT) {
             try {
                 runCatchingReported(thisLogger(), "Enrichment failed") {
@@ -750,16 +741,14 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                         "(${stats.cacheHits} cached, ${stats.failures} failed)"
                     reportAction.isEnabled = true
                     refreshLens()
-                    flowPanel.refreshLens()
-                    canvasPanel.refreshLens()
+                    project.publishGraphEvent { enrichmentChanged() }
                     rerender()
                 }.onFailure {
                     status.text = "Enrichment failed: ${describeFailure(it)}"
-                    flowPanel.setStatus(status.text)
-                    canvasPanel.setStatus(status.text)
+                    project.publishGraphEvent { statusChanged(status.text) }
                 }
             } finally {
-                if (!disposed) { enrichAction.isEnabled = true; flowPanel.setBusy(false); canvasPanel.setBusy(false) }
+                if (!disposed) { enrichAction.isEnabled = true; project.publishGraphEvent { busyChanged(false) } }
             }
         }
     }
@@ -806,34 +795,44 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 add(item("Collapse into ${tree.nodes[parent].name}") { setExpanded(open - parent, parent) })
             }
             if (result?.pointers?.getOrNull(source) != null) add(item("Open source") { navigate(source) })
-            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Add to flow chart") { flowPanel.addToChart(FlowStart(source)) })
-            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Open in canvas") { canvasPanel.openFunction(source) })
+            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Add to flow chart") { project.publishGraphEvent { addToChart(FlowStart(source)) } })
+            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Open in canvas") { project.publishGraphEvent { openInCanvas(source) } })
         }.takeIf { it.componentCount > 0 }
     }
 
     fun rebuild(debounce: Long = 0) {
         if (disposed) return
+        val generation = ++buildGeneration
         job?.cancel()
+        // Consumers must stop using the previous graph as soon as a rebuild is scheduled.
+        project.publishGraphEvent { graphBuilding() }
         job = service.scope.launch(Dispatchers.EDT) {
-            delay(debounce)
-            status.text = "Building application graph…"
-            flowPanel.setStatus(status.text)
-            canvasPanel.setBuilding()
-            runCatchingReported(thisLogger(), "Application graph failed") {
-                val built = service.buildProject()
-                val tree = built.graph.hierarchy()
-                result = built
-                hierarchy = tree
-                if (expandedKeys == null) expandedKeys = tree.expansion(detail.selectedItem as GraphDetail).mapTo(hashSetOf(), tree::key)
-                render(null)
-                refreshChanges()
-                flowPanel.showResult(built)
-                canvasPanel.showResult(built)
-                flowsPanel.graphChanged()
-            }.onFailure {
-                status.text = "Could not build graph. Use Refresh to retry."
-                flowPanel.setStatus(status.text)
-                canvasPanel.setStatus(status.text)
+            var completed = false
+            try {
+                delay(debounce)
+                status.text = "Building application graph…"
+                runCatchingReported(thisLogger(), "Application graph failed") {
+                    val built = service.buildProject()
+                    val tree = built.graph.hierarchy()
+                    result = built
+                    hierarchy = tree
+                    if (expandedKeys == null) expandedKeys = tree.expansion(detail.selectedItem as GraphDetail).mapTo(hashSetOf(), tree::key)
+                    render(null)
+                    refreshChanges()
+                    completed = true
+                    project.publishGraphEvent { graphBuilt(built) }
+                }.onFailure {
+                    status.text = "Could not build graph. Use Refresh to retry."
+                    completed = true
+                    project.publishGraphEvent { graphBuildFailed(status.text) }
+                }
+            } finally {
+                // Also release consumers when cancellation occurs during debounce.
+                // A superseded job must not clear the replacement build's state.
+                if (!completed && !disposed && generation == buildGeneration) {
+                    status.text = "Graph build cancelled. Use Refresh to retry."
+                    project.publishGraphEvent { graphBuildFailed(status.text) }
+                }
             }
         }
     }

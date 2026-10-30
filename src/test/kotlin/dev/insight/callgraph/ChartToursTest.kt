@@ -1,5 +1,6 @@
 package dev.insight.callgraph
 
+import com.intellij.openapi.util.Disposer
 import com.google.gson.JsonParser
 import com.intellij.openapi.components.service
 import com.intellij.testFramework.PlatformTestUtil
@@ -173,7 +174,7 @@ class ChartToursTest : BasePlatformTestCase() {
     fun `test panel saves the open story and replays it from Tours after a rebuild with a notice`() {
         val store = project.service<ChartTourStore>()
         store.tours.forEach { store.delete(it.name) }
-        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        val panel = FlowChartPanel(project)
         try {
             panel.showResult(CallGraphResult(old, List(old.nodes.size) { null }))
             presentChartStory(old, panel.flowCanvas, 1, 1, "Order flow", listOf(
@@ -196,7 +197,7 @@ class ChartToursTest : BasePlatformTestCase() {
             panel.flowCanvas.closeStory()
             assertFalse(panel.storyNotice.isVisible)
         } finally {
-            panel.dispose()
+            Disposer.dispose(panel)
             store.tours.forEach { store.delete(it.name) }
         }
     }

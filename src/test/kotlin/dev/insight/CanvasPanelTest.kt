@@ -1,5 +1,6 @@
 package dev.insight
 
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -31,15 +32,20 @@ class CanvasPanelTest : BasePlatformTestCase() {
 
     fun `test independent reading state clears on rebuild and uses shared actions`() {
         val actions = mutableListOf<String>()
-        val first = CanvasPanel(project, { actions += "activate" }, { actions += "refresh" }, { actions += "enrich" })
-        val second = CanvasPanel(project, {}, {}, {})
+        val first = CanvasPanel(project)
+        val second = CanvasPanel(project)
+        val connection = project.messageBus.connect(first)
+        connection.subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun rebuildRequested() { actions += "refresh" }
+            override fun enrichRequested() { actions += "enrich" }
+        })
         try {
             assertFalse(command(first, "Generate canvas").isEnabled)
             first.showResult(result()); second.showResult(result())
             assertTrue(command(first, "Generate canvas").isEnabled)
             perform(first, "Refresh"); perform(first, "Enrich")
             first.openFunction(0)
-            assertEquals(listOf("refresh", "enrich", "activate"), actions)
+            assertEquals(listOf("refresh", "enrich"), actions)
             first.readingView.zoom = 1.5
             assertEquals(1.0, second.readingView.zoom)
             first.readingView.data = CanvasData(CanvasDocument(listOf(CanvasLine("fun handle() {}", 0, "/src/Service.kt", 12))),
@@ -50,6 +56,6 @@ class CanvasPanelTest : BasePlatformTestCase() {
             first.showResult(result())
             assertTrue(command(first, "Generate canvas").isEnabled)
             assertEquals(1.5, first.readingView.zoom)
-        } finally { first.dispose(); second.dispose() }
+        } finally { Disposer.dispose(first); Disposer.dispose(second) }
     }
 }

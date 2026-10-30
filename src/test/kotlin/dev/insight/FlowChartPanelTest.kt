@@ -1,5 +1,6 @@
 package dev.insight
 
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.application.EDT
 import com.intellij.psi.PsiJavaFile
@@ -39,7 +40,7 @@ class FlowChartPanelTest : BasePlatformTestCase() {
     private fun button(panel: FlowChartPanel, label: String) = controls(panel).filterIsInstance<JButton>().single { it.text == label }
 
     fun `test To chat opens independent tabs that can be closed separately`() {
-        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        val panel = FlowChartPanel(project)
         try {
             panel.showResult(result())
             panel.addToChart(FlowStart(0))
@@ -65,16 +66,14 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             assertEquals("Explain rendering", second.input.text)
             panel.showResult(result(2))
             assertSame(second, tabs.selectedComponent)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 
     fun `test chart controls operate without enrichment and survive rebuilds`() {
-        var activated = 0
-        val panel = FlowChartPanel(project, { activated++ }, {}, {}, {}, {}, { false })
+        val panel = FlowChartPanel(project)
         try {
             panel.showResult(result())
             panel.addToChart(FlowStart(0))
-            assertEquals(1, activated)
             val chart = panel.flowCanvas
             assertEquals(listOf(0, 1, 2), chart.chart!!.steps.map { it.node })
             assertTrue(button(panel, "Hide calls").isEnabled)
@@ -93,12 +92,12 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             button(panel, "Clear chart").doClick()
             assertNull(chart.chart)
             assertFalse(button(panel, "Clear chart").isEnabled)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 
     fun `test chart search matches visible steps and keeps context in independent panels`() {
-        val first = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
-        val second = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        val first = FlowChartPanel(project)
+        val second = FlowChartPanel(project)
         try {
             for (panel in listOf(first, second)) {
                 panel.showResult(result())
@@ -119,11 +118,11 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             assertEquals(setOf(1), first.flowCanvas.searchMatches)
             search.text = ""
             assertNull(first.flowCanvas.searchMatches)
-        } finally { first.dispose(); second.dispose() }
+        } finally { Disposer.dispose(first); Disposer.dispose(second) }
     }
 
     fun `test compact controls follow chat grouping and undo`() {
-        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        val panel = FlowChartPanel(project)
         try {
             val built = result()
             panel.showResult(built)
@@ -163,30 +162,61 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             assertFalse(compact.isSelected)
             assertFalse(panel.flowCanvas.board.compact)
             assertFalse(summarize.isEnabled)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 
     fun `test editor additions wait for a graph rebuild and land in the chart`() {
         val file = myFixture.configureByText("Service.java", "class Service { void handleRequest() {} }") as PsiJavaFile
         val pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer<com.intellij.psi.PsiElement>(file.classes.single().methods.single())
-        var building = true
-        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { building })
+        val events = project.messageBus.syncPublisher(APPLICATION_GRAPH_TOPIC)
+        val panel = FlowChartPanel(project)
         try {
+            events.graphBuilding()
             panel.addToChart(pointer)
             assertTrue(panel.flowCanvas.board.starts.isEmpty())
             val graph = result().graph
             val nodes = graph.nodes.map { it.copy(filePath = file.virtualFile.path) }
-            building = false
-            panel.showResult(CallGraphResult(graph.copy(nodes = nodes), listOf(pointer, null, null)))
+            events.graphBuilt(CallGraphResult(graph.copy(nodes = nodes), listOf(pointer, null, null)))
             UIUtil.dispatchAllInvocationEvents()
             assertEquals(listOf(FlowStart(0)), panel.flowCanvas.board.starts)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 
-    fun `test shared analysis actions route to their owner`() {
+    fun `test scheduled rebuild immediately blocks stale graph additions and readiness`() {
+        val file = myFixture.configureByText("Service.java", "class Service { void handleRequest() {} }") as PsiJavaFile
+        val pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer<com.intellij.psi.PsiElement>(file.classes.single().methods.single())
+        val panel = FlowChartPanel(project)
+        val graphPanel = ProjectGraphPanel(project)
+        val events = project.messageBus.syncPublisher(APPLICATION_GRAPH_TOPIC)
+        try {
+            events.graphBuilt(result())
+            assertTrue(panel.chartReady)
+            // Check before dispatching the coroutine, both at startup and during a debounced refresh.
+            graphPanel.rebuild()
+            assertFalse(panel.chartReady)
+            graphPanel.rebuild(60_000)
+            assertFalse(panel.chartReady)
+            panel.addToChart(pointer)
+            assertTrue(panel.flowCanvas.board.starts.isEmpty())
+
+            val graph = result().graph
+            val nodes = graph.nodes.map { it.copy(filePath = file.virtualFile.path) }
+            events.graphBuilt(CallGraphResult(graph.copy(nodes = nodes), listOf(pointer, null, null)))
+            assertTrue(panel.chartReady)
+            UIUtil.dispatchAllInvocationEvents()
+            assertEquals(listOf(FlowStart(0)), panel.flowCanvas.board.starts)
+        } finally { Disposer.dispose(graphPanel); Disposer.dispose(panel) }
+    }
+
+    fun `test shared analysis actions publish events for their owner`() {
         val actions = mutableListOf<String>()
-        val panel = FlowChartPanel(project, {}, { actions += "graph:$it" }, { actions += "refresh" },
-            { actions += "enrich" }, { actions += "report" }, { false })
+        val panel = FlowChartPanel(project)
+        val connection = project.messageBus.connect(panel)
+        connection.subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun rebuildRequested() { actions += "refresh" }
+            override fun enrichRequested() { actions += "enrich" }
+            override fun reportRequested() { actions += "report" }
+        })
         try {
             panel.showResult(result())
             val toolbar = controls(panel).filterIsInstance<ActionToolbar>()
@@ -201,7 +231,7 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             val event = TestActionEvent.createTestEvent(report)
             report.update(event)
             assertFalse(event.presentation.isEnabled)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 
     fun `test function outline caches source facts for nodes later added to the chart`() {
@@ -219,7 +249,7 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             CallGraphNode(id, m.name, "Service", "Service.java:${id + 1}", 0, true, SymbolKind.FUNCTION, file.virtualFile.path)
         }
         val built = CallGraphResult(CallGraph(nodes, linkedSetOf(CallGraphEdge(0, 1)), false, projectGraph = true), pointers)
-        val panel = FlowChartPanel(project, {}, {}, {}, {}, {}, { false })
+        val panel = FlowChartPanel(project)
         try {
             panel.showResult(built)
             val ctx = panel.chatContext
@@ -235,6 +265,6 @@ class FlowChartPanelTest : BasePlatformTestCase() {
             } finally { scope.cancel() }
             panel.addToChart(FlowStart(1))
             assertEquals("Loads order payload from storage.", panel.flowCanvas.chart!!.step(1)!!.card.description)
-        } finally { panel.dispose() }
+        } finally { Disposer.dispose(panel) }
     }
 }

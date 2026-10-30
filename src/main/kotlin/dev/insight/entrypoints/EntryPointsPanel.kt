@@ -18,6 +18,8 @@ import com.intellij.util.ui.JBUI
 import dev.insight.agent.ProjectFiles
 import dev.insight.agent.ToolInputException
 import dev.insight.agent.describeChatFailure
+import dev.insight.callgraph.APPLICATION_GRAPH_TOPIC
+import dev.insight.callgraph.ApplicationGraphListener
 import dev.insight.core.runCatchingReported
 import dev.insight.graph.CallGraphResult
 import java.awt.BorderLayout
@@ -34,10 +36,11 @@ private val LOG = logger<EntryPointsPanel>()
 /** Independent searches and retained results let users compare both APIs side by side. */
 internal class EntryPointsPanel(
     private val project: Project,
-    private val graph: () -> CallGraphResult?,
 ) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<EntryPointService>()
     private var disposed = false
+    /** The latest application graph, mirrored from the graph panel via the Application Graph topic. */
+    private var latestGraph: CallGraphResult? = null
     private val llm = ResultPane(EntryPointApi.LLM)
     private val decisions = ResultPane(EntryPointApi.DECISIONS)
 
@@ -48,6 +51,9 @@ internal class EntryPointsPanel(
             setDividerLocation(0.5)
         }, BorderLayout.CENTER)
         add(JLabel("Double-click or Enter: open the entry point in the editor"), BorderLayout.SOUTH)
+        project.messageBus.connect(this).subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun graphBuilt(result: CallGraphResult) { latestGraph = result }
+        })
     }
 
     private inner class ResultPane(private val api: EntryPointApi) : JPanel(BorderLayout(0, 8)) {
@@ -103,7 +109,7 @@ internal class EntryPointsPanel(
                         val result = withBackgroundProgress(project, "Finding entry points with ${api.label}") {
                             reportRawProgress { reporter ->
                                 val running = currentCoroutineContext()[Job]
-                                service.find(graph(), { message ->
+                                service.find(latestGraph, { message ->
                                     reporter.text(message)
                                     SwingUtilities.invokeLater {
                                         if (!disposed && running?.isActive == true) status.text = message

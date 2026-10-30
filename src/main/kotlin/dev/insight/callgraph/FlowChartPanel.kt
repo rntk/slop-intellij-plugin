@@ -68,15 +68,9 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import kotlinx.coroutines.*
 
-/** Owns chart state and controls; the application analysis and enrichment are shared with the graph panel. */
+/** Owns chart state and controls; coordinates with the other graph panels through [APPLICATION_GRAPH_TOPIC]. */
 internal class FlowChartPanel(
     private val project: Project,
-    private val activateChart: () -> Unit,
-    private val showInGraph: (Int) -> Unit,
-    private val refresh: () -> Unit,
-    private val enrich: () -> Unit,
-    private val openReport: () -> Unit,
-    private val building: () -> Boolean,
 ) : JPanel(BorderLayout(0, JBUI.scale(8))), Disposable {
     private val service = project.service<CallGraphService>()
     private val enrichment = project.service<EnrichmentService>()
@@ -85,6 +79,8 @@ internal class FlowChartPanel(
     private var result: CallGraphResult? = null
     private var disposed = false
     private var enriching = false
+    /** Set while the application graph is rebuilding; mirrors the graph panel's build job via [APPLICATION_GRAPH_TOPIC]. */
+    private var rebuilding = false
     private val status = JLabel("Building application graph…")
     private val selection = JLabel(FLOW_HINT)
     internal val flowCanvas = FlowChartCanvas(::describeStep, { navigate(it) }, ::flowMenu, ::loadSteps,
@@ -115,8 +111,8 @@ internal class FlowChartPanel(
     private val callersButton = JButton("Show callers")
     private val removeButton = JButton("Remove column")
     private val clearButton = JButton("Clear chart")
-    private val enrichAction = PanelCommand("Enrich") { enrich() }
-    private val reportAction = PanelCommand("Report") { openReport() }
+    private val enrichAction = PanelCommand("Enrich") { project.publishGraphEvent { enrichRequested() } }
+    private val reportAction = PanelCommand("Report") { project.publishGraphEvent { reportRequested() } }
     private var updatingLens = false
     private val search = SearchTextField(false).apply {
         textEditor.columns = 24
@@ -138,7 +134,7 @@ internal class FlowChartPanel(
         override val canvas get() = flowCanvas
         override val restoreGroup get() = this@FlowChartPanel.restoreGroup
         override val disposed get() = this@FlowChartPanel.disposed
-        override val building get() = building()
+        override val building get() = this@FlowChartPanel.rebuilding
         override val result get() = this@FlowChartPanel.result
         override val revision get() = chatRevision
         override fun lens(graph: CallGraph) = currentLens(graph)
@@ -264,7 +260,7 @@ internal class FlowChartPanel(
     internal val chatContext: ChartChatContext = FlowChartChatContext(host)
 
     /** Whether chart tools can act now: a finished graph that is not rebuilding (EDT). */
-    internal val chartReady: Boolean get() = !disposed && result != null && !building()
+    internal val chartReady: Boolean get() = !disposed && result != null && !rebuilding
 
     /**
      * A chart session of its own for a review's /explain turn, and the functions declared in the [paths] (absolute) at the
@@ -274,7 +270,7 @@ internal class FlowChartPanel(
         val nodes = result?.graph?.nodes.orEmpty().filter { it.inProject && it.filePath in paths }
         val functions = nodes.take(MAX_EXPLAIN_FUNCTIONS).map { mapOf("id" to it.id, "name" to it.name,
             "kind" to it.kind.name.lowercase(), "container" to it.container, "location" to it.location) }
-        activateChart()
+        project.activateGraphTab(this)
         return FlowChartChatContext(host) to Gson().toJson(mapOf("revision" to chatRevision, "functions" to functions,
             "omitted" to (nodes.size - functions.size)))
     }
@@ -288,7 +284,7 @@ internal class FlowChartPanel(
     /** Every invocation gets an independent history and a fixed source anchor. */
     private fun openScopedChat(target: FlowChatTarget) {
         val built = result ?: return
-        if (building() || disposed) return
+        if (rebuilding || disposed) return
         val revision = chatRevision
         val sourceStamp = PsiModificationTracker.getInstance(project).modificationCount
         val ids = (target.nodes + listOfNotNull(target.owner)).toSet()
@@ -324,7 +320,7 @@ internal class FlowChartPanel(
                 override suspend fun snapshot(): String {
                     val current = chatContext.snapshot()
                     val stale = withContext(Dispatchers.EDT) {
-                        revision != chatRevision || building() ||
+                        revision != chatRevision || rebuilding ||
                             PsiModificationTracker.getInstance(project).modificationCount != sourceStamp
                     }
                     return Gson().toJson(mapOf("scoped_context" to com.google.gson.JsonParser.parseString(captured),
@@ -426,7 +422,7 @@ internal class FlowChartPanel(
         fun row(vararg controls: Component) = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply { controls.forEach(::add) }
         add(JPanel(BorderLayout(0, 4)).apply {
             add(CollapsibleControls(project, "insight.chart.controls", this@FlowChartPanel).apply {
-                command(PanelCommand("Refresh", "Rebuild the application graph") { refresh() })
+                command(PanelCommand("Refresh", "Rebuild the application graph") { project.publishGraphEvent { rebuildRequested() } })
                 command(enrichAction)
                 command(reportAction)
                 command(toursAction)
@@ -498,6 +494,16 @@ internal class FlowChartPanel(
                 }
             }
         }
+        // State and commands of the application graph panel, shared via the tool window's topic.
+        project.messageBus.connect(this).subscribe(APPLICATION_GRAPH_TOPIC, object : ApplicationGraphListener {
+            override fun graphBuilding() { rebuilding = true; setStatus("Building application graph…") }
+            override fun graphBuilt(result: CallGraphResult) { rebuilding = false; showResult(result) }
+            override fun graphBuildFailed(message: String) { rebuilding = false; setStatus(message) }
+            override fun enrichmentChanged() = refreshLens()
+            override fun statusChanged(text: String) = setStatus(text)
+            override fun busyChanged(busy: Boolean) = setBusy(busy)
+            override fun addToChart(start: FlowStart) = this@FlowChartPanel.addToChart(start)
+        })
     }
 
     fun showResult(built: CallGraphResult) {
@@ -717,7 +723,7 @@ internal class FlowChartPanel(
         flowCanvas.add(start)
         // With summaries, a placed function opens down its main path within a budget; without, only its own calls.
         if (flowCanvas.board.compact) flowLens?.lens?.let { flowCanvas.openCalls(it.openCalls(start.node)) }
-        activateChart()
+        project.activateGraphTab(this)
         flowCanvas.requestFocusInWindow()
         SwingUtilities.invokeLater { if (!disposed) flowCanvas.selectNode(start.node) }
     }
@@ -734,7 +740,7 @@ internal class FlowChartPanel(
     private fun placePending() {
         val pointer = pendingChart ?: return
         val built = result
-        if (built == null || building()) return
+        if (built == null || rebuilding) return
         pendingChart = null
         val element = pointer.element ?: return
         val path = element.containingFile?.virtualFile?.path
@@ -766,7 +772,7 @@ internal class FlowChartPanel(
         if (source != null) {
             if (result?.pointers?.getOrNull(source) != null) item("Open source") { navigate(source) }
             item("Show in graph") {
-                showInGraph(source)
+                project.publishGraphEvent { showInGraph(source) }
             }
         }
         if (step != null && (step.calls > 0 || step.callers > 0)) {
