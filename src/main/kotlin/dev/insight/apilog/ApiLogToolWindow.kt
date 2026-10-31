@@ -38,6 +38,7 @@ import java.time.format.DateTimeFormatter
 import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JTree
+import javax.swing.JTabbedPane
 import javax.swing.SwingUtilities
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
@@ -80,6 +81,10 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
         isEditable = false
         font = JBUI.Fonts.create(java.awt.Font.MONOSPACED, UIUtil.getLabelFont().size)
     }
+    private val structured = ApiLogStructuredView()
+    private var shownSelection: Pair<ApiExchange, Part>? = null
+    private var selectionVersion = 0L
+    private var refreshing = false
     private val count = JBLabel()
     private var traffic: ApiTrafficLog? = null
     private var unsubscribe: (() -> Unit)? = null
@@ -108,8 +113,8 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
                     border = JBUI.Borders.empty(4)
                     add(detailTitle, BorderLayout.CENTER)
                     add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
-                        add(JButton("Copy").apply {
-                            toolTipText = "Copy the text shown below"
+                        add(JButton("Copy raw").apply {
+                            toolTipText = "Copy the raw transcript for the selection"
                             addActionListener { copy(detail.text) }
                         })
                         add(JButton("Copy as JSON").apply {
@@ -118,10 +123,13 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
                         })
                     }, BorderLayout.EAST)
                 }, BorderLayout.NORTH)
-                add(JBScrollPane(detail), BorderLayout.CENTER)
+                add(JTabbedPane().apply {
+                    addTab("Structured", structured)
+                    addTab("Raw", JBScrollPane(detail))
+                }, BorderLayout.CENTER)
             }
         }, BorderLayout.CENTER)
-        tree.addTreeSelectionListener { showSelection() }
+        tree.addTreeSelectionListener { if (!refreshing) showSelection() }
         runLogTask("Loading API log") {
             val loaded = log()
             SwingUtilities.invokeLater {
@@ -145,6 +153,7 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
         val expanded = exchangeNodes().filter { tree.isExpanded(TreePath(it.path)) }.map { (it.userObject as Row).exchange.id }.toSet()
         val selection = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? Row
         val entries = log.entries()
+        refreshing = true
         root.removeAllChildren()
         for (exchange in entries.asReversed()) {
             root.add(DefaultMutableTreeNode(Row(exchange, Part.EXCHANGE)).apply {
@@ -164,6 +173,7 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
             target?.let { tree.selectionPath = TreePath(it.path) }
         }
         val failed = entries.count { it.failed }
+        refreshing = false
         count.text = "${entries.size} requests" + if (failed > 0) ", $failed failed" else ""
         showSelection()
     }
@@ -175,7 +185,29 @@ class ApiLogPanel(private val project: Project, log: () -> ApiTrafficLog) : JPan
         if (row == null || exchange == null) {
             detailTitle.text = "Select a request"
             detail.text = ""
+            shownSelection = null
+            selectionVersion++
+            structured.show(null)
             return
+        }
+        val current = exchange to row.part
+        if (shownSelection == current) return
+        shownSelection = current
+        val version = ++selectionVersion
+        structured.show(null)
+        runLogTask("Preparing structured API log") {
+            val json = ApiTrafficLog.toJson(exchange)
+            val value = when (row.part) {
+                Part.EXCHANGE -> json
+                Part.REQUEST -> json.getAsJsonObject("request")
+                Part.RESPONSE -> JsonObject().apply {
+                    json.get("response")?.let { add("response", it) }
+                    exchange.error?.let { addProperty("error", it) }
+                }
+            }
+            SwingUtilities.invokeLater {
+                if (!disposed && selectionVersion == version) structured.show(value)
+            }
         }
         val text = when (row.part) {
             Part.EXCHANGE -> ApiTrafficLog.toText(exchange)
