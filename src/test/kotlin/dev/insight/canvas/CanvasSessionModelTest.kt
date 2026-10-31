@@ -82,6 +82,32 @@ class CanvasSessionModelTest {
     }
 
     @Test
+    fun `chat tabs keep independent histories and drafts and choose an adjacent tab on close`() {
+        val model = model()
+        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
+        val first = card.activeChatId
+        model.setDraft(card.id, "first draft")
+        val second = model.addChat(card.id)!!
+        model.setDraft(card.id, "second draft")
+        val reply = listOf(SavedMessage(ChatRole.ASSISTANT, "background reply"))
+        model.setMessages(card.id, reply, first)
+        assertTrue(model.card(card.id)!!.messages.isEmpty())
+        assertEquals("second draft", model.card(card.id)!!.draft)
+        model.selectChat(card.id, first)
+        assertEquals(reply, model.card(card.id)!!.messages)
+        assertEquals("first draft", model.card(card.id)!!.draft)
+        model.selectChat(card.id, "missing")
+        assertEquals(first, model.card(card.id)!!.activeChatId)
+        model.removeChat(card.id, first)
+        assertEquals(second.id, model.card(card.id)!!.activeChatId)
+        model.setMessages(card.id, reply, first)
+        assertTrue(model.card(card.id)!!.messages.isEmpty())
+        model.removeChat(card.id, second.id)
+        assertEquals(listOf(second.copy(draft = "second draft")), model.card(card.id)!!.chats)
+        assertNull(model.addChat("missing"))
+    }
+
+    @Test
     fun `tool calls are not saved and saved messages become chat messages`() {
         val saved = savedMessages(listOf(ChatMessage(ChatRole.NOTICE, "Welcome"), ChatMessage(ChatRole.USER, "Q"),
             ChatMessage(ChatRole.TOOL, "read_file(path=a)"), ChatMessage(ChatRole.ASSISTANT, "A")))

@@ -23,7 +23,7 @@ class CanvasSessionStoreTest {
     private fun session(id: String, root: String, updated: Long): CanvasSession {
         val symbol = CanvasCard("a1", null, CardKind.SYMBOL, CardAnchor(3, 7, 1), SymbolRef("src/Store.kt", "save", "FUNCTION", "Store", 40, 3),
             "src/Store.kt", 3, "fun save() {\n  write()\n}", summary = "Saves.", folded = setOf(CardSection.SOURCE, CardSection.META),
-            messages = listOf(SavedMessage(ChatRole.USER, "why?"), SavedMessage(ChatRole.ASSISTANT, "Because.")), draft = "and")
+            chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "why?"), SavedMessage(ChatRole.ASSISTANT, "Because.")), draft = "and")))
         val selection = CanvasCard("a2", "a1", CardKind.SELECTION, CardAnchor(13, 20, 4), null, "src/Store.kt", 4, "  write()",
             textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true)
         return CanvasSession(id, root, "Main", 1, updated, listOf(symbol, selection), CanvasView(1.25, -40, 300))
@@ -78,7 +78,24 @@ class CanvasSessionStoreTest {
         assertEquals(CanvasView(), session.view)
         val card = session.cards.single()
         assertEquals(CanvasCard("c1", null, CardKind.SELECTION, CardAnchor(0, 0, 0), null, "", 0, "x", folded = setOf(CardSection.SOURCE),
-            messages = listOf(SavedMessage(ChatRole.USER, "q"))), card)
+            chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "q"))))), card)
+    }
+
+    @Test
+    fun `multiple chats and the selected tab round trip`() {
+        val store = CanvasSessionStore(directory)
+        val initial = session("tabs", "src/Main.kt", 10)
+        val model = CanvasSessionModel(initial)
+        val card = initial.cards.first()
+        val chat = model.addChat(card.id)!!
+        model.setDraft(card.id, "separate draft")
+        model.setMessages(card.id, listOf(SavedMessage(ChatRole.USER, "another topic")))
+        assertTrue(store.save(model.session))
+        val loaded = store.load("tabs")!!
+        assertEquals(model.session, loaded)
+        assertEquals(chat.id, loaded.cards.first().activeChatId)
+        assertEquals("and", loaded.cards.first().chats.first().draft)
+        assertEquals("separate draft", loaded.cards.first().draft)
     }
 
     @Test

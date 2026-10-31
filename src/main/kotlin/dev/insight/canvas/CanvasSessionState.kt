@@ -29,6 +29,10 @@ data class SymbolRef(val filePath: String, val name: String, val kind: String, v
 /** One saved chat message; tool calls are not kept, since a restored chat only needs what was said. */
 data class SavedMessage(val role: ChatRole, val text: String)
 
+/** One independent conversation within a card. Ids are scoped to their card. */
+data class CanvasChat(val id: String = "chat-1", val title: String = "Chat 1",
+    val messages: List<SavedMessage> = emptyList(), val draft: String = "")
+
 /** The canvas's zoom and scroll position, in canvas coordinates. */
 data class CanvasView(val zoom: Double = 1.0, val x: Int = 0, val y: Int = 0)
 
@@ -36,7 +40,7 @@ data class CanvasView(val zoom: Double = 1.0, val x: Int = 0, val y: Int = 0)
  * A card to the right of its parent: a selection or a symbol, with its own summary and chat. [text] is a snapshot of
  * the selected text or the symbol's source from 0-based document line [firstLine] of [filePath], bounded by
  * [CANVAS_CARD_TEXT_LIMIT]; [textTruncated] tells it was cut. [summaryError] is set when the latest summary failed.
- * [folded] sections are collapsed; [messages] and [draft] are the card's chat and unsent input.
+ * [folded] sections are collapsed; [chats] hold independent histories and drafts.
  */
 data class CanvasCard(
     val id: String,
@@ -51,11 +55,20 @@ data class CanvasCard(
     val summary: String? = null,
     val summaryError: String? = null,
     val folded: Set<CardSection> = emptySet(),
-    val messages: List<SavedMessage> = emptyList(),
-    val draft: String = "",
+    val chats: List<CanvasChat> = listOf(CanvasChat()),
+    val activeChatId: String = chats.first().id,
     /** Show the containing file, retaining the original opening identity. */
     val wholeFile: Boolean = false,
 ) {
+    init {
+        require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
+        require(chats.any { it.id == activeChatId })
+    }
+
+    val activeChat: CanvasChat get() = chats.first { it.id == activeChatId }
+    val messages: List<SavedMessage> get() = activeChat.messages
+    val draft: String get() = activeChat.draft
+
     /** 0-based document line of the text's last line. */
     val lastLine: Int get() = firstLine + text.count { it == '\n' }
 
@@ -203,9 +216,37 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
         return folded
     }
 
-    fun setMessages(cardId: String, messages: List<SavedMessage>) = update(cardId) { it.copy(messages = messages) }
+    fun addChat(cardId: String): CanvasChat? {
+        val card = card(cardId) ?: return null
+        val number = generateSequence(1) { it + 1 }.first { n -> card.chats.none { it.title == "Chat $n" } }
+        val chat = CanvasChat(ids(), "Chat $number")
+        update(cardId) { it.copy(chats = it.chats + chat, activeChatId = chat.id) }
+        return chat
+    }
 
-    fun setDraft(cardId: String, draft: String) = update(cardId) { it.copy(draft = draft) }
+    fun selectChat(cardId: String, chatId: String) = update(cardId) {
+        if (it.chats.any { chat -> chat.id == chatId }) it.copy(activeChatId = chatId) else it
+    }
+
+    /** Keep one conversation; select an adjacent tab when closing the selected one. */
+    fun removeChat(cardId: String, chatId: String) = update(cardId) { card ->
+        val index = card.chats.indexOfFirst { it.id == chatId }
+        if (index < 0 || card.chats.size == 1) card else {
+            val remaining = card.chats.filter { it.id != chatId }
+            card.copy(chats = remaining, activeChatId = if (card.activeChatId == chatId)
+                remaining[index.coerceAtMost(remaining.lastIndex)].id else card.activeChatId)
+        }
+    }
+
+    fun setMessages(cardId: String, messages: List<SavedMessage>, chatId: String? = null) = updateChat(cardId, chatId) {
+        it.copy(messages = messages)
+    }
+
+    fun setDraft(cardId: String, draft: String, chatId: String? = null) = updateChat(cardId, chatId) { it.copy(draft = draft) }
+
+    private fun updateChat(cardId: String, chatId: String?, change: (CanvasChat) -> CanvasChat) = update(cardId) { card ->
+        card.copy(chats = card.chats.map { if (it.id == (chatId ?: card.activeChatId)) change(it) else it })
+    }
 
     /**
      * Replaces a restored card's snapshot with the current code: its [anchor] in the parent's shown text, and [text]

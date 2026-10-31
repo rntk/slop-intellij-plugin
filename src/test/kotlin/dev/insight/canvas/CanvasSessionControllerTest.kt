@@ -12,9 +12,11 @@ import dev.insight.agent.ChatRole
 import dev.insight.agent.ToolCallEvent
 import dev.insight.llm.Completion
 import dev.insight.llm.FinishReason
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 
@@ -230,11 +232,17 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", source)
         val directory = Files.createTempDirectory("canvas-sessions")
         val store = CanvasSessionStore(directory)
-        val asked = mutableListOf<List<ChatMessage>>()
+        val asked = java.util.Collections.synchronizedList(mutableListOf<List<ChatMessage>>())
+        val slowReply = CompletableDeferred<Unit>()
+        val closedReply = CompletableDeferred<Unit>()
         val services = CanvasSessionServices(store, { { Completion("Calls the helper.", finishReason = FinishReason.COMPLETE) } }) { _, _ ->
             object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                     asked += messages
+                    if (messages.last().text == "Slow question") slowReply.await()
+                    if (messages.last().text == "Close question") {
+                        try { awaitCancellation() } finally { closedReply.complete(Unit) }
+                    }
                     return "It calls helper."
                 }
             }
@@ -270,6 +278,37 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("The existing chat should answer again",
                 { panel.model.card(card.id)!!.messages.count { it.role == ChatRole.ASSISTANT } == 2 }, 30)
             assertEquals(2, asked.last().count { it.role == ChatRole.USER })
+
+            val firstChat = panel.model.card(card.id)!!.activeChatId
+            view.input.text = "First draft"
+            view.send("Slow question")
+            PlatformTestUtil.waitWithEventsDispatching("The first tab should start its reply",
+                { asked.any { it.last().text == "Slow question" } }, 30)
+            val secondChat = panel.model.addChat(card.id)!!
+            assertEquals("", view.input.text)
+            view.input.text = "Second draft"
+            view.send("Independent question")
+            PlatformTestUtil.waitWithEventsDispatching("The second tab should answer while the first is busy",
+                { panel.model.card(card.id)!!.messages.any { it.role == ChatRole.ASSISTANT } }, 30)
+            assertEquals(listOf("Independent question"), asked.last().map { it.text })
+            slowReply.complete(Unit)
+            PlatformTestUtil.waitWithEventsDispatching("The first tab should save its background reply",
+                { panel.model.card(card.id)!!.chats.first().messages.count { it.role == ChatRole.ASSISTANT } == 3 }, 30)
+            assertEquals(secondChat.id, view.card.activeChatId)
+            assertEquals(1, view.card.messages.count { it.role == ChatRole.USER })
+            panel.model.selectChat(card.id, firstChat)
+            assertEquals("First draft", view.input.text)
+            panel.model.selectChat(card.id, secondChat.id)
+            assertEquals("Second draft", view.input.text)
+            assertTrue(store.save(panel.model.session))
+            assertEquals(panel.model.card(card.id)!!.chats, store.load(session.id)!!.card(card.id)!!.chats)
+            view.send("Close question")
+            PlatformTestUtil.waitWithEventsDispatching("The tab to close should start its reply",
+                { asked.any { it.last().text == "Close question" } }, 30)
+            panel.model.removeChat(card.id, secondChat.id)
+            PlatformTestUtil.waitWithEventsDispatching("Closing a tab should cancel its reply", { closedReply.isCompleted }, 30)
+            assertEquals(firstChat, view.card.activeChatId)
+            assertEquals("First draft", view.input.text)
 
             panel.model.toggleFolded(card.id, CardSection.SOURCE)
             assertFalse("Folding hides the source", view.sourcePane!!.isVisible)

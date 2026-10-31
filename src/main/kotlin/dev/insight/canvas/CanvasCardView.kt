@@ -29,6 +29,7 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.KeyStroke
+import javax.swing.JTabbedPane
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import kotlinx.coroutines.CancellationException
@@ -115,9 +116,15 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         toolTipText = "Show the whole file here, with links and this card's chat"
     })
 
-    private val chat: ChatSession = ChatSession(host.project, host.scope,
-        backendFactory = ChatBackendFactory { _ -> host.services.chatBackend(host.model, id) },
-        welcome = canvasWelcome(initial), restored = initial.messages.toChatMessages())
+    private val conversations = linkedMapOf<String, Pair<ChatSession, Disposable>>()
+    private val chat: ChatSession get() = conversation(card.activeChat)
+    private var syncingChat = false
+    private val chatTabs = host.zoomFont(JTabbedPane(JTabbedPane.TOP, JTabbedPane.SCROLL_TAB_LAYOUT))
+    private val chatBody = JPanel(StackLayout { scaled(4) }).apply { isOpaque = false }
+    private val closeChat = host.zoomFont(ActionLink("Close chat") { host.model.removeChat(id, card.activeChatId) }.apply {
+        name = "canvas-close-chat"
+        toolTipText = "Close the selected conversation and stop its reply"
+    })
     private val transcript = JPanel(StackLayout { scaled(6) }).apply { isOpaque = false }
     private val busy = host.zoomFont(JLabel("Working…", AnimatedIcon.Default(), JLabel.LEFT).apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -125,8 +132,12 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     })
     private val history = Section(CardSection.CHAT, "Chat", JPanel(StackLayout { scaled(4) }).apply {
         isOpaque = false
-        add(transcript)
-        add(busy)
+        add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(host.zoomFont(ActionLink("New chat") { host.model.addChat(id) }))
+            add(closeChat)
+        })
+        add(chatTabs)
     })
 
     val input = host.zoomFont(JBTextArea(initial.draft, 2, 0).apply {
@@ -147,7 +158,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             add(send)
         })
     })
-    private val chatSubscription: Disposable
 
     init {
         isOpaque = true
@@ -160,6 +170,13 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(history)
         add(inputSection)
 
+        chatBody.add(transcript)
+        chatBody.add(busy)
+        chatTabs.addChangeListener {
+            if (!syncingChat && chatTabs.selectedIndex >= 0) {
+                host.model.selectChat(id, card.chats[chatTabs.selectedIndex].id)
+            }
+        }
         send.addActionListener { submit() }
         stop.addActionListener { chat.stop() }
         input.getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "canvas-send")
@@ -173,7 +190,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             override fun changedUpdate(e: DocumentEvent) = changed()
             private var height = input.preferredSize.height
             private fun changed() {
-                host.model.setDraft(id, input.text)
+                if (!syncingChat) host.model.setDraft(id, input.text, card.activeChatId)
                 // Typing within a line keeps the card's size; lay out the canvas only when the input grows or shrinks.
                 val next = input.preferredSize.height
                 if (next != height) {
@@ -182,11 +199,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                 }
             }
         })
-        chatSubscription = chat.subscribe {
-            host.model.setMessages(id, savedMessages(chat.messages))
-            renderChat()
-        }
-        renderChat()
         update(initial)
         applyZoom()
         requestSummary(force = false)
@@ -212,9 +224,12 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Shows [next], the card's state in the model. */
     fun update(next: CanvasCard) {
         // The input already shows a typed draft; keystrokes need no card refresh or canvas layout.
-        val draftOnly = rendered && card.copy(draft = next.draft) == next
+        val draftOnly = rendered && card.activeChatId == next.activeChatId &&
+            card.copy(chats = next.chats) == next && card.chats.size == next.chats.size &&
+            card.chats.zip(next.chats).all { (a, b) -> a.copy(draft = b.draft) == b }
         card = next
         if (draftOnly) return
+        syncChats()
         val fresh = host.controller.source(id)
         val sourceChanged = fresh !== source
         if (sourceChanged) {
@@ -301,6 +316,42 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Asks the card's chat [text]. */
     internal fun send(text: String) = chat.send(text)
 
+    private fun conversation(saved: CanvasChat): ChatSession = conversations.getOrPut(saved.id) {
+        val session = ChatSession(host.project, host.scope,
+            backendFactory = ChatBackendFactory { _ -> host.services.chatBackend(host.model, id) },
+            welcome = canvasWelcome(card), restored = saved.messages.toChatMessages())
+        session to session.subscribe {
+            host.model.setMessages(id, savedMessages(session.messages), saved.id)
+            if (card.activeChatId == saved.id) renderChat()
+        }
+    }.first
+
+    private fun syncChats() {
+        val removed = conversations.keys.filter { key -> card.chats.none { it.id == key } }
+        removed.forEach { key -> conversations.remove(key)?.let { (session, subscription) ->
+            subscription.dispose()
+            session.discard()
+        } }
+        syncingChat = true
+        try {
+            closeChat.isEnabled = card.chats.size > 1
+            val ids = card.chats.map { it.id }
+            val shownIds = (0 until chatTabs.tabCount).map { chatTabs.getComponentAt(it).name }
+            if (shownIds != ids) {
+                chatTabs.removeAll()
+                card.chats.forEach { saved ->
+                    chatTabs.addTab(saved.title, JPanel(BorderLayout()).apply { isOpaque = false; name = saved.id })
+                }
+            }
+            chatTabs.selectedIndex = card.chats.indexOfFirst { it.id == card.activeChatId }
+            (chatTabs.selectedComponent as JPanel).add(chatBody, BorderLayout.CENTER)
+            if (input.text != card.draft) input.text = card.draft
+        } finally {
+            syncingChat = false
+        }
+        renderChat()
+    }
+
     private fun renderChat() {
         transcript.removeAll()
         val lines = canvasTranscript(chat.messages)
@@ -352,8 +403,11 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     override fun dispose() {
         summaryJob?.cancel()
-        chatSubscription.dispose()
-        chat.discard()
+        conversations.values.forEach { (session, subscription) ->
+            subscription.dispose()
+            session.discard()
+        }
+        conversations.clear()
         sourcePane?.let(Disposer::dispose)
     }
 

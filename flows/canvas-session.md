@@ -16,11 +16,11 @@ Opening a file starts a new session or resumes a saved one. The file is shown as
 
 ## Chat
 
-Each card is a separate conversation. Its context is the chain from the file to the card: the files involved, and the names, summaries and bounded sources of each step. The model reads more of the project with read-only tools instead of receiving whole files, so the context stays small.
+Each card has chat tabs. Readers can start a new conversation, switch tabs, or close a tab, keeping at least one. Every tab has its own history, draft and running reply; switching tabs keeps replies running, and closing a tab stops its reply. Tabs share the card's context: the chain from the file to the card, with the files involved and the names, summaries and bounded sources of each step. The model reads more of the project with read-only tools instead of receiving whole files, so the context stays small.
 
 ## Persistence
 
-A session is saved in the project as the reader works: cards, summaries, folded parts and chat histories. Reopening resolves its symbols again; a card whose symbol is gone keeps its saved text and chat.
+A session is saved in the project as the reader works: cards, summaries, folded parts, chat tabs, histories, drafts and the selected tab. Reopening resolves its symbols again; a card whose symbol is gone keeps its saved text and chats. Existing single-chat cards reopen with their conversation in the first tab.
 
 The Canvas Sessions side panel lists the project's saved sessions. Open it from the canvas's Sessions button or the IDE's tool windows, filter by root file name with fuzzy search, and open a session to resume it.
 

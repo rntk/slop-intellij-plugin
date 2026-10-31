@@ -107,7 +107,9 @@ class CanvasSessionStore(private val directory: Path) {
                 StoredCard(card.id, card.parentId, card.kind.name, card.anchor.startOffset, card.anchor.endOffset, card.anchor.line,
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
                     card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
-                    card.folded.map { it.name }.sorted(), card.messages.map { StoredMessage(it.role.name, it.text) }, card.draft, card.wholeFile)
+                    card.folded.map { it.name }.sorted(), null, null, card.wholeFile,
+                    card.chats.map { StoredChat(it.id, it.title, it.messages.map { m -> StoredMessage(m.role.name, m.text) }, it.draft) },
+                    card.activeChatId)
             }, session.view.zoom, session.view.x, session.view.y)))
     }
 
@@ -127,17 +129,25 @@ class CanvasSessionStore(private val directory: Path) {
                     symbol.offset ?: -1, symbol.line ?: -1)
             }
             if (kind == CardKind.SYMBOL && symbol == null) continue
+            val chats = card.chats.orEmpty().filterNotNull().mapNotNull { chat ->
+                val chatId = chat.id?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                CanvasChat(chatId, chat.title ?: "Chat", decodeMessages(chat.messages), chat.draft.orEmpty())
+            }.distinctBy { it.id }.ifEmpty {
+                listOf(CanvasChat(messages = decodeMessages(card.messages), draft = card.draft.orEmpty()))
+            }
             cards += CanvasCard(cardId, card.parentId, kind, CardAnchor(card.start ?: 0, card.end ?: 0, card.line ?: 0), symbol,
                 card.filePath.orEmpty(), card.firstLine ?: 0, card.text.orEmpty(), card.truncated ?: false, card.summary, card.summaryError,
                 card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
-                card.messages.orEmpty().mapNotNull { message ->
-                    SavedMessage(enumOrNull<ChatRole>(message?.role) ?: return@mapNotNull null, message?.text ?: return@mapNotNull null)
-                }, card.draft.orEmpty(), card.wholeFile ?: false)
+                chats, card.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id, card.wholeFile ?: false)
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
             CanvasView(session.zoom ?: 1.0, session.x ?: 0, session.y ?: 0))
     }.onFailure { rethrowCancellation(it); LOG.warn("Could not decode canvas session", it) }.getOrNull()
+
+    private fun decodeMessages(messages: List<StoredMessage?>?): List<SavedMessage> = messages.orEmpty().mapNotNull { message ->
+        SavedMessage(enumOrNull<ChatRole>(message?.role) ?: return@mapNotNull null, message?.text ?: return@mapNotNull null)
+    }
 
     // The stored shape, apart from the domain types so they can change without breaking saved files. Gson leaves
     // missing fields null, whatever Kotlin declares, so every field is nullable.
@@ -146,7 +156,8 @@ class CanvasSessionStore(private val directory: Path) {
     private class StoredCard(val id: String?, val parentId: String?, val kind: String?, val start: Int?, val end: Int?, val line: Int?,
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
         val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
-        val wholeFile: Boolean?)
+        val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?)
+    private class StoredChat(val id: String?, val title: String?, val messages: List<StoredMessage?>?, val draft: String?)
     private class StoredSymbol(val filePath: String?, val name: String?, val kind: String?, val container: String?, val offset: Int?, val line: Int?)
     private class StoredMessage(val role: String?, val text: String?)
 
