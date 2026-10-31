@@ -29,6 +29,9 @@ interface CallGraphLanguageSupport {
 
     fun relationKind(element: PsiElement): RelationKind? = null
 
+    /** Declaration-only constructs that gap summaries must read whole, regardless of the ordinary gap budget. */
+    fun keepGapWhole(element: PsiElement): Boolean = false
+
     /** Overridden declarations, resolved with the language's type substitution rules. */
     fun superMethods(element: PsiElement): List<PsiElement> = emptyList()
 

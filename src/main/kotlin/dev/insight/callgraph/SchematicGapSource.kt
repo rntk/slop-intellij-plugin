@@ -85,9 +85,10 @@ internal fun schematicGapUnits(scope: PsiElement, document: Document, rows: List
 }
 
 /**
- * Read action only. Complete statements and declarations containing [line], smallest first, strictly inside [scope]:
+ * Read action only. Complete statements and declarations containing [line], smallest first, inside [scope]:
  * elements that fill their lines and follow a structural opening brace or a sibling that ended on an earlier line.
  * Arguments, operands and fields after a comma never qualify, so they are read with what holds them.
+ * The scope itself qualifies only when its language requires the declaration to stay whole.
  */
 internal fun gapConstructs(scope: PsiElement, document: Document, line: Int): List<GapConstruct> {
     val file = scope.containingFile ?: return emptyList()
@@ -95,11 +96,20 @@ internal fun gapConstructs(scope: PsiElement, document: Document, line: Int): Li
     val start = (document.getLineStartOffset(line) until document.getLineEndOffset(line)).firstOrNull { !text[it].isWhitespace() }
         ?: return emptyList()
     val bounds = scope.textRange ?: return emptyList()
-    return generateSequence(file.findElementAt(start)) { it.parent }
-        .takeWhile { element -> element !is PsiFile && element.textRange?.let { bounds.contains(it) && it != bounds } == true }
+    val supports = CallGraphLanguageSupport.EP_NAME.extensionList.filter { it.supportsFile(file) }
+    fun keepWhole(element: PsiElement) = supports.any { it.keepGapWhole(element) }
+    // The first visible token (`type` in Go) may precede a named declaration's PSI range on the same line.
+    val seed = if (start < bounds.startOffset && line == lineOf(document, bounds.startOffset) && keepWhole(scope))
+        bounds.startOffset else start
+    return generateSequence(file.findElementAt(seed)) { it.parent }
+        .takeWhile { element -> element !is PsiFile && element.textRange?.let { bounds.contains(it) } == true }
         .onEach { ProgressManager.checkCanceled() }
-        .filter { complete(it, document) }
-        .map { GapConstruct(lineOf(document, it.textRange.startOffset), lineOf(document, it.textRange.endOffset - 1), headerLast(it, document)) }
+        // Some languages wrap a named declaration in another PSI element with the identical range.
+        .filter { it.textRange != bounds || keepWhole(it) }
+        // Language-confirmed declarations also qualify inside non-structural groups such as Go's `type (...)`.
+        // A named type scope can start after `type`; its whole source line still belongs to this unit.
+        .filter { complete(it, document) || (keepWhole(it) && (it === scope || fillsLines(it, document))) }
+        .map { GapConstruct(lineOf(document, it.textRange.startOffset), lineOf(document, it.textRange.endOffset - 1), headerLast(it, document), keepWhole(it)) }
         .distinctBy { it.first to it.last }
         .toList()
 }

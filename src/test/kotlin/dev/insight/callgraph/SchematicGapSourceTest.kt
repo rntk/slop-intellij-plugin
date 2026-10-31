@@ -29,10 +29,48 @@ class SchematicGapSourceTest : BasePlatformTestCase() {
 
     fun `test Rust enum is one construct while its later variants are not`() {
         val (file, document) = configure("lib.rs", "pub(crate) enum Outcome {\n    Done(Report),\n    Failed { reason: String },\n}\n")
-        assertEquals(GapConstruct(0, 3, 0), gapConstructs(file, document, 0).first())
-        assertEquals(GapConstruct(0, 3, 0), gapConstructs(file, document, 2).first())
+        assertEquals(GapConstruct(0, 3, 0, keepWhole = true), gapConstructs(file, document, 0).first())
+        assertEquals(GapConstruct(0, 3, 0, keepWhole = true), gapConstructs(file, document, 2).first())
         val rows = listOf(CodeRow(0, 0), BlockRow(1, 1, 1, null, emptyList()), CodeRow(2, 4))
         assertEquals(listOf(GapUnit(0, 3, symbols = listOf(1))), schematicGapUnits(file, document, rows))
+    }
+
+    fun `test Go declaration-only types ignore size and symbol limits but stay separate`() {
+        for (kind in listOf("struct", "interface")) {
+            val fields = (1..6).joinToString("\n") { if (kind == "struct") "    Field$it string" else "    Method$it()" }
+            val (file, document) = configure("types.go", "package main\n\ntype Large $kind {\n$fields\n}\ntype Other struct { Value int }\n")
+            val rows = listOf(CodeRow(2, 2)) + (3..8).map { BlockRow(it, it, it, it, emptyList()) } + CodeRow(9, 10)
+            val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+            assertEquals(listOf(GapUnit(2, 9, symbols = (3..8).toList()), GapUnit(10, 10)),
+                schematicGapUnits(file, document, rows, budget))
+            val scope = outermost(file, "type Large")
+            assertEquals(listOf(GapUnit(2, 9, symbols = (3..8).toList())),
+                schematicGapUnits(scope, document, rows.dropLast(1) + CodeRow(9, 9), budget))
+            val namedScope = generateSequence(file.findElementAt(file.text.indexOf("Large"))) { it.parent }
+                .first { it is com.goide.psi.GoTypeSpec }
+            assertEquals(listOf(GapUnit(2, 9, symbols = (3..8).toList())),
+                schematicGapUnits(namedScope, document, rows.dropLast(1) + CodeRow(9, 9), budget))
+        }
+    }
+
+    fun `test Rust declaration-only types grow from fields and variants beyond the budget`() {
+        for ((kind, member) in listOf("struct" to "field: String", "enum" to "Variant { field: String }")) {
+            val (file, document) = configure("types.rs", "pub $kind Large {\n    $member,\n}\nfn run() {\n    work();\n}\n")
+            val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+            assertEquals(listOf(GapUnit(0, 2)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val units = schematicGapUnits(file, document, listOf(CodeRow(0, 5)), GapBudget(lines = 1))
+            assertEquals(GapUnit(0, 2), units.first())
+            assertTrue(units.any { it.construct == 3..5 })
+        }
+    }
+
+    fun `test grouped Go types do not exempt their container or neighboring function`() {
+        val (file, document) = configure("types.go",
+            "package main\ntype (\n    Data struct {\n        Value string\n    }\n    Other int\n)\nfunc run() {\n    work()\n}\n")
+        val units = schematicGapUnits(file, document, listOf(CodeRow(1, 9)), GapBudget(lines = 1, chars = 1))
+        assertTrue(units.toString(), units.contains(GapUnit(2, 4)))
+        assertTrue(units.toString(), units.none { it.first <= 2 && it.last >= 5 })
+        assertTrue(units.toString(), units.none { it.first == 7 && it.last == 9 && it.construct == null })
     }
 
     fun `test Java arguments are read with their statement and long constructs by their header`() {

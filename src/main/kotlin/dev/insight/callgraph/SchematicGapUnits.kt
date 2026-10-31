@@ -10,8 +10,8 @@ data class GapUnit(val first: Int, val last: Int, val construct: IntRange? = nul
     operator fun contains(line: Int) = line in first..last
 }
 
-/** A complete statement or declaration on lines [first]..[last]; when it has a body, its header ends on [headerLast]. */
-data class GapConstruct(val first: Int, val last: Int, val headerLast: Int? = null)
+/** A complete statement or declaration; [keepWhole] exempts declaration-only constructs from the gap budget. */
+data class GapConstruct(val first: Int, val last: Int, val headerLast: Int? = null, val keepWhole: Boolean = false)
 
 /**
  * Bounds on one gap summary, measured without the bodies of folded declarations: at most [lines] lines, [chars]
@@ -24,7 +24,8 @@ data class GapBudget(val lines: Int = 50, val chars: Int = 4_000, val declaratio
  * The gaps of [rows] to summarize, in source order and never overlapping. Each [meaningful] line of a code row lies in
  * one: the [constructs] around it (smallest first, inside the schematic's scope) within [budget], else the header of
  * the smallest when the line is part of it, else the line itself. Overlapping units merge, as do plain ones meeting
- * inside one code row while they fit; units always cover blocks they touch whole. [text] gives a line's source.
+ * inside one code row while they fit; units always cover blocks they touch whole. Language-whitelisted declarations
+ * stay whole regardless of [budget]. [text] gives a line's source.
  */
 fun gapUnits(rows: List<SchematicRow>, text: (Int) -> String, meaningful: (Int) -> Boolean,
     constructs: (Int) -> List<GapConstruct>, budget: GapBudget = GapBudget()): List<GapUnit> {
@@ -50,6 +51,9 @@ fun gapUnits(rows: List<SchematicRow>, text: (Int) -> String, meaningful: (Int) 
     }
     fun pick(line: Int): Pair<IntRange, IntRange?> {
         val chain = constructs(line).filter { line in it.first..it.last }
+        // A field or variant can itself be a complete construct. Its declaration still takes precedence,
+        // including over the glance limit, so starting inside it gives the same unit as starting at its header.
+        chain.lastOrNull { it.keepWhole }?.let { return covering(it.first, it.last) to null }
         val smallest = chain.firstOrNull() ?: return covering(line, line) to null
         if (fits(smallest.first, smallest.last)) {
             var chosen = smallest

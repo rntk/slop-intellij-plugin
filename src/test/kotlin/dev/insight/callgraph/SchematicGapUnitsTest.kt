@@ -59,6 +59,16 @@ class SchematicGapUnitsTest {
     }
 
     @Test
+    fun `declaration-only containers stay whole from an inner construct regardless of every limit`() {
+        val rows = listOf(CodeRow(0, 1)) + (2..5).map { BlockRow(it, it, it, it, emptyList()) } + CodeRow(6, 80)
+        val container = GapConstruct(1, 79, headerLast = 1, keepWhole = true)
+        val constructs = mapOf(10 to listOf(GapConstruct(10, 10), container), 80 to listOf(GapConstruct(80, 80)))
+        assertEquals(listOf(GapUnit(1, 79, symbols = (2..5).toList()), GapUnit(80, 80)),
+            units(rows, constructs, blank = (0..79).toSet() - 10,
+                budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)))
+    }
+
+    @Test
     fun `a unit touching a folded declaration covers it whole`() {
         val rows = listOf(CodeRow(0, 1), BlockRow(2, 5, 2, 1, emptyList()), CodeRow(6, 6))
         assertEquals(listOf(GapUnit(1, 5, folded = listOf(3..5), symbols = listOf(2))),
