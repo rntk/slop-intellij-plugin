@@ -60,6 +60,84 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(listOf("entry", "unused"), reading.targets.map { opened.graph.nodes[it].name.substringBefore('(') })
     }
 
+    fun testIndexedUsagesDiscoverOtherFilesWithoutResolvingTheirBodies() {
+        val file = myFixture.configureByText("Api.java", "class Api { static void work() {} static void unused() {} }")
+        myFixture.addFileToProject("Client.java", """
+            class Client {
+                Runnable callback = Api::work;
+                void run() { Api.work(); Api.work(); hidden(); }
+                void hidden() { missing(); }
+            }
+        """.trimIndent())
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val initial = exploration.result
+        val work = initial.symbol("work").id
+        val found = background { exploration.findUsages(work) }
+        assertEquals(initial.graph.nodes, found.result.graph.nodes.take(initial.graph.nodes.size))
+        assertSame(found.result, exploration.result)
+        assertFalse(found.truncated)
+        assertEquals(3, found.usages.size)
+        assertEquals(2, found.usages.count { it.kind == RelationKind.CALL })
+        assertEquals(1, found.usages.count { it.kind == RelationKind.REFERENCE })
+        assertEquals(setOf("callback", "run"), found.usages.map {
+            (found.result.pointers[it.owner]!!.element as PsiNamedElement).name
+        }.toSet())
+        assertTrue("Search must leave bodies folded", found.result.occurrences.isEmpty())
+        assertFalse(found.result.graph.nodes.any { it.unresolved })
+        val run = found.result.symbol("run").id
+        assertTrue(CallGraphEdge(run, work) in found.result.graph.edges)
+        background { exploration.expand(run) }
+        assertEquals(found.result.graph.nodes, exploration.result.graph.nodes.take(found.result.graph.nodes.size))
+        assertTrue(exploration.result.occurrences.any { it.expression == "Api.work" })
+        assertFalse(exploration.result.occurrences.any { it.expression == "missing" })
+        val repeated = background { exploration.findUsages(work) }
+        assertEquals(found.usages, repeated.usages)
+    }
+
+    fun testUsageSearchIncludesTypeReferencesAndReportsTruncation() {
+        val file = myFixture.configureByText("Api.java", "class Api {}")
+        myFixture.addFileToProject("Client.java", "class Client { Api first; Api second; Api third; }")
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val api = exploration.result.symbol("Api").id
+        val found = background { exploration.findUsages(api, limit = 2) }
+        assertEquals(2, found.usages.size)
+        assertTrue(found.truncated)
+        assertTrue(found.usages.all { it.kind == RelationKind.REFERENCE && it.line == 1 })
+        val complete = background { exploration.findUsages(api) }
+        assertEquals(3, complete.usages.size)
+        assertFalse(complete.truncated)
+        assertEquals(found.result.graph.nodes, complete.result.graph.nodes)
+    }
+
+    fun testUsageSearchTracksDiscoveredFilesAndRejectsStaleSource() {
+        val file = myFixture.configureByText("Api.java", "class Api { static void work() {} }")
+        val client = myFixture.addFileToProject("Client.java", "class Client { void run() { Api.work(); } }")
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val work = exploration.result.symbol("work").id
+        background { exploration.findUsages(work) }
+        val beforeEdit = exploration.result
+        WriteCommandAction.runWriteCommandAction(project) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(client)!!
+            document.insertString(document.textLength, "\n// edited")
+            PsiDocumentManager.getInstance(project).commitDocument(document)
+        }
+        val failure = background { runCatching { exploration.findUsages(work) }.exceptionOrNull() }
+        assertTrue("Expected stale source rejection, got $failure", failure is IllegalStateException)
+        assertSame(beforeEdit, exploration.result)
+    }
+
+    fun testKotlinUsagesCanLeaveTheInitialFile() {
+        val file = myFixture.configureByText("api.kt", "package sample\nfun work() {}")
+        myFixture.addFileToProject("client.kt", "package sample\nfun run() { work() }")
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val work = exploration.result.symbol("work").id
+        val found = background { exploration.findUsages(work) }
+        assertEquals(1, found.usages.size)
+        assertEquals("run", (found.result.pointers[found.usages.single().owner]!!.element as PsiNamedElement).name)
+        assertEquals(RelationKind.CALL, found.usages.single().kind)
+        assertTrue(found.usages.single().filePath.endsWith("client.kt"))
+    }
+
     fun testFollowingOneBranchKeepsIdsAndDoesNotResolveTargetOrSiblingBodies() {
         myFixture.addFileToProject("Helper.java", """
             class Helper {

@@ -23,12 +23,26 @@ internal class ProgressiveSchematic private constructor(
     private val mutex = Mutex()
     private val opened = hashSetOf<Int>()
 
+    suspend fun findUsages(id: Int, limit: Int = 100): SchematicUsageSearch = mutex.withLock {
+        val found = smartReadAction(project) {
+            checkSources()
+            findSchematicUsages(project, result, id, limit).let { it to fileStamps(it.result) }
+        }
+        result = found.first.result
+        stamps = found.second
+        found.first
+    }
+
+    private fun checkSources() {
+        check(stamps.all { (file, stamp) -> file.isValid && fileStamp(file) == stamp }) {
+            "Source changed. Reopen the schematic to explore the updated code."
+        }
+    }
+
     suspend fun expand(id: Int) = mutex.withLock {
         if (id in opened) return@withLock
         val next = smartReadAction(project) {
-            check(stamps.all { (file, stamp) -> file.isValid && fileStamp(file) == stamp }) {
-                "Source changed. Reopen the schematic to explore the updated code."
-            }
+            checkSources()
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
                 ?: error("Source is no longer available. Reopen the schematic.")
             val merged = mergeSchematicResults(result, ProjectGraphAnalyzer.buildScope(project, element)) { snapshot, node ->
@@ -43,6 +57,9 @@ internal class ProgressiveSchematic private constructor(
     }
 
     companion object {
+        /** Attaches indexed outward exploration to an existing graph. Read action only. */
+        fun fromResult(project: Project, result: CallGraphResult) = ProgressiveSchematic(project, result, fileStamps(result))
+
         suspend fun open(project: Project, file: VirtualFile): ProgressiveSchematic? = smartReadAction(project) {
             val psi = PsiManager.getInstance(project).findFile(file) ?: return@smartReadAction null
             val initial = ProjectGraphAnalyzer.buildScope(project, psi, declarationsOnly = true)

@@ -251,6 +251,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 "Enter or a left click on a block pins its cards and requests summaries of those functions. Unpin releases a card. " +
                 "Click a summary to unfold or fold the code it leads to. " +
                 "Choose Show whole file to explore other declarations in its file. " +
+                "Choose Find usages to discover project callers and references, then Explore to unfold them here. " +
                 "IDE editor enables source selection and copying; turn it off for the original canvas view. " +
                 "Choose Source on a summary to open the file; in the original view, double-click code. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
@@ -341,6 +342,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private fun releaseBranch(component: Component) {
         if (component is LevelSlot) component.cancelLoad()
         if (component is LevelView) component.release()
+        if (component is LevelView.SummaryCard) component.cancelUsageSearch()
         if (component is SchematicSourceEditor) {
             sourceEditors.remove(component)
             Disposer.dispose(component)
@@ -499,8 +501,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         val path = buildList {
             add(graph.nodes[file.root].name to root)
             if (target != null) {
-                generateSequence<Component>(target) { it.parent }.filterIsInstance<LevelView.SummaryCard>()
-                    .toList().asReversed().forEach { add(it.trailName to it) }
+                generateSequence<Component>(target) { it.parent }.toList().asReversed().forEach {
+                    when (it) {
+                        is LevelView.SummaryCard -> add(it.trailName to it)
+                        is UsageBranch -> add("Used by ${graph.nodes[it.id].name}" to it)
+                    }
+                }
                 if (target is LevelView.BlockView) add(target.trailName to target)
             }
         }
@@ -956,6 +962,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     private fun foldAll() {
+        fun foldUsages(component: Component) {
+            if (component is UsageBranch && component.open) component.toggle()
+            if (component is Container) component.components.forEach(::foldUsages)
+        }
+        foldUsages(content)
         fun cards(component: Component): List<LevelView.SummaryCard> =
             (if (component is LevelView.SummaryCard && component.open) listOf(component) else emptyList()) +
                 ((component as? Container)?.components.orEmpty().flatMap(::cards))
@@ -972,6 +983,44 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             element.containingFile?.virtualFile?.let { it to element.textOffset }
         } ?: return
         OpenFileDescriptor(project, target.first, target.second).navigate(true)
+    }
+
+    /** An incoming relationship keeps its source and can unfold just like an outgoing symbol. */
+    private inner class UsageBranch(val id: Int, usages: List<SchematicUsage>) : JPanel(BorderLayout()) {
+        var open = false
+            private set
+        private var level: LevelSlot? = null
+        private val unfold = ActionLink("Explore ${graph.nodes[id].name}") { toggle() }.zoomFont()
+
+        init {
+            name = "schematic-usage-branch"
+            isOpaque = false
+            add(JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                add(unfold)
+                usages.forEach { usage ->
+                    val path = usage.filePath
+                    add(ActionLink("${if (usage.kind == RelationKind.CALL) "Call" else "Use"}: ${relativePath(path)}:${usage.line}") {
+                        com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(path)?.let {
+                            OpenFileDescriptor(project, it, usage.offset).navigate(true)
+                        }
+                    }.zoomFont())
+                }
+            }, BorderLayout.NORTH)
+        }
+
+        fun toggle() {
+            open = !open
+            trailTarget = this
+            unfold.text = "${if (open) "▾" else "▸"} ${graph.nodes[id].name} · ${graph.nodes[id].location}"
+            if (open) {
+                val slot = level ?: LevelSlot(id).also { level = it; add(it, BorderLayout.CENTER) }
+                slot.isVisible = true
+                applyZoom(slot)
+            } else level?.isVisible = false
+            refreshCards()
+        }
     }
 
     /** Resolves only [id]'s visible scope, then shows it without requesting descendant summaries. */
@@ -1059,6 +1108,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         fun release() {
             released = true
+            cards.forEach { it.cancelUsageSearch() }
             if (hoveredGap?.level === this) {
                 hoverExit.stop()
                 hoveredGap = null
@@ -1707,6 +1757,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 isOpaque = false
                 isVisible = false
             }
+            private val usages = JPanel().apply {
+                name = "schematic-usages"
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                isVisible = false
+            }
+            private var usageSearch: Job? = null
+            private var usagesLoaded = false
+            private val usagesToggle = ActionLink("Find usages") { showUsages() }.zoomFont()
             var level: LevelSlot? = null
                 private set
             private val pinToggle = ActionLink("Pin") {
@@ -1745,6 +1804,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     }.zoomFont())
                     add(sourceToggle)
                     add(fileToggle)
+                    add(usagesToggle)
                 }, BorderLayout.EAST)
                 add(if (choices.isEmpty()) header else JPanel().apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -1753,7 +1813,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     add(choiceLinks.apply { alignmentX = LEFT_ALIGNMENT })
                 }, BorderLayout.NORTH)
                 showChoices()
-                add(details, BorderLayout.SOUTH)
+                add(JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    isOpaque = false
+                    add(details)
+                    add(usages)
+                }, BorderLayout.SOUTH)
                 for (occurrence in occurrences) {
                     details.add(HtmlLabel().apply {
                         body = "<code>${escape(occurrence.expression)}</code><br>${escape(occurrence.explanation)}"
@@ -1791,6 +1856,56 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
             }
 
+            fun cancelUsageSearch() { usageSearch?.cancel() }
+
+            private fun showUsages() {
+                if (disposed || released || usageSearch?.isActive == true) return
+                pinTo(true)
+                trailTarget = this
+                if (usagesLoaded) {
+                    usages.isVisible = !usages.isVisible
+                    usagesToggle.text = if (usages.isVisible) "Hide usages" else "Show usages"
+                    this@SchematicPanel.refreshCards()
+                    return
+                }
+                usages.isVisible = true
+                usages.removeAll()
+                usages.add(JLabel("Finding project usages…").zoomFont())
+                usagesToggle.isEnabled = false
+                usageSearch = scope.launch(Dispatchers.EDT) {
+                    try {
+                        val found = withBackgroundProgress(project, "Finding usages: ${graph.nodes[symbol].name}") {
+                            val exploration = file.exploration ?: smartReadAction(project) {
+                                ProgressiveSchematic.fromResult(project, result)
+                            }.let { created -> file.exploration ?: created.also { file.exploration = it } }
+                            exploration.findUsages(symbol)
+                        }
+                        usages.removeAll()
+                        usages.add(JLabel(if (found.usages.isEmpty()) "No project usages found."
+                            else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)").zoomFont())
+                        found.usages.groupBy { it.owner }.forEach { (id, sites) -> usages.add(UsageBranch(id, sites)) }
+                        if (found.truncated) usages.add(JLabel("More usages exist; showing the first ${found.usages.size}.").zoomFont())
+                        usagesLoaded = true
+                        usagesToggle.text = "Hide usages"
+                    } catch (e: Throwable) {
+                        if (e is CancellationException || e is ControlFlowException) throw e
+                        LOG.warn("Unable to find schematic usages", e)
+                        usages.removeAll()
+                        usages.add(JLabel("Unable to find usages: ${e.message ?: e.javaClass.simpleName}").zoomFont())
+                    } finally {
+                        if (!usagesLoaded) {
+                            usages.components.filterIsInstance<JLabel>().firstOrNull { it.text == "Finding project usages…" }
+                                ?.text = "Usage search cancelled."
+                            usagesToggle.text = "Retry usages"
+                        }
+                        usagesToggle.isEnabled = true
+                        applyZoom(usages)
+                        this@SchematicPanel.refreshCards()
+                    }
+                }
+                this@SchematicPanel.refreshCards()
+            }
+
             private fun showChoices() {
                 choiceLinks.removeAll()
                 val shown = if (allChoices) choices else choices.take(CHOICES_SHOWN)
@@ -1818,6 +1933,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 level = null
                 wholeFile = null
                 chosen = id
+                cancelUsageSearch()
+                usages.components.forEach(::releaseBranch)
+                usages.removeAll()
+                usages.isVisible = false
+                usagesLoaded = false
+                usagesToggle.text = "Find usages"
                 summarize(listOf(id))
                 showChoices()
                 toggle()
@@ -1885,6 +2006,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
 
             fun update() {
+                usagesToggle.isVisible = !graph.nodes[symbol].unresolved && graph.nodes[symbol].kind != SymbolKind.FILE
                 fileToggle.isVisible = wholeFile != null || containingFile != null
                 fileToggle.text = if (wholeFile != null) "Show symbol" else "Show whole file"
                 fileToggle.toolTipText = if (wholeFile != null) "Return to ${graph.nodes[symbol].name}"
