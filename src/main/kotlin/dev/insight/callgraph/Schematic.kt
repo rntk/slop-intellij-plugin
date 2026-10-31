@@ -61,12 +61,21 @@ data class SchematicCall(val callee: Int, val line: Int, val occurrence: CallOcc
 data class SchematicReference(val target: Int, val line: Int, val columns: IntRange)
 
 /**
+ * A name of project symbol [target] at [columns] of [line], on any line of a scope read whole: a use of a type,
+ * function, property, parameter or variable, or the name of a declaration inside the scope. A [reference] does not
+ * call its target.
+ */
+data class SchematicMention(val target: Int, val line: Int, val columns: IntRange, val reference: Boolean = true)
+
+/**
  * A lossy reading of the file, class or function [scope]: [lines] are its source lines from document line
  * [firstLine], and [rows] cover them in order. [excerpts] hold the first line of each referenced declaration. [gaps] are
- * the code to summarize on demand; each code row lies in at most one, and a gap may hold blocks.
+ * the code to summarize on demand; each code row lies in at most one, and a gap may hold blocks. [mentions] are only
+ * read for a scope read whole, folded bodies included.
  */
 class Schematic(val scope: Int, val file: VirtualFile, val firstLine: Int, val lines: List<String>, val rows: List<SchematicRow>,
-    val excerpts: Map<Int, String> = emptyMap(), val gaps: List<GapUnit> = emptyList()) {
+    val excerpts: Map<Int, String> = emptyMap(), val gaps: List<GapUnit> = emptyList(),
+    val mentions: List<SchematicMention> = emptyList()) {
     fun text(line: Int): String = lines[line - firstLine]
     /** Declared and called symbols; referenced types and properties are only linked, never summarized from here. */
     val targets: List<Int> get() = rows.filterIsInstance<BlockRow>().flatMap { it.targets }.distinct()
@@ -215,9 +224,11 @@ fun reachable(roots: Collection<Int>, limit: Int, next: (Int) -> List<Int>): Map
 object SchematicBuilder {
     /**
      * Read action only. The schematic of [scope], or null when its source is gone. [calls] are CALL edges by caller,
-     * with calls from locals attributed to their function (see `liftCalls`).
+     * with calls from locals attributed to their function (see `liftCalls`). [whole] also reads [Schematic.mentions],
+     * which needs the scope expanded with its folded functions.
      */
-    fun build(result: CallGraphResult, hierarchy: GraphHierarchy, calls: Map<Int, List<CallGraphEdge>>, scope: Int): Schematic? {
+    fun build(result: CallGraphResult, hierarchy: GraphHierarchy, calls: Map<Int, List<CallGraphEdge>>, scope: Int,
+        whole: Boolean = false): Schematic? {
         val element = result.pointers.getOrNull(scope)?.element?.takeIf { it.isValid } ?: return null
         val psiFile = element.containingFile ?: return null
         val virtualFile = psiFile.virtualFile ?: return null
@@ -281,11 +292,16 @@ object SchematicBuilder {
         // Gaps follow the language's statements and declarations, so code rows are cut where they begin and end.
         val rows = schematicRows(first, last, declarations, sites, references)
         val gaps = schematicGapUnits(element, document, rows)
-        return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps)
+        val mentions = if (whole) mentions(result, document, element, scope) else emptyList()
+        return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps, mentions)
     }
 
     /** Symbols whose mentions are links: what a type or a property is can be read from its declaration. */
     private val REFERENCED = setOf(SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
+
+    /** Symbols a scope read whole links to: everything with a declaration of its own. */
+    private val MENTIONED = setOf(SymbolKind.CLASS, SymbolKind.FUNCTION, SymbolKind.PROPERTY, SymbolKind.PARAMETER,
+        SymbolKind.VARIABLE, SymbolKind.SYMBOL)
 
     /** Length at which [CallSiteAnalyzer] truncates [CallSite.text]. */
     private const val SITE_TEXT = 600
@@ -297,21 +313,7 @@ object SchematicBuilder {
      * skipped; locals and parameters are read where they are.
      */
     private fun references(result: CallGraphResult, document: Document, element: PsiElement, shown: BitSet, scope: Int): List<SchematicReference> {
-        val candidates by lazy {
-            result.graph.nodes.filter { it.kind in REFERENCED && it.inProject && !it.unresolved }.groupBy { it.filePath }
-        }
-        // Graph ids by declaration, indexed one file at a time as references reach it.
-        val ids = HashMap<String, Map<Pair<Int, SymbolKind>, Int>>()
-        fun id(target: PsiElement): Int? {
-            val (path, offset, kind) = ProjectGraphAnalyzer.key(target) ?: return null
-            if (kind !in REFERENCED) return null
-            return ids.getOrPut(path) {
-                candidates[path].orEmpty().mapNotNull { node ->
-                    val key = result.pointers.getOrNull(node.id)?.element?.takeIf { it.isValid }?.let(ProjectGraphAnalyzer::key)
-                    key?.let { (_, at, symbol) -> (at to symbol) to node.id }
-                }.toMap()
-            }[offset to kind]
-        }
+        val id = graphIds(result, REFERENCED)
         val found = linkedSetOf<SchematicReference>()
         element.accept(object : PsiRecursiveElementWalkingVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -334,7 +336,58 @@ object SchematicBuilder {
         return found.toList()
     }
 
-    /** The line declaring [id], trimmed, so a reader sees a constant's value or a type's shape without unfolding. */
+    /**
+     * Every name of a project symbol on the lines of [element], other than [scope] itself: uses of what the scope
+     * reaches, and the names of declarations inside it, so a nested function's parameters and the types in its body
+     * lead on too. Imports and comments are skipped.
+     */
+    private fun mentions(result: CallGraphResult, document: Document, element: PsiElement, scope: Int): List<SchematicMention> {
+        val id = graphIds(result, MENTIONED)
+        val found = linkedSetOf<SchematicMention>()
+        fun mention(target: Int, range: TextRange) {
+            if (target == scope) return
+            val line = document.getLineNumber(range.startOffset.coerceIn(0, document.textLength))
+            val columns = columns(document, range, line) ?: return
+            found += SchematicMention(target, line, columns, result.graph.nodes[target].kind != SymbolKind.FUNCTION)
+        }
+        element.accept(object : PsiRecursiveElementWalkingVisitor() {
+            override fun visitElement(element: PsiElement) {
+                ProgressManager.checkCanceled()
+                if (element is PsiComment || ProjectGraphAnalyzer.relationKind(element) == RelationKind.IMPORT) return
+                val name = (element as? PsiNameIdentifierOwner)?.nameIdentifier?.textRange
+                if (name != null) id(element)?.let { mention(it, name) }
+                for (reference in element.references) {
+                    val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
+                    for (target in resolveTargets(reference)) id(target)?.let { mention(it, range) }
+                }
+                super.visitElement(element)
+            }
+        })
+        return found.toList()
+    }
+
+    /**
+     * Graph ids of the project declarations of [kinds] that PSI elements stand for, indexed one file at a time as
+     * lookups reach it.
+     */
+    private fun graphIds(result: CallGraphResult, kinds: Set<SymbolKind>): (PsiElement) -> Int? {
+        val candidates by lazy {
+            result.graph.nodes.filter { it.kind in kinds && it.inProject && !it.unresolved }.groupBy { it.filePath }
+        }
+        val ids = HashMap<String, Map<Pair<Int, SymbolKind>, Int>>()
+        return { target ->
+            ProjectGraphAnalyzer.key(target)?.takeIf { it.third in kinds }?.let { (path, offset, kind) ->
+                ids.getOrPut(path) {
+                    candidates[path].orEmpty().mapNotNull { node ->
+                        val key = result.pointers.getOrNull(node.id)?.element?.takeIf { it.isValid }?.let(ProjectGraphAnalyzer::key)
+                        key?.let { (_, at, symbol) -> (at to symbol) to node.id }
+                    }.toMap()
+                }[offset to kind]
+            }
+        }
+    }
+
+    /** The line declaring [id], trimmed,so a reader sees a constant's value or a type's shape without unfolding. */
     private fun excerpt(result: CallGraphResult, id: Int): String? {
         val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: return null
         val file = element.containingFile ?: return null

@@ -236,6 +236,37 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testWholeReadingLinksEveryNameInFoldedBodies() {
+        myFixture.addFileToProject("Request.java", "class Request {}")
+        myFixture.addFileToProject("Response.java", "class Response {}")
+        myFixture.addFileToProject("Store.java", "class Store { static void save(Request request) {} }")
+        val file = myFixture.configureByText("Api.java", """
+            class Api<T> {
+                Response run(
+                        Request request,
+                        T extra) {
+                    Request copy = request;
+                    Store.save(copy);
+                    return null;
+                }
+            }
+        """.trimIndent())
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val root = exploration.result.graph.nodes.single { it.kind == dev.insight.graph.SymbolKind.FILE }.id
+        assertTrue("A folded reading has no mentions", background { exploration.schematic(root) }!!.mentions.isEmpty())
+
+        val reading = background { exploration.schematic(root, whole = true) }!!
+        val result = exploration.result
+        fun name(id: Int) = (result.pointers[id]?.element as? PsiNamedElement)?.name
+        val byLine = reading.mentions.groupBy({ it.line }, { name(it.target) }).mapValues { it.value.toSet() }
+        assertEquals(setOf("Request", "request"), byLine[2])
+        assertEquals("Type parameters and parameters on later signature lines", setOf("T", "extra"), byLine[3])
+        assertEquals(setOf("Request", "copy", "request"), byLine[4])
+        assertEquals("A call into another file, found in a folded body", setOf("Store", "save", "copy"), byLine[5])
+        assertFalse(reading.mentions.single { name(it.target) == "save" }.reference)
+        assertTrue(reading.mentions.none { it.target == root })
+    }
+
     fun testNewlyDiscoveredBoundaryFilesAreTrackedAfterExpansion() {
         val helper = myFixture.addFileToProject("Helper.java", "class Helper { static void work() {} }")
         val file = myFixture.configureByText("Selected.java", "class Selected { void entry() { Helper.work(); } }")

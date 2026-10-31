@@ -37,12 +37,15 @@
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Insight Schematic" displayType="BALLOON" isLogByDefault="true"/>
+        <notificationGroup id="Insight Canvas Session" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.callgraph.ProjectGraphToolWindowFactory"/>
         <toolWindow id="Insight Chat" anchor="right" icon="/icons/chat.svg"
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
+        <toolWindow id="Canvas Sessions" anchor="right" icon="/icons/insight.svg"
+                    factoryClass="dev.insight.canvas.CanvasSessionsToolWindowFactory"/>
         <toolWindow id="Diff Review" anchor="right" icon="/icons/diff-review.svg"
                     factoryClass="dev.insight.diff.DiffReviewToolWindowFactory"/>
         <toolWindow id="Code Review" anchor="right" icon="/icons/code-review.svg"
@@ -59,6 +62,7 @@
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->
@@ -114,6 +118,12 @@
             <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenSchematic" class="dev.insight.callgraph.OpenSchematicAction"
+                icon="/icons/insight.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+        </action>
+        <action id="Insight.OpenCanvasSession" class="dev.insight.canvas.OpenCanvasSessionAction"
                 icon="/icons/insight.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>

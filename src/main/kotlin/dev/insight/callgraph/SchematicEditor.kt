@@ -45,6 +45,7 @@ import dev.insight.graph.SymbolKind
 import dev.insight.graph.hierarchy
 import dev.insight.settings.ChatSettings
 import dev.insight.ui.ComponentMouseEvents
+import dev.insight.ui.FloatingPanel
 import dev.insight.ui.pixelBorder
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -2202,31 +2203,5 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         fun detab(line: String) = line.replace("\t", "    ")
         fun escape(text: String) = SummaryCardText.escape(text)
-    }
-}
-
-/** A translucent plate for controls that float over the canvas; it absorbs the pointer so the canvas below does not pan or scroll. */
-private open class FloatingPanel(layout: LayoutManager) : JPanel(layout) {
-    init {
-        isOpaque = false
-        border = JBUI.Borders.empty(4, 8)
-        val absorb = object : MouseAdapter() {}
-        addMouseListener(absorb)
-        addMouseMotionListener(absorb)
-        addMouseWheelListener(absorb)
-    }
-
-    override fun paintComponent(g: Graphics) {
-        val g2 = g.create() as Graphics2D
-        try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val arc = JBUI.scale(10)
-            g2.color = Color(background.red, background.green, background.blue, 225)
-            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-            g2.color = JBColor.border()
-            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
-        } finally {
-            g2.dispose()
-        }
     }
 }

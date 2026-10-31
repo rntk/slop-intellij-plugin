@@ -133,4 +133,24 @@ class ChatSessionTest : BasePlatformTestCase() {
             assertTrue(session.messages.isEmpty())
         } finally { scope.cancel() }
     }
+
+    fun `test restored messages follow the welcome and reach the backend`() {
+        val scope = CoroutineScope(SupervisorJob())
+        val requests = mutableListOf<List<ChatMessage>>()
+        val session = ChatSession(project, scope, backendFactory = { _ ->
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+                    requests += messages
+                    return "Again."
+                }
+            }
+        }, welcome = "Ask about run.", restored = listOf(ChatMessage(ChatRole.NOTICE, "Ask about run."),
+            ChatMessage(ChatRole.USER, "Why?"), ChatMessage(ChatRole.ASSISTANT, "Because."), ChatMessage(ChatRole.NOTICE, "Stopped.")))
+        try {
+            assertEquals(listOf("Ask about run.", "Why?", "Because.", "Stopped."), session.messages.map { it.text })
+            session.send("And?")
+            PlatformTestUtil.waitWithEventsDispatching("Reply should arrive", { !session.busy }, 5 /* seconds */)
+            assertEquals(listOf("Why?", "Because.", "And?"), requests.single().map { it.text })
+        } finally { scope.cancel() }
+    }
 }

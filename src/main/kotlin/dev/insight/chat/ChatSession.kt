@@ -31,6 +31,16 @@ open class ChatSession(
     welcome: String? = null,
     private val onClear: () -> Unit = {},
 ) : ChatConversation {
+    /**
+     * A conversation brought back from an earlier session: [restored] messages follow the welcome notice (a saved copy of
+     * that notice is dropped), and the model sees their USER and ASSISTANT messages. Save them with `messages` from a
+     * `subscribe` listener.
+     */
+    constructor(project: Project, scope: CoroutineScope, backendFactory: ChatBackendFactory, welcome: String? = null,
+        onClear: () -> Unit = {}, restored: List<ChatMessage>) : this(project, scope, backendFactory, welcome, onClear) {
+        history += restored.dropWhile { it.role == ChatRole.NOTICE && it.text == history.firstOrNull()?.text }
+    }
+
     private val chart = backendFactory.chartContext()
     private val history = mutableListOf(ChatMessage(ChatRole.NOTICE, welcome ?: if (chart == null)
         "Welcome to Insight. Ask about this project, or open the dashboard to explore the sample visualizations."

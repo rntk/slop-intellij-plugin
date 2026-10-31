@@ -9,6 +9,9 @@ import com.intellij.psi.PsiManager
 import dev.insight.graph.CallGraph
 import dev.insight.graph.CallGraphNode
 import dev.insight.graph.CallGraphResult
+import dev.insight.graph.RelationKind
+import dev.insight.graph.hierarchy
+import dev.insight.enrichment.liftCalls
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -22,6 +25,7 @@ internal class ProgressiveSchematic private constructor(
         private set
     private val mutex = Mutex()
     private val opened = hashSetOf<Int>()
+    private val openedWhole = hashSetOf<Int>()
 
     suspend fun findUsages(id: Int, limit: Int = 100): SchematicUsageSearch = mutex.withLock {
         val found = smartReadAction(project) {
@@ -39,13 +43,15 @@ internal class ProgressiveSchematic private constructor(
         }
     }
 
-    suspend fun expand(id: Int) = mutex.withLock {
-        if (id in opened) return@withLock
+    /** Resolves the scope [id]; [whole] also resolves the functions folded inside it, as a reader of all its lines needs. */
+    suspend fun expand(id: Int, whole: Boolean = false) = mutex.withLock {
+        if (id in openedWhole || !whole && id in opened) return@withLock
         val next = smartReadAction(project) {
             checkSources()
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
                 ?: error("Source is no longer available. Reopen the schematic.")
-            val merged = mergeSchematicResults(result, ProjectGraphAnalyzer.buildScope(project, element)) { snapshot, node ->
+            val branch = ProjectGraphAnalyzer.buildScope(project, element, foldFunctions = !whole)
+            val merged = mergeSchematicResults(result, branch) { snapshot, node ->
                 val target = snapshot.pointers.getOrNull(node.id)?.element
                 Triple(node.filePath, target?.textOffset, node.kind) to node.unresolved
             }
@@ -54,6 +60,22 @@ internal class ProgressiveSchematic private constructor(
         result = next.first
         stamps = next.second
         opened += id
+        if (whole) openedWhole += id
+    }
+
+    @Volatile private var analysis: SchematicAnalysis? = null
+
+    /**
+     * Expands [id], then builds its schematic from the expanded graph as a schematic level does; null when its source
+     * is gone. [whole] reads all of its lines, with [Schematic.mentions]. Call off the EDT.
+     */
+    suspend fun schematic(id: Int, whole: Boolean = false): Schematic? {
+        expand(id, whole)
+        val snapshot = result
+        val facts = analysis?.takeIf { it.result === snapshot } ?: SchematicAnalysis(snapshot).also { analysis = it }
+        val hierarchy = facts.hierarchy
+        val calls = facts.calls
+        return smartReadAction(project) { SchematicBuilder.build(snapshot, hierarchy, calls, id, whole) }
     }
 
     companion object {
@@ -76,6 +98,12 @@ internal class ProgressiveSchematic private constructor(
     }
 
     private data class FileStamp(val psi: Long, val document: Long?)
+}
+
+/** The graph facts a schematic is built from, computed once per graph snapshot. */
+internal class SchematicAnalysis(val result: CallGraphResult) {
+    val calls by lazy { liftCalls(result.graph).edges.filter { it.kind == RelationKind.CALL }.groupBy { it.caller } }
+    val hierarchy by lazy { result.graph.hierarchy() }
 }
 
 /** Appends discoveries without renumbering cards, breadcrumbs or chat references already on screen. */

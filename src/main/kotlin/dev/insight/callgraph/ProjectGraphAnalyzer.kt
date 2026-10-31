@@ -116,12 +116,16 @@ object ProjectGraphAnalyzer {
 
     fun build(project: Project, progress: (String) -> Unit = {}): CallGraphResult = buildFiles(project, null, progress = progress)
 
-    /** A file-local snapshot; folded functions and target bodies are never resolved. Read action only. */
-    internal fun buildScope(project: Project, scope: PsiElement, declarationsOnly: Boolean = false): CallGraphResult =
-        buildFiles(project, listOf(scope.containingFile), scope, declarationsOnly)
+    /**
+     * A file-local snapshot; target bodies are never resolved, and neither are functions folded inside [scope] unless
+     * [foldFunctions] is false. Read action only.
+     */
+    internal fun buildScope(project: Project, scope: PsiElement, declarationsOnly: Boolean = false,
+        foldFunctions: Boolean = true): CallGraphResult =
+        buildFiles(project, listOf(scope.containingFile), scope, declarationsOnly, foldFunctions)
 
     private fun buildFiles(project: Project, selectedFiles: List<PsiFile>?, scope: PsiElement? = null,
-        declarationsOnly: Boolean = false, progress: (String) -> Unit = {}): CallGraphResult {
+        declarationsOnly: Boolean = false, foldFunctions: Boolean = true, progress: (String) -> Unit = {}): CallGraphResult {
         progress("Finding supported project files")
         val manager = PsiManager.getInstance(project)
         val files = mutableListOf<PsiFile>()
@@ -210,7 +214,7 @@ object ProjectGraphAnalyzer {
                 occurrences += record
                 val relation = if (resolution.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                 record.displayTargets.forEach { edges += CallGraphEdge(owner, it, relation) }
-            }, scope = scope ?: file, foldFunctions = selectedFiles != null) { from, to, relation ->
+            }, scope = scope ?: file, foldFunctions = selectedFiles != null && foldFunctions) { from, to, relation ->
                 val fromId = key(from)?.let(ids::get)
                 // Package imports (for example Go) resolve to a directory: link every graph file directly inside it.
                 val toIds = if (to is PsiDirectory) filesByDirectory[to.virtualFile.path].orEmpty()
