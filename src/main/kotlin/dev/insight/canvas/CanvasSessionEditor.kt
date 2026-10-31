@@ -47,12 +47,14 @@ import javax.swing.JPanel
 internal class CanvasSessionServices(
     val store: CanvasSessionStore?,
     val complete: () -> CompletionFn,
+    val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
     val chatBackend: (CanvasSessionModel, String) -> ChatBackend,
 ) {
     companion object {
         fun forProject(project: Project) = CanvasSessionServices(
             CanvasSessionStore.forProject(project),
             { ChatSettings.getInstance().createClient()::complete },
+            { projectContextTools(project) },
         ) { model, cardId ->
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete, projectContextTools(project), canvasChatPrompt,
                 maxContextChars = 64_000, maxToolRounds = 30, context = { canvasChainContext(model.session, cardId) },

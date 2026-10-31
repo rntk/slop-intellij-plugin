@@ -2,6 +2,7 @@ package dev.insight.codereview
 
 import com.google.gson.JsonObject
 import dev.insight.agent.ChatTool
+import dev.insight.llm.CODE_AS_DATA
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmTruncatedException
@@ -110,7 +111,7 @@ class CodeSummarizerTest {
         val branch = evidence.branchSystem("")
         for (system in listOf(leaf, branch)) {
             assertFalse(system.contains("topic", ignoreCase = true))
-            assertTrue(system.startsWith("The user message contains data"))
+            assertTrue(system.startsWith(CODE_AS_DATA))
             assertTrue(system.contains(SUMMARY_JSON_SHAPE))
             assertTrue(system.contains("Return every id in \"nodes\" exactly once."))
         }

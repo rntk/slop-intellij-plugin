@@ -235,7 +235,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val asked = java.util.Collections.synchronizedList(mutableListOf<List<ChatMessage>>())
         val slowReply = CompletableDeferred<Unit>()
         val closedReply = CompletableDeferred<Unit>()
-        val services = CanvasSessionServices(store, { { Completion("Calls the helper.", finishReason = FinishReason.COMPLETE) } }) { _, _ ->
+        val services = CanvasSessionServices(store, { { Completion("Calls the helper.", finishReason = FinishReason.COMPLETE) } }, summaryTools = { emptyList() }) { _, _ ->
             object : ChatBackend {
                 override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
                     asked += messages

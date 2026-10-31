@@ -285,7 +285,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         val requestedSource = source
         summaryJob = host.scope.launch(Dispatchers.EDT) {
             try {
-                val text = withContext(Dispatchers.IO) { CanvasSummarizer({ host.services.complete()(it) }).summarize(input) }
+                val text = withContext(Dispatchers.IO) { CanvasSummarizer(host.services.complete(), tools = host.services.summaryTools()).summarize(input) }
                 host.model.setSummary(id, text)
             } catch (e: CanvasSummaryException) {
                 LOG.info("Canvas card summary failed: ${e.message}", e.cause)
