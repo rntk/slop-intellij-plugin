@@ -107,7 +107,7 @@ class CanvasSessionStore(private val directory: Path) {
                 StoredCard(card.id, card.parentId, card.kind.name, card.anchor.startOffset, card.anchor.endOffset, card.anchor.line,
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
                     card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
-                    card.folded.map { it.name }.sorted(), card.messages.map { StoredMessage(it.role.name, it.text) }, card.draft)
+                    card.folded.map { it.name }.sorted(), card.messages.map { StoredMessage(it.role.name, it.text) }, card.draft, card.wholeFile)
             }, session.view.zoom, session.view.x, session.view.y)))
     }
 
@@ -132,7 +132,7 @@ class CanvasSessionStore(private val directory: Path) {
                 card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
                 card.messages.orEmpty().mapNotNull { message ->
                     SavedMessage(enumOrNull<ChatRole>(message?.role) ?: return@mapNotNull null, message?.text ?: return@mapNotNull null)
-                }, card.draft.orEmpty())
+                }, card.draft.orEmpty(), card.wholeFile ?: false)
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
@@ -145,7 +145,8 @@ class CanvasSessionStore(private val directory: Path) {
         val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?)
     private class StoredCard(val id: String?, val parentId: String?, val kind: String?, val start: Int?, val end: Int?, val line: Int?,
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
-        val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?)
+        val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
+        val wholeFile: Boolean?)
     private class StoredSymbol(val filePath: String?, val name: String?, val kind: String?, val container: String?, val offset: Int?, val line: Int?)
     private class StoredMessage(val role: String?, val text: String?)
 

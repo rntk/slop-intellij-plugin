@@ -53,12 +53,14 @@ data class CanvasCard(
     val folded: Set<CardSection> = emptySet(),
     val messages: List<SavedMessage> = emptyList(),
     val draft: String = "",
+    /** Show the containing file, retaining the original opening identity. */
+    val wholeFile: Boolean = false,
 ) {
     /** 0-based document line of the text's last line. */
     val lastLine: Int get() = firstLine + text.count { it == '\n' }
 
     /** The symbol's name, or a short label for a selection. */
-    val title: String get() = symbol?.name ?: "Selection"
+    val title: String get() = if (wholeFile) filePath.substringAfterLast('/') else symbol?.name ?: "Selection"
 
     /** `path:first-last` with 1-based lines, as cited in chats. */
     val location: String get() = "$filePath:${firstLine + 1}" + if (lastLine > firstLine) "-${lastLine + 1}" else ""
@@ -212,6 +214,22 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
     fun restoreSnapshot(cardId: String, anchor: CardAnchor, firstLine: Int, text: String) = update(cardId) {
         val (bounded, truncated) = boundCardText(text)
         it.copy(anchor = anchor, firstLine = firstLine, text = bounded, textTruncated = truncated)
+    }
+
+    /** Expands in place; child anchors move from the excerpt to the same positions in the file. */
+    fun expandToFile(cardId: String, text: String, offset: Int, anchors: Map<String, CardAnchor> = emptyMap()) {
+        val card = card(cardId) ?: return
+        if (card.wholeFile) return
+        val (bounded, truncated) = boundCardText(text)
+        val changed = children(cardId).associate { child ->
+            child.id to child.copy(anchor = anchors[child.id] ?: child.anchor.copy(
+                startOffset = child.anchor.startOffset + offset, endOffset = child.anchor.endOffset + offset))
+        }
+        val expanded = card.copy(wholeFile = true, firstLine = 0, text = bounded, textTruncated = truncated,
+            summary = null, summaryError = null, folded = card.folded - CardSection.SOURCE)
+        session = session.copy(cards = cards.map { changed[it.id] ?: if (it.id == cardId) expanded else it }, updated = clock())
+        notify(CanvasChange.CardChanged(expanded))
+        changed.values.forEach { notify(CanvasChange.CardChanged(it)) }
     }
 
     fun setView(view: CanvasView) {

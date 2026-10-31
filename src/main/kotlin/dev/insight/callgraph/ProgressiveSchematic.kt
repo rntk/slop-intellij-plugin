@@ -63,6 +63,29 @@ internal class ProgressiveSchematic private constructor(
         if (whole) openedWhole += id
     }
 
+    /** Adds a complete file while keeping existing symbol ids stable. */
+    suspend fun fileSchematic(file: VirtualFile): Schematic? {
+        val id = mutex.withLock {
+            smartReadAction(project) {
+                checkSources()
+                val psi = PsiManager.getInstance(project).findFile(file) ?: return@smartReadAction null
+                fun fileId(snapshot: CallGraphResult) = snapshot.graph.nodes.firstOrNull { node ->
+                    node.kind == dev.insight.graph.SymbolKind.FILE && snapshot.pointers.getOrNull(node.id)?.element == psi
+                }?.id
+                fileId(result)?.let { return@smartReadAction it }
+                val branch = ProjectGraphAnalyzer.buildScope(project, psi, declarationsOnly = true)
+                val merged = mergeSchematicResults(result, branch) { snapshot, node ->
+                    val target = snapshot.pointers.getOrNull(node.id)?.element
+                    Triple(node.filePath, target?.textOffset, node.kind) to node.unresolved
+                }
+                result = merged
+                stamps = fileStamps(merged)
+                fileId(merged)
+            }
+        } ?: return null
+        return schematic(id, whole = true)
+    }
+
     @Volatile private var analysis: SchematicAnalysis? = null
 
     /**

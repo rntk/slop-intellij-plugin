@@ -30,8 +30,9 @@ data class CanvasSummaryInput(
     companion object {
         /** The input for [card], with [chain] its root-first chain (see [CanvasSessionModel.chain]). */
         fun of(card: CanvasCard, rootPath: String, chain: List<CanvasCard>, language: String? = null) = CanvasSummaryInput(
-            card.kind, card.symbol?.name, card.filePath, card.firstLine, card.text, card.symbol?.kind, card.symbol?.container,
-            language, (listOf(rootPath.substringAfterLast('/')) + chain.map { if (it.kind == CardKind.SYMBOL) it.title else "selection" })
+            if (card.wholeFile) CardKind.SYMBOL else card.kind, card.title, card.filePath, card.firstLine, card.text,
+            if (card.wholeFile) "FILE" else card.symbol?.kind, if (card.wholeFile) null else card.symbol?.container,
+            language, (listOf(rootPath.substringAfterLast('/')) + chain.map { if (it.wholeFile || it.kind == CardKind.SYMBOL) it.title else "selection" })
                 .joinToString(" → "))
     }
 }

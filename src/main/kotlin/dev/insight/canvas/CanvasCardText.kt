@@ -31,6 +31,7 @@ const val CANVAS_SELECTION_CHANGED = "The code around this selection changed sin
 
 /** `Function`, `Class`, … for a symbol card, `Selection` otherwise. */
 fun canvasKindLabel(card: CanvasCard): String = when {
+    card.wholeFile -> "File"
     card.kind == CardKind.SELECTION || card.symbol == null -> "Selection"
     else -> card.symbol.kind.lowercase().replaceFirstChar { it.titlecase(Locale.ROOT) }.ifEmpty { "Symbol" }
 }
@@ -38,7 +39,7 @@ fun canvasKindLabel(card: CanvasCard): String = when {
 /** The card's second header line: `function in Store · src/Store.kt:10-20`, or `external` without a place. */
 fun canvasCardMeta(card: CanvasCard): String {
     val symbol = card.symbol
-    val what = if (card.kind == CardKind.SELECTION || symbol == null) "selection"
+    val what = if (card.wholeFile) "file" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
         else symbol.kind.lowercase().ifEmpty { "symbol" } + symbol.container.takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
     val where = if (card.filePath.isEmpty()) "no source" else card.location
     return "$what · $where"
@@ -47,7 +48,7 @@ fun canvasCardMeta(card: CanvasCard): String {
 /** The header of a card's source section: `Source · 12 lines`, `Selected text · 3 lines`, with `(cut)` when truncated. */
 fun canvasSourceTitle(card: CanvasCard): String {
     val lines = if (card.text.isEmpty()) 0 else card.text.count { it == '\n' } + 1
-    val label = if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
+    val label = if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
     return "$label · $lines ${if (lines == 1) "line" else "lines"}" + if (card.textTruncated) " (cut)" else ""
 }
 
@@ -104,7 +105,8 @@ val canvasHelpHtml = """
     select any text and choose <b>Open card</b> (also in the right-click menu). Cards open further cards from their own
     source, so a chain can follow the code as far as you like; an arrow links each card to where it was opened.<br><br>
     Each card has its own chat, whose context is the chain from the file down to the card. Every part of a card folds
-    with its ▾ toggle; <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
+    with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
+    <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
     Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
     to another session of this file, or deletes this one. Reopening resolves symbols

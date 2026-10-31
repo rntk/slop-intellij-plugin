@@ -42,14 +42,14 @@ fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: Canvas
 /** `symbol function save in Store at path:10-20`, or `selection at path:3-5`. */
 private fun describe(card: CanvasCard): String {
     val symbol = card.symbol
-    val what = if (card.kind == CardKind.SELECTION || symbol == null) "selection"
+    val what = if (card.wholeFile) "file ${card.title}" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
         else "${symbol.kind.lowercase().ifEmpty { "symbol" }} ${symbol.name}" + symbol.container.takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
     return "$what at ${card.location}"
 }
 
 /** The card's text with 1-based line numbers within [limit] characters, cut at a line with a marker. */
 private fun numberedSource(card: CanvasCard, limit: Int): String {
-    val label = if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
+    val label = if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
     val lines = card.text.split('\n')
     val header = "$label (lines ${card.firstLine + 1}-${card.lastLine + 1}):\n"
     val out = StringBuilder()
@@ -88,6 +88,7 @@ val canvasChatPrompt = """
 
 /** The first notice of a card's chat, naming what it is about. */
 fun canvasWelcome(card: CanvasCard): String = when {
+    card.wholeFile -> "Ask about the file ${card.filePath}. I can read and search the project to answer."
     card.kind == CardKind.SELECTION || card.symbol == null ->
         "Ask about the selected code at ${card.location}. I can read and search the project to answer."
     else -> "Ask about ${card.symbol.name} (${card.symbol.kind.lowercase().ifEmpty { "symbol" }} at ${card.location}). " +

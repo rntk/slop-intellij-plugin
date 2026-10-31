@@ -52,6 +52,7 @@ internal interface CanvasCardHost {
     /** The card's size may have changed: lay out the canvas again. */
     fun cardResized()
     fun close(cardId: String)
+    fun expandToFile(cardId: String)
     fun navigate(source: CanvasSource?, path: String, line: Int)
 }
 
@@ -64,9 +65,11 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     var card: CanvasCard = initial
         private set
     private var rendered = false
-    val source: CanvasSource? = host.controller.source(id)
+    var source: CanvasSource? = host.controller.source(id)
+        private set
     /** The card's source viewer; null when it has no source text. */
-    val sourcePane: CanvasSourcePane? = source?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+    var sourcePane: CanvasSourcePane? = source?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+        private set
     /** Whether the card is drawn emphasised, after it was revealed. */
     var highlighted = false
         set(value) {
@@ -98,10 +101,19 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summaryRetry) })
     })
 
-    private val sourceSection = Section(CardSection.SOURCE, canvasSourceTitle(initial), sourcePane
+    private val sourceBody = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        add(sourcePane
         ?: host.zoomFont(JLabel(if (initial.kind == CardKind.SYMBOL) "No source to show." else "No text.").apply {
             foreground = UIUtil.getContextHelpForeground()
         }))
+    }
+    private val sourceSection = Section(CardSection.SOURCE, canvasSourceTitle(initial), sourceBody)
+    private val titleLabel = host.zoomFont(JLabel(card.title, kindIcon(card), JLabel.LEFT),
+        UIUtil.getLabelFont().deriveFont(Font.BOLD))
+    private val expand = host.zoomFont(ActionLink("Expand to file") { host.expandToFile(id) }.apply {
+        toolTipText = "Show the whole file here, with links and this card's chat"
+    })
 
     private val chat: ChatSession = ChatSession(host.project, host.scope,
         backendFactory = ChatBackendFactory { _ -> host.services.chatBackend(host.model, id) },
@@ -183,11 +195,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     private fun header(): JComponent = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
         isOpaque = false
         add(metaToggle, BorderLayout.WEST)
-        add(host.zoomFont(JLabel(card.title, kindIcon(card), JLabel.LEFT).apply {
-            toolTipText = "${canvasKindLabel(card)} ${card.title}"
-        }, UIUtil.getLabelFont().deriveFont(Font.BOLD)), BorderLayout.CENTER)
+        add(titleLabel, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
             isOpaque = false
+            add(expand)
             add(host.zoomFont(ActionLink("Source") { host.navigate(source, card.filePath, card.firstLine) }.apply {
                 toolTipText = "Open ${card.location} in the editor"
                 isEnabled = card.filePath.isNotEmpty()
@@ -204,13 +215,33 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         val draftOnly = rendered && card.copy(draft = next.draft) == next
         card = next
         if (draftOnly) return
+        val fresh = host.controller.source(id)
+        val sourceChanged = fresh !== source
+        if (sourceChanged) {
+            summaryJob?.cancel()
+            summaryJob = null
+            sourcePane?.let(Disposer::dispose)
+            source = fresh
+            sourcePane = fresh?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+            sourceBody.removeAll()
+            sourcePane?.let { sourceBody.add(it) }
+            sourcePane?.applyZoom(host.zoom)
+            notice.text = fresh?.notice.orEmpty()
+            notice.isVisible = !fresh?.notice.isNullOrBlank()
+        }
         rendered = true
-        metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(next)}"
+        titleLabel.text = next.title
+        titleLabel.icon = if (next.wholeFile) AllIcons.FileTypes.Any_type else kindIcon(next)
+        titleLabel.toolTipText = "${canvasKindLabel(next)} ${next.title}"
+        expand.isVisible = !next.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() && next.symbol?.kind != "FILE"
+        val shown = if (next.wholeFile && fresh != null) next.copy(text = fresh.text, textTruncated = false) else next
+        metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(shown)}"
         metaLabel.toolTipText = metaLabel.text
         meta.isVisible = CardSection.META !in next.folded
         metaToggle.text = glyph(CardSection.META !in next.folded)
         listOf(summary, sourceSection, history, inputSection).forEach { it.fold(it.section in next.folded) }
-        sourceSection.title.text = canvasSourceTitle(next)
+        sourcePane?.isVisible = CardSection.SOURCE !in next.folded
+        sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
         summaryText.text = next.summary.orEmpty()
         summaryText.isVisible = next.summary != null
@@ -227,6 +258,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         revalidate()
         repaint()
         host.cardResized()
+        if (sourceChanged) requestSummary(force = false)
     }
 
     /** Asks for the summary when the card has none yet, or again when [force]d; the result is saved in the model. */
@@ -235,6 +267,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         if (summaryJob?.isActive == true || current.text.isBlank()) return
         if (!force && (current.summary != null || current.summaryError != null)) return
         val input = CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
+        val requestedSource = source
         summaryJob = host.scope.launch(Dispatchers.EDT) {
             try {
                 val text = withContext(Dispatchers.IO) { CanvasSummarizer({ host.services.complete()(it) }).summarize(input) }
@@ -247,8 +280,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                 LOG.warn("Canvas card summary failed", e)
                 host.model.setSummary(id, null, "The summary failed: ${e.message ?: e.javaClass.simpleName}. See the IDE log.")
             } finally {
-                summaryJob = null
-                host.model.card(id)?.let(::update)
+                if (source === requestedSource) {
+                    summaryJob = null
+                    host.model.card(id)?.let(::update)
+                }
             }
         }
         update(current)

@@ -11,6 +11,7 @@ Opening a file starts a new session or resumes a saved one. The file is shown as
 - Clicking a symbol or selecting text opens a card beside it, linked by an arrow. Every project name on every shown line is a symbol: calls, types, type parameters, properties, parameters and variables, inside nested functions too.
 - A card shows meta information, a summary, the selection or the symbol's source, the chat history and a chat input. Every part folds.
 - A card's source works like the file: its symbols open further cards, so one chain can follow the code graph as far as the reader likes.
+- Expand to file replaces a card's excerpt with its whole file, keeping its chat and branches. The reader can follow links anywhere in that file or chat about it; reopening the session keeps the expanded view.
 - Closing a card also closes the cards opened from it.
 
 ## Chat

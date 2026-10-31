@@ -131,6 +131,101 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals("helper();", changed.model.card(selection.id)!!.text)
     }
 
+    fun testExpandToFileKeepsChatAndBranchesAndRestoresFullFile() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val entry = canvas.open(null, "entry")
+        val helper = canvas.open(entry.id, "helper")
+        val start = canvas.source(entry.id)!!.text.indexOf("helper();")
+        val selection = canvas.openSelection(entry.id, start, start + "helper();".length)!!
+        val messages = listOf(SavedMessage(ChatRole.USER, "Why?"), SavedMessage(ChatRole.ASSISTANT, "It delegates."))
+        canvas.model.setMessages(entry.id, messages)
+        canvas.model.setDraft(entry.id, "What else?")
+        canvas.model.setSummary(entry.id, "Calls helper.")
+        canvas.model.setFolded(entry.id, CardSection.SOURCE, true)
+        background { canvas.expandToFile(entry.id) }
+
+        val expanded = canvas.model.card(entry.id)!!
+        assertTrue(expanded.wholeFile)
+        assertEquals("Flow.java", expanded.title)
+        assertEquals(source, canvas.source(entry.id)!!.text)
+        assertEquals(0, expanded.firstLine)
+        assertEquals(messages, expanded.messages)
+        assertEquals("What else?", expanded.draft)
+        assertNull(expanded.summary)
+        assertFalse(CardSection.SOURCE in expanded.folded)
+        assertEquals("The original link still finds this card", entry.id, canvas.open(null, "entry").id)
+        assertEquals("The child moves to the same call in the full file", source.indexOf("helper();"),
+            canvas.model.card(helper.id)!!.anchor.startOffset)
+        assertEquals("The same call still finds its existing child", helper.id, canvas.open(entry.id, "helper").id)
+        val another = canvas.open(entry.id, "Flow")
+        assertEquals(entry.id, another.parentId)
+        assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("Current card: file Flow.java"))
+
+        val restored = controller(file, canvas.model.session)
+        background { restored.loadRoot(); restored.restore() }
+        assertEquals(source, restored.source(entry.id)!!.text)
+        assertTrue(restored.model.card(entry.id)!!.wholeFile)
+        assertEquals(messages, restored.model.card(entry.id)!!.messages)
+        assertNull(restored.source(selection.id)!!.notice)
+        assertTrue(restored.source(selection.id)!!.links.isNotEmpty())
+    }
+
+    fun testExpandCrossFileSymbolDiscoversLinksOutsideItsOriginalScope() {
+        val other = myFixture.addFileToProject("Other.java", """
+            class Other {
+                static void target() {}
+                static void sibling() { target(); }
+            }
+        """.trimIndent())
+        val file = myFixture.configureByText("Flow.java", "class Flow { void entry() { Other.target(); } }")
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val target = canvas.open(null, "target")
+        assertFalse(canvas.source(target.id)!!.text.contains("sibling"))
+        background { canvas.expandToFile(target.id) }
+        assertEquals(other.text, canvas.source(target.id)!!.text)
+        val sibling = canvas.open(target.id, "sibling")
+        assertEquals(target.id, sibling.parentId)
+        assertTrue(sibling.text.contains("target();"))
+
+        val restored = controller(file, canvas.model.session)
+        background { restored.loadRoot(); restored.restore() }
+        assertEquals(other.text, restored.source(target.id)!!.text)
+        assertNotNull(restored.source(sibling.id)!!.node)
+    }
+
+    fun testSelectionCanExpandToFileWithItsChildStillAnchored() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val start = source.indexOf("helper();")
+        val selection = canvas.openSelection(null, start, start + "helper();".length)!!
+        val child = canvas.open(selection.id, "helper")
+        background { canvas.expandToFile(selection.id) }
+        assertEquals(source, canvas.source(selection.id)!!.text)
+        assertEquals(start, canvas.model.card(child.id)!!.anchor.startOffset)
+        assertEquals(child.id, canvas.open(selection.id, "helper").id)
+    }
+
+    fun testFullFileBeyondSnapshotLimitRemainsVisibleAndLinked() {
+        val large = "class Flow {\n    void entry() {}\n" + "    // More file context.\n".repeat(2000) +
+            "    void last() {}\n}"
+        val file = myFixture.configureByText("Flow.java", large)
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val entry = canvas.open(null, "entry")
+        background { canvas.expandToFile(entry.id) }
+        val expanded = canvas.model.card(entry.id)!!
+        assertTrue(expanded.textTruncated)
+        assertTrue(expanded.text.length <= CANVAS_CARD_TEXT_LIMIT)
+        assertEquals(large, canvas.source(entry.id)!!.text)
+        val last = canvas.open(entry.id, "last")
+        assertTrue(canvas.source(last.id)!!.text.contains("void last()"))
+        assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("use read_file"))
+    }
+
     fun testPanelOpensCardsSummarizesChatsAndSavesTheSession() {
         val file = myFixture.configureByText("Flow.java", source)
         val directory = Files.createTempDirectory("canvas-sessions")
@@ -165,6 +260,16 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
                 { panel.model.card(card.id)!!.messages.any { it.role == ChatRole.ASSISTANT } }, 30)
             assertEquals("What does entry do?", asked.single().last().text)
             assertEquals(listOf(ChatRole.NOTICE, ChatRole.USER, ChatRole.ASSISTANT), panel.model.card(card.id)!!.messages.map { it.role })
+
+            val oldPane = view.sourcePane
+            panel.expandToFile(card.id)
+            PlatformTestUtil.waitWithEventsDispatching("The card should show the whole file", { panel.model.card(card.id)!!.wholeFile }, 30)
+            assertEquals(source, view.sourcePane!!.source.text)
+            assertNotSame(oldPane, view.sourcePane)
+            view.send("What else is in this file?")
+            PlatformTestUtil.waitWithEventsDispatching("The existing chat should answer again",
+                { panel.model.card(card.id)!!.messages.count { it.role == ChatRole.ASSISTANT } == 2 }, 30)
+            assertEquals(2, asked.last().count { it.role == ChatRole.USER })
 
             panel.model.toggleFolded(card.id, CardSection.SOURCE)
             assertFalse("Folding hides the source", view.sourcePane!!.isVisible)

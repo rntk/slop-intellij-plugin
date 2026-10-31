@@ -73,10 +73,10 @@ internal class CanvasSessionController(
     /** The file of a project-relative or absolute [path], if it exists. */
     fun findFile(path: String): VirtualFile? {
         if (path.isEmpty()) return null
-        if (path == model.session.rootPath) return rootFile
+        if (path == model.session.rootPath || path == rootFile.path) return rootFile
         val base = project.basePath
         val absolute = if (base != null && !path.startsWith("/")) "$base/$path" else path
-        return LocalFileSystem.getInstance().findFileByPath(absolute)
+        return rootFile.fileSystem.findFileByPath(absolute) ?: LocalFileSystem.getInstance().findFileByPath(absolute)
     }
 
     /** Builds the root file's source; throws with a short message when it cannot be read. */
@@ -116,6 +116,42 @@ internal class CanvasSessionController(
         return open(source) { model.open(parentId, CardKind.SELECTION, anchor, it.path, it.firstLine, it.text) }
     }
 
+    /** Replaces an excerpt with its full file and links, keeping the card's identity, chat and children. */
+    suspend fun expandToFile(cardId: String) {
+        val card = model.card(cardId) ?: return
+        if (card.wholeFile) return
+        val previous = source(cardId) ?: error("The card's source is not shown.")
+        val fresh = withContext(Dispatchers.Default) { fileSource(card) }
+            ?: error("The file ${card.filePath} is no longer available.")
+        // A selection may start within a line, so locate its exact text from that document line.
+        val lineOffset = fresh.text.lineSequence().take(previous.firstLine).sumOf { it.length + 1 }
+        val offset = fresh.text.indexOf(previous.text, lineOffset).takeIf { it >= 0 }
+            ?: error("Source changed. Reopen the canvas session to expand this card.")
+        val anchors = withContext(Dispatchers.Default) {
+            val candidates = linkTargets(fresh.links).mapNotNull(::node)
+            model.children(cardId).mapNotNull { child ->
+                val ref = child.symbol ?: return@mapNotNull null
+                val target = find(ref, candidates) ?: return@mapNotNull null
+                val shifted = child.anchor.copy(startOffset = child.anchor.startOffset + offset,
+                    endOffset = child.anchor.endOffset + offset)
+                child.id to restoredAnchor(fresh.text, fresh.firstLine, fresh.links, target.id, shifted)
+            }.toMap()
+        }
+        withContext(Dispatchers.EDT) {
+            val current = model.card(cardId) ?: return@withContext
+            if (current.wholeFile) return@withContext
+            sources[cardId] = fresh
+            model.expandToFile(cardId, fresh.text, offset, anchors)
+        }
+    }
+
+    private suspend fun fileSource(card: CanvasCard): CanvasSource? {
+        val file = findFile(card.filePath) ?: return null
+        val schematic = exploration.fileSchematic(file) ?: return null
+        return CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine,
+            card.filePath, file, schematic.scope)
+    }
+
     /**
      * Resolves the cards of a saved session again, root-first, once [loadRoot] is done: a symbol card is looked up
      * among its parent's link targets, then the whole graph, and shows its current source (refreshing the saved
@@ -128,6 +164,16 @@ internal class CanvasSessionController(
             val parent = source(card.parentId)
             val restored = try {
                 when {
+                    card.wholeFile -> {
+                        val fresh = withContext(Dispatchers.Default) { fileSource(card) }
+                        if (fresh == null) saved(card, "File not found; showing the saved source without links.")
+                        else {
+                            val changed = sourceChanged(card, fresh.text)
+                            withContext(Dispatchers.EDT) { model.restoreSnapshot(card.id, card.anchor, fresh.firstLine, fresh.text) }
+                            CanvasSource(fresh.text, fresh.links, fresh.firstLine, fresh.path, fresh.file, fresh.node,
+                                CANVAS_SOURCE_CHANGED.takeIf { changed })
+                        }
+                    }
                     parent == null -> saved(card, CANVAS_SYMBOL_MISSING)
                     card.kind == CardKind.SELECTION -> {
                         val (links, changed) = restoredSelectionLinks(parent.text, parent.links, card)

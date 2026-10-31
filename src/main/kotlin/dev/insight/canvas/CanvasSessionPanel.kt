@@ -235,7 +235,11 @@ internal class CanvasSessionPanel(
                 }
                 anchorYs.remove(id)
             }
-            is CanvasChange.CardChanged -> views[change.card.id]?.update(change.card)
+            is CanvasChange.CardChanged -> views[change.card.id]?.let { view ->
+                val anchorsChanged = view.card.anchor != change.card.anchor || view.card.wholeFile != change.card.wholeFile
+                view.update(change.card)
+                if (anchorsChanged) refreshAnchors()
+            }
             else -> return
         }
         if (change !is CanvasChange.CardChanged) refreshAnchors()
@@ -283,6 +287,23 @@ internal class CanvasSessionPanel(
             LOG.warn("Unable to open canvas card of $name", e)
             showStatus("Could not open $name: " +
                 (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+        }
+    }
+
+    override fun expandToFile(cardId: String) {
+        scope.launch(Dispatchers.EDT) {
+            showStatus("Opening full file…")
+            try {
+                controller.expandToFile(cardId)
+                hideSelectionButton()
+                showStatus("")
+                content.validate()
+                reveal(cardId)
+            } catch (e: Throwable) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                LOG.warn("Unable to expand canvas card to file", e)
+                showStatus("Could not expand to file: ${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
