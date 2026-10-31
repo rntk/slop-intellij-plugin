@@ -1,11 +1,15 @@
 package dev.insight.callgraph.javascript
 
 import com.intellij.lang.ecmascript6.psi.ES6ExportDeclaration
+import com.intellij.lang.ecmascript6.psi.ES6ExportDefaultAssignment
 import com.intellij.lang.ecmascript6.psi.ES6ImportDeclaration
 import com.intellij.lang.ecmascript6.psi.ES6ImportExportSpecifier
 import com.intellij.lang.ecmascript6.psi.ES6ImportedBinding
+import com.intellij.lang.ecmascript6.psi.JSClassExpression
 import com.intellij.lang.javascript.psi.*
+import com.intellij.lang.javascript.psi.ecma6.TypeScriptEnum
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptImportStatement
+import com.intellij.lang.javascript.psi.ecma6.TypeScriptInterface
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptTypeAlias
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptTypeParameter
 import com.intellij.lang.javascript.psi.ecmal4.JSAttributeList
@@ -14,6 +18,7 @@ import com.intellij.lang.javascript.psi.ecmal4.JSReferenceList
 import com.intellij.lang.javascript.psi.stubs.JSImplicitElement
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
@@ -31,6 +36,21 @@ import dev.insight.graph.SymbolKind
  */
 class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is JSFile
+
+    override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
+        is TypeScriptInterface, is TypeScriptEnum, is TypeScriptTypeAlias -> true
+        is JSClass -> element !is JSClassExpression && element.name != null && isDeclarationOnly(element)
+        is ES6ExportDefaultAssignment -> element.namedElement?.let(::keepGapWhole) == true
+        else -> false
+    }
+
+    private fun isDeclarationOnly(element: JSClass): Boolean =
+        element.functions.all { it.block == null } &&
+            element.fields.none { field ->
+                isBinding(field) ||
+                    PsiTreeUtil.findChildOfAnyType(field.initializer, JSFunctionExpression::class.java, JSClassExpression::class.java) != null
+            } &&
+            element.members.none { it is JSStaticBlock || (it is JSClass && !keepGapWhole(it)) }
 
     /** The function expression held by a variable, field or property, looking through parentheses. */
     private fun functionValue(element: PsiElement): JSFunctionExpression? {

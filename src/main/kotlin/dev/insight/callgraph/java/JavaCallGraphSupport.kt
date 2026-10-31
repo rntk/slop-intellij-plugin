@@ -5,6 +5,7 @@ import com.intellij.psi.PsiCall
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiMethodReferenceExpression
+import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
@@ -15,6 +16,17 @@ import dev.insight.graph.SymbolKind
 /** Loaded only when the Java plugin is present (see META-INF/call-graph-java.xml). */
 class JavaCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is PsiJavaFile
+
+    override fun keepGapWhole(element: PsiElement): Boolean =
+        element is PsiClass && element !is PsiTypeParameter && element !is PsiAnonymousClass && isDeclarationOnly(element)
+
+    private fun isDeclarationOnly(element: PsiClass): Boolean =
+        element.initializers.isEmpty() &&
+            element.methods.all { it is SyntheticElement || it.body == null } &&
+            element.fields.none {
+                PsiTreeUtil.findChildOfAnyType(it, PsiLambdaExpression::class.java, PsiAnonymousClass::class.java) != null
+            } &&
+            element.innerClasses.all(::isDeclarationOnly)
 
     override fun symbolKind(element: PsiElement): SymbolKind? = when (element) {
         is PsiTypeParameter -> SymbolKind.PARAMETER

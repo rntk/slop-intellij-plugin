@@ -51,17 +51,104 @@ class SchematicGapSourceTest : BasePlatformTestCase() {
             assertEquals(listOf(GapUnit(2, 9, symbols = (3..8).toList())),
                 schematicGapUnits(namedScope, document, rows.dropLast(1) + CodeRow(9, 9), budget))
         }
+        val (funcFile, funcDoc) = configure("func.go", "package main\n\ntype Handler func(\n    req Request,\n) Response\n")
+        assertEquals(listOf(GapUnit(2, 4)),
+            schematicGapUnits(funcFile, funcDoc, listOf(CodeRow(3, 3)), GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)))
     }
 
     fun `test Rust declaration-only types grow from fields and variants beyond the budget`() {
-        for ((kind, member) in listOf("struct" to "field: String", "enum" to "Variant { field: String }")) {
-            val (file, document) = configure("types.rs", "pub $kind Large {\n    $member,\n}\nfn run() {\n    work();\n}\n")
+        for ((kind, member) in listOf(
+            "struct" to "field: String,",
+            "union" to "field: u32,",
+            "enum" to "Variant { field: String },",
+            "trait" to "fn call(&self);\n    type Output;",
+        )) {
+            val (file, document) = configure("types.rs", "pub $kind Large {\n    $member\n}\nfn run() {\n    work();\n}\n")
             val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
-            assertEquals(listOf(GapUnit(0, 2)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
-            val units = schematicGapUnits(file, document, listOf(CodeRow(0, 5)), GapBudget(lines = 1))
-            assertEquals(GapUnit(0, 2), units.first())
-            assertTrue(units.any { it.construct == 3..5 })
+            val end = document.getLineNumber(file.text.indexOf("fn run")) - 1
+            assertEquals(listOf(GapUnit(0, end)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val units = schematicGapUnits(file, document, listOf(CodeRow(0, end + 3)), GapBudget(lines = 1))
+            assertEquals(GapUnit(0, end), units.first())
+            assertTrue(units.any { it.construct == (end + 1)..(end + 3) })
         }
+        val (aliasFile, aliasDoc) = configure("alias.rs", "pub type Handler =\n    fn(\n        Request,\n    ) -> Response;\n")
+        assertEquals(listOf(GapUnit(0, 3)),
+            schematicGapUnits(aliasFile, aliasDoc, listOf(CodeRow(2, 2)), GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)))
+        val (defaultTrait, defaultDoc) = configure("default.rs", "trait WithBody {\n    fn run(&self) {\n        work();\n    }\n}\n")
+        assertTrue(schematicGapUnits(defaultTrait, defaultDoc, listOf(CodeRow(0, 4)), GapBudget(lines = 1)).any { it.construct == 0..4 })
+    }
+
+    fun `test Java declaration-only types stay whole while classes with method bodies do not`() {
+        val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+        for (source in listOf(
+            "interface Large {\n  void m1();\n  void m2();\n}\n",
+            "@interface Large {\n  String m1();\n  int m2() default 0;\n}\n",
+            "enum Large {\n  FIRST,\n  SECOND\n}\n",
+            "record Large(\n  String first,\n  int second\n) {}\n",
+            "class Large {\n  String first;\n  int second;\n}\n",
+        )) {
+            val (file, document) = configure("Large.java", source)
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val scope = outermost(file, source.substringBefore(" "))
+            assertEquals(source, listOf(GapUnit(0, 3, symbols = listOf(1, 2))),
+                schematicGapUnits(scope, document, listOf(CodeRow(0, 0), BlockRow(1, 1, 1, 1, emptyList()), BlockRow(2, 2, 2, 2, emptyList()), CodeRow(3, 3)), budget))
+        }
+    }
+
+    fun `test Kotlin declaration-only types and aliases stay whole while classes with bodies do not`() {
+        val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+        for (source in listOf(
+            "data class Large(\n  val first: String,\n  val second: Int,\n)\n",
+            "enum class Large {\n  FIRST,\n  SECOND,\n}\n",
+            "interface Large {\n  fun m1()\n  fun m2()\n}\n",
+            "object Large {\n  const val FIRST = 1\n  const val SECOND = 2\n}\n",
+            "typealias Large =\n  (\n    String,\n  ) -> Int\n",
+        )) {
+            val (file, document) = configure("Large.kt", source)
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val scope = outermost(file, source.substringBefore(" "))
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(scope, document, listOf(CodeRow(0, 3)), budget))
+        }
+        val (withBody, bodyDoc) = configure("WithBody.kt", "class WithBody {\n  fun run() {\n    work()\n  }\n}\n")
+        assertTrue(schematicGapUnits(withBody, bodyDoc, listOf(CodeRow(0, 4)), GapBudget(lines = 1)).any { it.construct == 0..4 })
+    }
+
+    fun `test Python declaration-only classes protocols and type aliases stay whole`() {
+        val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+        for (source in listOf(
+            "class Large:\n    first: str\n    second: int = 1\n",
+            "class Large(Protocol):\n    def m1(self) -> None: ...\n    def m2(self) -> None: pass\n",
+            "type Large = (\n    str\n    | int\n)\n",
+        )) {
+            val (file, document) = configure("types.py", source)
+            val end = document.lineCount - 2
+            assertEquals(source, listOf(GapUnit(0, end)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val scope = outermost(file, source.substringBefore(" "))
+            assertEquals(source, listOf(GapUnit(0, end)), schematicGapUnits(scope, document, listOf(CodeRow(0, end)), budget))
+        }
+        val (withBody, bodyDoc) = configure("service.py", "class Service:\n    def run(self):\n        work()\n")
+        assertTrue(schematicGapUnits(withBody, bodyDoc, listOf(CodeRow(0, 2)), GapBudget(lines = 1)).any { it.construct == 0..2 })
+    }
+
+    fun `test TypeScript declaration-only types stay whole while classes with method bodies do not`() {
+        val budget = GapBudget(lines = 1, chars = 1, declarations = 0, glance = 0)
+        for (source in listOf(
+            "export interface Large {\n  first: string;\n  second(): void;\n}\n",
+            "export default interface Large {\n  first: string;\n  second: number;\n}\n",
+            "export enum Large {\n  First,\n  Second,\n}\n",
+            "export type Large = {\n  first: string;\n  second: number;\n};\n",
+            "export class Large {\n  first: string;\n  second: number;\n}\n",
+        )) {
+            val (file, document) = configure("types.ts", source)
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(file, document, listOf(CodeRow(1, 1)), budget))
+            val scope = outermost(file, "export")
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(scope, document, listOf(CodeRow(0, 3)), budget))
+            val namedScope = generateSequence(file.findElementAt(file.text.indexOf("Large"))) { it.parent }
+                .first { it is com.intellij.psi.PsiNamedElement && it.name == "Large" }
+            assertEquals(source, listOf(GapUnit(0, 3)), schematicGapUnits(namedScope, document, listOf(CodeRow(0, 3)), budget))
+        }
+        val (withBody, bodyDoc) = configure("service.ts", "export class Service {\n  run() {\n    work();\n  }\n}\n")
+        assertTrue(schematicGapUnits(withBody, bodyDoc, listOf(CodeRow(0, 4)), GapBudget(lines = 1)).any { it.construct == 0..4 })
     }
 
     fun `test grouped Go types do not exempt their container or neighboring function`() {

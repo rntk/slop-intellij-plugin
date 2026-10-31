@@ -18,7 +18,11 @@ import org.rust.lang.core.psi.ext.functions
 class RustCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is RsFile
 
-    override fun keepGapWhole(element: PsiElement) = element is RsStructItem || element is RsEnumItem
+    override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
+        is RsStructItem, is RsEnumItem, is RsTypeAlias, is RsTraitAlias -> true
+        is RsTraitItem -> element.members?.expandedMembers?.functions?.all { it.isAbstract } != false
+        else -> false
+    }
 
     // Closures have no declaration node; their calls belong to the enclosing function.
     override fun isFunction(element: PsiElement) = element is RsFunction

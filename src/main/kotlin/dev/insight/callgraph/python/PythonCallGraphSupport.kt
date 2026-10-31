@@ -24,6 +24,34 @@ import dev.insight.graph.SymbolKind
 class PythonCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is PyFile
 
+    override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
+        is PyTypeAliasStatement -> true
+        is PyClass -> isDeclarationOnly(element)
+        else -> false
+    }
+
+    private fun isDeclarationOnly(element: PyClass): Boolean =
+        element.statementList.statements.let { statements ->
+            statements.isNotEmpty() && statements.all { statement ->
+                when (statement) {
+                    is PyTypeDeclarationStatement, is PyPassStatement -> true
+                    is PyAssignmentStatement -> PsiTreeUtil.findChildOfType(statement.assignedValue, PyLambdaExpression::class.java) == null
+                    is PyExpressionStatement -> statement.expression.let { it is PyStringLiteralExpression || it is PyEllipsisLiteralExpression }
+                    is PyFunction -> isStubFunction(statement)
+                    is PyClass -> isDeclarationOnly(statement)
+                    else -> false
+                }
+            }
+        }
+
+    private fun isStubFunction(function: PyFunction): Boolean =
+        function.statementList.statements.let { statements ->
+            statements.isNotEmpty() && statements.all { statement ->
+                statement is PyPassStatement ||
+                    (statement is PyExpressionStatement && statement.expression.let { it is PyStringLiteralExpression || it is PyEllipsisLiteralExpression })
+            }
+        }
+
     override fun isFunction(element: PsiElement) = element is PyFunction
 
     override fun symbolKind(element: PsiElement): SymbolKind? = when (element) {

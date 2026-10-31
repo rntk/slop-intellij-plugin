@@ -1,6 +1,7 @@
 package dev.insight.callgraph.kotlin
 
 import com.intellij.psi.PsiElement
+import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphAnalyzer
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallResolution
@@ -26,6 +27,35 @@ import org.jetbrains.kotlin.psi.KtPropertyAccessor
  */
 class KotlinCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: com.intellij.psi.PsiFile) = file is KtFile
+
+    override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
+        is KtTypeAlias -> true
+        is KtClassOrObject -> isDeclarationOnly(element)
+        else -> false
+    }
+
+    private fun isDeclarationOnly(element: KtClassOrObject): Boolean =
+        element !is KtEnumEntry && element.name != null &&
+            element.getAnonymousInitializers().isEmpty() &&
+            element.primaryConstructorParameters.none { hasExecutableValue(it.defaultValue) } &&
+            element.declarations.all { declaration ->
+                when (declaration) {
+                    is KtNamedFunction -> !declaration.hasBody()
+                    is KtSecondaryConstructor -> !declaration.hasBody()
+                    is KtProperty -> declaration.accessors.none { it.hasBody() } && !hasExecutableValue(declaration.initializer)
+                    is KtEnumEntry -> declaration.declarations.isEmpty()
+                    is KtClassOrObject -> isDeclarationOnly(declaration)
+                    else -> true
+                }
+            }
+
+    private fun hasExecutableValue(expression: KtExpression?): Boolean =
+        PsiTreeUtil.findChildOfAnyType(
+            expression,
+            KtLambdaExpression::class.java,
+            KtNamedFunction::class.java,
+            KtObjectLiteralExpression::class.java,
+        ) != null
 
     override fun symbolKind(element: PsiElement): SymbolKind? = when {
         element is KtClassOrObject && element.name != null -> SymbolKind.CLASS
