@@ -105,8 +105,10 @@ internal class SchematicSourceEditor(
 
         editor.foldingModel.runBatchFoldingOperation {
             for ((row, block) in blocks) {
+                // A block covers only the line naming it; the rest of a declaration stays native source.
+                val (first, last) = if (row is BlockRow) row.headline to row.headline else row.first to row.last
                 val fold = editor.foldingModel.addCustomLinesFolding(
-                    row.first - schematic.firstLine, row.last - schematic.firstLine,
+                    first - schematic.firstLine, last - schematic.firstLine,
                     object : CustomFoldRegionRenderer {
                         override fun calcWidthInPixels(region: CustomFoldRegion) = block.preferredSize.width.coerceAtLeast(1)
                         override fun calcHeightInPixels(region: CustomFoldRegion) = block.preferredSize.height.coerceAtLeast(1)
@@ -114,7 +116,7 @@ internal class SchematicSourceEditor(
                         override fun paint(region: CustomFoldRegion, g: Graphics2D, targetRegion: Rectangle2D, textAttributes: TextAttributes) = Unit
                     },
                 )
-                checkNotNull(fold) { "Cannot fold schematic block ${row.first}..${row.last}" }
+                checkNotNull(fold) { "Cannot fold schematic block $first..$last" }
                 folds[row] = fold
             }
         }
@@ -140,11 +142,11 @@ internal class SchematicSourceEditor(
     /** The 0-based document line at [point] of the text area. */
     fun lineAt(point: Point): Int = schematic.firstLine + editor.xyToLogicalPosition(point).line
 
-    /** Tints document lines [first]..[last], blocks folded among them included. */
-    fun tint(first: Int, last: Int, color: Color) {
+    /** Tints document lines [first]..[last], blocks folded among them included; higher [layer]s paint over lower ones. */
+    fun tint(first: Int, last: Int, color: Color, layer: Int = HighlighterLayer.SELECTION - 1) {
         val document = editor.document
         editor.markupModel.addRangeHighlighter(document.getLineStartOffset(first - schematic.firstLine),
-            document.getLineEndOffset(last - schematic.firstLine), HighlighterLayer.SELECTION - 1,
+            document.getLineEndOffset(last - schematic.firstLine), layer,
             TextAttributes().apply { backgroundColor = color }, HighlighterTargetArea.LINES_IN_RANGE)
     }
 
@@ -169,6 +171,17 @@ internal class SchematicSourceEditor(
         }
         val origin = textOrigin()
         return Rectangle(origin.x, origin.y + top, right, bottom - top)
+    }
+
+    /** Where the text of document lines [first]..[last] begins, in this component's x, leaving out folded and blank lines. */
+    fun textLeft(first: Int, last: Int): Int? {
+        val document = editor.document
+        val folded = folds.values.map { document.getLineNumber(it.startOffset)..document.getLineNumber(it.endOffset) }
+        return (first - schematic.firstLine..last - schematic.firstLine).filter { line -> folded.none { line in it } }.mapNotNull { line ->
+            val start = document.getLineStartOffset(line)
+            val indent = document.charsSequence.subSequence(start, document.getLineEndOffset(line)).indexOfFirst { !it.isWhitespace() }
+            if (indent < 0) null else editor.offsetToXY(start + indent).x
+        }.minOrNull()?.plus(textOrigin().x)
     }
 
     /** Editor text and gutter origins are measured after layout; the outer canvas owns all scrolling. */

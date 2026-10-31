@@ -101,8 +101,10 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             span.javaClass.getMethod("showSummary", String::class.java).invoke(span, "Defines the flow and its store.")
             val viewer = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
             val blocks = schematic.rows.filterIsInstance<BlockRow>().size
+            // Declarations spanning several lines tint their native source too.
+            val tints = 1 + schematic.rows.count { it is BlockRow && it.last > it.first }
             assertEquals("Native source keeps blocks as its only folds", blocks, viewer.editor.foldingModel.allFoldRegions.size)
-            assertEquals("The summarized gap is tinted", 1, viewer.editor.markupModel.allHighlighters.size)
+            assertEquals("The summarized gap is tinted", tints, viewer.editor.markupModel.allHighlighters.size)
             val card = descendants(panel.canvas).single { it.javaClass.simpleName == "GapSummaryCard" } as java.awt.Container
             assertSame("Gap cards belong to the external card column", level, card.parent)
             val sourceLink = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Source" }
@@ -170,7 +172,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertFalse(sourceLink.isShowingInTree())
             val native = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
             assertEquals(blocks, native.editor.foldingModel.allFoldRegions.size)
-            assertEquals("A recreated native editor keeps the tint", 1, native.editor.markupModel.allHighlighters.size)
+            assertEquals("A recreated native editor keeps the tint", tints, native.editor.markupModel.allHighlighters.size)
             assertEquals(schematic.lines.joinToString("\n"), native.editor.document.text)
             layOut(panel)
             checkHover(native.editor.contentComponent)
@@ -194,6 +196,49 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(source.lines().indexOfFirst { it.trim() == "}" && it.startsWith("    }") }, entry.last)
         // Every line is covered once, in order.
         assertEquals((0 until source.lines().size).toList(), schematic.rows.flatMap { (it.first..it.last).toList() })
+    }
+
+    fun `test declarations show their whole source as one block while one-line symbols stay one line`() {
+        val (result, schematic) = build { it.kind == SymbolKind.FILE }
+        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, schematic.scope))
+        try {
+            val panel = editor.component as SchematicPanel
+            val toggle = descendants(panel).filterIsInstance<javax.swing.JCheckBox>().single { it.name == "schematic-native-editor" }
+            PlatformTestUtil.waitWithEventsDispatching("File should load", {
+                descendants(panel.canvas).any { it is SchematicSourceEditor }
+            }, 10)
+            val level = descendants(panel.canvas).first { it.javaClass.simpleName == "LevelView" } as java.awt.Container
+            val entry = schematic.rows.filterIsInstance<BlockRow>().single { it.declared?.let { id -> result.name(id) } == "entry" }
+            fun bodies() = descendants(level).filter { it.javaClass.simpleName == "BlockCode" }.map { it as javax.swing.JTextArea }
+            fun entryCard() = level.components.single {
+                it.javaClass.simpleName == "SummaryCard" && descendants(it as java.awt.Container)
+                    .filterIsInstance<javax.swing.JLabel>().any { label -> label.text.orEmpty().contains("entry(") }
+            }
+
+            // The IDE editor shows the body as native text and folds only the headline into the block.
+            val native = descendants(level).filterIsInstance<SchematicSourceEditor>().single().editor
+            val document = native.document
+            assertTrue(native.foldingModel.allFoldRegions.all { document.getLineNumber(it.startOffset) == document.getLineNumber(it.endOffset) })
+            assertTrue(bodies().none { it.isShowingInTree() })
+
+            toggle.doClick()
+            panel.setSize(1400, 900)
+            layOut(panel)
+            val body = bodies().single()
+            assertTrue(body.isShowingInTree())
+            assertEquals((entry.headline + 1..entry.last).joinToString("\n") { schematic.text(it).drop(4).trimEnd() }, body.text)
+            // `void check(int kind) {}` and the calls are one line each, with nothing beside their headline.
+            val lines = level.components.filter { it.javaClass.simpleName == "LineView" }
+            assertEquals(schematic.rows.count { it is BlockRow } - 1, lines.count { line -> descendants(line as java.awt.Container).none { it in bodies() } })
+
+            hoverMouse(body)
+            assertTrue("Hovering the body previews the declaration", entryCard().isVisible)
+            hoverMouse(body, java.awt.event.MouseEvent.MOUSE_EXITED)
+            click(body)
+            assertTrue("Clicking the body pins the declaration", entryCard().isVisible)
+        } finally {
+            com.intellij.openapi.util.Disposer.dispose(editor)
+        }
     }
 
     fun `test native viewers preserve snapshots line numbers selection fold geometry and editor lifetime`() {

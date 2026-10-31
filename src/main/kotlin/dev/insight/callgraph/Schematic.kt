@@ -28,7 +28,7 @@ sealed interface SchematicRow {
 data class CodeRow(override val first: Int, override val last: Int) : SchematicRow
 
 /**
- * Lines that lead further into the graph: a declaration of [declared] folded to its [headline] (the line naming it),
+ * Lines that lead further into the graph: a declaration of [declared], one block led by its [headline] (the line naming it),
  * a line that calls [calls], or a line naming project types and properties. A line with calls at separate places, or
  * with such names, has one of [links] for each; otherwise its only link is the whole row.
  */
@@ -49,7 +49,7 @@ data class SchematicLink(val targets: List<Int>, val columns: IntRange?, val occ
     val reference: Boolean = false)
 
 /**
- * A function declared in a schematic's scope, folded to one block; [headline] is the line naming it, and [columns] of
+ * A function declared in a schematic's scope, read as one block; [headline] is the line naming it, and [columns] of
  * that line hold its name, when known.
  */
 data class SchematicDeclaration(val id: Int, val first: Int, val last: Int, val headline: Int, val columns: IntRange? = null)

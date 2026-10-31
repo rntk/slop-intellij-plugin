@@ -12,6 +12,7 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
+import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorPolicy
@@ -85,8 +86,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * A lossy reading of a file through the call graph. Its source is shown line by line, but the functions it declares
- * fold into blocks, and lines that call project code become blocks too. Focusing or hovering a block previews the
+ * A lossy reading of a file through the call graph. Its source is shown whole, but the functions it declares are
+ * framed as blocks, and lines that call project code become blocks too. Focusing or hovering a block previews the
  * summary of the symbol it leads to; Enter or a click pins it. A summary unfolds into the same reading
  * of that symbol, so the reader can walk down the graph, keeping several branches open at once.
  *
@@ -457,19 +458,22 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
         val owner = if (e.id == MouseEvent.MOUSE_EXITED) null else
             generateSequence(e.component) { it.parent }.firstOrNull {
-                it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView.GapSummaryCard
+                it is LevelView.BlockView || it is LevelView.BlockCode || it is LevelView.SummaryCard || it is LevelView.GapSummaryCard
             }
+        val level = if (owner != null || e.id == MouseEvent.MOUSE_EXITED) null else
+            e.component as? LevelView ?: SwingUtilities.getAncestorOfClass(LevelView::class.java, e.component) as? LevelView
+        // A declaration's source previews its block, also as native text and in a split headline's frame.
         val block = when (owner) {
             is LevelView.BlockView -> owner
+            is LevelView.BlockCode -> owner.block
             is LevelView.SummaryCard -> owner.row
+            null -> level?.blockAt(e)
             else -> null
         }
         // Any source of a summarized gap previews it, between and around the blocks it holds.
         val gap = when (owner) {
             is LevelView.GapSummaryCard -> owner.span
-            null -> if (e.id == MouseEvent.MOUSE_EXITED) null else
-                (e.component as? LevelView ?: SwingUtilities.getAncestorOfClass(LevelView::class.java, e.component) as? LevelView)
-                    ?.summarizedAt(e)
+            null -> if (block == null) level?.summarizedAt(e) else null
             else -> null
         }
         if (block != null || gap != null) {
@@ -1236,8 +1240,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     showContextMenu(event, describeLine(line, selection),
                         if (selection.isNullOrEmpty() || editor == null) null else { { editor.selectionModel.copySelectionToClipboard() } })
                 }, onLineClick = { line ->
-                    if (!panned) spans.firstOrNull { line in it.unit && it.summary != null }?.toggle()
+                    if (!panned) blockAt(line)?.pin() ?: spans.firstOrNull { line in it.unit && it.summary != null }?.toggle()
                 }).also {
+                    // Declarations show their source natively, behind any gap holding them.
+                    lines.filter { it.multiline }.forEach { line ->
+                        it.tint(line.row.first, line.row.last, blockBackground, HighlighterLayer.SELECTION - 2)
+                    }
                     spans.filter { it.summary != null }.forEach { span -> it.tint(span.unit.first, span.unit.last, gapBackground) }
                     sourceEditors += it
                     // Earlier children paint above the native editor, inside the space reserved by its folds.
@@ -1285,6 +1293,17 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             return line?.let { at -> spans.firstOrNull { at in it.unit && it.summary != null } }
         }
 
+        /** The block whose declaration's native source is under the pointer, beside its headline. */
+        fun blockAt(e: MouseEvent): BlockView? {
+            val editor = source?.editor ?: return null
+            if (!SwingUtilities.isDescendingFrom(e.component, editor.contentComponent)) return null
+            return source?.lineAt(SwingUtilities.convertPoint(e.component, e.point, editor.contentComponent))?.let(::blockAt)
+        }
+
+        /** The block whose declaration holds document [line]. */
+        private fun blockAt(line: Int): BlockView? =
+            rows.filterIsInstance<LineView>().firstOrNull { it.multiline && line in it.row.first..it.row.last }?.main
+
         /** The first document line of a row view of this level. */
         private fun firstLine(row: Component): Int? = when (row) {
             is GapView -> row.row.first
@@ -1298,6 +1317,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         fun showSource(show: Boolean) {
             showPlainSource = show
             source?.isVisible = show
+            // The IDE editor shows declarations' source itself; compact mode keeps only their headlines.
+            rows.filterIsInstance<LineView>().forEach { it.showBody(show, useNativeSource) }
             rows.filterIsInstance<GapView>().forEach {
                 // Native source shows summarized gaps itself; compact mode keeps them as plain code beside their blocks.
                 it.isVisible = if (show) !useNativeSource else it.span?.summary != null
@@ -1428,11 +1449,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
         }
 
+        /** Lines [first]..[last] as shown: runs of blank lines show as one. */
+        private fun shownLines(first: Int, last: Int) = (first..last).filterIndexed { index, line ->
+            schematic.text(line).isNotBlank() || index == 0 || schematic.text(line - 1).isNotBlank()
+        }
+
         /** Plain code; runs of blank lines show as one. */
         private fun codeView(row: CodeRow): JComponent {
-            val shown = (row.first..row.last).filterIndexed { index, line ->
-                schematic.text(line).isNotBlank() || index == 0 || schematic.text(line - 1).isNotBlank()
-            }
+            val shown = shownLines(row.first, row.last)
             return CodeView(shown.joinToString("\n") { text(it) }).apply {
                 addMouseListener(object : MouseAdapter() {
                     override fun mouseClicked(e: MouseEvent) {
@@ -1515,6 +1539,13 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.stroke = BasicStroke(scaled(1).toFloat())
+                // In the IDE editor a declaration's frame encloses its native source like the canvas block does.
+                source?.takeIf { it.isVisible }?.let { native ->
+                    for (view in rows.filterIsInstance<LineView>().filter { it.multiline }) {
+                        val frame = view.nativeFrame(native, this)
+                        line(if (view.marked) blockOpen else JBColor.border(), 2).paintBorder(this, g2, frame.x, frame.y, frame.width, frame.height)
+                    }
+                }
                 // A gap's outline and amber rule enclose the code and blocks it summarizes.
                 for (span in spans.filter { it.summary != null }) {
                     val frame = span.frame() ?: continue
@@ -1542,7 +1573,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** Read-only code that leaves dragging to the canvas: no focus, selection or scrolling to the caret. */
-        inner class CodeView(text: String) : JTextArea(text), Zoomable {
+        open inner class CodeView(text: String, private val inset: Int = 4) : JTextArea(text), Zoomable {
             init {
                 caret = object : DefaultCaret() {
                     override fun adjustVisibility(nloc: java.awt.Rectangle?) = Unit
@@ -1558,13 +1589,26 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             override fun applyZoom() {
                 font = codeFont
-                border = pixelBorder(0, scaled(4), 0, scaled(4))
+                border = pixelBorder(0, scaled(inset), 0, scaled(inset))
             }
         }
 
         /**
+         * Source of [block]'s declaration beside its headline, lines [first]..[last] at the headline's indentation
+         * [depth]; a click pins the block like its headline does.
+         */
+        inner class BlockCode(val block: BlockView, first: Int, last: Int, depth: Int) : CodeView(
+            shownLines(first, last).joinToString("\n") { line ->
+                val raw = detab(schematic.text(line))
+                raw.drop(minOf(depth, raw.length - raw.trimStart().length)).trimEnd()
+            }, inset = 0) {
+            init { onClick(this) { block.pin() } }
+        }
+
+        /**
          * A block row at the code's indentation. Its only link is the whole row, or on a split line each call is a link
-         * of its own between the line's plain text.
+         * of its own between the line's plain text. A declaration spanning several lines shows all of them in its frame,
+         * except where the IDE editor shows them or compact mode hides them.
          */
         inner class LineView(val row: BlockRow) : JPanel(BorderLayout()), Zoomable {
             private val links = mutableListOf<BlockView>()
@@ -1573,25 +1617,47 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val blocks: List<BlockView> get() = links
             /** The line's frame; for a whole-row link, that link's box. */
             val box: JPanel
+            /** The part of [box] showing the headline. */
+            private val headline: JComponent
             val onTrail get() = links.any { it.onTrail }
+            val multiline get() = row.last > row.first
+            /** The link the rest of a declaration's source leads to: its declared name. */
+            val main get() = links.firstOrNull { row.declared != null && row.declared in it.link.targets } ?: links.first()
+            val marked get() = links.any { it.marked }
+            private val body = mutableListOf<JComponent>()
+            private var size: JLabel? = null
 
             init {
                 isOpaque = false
+                val depth = detab(schematic.text(row.headline)).takeWhile { it == ' ' }.length
+                fun code(block: BlockView, first: Int, last: Int) =
+                    if (first > last) null else BlockCode(block, first, last, depth).also { body += it }
+                fun sizeLabel() = JLabel("${row.last - row.first + 1} lines").apply {
+                    foreground = UIUtil.getContextHelpForeground()
+                    alignmentY = CENTER_ALIGNMENT
+                }.zoomFont().also { size = it }
                 if (!row.split) {
                     val block = BlockView(this, row.links.single(), text(row.headline).trimStart())
                     links += block
                     box = block.box
+                    headline = block.title
+                    if (multiline) {
+                        box.add(sizeLabel(), BorderLayout.EAST)
+                        code(block, row.first, row.headline - 1)?.let { box.add(it, BorderLayout.NORTH) }
+                        code(block, row.headline + 1, row.last)?.let { box.add(it, BorderLayout.SOUTH) }
+                    }
                     add(block, BorderLayout.WEST)
                 } else {
-                    box = JPanel().apply {
+                    val line = JPanel().apply {
                         layout = BoxLayout(this, BoxLayout.X_AXIS)
                         background = blockBackground
                     }
+                    headline = line
                     fun plain(text: String) {
-                        box.add(CallableLabel(detab(text)) { onTrail }.also { labels += it; it.alignmentY = CENTER_ALIGNMENT })
+                        line.add(CallableLabel(detab(text)) { onTrail }.also { labels += it; it.alignmentY = CENTER_ALIGNMENT })
                     }
                     fun link(link: SchematicLink, label: String) {
-                        box.add(BlockView(this, link, label).also { links += it; it.alignmentY = CENTER_ALIGNMENT })
+                        line.add(BlockView(this, link, label).also { links += it; it.alignmentY = CENTER_ALIGNMENT })
                     }
                     val raw = schematic.text(row.headline)
                     val end = raw.trimEnd().length
@@ -1610,15 +1676,48 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                         plain("  ")
                         link(link, "→ ${names(link)}")
                     }
-                    if (row.last > row.first) box.add(JLabel("  ${row.last - row.first + 1} lines").apply {
-                        foreground = UIUtil.getContextHelpForeground()
-                        alignmentY = CENTER_ALIGNMENT
-                    }.zoomFont())
-                    box.toolTipText = "<html>Calls, types and properties on this line are separate links<br>" +
+                    if (multiline) {
+                        line.add(JLabel("  "))
+                        line.add(sizeLabel())
+                    }
+                    line.toolTipText = "<html>Calls, types and properties on this line are separate links<br>" +
                         "<i>Click one, or reach it with Tab</i></html>"
+                    box = if (!multiline) line else JPanel(BorderLayout()).apply {
+                        background = blockBackground
+                        add(line, BorderLayout.CENTER)
+                        code(main, row.first, row.headline - 1)?.let { add(it, BorderLayout.NORTH) }
+                        code(main, row.headline + 1, row.last)?.let { add(it, BorderLayout.SOUTH) }
+                    }
                     add(box, BorderLayout.WEST)
                 }
                 applyZoom()
+            }
+
+            /**
+             * Shows the declaration's other lines in the frame, unless the IDE editor shows them [natively]; without
+             * [plain] source only the headline and the declaration's length remain.
+             */
+            fun showBody(plain: Boolean, natively: Boolean) {
+                body.forEach { it.isVisible = plain && !natively }
+                size?.isVisible = !plain
+            }
+
+            /** Where this row's cards' arrows start, in level coordinates: beside the headline. */
+            fun anchorBounds(level: Component): Rectangle {
+                val frame = SwingUtilities.convertRectangle(box.parent, box.bounds, level)
+                val line = SwingUtilities.convertRectangle(headline.parent, headline.bounds, level)
+                return Rectangle(frame.x, line.y, frame.width, line.height)
+            }
+
+            /** The frame around the declaration's native source, in level coordinates, from the headline's indentation. */
+            fun nativeFrame(native: SchematicSourceEditor, level: Component): Rectangle {
+                val lines = SwingUtilities.convertRectangle(native, native.linesBounds(row.first, row.last), level)
+                val frame = SwingUtilities.convertRectangle(box.parent, box.bounds, level)
+                // Text left of the headline's block, such as a closing brace, stays inside the frame.
+                val text = native.textLeft(row.first, row.last)?.let { SwingUtilities.convertPoint(native, it, 0, level).x - scaled(4) }
+                val left = minOf(frame.x, text ?: frame.x)
+                val right = maxOf(lines.x + lines.width + scaled(6), frame.x + frame.width)
+                return Rectangle(left, lines.y, right - left, lines.height)
             }
 
             private fun names(link: SchematicLink) = link.targets.joinToString(", ") { graph.nodes[it].name.substringBefore('(') }
@@ -1655,16 +1754,13 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val onTrail get() = inBreadcrumbs(this) || breadcrumbPath.any { (_, component) ->
                 component is SummaryCard && component.row === this
             }
-            private val title = CallableLabel(label) { line.onTrail }.also { line.labels += it }
+            val title = CallableLabel(label) { line.onTrail }.also { line.labels += it }
+            val marked get() = this === (hoveredBlock ?: activeBlock) || cardsFor(this).any { it.pinned || it.open }
 
             init {
                 isOpaque = false
                 box.background = blockBackground
                 box.add(title, BorderLayout.CENTER)
-                if (!row.split && row.last > row.first) {
-                    box.add(JLabel("${row.last - row.first + 1} lines").apply { foreground = UIUtil.getContextHelpForeground() }.zoomFont(),
-                        BorderLayout.EAST)
-                }
                 add(box, BorderLayout.WEST)
                 applyZoom()
                 onClick(box) { pin() }
@@ -1707,7 +1803,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             fun repaintBorder() {
                 val focused = this === (hoveredBlock ?: activeBlock)
-                val marked = focused || cardsFor(this).any { it.pinned || it.open }
                 // A constant inset keeps focusing a block from moving the source under the pointer.
                 box.border = if (row.split) BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 1),
                     pixelBorder(0, scaled(2), 0, scaled(2)))
@@ -1722,7 +1817,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         /** The summary of [target]; unfolds into [target]'s own schematic. */
         inner class SummaryCard(val target: Int, val row: BlockView, rowIndex: Int,
             private val occurrences: List<CallOccurrence>) : ExternalCard(rowIndex) {
-            override fun anchorBounds(): Rectangle = row.line.box.let { SwingUtilities.convertRectangle(it.parent, it.bounds, this@LevelView) }
+            override fun anchorBounds(): Rectangle = row.line.anchorBounds(this@LevelView)
             override val marked get() = pinned || open
             var pinned = false
                 private set

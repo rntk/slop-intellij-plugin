@@ -9,6 +9,7 @@ Opening builds or reuses the project's call graph. If the file cannot be shown, 
 ## Exploring
 
 - Declarations and calls appear as clickable blocks, shown on a canvas or in a read-only IDE editor. Switching views keeps the exploration.
+- Source is never hidden: a declaration spanning several lines is one clickable frame around all of its source, like a summarized gap, while a one-line symbol stays a one-line block.
 - Summaries appear on demand and can be pinned. Each summary condenses the tree below its symbol, and unfolding one shows that reading beneath it, so several branches stay open at once.
 - A breadcrumb trail shows the path from the root and lets the reader return to earlier symbols.
 - Exploration is never discarded; the reader can move freely beyond the initial graph.
