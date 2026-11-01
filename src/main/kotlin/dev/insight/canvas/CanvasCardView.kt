@@ -46,6 +46,8 @@ internal interface CanvasCardHost {
     val controller: CanvasSessionController
     val scope: CoroutineScope
     val services: CanvasSessionServices
+    /** What the cards' chats may do on this canvas. */
+    val actions: CanvasActions
     val sourceListener: CanvasSourcePane.Listener
     val zoom: Double
     /** Shows [component] in [base] (its own font by default) at the current zoom, now and after each zoom change. */
@@ -318,7 +320,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     private fun conversation(saved: CanvasChat): ChatSession = conversations.getOrPut(saved.id) {
         val session = ChatSession(host.project, host.scope,
-            backendFactory = ChatBackendFactory { _ -> host.services.chatBackend(host.model, id) },
+            backendFactory = ChatBackendFactory { _ -> host.services.chatBackend(host.actions, id) },
             welcome = canvasWelcome(card), restored = saved.messages.toChatMessages())
         session to session.subscribe {
             host.model.setMessages(id, savedMessages(session.messages), saved.id)

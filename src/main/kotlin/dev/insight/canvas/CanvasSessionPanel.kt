@@ -2,6 +2,7 @@ package dev.insight.canvas
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
@@ -11,6 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
@@ -19,6 +21,8 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.agent.ProjectFiles
+import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphService
 import dev.insight.graph.CallGraphNode
 import dev.insight.ui.ComponentMouseEvents
@@ -288,6 +292,52 @@ internal class CanvasSessionPanel(
             showStatus("Could not open $name: " +
                 (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
         }
+    }
+
+    /** The cards' chats act on the canvas like the reader: each card they open or show is revealed. */
+    override val actions: CanvasActions = object : CanvasActions {
+        override val session: CanvasSession get() = model.session
+        override fun source(cardId: String?): CanvasSource? = controller.source(cardId)
+        override fun target(id: Int): CanvasTarget? = controller.target(id)
+
+        override suspend fun declarations(path: String, name: String): List<CanvasTarget> =
+            controller.declarations(projectFile(path), name).mapNotNull { controller.target(it.id) }
+
+        override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int) =
+            revealing { controller.openSymbol(parentId, start, end, target) }
+
+        override suspend fun openSelection(parentId: String?, start: Int, end: Int) = revealing {
+            withContext(Dispatchers.EDT) { controller.openSelection(parentId, start, end) }
+                ?: throw ToolInputException("The selected text is blank.")
+        }
+
+        override suspend fun openFile(parentId: String?, start: Int, end: Int, path: String) =
+            revealing { controller.openFile(parentId, start, end, projectFile(path)) }
+
+        override suspend fun show(cardId: String) = withContext(Dispatchers.EDT) {
+            checkReady()
+            content.validate()
+            reveal(cardId)
+        }
+
+        private suspend fun revealing(open: suspend () -> CanvasCard): CanvasCard {
+            withContext(Dispatchers.EDT) { checkReady() }
+            val card = open()
+            withContext(Dispatchers.EDT) {
+                if (!disposed) {
+                    content.validate()
+                    reveal(card.id)
+                }
+            }
+            return card
+        }
+
+        private fun checkReady() {
+            if (disposed || !ready) throw ToolInputException("The canvas is still loading; answer without changing it.")
+        }
+
+        private suspend fun projectFile(path: String): VirtualFile = readAction { ProjectFiles(project).resolve(path) }
+            .also { if (it.isDirectory) throw ToolInputException("'$path' is a directory; name a file.") }
     }
 
     override fun expandToFile(cardId: String) {

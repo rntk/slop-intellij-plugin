@@ -42,23 +42,25 @@ import javax.swing.JPanel
 
 /**
  * The ports a canvas session talks to: where sessions are saved ([store], null when the project has none), the model
- * that writes summaries ([complete], created per summary) and each card's chat backend. Tests pass fakes.
+ * that writes summaries ([complete], created per summary) and each card's chat backend, created per reply for a card
+ * with the canvas [CanvasActions] its tools use. Tests pass fakes.
  */
 internal class CanvasSessionServices(
     val store: CanvasSessionStore?,
     val complete: () -> CompletionFn,
     val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
-    val chatBackend: (CanvasSessionModel, String) -> ChatBackend,
+    val chatBackend: (CanvasActions, String) -> ChatBackend,
 ) {
     companion object {
         fun forProject(project: Project) = CanvasSessionServices(
             CanvasSessionStore.forProject(project),
             { ChatSettings.getInstance().createClient()::complete },
             { projectContextTools(project) },
-        ) { model, cardId ->
-            LlmChatBackend(ChatSettings.getInstance().createClient()::complete, projectContextTools(project), canvasChatPrompt,
-                maxContextChars = 64_000, maxToolRounds = 30, context = { canvasChainContext(model.session, cardId) },
-                contextLabel = "Canvas chain")
+        ) { actions, cardId ->
+            LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
+                projectContextTools(project) + canvasTools(actions, cardId), canvasChatPrompt,
+                maxContextChars = 64_000, maxToolRounds = 30,
+                context = { canvasChainContext(actions.session, cardId, actions.source(null)) }, contextLabel = "Canvas chain")
         }
     }
 }

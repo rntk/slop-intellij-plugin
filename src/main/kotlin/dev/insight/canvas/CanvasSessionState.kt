@@ -172,15 +172,15 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
 
     /**
      * Opens a card from [parentId] (null: the root file) at [anchor], or returns the card already open there for the
-     * same [kind] and [symbol]. [text] is bounded by [CANVAS_CARD_TEXT_LIMIT].
+     * same [kind] and [symbol]. [text] is bounded by [CANVAS_CARD_TEXT_LIMIT]; a [wholeFile] card shows its whole file.
      */
     fun open(parentId: String?, kind: CardKind, anchor: CardAnchor, filePath: String, firstLine: Int, text: String,
-        symbol: SymbolRef? = null): CanvasCard {
+        symbol: SymbolRef? = null, wholeFile: Boolean = false): CanvasCard {
         require(parentId == null || card(parentId) != null) { "Unknown parent card $parentId" }
         require(kind != CardKind.SYMBOL || symbol != null) { "A symbol card needs its symbol" }
         findOpen(parentId, kind, anchor, symbol)?.let { return it }
         val (bounded, truncated) = boundCardText(text)
-        val card = CanvasCard(ids(), parentId, kind, anchor, symbol, filePath, firstLine, bounded, truncated)
+        val card = CanvasCard(ids(), parentId, kind, anchor, symbol, filePath, firstLine, bounded, truncated, wholeFile = wholeFile)
         session = session.copy(cards = session.cards + card, updated = clock())
         notify(CanvasChange.CardOpened(card))
         return card

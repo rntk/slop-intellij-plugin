@@ -55,7 +55,7 @@ fun canvasReadingPath(rootPath: String, chain: List<CanvasCard>): String {
             card.kind == CardKind.SELECTION && !card.wholeFile -> "selected in the code of step ${index + 1}"
             openedInside(card, parentPath) -> "opened at its declaration"
             else -> "opened from a reference at $parentPath:${card.anchor.line + 1}" +
-                parent?.let { referenceLine(it, card.anchor.line) }?.let { ": `$it`" }.orEmpty()
+                parent?.let { shownLine(it.text, it.firstLine, card.anchor.line) }?.let { ": `$it`" }.orEmpty()
         }
         "$what, $how"
     }
@@ -83,11 +83,6 @@ private fun readingName(card: CanvasCard): String {
             " (${card.location})"
     }
 }
-
-/** The trimmed 0-based document [line] of [card]'s text, at most 160 characters; null when blank or not in the text. */
-private fun referenceLine(card: CanvasCard, line: Int): String? =
-    card.text.split('\n').getOrNull(line - card.firstLine)?.trim()?.takeIf { it.isNotEmpty() }
-        ?.let { if (it.length > 160) it.take(159) + "…" else it }
 
 /** A summary could not be written; [message] is meant for the card. */
 class CanvasSummaryException(message: String, cause: Throwable? = null) : Exception(message, cause)

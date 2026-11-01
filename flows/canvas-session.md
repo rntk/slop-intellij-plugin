@@ -16,7 +16,9 @@ Opening a file starts a new session or resumes a saved one. The file is shown as
 
 ## Chat
 
-Each card has chat tabs. Readers can start a new conversation, switch tabs, or close a tab, keeping at least one. Every tab has its own history, draft and running reply; switching tabs keeps replies running, and closing a tab stops its reply. Tabs share the card's context: the chain from the file to the card, with the files involved and the names, summaries and bounded sources of each step. The model reads more of the project with read-only tools instead of receiving whole files, so the context stays small.
+Each card has chat tabs. Readers can start a new conversation, switch tabs, or close a tab, keeping at least one. Every tab has its own history, draft and running reply; switching tabs keeps replies running, and closing a tab stops its reply. Tabs share the card's context: the chain from the file to the card, with the name, place, opening line, summary and bounded source of each step, and the cards opened from the card. Other chains on the canvas are left out so unrelated exploration doesn't crowd the context; the model can list and read them on demand, and reads the rest of the project with read-only tools instead of receiving whole files.
+
+The model can also act on the canvas as the reader does, to show the code it talks about: click a symbol in any shown source, select lines, or open a card for a declaration or file the chain doesn't reach, attached to its own card. Each reply opens only a few cards.
 
 ## Persistence
 
@@ -27,4 +29,5 @@ The Canvas Sessions side panel lists the project's saved sessions. Open it from 
 ## Entry points
 
 - [CanvasSessionState.kt](../src/main/kotlin/dev/insight/canvas/CanvasSessionState.kt): the session model
-- [CanvasChainContext.kt](../src/main/kotlin/dev/insight/canvas/CanvasChainContext.kt): the chain as chat context
+- [CanvasChainContext.kt](../src/main/kotlin/dev/insight/canvas/CanvasChainContext.kt): the chain as chat context, and the chat prompt
+- [CanvasTools.kt](../src/main/kotlin/dev/insight/canvas/CanvasTools.kt): what a card's chat can read and open on the canvas

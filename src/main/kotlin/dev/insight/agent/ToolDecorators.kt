@@ -94,3 +94,32 @@ class BudgetedTool(
         return shown + if (format == Format.READ && last < requestedEnd) "\n[Read limited to $start-$last.]" else ""
     }
 }
+
+/**
+ * How many successful calls a group of tools may make in one turn, such as tools that change what the user sees.
+ * Create one per turn; [exhausted] goes back to the model once it is used up.
+ */
+class CallAllowance(val max: Int, private val exhausted: String) {
+    var used: Int = 0
+        private set
+
+    init {
+        require(max >= 0) { "Call allowance must not be negative" }
+    }
+
+    fun checkAvailable() {
+        if (used >= max) throw ToolInputException(exhausted)
+    }
+
+    internal fun consume() {
+        used++
+    }
+}
+
+/** Calls the wrapped tool only while [allowance], shared with other tools, lasts; failed calls cost nothing. */
+class LimitedTool(private val tool: ChatTool, private val allowance: CallAllowance) : ChatTool by tool {
+    override suspend fun call(arguments: JsonObject): String {
+        allowance.checkAvailable()
+        return tool.call(arguments).also { allowance.consume() }
+    }
+}

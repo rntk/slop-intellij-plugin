@@ -163,7 +163,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals("The same call still finds its existing child", helper.id, canvas.open(entry.id, "helper").id)
         val another = canvas.open(entry.id, "Flow")
         assertEquals(entry.id, another.parentId)
-        assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("Current card: file Flow.java"))
+        assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("Current card [card ${entry.id}]: file Flow.java"))
 
         val restored = controller(file, canvas.model.session)
         background { restored.loadRoot(); restored.restore() }
@@ -196,6 +196,38 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         background { restored.loadRoot(); restored.restore() }
         assertEquals(other.text, restored.source(target.id)!!.text)
         assertNotNull(restored.source(sibling.id)!!.node)
+    }
+
+    fun testDeclarationsAndFilesOutsideTheChainOpenAsCardsAndResolveAgainOnRestore() {
+        val other = myFixture.addFileToProject("Other.java", "class Other {\n    static void target() {}\n    static void unused() {}\n}")
+        val file = myFixture.configureByText("Flow.java", source)
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val entry = canvas.open(null, "entry")
+        assertFalse("Nothing on the canvas links to it yet", canvas.source(entry.id)!!.links.flatMap { it.targets }
+            .any { canvas.node(it)?.name?.startsWith("unused") == true })
+
+        val declared = background { canvas.declarations(other.virtualFile, "unused") }
+        assertEquals(1, declared.size)
+        assertEquals(3, canvas.target(declared.single().id)!!.line)
+        val unused = background { canvas.openSymbol(entry.id, 4, 8, declared.single().id) }
+        assertEquals(entry.id, unused.parentId)
+        assertTrue(unused.text, unused.text.contains("static void unused()"))
+        assertTrue(unused.filePath.endsWith("Other.java"))
+
+        val whole = background { canvas.openFile(entry.id, 4, 8, other.virtualFile) }
+        assertTrue(whole.wholeFile)
+        assertEquals(entry.id, whole.parentId)
+        assertEquals(other.text, canvas.source(whole.id)!!.text)
+        assertTrue("The file's symbols are clickable", canvas.source(whole.id)!!.links.isNotEmpty())
+        assertEquals(whole.id, background { canvas.openFile(entry.id, 4, 8, other.virtualFile) }.id)
+
+        val restored = controller(file, canvas.model.session)
+        background { restored.loadRoot(); restored.restore() }
+        assertNull(restored.source(unused.id)!!.notice)
+        assertEquals("unused", restored.node(restored.source(unused.id)!!.node!!)!!.name.substringBefore('('))
+        assertEquals(other.text, restored.source(whole.id)!!.text)
+        assertTrue(restored.model.card(whole.id)!!.wholeFile)
     }
 
     fun testSelectionCanExpandToFileWithItsChildStillAnchored() {

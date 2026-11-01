@@ -97,4 +97,17 @@ class ToolDecoratorsTest {
         assertEquals(6, budget.chars)
         assertEquals(1, records)
     }
+
+    @Test fun `limited tools share one allowance and failed calls cost nothing`() = runBlocking {
+        val allowance = CallAllowance(2, "No more.")
+        val first = LimitedTool(SourceTool("one"), allowance)
+        val second = LimitedTool(SourceTool("two"), allowance)
+        assertEquals("one", first.call(JsonObject()))
+        assertThrows(ToolInputException::class.java) { runBlocking { second.call(args("""{"fail":true}""")) } }
+        assertEquals(1, allowance.used)
+        assertEquals("two", second.call(JsonObject()))
+        val error = assertThrows(ToolInputException::class.java) { runBlocking { first.call(JsonObject()) } }
+        assertEquals("No more.", error.message)
+        assertEquals(2, allowance.used)
+    }
 }

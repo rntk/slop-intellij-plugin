@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.graph.CallGraphNode
+import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -116,6 +117,39 @@ internal class CanvasSessionController(
         return open(source) { model.open(parentId, CardKind.SELECTION, anchor, it.path, it.firstLine, it.text) }
     }
 
+    /**
+     * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source (the root file for
+     * null), or returns the card of that file already open there. For files the chain does not lead to.
+     */
+    suspend fun openFile(parentId: String?, start: Int, end: Int, file: VirtualFile): CanvasCard {
+        val parent = source(parentId) ?: error("The card to open from is not shown.")
+        val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
+        val path = relative(file.path).orEmpty()
+        val schematic = withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
+            ?: error("The file $path cannot be shown on the canvas; its language may not be supported.")
+        val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
+        val shown = CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine, path, schematic.file, schematic.scope)
+        return withContext(Dispatchers.EDT) {
+            model.findOpen(parentId, CardKind.SYMBOL, anchor, ref)?.let { return@withContext it }
+            checkNotNull(source(parentId)) { "The card to open from was closed." }
+            open(shown) { model.open(parentId, CardKind.SYMBOL, anchor, path, it.firstLine, it.text, ref, wholeFile = true) }
+        }
+    }
+
+    /** The resolved symbols named [name] (without parameters) declared in [file], once the file is in the graph. */
+    suspend fun declarations(file: VirtualFile, name: String): List<CallGraphNode> {
+        withContext(Dispatchers.Default) { exploration.fileSchematic(file) } ?: return emptyList()
+        return exploration.result.graph.nodes.filter {
+            it.filePath == file.path && it.kind != SymbolKind.FILE && canvasTargetNote(it) == null && it.name.substringBefore('(') == name
+        }
+    }
+
+    /** Graph symbol [id] as a card's chat names it. */
+    fun target(id: Int): CanvasTarget? = node(id)?.let { node ->
+        CanvasTarget(node.id, node.name, canvasTargetLabel(node, ::relative), relative(node.filePath), nodeLine(node)?.plus(1),
+            canvasTargetNote(node) == null)
+    }
+
     /** Replaces an excerpt with its full file and links, keeping the card's identity, chat and children. */
     suspend fun expandToFile(cardId: String) {
         val card = model.card(cardId) ?: return
@@ -195,7 +229,8 @@ internal class CanvasSessionController(
         val ref = card.symbol ?: return saved(card, CANVAS_SYMBOL_MISSING)
         val nodes = exploration.result.graph.nodes
         val linked = linkTargets(parent.links).mapNotNull(::node)
-        val found = find(ref, linked) ?: find(ref, nodes)
+        // A card opened at a declaration its parent does not link to is found by reading the symbol's file.
+        val found = find(ref, linked) ?: find(ref, nodes) ?: findInFile(ref)
             ?: return saved(card, if (card.text.isEmpty()) CanvasTargetNote.EXTERNAL.notice else CANVAS_SYMBOL_MISSING)
         if (canvasTargetNote(found) != null) return saved(card, canvasTargetNote(found)!!.notice)
         val (fresh, _) = withContext(Dispatchers.Default) { symbolSource(found) }
@@ -213,6 +248,12 @@ internal class CanvasSessionController(
         if (candidates.isEmpty()) return null
         val offsets = offsets(candidates.filter { it.name.substringBefore('(') == ref.name.substringBefore('(') })
         return restoreSymbol(ref, candidates, { relative(it.filePath) }, { offsets[it.id] })
+    }
+
+    private suspend fun findInFile(ref: SymbolRef): CallGraphNode? {
+        val file = findFile(ref.filePath)?.takeIf { it.isValid && !it.isDirectory } ?: return null
+        withContext(Dispatchers.Default) { exploration.fileSchematic(file) } ?: return null
+        return find(ref, exploration.result.graph.nodes.filter { it.filePath == file.path })
     }
 
     private suspend fun offsets(nodes: List<CallGraphNode>): Map<Int, Int> = readAction {
