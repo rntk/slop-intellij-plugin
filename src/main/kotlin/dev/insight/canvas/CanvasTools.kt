@@ -23,7 +23,8 @@ data class CanvasTarget(val id: Int, val name: String, val label: String, val pa
 /**
  * What a card's chat may read and do on its canvas, the same actions the developer has. Reads may run on any thread;
  * opening and showing cards switch to the EDT and reveal the card. Opening returns the card already open at the same
- * place when there is one. Failures the model can fix throw [ToolInputException].
+ * place when there is one. New cards record [CardOpenedBy.LLM]; existing cards retain their original opener.
+ * Failures the model can fix throw [ToolInputException].
  */
 interface CanvasActions {
     val session: CanvasSession
@@ -45,14 +46,14 @@ interface CanvasActions {
 const val CANVAS_OPEN_LIMIT = 6
 
 /**
- * The tools of [cardId]'s chat: reading the canvas beyond the chain in its context, and opening and showing cards.
- * Opening tools share an allowance of [maxOpened] cards per reply; create the tools once per reply.
+ * The tools of [cardId]'s chat (null: the root file's): reading the canvas beyond the context, and opening and
+ * showing cards. Opening tools share an allowance of [maxOpened] cards per reply; create the tools once per reply.
  */
-fun canvasTools(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> =
+fun canvasTools(actions: CanvasActions, cardId: String?, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> =
     canvasToolRegistry(actions, cardId, maxOpened).tools
 
 /** [canvasTools] by topic, for a chat that starts with [CANVAS_CHAT_TOOLS] and loads the rest when it needs them. */
-fun canvasToolRegistry(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): ToolRegistry {
+fun canvasToolRegistry(actions: CanvasActions, cardId: String?, maxOpened: Int = CANVAS_OPEN_LIMIT): ToolRegistry {
     val canvas = CanvasToolContext(actions, cardId)
     val opened = CallAllowance(maxOpened, "This reply has opened $maxOpened cards, the most one reply may open. " +
         "Answer with the cards already shown.")
@@ -69,13 +70,13 @@ fun canvasToolRegistry(actions: CanvasActions, cardId: String, maxOpened: Int = 
 val CANVAS_CHAT_TOOLS = listOf("read_card", "list_symbols", "open_symbol")
 
 /** Resolves card handles and lines for the tools of one card's chat. */
-private class CanvasToolContext(val actions: CanvasActions, val cardId: String) {
+private class CanvasToolContext(val actions: CanvasActions, val cardId: String?) {
     /** The card [handle] names: null for the root file, else an open card's id. */
     fun card(handle: String?): String? {
         val clean = handle?.trim()?.removePrefix("[")?.removeSuffix("]")?.removePrefix("card ")?.trim()
         return when {
             clean.isNullOrEmpty() || clean.equals(CANVAS_CURRENT, ignoreCase = true) ->
-                cardId.also { if (actions.session.card(it) == null) throw ToolInputException("The current card was closed.") }
+                cardId?.also { if (actions.session.card(it) == null) throw ToolInputException("The current card was closed.") }
             clean.equals(CANVAS_ROOT, ignoreCase = true) -> null
             actions.session.card(clean) != null -> clean
             else -> throw ToolInputException("No card '$handle' is open. Use \"$CANVAS_CURRENT\", \"$CANVAS_ROOT\" or an id from canvas_overview.")
@@ -171,9 +172,9 @@ private class CanvasOverviewTool(private val canvas: CanvasToolContext) : Canvas
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val session = canvas.actions.session
-        val chain = session.chain(canvas.cardId).map { it.id }.toSet()
+        val chain = canvas.cardId?.let(session::chain).orEmpty().map { it.id }.toSet()
         return buildString {
-            append("Root file: ${session.rootPath} [$CANVAS_ROOT]\n")
+            append("Root file: ${session.rootPath} [$CANVAS_ROOT]${if (canvas.cardId == null) " (current card)" else ""}\n")
             if (session.cards.isEmpty()) append("No cards are open.\n")
             fun branch(parentId: String?, depth: Int) {
                 for (card in session.children(parentId)) {

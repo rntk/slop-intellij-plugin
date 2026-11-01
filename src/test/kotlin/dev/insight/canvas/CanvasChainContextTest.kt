@@ -43,6 +43,33 @@ class CanvasChainContextTest {
     }
 
     @Test
+    fun `the root file's chat gets the file's numbered source and the cards opened from it`() {
+        val session = CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(run, selection, unrelated))
+        assertEquals("""
+            Root file: src/Main.kt (card "root")
+            This chat belongs to the root file itself, so "current" names the root file; there is no chain above it.
+
+            Current card [root]: file Main.kt at src/Main.kt
+            File source (lines 1-5):
+            1: fun main() {}
+            2:
+            3:
+            4:
+            5:     app.run()
+
+            Cards opened from the root file: run [card a] from line 5; main [card d] from line 1
+
+            1 other card is open further down the canvas and left out here; canvas_overview lists them.
+        """.trimIndent(), canvasChainContext(session, null, root).lines().joinToString("\n") { it.trimEnd() })
+        assertTrue(canvasChainContext(session, null).contains("[File source: not shown yet; use read_file path src/Main.kt]"))
+        val long = CanvasSource((1..500).joinToString("\n") { "line $it" }, emptyList(), 0, "src/Main.kt", null)
+        assertTrue(canvasRootContext("src/Main.kt", long, CanvasContextBudget(current = 300))
+            .contains("[truncated; use read_file path src/Main.kt from line"))
+        assertEquals("Ask about the file src/Main.kt. I read the project to answer and can open cards on the canvas to show " +
+            "you code.", canvasRootWelcome("src/Main.kt"))
+    }
+
+    @Test
     fun `the current card gets the larger budget and cut text says where to read on`() {
         val long = (1..200).joinToString("\n") { "line $it of the body" }
         val ancestor = run.copy(text = long)

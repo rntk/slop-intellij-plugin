@@ -30,6 +30,7 @@ import dev.insight.ui.FloatingPanel
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BasicStroke
+import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Container
@@ -103,6 +104,8 @@ internal class CanvasSessionPanel(
     private var rootView: RootView? = null
     private val views = LinkedHashMap<String, CanvasCardView>()
     internal val cardViews: Map<String, CanvasCardView> get() = views
+    /** The root file's chat, once the root file is shown. */
+    internal val rootChat: CanvasChatView? get() = rootView?.chat
     /** Each card's anchor, in its parent's y, as last laid out; arrows start there. */
     private val anchorYs = HashMap<String, Int>()
     private var message: JComponent? = null
@@ -147,7 +150,7 @@ internal class CanvasSessionPanel(
         add(sessionActions)
         add(JButton("Fold all").apply {
             isFocusable = false
-            toolTipText = "Fold every card's summary, source and chat; again to unfold them"
+            toolTipText = "Fold the file and every card's summary, source and chat; again to unfold them"
             addActionListener { foldAll() }
         })
         add(JButton("−").apply {
@@ -205,7 +208,7 @@ internal class CanvasSessionPanel(
                 rootView = RootView(root).also { content.add(it) }
                 model.cards.forEach(::addView)
                 ready = true
-                showStatus(if (model.cards.isEmpty()) "Click an underlined name or select code to open a card." else "")
+                showStatus(if (model.cards.isEmpty()) "Click an underlined name or select code to open a card, or ask about the file." else "")
                 refreshAnchors()
                 content.revalidate()
                 content.repaint()
@@ -243,6 +246,11 @@ internal class CanvasSessionPanel(
                 val anchorsChanged = view.card.anchor != change.card.anchor || view.card.wholeFile != change.card.wholeFile
                 view.update(change.card)
                 if (anchorsChanged) refreshAnchors()
+            }
+            // The root view lays out the canvas itself when its size may have changed.
+            is CanvasChange.RootChanged -> {
+                rootView?.update(change.root)
+                return
             }
             else -> return
         }
@@ -304,15 +312,15 @@ internal class CanvasSessionPanel(
             controller.declarations(projectFile(path), name).mapNotNull { controller.target(it.id) }
 
         override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int) =
-            revealing { controller.openSymbol(parentId, start, end, target) }
+            revealing { controller.openSymbol(parentId, start, end, target, CardOpenedBy.LLM) }
 
         override suspend fun openSelection(parentId: String?, start: Int, end: Int) = revealing {
-            withContext(Dispatchers.EDT) { controller.openSelection(parentId, start, end) }
+            withContext(Dispatchers.EDT) { controller.openSelection(parentId, start, end, CardOpenedBy.LLM) }
                 ?: throw ToolInputException("The selected text is blank.")
         }
 
         override suspend fun openFile(parentId: String?, start: Int, end: Int, path: String) =
-            revealing { controller.openFile(parentId, start, end, projectFile(path)) }
+            revealing { controller.openFile(parentId, start, end, projectFile(path), CardOpenedBy.LLM) }
 
         override suspend fun show(cardId: String) = withContext(Dispatchers.EDT) {
             checkReady()
@@ -436,10 +444,13 @@ internal class CanvasSessionPanel(
         unreveal.restart()
     }
 
+    /** Folds the file and every card's summary, source and chat; again to unfold them. */
     private fun foldAll() {
         val sections = listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT)
-        val fold = !model.cards.all { it.folded.containsAll(sections) }
+        val rootSections = sections
+        val fold = !(model.cards.all { it.folded.containsAll(sections) } && model.session.root.folded.containsAll(rootSections))
         model.cards.map { it.id }.forEach { id -> sections.forEach { model.setFolded(id, it, fold) } }
+        rootSections.forEach { model.setFolded(null, it, fold) }
     }
 
     private fun showSessions(button: JComponent) {
@@ -639,34 +650,131 @@ internal class CanvasSessionPanel(
         subscription.dispose()
         views.values.forEach(Disposer::dispose)
         views.clear()
-        rootView?.pane?.let(Disposer::dispose)
+        rootView?.let(Disposer::dispose)
         rootView = null
         if (persist) autosave?.flush()
         scope.cancel()
         Disposer.dispose(controller)
     }
 
-    /** The root file: a small header with its path above its source. */
-    private inner class RootView(source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }) {
+    /** The initial file folds like a card, with an explicitly requested summary and chat below its source. */
+    private inner class RootView(private val source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
         val pane = CanvasSourcePane(project, null, source, sourceListener)
+        private val metaToggle = canvasFoldToggle(this@CanvasSessionPanel, null, CardSection.META)
+        private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
+        private val summaryText = zoomFont(wrappedText(""))
+        private val summaryStatus = zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
+        private val summarize = zoomFont(ActionLink("Summarize") { requestSummary() })
+        private var summaryJob: Job? = null
+        private val summary = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.SUMMARY, "Summary",
+            JPanel(StackLayout { zoomScaled(2, zoom) }).apply {
+                isOpaque = false
+                add(summaryText)
+                add(summaryStatus)
+                add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summarize) })
+            })
+        private val sourceSection = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.SOURCE,
+            "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines", pane)
+        private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
+        private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat", historyBody)
+        val chat = CanvasChatView(this@CanvasSessionPanel, null, model.session.root, { canvasRootWelcome(model.session.rootPath) },
+            "Ask about this file… (Enter sends, Shift+Enter for a new line)") { history.title.text = it }
+        private val ask = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.INPUT, "Ask", chat.ask)
+        private var rendered: CanvasRootState? = null
 
         init {
             isOpaque = false
-            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+            name = "canvas-root"
+            historyBody.add(chat.history)
+            add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
                 isOpaque = false
-                add(zoomFont(JLabel(source.path, file.source.fileType.icon, JLabel.LEFT), UIUtil.getLabelFont().deriveFont(Font.BOLD)))
+                add(metaToggle, BorderLayout.WEST)
+                add(zoomFont(JLabel(file.source.name, file.source.fileType.icon, JLabel.LEFT),
+                    UIUtil.getLabelFont().deriveFont(Font.BOLD)), BorderLayout.CENTER)
                 add(zoomFont(ActionLink("Source") { navigate(source, source.path, source.firstLine) }.apply {
                     toolTipText = "Open ${source.path} in the editor"
-                }))
+                }), BorderLayout.EAST)
             })
-            add(pane)
+            add(meta)
+            add(summary)
+            add(sourceSection)
+            add(history)
+            add(ask)
+            update(model.session.root)
         }
 
-        fun anchorY(anchor: CardAnchor): Int = SwingUtilities.convertPoint(pane, 0, pane.anchorY(anchor.startOffset), this).y
+        /** Shows [root], the root file's chats and folding in the model. */
+        fun update(root: CanvasRootState) {
+            val chatChanged = chat.update(root)
+            val previous = rendered
+            rendered = root
+            if (previous != null && !chatChanged && previous.copy(chats = root.chats) == root) return
+            meta.isVisible = CardSection.META !in root.folded
+            metaToggle.text = canvasFoldGlyph(meta.isVisible)
+            listOf(summary, sourceSection, history, ask).forEach { it.fold(it.section in root.folded) }
+            val pending = summaryJob?.isActive == true
+            summaryText.text = root.summary.orEmpty()
+            summaryText.isVisible = root.summary != null
+            summaryStatus.text = when {
+                pending -> "Summarizing…"
+                root.summaryError != null -> root.summaryError
+                source.text.isBlank() -> "No source to summarize."
+                else -> ""
+            }
+            summaryStatus.isVisible = summaryStatus.text.isNotEmpty()
+            summarize.text = when {
+                root.summaryError != null -> "Retry"
+                root.summary != null -> "Summarize again"
+                else -> "Summarize"
+            }
+            summarize.isEnabled = !pending && source.text.isNotBlank()
+            revalidate()
+            repaint()
+            cardResized()
+        }
+
+        private fun requestSummary() {
+            if (summaryJob?.isActive == true || source.text.isBlank()) return
+            val input = CanvasSummaryInput(CardKind.SYMBOL, file.source.name, source.path, source.firstLine,
+                source.text, symbolKind = "FILE", language = file.source.fileType.displayName)
+            summaryJob = scope.launch(Dispatchers.EDT) {
+                try {
+                    val text = withContext(Dispatchers.IO) {
+                        CanvasSummarizer(services.complete(), tools = services.summaryTools()).summarize(input)
+                    }
+                    model.setSummary(null, text)
+                } catch (e: CanvasSummaryException) {
+                    LOG.info("Canvas file summary failed: ${e.message}", e.cause)
+                    model.setSummary(null, null, e.message)
+                } catch (e: Throwable) {
+                    if (e is CancellationException || e is ControlFlowException) throw e
+                    LOG.warn("Canvas file summary failed", e)
+                    model.setSummary(null, null, "The summary failed: ${e.message ?: e.javaClass.simpleName}. See the IDE log.")
+                } finally {
+                    summaryJob = null
+                    rendered = null
+                    if (!disposed) update(model.session.root)
+                }
+            }
+            rendered = null
+            update(model.session.root)
+        }
+
+        fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible)
+            SwingUtilities.convertPoint(pane, 0, pane.anchorY(anchor.startOffset), this).y
+        else components.first().let { it.y + it.height / 2 }
 
         override fun getPreferredSize(): Dimension {
             val stacked = super.getPreferredSize()
-            return Dimension(maxOf(pane.preferredSize.width, components.first().preferredSize.width), stacked.height)
+            // Wide enough to chat in, even beside a short, narrow file.
+            return Dimension(maxOf(pane.preferredSize.width, components.first().preferredSize.width,
+                zoomScaled(ROOT_CHAT_MIN_WIDTH, zoom)), stacked.height)
+        }
+
+        override fun dispose() {
+            summaryJob?.cancel()
+            Disposer.dispose(chat)
+            Disposer.dispose(pane)
         }
     }
 
@@ -787,6 +895,7 @@ internal class CanvasSessionPanel(
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
         const val CARD_WIDTH = 560
         const val ROOT_MAX_WIDTH = 960
+        const val ROOT_CHAT_MIN_WIDTH = 480
         const val MIN_ZOOM = 0.25
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2

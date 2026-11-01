@@ -42,14 +42,14 @@ import javax.swing.JPanel
 
 /**
  * The ports a canvas session talks to: where sessions are saved ([store], null when the project has none), the model
- * that writes summaries ([complete], created per summary) and each card's chat backend, created per reply for a card
- * with the canvas [CanvasActions] its tools use. Tests pass fakes.
+ * that writes summaries ([complete], created per summary) and each chat's backend, created per reply for a card, or
+ * for the root file when the card id is null, with the canvas [CanvasActions] its tools use. Tests pass fakes.
  */
 internal class CanvasSessionServices(
     val store: CanvasSessionStore?,
     val complete: () -> CompletionFn,
     val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
-    val chatBackend: (CanvasActions, String) -> ChatBackend,
+    val chatBackend: (CanvasActions, String?) -> ChatBackend,
 ) {
     companion object {
         fun forProject(project: Project) = CanvasSessionServices(
@@ -61,7 +61,8 @@ internal class CanvasSessionServices(
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
                 projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
                 maxContextChars = 64_000, maxToolRounds = 30,
-                context = { canvasChainContext(actions.session, cardId, actions.source(null)) }, contextLabel = "Canvas chain",
+                context = { canvasChainContext(actions.session, cardId, actions.source(null)) },
+                contextLabel = if (cardId == null) "Canvas file" else "Canvas chain",
                 registry = canvas)
         }
     }

@@ -118,6 +118,21 @@ class CanvasToolsTest {
     }
 
     @Test
+    fun `the root file's chat takes the root file as its current card`() {
+        val canvas = FakeCanvas()
+        val tools = canvasTools(canvas, null)
+        assertTrue(tools.call("read_card").startsWith("Root file src/Main.kt\n"))
+        tools.call("open_symbol", """{"name":"run"}""")
+        val card = canvas.model.cards.single()
+        assertNull(card.parentId)
+        tools.call("open_declaration", """{"path":"src/Store.kt","name":"save"}""")
+        assertEquals("Cards it opens attach to the root file", listOf(null, null), canvas.model.cards.map { it.parentId })
+        val overview = tools.call("canvas_overview")
+        assertTrue(overview, overview.startsWith("Root file: src/Main.kt [root] (current card)\n"))
+        assertFalse(overview, overview.contains("on the current chain"))
+    }
+
+    @Test
     fun `a name leading to several declarations asks for a target, and list_symbols numbers them`() {
         val canvas = FakeCanvas()
         val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")

@@ -9,6 +9,9 @@ import java.util.concurrent.CopyOnWriteArrayList
 /** What a card shows: text the reader selected, or a symbol they clicked. */
 enum class CardKind { SELECTION, SYMBOL }
 
+/** Who first opened a card; revisiting an existing card keeps its original attribution. */
+enum class CardOpenedBy { USER, LLM }
+
 /** The foldable parts of a card, top to bottom. */
 enum class CardSection { META, SUMMARY, SOURCE, CHAT, INPUT }
 
@@ -33,6 +36,30 @@ data class SavedMessage(val role: ChatRole, val text: String)
 data class CanvasChat(val id: String = "chat-1", val title: String = "Chat 1",
     val messages: List<SavedMessage> = emptyList(), val draft: String = "")
 
+/** What has chat tabs and folds like a card: a card, or the root file. */
+interface CanvasChatHolder {
+    val chats: List<CanvasChat>
+    val activeChatId: String
+    val folded: Set<CardSection>
+    val activeChat: CanvasChat get() = chats.first { it.id == activeChatId }
+    val messages: List<SavedMessage> get() = activeChat.messages
+    val draft: String get() = activeChat.draft
+}
+
+/** The root file's own chats and folded parts: it is shown like a card, but cards opened from it have no parent. */
+data class CanvasRootState(
+    override val chats: List<CanvasChat> = listOf(CanvasChat()),
+    override val activeChatId: String = chats.first().id,
+    override val folded: Set<CardSection> = emptySet(),
+    val summary: String? = null,
+    val summaryError: String? = null,
+) : CanvasChatHolder {
+    init {
+        require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
+        require(chats.any { it.id == activeChatId })
+    }
+}
+
 /** The canvas's zoom and scroll position, in canvas coordinates. */
 data class CanvasView(val zoom: Double = 1.0, val x: Int = 0, val y: Int = 0)
 
@@ -54,20 +81,17 @@ data class CanvasCard(
     val textTruncated: Boolean = false,
     val summary: String? = null,
     val summaryError: String? = null,
-    val folded: Set<CardSection> = emptySet(),
-    val chats: List<CanvasChat> = listOf(CanvasChat()),
-    val activeChatId: String = chats.first().id,
+    override val folded: Set<CardSection> = emptySet(),
+    override val chats: List<CanvasChat> = listOf(CanvasChat()),
+    override val activeChatId: String = chats.first().id,
     /** Show the containing file, retaining the original opening identity. */
     val wholeFile: Boolean = false,
-) {
+    val openedBy: CardOpenedBy = CardOpenedBy.USER,
+) : CanvasChatHolder {
     init {
         require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
         require(chats.any { it.id == activeChatId })
     }
-
-    val activeChat: CanvasChat get() = chats.first { it.id == activeChatId }
-    val messages: List<SavedMessage> get() = activeChat.messages
-    val draft: String get() = activeChat.draft
 
     /** 0-based document line of the text's last line. */
     val lastLine: Int get() = firstLine + text.count { it == '\n' }
@@ -81,7 +105,8 @@ data class CanvasCard(
 
 /**
  * A saved exploration of one file: [rootPath] is the project-relative path of the opened file, [cards] in the order
- * they were opened (parents always before their children), and [view] the canvas position. Times are epoch millis.
+ * they were opened (parents always before their children), [view] the canvas position, and [root] the root file's
+ * own chats. Times are epoch millis.
  */
 data class CanvasSession(
     val id: String,
@@ -91,8 +116,12 @@ data class CanvasSession(
     val updated: Long,
     val cards: List<CanvasCard> = emptyList(),
     val view: CanvasView = CanvasView(),
+    val root: CanvasRootState = CanvasRootState(),
 ) {
     fun card(id: String): CanvasCard? = cards.firstOrNull { it.id == id }
+
+    /** The chats of [cardId], or the root file's for null; null when the card is unknown. */
+    fun chatHolder(cardId: String?): CanvasChatHolder? = if (cardId == null) root else card(cardId)
 
     /** Cards opened from [parentId], or from the root file when it is null, in opening order. */
     fun children(parentId: String?): List<CanvasCard> = cards.filter { it.parentId == parentId }
@@ -151,6 +180,8 @@ sealed interface CanvasChange {
     data class CardsRemoved(val ids: Set<String>) : CanvasChange
     /** Summary, folding, chat or draft of [card] changed; [card] is the new state. */
     data class CardChanged(val card: CanvasCard) : CanvasChange
+    /** The root file's chats, drafts or folding changed; [root] is the new state. */
+    data class RootChanged(val root: CanvasRootState) : CanvasChange
     data class ViewChanged(val view: CanvasView) : CanvasChange
     data class TitleChanged(val title: String) : CanvasChange
 }
@@ -175,12 +206,13 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
      * same [kind] and [symbol]. [text] is bounded by [CANVAS_CARD_TEXT_LIMIT]; a [wholeFile] card shows its whole file.
      */
     fun open(parentId: String?, kind: CardKind, anchor: CardAnchor, filePath: String, firstLine: Int, text: String,
-        symbol: SymbolRef? = null, wholeFile: Boolean = false): CanvasCard {
+        symbol: SymbolRef? = null, wholeFile: Boolean = false, openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
         require(parentId == null || card(parentId) != null) { "Unknown parent card $parentId" }
         require(kind != CardKind.SYMBOL || symbol != null) { "A symbol card needs its symbol" }
         findOpen(parentId, kind, anchor, symbol)?.let { return it }
         val (bounded, truncated) = boundCardText(text)
-        val card = CanvasCard(ids(), parentId, kind, anchor, symbol, filePath, firstLine, bounded, truncated, wholeFile = wholeFile)
+        val card = CanvasCard(ids(), parentId, kind, anchor, symbol, filePath, firstLine, bounded, truncated,
+            wholeFile = wholeFile, openedBy = openedBy)
         session = session.copy(cards = session.cards + card, updated = clock())
         notify(CanvasChange.CardOpened(card))
         return card
@@ -202,50 +234,73 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
     }
 
     /** A finished summary, or with [error] a failed one; null [summary] and [error] reset it so it can be requested again. */
-    fun setSummary(cardId: String, summary: String?, error: String? = null) =
-        update(cardId) { it.copy(summary = summary?.takeIf { text -> text.isNotBlank() }, summaryError = error) }
+    fun setSummary(cardId: String?, summary: String?, error: String? = null) {
+        val text = summary?.takeIf { it.isNotBlank() }
+        if (cardId == null) updateRoot { it.copy(summary = text, summaryError = error) }
+        else update(cardId) { it.copy(summary = text, summaryError = error) }
+    }
 
-    fun setFolded(cardId: String, section: CardSection, folded: Boolean) =
-        update(cardId) { it.copy(folded = if (folded) it.folded + section else it.folded - section) }
+    /** Folds or unfolds [section] of [cardId], or of the root file for null. */
+    fun setFolded(cardId: String?, section: CardSection, folded: Boolean) {
+        fun Set<CardSection>.with() = if (folded) this + section else this - section
+        if (cardId == null) updateRoot { it.copy(folded = it.folded.with()) } else update(cardId) { it.copy(folded = it.folded.with()) }
+    }
 
     /** Folds or unfolds [section]; returns whether it is folded now, or null when the card is unknown. */
-    fun toggleFolded(cardId: String, section: CardSection): Boolean? {
-        val card = card(cardId) ?: return null
-        val folded = section !in card.folded
+    fun toggleFolded(cardId: String?, section: CardSection): Boolean? {
+        val holder = session.chatHolder(cardId) ?: return null
+        val folded = section !in holder.folded
         setFolded(cardId, section, folded)
         return folded
     }
 
-    fun addChat(cardId: String): CanvasChat? {
-        val card = card(cardId) ?: return null
-        val number = generateSequence(1) { it + 1 }.first { n -> card.chats.none { it.title == "Chat $n" } }
+    /** Starts and selects a new chat of [cardId], or of the root file for null; null when the card is unknown. */
+    fun addChat(cardId: String?): CanvasChat? {
+        val holder = session.chatHolder(cardId) ?: return null
+        val number = generateSequence(1) { it + 1 }.first { n -> holder.chats.none { it.title == "Chat $n" } }
         val chat = CanvasChat(ids(), "Chat $number")
-        update(cardId) { it.copy(chats = it.chats + chat, activeChatId = chat.id) }
+        updateChats(cardId) { chats, _ -> chats + chat to chat.id }
         return chat
     }
 
-    fun selectChat(cardId: String, chatId: String) = update(cardId) {
-        if (it.chats.any { chat -> chat.id == chatId }) it.copy(activeChatId = chatId) else it
+    fun selectChat(cardId: String?, chatId: String) = updateChats(cardId) { chats, active ->
+        chats to if (chats.any { it.id == chatId }) chatId else active
     }
 
     /** Keep one conversation; select an adjacent tab when closing the selected one. */
-    fun removeChat(cardId: String, chatId: String) = update(cardId) { card ->
-        val index = card.chats.indexOfFirst { it.id == chatId }
-        if (index < 0 || card.chats.size == 1) card else {
-            val remaining = card.chats.filter { it.id != chatId }
-            card.copy(chats = remaining, activeChatId = if (card.activeChatId == chatId)
-                remaining[index.coerceAtMost(remaining.lastIndex)].id else card.activeChatId)
+    fun removeChat(cardId: String?, chatId: String) = updateChats(cardId) { chats, active ->
+        val index = chats.indexOfFirst { it.id == chatId }
+        if (index < 0 || chats.size == 1) chats to active else {
+            val remaining = chats.filter { it.id != chatId }
+            remaining to if (active == chatId) remaining[index.coerceAtMost(remaining.lastIndex)].id else active
         }
     }
 
-    fun setMessages(cardId: String, messages: List<SavedMessage>, chatId: String? = null) = updateChat(cardId, chatId) {
+    fun setMessages(cardId: String?, messages: List<SavedMessage>, chatId: String? = null) = updateChat(cardId, chatId) {
         it.copy(messages = messages)
     }
 
-    fun setDraft(cardId: String, draft: String, chatId: String? = null) = updateChat(cardId, chatId) { it.copy(draft = draft) }
+    fun setDraft(cardId: String?, draft: String, chatId: String? = null) = updateChat(cardId, chatId) { it.copy(draft = draft) }
 
-    private fun updateChat(cardId: String, chatId: String?, change: (CanvasChat) -> CanvasChat) = update(cardId) { card ->
-        card.copy(chats = card.chats.map { if (it.id == (chatId ?: card.activeChatId)) change(it) else it })
+    private fun updateChat(cardId: String?, chatId: String?, change: (CanvasChat) -> CanvasChat) = updateChats(cardId) { chats, active ->
+        chats.map { if (it.id == (chatId ?: active)) change(it) else it } to active
+    }
+
+    /** Applies [change] to the chats and selected chat id of [cardId], or of the root file for null. */
+    private fun updateChats(cardId: String?, change: (List<CanvasChat>, String) -> Pair<List<CanvasChat>, String>) {
+        if (cardId == null) updateRoot { root ->
+            change(root.chats, root.activeChatId).let { (chats, active) -> root.copy(chats = chats, activeChatId = active) }
+        } else update(cardId) { card ->
+            change(card.chats, card.activeChatId).let { (chats, active) -> card.copy(chats = chats, activeChatId = active) }
+        }
+    }
+
+    /** Applies [change] to the root file's chats and folding; an unchanged root notifies nobody. */
+    private fun updateRoot(change: (CanvasRootState) -> CanvasRootState) {
+        val new = change(session.root)
+        if (new == session.root) return
+        session = session.copy(root = new, updated = clock())
+        notify(CanvasChange.RootChanged(new))
     }
 
     /**

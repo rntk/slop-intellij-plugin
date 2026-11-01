@@ -1,5 +1,6 @@
 package dev.insight.canvas
 
+import com.google.gson.JsonObject
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiDocumentManager
@@ -19,6 +20,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
+import java.awt.Container
+import javax.swing.JLabel
 
 class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
     private val source = """
@@ -258,6 +261,191 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val last = canvas.open(entry.id, "last")
         assertTrue(canvas.source(last.id)!!.text.contains("void last()"))
         assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("use read_file"))
+    }
+
+    fun testChatOpeningToolsMarkNewCardsAndKeepOriginalOpenerWhenRevealing() {
+        val other = myFixture.addFileToProject("Other.java", "class Other { static void unused() {} }")
+        val file = myFixture.configureByText("Flow.java", source)
+        val session = CanvasSession.new("Flow.java")
+        val services = CanvasSessionServices(null, { { Completion("Summary", finishReason = FinishReason.COMPLETE) } },
+            summaryTools = { emptyList() }) { _, _ ->
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit) = "Answer"
+            }
+        }
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            val root = panel.controller.source(null)!!
+            val (_, target) = panel.controller.link(root, "entry")
+            val link = root.links.filter { target in it.targets }
+                .minWith(compareBy({ it.range.first }, { it.range.last - it.range.first }))
+            val job = panel.openSymbol(null, link, target)
+            PlatformTestUtil.waitWithEventsDispatching("The reader's card should open", { job.isCompleted }, 30)
+            val entry = panel.model.cards.single()
+            assertEquals(CardOpenedBy.USER, entry.openedBy)
+            val tools = canvasTools(panel.actions, entry.id, maxOpened = 10)
+            fun call(name: String, arguments: JsonObject = JsonObject()) = background {
+                tools.first { it.definition.name == name }.call(arguments)
+            }
+            fun args(vararg values: Pair<String, String>) = JsonObject().apply {
+                values.forEach { (key, value) -> addProperty(key, value) }
+            }
+            fun badge(cardId: String): JLabel {
+                fun labels(container: Container): List<JLabel> = container.components.flatMap {
+                    (if (it is JLabel) listOf(it) else emptyList()) + (if (it is Container) labels(it) else emptyList())
+                }
+                return labels(panel.cardViews.getValue(cardId)).single { it.name == "canvas-opened-by-llm" }
+            }
+
+            call("open_symbol", args("name" to "helper"))
+            val helper = panel.model.cards.last()
+            assertEquals(CardOpenedBy.LLM, helper.openedBy)
+            assertTrue(badge(helper.id).isVisible)
+            assertEquals("LLM", badge(helper.id).text)
+            assertEquals("Opened by the LLM through chat tools", badge(helper.id).toolTipText)
+            panel.model.setFolded(helper.id, CardSection.META, true)
+            assertTrue("The marker stays visible with folded metadata", badge(helper.id).isVisible)
+
+            call("open_symbol", args("card" to "root", "name" to "entry"))
+            call("show_card", args("card" to entry.id))
+            assertEquals("Revealing existing cards opens no new cards", 2, panel.model.cards.size)
+            assertEquals(CardOpenedBy.USER, panel.model.card(entry.id)!!.openedBy)
+            assertFalse(badge(entry.id).isVisible)
+            val helperAgain = background { panel.controller.openSymbol(entry.id, helper.anchor.startOffset,
+                helper.anchor.endOffset, panel.controller.source(helper.id)!!.node!!) }
+            assertEquals(helper.id, helperAgain.id)
+            assertEquals(CardOpenedBy.LLM, panel.model.card(helper.id)!!.openedBy)
+
+            call("open_selection", JsonObject().apply { addProperty("start_line", 3) })
+            val selection = panel.model.cards.last()
+            assertEquals(CardKind.SELECTION, selection.kind)
+            assertEquals(CardOpenedBy.LLM, selection.openedBy)
+            assertTrue(badge(selection.id).isVisible)
+
+            val path = panel.controller.relative(other.virtualFile.path)!!
+            call("open_declaration", args("path" to path, "name" to "unused"))
+            assertEquals(CardOpenedBy.LLM, panel.model.cards.last().openedBy)
+            call("open_file", args("path" to path))
+            val whole = panel.model.cards.last()
+            assertTrue(whole.wholeFile)
+            assertEquals(CardOpenedBy.LLM, whole.openedBy)
+            assertTrue(badge(whole.id).isVisible)
+
+            background { panel.controller.expandToFile(helper.id) }
+            assertTrue(badge(helper.id).isVisible)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
+    fun testRootSectionsMatchCardOrderAndSummaryRunsOnlyOnClick() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val store = CanvasSessionStore(Files.createTempDirectory("canvas-root-summary"))
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val services = CanvasSessionServices(store, { {
+            calls.incrementAndGet()
+            Completion("The Flow file.", finishReason = FinishReason.COMPLETE)
+        } }, summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        var panel: CanvasSessionPanel? = null
+        try {
+            fun open(session: CanvasSession): CanvasSessionPanel {
+                val opened = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+                panel = opened
+                opened.setSize(1400, 900)
+                PlatformTestUtil.waitWithEventsDispatching("The file should load", { opened.ready }, 30)
+                return opened
+            }
+            fun sections(opened: CanvasSessionPanel): List<CanvasFoldSection> =
+                (opened.canvas.components.single { it.name == "canvas-root" } as Container)
+                    .components.filterIsInstance<CanvasFoldSection>()
+            val opened = open(CanvasSession.new("Flow.java"))
+            assertEquals(0, calls.get())
+            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT),
+                sections(opened).map { it.section })
+            for (section in sections(opened)) {
+                opened.model.toggleFolded(null, section.section)
+                assertFalse(section.body.isVisible)
+                opened.model.toggleFolded(null, section.section)
+                assertTrue(section.body.isVisible)
+            }
+            assertEquals(0, calls.get())
+            val summaryBody = sections(opened).first().body
+            fun links(container: Container): List<com.intellij.ui.components.ActionLink> = container.components.flatMap {
+                (if (it is com.intellij.ui.components.ActionLink) listOf(it) else emptyList()) +
+                    (if (it is Container) links(it) else emptyList())
+            }
+            links(summaryBody).single { it.text == "Summarize" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The requested summary should arrive",
+                { opened.model.session.root.summary != null }, 30)
+            assertEquals(1, calls.get())
+            assertEquals("The Flow file.", opened.model.session.root.summary)
+            opened.model.setFolded(null, CardSection.SOURCE, true)
+            opened.model.setFolded(null, CardSection.INPUT, true)
+            val saved = opened.model.session
+            assertTrue(store.save(saved))
+            Disposer.dispose(opened)
+            panel = null
+            val restored = open(store.load(saved.id)!!)
+            assertEquals(saved.root, restored.model.session.root)
+            assertFalse(sections(restored).single { it.section == CardSection.SOURCE }.body.isVisible)
+            assertFalse(sections(restored).single { it.section == CardSection.INPUT }.body.isVisible)
+            assertEquals(1, calls.get())
+        } finally {
+            panel?.let(Disposer::dispose)
+        }
+    }
+
+    fun testTheRootFileChatsLikeACardBeforeAnyCardIsOpen() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val directory = Files.createTempDirectory("canvas-sessions")
+        val store = CanvasSessionStore(directory)
+        val asked = java.util.Collections.synchronizedList(mutableListOf<Pair<String?, String>>())
+        val services = CanvasSessionServices(store, { { Completion("Summary", finishReason = FinishReason.COMPLETE) } },
+            summaryTools = { emptyList() }) { _, cardId ->
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+                    asked += cardId to messages.last().text
+                    return "It is the Flow class."
+                }
+            }
+        }
+        val session = CanvasSession.new("Flow.java")
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            val chat = panel.rootChat!!
+            assertTrue(panel.model.cards.isEmpty())
+            chat.send("What does this file do?")
+            PlatformTestUtil.waitWithEventsDispatching("The root chat should answer",
+                { panel.model.session.root.messages.any { it.role == ChatRole.ASSISTANT } }, 30)
+            assertEquals(listOf<Pair<String?, String>>(null to "What does this file do?"), asked.toList())
+            assertEquals(listOf(ChatRole.NOTICE, ChatRole.USER, ChatRole.ASSISTANT), panel.model.session.root.messages.map { it.role })
+            assertEquals("Ask about the file Flow.java.", panel.model.session.root.messages.first().text.substringBefore(" I read"))
+
+            val first = panel.model.session.root.activeChatId
+            chat.input.text = "Root draft"
+            val second = panel.model.addChat(null)!!
+            assertEquals("", chat.input.text)
+            panel.model.selectChat(null, first)
+            assertEquals("Root draft", chat.input.text)
+            assertEquals(listOf(first, second.id), panel.model.session.root.chats.map { it.id })
+
+            val tools = canvasTools(panel.actions, null, maxOpened = 10)
+            background { tools.first { it.definition.name == "open_symbol" }.call(JsonObject().apply { addProperty("name", "entry") }) }
+            val opened = panel.model.cards.single()
+            assertNull(opened.parentId)
+            assertEquals(CardOpenedBy.LLM, opened.openedBy)
+            panel.model.toggleFolded(null, CardSection.CHAT)
+            panel.canvas.doLayout()
+            assertTrue("The card still sits right of the root file", panel.cardViews.getValue(opened.id).x > 0)
+            assertTrue(store.save(panel.model.session))
+            assertEquals(panel.model.session.root, store.load(session.id)!!.root)
+        } finally {
+            Disposer.dispose(panel)
+        }
     }
 
     fun testPanelOpensCardsSummarizesChatsAndSavesTheSession() {

@@ -31,6 +31,43 @@ class CanvasSessionModelTest {
     }
 
     @Test
+    fun `opening attribution belongs to each card and survives revisiting in either direction`() {
+        val model = model()
+        val manual = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
+        val revisitedByLlm = model.open(null, CardKind.SYMBOL, manual.anchor, manual.filePath, manual.firstLine,
+            manual.text, save, openedBy = CardOpenedBy.LLM)
+        assertSame(manual, revisitedByLlm)
+        assertEquals(CardOpenedBy.USER, revisitedByLlm.openedBy)
+
+        val llm = model.open(manual.id, CardKind.SELECTION, CardAnchor(0, 3, 3), "src/Store.kt", 3, "fun",
+            openedBy = CardOpenedBy.LLM)
+        val revisitedByUser = model.open(manual.id, CardKind.SELECTION, llm.anchor, llm.filePath, llm.firstLine, llm.text)
+        assertSame(llm, revisitedByUser)
+        assertEquals(CardOpenedBy.LLM, revisitedByUser.openedBy)
+
+        val manualChild = model.open(llm.id, CardKind.SELECTION, CardAnchor(0, 1, 3), "src/Store.kt", 3, "f")
+        assertEquals(CardOpenedBy.USER, manualChild.openedBy)
+        assertEquals(3, model.cards.size)
+    }
+
+    @Test
+    fun `summary chat restore and expand preserve opening attribution`() {
+        val model = model()
+        val card = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save,
+            openedBy = CardOpenedBy.LLM)
+        val child = model.open(card.id, CardKind.SELECTION, CardAnchor(0, 3, 3), card.filePath, 3, "fun",
+            openedBy = CardOpenedBy.LLM)
+        model.setSummary(card.id, "Saves it.")
+        model.setFolded(card.id, CardSection.SUMMARY, true)
+        model.addChat(card.id)
+        model.setDraft(card.id, "why?")
+        model.restoreSnapshot(card.id, card.anchor.copy(line = 4), 4, "fun save() { write() }")
+        model.expandToFile(card.id, "package sample\nfun save() { write() }", 15)
+        assertEquals(CardOpenedBy.LLM, model.card(card.id)!!.openedBy)
+        assertEquals(CardOpenedBy.LLM, model.card(child.id)!!.openedBy)
+    }
+
+    @Test
     fun `removing a card removes its subtree and chains run root first`() {
         val model = model()
         val a = model.open(null, CardKind.SYMBOL, CardAnchor(0, 4, 0), "src/Store.kt", 3, "a", save)
@@ -105,6 +142,36 @@ class CanvasSessionModelTest {
         model.removeChat(card.id, second.id)
         assertEquals(listOf(second.copy(draft = "second draft")), model.card(card.id)!!.chats)
         assertNull(model.addChat("missing"))
+    }
+
+    @Test
+    fun `the root file has its own chat tabs, drafts and folding, apart from the cards`() {
+        val model = model()
+        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
+        val changes = mutableListOf<CanvasChange>()
+        model.subscribe { changes += it }
+        val first = model.session.root.activeChatId
+        model.setDraft(null, "about the file")
+        val second = model.addChat(null)!!
+        assertEquals("Chat 2", second.title)
+        val reply = listOf(SavedMessage(ChatRole.ASSISTANT, "background reply"))
+        model.setMessages(null, reply, first)
+        assertTrue(model.session.root.messages.isEmpty())
+        model.selectChat(null, first)
+        assertEquals(reply, model.session.root.messages)
+        assertEquals("about the file", model.session.root.draft)
+        assertEquals(true, model.toggleFolded(null, CardSection.CHAT))
+        model.removeChat(null, first)
+        model.removeChat(null, second.id)
+        assertEquals(listOf(second), model.session.root.chats)
+        assertEquals(setOf(CardSection.CHAT), model.session.root.folded)
+
+        assertEquals(listOf(CanvasChat()), model.card(card.id)!!.chats)
+        assertTrue(changes.all { it is CanvasChange.RootChanged })
+        assertEquals(model.session.root, (changes.last() as CanvasChange.RootChanged).root)
+        val count = changes.size
+        model.selectChat(null, "missing")
+        assertEquals("An unchanged root notifies nobody", count, changes.size)
     }
 
     @Test

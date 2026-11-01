@@ -25,7 +25,7 @@ class CanvasSessionStoreTest {
             "src/Store.kt", 3, "fun save() {\n  write()\n}", summary = "Saves.", folded = setOf(CardSection.SOURCE, CardSection.META),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "why?"), SavedMessage(ChatRole.ASSISTANT, "Because.")), draft = "and")))
         val selection = CanvasCard("a2", "a1", CardKind.SELECTION, CardAnchor(13, 20, 4), null, "src/Store.kt", 4, "  write()",
-            textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true)
+            textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true, openedBy = CardOpenedBy.LLM)
         return CanvasSession(id, root, "Main", 1, updated, listOf(symbol, selection), CanvasView(1.25, -40, 300))
     }
 
@@ -77,8 +77,22 @@ class CanvasSessionStoreTest {
         assertEquals("A.kt", session.title)
         assertEquals(CanvasView(), session.view)
         val card = session.cards.single()
+        assertEquals(CardOpenedBy.USER, card.openedBy)
         assertEquals(CanvasCard("c1", null, CardKind.SELECTION, CardAnchor(0, 0, 0), null, "", 0, "x", folded = setOf(CardSection.SOURCE),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "q"))))), card)
+    }
+
+    @Test
+    fun `unknown opening attribution falls back without dropping the card`() {
+        Files.createDirectories(directory)
+        Files.writeString(directory.resolve("origin.json"), """
+            {"version":1,"session":{"id":"origin","rootPath":"src/A.kt","cards":[
+              {"id":"c1","kind":"SELECTION","text":"x","openedBy":"FUTURE"},
+              {"id":"c2","kind":"SELECTION","text":"y","openedBy":"LLM"}
+            ]}}
+        """.trimIndent())
+        val session = CanvasSessionStore(directory).load("origin")!!
+        assertEquals(listOf(CardOpenedBy.USER, CardOpenedBy.LLM), session.cards.map { it.openedBy })
     }
 
     @Test
@@ -96,6 +110,24 @@ class CanvasSessionStoreTest {
         assertEquals(chat.id, loaded.cards.first().activeChatId)
         assertEquals("and", loaded.cards.first().chats.first().draft)
         assertEquals("separate draft", loaded.cards.first().draft)
+    }
+
+    @Test
+    fun `the root file's chats round trip, and older sessions start with one empty chat`() {
+        val store = CanvasSessionStore(directory)
+        val model = CanvasSessionModel(session("root", "src/Main.kt", 10))
+        model.setMessages(null, listOf(SavedMessage(ChatRole.USER, "what is this file?")))
+        val chat = model.addChat(null)!!
+        model.setDraft(null, "and then")
+        model.setFolded(null, CardSection.INPUT, true)
+        assertTrue(store.save(model.session))
+        val loaded = store.load("root")!!
+        assertEquals(model.session, loaded)
+        assertEquals(chat.id, loaded.root.activeChatId)
+        assertEquals("what is this file?", loaded.root.chats.first().messages.single().text)
+
+        Files.writeString(directory.resolve("older.json"), """{"version":1,"session":{"id":"older","rootPath":"src/A.kt"}}""")
+        assertEquals(CanvasRootState(), store.load("older")!!.root)
     }
 
     @Test

@@ -13,11 +13,15 @@ const val CANVAS_ROOT = "root"
 const val CANVAS_CURRENT = "current"
 
 /**
- * The chat context of [cardId] in [session]: its chain from the root file down to the card. [root] is the root file's
- * shown source, quoted where the first card was opened from it.
+ * The chat context of [cardId] in [session]: its chain from the root file down to the card, or for null the root
+ * file's own chat context. [root] is the root file's shown source, quoted where the first card was opened from it.
  */
-fun canvasChainContext(session: CanvasSession, cardId: String, root: CanvasSource? = null,
+fun canvasChainContext(session: CanvasSession, cardId: String?, root: CanvasSource? = null,
     budget: CanvasContextBudget = CanvasContextBudget()): String {
+    if (cardId == null) {
+        val opened = session.children(null)
+        return canvasRootContext(session.rootPath, root, budget, opened, elsewhere = session.cards.size - opened.size)
+    }
     val chain = session.chain(cardId)
     val onChain = chain.map { it.id }.toSet()
     val opened = session.children(cardId)
@@ -67,6 +71,28 @@ fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: Canvas
         }
     }.trimEnd()
 }
+
+/**
+ * What the root file's chat knows of the canvas: the file's numbered [root] source within the current card's budget,
+ * the cards [opened] from it, and how many cards lie further down ([elsewhere]), which canvas_overview lists.
+ */
+fun canvasRootContext(rootPath: String, root: CanvasSource?, budget: CanvasContextBudget = CanvasContextBudget(),
+    opened: List<CanvasCard> = emptyList(), elsewhere: Int = 0): String = buildString {
+    append("Root file: $rootPath (card \"$CANVAS_ROOT\")\n")
+    append("This chat belongs to the root file itself, so \"$CANVAS_CURRENT\" names the root file; there is no chain above it.\n\n")
+    append("Current card [$CANVAS_ROOT]: file ${rootPath.substringAfterLast('/')} at $rootPath\n")
+    append(if (root == null || root.text.isEmpty()) "[File source: not shown yet; use read_file path $rootPath]\n"
+        else numberedText("File source", root.text, root.firstLine, rootPath, minOf(budget.current, budget.total)))
+    if (opened.isNotEmpty()) {
+        append("\nCards opened from the root file: ")
+        append(opened.joinToString("; ") { "${it.title} [card ${it.id}] from line ${it.anchor.line + 1}" })
+        append("\n")
+    }
+    if (elsewhere > 0) {
+        append("\n${if (elsewhere == 1) "1 other card is" else "$elsewhere other cards are"} open further down the canvas ")
+        append("and left out here; canvas_overview lists them.\n")
+    }
+}.trimEnd()
 
 /** `symbol function save in Store at path:10-20`, or `selection at path:3-5`. */
 internal fun describe(card: CanvasCard): String {
@@ -130,6 +156,8 @@ val canvasChatPrompt = """
     - The canvas holds many chains at once, branching from the root file or from any card, and they may be about
       unrelated things. Each card has its own model-written summary, which may be wrong, and its own chats.
     - You are a chat of the current card. Its chain is your context; other chains are left out on purpose.
+    - The root file has chats too. When you are one of them, the root file is your current card: you receive its
+      numbered source and the cards opened from it instead of a chain, and cards you open attach to it.
 
     What you receive with each question
     - The current chain: the root file's path, then every card from the root down to the current card with its id,
@@ -176,4 +204,9 @@ fun canvasWelcome(card: CanvasCard): String = when {
     card.wholeFile -> "Ask about the file ${card.filePath}."
     card.kind == CardKind.SELECTION || card.symbol == null -> "Ask about the selected code at ${card.location}."
     else -> "Ask about ${card.symbol.name} (${card.symbol.kind.lowercase().ifEmpty { "symbol" }} at ${card.location})."
-} + " I read the project to answer and can open cards on the canvas to show you code."
+} + CANVAS_WELCOME_TOOLS
+
+/** The first notice of the root file's chat. */
+fun canvasRootWelcome(rootPath: String): String = "Ask about the file $rootPath.$CANVAS_WELCOME_TOOLS"
+
+private const val CANVAS_WELCOME_TOOLS = " I read the project to answer and can open cards on the canvas to show you code."

@@ -106,7 +106,9 @@ val canvasHelpHtml = """
     source, so a chain can follow the code as far as you like; an arrow links each card to where it was opened.<br><br>
     Each card has independent chat tabs. Use <b>New chat</b> to start another conversation; switch tabs to return to
     its history and draft. All tabs use the chain from the file down to the card as context, and can open cards on the
-    canvas to show you the code they talk about. Every part of a card folds
+    canvas to show you the code they talk about. The file has its own chat tabs below its source, to ask about the
+    whole file right away; they use the file and the cards opened from it as context. Click <b>Summarize</b> to
+    request the file summary. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
     <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
     Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. The session is saved as you work: <b>Sessions</b>

@@ -96,6 +96,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Ctrl/⌘ + wheel zooms it. With the canvas focused, keys scroll and zoom it too.
  */
 internal class SchematicPanel(private val project: Project, private val file: SchematicFile) : JPanel(null) {
+    /** The same canvas port used by the schematic's chat tools. */
+    internal val chatCanvas: SchematicCanvas = ChatCanvas()
     private val result get() = file.exploration?.result ?: file.result
     private val graph get() = result.graph
     @Volatile private var analysis = Analysis(file.result)
@@ -770,8 +772,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** The canvas as the chat sees and drives it; everything runs on the EDT, waiting for levels without blocking it. */
     private inner class ChatCanvas : SchematicCanvas {
-        suspend fun roots(): List<Int> = rootSlot.awaitLevel()?.targets.orEmpty()
-
         override suspend fun snapshot(): String {
             val level = rootSlot.awaitLevel()
             return withContext(Dispatchers.EDT) {
@@ -852,12 +852,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** A chat about this schematic, floating over the canvas's right side. */
     private inner class SchematicChatBlock : FloatingPanel(BorderLayout(0, JBUI.scale(4))) {
-        private val canvasAccess = ChatCanvas()
+        private val canvasAccess = chatCanvas
         private val tools by lazy {
             val graphTools = SchematicGraph(lifted, result.occurrences, summaries::get, ::relativePath, ::readSource,
                 snapshot = { currentAnalysis.let { it.lifted to it.result.occurrences } },
                 expand = { file.exploration?.expand(it) })
-            schematicChatTools(project, graphTools, canvasAccess, canvasAccess::roots)
+            schematicChatTools(project, graphTools, canvasAccess) { rootSlot.awaitLevel()?.targets.orEmpty() }
         }
         private val session = object : ChatSession(project, scope, backendFactory = { _ -> createBackend() },
             welcome = "Ask about ${graph.nodes[file.root].name} and the code " +
@@ -1884,6 +1884,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
             private var allChoices = false
             private val arrow = JLabel(if (expandable) "▸" else "·").zoomFont()
+            private val originBadge = JLabel("LLM").apply {
+                name = "schematic-card-origin"
+                toolTipText = "Opened by the LLM through chat tools"
+                foreground = blockOpen
+                isVisible = false
+            }.zoomFont(font.deriveFont(Font.BOLD))
             private val text = HtmlLabel { inBreadcrumbs(this) || inBreadcrumbs(row) }
             private val header = JPanel(BorderLayout())
             private val actions = JPanel()
@@ -1930,6 +1936,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 header.add(actions.apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     isOpaque = false
+                    add(originBadge)
                     add(pinToggle)
                     add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(if (node.unresolved) target else shown) }
                         .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
@@ -2103,6 +2110,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
              * External code stays a card; opening its source would leave the schematic.
              */
             fun follow(id: Int) {
+                // Following an existing card does not change who opened it. Hover previews are still unopened.
+                if (!pinned) originBadge.isVisible = true
                 trailTarget = this
                 if (id == symbol && wholeFile != null) showWholeFile(false)
                 if (id != shown && id in choices && graph.nodes[id].inProject) pick(id) else pinTo(true)
@@ -2146,6 +2155,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             fun pinTo(value: Boolean, batch: Boolean = false) {
                 if (pinned == value) return
                 pinned = value
+                if (!value) originBadge.isVisible = false
                 if (value && !batch) summarize(listOf(symbol))
                 pinToggle.text = if (value) "Unpin" else "Pin"
                 // Releasing an unfolded card also folds its branch, so hidden descendants cannot retain the cursor.

@@ -92,7 +92,8 @@ internal class CanvasSessionController(
      * Opens the card of graph symbol [target] from link [start] until [end] of [parentId]'s source (the root file for
      * null), or returns the card already open there. Targets outside the project open a card without source.
      */
-    suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int): CanvasCard {
+    suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int,
+        openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val node = node(target) ?: error("Unknown symbol #$target.")
         val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
@@ -100,12 +101,13 @@ internal class CanvasSessionController(
         return withContext(Dispatchers.EDT) {
             model.findOpen(parentId, CardKind.SYMBOL, anchor, built.second)?.let { return@withContext it }
             checkNotNull(source(parentId)) { "The card to open from was closed." }
-            open(built.first) { model.open(parentId, CardKind.SYMBOL, anchor, it.path, it.firstLine, it.text, built.second) }
+            open(built.first) { model.open(parentId, CardKind.SYMBOL, anchor, it.path, it.firstLine, it.text, built.second,
+                openedBy = openedBy) }
         }
     }
 
     /** Opens a card of [start] until [end] of [parentId]'s source, or the one already open there; null for blank text. EDT. */
-    fun openSelection(parentId: String?, start: Int, end: Int): CanvasCard? {
+    fun openSelection(parentId: String?, start: Int, end: Int, openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard? {
         val parent = source(parentId) ?: return null
         val from = start.coerceIn(0, parent.text.length)
         val to = end.coerceIn(from, parent.text.length)
@@ -114,14 +116,15 @@ internal class CanvasSessionController(
         val anchor = cardAnchor(parent.text, from, to, parent.firstLine)
         model.findOpen(parentId, CardKind.SELECTION, anchor, null)?.let { return it }
         val source = CanvasSource(text, linksInSlice(parent.links, from, to), anchor.line, parent.path, parent.file)
-        return open(source) { model.open(parentId, CardKind.SELECTION, anchor, it.path, it.firstLine, it.text) }
+        return open(source) { model.open(parentId, CardKind.SELECTION, anchor, it.path, it.firstLine, it.text, openedBy = openedBy) }
     }
 
     /**
      * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source (the root file for
      * null), or returns the card of that file already open there. For files the chain does not lead to.
      */
-    suspend fun openFile(parentId: String?, start: Int, end: Int, file: VirtualFile): CanvasCard {
+    suspend fun openFile(parentId: String?, start: Int, end: Int, file: VirtualFile,
+        openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
         val path = relative(file.path).orEmpty()
@@ -132,7 +135,8 @@ internal class CanvasSessionController(
         return withContext(Dispatchers.EDT) {
             model.findOpen(parentId, CardKind.SYMBOL, anchor, ref)?.let { return@withContext it }
             checkNotNull(source(parentId)) { "The card to open from was closed." }
-            open(shown) { model.open(parentId, CardKind.SYMBOL, anchor, path, it.firstLine, it.text, ref, wholeFile = true) }
+            open(shown) { model.open(parentId, CardKind.SYMBOL, anchor, path, it.firstLine, it.text, ref, wholeFile = true,
+                openedBy = openedBy) }
         }
     }
 
