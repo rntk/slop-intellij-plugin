@@ -111,7 +111,8 @@ val canvasHelpHtml = """
     request the file summary. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
     <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
-    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. The session is saved as you work: <b>Sessions</b>
+    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
+    cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
     to another session of this file, or deletes this one. Reopening resolves symbols
     again; a card whose symbol is gone keeps its saved text and chat.

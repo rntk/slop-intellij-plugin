@@ -4,6 +4,8 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
@@ -19,6 +21,7 @@ import com.intellij.openapi.fileEditor.FileEditorPolicy
 import com.intellij.openapi.fileEditor.FileEditorProvider
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
@@ -53,6 +56,7 @@ import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.SourceChainLocation
 import dev.insight.ui.openSourceChain
+import dev.insight.ui.showCardSearch
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -238,8 +242,14 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         toolTipText = "Use the IDE source editor; turn off to use the original canvas view"
         addActionListener { switchSourceView(isSelected) }
     }
+    private val findCard = JButton("Find card").apply {
+        isFocusable = false
+        toolTipText = "Fuzzy search the pinned and unfolded cards and move to one (Ctrl/⌘ + F outside source text, where it finds in the text)"
+        addActionListener { openCardSearch() }
+    }
     private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
         add(nativeEditorToggle)
+        add(findCard)
         add(JButton("Fold all").apply { isFocusable = false; addActionListener { foldAll() } })
         add(JButton("−").apply {
             isFocusable = false
@@ -263,6 +273,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 "IDE editor enables source selection and copying; turn it off for the original canvas view. " +
                 "Choose Source on a summary to open the file; in the original view, double-click code. " +
                 "Choose Compact on an unfolded summary to keep only clickable blocks; Full restores the plain code. " +
+                "Find card (Ctrl/⌘ + F outside the IDE editor) fuzzy-searches the pinned and unfolded cards and moves to the one you pick. " +
                 "Drag outside source text, or middle-drag, to move; Ctrl/⌘ + wheel to zoom. " +
                 "With the canvas focused, + and − zoom; arrows, Page Up/Down, Home and End scroll.<br><br>" +
                 "Calls load as you unfold scopes; summaries describe each function's own source. Reopen the schematic after edits.</div></html>"
@@ -282,6 +293,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             content.reserve(view.x.toLong() + view.width, view.y.toLong() + view.height)
         }
         installNavigation()
+        // Off inside the IDE source editor, so the shortcut falls through to the IDE's Find there.
+        object : DumbAwareAction() {
+            override fun actionPerformed(e: AnActionEvent) = openCardSearch()
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = generateSequence(e.getData(PlatformCoreDataKeys.CONTEXT_COMPONENT)) { it.parent }
+                    .none { it is SchematicSourceEditor }
+            }
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        }.registerCustomShortcutSet(CommonShortcuts.getFind(), this)
         content.addMouseWheelListener(::wheel)
         // Earlier components paint on top, so the floating bars come before the canvas.
         add(controls)
@@ -974,6 +994,32 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private fun refreshSummaries(component: Component) {
         if (component is LevelView.SummaryCard) component.update()
         if (component is Container) component.components.forEach(::refreshSummaries)
+    }
+
+    private fun openCardSearch() {
+        if (disposed) return
+        val shown = mutableListOf<LevelView.SummaryCard>()
+        fun visit(component: Component) {
+            if (!component.isVisible) return
+            if (component is LevelView.SummaryCard && (component.pinned || component.open)) shown += component
+            (component as? Container)?.components?.forEach(::visit)
+        }
+        visit(content)
+        showCardSearch(findCard, shown.map { card ->
+            schematicCardCandidate(card, graph.nodes[card.shown], summaries[card.symbol], (card as? LevelView.UsageCard)?.origin?.trailName)
+        }, ::moveTo)
+    }
+
+    /** Selects [card] and centres the canvas on it (on its top, if taller than the view). */
+    private fun moveTo(card: LevelView.SummaryCard) {
+        if (disposed || !card.isShowing) return
+        revealBreadcrumb(card)
+        val bounds = SwingUtilities.convertRectangle(card.parent, card.bounds, content)
+        val viewport = scroll.viewport.extentSize
+        val top = JBUI.scale(FLOATING_ROW_SPACE) + scaled(16)
+        val x = if (bounds.width <= viewport.width) bounds.x + bounds.width / 2 - viewport.width / 2 else bounds.x - scaled(16)
+        val y = if (bounds.height <= viewport.height - top) bounds.y + bounds.height / 2 - (viewport.height + top) / 2 else bounds.y - top
+        scrollTo(maxOf(x, 0), maxOf(y, 0))
     }
 
     private fun foldAll() {

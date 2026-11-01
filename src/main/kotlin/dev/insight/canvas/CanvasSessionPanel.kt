@@ -7,7 +7,12 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -32,6 +37,7 @@ import dev.insight.ui.layoutZoomContent
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.openSourceChain
+import dev.insight.ui.showCardSearch
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -148,9 +154,15 @@ internal class CanvasSessionPanel(
         toolTipText = "Start a new session, switch to another saved session of this file, or delete this one"
         addActionListener { showSessions(this) }
     }
+    private val findCard = JButton("Find card").apply {
+        isFocusable = false
+        toolTipText = "Fuzzy search the cards on the canvas and move to one (Ctrl/⌘ + F outside source text, where it finds in the text)"
+        addActionListener { openCardSearch() }
+    }
     private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
         add(sessions)
         add(sessionActions)
+        add(findCard)
         add(JButton("Fold all").apply {
             isFocusable = false
             toolTipText = "Fold the file and every card's summary, source and chat; again to unfold them"
@@ -198,6 +210,15 @@ internal class CanvasSessionPanel(
         add(controls)
         add(scroll)
         scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+        // Off inside the file's and cards' source, so the shortcut falls through to the IDE's Find there.
+        object : DumbAwareAction() {
+            override fun actionPerformed(e: AnActionEvent) = openCardSearch()
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = generateSequence(e.getData(PlatformCoreDataKeys.CONTEXT_COMPONENT)) { it.parent }
+                    .none { it is CanvasSourcePane }
+            }
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        }.registerCustomShortcutSet(CommonShortcuts.getFind(), this, this)
         load()
     }
 
@@ -462,6 +483,23 @@ internal class CanvasSessionPanel(
         content.scrollRectToVisible(Rectangle(view.x - zoomScaled(16, zoom), view.y - zoomScaled(16, zoom),
             minOf(view.width + zoomScaled(32, zoom), viewport.width), minOf(view.height, viewport.height)))
         unreveal.restart()
+    }
+
+    private fun openCardSearch() {
+        if (!ready || disposed) return
+        showCardSearch(findCard, model.cards.map(::canvasCardCandidate), ::moveTo)
+    }
+
+    /** Centres the canvas on card [cardId] (its top, if taller than the view) and emphasises it for a moment. */
+    private fun moveTo(cardId: String) {
+        val view = views[cardId] ?: return
+        content.validate()
+        val viewport = scroll.viewport.extentSize
+        val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
+        val x = if (view.width <= viewport.width) view.x + view.width / 2 - viewport.width / 2 else view.x - zoomScaled(16, zoom)
+        val y = if (view.height <= viewport.height - top) view.y + view.height / 2 - (viewport.height + top) / 2 else view.y - top
+        scrollTo(maxOf(x, 0), maxOf(y, 0))
+        reveal(cardId)
     }
 
     /** Folds the file and every card's summary, source and chat; again to unfold them. */
