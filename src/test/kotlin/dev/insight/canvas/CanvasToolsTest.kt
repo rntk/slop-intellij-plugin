@@ -4,6 +4,8 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.insight.agent.ChatTool
 import dev.insight.agent.ToolInputException
+import dev.insight.agent.SEARCH_TOOLS
+import dev.insight.agent.ToolSet
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -191,6 +193,23 @@ class CanvasToolsTest {
         assertTrue(tools.fails("open_symbol", """{"name":"App"}""").contains("opened 1 cards"))
         canvasTools(canvas, main.id, maxOpened = 1).call("open_symbol", """{"name":"App"}""")
         assertEquals("A fresh reply gets a fresh allowance", 3, canvas.model.cards.size)
+    }
+
+    @Test
+    fun `a card's chat starts with the walking tools and finds the others with search_tools`() {
+        val canvas = FakeCanvas()
+        val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
+        val registry = canvasToolRegistry(canvas, main.id)
+        assertEquals(canvasTools(canvas, main.id).map { it.definition.name }, registry.tools.map { it.definition.name })
+        val tools = ToolSet(registry.select(*CANVAS_CHAT_TOOLS.toTypedArray()), registry)
+        assertEquals(setOf("read_card", "list_symbols", "open_symbol", SEARCH_TOOLS), tools.names)
+        val found = runBlocking { tools[SEARCH_TOOLS]!!.call(args("""{"query":"open a card for a whole file"}""")) }
+        assertTrue(found, found.contains("- open_file:"))
+        assertEquals(setOf("read_card", "list_symbols", "open_symbol", SEARCH_TOOLS, "open_file"), tools.names)
+
+        val shown = runBlocking { tools[SEARCH_TOOLS]!!.call(args("""{"query":"show_card"}""")) }
+        assertTrue(shown, shown.startsWith("Loaded 1 tool;"))
+        assertEquals(setOf("read_card", "list_symbols", "open_symbol", SEARCH_TOOLS, "open_file", "show_card"), tools.names)
     }
 
     @Test

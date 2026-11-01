@@ -42,10 +42,11 @@ data class ToolChatResult(
  * rather than failing the turn. After [maxToolRounds] rounds of calls, one final request disables new
  * calls through the API's tool choice. If the server ignores it or the reply is empty, retry once with an answer-now note.
  * A [followUp] can reject an answer, e.g. when required work is missing, and continue the turn.
+ * Each turn starts with [tools]; with a [registry], the model can load more through search_tools (see [ToolSet]).
  */
 class ToolChatRunner(
     private val complete: CompletionFn,
-    tools: List<ChatTool>,
+    private val tools: List<ChatTool>,
     private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     private val maxToolResultChars: Int = DEFAULT_MAX_TOOL_RESULT_CHARS,
     private val maxContextChars: Int = 64_000,
@@ -55,11 +56,11 @@ class ToolChatRunner(
     /** Checked when the model answers; a non-null note is sent back as a user message and the turn continues. */
     private val followUp: (suspend () -> String?)? = null,
     private val maxFollowUps: Int = 2,
+    /** Tools the model may find and load during a turn, beyond [tools]. */
+    private val registry: ToolRegistry? = null,
 ) {
-    private val tools = tools.associateBy { it.definition.name }
-
     init {
-        require(this.tools.size == tools.size) { "Tool names must be unique" }
+        ToolSet(tools, registry) // Validates unique names.
         require(maxToolRounds >= 0) { "Max tool rounds must not be negative" }
         require(maxToolResultChars > 0) { "Max tool result size must be positive" }
         require(maxContextChars > 0) { "Max context size must be positive" }
@@ -74,9 +75,12 @@ class ToolChatRunner(
         val transcript = mutableListOf<LlmMessage>()
         var requestCount = 0
         var followUps = 0
-        // Schemas stay in every request, including the last one, so earlier calls remain interpretable.
-        val definitions = tools.values.map { it.definition }
+        val toolSet = ToolSet(tools, registry)
         for (round in 0..maxToolRounds) {
+            // Schemas stay in every request, including the last one, so earlier calls remain interpretable.
+            // Tools loaded in a round are advertised from the next request on.
+            val definitions = toolSet.definitions
+            val advertisedNames = definitions.mapTo(HashSet()) { it.name }
             val exhausted = round == maxToolRounds && definitions.isNotEmpty()
             var answerNow = false
             fun request(context: List<LlmMessage>) = CompletionRequest(
@@ -137,7 +141,7 @@ class ToolChatRunner(
             transcript += assistant.copy(reasoning = null, thinkingBlocks = emptyList())
             for (call in calls) {
                 currentCoroutineContext()[FileTraceContext]?.trace?.requestTool(call.name, call.arguments)
-                val (result, failed) = execute(call.name, call.arguments)
+                val (result, failed) = execute(toolSet, advertisedNames, call.name, call.arguments)
                 val toolMessage = LlmMessage.tool(call.id!!, result)
                 roundMessages += toolMessage
                 transcript += toolMessage
@@ -148,9 +152,16 @@ class ToolChatRunner(
         error("unreachable")
     }
 
-    private suspend fun execute(name: String, arguments: JsonObject): Pair<String, Boolean> {
+    private suspend fun execute(tools: ToolSet, advertisedNames: Set<String>, name: String, arguments: JsonObject): Pair<String, Boolean> {
+        // A batch may load tools, but only the next completion can use their schemas.
+        if (name !in advertisedNames) {
+            if (tools.loadable(name)) tools.load(name)
+            if (tools[name] != null)
+                return "Error: '$name' was not advertised in this request, so the call did not run. " +
+                    "It is loaded now; call it again after receiving its schema." to true
+        }
         val tool = tools[name]
-            ?: return "Error: unknown tool '${name.ifBlank { "(missing name)" }}'. Available tools: ${tools.keys.joinToString()}." to true
+            ?: return "Error: unknown tool '${name.ifBlank { "(missing name)" }}'. Available tools: ${tools.names.joinToString()}." to true
         return try {
             limit(tool.call(arguments)) to false
         } catch (e: CancellationException) {

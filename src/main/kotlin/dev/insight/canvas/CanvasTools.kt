@@ -5,6 +5,7 @@ import dev.insight.agent.CallAllowance
 import dev.insight.agent.ChatTool
 import dev.insight.agent.LimitedTool
 import dev.insight.agent.ToolInputException
+import dev.insight.agent.ToolRegistry
 import dev.insight.agent.lenientInt
 import dev.insight.agent.optionalStringArg
 import dev.insight.agent.stringArg
@@ -47,14 +48,25 @@ const val CANVAS_OPEN_LIMIT = 6
  * The tools of [cardId]'s chat: reading the canvas beyond the chain in its context, and opening and showing cards.
  * Opening tools share an allowance of [maxOpened] cards per reply; create the tools once per reply.
  */
-fun canvasTools(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> {
+fun canvasTools(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> =
+    canvasToolRegistry(actions, cardId, maxOpened).tools
+
+/** [canvasTools] by topic, for a chat that starts with [CANVAS_CHAT_TOOLS] and loads the rest when it needs them. */
+fun canvasToolRegistry(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): ToolRegistry {
     val canvas = CanvasToolContext(actions, cardId)
     val opened = CallAllowance(maxOpened, "This reply has opened $maxOpened cards, the most one reply may open. " +
         "Answer with the cards already shown.")
-    return listOf(CanvasOverviewTool(canvas), ReadCardTool(canvas), ListSymbolsTool(canvas), ShowCardTool(canvas)) +
-        listOf(OpenSymbolTool(canvas), OpenSelectionTool(canvas), OpenDeclarationTool(canvas), OpenFileCardTool(canvas))
-            .map { LimitedTool(it, opened) }
+    return ToolRegistry()
+        .register("reading the canvas: card sources, their clickable symbols, and every card and chain",
+            CanvasOverviewTool(canvas), ReadCardTool(canvas), ListSymbolsTool(canvas))
+        .register("showing code on the canvas: opening cards for symbols, selected lines, declarations anywhere in " +
+            "the project or whole files, and highlighting an open card",
+            listOf(ShowCardTool(canvas)) + listOf(OpenSymbolTool(canvas), OpenSelectionTool(canvas),
+                OpenDeclarationTool(canvas), OpenFileCardTool(canvas)).map { LimitedTool(it, opened) })
 }
+
+/** The canvas tools a card's chat starts with, for walking the chain; the others are found with search_tools. */
+val CANVAS_CHAT_TOOLS = listOf("read_card", "list_symbols", "open_symbol")
 
 /** Resolves card handles and lines for the tools of one card's chat. */
 private class CanvasToolContext(val actions: CanvasActions, val cardId: String) {

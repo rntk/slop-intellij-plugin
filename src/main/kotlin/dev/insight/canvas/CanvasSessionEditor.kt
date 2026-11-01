@@ -57,10 +57,12 @@ internal class CanvasSessionServices(
             { ChatSettings.getInstance().createClient()::complete },
             { projectContextTools(project) },
         ) { actions, cardId ->
+            val canvas = canvasToolRegistry(actions, cardId)
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
-                projectContextTools(project) + canvasTools(actions, cardId), canvasChatPrompt,
+                projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
                 maxContextChars = 64_000, maxToolRounds = 30,
-                context = { canvasChainContext(actions.session, cardId, actions.source(null)) }, contextLabel = "Canvas chain")
+                context = { canvasChainContext(actions.session, cardId, actions.source(null)) }, contextLabel = "Canvas chain",
+                registry = canvas)
         }
     }
 }

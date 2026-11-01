@@ -48,3 +48,4 @@ Use `./build.sh` for compile, test, and packaging. Don't call `./gradlew` or `./
 - Pass input and progress callbacks to workflow methods; retain descriptive entry points such as `summarize`, `find`, or `run`.
 - Keep prompt construction, source-range calculations, request estimates, and HTML rendering in non-Swing files. Test these functions without `BasePlatformTestCase`; reserve platform tests for IDE integration.
 - Compose tool policies with named decorators in the `agent` package, alongside `ChatTool`, rather than embedding anonymous wrappers in workflows.
+- Pass the tools every turn needs as the tool list, and register the rest by topic in a `ToolRegistry` passed as `registry`; the model loads them with `search_tools`, which never offers a tool the turn already has.

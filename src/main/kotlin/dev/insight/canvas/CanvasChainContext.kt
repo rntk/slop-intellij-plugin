@@ -152,6 +152,7 @@ val canvasChatPrompt = """
       whole project file, for answers that lie outside what the chain links to. Both attach the new card to the
       current card unless you name another card and line.
     - show_card scrolls to a card that is already open and highlights it.
+    - Only some of these tools are loaded at first. search_tools loads the others, by name or by what they do.
 
     When to show code on the canvas
     - Open a card when seeing the code helps more than describing it: where a call leads, where a value comes from,
