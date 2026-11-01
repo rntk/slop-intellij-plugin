@@ -508,8 +508,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             if (target != null) {
                 generateSequence<Component>(target) { it.parent }.toList().asReversed().forEach {
                     when (it) {
+                        is LevelView.UsageCard -> add("Used by ${it.trailName}" to it)
                         is LevelView.SummaryCard -> add(it.trailName to it)
-                        is UsageBranch -> add("Used by ${graph.nodes[it.id].name}" to it)
                     }
                 }
                 if (target is LevelView.BlockView) add(target.trailName to target)
@@ -967,11 +967,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     private fun foldAll() {
-        fun foldUsages(component: Component) {
-            if (component is UsageBranch && component.open) component.toggle()
-            if (component is Container) component.components.forEach(::foldUsages)
-        }
-        foldUsages(content)
         fun cards(component: Component): List<LevelView.SummaryCard> =
             (if (component is LevelView.SummaryCard && component.open) listOf(component) else emptyList()) +
                 ((component as? Container)?.components.orEmpty().flatMap(::cards))
@@ -991,41 +986,39 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     }
 
     /** An incoming relationship keeps its source and can unfold just like an outgoing symbol. */
-    private inner class UsageBranch(val id: Int, usages: List<SchematicUsage>) : JPanel(BorderLayout()) {
-        var open = false
-            private set
-        private var level: LevelSlot? = null
-        private val unfold = ActionLink("Explore ${graph.nodes[id].name}") { toggle() }.zoomFont()
+    private inner class UsageBranch(val id: Int, usages: List<SchematicUsage>,
+        private val follow: (Int, JComponent) -> Unit) : JPanel(BorderLayout()), Zoomable {
+        private val unfold = ActionLink("Explore ${graph.nodes[id].name}") { follow(id, this) }.zoomFont()
 
         init {
             name = "schematic-usage-branch"
             isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
             add(JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
-                add(unfold)
+                add(unfold.apply { alignmentX = LEFT_ALIGNMENT })
                 usages.forEach { usage ->
                     val path = usage.filePath
                     add(ActionLink("${if (usage.kind == RelationKind.CALL) "Call" else "Use"}: ${relativePath(path)}:${usage.line}") {
-                        com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(path)?.let {
-                            OpenFileDescriptor(project, it, usage.offset).navigate(true)
+                        filesByPath[path]?.id?.let { fileId ->
+                            follow(fileId, this@UsageBranch)
                         }
+                    }.apply {
+                        alignmentX = LEFT_ALIGNMENT
+                        border = JBUI.Borders.empty(3, 12, 3, 0)
                     }.zoomFont())
                 }
             }, BorderLayout.NORTH)
+            applyZoom()
         }
 
-        fun toggle() {
-            open = !open
-            trailTarget = this
-            unfold.text = "${if (open) "▾" else "▸"} ${graph.nodes[id].name} · ${graph.nodes[id].location}"
-            if (open) {
-                val slot = level ?: LevelSlot(id).also { level = it; add(it, BorderLayout.CENTER) }
-                slot.isVisible = true
-                applyZoom(slot)
-            } else level?.isVisible = false
-            refreshCards()
+        override fun applyZoom() {
+            border = BorderFactory.createCompoundBorder(pixelBorder(scaled(6), 0, scaled(4), 0),
+                BorderFactory.createCompoundBorder(line(JBColor.border(), 1), pixelBorder(scaled(6), scaled(8), scaled(6), scaled(8))))
+            (layout as BorderLayout).vgap = scaled(6)
         }
+
     }
 
     /** Resolves only [id]'s visible scope, then shows it without requesting descendant summaries. */
@@ -1096,11 +1089,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     /** The rows of one schematic on the left and a summary card per block target on the right, joined by arrows. */
     private inner class LevelView(private val schematic: Schematic) : JPanel(null), Zoomable {
         private val cards = mutableListOf<SummaryCard>()
+        private val usageCards = mutableListOf<UsageCard>()
         private val rows = mutableListOf<JComponent>()
         private val spans = schematic.gaps.map { GapSpan(it) }
-        /** Both kinds share one card column, in source order. */
+        /** Symbol and gap cards share a column; linked usages occupy the next column. */
         private val externalCards: List<ExternalCard> get() =
-            (cards + spans.mapNotNull { it.card }).sortedBy { it.rowIndex }
+            (cards + spans.mapNotNull { it.card } + usageCards).sortedBy { it.rowIndex }
         private val indent = schematic.lines.filter { it.isNotBlank() }.minOfOrNull { line -> detab(line).takeWhile { it == ' ' }.length } ?: 0
         private val charWidth get() = getFontMetrics(codeFont).charWidth(' ')
         /** Links of this level in source order; a split line has several. */
@@ -1113,7 +1107,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
         fun release() {
             released = true
-            cards.forEach { it.cancelUsageSearch() }
+            (cards + usageCards).forEach { it.cancelUsageSearch() }
             if (hoveredGap?.level === this) {
                 hoverExit.stop()
                 hoveredGap = null
@@ -1272,6 +1266,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 it.isVisible = visible
                 if (revealed) applyZoom(it)
             }
+            usageCards.forEach {
+                val visible = it.origin.isVisible && it.pinned
+                val revealed = visible && !it.isVisible
+                it.isVisible = visible
+                if (revealed) applyZoom(it)
+            }
             rows.filterIsInstance<LineView>().forEach { it.repaintBorder() }
             spans.forEach { span ->
                 span.card?.let { card ->
@@ -1403,6 +1403,39 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             open val accent: Color get() = blockOpen
         }
 
+        /** A normal summary card, anchored to a usage link beside the original card. */
+        inner class UsageCard(val origin: SummaryCard, target: Int, val anchor: JComponent) :
+            SummaryCard(target, origin.row, origin.rowIndex, emptyList()) {
+            override fun anchorBounds(): Rectangle =
+                if (generateSequence<Component>(anchor) { it.parent }.takeWhile { it !== origin }.all { it.isVisible })
+                    SwingUtilities.convertRectangle(anchor.parent, anchor.bounds, this@LevelView)
+                else Rectangle(origin.x, origin.y, origin.width, minOf(origin.height, scaled(32)))
+            init {
+                name = "schematic-linked-usage-card"
+                addCloseAction { close() }
+            }
+            fun close() {
+                usageCards.filter { it.origin === this }.toList().forEach { it.close() }
+                if (trailTarget?.let { it === this || SwingUtilities.isDescendingFrom(it, this) } == true)
+                    trailTarget = origin
+                releaseBranch(this)
+                usageCards.remove(this)
+                this@LevelView.remove(this)
+                this@SchematicPanel.refreshCards()
+            }
+        }
+
+        private fun openUsage(origin: SummaryCard, target: Int, anchor: JComponent) {
+            val card = usageCards.firstOrNull { it.origin === origin && it.target == target }
+                ?: UsageCard(origin, target, anchor).also { usageCards += it; add(it) }
+            card.pinTo(true)
+            card.unfold()
+            card.isVisible = true
+            trailTarget = card
+            applyZoom(card)
+            this@SchematicPanel.refreshCards()
+        }
+
         inner class GapSummaryCard(val span: GapSpan, rowIndex: Int, summary: String) : ExternalCard(rowIndex) {
             var pinned = false
                 private set
@@ -1490,13 +1523,19 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             val external = externalCards
             val cardSizes = external.map { if (it.isVisible) it.preferredSize else Dimension() }
             var cardBottom: Int? = null
+            var usageBottom: Int? = null
             val cardTops = external.mapIndexed { index, card ->
-                if (!card.isVisible) 0 else
+                if (!card.isVisible) 0 else if (card is UsageCard)
+                    maxOf(rowTops[card.rowIndex], usageBottom?.plus(scaled(GAP)) ?: 0).also {
+                        usageBottom = it + cardSizes[index].height
+                    } else
                     maxOf(rowTops[card.rowIndex], cardBottom?.plus(scaled(GAP)) ?: 0).also { cardBottom = it + cardSizes[index].height }
             }
-            val cardsWidth = cardSizes.maxOfOrNull { it.width } ?: 0
-            val width = sourceWidth + if (external.none { it.isVisible }) 0 else scaled(ARROW_WIDTH) + cardsWidth
-            return LevelMeasurement(sourceWidth, rowSizes, rowTops, cardSizes, cardTops, Dimension(width, maxOf(sourceHeight, cardBottom ?: 0)))
+            val cardsWidth = external.indices.filter { external[it] !is UsageCard }.maxOfOrNull { cardSizes[it].width } ?: 0
+            val usageWidth = external.indices.filter { external[it] is UsageCard }.maxOfOrNull { cardSizes[it].width } ?: 0
+            val width = sourceWidth + (if (cardsWidth == 0) 0 else scaled(ARROW_WIDTH) + cardsWidth) +
+                (if (usageWidth == 0) 0 else scaled(ARROW_WIDTH) + usageWidth)
+            return LevelMeasurement(sourceWidth, rowSizes, rowTops, cardSizes, cardTops, Dimension(width, maxOf(sourceHeight, cardBottom ?: 0, usageBottom ?: 0)))
         }
 
         override fun doLayout() {
@@ -1514,8 +1553,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     row.setBounds(origin.x, origin.y + rowTops[index], sourceWidth - origin.x, rowSizes[index].height)
                 }
                 val x = sourceWidth + scaled(ARROW_WIDTH)
+                val usageX = x + (externalCards.indices.filter { externalCards[it] !is UsageCard }
+                    .maxOfOrNull { cardSizes[it].width } ?: 0) + scaled(ARROW_WIDTH)
                 externalCards.forEachIndexed { index, card ->
-                    if (card.isVisible) card.setBounds(x, origin.y + cardTops[index], cardSizes[index].width, cardSizes[index].height)
+                    if (card.isVisible) card.setBounds(if (card is UsageCard) usageX else x, origin.y + cardTops[index], cardSizes[index].width, cardSizes[index].height)
                     else card.setBounds(0, 0, 0, 0)
                 }
             }
@@ -1816,7 +1857,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         /** The summary of [target]; unfolds into [target]'s own schematic. */
-        inner class SummaryCard(val target: Int, val row: BlockView, rowIndex: Int,
+        open inner class SummaryCard(val target: Int, val row: BlockView, rowIndex: Int,
             private val occurrences: List<CallOccurrence>) : ExternalCard(rowIndex) {
             override fun anchorBounds(): Rectangle = row.line.anchorBounds(this@LevelView)
             override val marked get() = pinned || open
@@ -1952,6 +1993,10 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }
             }
 
+            protected fun addCloseAction(close: () -> Unit) {
+                actions.add(ActionLink("Close") { close() }.zoomFont())
+            }
+
             fun cancelUsageSearch() { usageSearch?.cancel() }
 
             private fun showUsages() {
@@ -1976,11 +2021,22 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                             }.let { created -> file.exploration ?: created.also { file.exploration = it } }
                             exploration.findUsages(symbol)
                         }
+                        val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
+                            .getDocument(schematic.file)
+                        val sites = found.usages.filterNot { usage ->
+                            usage.owner == shown || (usage.filePath == schematic.file.path &&
+                                (occurrences.any { usage.offset >= it.startOffset && usage.offset < it.endOffset } ||
+                                    (occurrences.isEmpty() && usage.line - 1 == row.line.row.headline &&
+                                        (row.link.columns == null || document?.let {
+                                            usage.offset - it.getLineStartOffset(row.line.row.headline) in row.link.columns
+                                        } == true))))
+                        }
                         usages.removeAll()
-                        usages.add(JLabel(if (found.usages.isEmpty()) "No project usages found."
-                            else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)").zoomFont())
-                        found.usages.groupBy { it.owner }.forEach { (id, sites) -> usages.add(UsageBranch(id, sites)) }
-                        if (found.truncated) usages.add(JLabel("More usages exist; showing the first ${found.usages.size}.").zoomFont())
+                        usages.add(JLabel(if (sites.isEmpty()) "No project usages found."
+                            else "Used by (${sites.size}${if (found.truncated) "+" else ""} sites)").zoomFont())
+                        sites.groupBy { it.owner }.forEach { (id, locations) -> usages.add(UsageBranch(id, locations) { target, anchor -> openUsage(this@SummaryCard, target, anchor) }) }
+                        if (found.truncated) usages.add(JLabel("More usages exist; showing ${sites.size} sites.").zoomFont())
+                        usages.components.filterIsInstance<JComponent>().forEach { it.alignmentX = LEFT_ALIGNMENT }
                         usagesLoaded = true
                         usagesToggle.text = "Hide usages"
                     } catch (e: Throwable) {
@@ -2022,6 +2078,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             /** Follows [id] as if it were the callee: project code unfolds here, external code opens its source. */
             private fun pick(id: Int) {
                 trailTarget = this
+                usageCards.filter { it.origin === this }.toList().forEach { it.close() }
                 pinTo(true)
                 if (!graph.nodes[id].inProject) { navigate(id); return }
                 if (open) toggle()
@@ -2122,7 +2179,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     choices = choices.size,
                     chosen = chosen?.let { graph.nodes[it] },
                     excerpt = schematic.excerpts[shownNode.id],
-                    reference = row.link.reference,
+                    reference = this !is UsageCard && row.link.reference,
                 )
             }
 
