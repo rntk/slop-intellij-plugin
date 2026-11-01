@@ -84,7 +84,7 @@ object ProjectGraphAnalyzer {
                     val callKind = if (call.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                     call.targets.forEach { emit(from, source(it), relation ?: callKind) }
                 }
-                for (reference in element.references) {
+                for (reference in element.navigationReferences()) {
                     for (target in resolveTargets(reference)) emit(from, source(target), relation ?: RelationKind.REFERENCE)
                 }
                 super.visitElement(element)
@@ -102,7 +102,7 @@ object ProjectGraphAnalyzer {
             override fun visitElement(element: PsiElement) {
                 ProgressManager.checkCanceled()
                 if (element is PsiComment || element.textRange.endOffset <= start || element.textRange.startOffset >= end) return
-                for (reference in element.references) {
+                for (reference in element.navigationReferences()) {
                     val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
                     if (range.startOffset < start || range.endOffset > end) continue
                     resolveTargets(reference).filter {
@@ -122,7 +122,7 @@ object ProjectGraphAnalyzer {
      */
     internal fun buildScope(project: Project, scope: PsiElement, declarationsOnly: Boolean = false,
         foldFunctions: Boolean = true): CallGraphResult =
-        buildFiles(project, listOf(scope.containingFile), scope, declarationsOnly, foldFunctions)
+        buildFiles(project, listOf(scope.containingFile), explorationSource(scope), declarationsOnly, foldFunctions)
 
     private fun buildFiles(project: Project, selectedFiles: List<PsiFile>?, scope: PsiElement? = null,
         declarationsOnly: Boolean = false, foldFunctions: Boolean = true, progress: (String) -> Unit = {}): CallGraphResult {
@@ -190,7 +190,7 @@ object ProjectGraphAnalyzer {
                 } ?: file
                 val scope = key(scopeElement)?.let(ids::get) ?: owner
                 val targets = resolution.targets.mapNotNull { targetId(it, boundary = true) }.distinct()
-                fun bindings(expression: PsiElement?) = expression?.references.orEmpty()
+                fun bindings(expression: PsiElement?) = expression?.navigationReferences().orEmpty()
                     .flatMap(::resolveTargets).mapNotNull { targetId(it, boundary = true) }.distinct()
                 val receivers = bindings(resolution.receiver)
                 val bindings = bindings(resolution.callee)

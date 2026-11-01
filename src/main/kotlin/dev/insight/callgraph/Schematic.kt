@@ -229,7 +229,8 @@ object SchematicBuilder {
      */
     fun build(result: CallGraphResult, hierarchy: GraphHierarchy, calls: Map<Int, List<CallGraphEdge>>, scope: Int,
         whole: Boolean = false): Schematic? {
-        val element = result.pointers.getOrNull(scope)?.element?.takeIf { it.isValid } ?: return null
+        val declaration = result.pointers.getOrNull(scope)?.element?.takeIf { it.isValid } ?: return null
+        val element = explorationSource(declaration)
         val psiFile = element.containingFile ?: return null
         val virtualFile = psiFile.virtualFile ?: return null
         val document = PsiDocumentManager.getInstance(psiFile.project).getDocument(psiFile) ?: return null
@@ -257,8 +258,11 @@ object SchematicBuilder {
 
         // Call sites are collected per class too: calls in methods belong to those methods.
         val callers = listOf(scope) + own.filter { it != scope && result.graph.nodes[it].kind == SymbolKind.CLASS }
+        // Initializers and parameter defaults have an enclosing function/class as occurrence scope. Their own
+        // source range still owns the calls the reader sees when opening the binding itself.
+        val binding = result.graph.nodes[scope].kind !in setOf(SymbolKind.FILE, SymbolKind.CLASS, SymbolKind.FUNCTION)
         val sites = if (result.graph.projectGraph) result.occurrences.filter {
-            it.filePath == virtualFile.path && it.scope in callers && it.startOffset >= element.textRange.startOffset &&
+            it.filePath == virtualFile.path && (binding || it.scope in callers) && it.startOffset >= element.textRange.startOffset &&
                 it.startOffset < element.textRange.endOffset
         }.flatMap { occurrence ->
             val line = document.getLineNumber(occurrence.startOffset.coerceIn(0, document.textLength))
@@ -321,7 +325,7 @@ object SchematicBuilder {
                 if (element is PsiComment || ProjectGraphAnalyzer.relationKind(element) == RelationKind.IMPORT) return
                 val (start, end) = lines(document, element.textRange)
                 if (shown.nextSetBit(start).let { it < 0 || it > end }) return
-                for (reference in element.references) {
+                for (reference in element.navigationReferences()) {
                     val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
                     val line = document.getLineNumber(range.startOffset.coerceIn(0, document.textLength))
                     if (!shown[line]) continue
@@ -356,7 +360,7 @@ object SchematicBuilder {
                 if (element is PsiComment || ProjectGraphAnalyzer.relationKind(element) == RelationKind.IMPORT) return
                 val name = (element as? PsiNameIdentifierOwner)?.nameIdentifier?.textRange
                 if (name != null) id(element)?.let { mention(it, name) }
-                for (reference in element.references) {
+                for (reference in element.navigationReferences()) {
                     val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
                     for (target in resolveTargets(reference)) id(target)?.let { mention(it, range) }
                 }

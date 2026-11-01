@@ -16,6 +16,14 @@ import dev.insight.graph.SymbolKind
 class GoCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is GoFile
 
+    override fun explorationSource(element: PsiElement): PsiElement? = when (element) {
+        is GoVarDefinition -> element.parent as? GoVarSpec
+        is GoConstDefinition -> element.parent as? GoConstSpec
+        is GoFieldDefinition -> element.parent as? GoFieldDeclaration
+        is GoParamDefinition -> element.parent as? GoParameterDeclaration
+        else -> null
+    }
+
     override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
         is GoTypeSpec -> true
         // Include the `type` keyword, but never widen to an entire grouped declaration.

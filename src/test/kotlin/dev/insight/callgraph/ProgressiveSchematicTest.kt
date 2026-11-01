@@ -267,6 +267,60 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(reading.mentions.none { it.target == root })
     }
 
+    fun testGoBindingReadsMultilineInitializerAndParameterType() {
+        val file = myFixture.configureByText("main.go", """
+            package main
+            type Config struct {}
+            func build(config Config) Config { return config }
+            func run(config Config) {
+                routes := build(
+                    config,
+                )
+                _ = routes
+            }
+        """.trimIndent())
+        assertBindingInitializer(file, "routes", "build", "config,")
+    }
+
+    fun testRustBindingReadsMultilineInitializerAndParameterType() {
+        val file = myFixture.configureByText("main.rs", """
+            struct Config {}
+            fn build(config: Config) -> Config { config }
+            fn run(config: Config) {
+                let routes = build(
+                    config,
+                );
+                consume(routes);
+            }
+        """.trimIndent())
+        assertBindingInitializer(file, "routes", "build", "config,")
+    }
+
+    private fun assertBindingInitializer(file: com.intellij.psi.PsiFile, binding: String, factory: String, argument: String) {
+        val exploration = background { ProgressiveSchematic.open(project, file.virtualFile) }!!
+        val id = exploration.result.symbol(binding).id
+        val reading = background { exploration.schematic(id, whole = true) }!!
+        assertTrue(reading.lines.toString(), reading.lines.any { argument in it })
+        assertFalse("Do not open the rest of the enclosing body", reading.lines.any { "consume" in it || "_ =" in it })
+        val text = dev.insight.canvas.canvasText(reading)
+        val links = dev.insight.canvas.canvasLinks(reading)
+        val target = dev.insight.canvas.linkAt(links, text.indexOf(factory))
+        assertNotNull("The initializer's call should stay clickable", target)
+        val factoryId = exploration.result.symbol(factory).id
+        assertTrue(target!!.targets.contains(factoryId))
+        val next = background { exploration.schematic(factoryId, whole = true) }!!
+        assertTrue(next.lines.any { factory in it })
+        val parameter = exploration.result.graph.nodes.single {
+            it.kind == dev.insight.graph.SymbolKind.PARAMETER && it.name == "config" &&
+                exploration.result.pointers[it.id]?.element?.parent?.text?.contains("config") == true &&
+                it.id in reading.mentions.map { mention -> mention.target }
+        }
+        val parameterReading = background { exploration.schematic(parameter.id, whole = true) }!!
+        assertTrue("The parameter's type should stay clickable", parameterReading.mentions.any {
+            exploration.result.graph.nodes[it.target].name == "Config"
+        })
+    }
+
     fun testNewlyDiscoveredBoundaryFilesAreTrackedAfterExpansion() {
         val helper = myFixture.addFileToProject("Helper.java", "class Helper { static void work() {} }")
         val file = myFixture.configureByText("Selected.java", "class Selected { void entry() { Helper.work(); } }")

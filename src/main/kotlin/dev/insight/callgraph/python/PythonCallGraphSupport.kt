@@ -3,6 +3,7 @@ package dev.insight.callgraph.python
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiNamedElement
+import com.intellij.psi.PsiReference
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiModificationTracker
@@ -23,6 +24,20 @@ import dev.insight.graph.SymbolKind
  */
 class PythonCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is PyFile
+
+    override fun explorationSource(element: PsiElement): PsiElement? {
+        if (element !is PyTargetExpression) return null
+        // The target alone excludes its annotation and RHS, including multiline calls and their arguments.
+        return PsiTreeUtil.getParentOfType(element, PyStatement::class.java)?.takeIf {
+            it is PyAssignmentStatement || it is PyTypeDeclarationStatement || it is PyAugAssignmentStatement
+        }
+    }
+
+    override fun navigationReferences(element: PsiElement): List<PsiReference>? {
+        if (element !is PyReferenceOwner) return null
+        val context = TypeEvalContext.userInitiated(element.project, element.containingFile)
+        return listOf(element.getReference(PyResolveContext.defaultContext(context)))
+    }
 
     override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
         is PyTypeAliasStatement -> true

@@ -2,6 +2,7 @@ package dev.insight.callgraph
 
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiReference
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 
@@ -23,6 +24,12 @@ interface CallGraphLanguageSupport {
     /** Maps synthetic elements (for example Kotlin light methods seen from Java) to their source declaration. */
     fun unwrap(element: PsiElement): PsiElement? = null
 
+    /** Complete source to read when opening a declaration whose PSI holds only its name (for example a binding). */
+    fun explorationSource(element: PsiElement): PsiElement? = null
+
+    /** References with the same inference context as IDE navigation; null uses the platform references. */
+    fun navigationReferences(element: PsiElement): List<PsiReference>? = null
+
     fun supportsFile(file: com.intellij.psi.PsiFile): Boolean = false
 
     fun symbolKind(element: PsiElement): SymbolKind? = if (isFunction(element)) SymbolKind.FUNCTION else null
@@ -39,3 +46,9 @@ interface CallGraphLanguageSupport {
         val EP_NAME = ExtensionPointName<CallGraphLanguageSupport>("dev.insight.callGraphLanguageSupport")
     }
 }
+
+internal fun explorationSource(element: PsiElement): PsiElement =
+    CallGraphLanguageSupport.EP_NAME.extensionList.firstNotNullOfOrNull { it.explorationSource(element) } ?: element
+
+internal fun PsiElement.navigationReferences(): List<PsiReference> =
+    CallGraphLanguageSupport.EP_NAME.extensionList.firstNotNullOfOrNull { it.navigationReferences(this) } ?: references.toList()
