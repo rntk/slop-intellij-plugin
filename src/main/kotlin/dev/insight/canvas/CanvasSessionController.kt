@@ -256,7 +256,8 @@ internal class CanvasSessionController(
 
     private suspend fun findInFile(ref: SymbolRef): CallGraphNode? {
         val file = findFile(ref.filePath)?.takeIf { it.isValid && !it.isDirectory } ?: return null
-        withContext(Dispatchers.Default) { exploration.fileSchematic(file) } ?: return null
+        // Finding one saved card must not resolve every other function in its file.
+        withContext(Dispatchers.Default) { exploration.fileDeclarations(file) } ?: return null
         return find(ref, exploration.result.graph.nodes.filter { it.filePath == file.path })
     }
 

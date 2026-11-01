@@ -263,6 +263,32 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("use read_file"))
     }
 
+    fun testRestoresSmallZoomAndCanZoomBackIn() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val card = CanvasCard("selection", null, CardKind.SELECTION, CardAnchor(0, source.length, 0),
+            null, "Flow.java", 0, source, summary = "A saved summary with wrapping text. ".repeat(50),
+            chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.ASSISTANT,
+                "A saved answer with wrapping text. ".repeat(50))))))
+        val session = CanvasSession.new("Flow.java").copy(view = CanvasView(0.05, 300, 200), cards = listOf(card))
+        val services = CanvasSessionServices(null, { error("No summary requested") },
+            summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The zoomed file should load", { panel.ready }, 30)
+            assertEquals(0.05, panel.zoom, 0.001)
+            val viewport = panel.canvas.parent as javax.swing.JViewport
+            PlatformTestUtil.waitWithEventsDispatching("The saved scroll position should be restored",
+                { viewport.viewPosition == java.awt.Point(300, 200) }, 30)
+            assertEquals(card.summary, panel.model.cards.single().summary)
+            assertEquals(card.messages, panel.model.cards.single().messages)
+            panel.zoomTo(1.0)
+            assertEquals(1.0, panel.zoom, 0.001)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
     fun testChatOpeningToolsMarkNewCardsAndKeepOriginalOpenerWhenRevealing() {
         val other = myFixture.addFileToProject("Other.java", "class Other { static void unused() {} }")
         val file = myFixture.configureByText("Flow.java", source)

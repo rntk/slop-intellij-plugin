@@ -27,6 +27,8 @@ import dev.insight.callgraph.CallGraphService
 import dev.insight.graph.CallGraphNode
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
+import dev.insight.ui.CanvasZoomAnchor
+import dev.insight.ui.layoutZoomContent
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.openSourceChain
@@ -204,7 +206,9 @@ internal class CanvasSessionPanel(
         scope.launch(Dispatchers.EDT) {
             try {
                 val root = controller.loadRoot()
-                if (model.cards.isNotEmpty()) controller.restore { index, count -> showStatus("Restoring card $index of $count…") }
+                if (model.cards.isNotEmpty()) controller.restore { index, count ->
+                    showMessage("Restoring card $index of $count…")
+                }
                 showMessage(null)
                 rootView = RootView(root).also { content.add(it) }
                 model.cards.forEach(::addView)
@@ -572,13 +576,16 @@ internal class CanvasSessionPanel(
         val point = anchor ?: Point(viewport.width / 2, viewport.height / 2)
         val previous = viewport.viewPosition
         val ratio = next / zoom
+        val tracked = CanvasZoomAnchor(content, Point(previous.x + point.x, previous.y + point.y))
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
         rootView?.pane?.applyZoom(zoom)
         content.revalidate()
         scroll.validate()
-        scrollTo(((previous.x + point.x) * ratio - point.x).roundToInt(), ((previous.y + point.y) * ratio - point.y).roundToInt())
+        layoutZoomContent(content)
+        val destination = tracked.resolve(content, ratio)
+        scrollTo(destination.x - point.x, destination.y - point.y)
         content.repaint()
     }
 
@@ -923,7 +930,7 @@ internal class CanvasSessionPanel(
         const val CARD_WIDTH = 560
         const val ROOT_MAX_WIDTH = 960
         const val ROOT_CHAT_MIN_WIDTH = 480
-        const val MIN_ZOOM = 0.25
+        const val MIN_ZOOM = 0.05
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2
         const val WHEEL_ZOOM_STEP = 1.15

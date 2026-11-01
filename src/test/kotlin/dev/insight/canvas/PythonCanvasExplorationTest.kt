@@ -10,6 +10,35 @@ import kotlinx.coroutines.runBlocking
 
 /** Follows real source links through cards, including bindings whose PSI excludes their initializer. */
 class PythonCanvasExplorationTest : BasePlatformTestCase() {
+    fun testRestoringAnExternalMethodDoesNotResolveUnopenedFunctionBodies() {
+        val other = myFixture.addFileToProject("worker.py", """
+            class Worker:
+                def selected(self):
+                    return used_call()
+
+                def unrelated(self):
+                    return unopened_call()
+        """.trimIndent())
+        val file = myFixture.configureByText("entry.py", "def main():\n    pass\n")
+        val opened = background { openCanvasSessionFile(project, file.virtualFile, store = null) }!!
+        val path = relativePath(project, other.virtualFile.path)
+        val saved = CanvasCard("method", null, CardKind.SYMBOL, CardAnchor(0, 3, 0),
+            SymbolRef(path, "selected(self)", "FUNCTION"), path, 1, "old snapshot",
+            summary = "Saved summary")
+        val session = CanvasSession.new("entry.py").copy(cards = listOf(saved))
+        val controller = CanvasSessionController(project, file.virtualFile, opened.exploration, opened.root,
+            CanvasSessionModel(session))
+        Disposer.register(testRootDisposable, controller)
+        background { controller.loadRoot(); controller.restore() }
+        val restored = controller.source(saved.id)!!
+        assertNotNull("The saved method should resolve to live source", restored.node)
+        assertTrue(restored.text, restored.text.contains("return used_call()"))
+        assertEquals(saved.summary, controller.model.cards.single().summary)
+        val names = opened.exploration.result.graph.nodes.map { it.name.substringBefore('(') }
+        assertTrue(names.toString(), "used_call" in names)
+        assertFalse("Restoring one card must not resolve unrelated bodies: $names", "unopened_call" in names)
+    }
+
     private fun <T> background(block: suspend () -> T): T {
         val task = CoroutineScope(Dispatchers.Default).async { runCatching { block() } }
         try {

@@ -47,6 +47,8 @@ import dev.insight.settings.ChatSettings
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.pixelBorder
+import dev.insight.ui.CanvasZoomAnchor
+import dev.insight.ui.layoutZoomContent
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.SourceChainLocation
@@ -594,12 +596,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         val point = anchor ?: Point(viewport.width / 2, viewport.height / 2)
         val previous = viewport.viewPosition
         val ratio = next / zoom
+        val tracked = CanvasZoomAnchor(content, Point(previous.x + point.x, previous.y + point.y))
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
         content.revalidate()
         scroll.validate()
-        scrollTo(((previous.x + point.x) * ratio - point.x).roundToInt(), ((previous.y + point.y) * ratio - point.y).roundToInt())
+        layoutZoomContent(content)
+        val destination = tracked.resolve(content, ratio)
+        scrollTo(destination.x - point.x, destination.y - point.y)
         content.repaint()
     }
 
@@ -2280,7 +2285,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         const val MIN_CALLABLE_FONT_SIZE = 14
         /** Name-match choices listed before "Show all". */
         const val CHOICES_SHOWN = 8
-        const val MIN_ZOOM = 0.25
+        const val MIN_ZOOM = 0.05
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2
         const val WHEEL_ZOOM_STEP = 1.15

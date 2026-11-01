@@ -43,7 +43,9 @@ internal class CanvasChatView(
     private val conversations = linkedMapOf<String, Pair<ChatSession, Disposable>>()
     private val chat: ChatSession get() = conversation(holder.activeChat)
     private var syncing = false
-    private val tabs = host.zoomFont(JTabbedPane(JTabbedPane.TOP, JTabbedPane.SCROLL_TAB_LAYOUT))
+    // Wrapped, not scrolled: Darcula's scroll layout recurses until the stack overflows when the selected tab is wider
+    // than the strip, as on a zoomed-out card whose tab insets do not shrink with the zoom.
+    private val tabs = host.zoomFont(JTabbedPane(JTabbedPane.TOP, JTabbedPane.WRAP_TAB_LAYOUT))
     private val body = JPanel(StackLayout { scaled(4) }).apply { isOpaque = false }
     private val closeChat = host.zoomFont(ActionLink("Close chat") { host.model.removeChat(cardId, holder.activeChatId) }.apply {
         name = "canvas-close-chat"
