@@ -49,6 +49,8 @@ import dev.insight.ui.FloatingPanel
 import dev.insight.ui.pixelBorder
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
+import dev.insight.ui.SourceChainLocation
+import dev.insight.ui.openSourceChain
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -703,7 +705,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
     private fun showContextMenu(e: MouseEvent, pointer: String? = null, copy: (() -> Unit)? = null) {
         // Stop at the nearest level so unfolded source never inherits its parent card's actions.
         val owner = generateSequence(e.component) { it.parent }
-            .firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView }
+            .firstOrNull { it is LevelView.BlockView || it is LevelView.SummaryCard || it is LevelView.GapSummaryCard || it is LevelView }
         val context = pointer ?: when (owner) {
             is LevelView.BlockView -> owner.describe()
             is LevelView.SummaryCard -> owner.describe()
@@ -732,6 +734,9 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 addSeparator()
                 owner.addContextActions(this)
             }
+            if (owner is LevelView.GapSummaryCard) add(JMenuItem("Side by side").apply {
+                addActionListener { owner.openSideBySide() }
+            })
         }.show(e.component, e.x, e.y)
     }
 
@@ -1088,6 +1093,15 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
     /** The rows of one schematic on the left and a summary card per block target on the right, joined by arrows. */
     private inner class LevelView(private val schematic: Schematic) : JPanel(null), Zoomable {
+        /** The actual unfolded branch, retaining recursive visits and the line that opened the next card. */
+        fun sourceChain(line: Int): List<SourceChainLocation> {
+            val owner = generateSequence(parent) { it.parent }.filterIsInstance<SummaryCard>().firstOrNull()
+            val chain = owner?.sourceChain().orEmpty()
+            return chain.dropLast(1) + SourceChainLocation(
+                schematic.file.path, graph.nodes[schematic.scope].name, line, file = schematic.file,
+                summary = chain.lastOrNull()?.summary ?: schematicSourceSummary(summaries[schematic.scope]))
+        }
+
         private val cards = mutableListOf<SummaryCard>()
         private val usageCards = mutableListOf<UsageCard>()
         private val rows = mutableListOf<JComponent>()
@@ -1406,6 +1420,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         /** A normal summary card, anchored to a usage link beside the original card. */
         inner class UsageCard(val origin: SummaryCard, target: Int, val anchor: JComponent) :
             SummaryCard(target, origin.row, origin.rowIndex, emptyList()) {
+            override fun sourceChain() = origin.sourceChain() + sourceLocation()
             override fun anchorBounds(): Rectangle =
                 if (generateSequence<Component>(anchor) { it.parent }.takeWhile { it !== origin }.all { it.isVisible })
                     SwingUtilities.convertRectangle(anchor.parent, anchor.bounds, this@LevelView)
@@ -1437,6 +1452,12 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         inner class GapSummaryCard(val span: GapSpan, rowIndex: Int, summary: String) : ExternalCard(rowIndex) {
+            fun openSideBySide() {
+                val chain = sourceChain(span.unit.first)
+                openSourceChain(project, chain.dropLast(1) + chain.last().copy(endLine = span.unit.last, summary = span.summary),
+                    "${schematic.file.name}:${span.unit.first + 1}")
+            }
+
             var pinned = false
                 private set
             /** A tall gap's arrow leaves from its first line, beside where the card starts. */
@@ -1460,6 +1481,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     isOpaque = false
                     add(pinToggle)
                     add(ActionLink("Source") { navigate(schematic.file, span.unit.first) }.zoomFont())
+                    add(ActionLink("Side by side") { openSideBySide() }.zoomFont())
                 }, BorderLayout.EAST)
                 add(header, BorderLayout.NORTH)
                 isVisible = false
@@ -1940,6 +1962,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     add(pinToggle)
                     add(ActionLink(if (node.unresolved) "Call site" else "Source") { navigate(if (node.unresolved) target else shown) }
                         .apply { verticalAlignment = SwingConstants.TOP }.zoomFont())
+                    add(ActionLink("Side by side") {
+                        openSourceChain(project, sourceChain(), trailName)
+                    }.apply {
+                        toolTipText = "Open the chain from the root to this card in a new tab"
+                    }.zoomFont())
                     if (occurrences.isNotEmpty()) add(ActionLink("Explain link") {
                         details.isVisible = !details.isVisible
                         if (details.isVisible) applyZoom(details)
@@ -1989,6 +2016,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 applyZoom()
                 update()
             }
+
+            open fun sourceChain(): List<SourceChainLocation> = this@LevelView.sourceChain(row.row.headline) + sourceLocation()
+
+            protected fun sourceLocation() = schematicSourceLocation(result, symbol, trailName)
+                .copy(summary = schematicSourceSummary(summaries[symbol]))
 
             fun addContextActions(menu: JPopupMenu) {
                 for (link in actions.components.filterIsInstance<ActionLink>().filter { it.isVisible }) {

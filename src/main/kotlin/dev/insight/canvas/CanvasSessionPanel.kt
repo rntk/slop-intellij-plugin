@@ -29,6 +29,7 @@ import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
+import dev.insight.ui.openSourceChain
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -348,6 +349,20 @@ internal class CanvasSessionPanel(
             .also { if (it.isDirectory) throw ToolInputException("'$path' is a directory; name a file.") }
     }
 
+    override fun openSideBySide(cardId: String) {
+        val chain = model.session.chain(cardId)
+        val locations = canvasSourceChain(model.session, cardId).mapIndexed { index, location ->
+            val source = controller.source(chain.getOrNull(index - 1)?.id)
+            location.copy(file = source?.file?.takeIf { it.isValid } ?: controller.findFile(location.path))
+        }
+        openSourceChain(project, locations, model.card(cardId)?.title ?: model.session.title)
+    }
+
+    private fun sideBySideAction(cardId: String) = JMenuItem("Side by side").apply {
+        toolTipText = "Open the chain from the root file to this card in a new tab"
+        addActionListener { openSideBySide(cardId) }
+    }
+
     override fun expandToFile(cardId: String) {
         scope.launch(Dispatchers.EDT) {
             showStatus("Opening full file…")
@@ -398,6 +413,7 @@ internal class CanvasSessionPanel(
     private fun showContextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int) {
         val selected = pane.selection()
         JPopupMenu().apply {
+            pane.owner?.let { add(sideBySideAction(it)) }
             add(JMenuItem("Open card for selection").apply {
                 isEnabled = selected != null
                 addActionListener { openSelection(pane) }
@@ -589,6 +605,17 @@ internal class CanvasSessionPanel(
 
     private fun drag(e: MouseEvent) {
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
+        if (e.isPopupTrigger) {
+            val point = SwingUtilities.convertPoint(e.component, e.point, content)
+            val underPointer = SwingUtilities.getDeepestComponentAt(content, point.x, point.y) ?: e.component
+            val ancestors = generateSequence(underPointer) { it.parent }.toList()
+            val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
+            if (card != null && ancestors.none { it is CanvasSourcePane || it is JTextComponent }) {
+                endDrag()
+                JPopupMenu().apply { add(sideBySideAction(card.id)) }.show(e.component, e.x, e.y)
+                return
+            }
+        }
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                 panned = false

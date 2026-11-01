@@ -13,6 +13,7 @@ Opening a file starts a new session or resumes a saved one. The file is shown as
 - A card's source works like the file: its symbols open further cards, so one chain can follow the code graph as far as the reader likes.
 - Expand to file replaces a card's excerpt with its whole file, keeping its chat and branches. The reader can follow links anywhere in that file or chat about it; reopening the session keeps the expanded view.
 - Closing a card also closes the cards opened from it.
+- A card's Side by side link or context menu opens its chain from the root in a separate source view, with each file positioned at that step and any generated summary above its source.
 
 ## Chat
 

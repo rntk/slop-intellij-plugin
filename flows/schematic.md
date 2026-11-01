@@ -12,6 +12,7 @@ Opening builds or reuses the project's call graph. If the file cannot be shown, 
 - Source is never hidden: a declaration spanning several lines is one clickable frame around all of its source, like a summarized gap, while a one-line symbol stays a one-line block.
 - Summaries appear on demand and can be pinned. Each summary condenses the tree below its symbol, and unfolding one shows that reading beneath it, so several branches stay open at once.
 - A breadcrumb trail shows the path from the root and lets the reader return to earlier symbols.
+- A card's Side by side link or context menu opens that explored path in a separate source view, with each file positioned at that step and any generated summary above its source.
 - Exploration is never discarded; the reader can move freely beyond the initial graph.
 - Each opened source card keeps its resolved symbols clickable, including the references inside complete initializers and multiline statements.
 - Find usages on a symbol searches the project for callers and other references. Their source locations stay linked, and referencing symbols unfold alongside the existing exploration, so the initial file is a starting point rather than a boundary.

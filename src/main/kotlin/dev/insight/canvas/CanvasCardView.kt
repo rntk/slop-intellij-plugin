@@ -45,6 +45,7 @@ internal interface CanvasCardHost {
     fun cardResized()
     fun close(cardId: String)
     fun expandToFile(cardId: String)
+    fun openSideBySide(cardId: String)
     fun navigate(source: CanvasSource?, path: String, line: Int)
 }
 
@@ -148,6 +149,9 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
             isOpaque = false
             add(expand)
+            add(host.zoomFont(ActionLink("Side by side") { host.openSideBySide(id) }.apply {
+                toolTipText = "Open the chain from the root file to this card in a new tab"
+            }))
             add(host.zoomFont(ActionLink("Source") { host.navigate(source, card.filePath, card.firstLine) }.apply {
                 toolTipText = "Open ${card.location} in the editor"
                 isEnabled = card.filePath.isNotEmpty()

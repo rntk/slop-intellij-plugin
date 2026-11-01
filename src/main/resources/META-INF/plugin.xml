@@ -61,6 +61,7 @@
         <fileEditorProvider implementation="dev.insight.review.ReviewCanvasEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.ui.SourceChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>

@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
+import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -152,7 +153,7 @@ internal class CodeMoveChart(
         return "…" + text.substring(text.length - end)
     }
 
-    private fun stroke(lines: Int, max: Int): Float = JBUI.scale(1.5f) + JBUI.scale(10f) * lines / maxOf(1, max)
+    private fun stroke(lines: Int, max: Int): Float = JBUIScale.scale(1.5f) + JBUIScale.scale(10f) * lines / maxOf(1, max)
 
     private fun nodeAt(event: MouseEvent) = nodes.firstOrNull { it.bounds.contains(event.point) }
 
