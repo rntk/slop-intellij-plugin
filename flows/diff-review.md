@@ -10,6 +10,8 @@ Source and diff views offer the IDE's declaration navigation and usage search fo
 
 A changed file's context menu offers **Open on canvas**. It starts a clickable source exploration with related changed files already open, following resolved code relationships in both directions across the comparison. Files whose reviewed source is unavailable or differs from the project are reported rather than used as relationship evidence.
 
+**Open on flowchart** reads the same evidence one step above the source: a flow chart of the changed functions in that file and its related changed files, with the calls between changes opened and unchanged code shown as closed context. Conditions, loops and grouped calls replace raw lines, changed steps stand out, and changed code is never grouped away. Labels may be model interpretations; the calls come from static analysis.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — review workspace

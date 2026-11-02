@@ -4,6 +4,8 @@ import com.intellij.diff.DiffManager
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.components.service
+import dev.insight.enrichment.EnrichmentService
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -84,7 +86,8 @@ internal class DiffReviewPanel(
     private var disposed = false
     private var refreshJob: Job? = null
     private var repositoriesJob: Job? = null
-    private var canvasJob: Job? = null
+    /** Preparing a canvas or flowchart of the selected file; one at a time, as both resolve every changed file. */
+    private var openJob: Job? = null
     private var request = ReviewDiffRequest()
     private val tree = Tree(DefaultMutableTreeNode("Changes"))
     private val untracked = UntrackedFilesTree { file, selected ->
@@ -180,10 +183,19 @@ internal class DiffReviewPanel(
                 "Explore this file and related changed files as clickable source cards", null) {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
                 override fun update(e: AnActionEvent) {
-                    e.presentation.isEnabled = !state.refreshing && canvasJob?.isActive != true &&
+                    e.presentation.isEnabled = !state.refreshing && openJob?.isActive != true &&
                         tree.selectionCount == 1 && selectedFile() != null
                 }
                 override fun actionPerformed(e: AnActionEvent) { openSelectionOnCanvas() }
+            },
+            object : com.intellij.openapi.actionSystem.AnAction("Open on flowchart",
+                "Chart the flow of this file's changes and related changed files, one step above the source", null) {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) {
+                    e.presentation.isEnabled = !state.refreshing && openJob?.isActive != true &&
+                        tree.selectionCount == 1 && selectedFile() != null
+                }
+                override fun actionPerformed(e: AnActionEvent) { openSelectionOnFlowchart() }
             },
             tabs.toChatAction("Chat about the selection in a new tab, with its summaries and diff in context",
                 enabled = { !state.refreshing }, entries = ::selectedEntries) {
@@ -306,10 +318,10 @@ internal class DiffReviewPanel(
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
 
     private fun openSelectionOnCanvas() {
-        if (state.refreshing || canvasJob?.isActive == true || tree.selectionCount != 1) return
+        if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return
         val selected = selectedFile() ?: return
         val snapshot = state.snapshot
-        canvasJob = scope.launch {
+        openJob = scope.launch {
             status.text = "Finding related changes for ${selected.path}…"
             try {
                 runCatchingReported(LOG, "Could not open diff on canvas") {
@@ -329,6 +341,37 @@ internal class DiffReviewPanel(
             } catch (e: CancellationException) {
                 ensureActive()
                 status.text = "Opening canvas cancelled. Retry from the file menu."
+                throw e
+            }
+        }
+    }
+
+    private fun openSelectionOnFlowchart() {
+        if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return
+        val selected = selectedFile() ?: return
+        val snapshot = state.snapshot
+        openJob = scope.launch {
+            status.text = "Charting related changes for ${selected.path}…"
+            try {
+                runCatchingReported(LOG, "Could not open diff on flowchart") {
+                    val enrichment = project.service<EnrichmentService>().latest
+                    val prepared = withBackgroundProgress(project, "Charting related changes: ${selected.path}") {
+                        withContext(Dispatchers.Default) { prepareDiffFlowChart(project, snapshot, selected.path, enrichment) }
+                    }
+                    check(!state.refreshing && state.snapshot == snapshot) { "The diff changed. Retry after refreshing." }
+                    FileEditorManager.getInstance(project).openFile(prepared, true)
+                    val chart = prepared.chart
+                    status.text = "Charted ${chart.changed.size} changed functions in ${prepared.stamps.size} related files" +
+                        if (prepared.unavailable.isEmpty()) "" else
+                            " · ${prepared.unavailable.size} files could not be analyzed (missing, unsupported, or different from the reviewed source)"
+                    status.toolTipText = prepared.unavailable.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: status.text
+                }.onFailure {
+                    status.text = "Could not open flowchart: ${describeFailure(it)}"
+                    status.toolTipText = status.text
+                }
+            } catch (e: CancellationException) {
+                ensureActive()
+                status.text = "Opening flowchart cancelled. Retry from the file menu."
                 throw e
             }
         }

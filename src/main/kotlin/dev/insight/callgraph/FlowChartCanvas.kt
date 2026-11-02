@@ -388,6 +388,9 @@ class FlowChartCanvas(
         update(FlowBoard(compact = board.compact))
     }
 
+    /** Replaces the whole board, for a chart prepared elsewhere such as a diff's flowchart. */
+    fun setBoard(next: FlowBoard) = update(next)
+
     fun setCompact(compact: Boolean) = update(board.copy(compact = compact))
 
     fun collapseRegions() = update(board.copy(openRegions = emptySet()))

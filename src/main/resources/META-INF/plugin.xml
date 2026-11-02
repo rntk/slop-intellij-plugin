@@ -64,6 +64,7 @@
         <fileEditorProvider implementation="dev.insight.ui.SourceChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.diff.DiffFlowChartEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->

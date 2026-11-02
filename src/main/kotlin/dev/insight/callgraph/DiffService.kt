@@ -69,7 +69,7 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
                 }
             }
             val paths = files.filter { it.status != FileDiff.Status.DELETED }.mapTo(hashSetOf()) { it.path }
-            val ranges = smartReadAction(project) { nodeRanges(built, paths) }
+            val ranges = smartReadAction(project) { nodeLineRanges(project, built, paths) }
             val tree = built.graph.hierarchy()
             val changed = keepInnermost(mapChangesToNodes(files, ranges), tree.parent)
             val neighborhood = pruneToChangedNeighborhood(liftCalls(built.graph), changed, request.maxHops, request.maxHops)
@@ -130,27 +130,6 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
         }
     }
 
-    /** Symbols in [paths] with their 1-based inclusive lines. Locals are left out: calls are attributed to their owners. */
-    private fun nodeRanges(built: CallGraphResult, paths: Set<String>): Map<Int, Pair<String, IntRange>> {
-        if (paths.isEmpty()) return emptyMap()
-        val documents = PsiDocumentManager.getInstance(project)
-        val ranges = HashMap<Int, Pair<String, IntRange>>()
-        for (node in built.graph.nodes) {
-            val path = node.filePath ?: continue
-            if (path !in paths || node.kind == SymbolKind.VARIABLE || node.kind == SymbolKind.PARAMETER) continue
-            val element = built.pointers.getOrNull(node.id)?.element ?: continue
-            val file = element.containingFile ?: continue
-            val document = documents.getDocument(file) ?: continue
-            val range = element.textRange ?: continue
-            val length = document.textLength
-            val start = range.startOffset.coerceIn(0, length)
-            val end = (range.endOffset - 1).coerceIn(start, maxOf(length, start))
-            if (length == 0) { ranges[node.id] = path to 1..1; continue }
-            ranges[node.id] = path to (document.getLineNumber(start) + 1)..(document.getLineNumber(minOf(end, length)) + 1)
-        }
-        return ranges
-    }
-
     companion object {
         private val LOG = logger<DiffService>()
 
@@ -165,4 +144,25 @@ class DiffService(private val project: Project, val scope: CoroutineScope) {
             listOf(LineChange(0, lineCount(before), 0, lineCount(after)))
         }
     }
+}
+
+/** Symbols in [paths] with their 1-based inclusive lines. Locals are left out: calls are attributed to their owners. Read action only. */
+internal fun nodeLineRanges(project: Project, built: CallGraphResult, paths: Set<String>): Map<Int, Pair<String, IntRange>> {
+    if (paths.isEmpty()) return emptyMap()
+    val documents = PsiDocumentManager.getInstance(project)
+    val ranges = HashMap<Int, Pair<String, IntRange>>()
+    for (node in built.graph.nodes) {
+        val path = node.filePath ?: continue
+        if (path !in paths || node.kind == SymbolKind.VARIABLE || node.kind == SymbolKind.PARAMETER) continue
+        val element = built.pointers.getOrNull(node.id)?.element ?: continue
+        val file = element.containingFile ?: continue
+        val document = documents.getDocument(file) ?: continue
+        val range = element.textRange ?: continue
+        val length = document.textLength
+        val start = range.startOffset.coerceIn(0, length)
+        val end = (range.endOffset - 1).coerceIn(start, maxOf(length, start))
+        if (length == 0) { ranges[node.id] = path to 1..1; continue }
+        ranges[node.id] = path to (document.getLineNumber(start) + 1)..(document.getLineNumber(minOf(end, length)) + 1)
+    }
+    return ranges
 }
