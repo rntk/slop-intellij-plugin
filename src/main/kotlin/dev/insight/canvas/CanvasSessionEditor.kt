@@ -68,13 +68,17 @@ internal class CanvasSessionServices(
     }
 }
 
-/** A canvas session of [source] in an editor tab: its graph [exploration] with FILE symbol [root], and the [session] shown. */
+/**
+ * A canvas session of [source] in an editor tab: its graph [exploration] with FILE symbol [root], and the [session] shown.
+ * [diffs] holds unified patches by absolute file path, for files opened from a diff whose new side is the shown source.
+ */
 internal class CanvasSessionFile(
     val source: VirtualFile,
     val rootPath: String,
     val exploration: ProgressiveSchematic,
     val root: Int,
     session: CanvasSession,
+    val diffs: Map<String, String> = emptyMap(),
 ) : LightVirtualFile("Canvas: ${source.name}") {
     @Volatile var session: CanvasSession = session
 }
@@ -136,17 +140,18 @@ class OpenCanvasSessionAction : AnAction() {
 
 /**
  * The canvas session of [file]: its graph, and the most recent saved session of it from [store] or a new one; null
- * when the file cannot be shown. Off the EDT.
+ * when the file cannot be shown. [diffs] as in [CanvasSessionFile]. Off the EDT.
  */
 internal suspend fun openCanvasSessionFile(project: Project, file: VirtualFile,
-    store: CanvasSessionStore? = CanvasSessionStore.forProject(project), saved: CanvasSession? = null): CanvasSessionFile? {
+    store: CanvasSessionStore? = CanvasSessionStore.forProject(project), saved: CanvasSession? = null,
+    diffs: Map<String, String> = emptyMap()): CanvasSessionFile? {
     val exploration = ProgressiveSchematic.open(project, file) ?: return null
     val root = exploration.result.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path } ?: return null
     val rootPath = relativePath(project, file.path)
     val session = saved ?: withContext(Dispatchers.IO) {
         store?.list(rootPath)?.firstNotNullOfOrNull { store.load(it.id) }
     } ?: CanvasSession.new(rootPath)
-    return CanvasSessionFile(file, rootPath, exploration, root.id, session)
+    return CanvasSessionFile(file, rootPath, exploration, root.id, session, diffs)
 }
 
 /** Called on the EDT after loading a saved session; reuse its file's tab when it is already open. */

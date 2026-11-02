@@ -63,10 +63,14 @@ internal suspend fun prepareDiffCanvasSession(project: Project, snapshot: Review
             review.path to file
         }.toMap()
     }
+    // Patches only where both sides were read; their new-side lines number the source the canvas shows.
+    val diffs = snapshot.files.mapNotNull { review ->
+        eligible[review.path]?.takeIf { review.before != null }?.let { it.path to review.patch }
+    }.toMap()
     val source = eligible[selected.path]
         ?: error("${selected.path} has no current source matching the reviewed after-side. Refresh the diff or check out its target revision before opening it on canvas.")
     val opened = openCanvasSessionFile(project, source, store = null, saved = CanvasSession.new(
-        relativePath(project, source.path), "${source.name} · ${snapshot.comparison.summary}"))
+        relativePath(project, source.path), "${source.name} · ${snapshot.comparison.summary}"), diffs = diffs)
         ?: error("${selected.path} cannot be shown on canvas. Check that its language plugin is enabled.")
     val supported = linkedMapOf<String, VirtualFile>()
     for ((reviewPath, file) in eligible) {

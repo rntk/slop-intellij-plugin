@@ -223,25 +223,93 @@ internal class CanvasChatView(
 }
 
 /** A titled part of card [cardId], or of the root file for null, that folds with its toggle or title as saved in the model. */
-internal class CanvasFoldSection(private val host: CanvasCardHost, cardId: String?, val section: CardSection, title: String,
-    val body: JComponent) : JPanel(StackLayout { zoomScaled(4, host.zoom) }) {
+internal open class CanvasFoldSection(private val host: CanvasCardHost, private val cardId: String?, val section: CardSection,
+    title: String, val body: JComponent) : JPanel(StackLayout { zoomScaled(4, host.zoom) }) {
     private val toggle = canvasFoldToggle(host, cardId, section)
     val title: JLabel = host.zoomFont(JLabel(title).apply { foreground = UIUtil.getContextHelpForeground() },
         UIUtil.getLabelFont().deriveFont(Font.BOLD))
+    /** The toggle and title, in one row. */
+    protected val header = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+        add(toggle)
+        add(this@CanvasFoldSection.title.onLeftClick { titleClicked() })
+    }
 
     init {
         isOpaque = false
-        add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-            isOpaque = false
-            add(toggle)
-            add(this@CanvasFoldSection.title.onLeftClick { host.model.toggleFolded(cardId, section) })
-        })
+        add(header)
         add(body)
+    }
+
+    protected open fun titleClicked() {
+        host.model.toggleFolded(cardId, section)
     }
 
     fun fold(folded: Boolean) {
         body.isVisible = !folded
         toggle.text = canvasFoldGlyph(!folded)
+    }
+}
+
+/**
+ * The [CardSection.SOURCE] part of card [cardId], or of the root file for null, showing [source]. Given a diff, its title
+ * becomes a tab beside a Diff tab and the section shows one of them at a time, so the card grows by only one. Clicking
+ * the shown tab folds the section; clicking the other shows it, unfolded. The source is shown first.
+ */
+internal class CanvasSourceSection(private val host: CanvasCardHost, private val cardId: String?, title: String,
+    private val source: JComponent) : CanvasFoldSection(host, cardId, CardSection.SOURCE, title,
+        JPanel(BorderLayout()).apply { isOpaque = false }) {
+    val diffTab: JLabel = host.zoomFont(JLabel().apply { isVisible = false }, UIUtil.getLabelFont().deriveFont(Font.BOLD))
+        .onLeftClick { if (showsDiff) host.model.toggleFolded(cardId, section) else select(diff = true) }
+    private var diff: JComponent? = null
+    /** Whether the Diff tab is shown rather than the source. */
+    var showsDiff = false
+        private set
+
+    init {
+        header.add(diffTab)
+        showTab()
+    }
+
+    /** Offers [component] in a Diff tab titled [tabTitle]; null removes the tab and shows the source. */
+    fun setDiff(component: JComponent?, tabTitle: String) {
+        diff = component
+        diffTab.text = tabTitle
+        if (component == null) showsDiff = false
+        showTab()
+    }
+
+    override fun titleClicked() = if (showsDiff) select(diff = false) else super.titleClicked()
+
+    private fun select(diff: Boolean) {
+        showsDiff = diff
+        showTab()
+        host.model.setFolded(cardId, section, false)
+        revalidate()
+        repaint()
+        host.cardResized()
+    }
+
+    private fun showTab() {
+        val shown = diff?.takeIf { showsDiff } ?: source
+        if ((body as JPanel).components.singleOrNull() !== shown) {
+            body.removeAll()
+            body.add(shown)
+        }
+        val tabbed = diff != null
+        diffTab.isVisible = tabbed
+        listOf(title to !showsDiff, diffTab to showsDiff).forEach { (tab, selected) ->
+            tab.foreground = if (tabbed && selected) UIUtil.getLabelForeground() else UIUtil.getContextHelpForeground()
+            tab.border = when {
+                !tabbed -> null
+                selected -> JBUI.Borders.customLineBottom(TAB_UNDERLINE)
+                else -> JBUI.Borders.emptyBottom(1)
+            }
+        }
+    }
+
+    private companion object {
+        val TAB_UNDERLINE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
     }
 }
 

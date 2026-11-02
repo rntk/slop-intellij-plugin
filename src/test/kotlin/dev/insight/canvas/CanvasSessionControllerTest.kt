@@ -21,6 +21,8 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.awt.Container
+import java.awt.event.InputEvent
+import java.awt.event.MouseEvent
 import javax.swing.JLabel
 
 class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
@@ -420,6 +422,57 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(1, calls.get())
         } finally {
             panel?.let(Disposer::dispose)
+        }
+    }
+
+    fun testDiffSourceShowsOnlyForFilesFromADiffAndOnlyHunksWithinACard() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val services = CanvasSessionServices(null, { { Completion("Summary.", finishReason = FinishReason.COMPLETE) } },
+            summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        val session = CanvasSession.new("Flow.java")
+        val plain = sessionFile(file, session)
+        val patch = "@@ -6,1 +6,1 @@\n-        int x = 0;\n+        int x = 1;\n"
+        val opened = CanvasSessionFile(plain.source, plain.rootPath, plain.exploration, plain.root, session,
+            mapOf(file.virtualFile.path to patch))
+        val panel = CanvasSessionPanel(project, opened, session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            val rootSections = (panel.canvas.components.single { it.name == "canvas-root" } as Container)
+                .components.filterIsInstance<CanvasFoldSection>()
+            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT),
+                rootSections.map { it.section })
+            val tabs = rootSections.single { it.section == CardSection.SOURCE } as CanvasSourceSection
+            val body = tabs.body as Container
+            fun click(label: JLabel) = label.mouseListeners.forEach {
+                it.mouseClicked(MouseEvent(label, MouseEvent.MOUSE_CLICKED, 0, InputEvent.BUTTON1_DOWN_MASK, 1, 1, 1, false, MouseEvent.BUTTON1))
+            }
+            assertEquals("Diff · +1 −1", tabs.diffTab.text)
+            assertTrue(tabs.diffTab.isVisible)
+            assertFalse("The source shows first", tabs.showsDiff)
+            assertTrue(body.components.single() is CanvasSourcePane)
+            click(tabs.diffTab)
+            assertTrue("One tab shows at a time", body.components.single() is CanvasDiffPane)
+            click(tabs.diffTab)
+            assertFalse("The shown tab folds the section", body.isVisible)
+            click(tabs.title)
+            assertTrue("The other tab shows, unfolded", body.isVisible && body.components.single() is CanvasSourcePane)
+
+            fun open(name: String): CanvasCardView {
+                val (link, target) = panel.controller.link(panel.controller.source(null)!!, name)
+                val job = panel.openSymbol(null, link, target)
+                PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
+                return panel.cardViews.getValue(panel.model.cards.last().id)
+            }
+            val entry = open("entry")
+            assertNull("entry has no changed lines", entry.diffPane)
+            val helper = open("helper")
+            assertEquals(listOf("        int x = 0;", "        int x = 1;"), helper.diffPane!!.rows.map { it.text })
+            panel.expandToFile(entry.id)
+            PlatformTestUtil.waitWithEventsDispatching("The card should show the whole file", { entry.diffPane != null }, 30)
+            assertEquals(2, entry.diffPane!!.rows.size)
+        } finally {
+            Disposer.dispose(panel)
         }
     }
 

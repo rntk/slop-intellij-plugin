@@ -45,6 +45,7 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
         )
         val prepared = background { prepareDiffCanvasSession(project, ReviewSnapshot(files, emptyList()), "Root.java") }
         assertEquals(emptyList<String>(), prepared.unavailable)
+        assertEquals(files.map { it.absolutePath }.toSet(), prepared.file.diffs.keys)
         val opened = prepared.file
         val cards = opened.session.cards
         assertEquals(setOf("Caller.java", "Leaf.java", "Child.java"), cards.map { it.filePath.substringAfterLast('/') }.toSet())
@@ -90,6 +91,8 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
         val snapshot = ReviewSnapshot(listOf(root, stale, unsupported, deleted), emptyList())
         val prepared = background { prepareDiffCanvasSession(project, snapshot, root.path) }
         assertEquals(setOf(stale.path, unsupported.path, deleted.path), prepared.unavailable.toSet())
+        // Stale and deleted sources would number another text; the unsupported file's patch shows only if it is opened.
+        assertEquals(setOf(root.absolutePath, unsupported.absolutePath), prepared.file.diffs.keys)
         assertTrue(prepared.file.session.cards.isEmpty())
         for (path in listOf(stale.path, deleted.path)) {
             try {

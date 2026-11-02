@@ -63,35 +63,11 @@ internal class CanvasSourcePane(
         editor.highlighter = source.file?.let { EditorHighlighterFactory.getInstance().createEditorHighlighter(project, it) }
             ?: EditorHighlighterFactory.getInstance().createEditorHighlighter(project,
                 FileTypeManager.getInstance().getFileTypeByFileName(source.path.substringAfterLast('/')))
-        editor.settings.apply {
-            isLineNumbersShown = true
-            isFoldingOutlineShown = false
-            isAutoCodeFoldingEnabled = false
-            isLineMarkerAreaShown = false
-            isIndentGuidesShown = false
-            isRightMarginShown = false
-            isCaretRowShown = false
-            isUseSoftWraps = false
-            isWheelFontChangeEnabled = false
-            additionalLinesCount = 0
-            additionalColumnsCount = 0
-            isAdditionalPageAtBottom = false
-        }
+        configureCanvasViewer(editor, listener::wheel)
         editor.gutter.setLineNumberConverter(object : LineNumberConverter {
             override fun convert(editor: Editor, lineNumber: Int) = source.firstLine + lineNumber
             override fun getMaxLineNumber(editor: Editor) = source.firstLine + editor.document.lineCount
         })
-        editor.setVerticalScrollbarVisible(false)
-        editor.scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-        editor.setBorder(null)
-        editor.scrollPane.isWheelScrollingEnabled = false
-        val forwardWheel = MouseWheelListener { event ->
-            listener.wheel(event)
-            event.consume()
-        }
-        listOf(editor.contentComponent, editor.gutterComponentEx, editor.scrollPane).forEach { it.addMouseWheelListener(forwardWheel) }
-        editor.contentComponent.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
-        editor.contentComponent.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
 
         val linkAttributes = TextAttributes().apply {
             backgroundColor = LINK_BACKGROUND
@@ -178,15 +154,7 @@ internal class CanvasSourcePane(
 
     private fun textOrigin(): Point = SwingUtilities.convertPoint(editor.contentComponent, 0, 0, this)
 
-    override fun getPreferredSize(): Dimension {
-        val text = editor.contentComponent.preferredSize
-        val natural = text.width + editor.gutterComponentEx.preferredSize.width
-        val width = minOf(natural, maxWidth)
-        // Laid out narrower than its text (a card's width), the pane scrolls sideways and needs room for the bar.
-        val shown = if (this.width > 0) minOf(this.width, width) else width
-        val bar = if (natural > shown) editor.scrollPane.horizontalScrollBar.preferredSize.height else 0
-        return Dimension(width, text.height + bar)
-    }
+    override fun getPreferredSize(): Dimension = canvasViewerSize(editor, width, maxWidth)
 
     override fun dispose() {
         if (!editor.isDisposed) EditorFactory.getInstance().releaseEditor(editor)
@@ -197,4 +165,46 @@ internal class CanvasSourcePane(
         val LINK_UNDERLINE = JBColor(Color(120, 150, 225), Color(105, 135, 200))
         val ANCHOR_BACKGROUND = JBColor(Color(255, 236, 179), Color(84, 72, 40))
     }
+}
+
+/** Shows [editor] as a canvas viewer: line numbers without editor chrome, and the wheel scrolling the canvas instead. */
+internal fun configureCanvasViewer(editor: EditorEx, wheel: (MouseWheelEvent) -> Unit) {
+    editor.settings.apply {
+        isLineNumbersShown = true
+        isFoldingOutlineShown = false
+        isAutoCodeFoldingEnabled = false
+        isLineMarkerAreaShown = false
+        isIndentGuidesShown = false
+        isRightMarginShown = false
+        isCaretRowShown = false
+        isUseSoftWraps = false
+        isWheelFontChangeEnabled = false
+        additionalLinesCount = 0
+        additionalColumnsCount = 0
+        isAdditionalPageAtBottom = false
+    }
+    editor.setVerticalScrollbarVisible(false)
+    editor.scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+    editor.setBorder(null)
+    editor.scrollPane.isWheelScrollingEnabled = false
+    val forwardWheel = MouseWheelListener { event ->
+        wheel(event)
+        event.consume()
+    }
+    listOf(editor.contentComponent, editor.gutterComponentEx, editor.scrollPane).forEach { it.addMouseWheelListener(forwardWheel) }
+    editor.contentComponent.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
+    editor.contentComponent.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
+}
+
+/**
+ * A canvas viewer's size: its text, at most [maxWidth] wide. Laid out narrower than its text ([width], a card's), the
+ * viewer scrolls sideways and needs room for the bar.
+ */
+internal fun canvasViewerSize(editor: EditorEx, width: Int, maxWidth: Int): Dimension {
+    val text = editor.contentComponent.preferredSize
+    val natural = text.width + editor.gutterComponentEx.preferredSize.width
+    val preferred = minOf(natural, maxWidth)
+    val shown = if (width > 0) minOf(width, preferred) else preferred
+    val bar = if (natural > shown) editor.scrollPane.horizontalScrollBar.preferredSize.height else 0
+    return Dimension(preferred, text.height + bar)
 }

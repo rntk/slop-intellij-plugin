@@ -38,6 +38,8 @@ internal interface CanvasCardHost {
     /** What the cards' chats may do on this canvas. */
     val actions: CanvasActions
     val sourceListener: CanvasSourcePane.Listener
+    /** Unified patches by absolute file path, for files opened from a diff; empty otherwise. */
+    val diffs: Map<String, String>
     val zoom: Double
     /** Shows [component] in [base] (its own font by default) at the current zoom, now and after each zoom change. */
     fun <T : JComponent> zoomFont(component: T, base: Font = component.font): T
@@ -50,8 +52,9 @@ internal interface CanvasCardHost {
 }
 
 /**
- * One card on the canvas: a header with the card's kind, name and place, then its summary, source, chat history and
- * chat input, each folded with its toggle as saved in the card. The card's chat keeps its history in the model.
+ * One card on the canvas: a header with the card's kind, name and place, then its summary, source (with a Diff tab for
+ * a file opened from a diff), chat history and chat input, each folded with its toggle as saved in the card. The card's
+ * chat keeps its history in the model.
  */
 internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasCard) : JPanel(StackLayout { zoomScaled(4, host.zoom) }), Disposable {
     val id = initial.id
@@ -101,7 +104,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             foreground = UIUtil.getContextHelpForeground()
         }))
     }
-    private val sourceSection = CanvasFoldSection(host, id, CardSection.SOURCE, canvasSourceTitle(initial), sourceBody)
+    /** The changed hunks within the card's source; null when it shows no change from a diff. */
+    var diffPane: CanvasDiffPane? = null
+        private set
+    private val sourceSection = CanvasSourceSection(host, id, canvasSourceTitle(initial), sourceBody)
     private val titleLabel = host.zoomFont(JLabel(card.title, kindIcon(card), JLabel.LEFT),
         UIUtil.getLabelFont().deriveFont(Font.BOLD))
     private val openedByLabel = host.zoomFont(JLabel("LLM").apply {
@@ -185,6 +191,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             notice.text = fresh?.notice.orEmpty()
             notice.isVisible = !fresh?.notice.isNullOrBlank()
         }
+        if (sourceChanged || !rendered) showDiff(next)
         rendered = true
         titleLabel.text = next.title
         openedByLabel.isVisible = next.openedBy == CardOpenedBy.LLM
@@ -216,6 +223,15 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         repaint()
         host.cardResized()
         if (sourceChanged) requestSummary(force = false)
+    }
+
+    /** Offers the changed hunks within the card's source in a Diff tab, with no tab for a file not opened from a diff. */
+    private fun showDiff(card: CanvasCard) {
+        diffPane?.let(Disposer::dispose)
+        val rows = canvasSourceDiff(host.diffs, source, card.wholeFile)
+        diffPane = rows.takeIf { it.isNotEmpty() }?.let { CanvasDiffPane(host.project, card.filePath, it, host.sourceListener::wheel) }
+        diffPane?.applyZoom(host.zoom)
+        sourceSection.setDiff(diffPane, canvasDiffTitle(rows))
     }
 
     /** Asks for the summary when the card has none yet, or again when [force]d; the result is saved in the model. */
@@ -257,11 +273,12 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(accent, if (highlighted) scaled(2) else scaled(1)),
             pixel(scaled(8)))
         sourcePane?.applyZoom(host.zoom)
+        diffPane?.applyZoom(host.zoom)
     }
 
-    /** The y of [anchor]'s line in this card, or the header's middle when the source is folded. */
+    /** The y of [anchor]'s line in this card, or the header's middle when the source is folded or shows its diff. */
     fun anchorY(anchor: CardAnchor): Int {
-        val pane = sourcePane?.takeIf { sourceSection.body.isVisible }
+        val pane = sourcePane?.takeIf { sourceSection.body.isVisible && !sourceSection.showsDiff }
             ?: return headerMiddle()
         val y = pane.anchorY(anchor.startOffset)
         return javax.swing.SwingUtilities.convertPoint(pane, 0, y, this).y
@@ -274,6 +291,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         summaryJob?.cancel()
         Disposer.dispose(chat)
         sourcePane?.let(Disposer::dispose)
+        diffPane?.let(Disposer::dispose)
     }
 
     private fun scaled(value: Int) = zoomScaled(value, host.zoom)

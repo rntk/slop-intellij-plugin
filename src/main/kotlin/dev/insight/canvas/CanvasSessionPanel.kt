@@ -186,6 +186,8 @@ internal class CanvasSessionPanel(
         })
     }
 
+    override val diffs: Map<String, String> get() = file.diffs
+
     override val sourceListener = object : CanvasSourcePane.Listener {
         override fun wheel(event: MouseWheelEvent) = this@CanvasSessionPanel.wheel(event)
         override fun linkClicked(pane: CanvasSourcePane, link: CanvasLink, event: MouseEvent) {
@@ -215,7 +217,7 @@ internal class CanvasSessionPanel(
             override fun actionPerformed(e: AnActionEvent) = openCardSearch()
             override fun update(e: AnActionEvent) {
                 e.presentation.isEnabled = generateSequence(e.getData(PlatformCoreDataKeys.CONTEXT_COMPONENT)) { it.parent }
-                    .none { it is CanvasSourcePane }
+                    .none { it is CanvasSourcePane || it is CanvasDiffPane }
             }
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
         }.registerCustomShortcutSet(CommonShortcuts.getFind(), this, this)
@@ -619,6 +621,7 @@ internal class CanvasSessionPanel(
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
         rootView?.pane?.applyZoom(zoom)
+        rootView?.diffPane?.applyZoom(zoom)
         content.revalidate()
         scroll.validate()
         layoutZoomContent(content)
@@ -628,7 +631,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun applyZoom(component: Component) {
-        if (component is CanvasSourcePane) return
+        if (component is CanvasSourcePane || component is CanvasDiffPane) return
         if (component is JComponent) (component.getClientProperty(BASE_FONT) as? Font)?.let { component.font = it.zoomed(zoom) }
         (component as? Container)?.components?.forEach(::applyZoom)
         if (component is CanvasCardView) component.applyZoom()
@@ -655,7 +658,7 @@ internal class CanvasSessionPanel(
             val underPointer = SwingUtilities.getDeepestComponentAt(content, point.x, point.y) ?: e.component
             val ancestors = generateSequence(underPointer) { it.parent }.toList()
             val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
-            if (card != null && ancestors.none { it is CanvasSourcePane || it is JTextComponent }) {
+            if (card != null && ancestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
                 endDrag()
                 JPopupMenu().apply { add(sideBySideAction(card.id)) }.show(e.component, e.x, e.y)
                 return
@@ -666,7 +669,7 @@ internal class CanvasSessionPanel(
                 panned = false
                 // Source text, chat text and buttons keep their own selection and clicks.
                 if (SwingUtilities.isLeftMouseButton(e) && generateSequence(e.component) { it.parent }
-                        .any { it is CanvasSourcePane || it is JTextComponent || it is AbstractButton || it is ActionLink }) return
+                        .any { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent || it is AbstractButton || it is ActionLink }) return
                 dragStart = e.locationOnScreen
                 dragView = scroll.viewport.viewPosition
                 content.requestFocusInWindow()
@@ -729,7 +732,10 @@ internal class CanvasSessionPanel(
         Disposer.dispose(controller)
     }
 
-    /** The initial file folds like a card, with an explicitly requested summary and chat below its source. */
+    /**
+     * The initial file folds like a card, with an explicitly requested summary and chat below its source, and a Diff tab
+     * beside the source when opened from a diff.
+     */
     private inner class RootView(private val source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
         val pane = CanvasSourcePane(project, null, source, sourceListener)
         private val metaToggle = canvasFoldToggle(this@CanvasSessionPanel, null, CardSection.META)
@@ -745,8 +751,12 @@ internal class CanvasSessionPanel(
                 add(summaryStatus)
                 add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summarize) })
             })
-        private val sourceSection = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.SOURCE,
+        private val diffRows = canvasSourceDiff(file.diffs, source, wholeFile = true)
+        /** The file's changed hunks; null, with no Diff tab, when it was not opened from a diff. */
+        val diffPane = diffRows.takeIf { it.isNotEmpty() }?.let { CanvasDiffPane(project, source.path, it, sourceListener::wheel) }
+        private val sourceSection = CanvasSourceSection(this@CanvasSessionPanel, null,
             "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines", pane)
+            .apply { setDiff(diffPane, canvasDiffTitle(diffRows)) }
         private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
         private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat", historyBody)
         val chat = CanvasChatView(this@CanvasSessionPanel, null, model.session.root, { canvasRootWelcome(model.session.rootPath) },
@@ -832,14 +842,14 @@ internal class CanvasSessionPanel(
             update(model.session.root)
         }
 
-        fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible)
+        fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible && !sourceSection.showsDiff)
             SwingUtilities.convertPoint(pane, 0, pane.anchorY(anchor.startOffset), this).y
         else components.first().let { it.y + it.height / 2 }
 
         override fun getPreferredSize(): Dimension {
             val stacked = super.getPreferredSize()
             // Wide enough to chat in, even beside a short, narrow file.
-            return Dimension(maxOf(pane.preferredSize.width, components.first().preferredSize.width,
+            return Dimension(maxOf(pane.preferredSize.width, diffPane?.preferredSize?.width ?: 0, components.first().preferredSize.width,
                 zoomScaled(ROOT_CHAT_MIN_WIDTH, zoom)), stacked.height)
         }
 
@@ -847,6 +857,7 @@ internal class CanvasSessionPanel(
             summaryJob?.cancel()
             Disposer.dispose(chat)
             Disposer.dispose(pane)
+            diffPane?.let(Disposer::dispose)
         }
     }
 
@@ -890,6 +901,7 @@ internal class CanvasSessionPanel(
             val root = rootView
             if (root != null) {
                 root.pane.maxWidth = zoomScaled(ROOT_MAX_WIDTH, zoom)
+                root.diffPane?.maxWidth = zoomScaled(ROOT_MAX_WIDTH, zoom)
                 // Measured twice: the second time at its own width, after a zoom changed it.
                 root.setSize(root.preferredSize.width.coerceAtLeast(1), maxOf(root.height, 1))
                 val size = root.preferredSize
@@ -901,6 +913,7 @@ internal class CanvasSessionPanel(
                 val items = model.cards.mapNotNull { card ->
                     val view = views[card.id] ?: return@mapNotNull null
                     view.sourcePane?.maxWidth = width - 2 * zoomScaled(9, zoom)
+                    view.diffPane?.maxWidth = width - 2 * zoomScaled(9, zoom)
                     view.setSize(width, maxOf(view.height, 1))
                     val height = view.preferredSize.height
                     view.setSize(width, height)
