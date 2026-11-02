@@ -8,6 +8,8 @@ Chat can also read current project files outside the change for supporting conte
 
 Source and diff views offer the IDE's declaration navigation and usage search for snapshot files that match current project source.
 
+A changed file's context menu offers **Open on canvas**. It starts a clickable source exploration with related changed files already open, following resolved code relationships in both directions across the comparison. Files whose reviewed source is unavailable or differs from the project are reported rather than used as relationship evidence.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — review workspace

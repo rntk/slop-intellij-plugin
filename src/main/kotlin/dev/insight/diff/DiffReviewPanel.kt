@@ -84,6 +84,7 @@ internal class DiffReviewPanel(
     private var disposed = false
     private var refreshJob: Job? = null
     private var repositoriesJob: Job? = null
+    private var canvasJob: Job? = null
     private var request = ReviewDiffRequest()
     private val tree = Tree(DefaultMutableTreeNode("Changes"))
     private val untracked = UntrackedFilesTree { file, selected ->
@@ -175,6 +176,15 @@ internal class DiffReviewPanel(
         }
         tree.openFilesOnActivate("showDiff") { selectedFile()?.let { showDiff(it.path); true } ?: false }
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
+            object : com.intellij.openapi.actionSystem.AnAction("Open on canvas",
+                "Explore this file and related changed files as clickable source cards", null) {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) {
+                    e.presentation.isEnabled = !state.refreshing && canvasJob?.isActive != true &&
+                        tree.selectionCount == 1 && selectedFile() != null
+                }
+                override fun actionPerformed(e: AnActionEvent) { openSelectionOnCanvas() }
+            },
             tabs.toChatAction("Chat about the selection in a new tab, with its summaries and diff in context",
                 enabled = { !state.refreshing }, entries = ::selectedEntries) {
                 status.text = "The selection is not in this tab's changes. Choose the All changes tab or a tab that includes it."
@@ -294,6 +304,35 @@ internal class DiffReviewPanel(
     }
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
+
+    private fun openSelectionOnCanvas() {
+        if (state.refreshing || canvasJob?.isActive == true || tree.selectionCount != 1) return
+        val selected = selectedFile() ?: return
+        val snapshot = state.snapshot
+        canvasJob = scope.launch {
+            status.text = "Finding related changes for ${selected.path}…"
+            try {
+                runCatchingReported(LOG, "Could not open diff on canvas") {
+                    val prepared = withBackgroundProgress(project, "Opening related changes: ${selected.path}") {
+                        withContext(Dispatchers.Default) { prepareDiffCanvasSession(project, snapshot, selected.path) }
+                    }
+                    check(!state.refreshing && state.snapshot == snapshot) { "The diff changed. Retry after refreshing." }
+                    FileEditorManager.getInstance(project).openFile(prepared.file, true)
+                    status.text = "Opened ${prepared.file.session.cards.size + 1} related changed files on canvas" +
+                        if (prepared.unavailable.isEmpty()) "" else
+                            " · ${prepared.unavailable.size} files could not be analyzed (missing, unsupported, or different from the reviewed source)"
+                    status.toolTipText = prepared.unavailable.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: status.text
+                }.onFailure {
+                    status.text = "Could not open canvas: ${describeFailure(it)}"
+                    status.toolTipText = status.text
+                }
+            } catch (e: CancellationException) {
+                ensureActive()
+                status.text = "Opening canvas cancelled. Retry from the file menu."
+                throw e
+            }
+        }
+    }
 
     private fun selectedFile(): ReviewFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? ReviewFile
 

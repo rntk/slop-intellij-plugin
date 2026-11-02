@@ -6,6 +6,8 @@ A canvas session is a visual walk through the code graph with many separate chat
 
 Opening a file starts a new session or resumes a saved one. The file is shown as source on a canvas, with the symbols that the IDE can resolve made clickable. Analysis runs locally, and if the file can't be shown, the reader gets a notification.
 
+Opening from Diff Review starts a new exploration with related changed files already shown as connected cards. The reader can follow symbols and continue those chains as in any other session.
+
 ## Walking
 
 - Clicking a symbol or selecting text opens a card beside it, linked by an arrow. Every project name on every shown line is a symbol: calls, types, type parameters, properties, parameters and variables, inside nested functions too.
