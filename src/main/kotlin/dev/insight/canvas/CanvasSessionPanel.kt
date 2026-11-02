@@ -771,7 +771,7 @@ internal class CanvasSessionPanel(
             add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
                 isOpaque = false
                 add(metaToggle, BorderLayout.WEST)
-                add(zoomFont(JLabel(file.source.name, file.source.fileType.icon, JLabel.LEFT),
+                add(zoomFont(CanvasTitleLabel(file.source.name, file.source.fileType.icon),
                     UIUtil.getLabelFont().deriveFont(Font.BOLD)), BorderLayout.CENTER)
                 add(zoomFont(ActionLink("Source") { navigate(source, source.path, source.firstLine) }.apply {
                     toolTipText = "Open ${source.path} in the editor"

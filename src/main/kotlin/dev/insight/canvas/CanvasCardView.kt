@@ -108,7 +108,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     var diffPane: CanvasDiffPane? = null
         private set
     private val sourceSection = CanvasSourceSection(host, id, canvasSourceTitle(initial), sourceBody)
-    private val titleLabel = host.zoomFont(JLabel(card.title, kindIcon(card), JLabel.LEFT),
+    private val titleLabel = host.zoomFont(CanvasTitleLabel(card.title, kindIcon(card)),
         UIUtil.getLabelFont().deriveFont(Font.BOLD))
     private val openedByLabel = host.zoomFont(JLabel("LLM").apply {
         name = "canvas-opened-by-llm"
