@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.WordScope
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -320,7 +321,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
         addActionListener {
             JBPopupFactory.getInstance().createPopupChooserBuilder(scopes)
                 .setTitle("Word Changes Scope")
-                .setNamerForFiltering { if (it.path.isEmpty()) "All changed files" else it.path }
+                .setNamerForFiltering { it.filterName }
                 .setSelectedValue(wordScope, true)
                 .setMovable(true)
                 .setResizable(true)

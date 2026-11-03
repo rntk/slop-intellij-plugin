@@ -171,7 +171,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
             assertTrue(buttons.containsAll(listOf("Open review", "Clear tabs")))
             assertFalse(buttons.any { it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
-            assertEquals(listOf("Summaries", "Topics"), viewLabels(tab))
+            assertEquals(listOf("Summaries", "Topics", "Words"), viewLabels(tab))
             assertSame(tab.viewSelector, descendants(tab).filterIsInstance<ReviewViewSelector>().single())
             assertTrue(tab.viewSelector.isEnabled)
             assertTrue(tab.state.summariesVisible)
@@ -179,6 +179,41 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
             assertFalse(tab.session.busy)
             assertTrue(tab.session.messages.none { it.role == ChatRole.USER })
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun `test words open a cloud of the scope that follows the snapshot`() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        try {
+            tab.update(codeSnapshot(codeFile("src/a.kt", "fun alpha() = alpha\n")))
+            tab.openWords()
+            assertEquals(dev.insight.review.CanvasTabKey.Words, tab.canvas.selectedKey)
+            assertEquals("Words", tab.canvas.pageTitle(dev.insight.review.CanvasTabKey.Words))
+            fun cloudWords() = descendants(tab.canvas).filterIsInstance<CodeWordCloud>().singleOrNull()?.words?.words?.map { it.word }?.toSet()
+            PlatformTestUtil.waitWithEventsDispatching("The words should be counted", { cloudWords() != null }, 20)
+            assertEquals(setOf("fun", "alpha"), cloudWords())
+            tab.update(codeSnapshot(codeFile("src/a.kt", "val beta = 1\n")))
+            PlatformTestUtil.waitWithEventsDispatching("The words should be counted again", { cloudWords() == setOf("val", "beta") }, 20)
+
+            tab.update(codeSnapshot(codeFile("src/a.kt", "val beta = 1\n"), codeFile("src/sub/b.kt", "fun gamma() = delta\n"),
+                codeFile("src/sub/c.kt", "val epsilon = 2\n")))
+            fun scopeButton() = descendants(tab.canvas).filterIsInstance<JButton>().single { it.name == "word-scope" }
+            PlatformTestUtil.waitWithEventsDispatching("Every file should be counted", { cloudWords()?.contains("gamma") == true }, 20)
+            assertEquals("All files in scope · 3", scopeButton().text)
+            val directory = tab.state.snapshot.files.map { it.path }.let { dev.insight.review.pathWordScopes(it, "All files in scope") }
+                .single { it.path == "src/sub" }
+            tab.chooseWordScope(directory)
+            PlatformTestUtil.waitWithEventsDispatching("The directory should be counted",
+                { cloudWords() == setOf("fun", "gamma", "delta", "val", "epsilon") }, 20)
+            assertEquals("src/sub/ · 2", scopeButton().text)
+            tab.chooseWordScope(directory.copy(path = "src/sub/c.kt", directory = false, files = 1))
+            PlatformTestUtil.waitWithEventsDispatching("The file should be counted", { cloudWords() == setOf("val", "epsilon") }, 20)
+            tab.update(codeSnapshot(codeFile("src/a.kt", "val beta = 1\n")))
+            PlatformTestUtil.waitWithEventsDispatching("A scope without files falls back to every file", { cloudWords() == setOf("val", "beta") }, 20)
+            assertEquals("All files in scope · 1", scopeButton().text)
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
+            assertFalse(tab.state.wordsVisible)
+            assertFalse(dev.insight.review.CanvasTabKey.Words in tab.canvas.pageKeys)
         } finally { Disposer.dispose(tab) }
     }
 

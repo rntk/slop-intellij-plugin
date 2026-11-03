@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.review.WordScope
+import dev.insight.review.pathWordScopes
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -86,31 +88,8 @@ internal fun wordChanges(files: List<ReviewFile>, limit: Int = 300): WordChanges
     return WordChanges(words.take(limit), removed, added, ChangedLineCounts(deletedLines, addedLines), matched)
 }
 
-/** The changed files the word chart counts: one file, the files beneath a directory, or every file when [path] is empty. */
-internal data class WordScope(val path: String, val directory: Boolean, val files: Int) {
-    fun contains(file: String) = path.isEmpty() || if (directory) file.startsWith("$path/") else file == path
-
-    override fun toString() = when {
-        path.isEmpty() -> "All changed files · $files"
-        directory -> "$path/ · $files"
-        else -> path
-    }
-}
-
 /** Every changed file and every directory above one, after the scope of all files; a directory comes before its contents. */
-internal fun wordScopes(files: List<ReviewFile>): List<WordScope> {
-    val directories = hashMapOf<String, Int>()
-    files.forEach { file ->
-        var end = file.path.lastIndexOf('/')
-        while (end > 0) {
-            val directory = file.path.substring(0, end)
-            directories.merge(directory, 1, Int::plus)
-            end = directory.lastIndexOf('/')
-        }
-    }
-    val scopes = directories.map { (path, count) -> WordScope(path, true, count) } + files.map { WordScope(it.path, false, 1) }
-    return listOf(WordScope("", true, files.size)) + scopes.sortedWith(compareBy({ it.path.replace('/', '\u0000') }, { !it.directory }))
-}
+internal fun wordScopes(files: List<ReviewFile>): List<WordScope> = pathWordScopes(files.map { it.path }, "All changed files")
 
 /**
  * Words scattered across the width by [WordChanges.side]: removed on the left, added on the right, shared in the middle.

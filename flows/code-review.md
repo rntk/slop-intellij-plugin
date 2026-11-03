@@ -6,6 +6,8 @@ A file, folder or summary entry can be taken to chat: a new review tab whose con
 
 Chat can also read current project files outside the review scope for supporting context, keeping that context distinct from the captured code.
 
+A Words view gives a compact picture of the vocabulary in scope: the most frequent words as a cloud, sized by frequency. Selecting a word opens the files where it appears. Like the diff Words view, it is computed from the captured code and does not depend on an assistant response.
+
 Source views offer the IDE's declaration navigation and usage search when the captured file matches current project source.
 
 Entry points for further exploration:

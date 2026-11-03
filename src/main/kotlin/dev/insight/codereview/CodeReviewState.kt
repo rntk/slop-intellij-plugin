@@ -41,6 +41,17 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun hasFile(path: String): Boolean = path in snapshot.byPath
     override fun resolveSource(range: ReviewSourceRange): ReviewSourceBlock = resolveCodeSource(snapshot, range)
 
+    /** Whether the Words page is shown; its counts follow the snapshot. */
+    var wordsVisible = false
+        private set
+    fun showWords() { wordsVisible = true }
+    fun hideWords() { wordsVisible = false }
+
+    override fun clearNotes() {
+        super.clearNotes()
+        wordsVisible = false
+    }
+
     /** Whether [path] belongs to this tab: everything without a fixed scope, else a listed file or a file in a listed folder. */
     fun inScope(path: String): Boolean = scopePaths == null || path in scopePaths ||
         scopePaths.any { it.isEmpty() || path.startsWith("$it/") }

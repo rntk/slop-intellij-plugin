@@ -40,9 +40,11 @@ import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
+import dev.insight.review.WordScope
 import dev.insight.review.chatFocus
 import dev.insight.agent.findSourceFile
 import dev.insight.review.current
+import dev.insight.review.pathWordScopes
 import dev.insight.review.seedTopicSummaries
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
@@ -115,6 +117,20 @@ internal class CodeReviewTab(
             "Large Code Review Run", "Continue", "Cancel", Messages.getQuestionIcon()) == Messages.YES
     }
 
+    /** The Words page; counting runs in the background, so the page keeps the last count while the scope is recounted. */
+    private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
+        chooseWordScope = ::chooseWordScope)
+    /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
+    private var wordCount: WordCount? = null
+    private var allWords: WordCount? = null
+    /** The file or directory the cloud counts; kept while the snapshot still has files in it. */
+    private var wordScope = WordScope("", true, 0, ALL_FILES)
+    /** Listing the scopes sorts every directory, so they are listed again only when the files change. */
+    private var wordScopes = listOf(wordScope)
+    private var wordScopesOf: List<CodeFile>? = null
+    private var wordsJob: Job? = null
+    private var wordsTarget: Pair<List<CodeFile>, WordScope>? = null
+
     override val canvas: NoteCanvas = NoteCanvas(
         open = { path -> openFile(path, null) },
         remove = { note -> state.removeNote(note.paths, note.symbol); renderCanvas() },
@@ -156,6 +172,7 @@ internal class CodeReviewTab(
             removeTopics = { state.hideTopics(); renderCanvas() },
             saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         ),
+        extension = codeCards,
     )
 
     /** The file shown in File view, its structure once analyzed or why it could not be, and the analysis in progress. */
@@ -173,7 +190,13 @@ internal class CodeReviewTab(
             "Read every source file as one document, with file paths and summaries (/summaries)"),
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read every source file as one document, grouped by topic, with each file's summary (/topics)"),
+        ReviewViewOption(CanvasTabKey.Words, "Words",
+            "Chart the most frequent words of the source in scope: larger words occur more often"),
     )
+
+    override fun openView(key: CanvasTabKey) {
+        if (key == CanvasTabKey.Words) openWords() else super.openView(key)
+    }
 
     /** Coalesces canvas updates while a run saves summaries or topics. */
     private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
@@ -298,12 +321,57 @@ internal class CodeReviewTab(
         val previousNotes = state.notes.size
         state.update(snapshot)
         if (state.revision != previousRevision) { session.stop(); sourcePoints.clear() }
+        if (state.wordsVisible) countWords()
         // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
         if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
         else if (fileViewPath != null && state.revision != previousRevision) { fileStructure = null; analyzeFileView() }
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
+    }
+
+    /** Counted from the snapshot by code, so the cloud needs no chat turn. */
+    fun openWords() {
+        state.showWords()
+        countWords()
+        renderCanvas()
+        showCanvas { canvas.focusWords() }
+    }
+
+    /** Counts the words of one file or directory of the scope, or of every file again. */
+    internal fun chooseWordScope(scope: WordScope) {
+        if (scope == wordScope) return
+        wordScope = scope
+        countWords()
+        renderCanvas()
+    }
+
+    /**
+     * Counts the words of [wordScope] in the current files in the background, unless they are already counted or being
+     * counted. A scope whose files are gone falls back to every file.
+     */
+    private fun countWords() {
+        val files = state.snapshot.files
+        if (wordScopesOf !== files) {
+            wordScopesOf = files
+            wordScopes = pathWordScopes(files.map { it.path }, ALL_FILES)
+            wordScope = wordScopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: wordScopes.first()
+        }
+        val counting = wordScope
+        if (wordCount?.counts(files, counting) == true) return
+        allWords?.takeIf { it.counts(files, counting) }?.let { wordCount = it; return }
+        if (wordsJob?.isActive == true && wordsTarget?.let { it.first === files && it.second == counting } == true) return
+        wordsJob?.cancel()
+        wordsTarget = files to counting
+        wordsJob = scope.launch {
+            val counted = withContext(Dispatchers.Default) {
+                val job = currentCoroutineContext().job
+                codeWords(files.filter { counting.contains(it.path) }) { job.ensureActive() }
+            }
+            if (disposed || state.snapshot.files !== files || wordScope != counting) return@launch
+            wordCount = WordCount(files, counting, counted).also { if (counting.path.isEmpty()) allWords = it }
+            if (state.wordsVisible) renderCanvas()
+        }
     }
 
     /** A pipeline run starts holding snapshot updates (EDT). */
@@ -459,6 +527,8 @@ internal class CodeReviewTab(
     }
 
     override fun renderCanvas() {
+        codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
+            updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
@@ -547,13 +617,20 @@ internal class CodeReviewTab(
 
     override fun dispose() {
         canvasTimer.stop()
+        wordsJob?.cancel()
         holding = false
         pendingSnapshot = null
         super.dispose()
     }
 
+    /** The words of the files of [scope] in [files], a snapshot's files compared by identity. */
+    private class WordCount(val files: List<CodeFile>, val scope: WordScope, val words: CodeWords) {
+        fun counts(files: List<CodeFile>, scope: WordScope) = this.files === files && this.scope == scope
+    }
+
     internal companion object {
         const val CANVAS_REFRESH_MS = 250
+        const val ALL_FILES = "All files in scope"
     }
 }
 

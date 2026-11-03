@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.WordScope
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import dev.insight.review.CanvasTabKey
