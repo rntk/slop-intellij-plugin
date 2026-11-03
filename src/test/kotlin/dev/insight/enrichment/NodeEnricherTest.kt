@@ -2,6 +2,7 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonObject
 import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionContextLimitException
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
@@ -152,6 +153,18 @@ class NodeEnricherTest {
     @Test(expected = CancellationException::class)
     fun `cancellation is rethrown`(): Unit = runBlocking {
         NodeEnricher({ throw CancellationException("stop") }).enrich(input(), listOf(0), emptyList())
+    }
+
+    @Test fun `context limit stops the run instead of counting per-node failures`() = runBlocking {
+        val calls = AtomicInteger()
+        val failure = DecisionContextLimitException("Increase the context window in Insight Chat settings")
+        val enricher = NodeEnricher({ calls.incrementAndGet(); throw failure }, concurrency = 1)
+
+        val thrown = runCatching { enricher.enrich(input(), listOf(0, 1, 2), emptyList()) }.exceptionOrNull()
+
+        assertTrue(thrown is DecisionContextLimitException)
+        assertEquals(failure.message, thrown!!.message)
+        assertEquals(1, calls.get())
     }
 
     @Test fun `concurrency is bounded`() = runBlocking {

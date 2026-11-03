@@ -2,6 +2,7 @@ package dev.insight.chat
 
 import com.intellij.openapi.project.Project
 import dev.insight.agent.ChatBackend
+import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
 
 /** Creates a backend for each turn on IO; owned UI resources are cleared/disposed on the EDT. */
@@ -21,7 +22,7 @@ internal class ProjectChatBackendFactory(private val project: Project) : ChatBac
 
     override fun create(suggestFollowups: (List<String>) -> Unit): ChatBackend {
         val client = ChatSettings.getInstance().createClient()
-        return LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt())
+        return LlmChatBackend(client::complete, projectTools(project, sourcePoints), projectChatSystemPrompt(), maxContextChars = configuredContextChars())
     }
 
     override fun clear() = sourcePoints.clear()

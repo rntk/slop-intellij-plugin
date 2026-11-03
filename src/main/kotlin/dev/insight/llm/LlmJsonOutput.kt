@@ -24,7 +24,8 @@ internal const val CODE_AS_DATA =
  * object are ignored). With a [schema], llama.cpp constrains the answer by `response_format: json_schema`; otherwise
  * by `json_object`. Unparsable output is retried; truncation doubles the token budget for the next attempt, since
  * reasoning models spend part of the output budget on reasoning. With [retryTruncated] false, truncation is returned
- * immediately as [LlmTruncatedException] so a caller can split the batch. The initial budget is at least 10,000 tokens.
+ * immediately as [LlmTruncatedException] so a caller can split the batch. The preferred initial budget is at least
+ * 10,000 tokens; a configured context window may reduce it to fit alongside the input.
  * Throws [IOException] when no attempt yields an object.
  */
 suspend fun completeJson(
@@ -50,6 +51,7 @@ suspend fun completeJson(
         val request = CompletionRequest(
             listOf(LlmMessage.system(system), LlmMessage.user(user)),
             temperature = temperature, maxTokens = budget, responseFormat = format,
+            fitOutputToContext = true,
         )
         val completion = try {
             complete(request)
@@ -57,6 +59,9 @@ suspend fun completeJson(
             throw e
         } catch (e: LlmApiException) {
             // HTTP errors were already retried by the client; a context overflow will not go away on its own.
+            throw e
+        } catch (e: LlmContextLimitException) {
+            // Repeating a locally rejected request cannot make it fit the configured window.
             throw e
         } catch (e: LlmTruncatedException) {
             if (!retryTruncated) throw e
@@ -69,7 +74,7 @@ suspend fun completeJson(
         }
         parseJsonObjectLeniently(completion.content)?.let { return it }
         failure = if (completion.finishReason == FinishReason.TRUNCATED) {
-            val truncated = LlmTruncatedException("LLM output was truncated at $budget tokens before the JSON object was complete")
+            val truncated = LlmTruncatedException("LLM output was truncated before the JSON object was complete")
             if (!retryTruncated) throw truncated
             truncated.also { budget *= 2 }
         } else IOException("LLM output is not a JSON object: ${completion.content.take(200)}")

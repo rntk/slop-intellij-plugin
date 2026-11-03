@@ -67,6 +67,38 @@ class ChatSettingsConfigurableTest : BasePlatformTestCase() {
     private fun labeledField(label: String) = descendants().filterIsInstance<JLabel>()
         .first { it.text == label }.labelFor as JTextField
 
+    fun `test context windows validate reset and keep separate provider drafts`() {
+        val windows = descendants().filterIsInstance<JLabel>().filter { it.text == "Context window (tokens):" }
+            .map { it.labelFor as JTextField }
+        val decisions = windows.first()
+        val local = windows[1]
+        val openAi = windows[2]
+        decisions.text = "8192"
+        local.text = "32768"
+        providerChoice().selectedItem = LlmProvider.OPENAI
+        openAi.text = "128000"
+        assertTrue(configurable.isModified)
+        configurable.reset()
+        assertTrue(windows.all { it.text == "0" })
+        assertFalse(configurable.isModified)
+
+        decisions.text = "-1"
+        assertFalse(panel.validateAll().isEmpty())
+        decisions.text = "8192"
+        local.text = "10000"
+        assertTrue(panel.validateAll().any { it.message.contains("larger than max output tokens") })
+        local.text = "32768"
+        providerChoice().selectedItem = LlmProvider.OPENAI
+        openAi.text = "128000"
+        assertTrue(panel.validateAll().isEmpty())
+        configurable.apply()
+        assertEquals(8192, settings.state.decisionsContextWindowTokens)
+        assertEquals(32768, settings.state.contextWindowTokens)
+        assertEquals(128000, settings.state.openAi.contextWindowTokens)
+        assertEquals((128000 - 10000) * 4, configuredContextChars())
+        assertFalse(configurable.isModified)
+    }
+
     fun `test Decisions URL and key validate and participate in Apply and Reset`() {
         val url = labeledField("Server URL:")
         val key = labeledField("API key:") as JPasswordField

@@ -322,6 +322,36 @@ class DecisionsEntryPointFinderTest {
         assertTrue(result.summary.contains("1 candidates too large"))
     }
 
+    @Test fun `configured token window replaces legacy byte budget and bounds complete requests`() = runBlocking {
+        val sources = Sources(mapOf("Main.kt" to "fun main() {}"))
+        for ((tokens, expectedCalls) in listOf(100 to 0, 4000 to 1)) {
+            var calls = 0
+            val result = DecisionsEntryPointFinder({ request ->
+                calls++
+                assertTrue(DecisionJson.encode(request).length <= tokens * 4)
+                response(request)
+            }, sources, { sources.contents[it] }, contextWindowTokens = tokens)
+                .find(emptyList())
+            assertEquals(expectedCalls, calls)
+            assertEquals(expectedCalls, result.entryPoints.size)
+        }
+    }
+
+    @Test fun `explicit byte budget still applies with a configured token window`() = runBlocking {
+        val sources = Sources(mapOf("Main.kt" to "fun main() {}\n" + List(24) { "// 漢😀".repeat(50) }.joinToString("\n")))
+        for ((bytes, tokens, expectedCalls) in listOf(Triple(100, 4000, 0), Triple(4000, 4000, 1), Triple(4000, 100, 0))) {
+            var calls = 0
+            val result = DecisionsEntryPointFinder({ request ->
+                calls++
+                assertTrue(DecisionJson.encode(request).toByteArray(Charsets.UTF_8).size <= bytes)
+                response(request)
+            }, sources, { sources.contents[it] }, maxRequestBytes = bytes, contextWindowTokens = tokens)
+                .find(emptyList())
+            assertEquals(expectedCalls, calls)
+            assertEquals(expectedCalls, result.entryPoints.size)
+        }
+    }
+
     @Test fun `uncertain categories are flagged`() {
         val result = find(Sources(mapOf("Main.kt" to "fun main() {}"))) { response(it, kindConfidence = 0.3) }
         assertTrue(result.entryPoints.single().description.contains("category uncertain"))

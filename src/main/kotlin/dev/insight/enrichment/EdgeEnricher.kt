@@ -2,6 +2,7 @@ package dev.insight.enrichment
 
 import com.google.gson.JsonObject
 import dev.insight.decisions.DecisionAnswer
+import dev.insight.decisions.DecisionContextLimitException
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionRequest
 import dev.insight.decisions.DecisionResponse
@@ -77,6 +78,8 @@ class EdgeEnricher(
                             cache.putEdge(key, annotation)
                             annotations[edge] = annotation
                         } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: DecisionContextLimitException) {
                             throw e
                         } catch (e: Exception) {
                             logFailure(failures.incrementAndGet(), e)

@@ -66,6 +66,7 @@ class EntryPointFinder(
     private val treeChars: Int = 8_000,
     private val maxSourceLines: Int = 1_600,
     private val maxSourceChars: Int = 32_000,
+    private val maxContextChars: Int = 64_000,
 ) {
     init {
         require(maxFileReads > 0 && maxSourceLines > 0 && maxSourceChars > 0) { "Read budgets must be positive" }
@@ -123,7 +124,7 @@ class EntryPointFinder(
                 }, budget, BudgetedTool.Format.READ), reads)
                 else -> tool
             }
-        }, maxToolRounds = maxToolRounds)
+        }, maxToolRounds = maxToolRounds, maxContextChars = maxContextChars)
         val messages = listOf(
             LlmMessage.system(systemPrompt(maxFileReads, maxSourceLines, maxSourceChars)),
             LlmMessage.user(userPrompt(tree, hints, known, changed)),

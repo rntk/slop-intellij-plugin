@@ -51,6 +51,7 @@ class EntryPointDecisionException(
  *
  * [threshold] and [maxRequestBytes] are starting points, not validated values: tune the threshold on labeled
  * projects, and the byte budget against the server's context. [concurrency] bounds files evaluated in parallel.
+ * A configured context window replaces the default byte budget; an explicit [maxRequestBytes] still applies.
  */
 class DecisionsEntryPointFinder(
     private val evaluate: DecisionFn,
@@ -58,13 +59,15 @@ class DecisionsEntryPointFinder(
     private val read: suspend (String) -> String?,
     private val maxFiles: Int = 200,
     private val threshold: Double = 0.7,
-    private val maxRequestBytes: Int = MAX_REQUEST_BYTES,
+    private val maxRequestBytes: Int? = null,
     private val concurrency: Int = 4,
     private val cache: EntryPointDecisionCache = EntryPointDecisionCache(),
+    private val contextWindowTokens: Int = 0,
 ) {
     init {
         require(maxFiles > 0); require(threshold in 0.0..1.0)
-        require(maxRequestBytes > 0); require(concurrency > 0)
+        require(contextWindowTokens >= 0)
+        require(maxRequestBytes == null || maxRequestBytes > 0); require(concurrency > 0)
     }
 
     private class Candidate(val line: Int, val name: String, val code: String) {
@@ -304,7 +307,11 @@ class DecisionsEntryPointFinder(
         var sourceBudget = 1200
         while (true) {
             val request = request(path, lines, registrations, batch, sourceBudget)
-            if (DecisionJson.encode(request).toByteArray(Charsets.UTF_8).size <= maxRequestBytes) return request
+            val encoded = DecisionJson.encode(request)
+            val byteLimit = maxRequestBytes ?: MAX_REQUEST_BYTES.takeIf { contextWindowTokens == 0 }
+            val fitsBytes = byteLimit == null || encoded.toByteArray(Charsets.UTF_8).size <= byteLimit
+            val fitsWindow = contextWindowTokens == 0 || encoded.length.toLong() <= contextWindowTokens.toLong() * 4
+            if (fitsBytes && fitsWindow) return request
             if (sourceBudget <= MIN_SOURCE_BUDGET) return null
             sourceBudget = (sourceBudget / 2).coerceAtLeast(MIN_SOURCE_BUDGET)
         }

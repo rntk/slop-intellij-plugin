@@ -71,11 +71,11 @@ internal fun gapTools(source: GapSource) = listOf(
 )
 
 /** No IDE or UI dependencies; each gap gets its own tool conversation. */
-internal class SchematicGapWorkflow(private val complete: CompletionFn) {
+internal class SchematicGapWorkflow(private val maxContextChars: Int = 64_000, private val complete: CompletionFn) {
     suspend fun summarize(source: GapSource, unit: GapUnit): String? {
         require(unit.first >= 0 && unit.last in unit.first until source.lines.size)
         if ((unit.first..unit.last).all { source.lines[it].isBlank() }) return null
-        val result = ToolChatRunner(complete, gapTools(source), maxToolRounds = 8).run(listOf(
+        val result = ToolChatRunner(complete, gapTools(source), maxToolRounds = 8, maxContextChars = maxContextChars).run(listOf(
             LlmMessage.system("Explain the provided code excerpt in plain language: complete statements or declarations, " +
                 "or the header of a longer one. Write a brief plain-text " +
                 "summary of 1–3 sentences explaining its purpose and behavior. Do not include a title or heading. " +

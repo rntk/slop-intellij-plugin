@@ -25,7 +25,8 @@ internal fun diffSummarizer(
     readTool: ChatTool?,
     options: ReviewSummaryOptions = ReviewSummaryOptions(),
     evidence: SummaryEvidence = DiffSummaryEvidence(),
-): ReviewSummarizer = ReviewSummarizer(complete, readTool, options, evidence)
+    maxContextChars: Int = 64_000,
+): ReviewSummarizer = ReviewSummarizer(complete, readTool, options, evidence, maxContextChars)
 
 /** A changed file's patch and provenance. A summary cites the patch's own lines, numbered from 1. */
 internal class DiffSummaryEvidence : SummaryEvidence {

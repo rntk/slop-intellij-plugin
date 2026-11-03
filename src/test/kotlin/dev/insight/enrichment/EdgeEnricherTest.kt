@@ -1,6 +1,7 @@
 package dev.insight.enrichment
 
 import dev.insight.decisions.DecisionRequest
+import dev.insight.decisions.DecisionContextLimitException
 import dev.insight.graph.CallGraph
 import dev.insight.graph.CallGraphEdge
 import dev.insight.graph.RelationKind
@@ -63,6 +64,20 @@ class EdgeEnricherTest {
         val edited = input.copy(facts = facts + (1 to EnricherFakes.facts(1, "f1", doc = "Now different.")))
         assertEquals("callee change invalidates", 1, enricher.enrich(edited, listOf(CallGraphEdge(0, 1))).requests)
         assertEquals(4, calls.get())
+    }
+
+    @Test fun `context limit stops the run instead of counting per-edge failures`() = runBlocking {
+        val calls = AtomicInteger()
+        val failure = DecisionContextLimitException("Increase the context window in Insight Chat settings")
+        val enricher = EdgeEnricher({ calls.incrementAndGet(); throw failure }, concurrency = 1)
+
+        val thrown = runCatching {
+            enricher.enrich(input, listOf(CallGraphEdge(0, 1), CallGraphEdge(0, 2)))
+        }.exceptionOrNull()
+
+        assertTrue(thrown is DecisionContextLimitException)
+        assertEquals(failure.message, thrown!!.message)
+        assertEquals(1, calls.get())
     }
 
     @Test fun `concurrency is bounded`() = runBlocking {

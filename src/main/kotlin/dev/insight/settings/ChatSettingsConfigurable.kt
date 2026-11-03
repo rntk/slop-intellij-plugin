@@ -51,6 +51,15 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
             storedDecisionsApiKey = settings.decisionsApiKey.orEmpty()
             decisionsApiKey = storedDecisionsApiKey
             group("Decisions API") {
+                row("Context window (tokens):") {
+                    intTextField(0..Int.MAX_VALUE)
+                        .bindIntText({ state.decisionsContextWindowTokens }, { state.decisionsContextWindowTokens = it })
+                        .validationOnApply {
+                            if (it.text.toIntOrNull()?.let { value -> value >= 0 } == true) null
+                            else error("Context window must be a non-negative integer")
+                        }
+                        .comment("Input limit supported by your server. 0 keeps existing budgets. Estimated at four serialized characters per token; the server enforces the actual limit. Applies to new jobs.")
+                }
                 row("Server URL:") {
                     textField()
                         .bindText({ state.decisionsUrl.orEmpty() }, { state.decisionsUrl = it.trim() })
@@ -82,6 +91,7 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                 storedApiKeys[provider] = settings.apiKey(provider).orEmpty()
                 apiKeys[provider] = storedApiKeys.getValue(provider)
                 lateinit var urlField: JTextField
+                lateinit var outputTokensField: JTextField
                 group(provider.displayName) {
                     row("Server URL:") {
                         urlField = textField()
@@ -123,10 +133,24 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                                 }
                             }
                     }
-                    row("Max output tokens:") {
+                    row("Context window (tokens):") {
                         intTextField(0..Int.MAX_VALUE)
+                            .bindIntText({ options.contextWindowTokens }, { options.contextWindowTokens = it })
+                            .validationOnApply { field ->
+                                val context = field.text.toIntOrNull()
+                                val output = outputTokensField.text.toIntOrNull()?.let {
+                                    if (it == 0 && provider == LlmProvider.ANTHROPIC) dev.insight.llm.DEFAULT_OUTPUT_TOKENS else it
+                                }
+                                if (context == null || context < 0) error("Context window must be a non-negative integer")
+                                else if (output != null && context > 0 && context <= output)
+                                    error("Context window must be larger than max output tokens") else null
+                            }
+                            .comment("Total input + output supported by this model/server. 0 keeps existing budgets. Input is estimated at four serialized characters per token; output tokens are reserved. Applies to new chats and jobs.")
+                    }
+                    row("Max output tokens:") {
+                        outputTokensField = intTextField(0..Int.MAX_VALUE)
                             .bindIntText({ options.maxOutputTokens }, { options.maxOutputTokens = it })
-                            .comment("Default for requests without an explicit token budget, including chat. 0 uses the provider default (10000 for Anthropic). Analysis requests keep their own budgets.")
+                            .comment("Default for requests without an explicit token budget, including chat. 0 uses the provider default (10000 for Anthropic). Analysis requests keep their own budgets.").component
                     }
                     row("Request timeout (seconds):") {
                         intTextField(10..86400).bindIntText({ options.requestTimeoutSeconds }, { options.requestTimeoutSeconds = it })

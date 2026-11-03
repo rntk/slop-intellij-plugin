@@ -36,6 +36,19 @@ class ChangeSummaryTest {
     private fun ReviewSummaryTree.byLocation(location: String) = nodes.single { it.location == location }
     private fun ReviewSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
 
+    @Test fun `local context rejection is not retried as a summary failure`() = runBlocking {
+        var requests = 0
+        val rejection = dev.insight.llm.LlmContextLimitException("Input exceeds context window")
+        try {
+            diffSummarizer({ requests++; throw rejection }, null)
+                .run(ReviewSummaries(buildSummaryTree(listOf(file("a.kt")))), "", { error("Must not save") })
+            fail("Local context limit swallowed")
+        } catch (e: dev.insight.llm.LlmContextLimitException) {
+            assertEquals(rejection.message, e.message)
+        }
+        assertEquals(1, requests)
+    }
+
     @Test fun `tree keeps every path segment as its own folder and lists folders first`() {
         val tree = buildSummaryTree(listOf(
             file("src/main/kotlin/app/b.kt"), file("src/main/kotlin/app/a.kt"),

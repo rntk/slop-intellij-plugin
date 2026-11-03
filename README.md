@@ -17,6 +17,8 @@ Code analysis supports Java, Kotlin, Python, Go, Rust, JavaScript and TypeScript
 
 Settings → Tools → Insight Chat includes separate maximum concurrent request limits for the LLM and Decisions APIs. Each limit is shared across jobs and projects in the IDE. Excess requests wait without blocking the UI, and applying a new limit also affects existing clients. Individual jobs may use fewer requests than the configured maximum.
 
+Each LLM provider also has a **Context window (tokens)** setting; the Decisions API has its own input limit. Set it to the capacity supported by your selected model and server. LLM windows include input and output, with the requested output budget reserved first. The plugin estimates input at four serialized characters per token; server tokenization and limits remain authoritative. Zero preserves existing budgets. Changes apply to new chats and jobs. Chat evicts older context as needed; requests that still exceed the configured estimate fail locally with an explanation.
+
 Run the plugin in a development IDE instance:
 
 ```sh

@@ -13,6 +13,7 @@ import dev.insight.llm.forEachConcurrently
 import dev.insight.llm.parseJsonObjectLeniently
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
+import dev.insight.llm.LlmContextLimitException
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmTruncatedException
 import dev.insight.prompts.PromptTemplates
@@ -100,6 +101,7 @@ class ReviewSummarizer internal constructor(
     private val readTool: ChatTool?,
     private val options: ReviewSummaryOptions = ReviewSummaryOptions(),
     internal val evidence: SummaryEvidence,
+    private val maxContextChars: Int = 64_000,
 ) {
     /**
      * [save] stores a batch and returns the current summaries; it throws when the snapshot changed, which ends the run.
@@ -178,6 +180,9 @@ class ReviewSummarizer internal constructor(
                     mutex.withLock { error = e.message ?: e.javaClass.simpleName }
                     emptyMap()
                 } catch (e: CancellationException) {
+                    throw e
+                } catch (e: LlmContextLimitException) {
+                    // The configured window will reject the same request on every attempt.
                     throw e
                 } catch (e: LlmApiException) {
                     // The server rejected the request; the next one would fail the same way.
@@ -309,7 +314,7 @@ class ReviewSummarizer internal constructor(
             add("nodes", JsonArray().apply { batch.forEachIndexed { index, node -> add(item(index + 1, node, summaries, feedback[node.id])) } })
         }.toString()
         val answer = if (batch.any(::cut) && readTool != null) {
-            val reply = ToolChatRunner(counted, listOf(readTool), maxToolRounds = options.maxToolRounds)
+            val reply = ToolChatRunner(counted, listOf(readTool), maxToolRounds = options.maxToolRounds, maxContextChars = maxContextChars)
                 .run(listOf(LlmMessage.system(system), LlmMessage.user("$user\n\n$JSON_ONLY")), onToolCall).reply
             parseJsonObjectLeniently(reply) ?: throw IllegalStateException("The summary answer is not a JSON object: ${reply.take(200)}")
         } else completeJson(counted, system, user, schema(batch.size), maxTokens = 4096 + 768 * batch.size,

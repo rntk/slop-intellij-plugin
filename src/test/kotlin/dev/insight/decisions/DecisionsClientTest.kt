@@ -23,6 +23,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class DecisionsClientTest {
+    @Test fun `configured context rejects oversized state and questions before transport`() = runBlocking {
+        val client = DecisionsClient("key", "http://127.0.0.1:1", maxRetries = 0, contextWindowTokens = 100)
+        for (large in listOf(
+            DecisionRequest("x".repeat(1000), mapOf("q" to DecisionQuestion.Noul("Judge"))),
+            DecisionRequest("small", mapOf("q" to DecisionQuestion.Noul("x".repeat(1000)))),
+        )) {
+            val failure = runCatching { client.evaluate(large) }.exceptionOrNull()
+            assertTrue(failure is DecisionContextLimitException)
+            assertTrue(failure!!.message!!.contains("configured context window"))
+        }
+    }
+
     @get:Rule val timeout = Timeout.seconds(30)
 
     private lateinit var server: HttpServer

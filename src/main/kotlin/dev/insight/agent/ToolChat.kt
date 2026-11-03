@@ -6,6 +6,7 @@ import dev.insight.llm.Completion
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
+import dev.insight.llm.LlmContextLimitException
 import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmProtocolException
@@ -98,6 +99,9 @@ class ToolChatRunner(
                         return complete(candidate)
                     } catch (error: LlmApiException) {
                         if (!error.isContextOverflow() || retries >= maxContextRetries || !window.shrink(candidate)) throw error
+                        retries++
+                    } catch (error: LlmContextLimitException) {
+                        if (retries >= maxContextRetries || !window.shrink(candidate)) throw error
                         retries++
                     }
                 }

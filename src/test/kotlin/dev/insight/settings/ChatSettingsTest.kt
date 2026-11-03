@@ -18,11 +18,16 @@ class ChatSettingsTest : BasePlatformTestCase() {
         assertEquals(300, state.configuration().requestTimeoutSeconds)
         assertEquals(4, state.maxConcurrentLlmRequests)
         assertEquals(4, state.maxConcurrentDecisionRequests)
+        assertEquals(0, state.configuration().contextWindowTokens)
+        assertEquals(0, state.decisionsContextWindowTokens)
 
         state.provider = LlmProvider.OPENAI
         state.openAi.model = "cloud-model"
         state.openAi.serverUrl = "https://gateway.example/v1"
         state.openAi.maxOutputTokens = 4096
+        state.openAi.contextWindowTokens = 128_000
+        state.contextWindowTokens = 32_000
+        state.decisionsContextWindowTokens = 16_000
         state.openAi.maxRetries = 4
         state.openAi.serviceTier = "flex"
         state.deepSeek.model = "other-model"
@@ -33,7 +38,10 @@ class ChatSettingsTest : BasePlatformTestCase() {
         assertEquals("other-model", restored.deepSeek.model)
         assertEquals(3, restored.maxConcurrentLlmRequests)
         assertEquals(7, restored.maxConcurrentDecisionRequests)
+        assertEquals(128_000, restored.configuration().contextWindowTokens)
+        assertEquals(16_000, restored.decisionsContextWindowTokens)
         restored.provider = LlmProvider.LLAMA_CPP
+        assertEquals(32_000, restored.configuration().contextWindowTokens)
         assertEquals("local-model", restored.configuration().model)
         assertEquals("http://localhost:8080", restored.configuration().baseUrl)
         assertEquals(300, restored.configuration().requestTimeoutSeconds)

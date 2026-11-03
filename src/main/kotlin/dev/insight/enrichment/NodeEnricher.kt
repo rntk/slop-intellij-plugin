@@ -6,6 +6,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.insight.core.Hashing
 import dev.insight.decisions.DecisionAnswer
 import dev.insight.decisions.DecisionApiException
+import dev.insight.decisions.DecisionContextLimitException
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.DecisionQuestion
 import dev.insight.decisions.DecisionRequest
@@ -78,6 +79,8 @@ class NodeEnricher(
                             cache.putNode(key, annotation)
                             annotations[facts.id] = annotation
                         } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: DecisionContextLimitException) {
                             throw e
                         } catch (e: Exception) {
                             logFailure(failures.incrementAndGet(), e)

@@ -30,6 +30,7 @@ import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.chat.LlmChatBackend
 import dev.insight.graph.SymbolKind
 import dev.insight.llm.CompletionFn
+import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +50,7 @@ internal class CanvasSessionServices(
     val store: CanvasSessionStore?,
     val complete: () -> CompletionFn,
     val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
+    val maxContextChars: () -> Int = { 64_000 },
     val chatBackend: (CanvasActions, String?) -> ChatBackend,
 ) {
     companion object {
@@ -56,11 +58,12 @@ internal class CanvasSessionServices(
             CanvasSessionStore.forProject(project),
             { ChatSettings.getInstance().createClient()::complete },
             { projectContextTools(project) },
+            { configuredContextChars() },
         ) { actions, cardId ->
             val canvas = canvasToolRegistry(actions, cardId)
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
                 projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
-                maxContextChars = 64_000, maxToolRounds = 30,
+                maxContextChars = configuredContextChars(64_000), maxToolRounds = 30,
                 context = { canvasChainContext(actions.session, cardId, actions.source(null)) },
                 contextLabel = if (cardId == null) "Canvas file" else "Canvas chain",
                 registry = canvas)

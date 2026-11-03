@@ -822,7 +822,7 @@ internal class CanvasSessionPanel(
             summaryJob = scope.launch(Dispatchers.EDT) {
                 try {
                     val text = withContext(Dispatchers.IO) {
-                        CanvasSummarizer(services.complete(), tools = services.summaryTools()).summarize(input)
+                        CanvasSummarizer(services.complete(), tools = services.summaryTools(), maxContextChars = services.maxContextChars()).summarize(input)
                     }
                     model.setSummary(null, text)
                 } catch (e: CanvasSummaryException) {

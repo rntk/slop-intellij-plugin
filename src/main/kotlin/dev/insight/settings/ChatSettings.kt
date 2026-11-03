@@ -35,6 +35,7 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
         var maxConcurrentDecisionRequests by property(ApiRequestLimits.DEFAULT_MAX_CONCURRENT_REQUESTS)
         /** Server address; blank uses [DEFAULT_DECISIONS_URL]. */
         var decisionsUrl by string("")
+        var decisionsContextWindowTokens by property(0)
 
         fun options(provider: LlmProvider): ProviderState = when (provider) {
             LlmProvider.LLAMA_CPP -> this
@@ -52,12 +53,13 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
         var requestTimeoutSeconds by property(600)
         var maxRetries by property(6)
         var maxOutputTokens by property(dev.insight.llm.DEFAULT_OUTPUT_TOKENS)
+        var contextWindowTokens by property(0)
         var cachePrompt by property(true)
         var serviceTier by string("")
         var promptCacheKey by string("")
 
         fun configuration(provider: LlmProvider) = LlmConfiguration(provider, serverUrl.orEmpty(), model.orEmpty(),
-            requestTimeoutSeconds, maxRetries, maxOutputTokens, cachePrompt, serviceTier.orEmpty(), promptCacheKey.orEmpty())
+            requestTimeoutSeconds, maxRetries, maxOutputTokens, cachePrompt, serviceTier.orEmpty(), promptCacheKey.orEmpty(), contextWindowTokens)
     }
 
     /** Reading the password safe can block; call on IO outside settings dialogs. */
@@ -68,7 +70,7 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
 
     /** Reading the password safe can block; call on IO outside settings dialogs. */
     fun createDecisionsClient(requestTimeout: Duration = Duration.ofSeconds(120), maxRetries: Int = 4): DecisionsClient =
-        decisionsClient(state.decisionsUrl.orEmpty(), decisionsApiKey, requestTimeout, maxRetries, ApiLogs.decisions)
+        decisionsClient(state.decisionsUrl.orEmpty(), decisionsApiKey, requestTimeout, maxRetries, ApiLogs.decisions, state.decisionsContextWindowTokens)
 
     override fun loadState(state: State) {
         super.loadState(state)
@@ -101,7 +103,7 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
 
         /** Validates without making a request. Also used by the settings dialog on Apply. Blank [url] uses the default. */
         fun decisionsClient(url: String, apiKey: String?, requestTimeout: Duration = Duration.ofSeconds(120),
-                            maxRetries: Int = 4, traffic: ApiTrafficLog? = null): DecisionsClient {
+                            maxRetries: Int = 4, traffic: ApiTrafficLog? = null, contextWindowTokens: Int = 0): DecisionsClient {
             val key = apiKey?.trim()?.ifEmpty { null }
             val trimmed = url.trim().ifEmpty { DEFAULT_DECISIONS_URL }
             val baseUrl = if ("://" in trimmed) trimmed else "http://$trimmed"
@@ -111,7 +113,7 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
                 "Refusing to send an API key to a non-HTTPS server URL"
             }
             // DecisionsClient requires a bearer token; local servers accept any, so a blank key sends "local".
-            return DecisionsClient(key ?: "local", baseUrl, requestTimeout, maxRetries, traffic = traffic)
+            return DecisionsClient(key ?: "local", baseUrl, requestTimeout, maxRetries, traffic = traffic, contextWindowTokens = contextWindowTokens)
         }
         private val localHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1")
 
@@ -121,3 +123,15 @@ class ChatSettings : SimplePersistentStateComponent<ChatSettings.State>(State())
 
 /** The LLM client for background analyses. Call on IO: reading the API key from the password safe can block. */
 internal fun configuredLlmClient(): LlmClient = ChatSettings.getInstance().createClient()
+
+/** Read in service/UI adapters and pass into PSI-free workflows. Zero preserves their existing budgets. */
+internal fun configuredContextChars(fallback: Int = 64_000): Int {
+    val config = ChatSettings.getInstance().state.configuration()
+    return dev.insight.llm.contextInputChars(config.contextWindowTokens, config.defaultOutputTokens, fallback)
+}
+
+/** Snapshot settings in the adapter; explicit workflow output budgets can change between attempts. */
+internal fun configuredContextCharsForOutput(fallback: Int = 64_000): (Int) -> Int {
+    val config = ChatSettings.getInstance().state.configuration()
+    return { outputTokens -> dev.insight.llm.contextInputChars(config.contextWindowTokens, outputTokens, fallback) }
+}

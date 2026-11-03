@@ -46,6 +46,7 @@ import dev.insight.graph.CallOccurrence
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 import dev.insight.graph.hierarchy
+import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
@@ -896,7 +897,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         private fun createBackend(): ChatBackend = LlmChatBackend(ChatSettings.getInstance().createClient()::complete, tools,
-            schematicChatPrompt, maxContextChars = 120_000, maxToolRounds = 60, context = canvasAccess::snapshot,
+            schematicChatPrompt, maxContextChars = configuredContextChars(120_000), maxToolRounds = 60, context = canvasAccess::snapshot,
             contextLabel = "Current schematic", evictionTarget = 0.7)
 
         val chat = ChatPanel(project, session, title = "Schematic Chat", showDashboard = false, compactTools = true)
@@ -1203,7 +1204,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             gapSummaryJob = scope.launch(Dispatchers.EDT) {
                 try {
                     withBackgroundProgress(project, "Summarizing gaps: ${schematic.file.name}") {
-                        val workflow = SchematicGapWorkflow(ChatSettings.getInstance().createClient()::complete)
+                        val workflow = SchematicGapWorkflow(configuredContextChars(), ChatSettings.getInstance().createClient()::complete)
                         for (gap in gaps) {
                             currentCoroutineContext().ensureActive()
                             try {

@@ -12,6 +12,7 @@ import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmRole
+import dev.insight.llm.LlmContextLimitException
 import dev.insight.llm.LlmTool
 import dev.insight.llm.LlmToolCall
 import java.io.IOException
@@ -217,6 +218,16 @@ class EntryPointFinderTest {
         val result = EntryPointFinder(model::complete, setup(), emptyList(), EntryPointCache()).find(emptyList())
         assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
         assertEquals("A CLI.", result.summary)
+    }
+
+    @Test fun `context rejection during repair preserves the parseable analysis`() = runBlocking {
+        var requests = 0
+        val result = EntryPointFinder({
+            if (++requests == 1) answer.copy(content = answer.content.replace("\"kind\": \"application\"", "\"kind\": \"frontend\""))
+            else throw LlmContextLimitException("configured window is too small")
+        }, setup(), emptyList(), EntryPointCache()).find(emptyList())
+        assertEquals(listOf("src/Main.kt", "scripts/run.sh"), result.entryPoints.map { it.path })
+        assertEquals(2, result.requestCount)
     }
 
     @Test fun `rejects an answer with no usable analysis`() = runBlocking {

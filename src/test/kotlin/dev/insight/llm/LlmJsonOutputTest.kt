@@ -66,4 +66,28 @@ class LlmJsonOutputTest {
         assertNull(parseJsonObjectLeniently("{\"x\": "))
         assertNull(parseJsonObjectLeniently("} {"))
     }
+
+    @Test fun `local context rejection is an IOException and is never retried`() = runBlocking {
+        val expected = LlmContextLimitException("configured window is too small")
+        val error = try {
+            completeJson(replies({ throw expected }), "s", "u", null, 100)
+            null
+        } catch (e: IOException) { e }
+        assertSame(expected, error)
+        assertEquals(1, requests.size)
+    }
+
+    @Test fun `context rejection after truncation stops budget growth immediately`() = runBlocking {
+        val expected = LlmContextLimitException("configured window is too small")
+        val error = try {
+            completeJson(replies(
+                { Completion("{", finishReason = FinishReason.TRUNCATED) },
+                { throw LlmTruncatedException("truncated") },
+                { throw expected },
+            ), "s", "u", null, 100)
+            null
+        } catch (e: IOException) { e }
+        assertSame(expected, error)
+        assertEquals(listOf(10_000, 20_000, 40_000), requests.map { it.maxTokens })
+    }
 }

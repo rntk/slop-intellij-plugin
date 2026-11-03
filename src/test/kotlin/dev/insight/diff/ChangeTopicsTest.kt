@@ -65,6 +65,52 @@ class ChangeTopicsTest {
         assertEquals(1, requests)
     }
 
+    @Test fun `tool input window reserves the output budget again after truncation`() = runBlocking {
+        var topics = ReviewTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
+        val budgets = mutableListOf<Int>()
+        var calls = 0
+        val reader = object : dev.insight.agent.ChatTool {
+            override val definition = dev.insight.llm.LlmTool("read_diff_files", "Read patch",
+                JsonParser.parseString("""{"type":"object"}""").asJsonObject)
+            override suspend fun call(arguments: com.google.gson.JsonObject) = "y".repeat(16_000)
+        }
+        val run = diffTopicGenerator({ request ->
+            calls++
+            val inputChars = dev.insight.llm.LlmJson.encode(request, "", true).length
+            assertTrue(inputChars <= dev.insight.llm.contextInputChars(32_768, request.maxTokens!!))
+            val round = (calls - 1) % 9
+            if (round < 8) Completion("", toolCalls = listOf(dev.insight.llm.LlmToolCall("read$calls", "read_diff_files",
+                com.google.gson.JsonObject())))
+            else {
+                assertTrue(request.messages.any { "Context omitted to fit the window" in it.content })
+                if (calls == 9) Completion("{", finishReason = FinishReason.TRUNCATED)
+                else Completion("""{"topic":"UI>DiffReview>Topics"}""")
+            }
+        }, reader, contextCharsForOutput = { output ->
+            budgets += output
+            dev.insight.llm.contextInputChars(32_768, output)
+        }).run(topics, "", { path, label -> topics.assign(path, label).also { topics = it } })
+        assertEquals(listOf(10_000, 20_000), budgets)
+        assertEquals(18, run.requests)
+        assertTrue(run.topics.complete)
+    }
+
+    @Test fun `output escalation that reaches the whole window fails without repeated local rejections`() = runBlocking {
+        var requests = 0
+        val rejection = dev.insight.llm.LlmContextLimitException("Output exceeds context window")
+        try {
+            diffTopicGenerator({ request ->
+                requests++
+                if (request.maxTokens!! >= 32_768) throw rejection
+                throw LlmTruncatedException("Needs more output")
+            }, null).run(ReviewTopics(listOf(file("a"))), "", { _, _ -> error("Must not save") })
+            fail("Local context limit swallowed")
+        } catch (e: dev.insight.llm.LlmContextLimitException) {
+            assertSame(rejection, e)
+        }
+        assertEquals(3, requests)
+    }
+
     @Test fun `large patch reads evict older tool rounds while preserving current evidence`() = runBlocking {
         var topics = ReviewTopics(listOf(file("large.kt").copy(patch = "x".repeat(60_000))))
         var calls = 0

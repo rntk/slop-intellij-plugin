@@ -14,6 +14,8 @@ import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
+import dev.insight.settings.configuredContextChars
+import dev.insight.settings.configuredContextCharsForOutput
 import dev.insight.settings.ChatSettings
 import dev.insight.agent.ChatTool
 import dev.insight.chat.LlmChatBackend
@@ -155,7 +157,7 @@ internal class CodeReviewTab(
                 val snapshot = state.snapshot
                 val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
                     this.complete ?: ChatSettings.getInstance().createClient()::complete)
-                ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
+                ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot), maxContextChars = configuredContextChars())
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             openNode = { node -> openFile(node.path, node.lines?.first) },
@@ -229,7 +231,7 @@ internal class CodeReviewTab(
                     withCountProgress("Classifying files in scope…", "files classified") { onProgress ->
                         ReviewTopicGenerator(complete, codeReviewTools(context).single { it.definition.name == READ_CODE_TOOL },
                             system = CODE_TOPIC_SYSTEM, evidence = codeTopicEvidence(context.snapshot) { state.summaries },
-                            concurrency = CODE_TOPIC_CONCURRENCY)
+                            concurrency = CODE_TOPIC_CONCURRENCY, contextCharsForOutput = configuredContextCharsForOutput(48_000))
                             .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
                     }
                 }
@@ -247,7 +249,7 @@ internal class CodeReviewTab(
                 // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                 val run = pipeline {
                     withCountProgress("Summarizing the code…", "summaries") { onProgress ->
-                        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence)
+                        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence, maxContextChars = configuredContextChars())
                             .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
                                 if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
                     }
@@ -260,7 +262,7 @@ internal class CodeReviewTab(
             return LlmChatBackend(rawComplete,
                 chatTools(context) + turn.chartTools,
                 turn.prompt(codeReviewPrompt(scopeName)) + codeFocusPrompt(context.snapshot, turnFocus),
-                maxContextChars = 160_000, maxToolRounds = 100,
+                maxContextChars = configuredContextChars(160_000), maxToolRounds = 100,
                 context = if (turnFocus == null) { { context.overview() } }
                     else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
                 contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)

@@ -8,6 +8,7 @@ import dev.insight.agent.ProjectFiles
 import dev.insight.agent.ToolInputException
 import dev.insight.chat.projectTools
 import dev.insight.graph.CallGraphResult
+import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
 import dev.insight.settings.configuredLlmClient
 import kotlinx.coroutines.CoroutineScope
@@ -44,13 +45,14 @@ class EntryPointService(private val project: Project, val scope: CoroutineScope)
         }
         val result = withContext(Dispatchers.IO) {
             when (api) {
-                EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache)
+                EntryPointApi.LLM -> EntryPointFinder(configuredLlmClient()::complete, IdeSnapshot(files), tools, cache, maxContextChars = configuredContextChars())
                     .find(hints, progress)
                 EntryPointApi.DECISIONS -> DecisionsEntryPointFinder(
                     ChatSettings.getInstance().createDecisionsClient()::evaluate,
                     IdeSnapshot(files),
                     { path -> readAction { files.text(files.resolve(path)) } },
                     cache = decisionsCache,
+                    contextWindowTokens = ChatSettings.getInstance().state.decisionsContextWindowTokens,
                 ).find(hints, progress)
             }
         }

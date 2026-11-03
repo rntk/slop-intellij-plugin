@@ -42,6 +42,8 @@ import dev.insight.review.current
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
 import dev.insight.review.topicsReply
+import dev.insight.settings.configuredContextChars
+import dev.insight.settings.configuredContextCharsForOutput
 import dev.insight.settings.ChatSettings
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -118,7 +120,7 @@ internal class DiffReviewTab(
                 val files = state.snapshot.files
                 val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
                 val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
-                diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             // The cited lines are those of the snapshot file, so its diff opens rather than the current one.
@@ -199,7 +201,7 @@ internal class DiffReviewTab(
             val command = ReviewCommand.parse(question)
             if (command == ReviewCommand.TOPICS) {
                 val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
-                    diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                    diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, contextCharsForOutput = configuredContextCharsForOutput(48_000))
                         .run(context.startTopics(), summariesFocus(question), context::assignTopic, onToolCall, onProgress)
                 }
                 return topicsReply(run)
@@ -208,7 +210,7 @@ internal class DiffReviewTab(
                 val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
                 // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                 val run = withCountProgress("Summarizing the change…", "summaries") { onProgress ->
-                    diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" })
+                    diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
                         .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
                             if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
                 }
@@ -219,7 +221,7 @@ internal class DiffReviewTab(
             return LlmChatBackend(rawComplete,
                 chatTools(context) + turn.chartTools,
                 turn.prompt(diffReviewPrompt()) + diffFocusPrompt(files, turnFocus),
-                maxContextChars = 160_000, maxToolRounds = 100,
+                maxContextChars = configuredContextChars(160_000), maxToolRounds = 100,
                 context = if (turnFocus == null) { { context.state(0, INLINE_PATCH_CHARS) } }
                     else { { withContext(Dispatchers.EDT) { focusState(snapshot, turnFocus) } } },
                 contextLabel = if (turnFocus == null) "Current diff snapshot" else "Current focus snapshot",

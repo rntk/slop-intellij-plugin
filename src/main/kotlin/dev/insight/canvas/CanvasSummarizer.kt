@@ -118,7 +118,7 @@ fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> {
 }
 
 /** Writes card summaries with an injected completion port; no IDE or UI dependencies. */
-class CanvasSummarizer(private val complete: CompletionFn, private val maxTokens: Int? = 600, private val tools: List<ChatTool> = emptyList()) {
+class CanvasSummarizer(private val complete: CompletionFn, private val maxTokens: Int? = 600, private val tools: List<ChatTool> = emptyList(), private val maxContextChars: Int = 64_000) {
     /**
      * The summary of [input], trimmed. [onProgress] reports what is being summarized. Cancellation propagates; any other
      * failure, an empty answer or a cut-off one becomes a [CanvasSummaryException].
@@ -129,7 +129,7 @@ class CanvasSummarizer(private val complete: CompletionFn, private val maxTokens
         val completion = try {
             if (tools.isEmpty()) complete(CompletionRequest(canvasSummaryMessages(input), temperature = 0.2, maxTokens = maxTokens))
             else {
-                val result = ToolChatRunner({ complete(it.copy(temperature = 0.2, maxTokens = maxTokens)) }, tools, maxToolRounds = 8)
+                val result = ToolChatRunner({ complete(it.copy(temperature = 0.2, maxTokens = maxTokens)) }, tools, maxToolRounds = 8, maxContextChars = maxContextChars)
                     .run(canvasSummaryMessages(input)) { onProgress("Reading context: ${it.name}…") }
                 Completion(result.reply, finishReason = result.finishReason)
             }

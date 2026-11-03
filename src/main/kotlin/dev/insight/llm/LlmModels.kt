@@ -60,6 +60,8 @@ data class CompletionRequest(
      * `{"type":"json_schema","json_schema":{"schema":{...}}}`; llama.cpp enforces it with a grammar.
      */
     val responseFormat: JsonObject? = null,
+    /** Allow the configured client to reduce output to the remaining context capacity. */
+    val fitOutputToContext: Boolean = false,
 )
 
 /** Provider finish reasons mapped to one vocabulary. UNKNOWN is not treated as truncation: some servers omit it. */

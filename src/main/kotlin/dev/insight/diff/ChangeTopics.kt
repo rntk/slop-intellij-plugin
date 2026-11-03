@@ -18,7 +18,9 @@ internal fun diffTopicGenerator(
     system: String = DIFF_TOPIC_SYSTEM,
     evidence: (ReviewSource, ReviewTopics) -> TopicEvidence = { source, _ -> diffTopicEvidence(source as ReviewFile, patchChars) },
     concurrency: Int = 1,
-): ReviewTopicGenerator = ReviewTopicGenerator(complete, readTool, patchChars, attempts, system, evidence, concurrency)
+    maxContextChars: Int = 48_000,
+    contextCharsForOutput: (Int) -> Int = { maxContextChars },
+): ReviewTopicGenerator = ReviewTopicGenerator(complete, readTool, patchChars, attempts, system, evidence, concurrency, maxContextChars, contextCharsForOutput)
 
 /** A changed file's status and patch, cut at [patchChars]. */
 internal fun diffTopicEvidence(file: ReviewFile, patchChars: Int): TopicEvidence = TopicEvidence(mapOf(

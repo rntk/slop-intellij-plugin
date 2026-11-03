@@ -12,6 +12,7 @@ import dev.insight.llm.forEachConcurrently
 import dev.insight.llm.parseJsonObjectLeniently
 import dev.insight.llm.CompletionFn
 import dev.insight.llm.LlmApiException
+import dev.insight.llm.LlmContextLimitException
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmTruncatedException
 import kotlinx.coroutines.CancellationException
@@ -151,6 +152,9 @@ class ReviewTopicGenerator internal constructor(
     private val system: String,
     private val evidence: (ReviewSource, ReviewTopics) -> TopicEvidence,
     private val concurrency: Int = 1,
+    maxContextChars: Int = 48_000,
+    /** Input allowance for the actual output budget, recalculated after truncation. */
+    private val contextCharsForOutput: (Int) -> Int = { maxContextChars },
 ) {
     init { require(patchChars > 0 && attempts > 0 && concurrency > 0) }
 
@@ -208,7 +212,7 @@ class ReviewTopicGenerator internal constructor(
                 }
                 val answer = if (shown.cut && readTool != null) {
                     val reply = ToolChatRunner(budgeted, listOf(readTool), maxToolRounds = 100,
-                        maxContextChars = 48_000, evictionTarget = 0.75)
+                        maxContextChars = contextCharsForOutput(outputBudget), evictionTarget = 0.75)
                         .run(listOf(LlmMessage.system(system), LlmMessage.user(user)), onToolCall)
                     parseJsonObjectLeniently(reply.reply) ?: throw
                         if (reply.finishReason == dev.insight.llm.FinishReason.TRUNCATED) LlmTruncatedException("Topic answer was truncated")
@@ -216,6 +220,9 @@ class ReviewTopicGenerator internal constructor(
                 } else completeJson(budgeted, system, user, SCHEMA, maxTokens = outputBudget, attempts = 1, retryTruncated = false)
                 decode(answer) ?: throw IllegalStateException("Topic answer needs a valid 2–5 level path")
             } catch (e: CancellationException) {
+                throw e
+            } catch (e: LlmContextLimitException) {
+                // A local configuration limit cannot be fixed by repeating this attempt.
                 throw e
             } catch (e: LlmApiException) {
                 throw e

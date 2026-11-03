@@ -8,6 +8,7 @@ import dev.insight.chat.ChartReferences
 import dev.insight.chat.ChatBackendFactory
 import dev.insight.chat.LlmChatBackend
 import dev.insight.chat.SourcePoints
+import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
 
 /** Chart backend policy: chart actions plus the project tools useful for source evidence. */
@@ -25,7 +26,7 @@ internal class ChartChatBackendFactory(
             .filter { it.definition.name in SOURCE_TOOLS }
         return LlmChatBackend(client::complete, tools,
             chartChatSystemPrompt(tools, references = chart is ChartReferences, scoped = chart.scoped),
-            maxToolRounds = 100, context = chart::snapshot)
+            maxContextChars = configuredContextChars(), maxToolRounds = 100, context = chart::snapshot)
     }
 
     override fun clear() = sourcePoints.clear()

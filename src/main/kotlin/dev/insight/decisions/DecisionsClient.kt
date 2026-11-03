@@ -20,6 +20,9 @@ class DecisionApiException(
     val retryAfter: String?,
 ) : IOException("Decisions API returned HTTP $statusCode")
 
+/** Local request limit failure that requires smaller input or a settings change. */
+class DecisionContextLimitException(message: String) : IOException(message)
+
 /**
  * Reusable TypeSafe System One client. No IntelliJ service, settings, or UI dependencies.
  * Calls suspend without blocking the EDT; cancellation cancels the in-flight HTTP future.
@@ -35,6 +38,7 @@ class DecisionsClient(
     private val maxRetries: Int = 6,
     private val httpClient: HttpClient = Transports.shared(),
     private val traffic: ApiTrafficLog? = null,
+    private val contextWindowTokens: Int = 0,
 ) {
     private val endpoint = apiUri(baseUrl, "/systemone")
 
@@ -43,6 +47,7 @@ class DecisionsClient(
         require(endpoint.scheme in setOf("http", "https") && endpoint.host != null &&
             endpoint.userInfo == null && endpoint.fragment == null) { "Endpoint must be an HTTP(S) URI" }
         require(!requestTimeout.isNegative && !requestTimeout.isZero) { "Request timeout must be positive" }
+        require(contextWindowTokens >= 0) { "Context window must not be negative" }
         require(maxRetries in 0..100) { "Max retries must be between 0 and 100" }
         require(httpClient.followRedirects() == HttpClient.Redirect.NEVER) { "Transport must disable redirects" }
     }
@@ -50,6 +55,11 @@ class DecisionsClient(
     /** One answer per question ID. Retries transient HTTP, transport, and invalid-response failures. */
     suspend fun evaluate(request: DecisionRequest): DecisionResponse {
         val body = DecisionJson.encode(request)
+        if (contextWindowTokens > 0 && body.length.toLong() > contextWindowTokens.toLong() * 4) {
+            throw DecisionContextLimitException(
+                "Estimated Decisions request exceeds the configured context window ($contextWindowTokens tokens). Increase the context window in Insight Chat settings or reduce the input."
+            )
+        }
         // Snapshot the schema so caller mutation during suspension cannot alter response validation.
         val questions = request.questions.mapValues { (_, question) ->
             when (question) {

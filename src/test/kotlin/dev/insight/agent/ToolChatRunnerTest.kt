@@ -7,6 +7,8 @@ import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.FinishReason
 import dev.insight.llm.LlmApiException
+import dev.insight.llm.LlmContextLimitException
+import dev.insight.llm.contextInputChars
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmProtocolException
 import dev.insight.llm.LlmRole
@@ -19,6 +21,40 @@ import org.junit.Test
 import java.net.ConnectException
 
 class ToolChatRunnerTest {
+    @Test fun `provider window changes how much history is retained`() = runBlocking {
+        val messages = listOf(LlmMessage.system("policy"), LlmMessage.user("Earlier"),
+            LlmMessage.assistant("x".repeat(3000)), LlmMessage.user("Current question"))
+        for ((tokens, retained) in listOf(500 to false, 2000 to true)) {
+            val model = FakeModel(Completion("Done"))
+            ToolChatRunner(model::complete, emptyList(), maxContextChars = contextInputChars(tokens, 100))
+                .run(messages)
+            val sent = model.requests.single().messages
+            assertEquals(retained, sent.any { it.content == "Earlier" })
+            assertEquals("policy", sent.first().content)
+            assertTrue(sent.last().content.startsWith("Current question"))
+        }
+    }
+
+    @Test fun `local context rejection retries only when removable history exists`() = runBlocking {
+        val requests = mutableListOf<CompletionRequest>()
+        val result = ToolChatRunner({ request ->
+            requests += request
+            if (requests.size == 1) throw LlmContextLimitException("Configured context exceeded")
+            Completion("Done")
+        }, emptyList()).run(listOf(LlmMessage.user("old"), LlmMessage.assistant("x".repeat(2000)), LlmMessage.user("new")))
+        assertEquals("Done", result.reply)
+        assertEquals(2, requests.size)
+        assertFalse(requests.last().messages.any { it.content == "old" })
+
+        var attempts = 0
+        val failure = runCatching {
+            ToolChatRunner({ attempts++; throw LlmContextLimitException("Configured context exceeded") }, emptyList())
+                .run(listOf(LlmMessage.user("Protected question")))
+        }.exceptionOrNull()
+        assertTrue(failure is LlmContextLimitException)
+        assertEquals(1, attempts)
+    }
+
     private fun args(json: String) = JsonParser.parseString(json).asJsonObject
     private fun call(name: String, json: String = "{}", id: String? = null) = LlmToolCall(id, name, args(json))
 
