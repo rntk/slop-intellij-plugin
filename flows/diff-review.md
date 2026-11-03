@@ -12,6 +12,8 @@ A changed file's context menu offers **Open on canvas**. It starts a clickable s
 
 **Open on flowchart** reads the same evidence one step above the source: a flow chart of the changed functions in that file and its related changed files, with the calls between changes opened and unchanged code shown as closed context. Conditions, loops and grouped calls replace raw lines, changed steps stand out, and changed code is never grouped away. Labels may be model interpretations; the calls come from static analysis.
 
+Hierarchy views place the chart beside diff blocks. Hovering or selecting a topic or summary shows one block for each changed file within that entry.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — review workspace

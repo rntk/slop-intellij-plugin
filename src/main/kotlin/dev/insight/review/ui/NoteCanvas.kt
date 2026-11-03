@@ -257,8 +257,12 @@ internal class NoteCanvas(
         return JBScrollPane(content).apply { border = null }
     }
 
-    private fun bodyScroll(card: JPanel) =
-        (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as? JScrollPane
+    private fun bodyScroll(card: JPanel): JScrollPane? {
+        val body = (card.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER)
+        return body as? JScrollPane ?: (body as? Container)?.let { container ->
+            descendantsOf(container).filterIsInstance<JScrollPane>().firstOrNull()
+        }
+    }
 
     /** Zoom the document around a point in its viewport, keeping that content under the pointer. */
     private fun zoomDocument(key: CanvasTabKey, requested: Double, anchor: Point? = null) {

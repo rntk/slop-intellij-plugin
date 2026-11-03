@@ -50,6 +50,7 @@ internal class ChangeTopicHierarchyPanel(
             }
             val placeholder = branchCard("topic:pending", "Awaiting topic", null, 0, pending.count(), active = false,
                 tooltip = "Run /topics to classify these files", toggle = null, placeholder = true)
+            preview(placeholder, pending.map { outline.files[it] })
             val height = maxOf(childY - gap - y, placeholder.preferredSize.height)
             add(placeholder.apply { setBounds(0, y, cardWidth, height) })
             y += height + gap
@@ -93,6 +94,7 @@ internal class ChangeTopicHierarchyPanel(
             val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, emptyMap())
             readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
             summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
+            preview(note, (node.first..node.last).map { outline.files[it] })
             actions.installEntryMenu(note, identity)
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -101,6 +103,7 @@ internal class ChangeTopicHierarchyPanel(
             childY = placeEntries(outline.children(node), column + 1, childY, node.path.first())
             maxOf(childY - gap - y, component.preferredSize.height)
         }
+        preview(component, (node.first..node.last).map { outline.files[it] })
         actions.installEntryMenu(component, identity)
         add(component.apply { setBounds(column * step, y, cardWidth, height) })
         anchors[identity] = component
@@ -120,6 +123,8 @@ internal class ChangeTopicHierarchyPanel(
         val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, emptyMap())
         readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
         if (summary != null) installWordTracing(note, identity, summary, state, actions.trace)
+        preview(leaf, listOf(file))
+        preview(note, listOf(file))
         actions.installEntryMenu(leaf, identity)
         actions.installEntryMenu(note, identity)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)

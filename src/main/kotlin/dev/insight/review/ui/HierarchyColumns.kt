@@ -52,6 +52,8 @@ internal abstract class HierarchyColumnsPanel(
     private var right = 0
     /** The card of each node by its summary identity, so a traced match can be scrolled into view. */
     val anchors = mutableMapOf<String, JComponent>()
+    val previewScopes = mutableMapOf<JComponent, List<ReviewSource>>()
+    protected fun preview(component: JComponent, files: List<ReviewSource>) { previewScopes[component] = files }
     private val stickyHeaders = StickyCardHeaders()
     fun updateStickyHeaders(top: Int) = stickyHeaders.update(top)
     protected fun scaled(n: Int) = zoomScaled(n, zoom)

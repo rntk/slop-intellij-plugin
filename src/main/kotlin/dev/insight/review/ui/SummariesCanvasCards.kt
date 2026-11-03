@@ -88,6 +88,7 @@ internal class SummariesCanvasCards(
         var scrollX = 0
         var treeScrollX = 0
         var treeWidth: Int? = null
+        var hierarchyPreviewPaths = emptyList<String>()
         var diffPanel: com.intellij.openapi.Disposable? = null
         var version: Int? = null
         var navigatePath = ""
@@ -332,7 +333,12 @@ internal class SummariesCanvasCards(
                 revealCanvasTrace(body, target)
             }
         }
-        val readingArea = if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
+        val hierarchyPanel = findHierarchyPanel(body)
+        val hierarchyReading = hierarchyPanel?.let {
+            HierarchyPreviewPanel(it, bodyScroll, project, tab.hierarchyPreviewPaths, { paths -> tab.hierarchyPreviewPaths = paths })
+                .also { preview -> tab.diffPanel = preview }
+        }
+        val readingArea = hierarchyReading ?: if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
             rememberTreeWidth = { tab.treeWidth = it }, rememberTreeScrollX = { tab.treeScrollX = it }) else bodyScroll
         installSummariesTraceOverlay(card, readingArea, summariesView, summariesTrace, inner, traceWhere)
         return card

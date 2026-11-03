@@ -35,6 +35,8 @@ internal class ChangeSummaryHierarchyPanel(
         while (pending.isNotEmpty()) pending.removeFirst().let { ids += it.identity; it.children.mapTo(pending, tree::get) }
         ids
     }.orEmpty()
+    private val sources = tree.nodes.mapNotNull { it.file }.associateBy { it.path }
+    private fun previewNode(component: JComponent, node: SummaryNode) = preview(component, node.files.mapNotNull(sources::get))
     private val trace = state.resultTrace
     private val marks = traceMarks(tree, trace)
 
@@ -70,6 +72,7 @@ internal class ChangeSummaryHierarchyPanel(
             select = { actions.select(node.identity) },
             review = actions.review?.control(node, summaryFont()),
             explain = actions.explainAction(node), explainEnabled = card.canRun)
+        previewNode(component, node)
         actions.installEntryMenu(component, node)
         val height = if (collapsed) {
             rowsPlaced++
@@ -78,6 +81,7 @@ internal class ChangeSummaryHierarchyPanel(
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
             actions.review?.decorate(note, node)
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.follow) { actions.toggle(node.identity) } }
+            previewNode(note, node)
             actions.installEntryMenu(note, node)
             maxOf(component.preferredSize.height, note.preferredSize.height)
         } else {
@@ -117,6 +121,8 @@ internal class ChangeSummaryHierarchyPanel(
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
         actions.review?.decorate(note, node)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, follow = actions.follow)
+        previewNode(leaf, node)
+        previewNode(note, node)
         actions.installEntryMenu(leaf, node)
         actions.installEntryMenu(note, node)
         val height = maxOf(leaf.preferredSize.height, note.preferredSize.height)

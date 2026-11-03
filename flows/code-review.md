@@ -10,6 +10,8 @@ A Words view gives a compact picture of the vocabulary in scope: the most freque
 
 Source views offer the IDE's declaration navigation and usage search when the captured file matches current project source.
 
+Hierarchy views place the chart beside source blocks. Hovering or selecting a topic or summary shows one block for each captured file within that entry.
+
 Entry points for further exploration:
 
 - [CodeReviewPanel.kt](../src/main/kotlin/dev/insight/codereview/CodeReviewPanel.kt) — review workspace

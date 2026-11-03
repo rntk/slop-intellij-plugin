@@ -48,6 +48,8 @@ internal class TopicsCanvasCard(
     val view = ChangeTopicsViewState(vocabulary.foldLargeTopics)
     var scroll = 0
     private var content: TopicsCard? = null
+    private var hierarchyPreview: HierarchyPreviewPanel? = null
+    private var hierarchyPreviewPaths = emptyList<String>()
     private var currentCard: JPanel? = null
     private val review = SummaryReviewSession(reviewed)
     private val trace = SummaryTraceSession(view, { content?.reading }, canvasActions.openLines,
@@ -76,6 +78,9 @@ internal class TopicsCanvasCard(
     fun update(content: TopicsCard?) {
         this.content = content
         if (content == null) {
+            hierarchyPreview?.let(com.intellij.openapi.util.Disposer::dispose)
+            hierarchyPreview = null
+            hierarchyPreviewPaths = emptyList()
             scroll = 0
             currentCard = null
             review.stop()
@@ -101,6 +106,8 @@ internal class TopicsCanvasCard(
         generationRunning: Boolean, status: String?, entryMenu: ((String) -> JPopupMenu)?,
         installWheelZoom: (JScrollPane) -> Unit,
     ): JPanel {
+        hierarchyPreview?.let(com.intellij.openapi.util.Disposer::dispose)
+        hierarchyPreview = null
         val topics = content.topics
         // The header, levels and width follow every file, so typing in the search fields does not move them.
         val outline = view.fullOutline(content)
@@ -194,7 +201,7 @@ internal class TopicsCanvasCard(
             add(header, BorderLayout.NORTH)
             add(search, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        card.add(JBScrollPane(body).apply {
+        val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             // A deep hierarchy may scroll sideways; leave room for that scroll bar.
             val sideways = if (body.preferredSize.width > width) horizontalScrollBar.preferredSize.height else 0
@@ -214,7 +221,13 @@ internal class TopicsCanvasCard(
                 card.validate()
                 revealCanvasTrace(body, target)
             }
-        }, BorderLayout.CENTER)
+        }
+        val chart = findHierarchyPanel(body)
+        val readingArea = chart?.let {
+            HierarchyPreviewPanel(it, bodyScroll, project, hierarchyPreviewPaths, { paths -> hierarchyPreviewPaths = paths })
+                .also { preview -> hierarchyPreview = preview }
+        } ?: bodyScroll
+        card.add(readingArea, BorderLayout.CENTER)
         currentCard = card
         return card
     }
@@ -248,6 +261,8 @@ internal class TopicsCanvasCard(
     private fun scaledFont(font: java.awt.Font) = font.zoomed(1.0)
 
     override fun dispose() {
+        hierarchyPreview?.let(com.intellij.openapi.util.Disposer::dispose)
+        hierarchyPreview = null
         currentCard = null
         trace.stop()
         review.stop()
