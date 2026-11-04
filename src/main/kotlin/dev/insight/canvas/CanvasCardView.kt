@@ -48,6 +48,7 @@ internal interface CanvasCardHost {
     fun close(cardId: String)
     fun expandToFile(cardId: String)
     fun openSideBySide(cardId: String)
+    fun attachFile(cardId: String?)
     fun navigate(source: CanvasSource?, path: String, line: Int)
 }
 
@@ -100,7 +101,11 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     private val sourceBody = JPanel(BorderLayout()).apply {
         isOpaque = false
         add(sourcePane
-        ?: host.zoomFont(JLabel(if (initial.kind == CardKind.SYMBOL) "No source to show." else "No text.").apply {
+        ?: host.zoomFont(JLabel(when (initial.kind) {
+            CardKind.SYMBOL -> "No source to show."
+            CardKind.ATTACHMENT -> "Use Open file to view this attachment in the IDE."
+            CardKind.SELECTION -> "No text."
+        }).apply {
             foreground = UIUtil.getContextHelpForeground()
         }))
     }
@@ -154,11 +159,12 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         }, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
             isOpaque = false
+            add(host.zoomFont(ActionLink("Attach file") { host.attachFile(id) }.apply { name = "canvas-attach-file" }))
             add(expand)
             add(host.zoomFont(ActionLink("Side by side") { host.openSideBySide(id) }.apply {
                 toolTipText = "Open the chain from the root file to this card in a new tab"
             }))
-            add(host.zoomFont(ActionLink("Source") { host.navigate(source, card.filePath, card.firstLine) }.apply {
+            add(host.zoomFont(ActionLink(if (card.kind == CardKind.ATTACHMENT) "Open file" else "Source") { host.navigate(source, card.filePath, card.firstLine) }.apply {
                 toolTipText = "Open ${card.location} in the editor"
                 isEnabled = card.filePath.isNotEmpty()
             }))
@@ -192,12 +198,16 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             notice.isVisible = !fresh?.notice.isNullOrBlank()
         }
         if (sourceChanged || !rendered) showDiff(next)
+        if ((sourceChanged || !rendered) && next.kind == CardKind.ATTACHMENT && next.attachment?.imageBase64 != null) {
+            sourceBody.removeAll()
+            sourceBody.add(CanvasImagePreview(next.attachment.imageBase64) { host.zoom })
+        }
         rendered = true
         titleLabel.text = next.title
         openedByLabel.isVisible = next.openedBy == CardOpenedBy.LLM
         titleLabel.icon = if (next.wholeFile) AllIcons.FileTypes.Any_type else kindIcon(next)
         titleLabel.toolTipText = "${canvasKindLabel(next)} ${next.title}"
-        expand.isVisible = !next.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() && next.symbol?.kind != "FILE"
+        expand.isVisible = next.kind != CardKind.ATTACHMENT && !next.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() && next.symbol?.kind != "FILE"
         val shown = if (next.wholeFile && fresh != null) next.copy(text = fresh.text, textTruncated = false) else next
         metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(shown)}"
         metaLabel.toolTipText = metaLabel.text
@@ -237,6 +247,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Asks for the summary when the card has none yet, or again when [force]d; the result is saved in the model. */
     fun requestSummary(force: Boolean) {
         val current = host.model.card(id) ?: return
+        if (current.kind == CardKind.ATTACHMENT && !force) return
         if (summaryJob?.isActive == true || current.text.isBlank()) return
         if (!force && (current.summary != null || current.summaryError != null)) return
         val input = CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
@@ -304,7 +315,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         @Suppress("UseDPIAwareBorders")
         fun pixel(value: Int) = javax.swing.border.EmptyBorder(value, value, value, value)
 
-        fun kindIcon(card: CanvasCard): Icon = when (card.symbol?.kind?.takeIf { card.kind == CardKind.SYMBOL }) {
+        fun kindIcon(card: CanvasCard): Icon = if (card.kind == CardKind.ATTACHMENT) AllIcons.FileTypes.Any_type else when (card.symbol?.kind?.takeIf { card.kind == CardKind.SYMBOL }) {
             null -> AllIcons.Actions.Selectall
             "CLASS" -> AllIcons.Nodes.Class
             "FUNCTION" -> AllIcons.Nodes.Method

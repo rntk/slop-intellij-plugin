@@ -7,7 +7,10 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** What a card shows: text the reader selected, or a symbol they clicked. */
-enum class CardKind { SELECTION, SYMBOL }
+enum class CardKind { SELECTION, SYMBOL, ATTACHMENT }
+
+/** A linked local file, with a bounded image snapshot when it can be previewed. Text uses the card's snapshot. */
+data class CanvasAttachment(val mediaType: String, val size: Long, val imageBase64: String? = null)
 
 /** Who first opened a card; revisiting an existing card keeps its original attribution. */
 enum class CardOpenedBy { USER, LLM }
@@ -87,6 +90,7 @@ data class CanvasCard(
     /** Show the containing file, retaining the original opening identity. */
     val wholeFile: Boolean = false,
     val openedBy: CardOpenedBy = CardOpenedBy.USER,
+    val attachment: CanvasAttachment? = null,
 ) : CanvasChatHolder {
     init {
         require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
@@ -97,7 +101,7 @@ data class CanvasCard(
     val lastLine: Int get() = firstLine + text.count { it == '\n' }
 
     /** The symbol's name, or a short label for a selection. */
-    val title: String get() = if (wholeFile) filePath.substringAfterLast('/') else symbol?.name ?: "Selection"
+    val title: String get() = if (wholeFile || kind == CardKind.ATTACHMENT) filePath.substringAfterLast('/') else symbol?.name ?: "Selection"
 
     /** `path:first-last` with 1-based lines, as cited in chats. */
     val location: String get() = "$filePath:${firstLine + 1}" + if (lastLine > firstLine) "-${lastLine + 1}" else ""
@@ -231,6 +235,18 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
         session = session.copy(cards = session.cards.filter { it.id !in removed }, updated = clock())
         notify(CanvasChange.CardsRemoved(removed))
         return removed
+    }
+
+    /** Attaches a file to a card or the root, independently of the source language and available symbols. */
+    fun attach(parentId: String?, filePath: String, text: String, attachment: CanvasAttachment, truncated: Boolean = false): CanvasCard {
+        require(parentId == null || card(parentId) != null) { "Unknown parent card $parentId" }
+        cards.firstOrNull { it.parentId == parentId && it.kind == CardKind.ATTACHMENT && it.filePath == filePath }?.let { return it }
+        val (bounded, cut) = boundCardText(text)
+        val card = CanvasCard(ids(), parentId, CardKind.ATTACHMENT, CardAnchor(0, 0, card(parentId.orEmpty())?.firstLine ?: 0),
+            null, filePath, 0, bounded, truncated || cut, attachment = attachment)
+        session = session.copy(cards = session.cards + card, updated = clock())
+        notify(CanvasChange.CardOpened(card))
+        return card
     }
 
     /** A finished summary, or with [error] a failed one; null [summary] and [error] reset it so it can be requested again. */

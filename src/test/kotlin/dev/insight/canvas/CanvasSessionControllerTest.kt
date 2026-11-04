@@ -73,6 +73,60 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         return background { openSymbol(parentId, link.range.first, link.range.last + 1, target) }
     }
 
+    fun testExternalDocumentationAttachesWithoutLanguageSupportAndRestoresItsSnapshot() {
+        val sourceFile = myFixture.configureByText("Flow.java", source)
+        val canvas = controller(sourceFile, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val method = canvas.open(null, "entry")
+        val path = Files.createTempFile("canvas-documentation-", ".md")
+        try {
+            Files.writeString(path, "# Documentation\nThis method starts the workflow.")
+            val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)!!
+            val attachment = background { canvas.attachFile(method.id, file) }
+            assertEquals(CardKind.ATTACHMENT, attachment.kind)
+            assertEquals(method.id, attachment.parentId)
+            assertEquals(path.toString(), attachment.filePath)
+            assertTrue(attachment.text.contains("This method starts the workflow."))
+            assertEquals(file, canvas.source(attachment.id)!!.file)
+            assertTrue(canvas.source(attachment.id)!!.links.isEmpty())
+            val reopened = controller(sourceFile, canvas.model.session)
+            background { reopened.loadRoot(); reopened.restore() }
+            assertEquals(attachment.text, reopened.source(attachment.id)!!.text)
+            assertEquals(file, reopened.source(attachment.id)!!.file)
+            assertTrue(canvasChainContext(reopened.model.session, method.id).contains("This method starts the workflow."))
+        } finally { Files.deleteIfExists(path) }
+    }
+
+    fun testAttachmentCardsShowPictureAndTextPreviewsAndOpenOriginalTextInTheIde() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val document = myFixture.addFileToProject("notes.md", "# Workflow documentation")
+        val bitmap = java.awt.image.BufferedImage(80, 40, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        val bytes = java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(bitmap, "png", it) }.toByteArray()
+        val image = java.util.Base64.getEncoder().encodeToString(bytes)
+        val model = CanvasSessionModel(CanvasSession.new("Flow.java"))
+        val picture = model.attach(null, "/missing/screenshot.png", "", CanvasAttachment("image/png", bytes.size.toLong(), image))
+        val text = model.attach(null, document.virtualFile.path, document.text, CanvasAttachment("text/markdown", document.textLength.toLong()))
+        val services = CanvasSessionServices(null, { error("Attachments should not request code summaries") }) { _, _ ->
+            error("No chat requested")
+        }
+        val panel = CanvasSessionPanel(project, sessionFile(file, model.session), model.session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("Attachment previews should load", { panel.ready }, 30)
+            fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
+                listOf(it) + if (it is Container) descendants(it) else emptyList()
+            }
+            val pictureView = panel.cardViews.getValue(picture.id)
+            assertEquals(1, descendants(pictureView).filterIsInstance<CanvasImagePreview>().size)
+            assertEquals(document.text, panel.cardViews.getValue(text.id).sourcePane!!.source.text)
+            assertTrue(descendants(pictureView).filterIsInstance<com.intellij.ui.components.ActionLink>().any { it.text == "Open file" })
+            assertTrue(descendants(panel.canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().count { it.name == "canvas-attach-file" } >= 3)
+            panel.navigate(panel.controller.source(text.id), text.filePath, 0)
+            PlatformTestUtil.waitWithEventsDispatching("Open file should open the original in the IDE",
+                { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).isFileOpen(document.virtualFile) }, 30)
+        } finally { Disposer.dispose(panel) }
+    }
+
     fun testCardsOpenFromLinksAndSelectionsAndResolveAgainOnRestore() {
         val file = myFixture.configureByText("Flow.java", source)
         val canvas = controller(file, CanvasSession.new("Flow.java"))

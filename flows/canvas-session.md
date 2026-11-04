@@ -16,6 +16,7 @@ Opening from Diff Review starts a new exploration with related changed files alr
 - Expand to file replaces a card's excerpt with its whole file, keeping its chat and branches. The reader can follow links anywhere in that file or chat about it; reopening the session keeps the expanded view.
 - Closing a card also closes the cards opened from it.
 - A card's Side by side link or context menu opens its chain from the root in a separate source view, with each file positioned at that step and any generated summary above its source.
+- Attach file on the root file or any card opens a file picker. Confirming adds connected attachment cards for documentation, screenshots or other local files, including files outside the project. Text and pictures have inline previews; Open file uses the IDE's editor or installed viewer for the original. Closing an attachment removes its canvas link.
 
 ## Chat
 
@@ -23,9 +24,13 @@ Each card has chat tabs. Readers can start a new conversation, switch tabs, or c
 
 The model can also act on the canvas as the reader does, to show the code it talks about: click a symbol in any shown source, select lines, or open a card for a declaration or file the chain doesn't reach, attached to its own card. Each reply opens only a few cards. The chat starts with the tools a walk needs most and finds the others by search when a question calls for them, so their descriptions don't fill every request.
 
+Attachments linked to the current chain are shared by its chat tabs. Chats receive bounded text snapshots and supported image snapshots; other file types are identified by name and type. Images require a model that supports vision. Attachments on unrelated branches stay out of the context.
+
 ## Persistence
 
 A session is saved in the project as the reader works: cards, summaries, folded parts, chat tabs, histories, drafts and the selected tab. Reopening resolves its symbols again; a card whose symbol is gone keeps its saved text and chats. Existing single-chat cards reopen with their conversation in the first tab.
+
+Attachment links and preview snapshots are saved too. They keep their saved previews when the original moves or disappears; opening the original requires that file to remain available.
 
 The Canvas Sessions side panel lists the project's saved sessions. Open it from the canvas's Sessions button or the IDE's tool windows, filter by root file name with fuzzy search, and open a session to resume it.
 

@@ -115,7 +115,7 @@ private class CanvasToolContext(val actions: CanvasActions, val cardId: String?)
         else append(numberedText(label(card), text, source?.firstLine ?: card.firstLine, card.filePath, REPORT_SOURCE_CHARS))
     }.trimEnd()
 
-    fun label(card: CanvasCard) = if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
+    fun label(card: CanvasCard) = if (card.kind == CardKind.ATTACHMENT) "Attachment text" else if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
 
     /** Runs [open] and reports the card it returns, telling whether it was open before. */
     suspend fun opening(open: suspend () -> CanvasCard): String {
@@ -209,6 +209,7 @@ private class ReadCardTool(private val canvas: CanvasToolContext) : CanvasTool(
             if (card == null) append("Root file ${canvas.actions.session.rootPath}\n")
             else {
                 append("Card ${card.id}: ${describe(card)}\n")
+                card.attachment?.let { append("Attachment: ${it.mediaType}, ${it.size} bytes; linked to ${card.parentId ?: CANVAS_ROOT}.\n") }
                 append("Opened from: ${card.parentId?.let { "card $it" } ?: "the root file"}, line ${card.anchor.line + 1}\n")
                 card.summary?.let { append("Summary (model-written): ${it.trim()}\n") }
                 val children = canvas.actions.session.children(card.id)

@@ -95,6 +95,7 @@ fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> {
     val (text, truncated) = boundCardText(input.text, CANVAS_SUMMARY_TEXT_LIMIT)
     val numbered = text.split('\n').withIndex().joinToString("\n") { (index, line) -> "${input.firstLine + index + 1}: $line" }
     val what = when (input.kind) {
+        CardKind.ATTACHMENT -> "Explain the attached document and its relevance to the code."
         CardKind.SELECTION -> "Explain what the selected code does in the context of its file: its purpose, what it reads and changes, " +
             "and how it fits the surrounding code."
         CardKind.SYMBOL -> "Explain what this ${input.symbolKind?.lowercase() ?: "symbol"} does: its purpose, inputs, effects and result."

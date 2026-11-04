@@ -31,6 +31,7 @@ const val CANVAS_SELECTION_CHANGED = "The code around this selection changed sin
 
 /** `Function`, `Class`, … for a symbol card, `Selection` otherwise. */
 fun canvasKindLabel(card: CanvasCard): String = when {
+    card.kind == CardKind.ATTACHMENT -> "Attachment"
     card.wholeFile -> "File"
     card.kind == CardKind.SELECTION || card.symbol == null -> "Selection"
     else -> card.symbol.kind.lowercase().replaceFirstChar { it.titlecase(Locale.ROOT) }.ifEmpty { "Symbol" }
@@ -39,7 +40,7 @@ fun canvasKindLabel(card: CanvasCard): String = when {
 /** The card's second header line: `function in Store · src/Store.kt:10-20`, or `external` without a place. */
 fun canvasCardMeta(card: CanvasCard): String {
     val symbol = card.symbol
-    val what = if (card.wholeFile) "file" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
+    val what = if (card.kind == CardKind.ATTACHMENT) "attachment" else if (card.wholeFile) "file" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
         else symbol.kind.lowercase().ifEmpty { "symbol" } + symbol.container.takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
     val where = if (card.filePath.isEmpty()) "no source" else card.location
     return "$what · $where"
@@ -47,8 +48,10 @@ fun canvasCardMeta(card: CanvasCard): String {
 
 /** The header of a card's source section: `Source · 12 lines`, `Selected text · 3 lines`, with `(cut)` when truncated. */
 fun canvasSourceTitle(card: CanvasCard): String {
+    if (card.kind == CardKind.ATTACHMENT && card.attachment?.imageBase64 != null) return "Picture"
+    if (card.kind == CardKind.ATTACHMENT && card.text.isEmpty()) return "Attached file"
     val lines = if (card.text.isEmpty()) 0 else card.text.count { it == '\n' } + 1
-    val label = if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
+    val label = if (card.kind == CardKind.ATTACHMENT) "Attachment" else if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
     return "$label · $lines ${if (lines == 1) "line" else "lines"}" + if (card.textTruncated) " (cut)" else ""
 }
 
@@ -111,6 +114,8 @@ val canvasHelpHtml = """
     request the file summary. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
     <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
+    <b>Attach file</b> links documents, screenshots or other local files to the file or card. Text and pictures
+    have previews and become context for chats on that chain. <b>Open file</b> opens the original in the IDE.<br><br>
     Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
     cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches

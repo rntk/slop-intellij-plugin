@@ -149,6 +149,7 @@ internal object AnthropicJson {
                 }
                 message.role == LlmRole.USER && openToolResults != null -> {
                     if (message.content.isNotEmpty()) openToolResults.add(textBlock(message.content))
+                    message.images.forEach { openToolResults.add(imageBlock(it)) }
                 }
                 message.role == LlmRole.ASSISTANT && (message.toolCalls.isNotEmpty() || message.thinkingBlocks.isNotEmpty()) ->
                     output.add(JsonObject().apply {
@@ -168,6 +169,13 @@ internal object AnthropicJson {
                         })
                     })
                 // The API rejects messages with empty content.
+                message.images.isNotEmpty() -> output.add(JsonObject().apply {
+                    addProperty("role", message.role.wire)
+                    add("content", JsonArray().apply {
+                        if (message.content.isNotEmpty()) add(textBlock(message.content))
+                        message.images.forEach { add(imageBlock(it)) }
+                    })
+                })
                 message.content.isEmpty() -> continue
                 else -> output.add(JsonObject().apply {
                     addProperty("role", message.role.wire)
@@ -182,6 +190,15 @@ internal object AnthropicJson {
     private fun textBlock(text: String) = JsonObject().apply {
         addProperty("type", "text")
         addProperty("text", text)
+    }
+
+    private fun imageBlock(image: LlmImage) = JsonObject().apply {
+        addProperty("type", "image")
+        add("source", JsonObject().apply {
+            addProperty("type", "base64")
+            addProperty("media_type", image.mediaType)
+            addProperty("data", image.base64)
+        })
     }
 
     fun decode(body: String): Completion = try {

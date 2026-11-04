@@ -108,7 +108,7 @@ class CanvasSessionStore(private val directory: Path) {
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
                     card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
                     card.folded.map { it.name }.sorted(), null, null, card.wholeFile,
-                    encodeChats(card.chats), card.activeChatId, card.openedBy.name)
+                    encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment)
             }, session.view.zoom, session.view.x, session.view.y,
             session.root.let { StoredRoot(encodeChats(it.chats), it.activeChatId, it.folded.map { section -> section.name }.sorted(), it.summary, it.summaryError) })))
     }
@@ -139,7 +139,7 @@ class CanvasSessionStore(private val directory: Path) {
                 card.filePath.orEmpty(), card.firstLine ?: 0, card.text.orEmpty(), card.truncated ?: false, card.summary, card.summaryError,
                 card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
                 chats, card.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id, card.wholeFile ?: false,
-                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER)
+                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment)
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
@@ -171,7 +171,7 @@ class CanvasSessionStore(private val directory: Path) {
     private class StoredCard(val id: String?, val parentId: String?, val kind: String?, val start: Int?, val end: Int?, val line: Int?,
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
         val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
-        val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?)
+        val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?, val attachment: CanvasAttachment?)
     private class StoredChat(val id: String?, val title: String?, val messages: List<StoredMessage?>?, val draft: String?)
     private class StoredSymbol(val filePath: String?, val name: String?, val kind: String?, val container: String?, val offset: Int?, val line: Int?)
     private class StoredMessage(val role: String?, val text: String?)

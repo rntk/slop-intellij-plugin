@@ -82,17 +82,20 @@ data class LlmConfiguration(
     private fun contextLimitException() = LlmContextLimitException(
         "Estimated request plus output exceeds the configured context window ($contextWindowTokens tokens). Increase the context window in Insight Chat settings or reduce the input/output budget.")
 
-    private fun requestChars(request: CompletionRequest): Int = when (provider) {
-        // Includes replayed thinking blocks, which the OpenAI-compatible representation omits.
-        LlmProvider.ANTHROPIC -> AnthropicJson.encode(request, model, DEFAULT_OUTPUT_TOKENS, serviceTier, cachePrompt).length
-        LlmProvider.OPENAI -> LlmJson.encode(
-            request.copy(responseFormat = request.responseFormat?.let(OpenAiClient::namedSchema)),
-            model, cachePrompt = false, maxTokensKey = "max_completion_tokens", replayReasoning = false,
-        ) {
-            serviceTier.takeIf { it.isNotBlank() }?.let { addProperty("service_tier", it) }
-            promptCacheKey.takeIf { it.isNotBlank() }?.let { addProperty("prompt_cache_key", it) }
-        }.length
-        else -> LlmJson.encode(request, model, cachePrompt).length
+    private fun requestChars(original: CompletionRequest): Int {
+        val request = original.forContextEstimate()
+        return when (provider) {
+            // Includes replayed thinking blocks, which the OpenAI-compatible representation omits.
+            LlmProvider.ANTHROPIC -> AnthropicJson.encode(request, model, DEFAULT_OUTPUT_TOKENS, serviceTier, cachePrompt).length
+            LlmProvider.OPENAI -> LlmJson.encode(
+                request.copy(responseFormat = request.responseFormat?.let(OpenAiClient::namedSchema)),
+                model, cachePrompt = false, maxTokensKey = "max_completion_tokens", replayReasoning = false,
+            ) {
+                serviceTier.takeIf { it.isNotBlank() }?.let { addProperty("service_tier", it) }
+                promptCacheKey.takeIf { it.isNotBlank() }?.let { addProperty("prompt_cache_key", it) }
+            }.length
+            else -> LlmJson.encode(request, model, cachePrompt).length
+        }
     }
 }
 

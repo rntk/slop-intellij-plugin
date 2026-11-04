@@ -119,6 +119,20 @@ internal class CanvasSessionController(
         return open(source) { model.open(parentId, CardKind.SELECTION, anchor, it.path, it.firstLine, it.text, openedBy = openedBy) }
     }
 
+    /** Attaches any local file, including files outside the project and languages absent from the graph. */
+    suspend fun attachFile(parentId: String?, file: VirtualFile): CanvasCard {
+        require(!file.isDirectory) { "Choose a file, not a directory." }
+        val content = withContext(Dispatchers.IO) {
+            val mediaType = java.nio.file.Files.probeContentType(java.nio.file.Path.of(file.path)) ?: "application/octet-stream"
+            file.inputStream.use { readCanvasAttachment(it, file.length, mediaType, file.fileType.isBinary, file.charset) }
+        }
+        val path = relative(file.path).orEmpty()
+        val shown = CanvasSource(content.text, emptyList(), 0, path, file, notice = attachmentNotice(content.attachment))
+        return withContext(Dispatchers.EDT) {
+            open(shown) { model.attach(parentId, path, content.text, content.attachment, content.truncated) }
+        }
+    }
+
     /**
      * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source (the root file for
      * null), or returns the card of that file already open there. For files the chain does not lead to.
@@ -202,6 +216,9 @@ internal class CanvasSessionController(
             val parent = source(card.parentId)
             val restored = try {
                 when {
+                    card.kind == CardKind.ATTACHMENT -> saved(card,
+                        if (findFile(card.filePath) == null) "Linked file not found; showing the saved attachment snapshot."
+                        else attachmentNotice(card.attachment))
                     card.wholeFile -> {
                         val fresh = withContext(Dispatchers.Default) { fileSource(card) }
                         if (fresh == null) saved(card, "File not found; showing the saved source without links.")
@@ -284,6 +301,10 @@ internal class CanvasSessionController(
 
     private fun saved(card: CanvasCard, notice: String) =
         CanvasSource(card.text, emptyList(), card.firstLine, card.filePath, findFile(card.filePath), notice = notice)
+
+    private fun attachmentNotice(attachment: CanvasAttachment?): String =
+        if (attachment?.imageBase64 != null) "Image snapshot. Open file to view the original in the IDE."
+        else "Linked attachment. Open file to view the original in the IDE."
 
     private fun open(source: CanvasSource, open: (CanvasSource) -> CanvasCard): CanvasCard {
         opening = source

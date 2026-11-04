@@ -7,6 +7,14 @@ enum class LlmRole(val wire: String) { SYSTEM("system"), USER("user"), ASSISTANT
 /** A model-issued function call. [arguments] is always a decoded JSON object, never a JSON string. */
 data class LlmToolCall(val id: String?, val name: String, val arguments: JsonObject)
 
+/** An image snapshot, encoded separately from text so providers can send it to vision-capable models. */
+data class LlmImage(val mediaType: String, val base64: String)
+
+/** Image tokens depend on dimensions and provider, rather than the base64 transport size. */
+internal fun CompletionRequest.forContextEstimate(): CompletionRequest = copy(messages = messages.map { message ->
+    if (message.images.isEmpty()) message else message.copy(images = message.images.map { it.copy(base64 = "x".repeat(16_384)) })
+})
+
 /**
  * One message in the provider-neutral shape. Clients serialize it to their wire format.
  * [reasoning] is replayed on assistant tool-call messages; some servers need it to continue a tool loop.
@@ -20,6 +28,7 @@ data class LlmMessage(
     val toolCalls: List<LlmToolCall> = emptyList(),
     val toolCallId: String? = null,
     val thinkingBlocks: List<JsonObject> = emptyList(),
+    val images: List<LlmImage> = emptyList(),
 ) {
     companion object {
         fun system(content: String) = LlmMessage(LlmRole.SYSTEM, content)

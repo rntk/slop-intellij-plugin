@@ -7,6 +7,9 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonShortcuts
@@ -462,7 +465,31 @@ internal class CanvasSessionPanel(
             showStatus("Cannot find $path.")
             return
         }
-        OpenFileDescriptor(project, target, maxOf(line, 0), 0).navigate(true)
+        if (target.fileType.isBinary) FileEditorManager.getInstance(project).openFile(target, true)
+        else OpenFileDescriptor(project, target, maxOf(line, 0), 0).navigate(true)
+    }
+
+    override fun attachFile(cardId: String?) {
+        val descriptor = FileChooserDescriptor(true, false, true, true, false, true).apply {
+            title = "Attach Files to ${cardId?.let(model::card)?.title ?: file.source.name}"
+            description = "Link documents, screenshots or other files to this card"
+        }
+        FileChooser.chooseFiles(descriptor, project, null) { files ->
+            scope.launch(Dispatchers.EDT) {
+                for (attachment in files) {
+                    try {
+                        val card = controller.attachFile(cardId, attachment)
+                        content.validate()
+                        reveal(card.id)
+                        showStatus("")
+                    } catch (e: Throwable) {
+                        if (e is CancellationException || e is ControlFlowException) throw e
+                        LOG.warn("Could not attach ${attachment.path}", e)
+                        showStatus("Could not attach ${attachment.name}: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+            }
+        }
     }
 
     override fun close(cardId: String) {
@@ -773,9 +800,13 @@ internal class CanvasSessionPanel(
                 add(metaToggle, BorderLayout.WEST)
                 add(zoomFont(CanvasTitleLabel(file.source.name, file.source.fileType.icon),
                     UIUtil.getLabelFont().deriveFont(Font.BOLD)), BorderLayout.CENTER)
-                add(zoomFont(ActionLink("Source") { navigate(source, source.path, source.firstLine) }.apply {
-                    toolTipText = "Open ${source.path} in the editor"
-                }), BorderLayout.EAST)
+                add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+                    isOpaque = false
+                    add(zoomFont(ActionLink("Attach file") { attachFile(null) }.apply { name = "canvas-attach-file" }))
+                    add(zoomFont(ActionLink("Source") { navigate(source, source.path, source.firstLine) }.apply {
+                        toolTipText = "Open ${source.path} in the editor"
+                    }))
+                }, BorderLayout.EAST)
             })
             add(meta)
             add(summary)

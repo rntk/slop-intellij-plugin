@@ -5,6 +5,7 @@ import dev.insight.llm.LlmApiException
 import dev.insight.llm.LlmJson
 import dev.insight.llm.LlmMessage
 import dev.insight.llm.LlmRole
+import dev.insight.llm.forContextEstimate
 
 /**
  * A character-based moving window. Evicts complete older historical turns, then complete older tool
@@ -101,7 +102,7 @@ internal class ChatContextWindow(
         }
     }
 
-    private fun size(request: CompletionRequest): Int = LlmJson.encode(request, "", true).length
+    private fun size(request: CompletionRequest): Int = LlmJson.encode(request.forContextEstimate(), "", true).length
 
     private companion object {
         const val MAX_ARGUMENT_CHARS = 192

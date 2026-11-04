@@ -65,7 +65,16 @@ internal object LlmJson {
 
     private fun message(message: LlmMessage, replayReasoning: Boolean) = JsonObject().apply {
         addProperty("role", message.role.wire)
-        addProperty("content", message.content)
+        if (message.images.isEmpty()) addProperty("content", message.content)
+        else add("content", JsonArray().apply {
+            add(JsonObject().apply { addProperty("type", "text"); addProperty("text", message.content) })
+            message.images.forEach { image ->
+                add(JsonObject().apply {
+                    addProperty("type", "image_url")
+                    add("image_url", JsonObject().apply { addProperty("url", "data:${image.mediaType};base64,${image.base64}") })
+                })
+            }
+        })
         if (message.role == LlmRole.TOOL) addProperty("tool_call_id", message.toolCallId)
         if (replayReasoning && !message.reasoning.isNullOrEmpty()) addProperty("reasoning_content", message.reasoning)
         if (message.toolCalls.isNotEmpty()) {

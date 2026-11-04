@@ -65,6 +65,7 @@ internal class CanvasSessionServices(
                 projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
                 maxContextChars = configuredContextChars(64_000), maxToolRounds = 30,
                 context = { canvasChainContext(actions.session, cardId, actions.source(null)) },
+                images = { canvasContextImages(actions.session, cardId) },
                 contextLabel = if (cardId == null) "Canvas file" else "Canvas chain",
                 registry = canvas)
         }
