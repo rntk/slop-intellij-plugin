@@ -11,6 +11,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.graph.RelationKind
 import dev.insight.ui.zoomScaled
 import java.awt.BorderLayout
 import java.awt.Color
@@ -49,6 +50,7 @@ internal interface CanvasCardHost {
     fun expandToFile(cardId: String)
     fun openSideBySide(cardId: String)
     fun attachFile(cardId: String?)
+    fun openUsage(cardId: String, owner: Int, filePath: String, wholeFile: Boolean = false)
     fun navigate(source: CanvasSource?, path: String, line: Int)
 }
 
@@ -124,6 +126,19 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     private val expand = host.zoomFont(ActionLink("Expand to file") { host.expandToFile(id) }.apply {
         toolTipText = "Show the whole file here, with links and this card's chat"
     })
+    private var usageSearch: Job? = null
+    private var usagesLoaded = false
+    internal val usages = JPanel(StackLayout { scaled(2) }).apply {
+        name = "canvas-usages"
+        isOpaque = false
+        isVisible = false
+    }
+    private val usagesToggle = host.zoomFont(ActionLink("Find usages") { showUsages() }.apply {
+        name = "canvas-find-usages"
+        toolTipText = "Find project callers and references to this symbol"
+    })
+    val canFindUsages: Boolean
+        get() = card.kind == CardKind.SYMBOL && !card.wholeFile && host.controller.canFindUsages(source?.node)
 
     // The history section is created first, so the chat view can name it as messages arrive.
     private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
@@ -142,6 +157,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(meta)
         add(summary)
         add(sourceSection)
+        add(usages)
         add(history)
         add(inputSection)
         update(initial)
@@ -159,6 +175,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         }, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
             isOpaque = false
+            add(usagesToggle)
             add(host.zoomFont(ActionLink("Attach file") { host.attachFile(id) }.apply { name = "canvas-attach-file" }))
             add(expand)
             add(host.zoomFont(ActionLink("Side by side") { host.openSideBySide(id) }.apply {
@@ -188,6 +205,13 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         if (sourceChanged) {
             summaryJob?.cancel()
             summaryJob = null
+            usageSearch?.cancel()
+            usageSearch = null
+            usagesLoaded = false
+            usages.removeAll()
+            usages.isVisible = false
+            usagesToggle.text = "Find usages"
+            usagesToggle.isEnabled = true
             sourcePane?.let(Disposer::dispose)
             source = fresh
             sourcePane = fresh?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
@@ -207,6 +231,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         openedByLabel.isVisible = next.openedBy == CardOpenedBy.LLM
         titleLabel.icon = if (next.wholeFile) AllIcons.FileTypes.Any_type else kindIcon(next)
         titleLabel.toolTipText = "${canvasKindLabel(next)} ${next.title}"
+        usagesToggle.isVisible = canFindUsages
         expand.isVisible = next.kind != CardKind.ATTACHMENT && !next.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() && next.symbol?.kind != "FILE"
         val shown = if (next.wholeFile && fresh != null) next.copy(text = fresh.text, textTruncated = false) else next
         metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(shown)}"
@@ -278,6 +303,92 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Asks the card's selected chat [text]. */
     internal fun send(text: String) = chat.send(text)
 
+    /** Searches the project for references to this card's symbol, or toggles the loaded usage list. */
+    fun showUsages() {
+        val target = source?.node?.takeIf { canFindUsages } ?: return
+        if (usageSearch?.isActive == true) return
+        if (usagesLoaded) {
+            usages.isVisible = !usages.isVisible
+            usagesToggle.text = if (usages.isVisible) "Hide usages" else "Show usages"
+            revalidate()
+            repaint()
+            host.cardResized()
+            return
+        }
+        usages.isVisible = true
+        usages.removeAll()
+        usages.add(host.zoomFont(JLabel("Finding project usages…").apply {
+            foreground = UIUtil.getContextHelpForeground()
+        }))
+        usagesToggle.isEnabled = false
+        val requestedSource = source
+        usageSearch = host.scope.launch(Dispatchers.EDT) {
+            try {
+                val found = host.controller.findUsages(target)
+                if (source !== requestedSource) return@launch
+                usages.removeAll()
+                usages.add(host.zoomFont(JLabel(
+                    if (found.usages.isEmpty()) "No project usages found."
+                    else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)"
+                ).apply { foreground = UIUtil.getContextHelpForeground() }))
+                found.usages.groupBy { it.owner }.forEach { (ownerId, locations) ->
+                    val first = locations.first()
+                    usages.add(JPanel(StackLayout { scaled(2) }).apply {
+                        name = "canvas-usage-branch"
+                        isOpaque = false
+                        border = BorderFactory.createCompoundBorder(
+                            pixel(scaled(2)),
+                            BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBColor.border(), 1), pixel(scaled(4))),
+                        )
+                        add(host.zoomFont(ActionLink("Explore ${first.ownerName}") {
+                            host.openUsage(id, ownerId, first.filePath, wholeFile = false)
+                        }.apply {
+                            toolTipText = first.ownerLabel
+                        }))
+                        locations.forEach { usage ->
+                            val kindLabel = if (usage.kind == RelationKind.CALL) "Call" else "Use"
+                            add(host.zoomFont(ActionLink("$kindLabel: ${usage.path}:${usage.line}") {
+                                host.openUsage(id, ownerId, usage.filePath, wholeFile = true)
+                            }.apply {
+                                border = JBUI.Borders.empty(1, 10, 1, 0)
+                            }))
+                        }
+                    })
+                }
+                if (found.truncated) {
+                    usages.add(host.zoomFont(JLabel("More usages exist; showing ${found.usages.size} sites.").apply {
+                        foreground = UIUtil.getContextHelpForeground()
+                    }))
+                }
+                usagesLoaded = true
+                usagesToggle.text = "Hide usages"
+            } catch (e: Throwable) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                LOG.warn("Unable to find canvas usages", e)
+                usages.removeAll()
+                usages.add(host.zoomFont(JLabel("Unable to find usages: ${e.message ?: e.javaClass.simpleName}").apply {
+                    foreground = NOTICE
+                }))
+            } finally {
+                if (source === requestedSource) {
+                    usageSearch = null
+                    if (!usagesLoaded) {
+                        usages.components.filterIsInstance<JLabel>().firstOrNull { it.text == "Finding project usages…" }
+                            ?.text = "Usage search cancelled."
+                        usagesToggle.text = "Retry usages"
+                    }
+                    usagesToggle.isEnabled = true
+                    revalidate()
+                    repaint()
+                    host.cardResized()
+                }
+            }
+        }
+        revalidate()
+        repaint()
+        host.cardResized()
+    }
+
     /** Sizes beyond fonts, at the current zoom. */
     fun applyZoom() {
         val accent = if (highlighted) ACCENT else JBColor.border()
@@ -300,6 +411,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     override fun dispose() {
         summaryJob?.cancel()
+        usageSearch?.cancel()
         Disposer.dispose(chat)
         sourcePane?.let(Disposer::dispose)
         diffPane?.let(Disposer::dispose)

@@ -106,7 +106,9 @@ val canvasHelpHtml = """
     <html><div style='width:420px'>
     The file is shown on the left; underlined names lead into the code graph. Click one to open its card beside it, or
     select any text and choose <b>Open card</b> (also in the right-click menu). Cards open further cards from their own
-    source, so a chain can follow the code as far as you like; an arrow links each card to where it was opened.<br><br>
+    source, so a chain can follow the code as far as you like; an arrow links each card to where it was opened.
+    <b>Find usages</b> on a symbol card (or in the right-click menu on any symbol) searches the project for callers and
+    other references and opens them as connected cards.<br><br>
     Each card has independent chat tabs. Use <b>New chat</b> to start another conversation; switch tabs to return to
     its history and draft. All tabs use the chain from the file down to the card as context, and can open cards on the
     canvas to show you the code they talk about. The file has its own chat tabs below its source, to ask about the

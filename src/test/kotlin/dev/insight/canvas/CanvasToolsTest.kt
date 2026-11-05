@@ -55,6 +55,15 @@ class CanvasToolsTest {
         override suspend fun declarations(path: String, name: String) =
             targets.values.filter { it.path == path && it.name.substringBefore('(') == name }
 
+        override suspend fun findUsages(target: Int): CanvasUsageSearch {
+            val info = targets.getValue(target)
+            val usages = if (target == 5) listOf(
+                CanvasUsage(2, "run()", targets.getValue(2).label, "/project/src/App.kt", "src/App.kt", 18, 2,
+                    dev.insight.graph.RelationKind.CALL),
+            ) else emptyList()
+            return CanvasUsageSearch(target, info.name, usages, false)
+        }
+
         override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int): CanvasCard {
             val parent = sources.getValue(parentId)
             val info = targets.getValue(target)
@@ -225,6 +234,15 @@ class CanvasToolsTest {
         val shown = runBlocking { tools[SEARCH_TOOLS]!!.call(args("""{"query":"show_card"}""")) }
         assertTrue(shown, shown.startsWith("Loaded 1 tool;"))
         assertEquals(setOf("read_card", "list_symbols", "open_symbol", SEARCH_TOOLS, "open_file", "show_card"), tools.names)
+
+        val usagesLoaded = runBlocking { tools[SEARCH_TOOLS]!!.call(args("""{"query":"find_usages"}""")) }
+        assertTrue(usagesLoaded, usagesLoaded.startsWith("Loaded 1 tool;"))
+        val saveCard = runBlocking { canvas.openSymbol(null, 0, 3, 5) }
+        val saveTools = canvasTools(canvas, saveCard.id)
+        assertEquals("""
+            Usages of save() (1 sites):
+            - Call at src/App.kt:2 in run() · function in App · src/App.kt:2
+        """.trimIndent(), saveTools.call("find_usages"))
     }
 
     @Test

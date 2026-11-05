@@ -9,6 +9,7 @@ import dev.insight.agent.ToolRegistry
 import dev.insight.agent.lenientInt
 import dev.insight.agent.optionalStringArg
 import dev.insight.agent.stringArg
+import dev.insight.graph.RelationKind
 import dev.insight.llm.JsonSchemas
 import dev.insight.llm.LlmTool
 import kotlin.math.abs
@@ -33,6 +34,9 @@ interface CanvasActions {
     fun target(id: Int): CanvasTarget?
     /** The symbols named [name] (without parameters) declared in project file [path], after reading that file. */
     suspend fun declarations(path: String, name: String): List<CanvasTarget>
+    /** Searches project files for callers and references to graph symbol [target]. */
+    suspend fun findUsages(target: Int): CanvasUsageSearch =
+        CanvasUsageSearch(target, target(target)?.name ?: "#$target", emptyList(), false)
     /** Opens [target]'s card from [start] until [end] of [parentId]'s source (null: the root file). */
     suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int): CanvasCard
     suspend fun openSelection(parentId: String?, start: Int, end: Int): CanvasCard
@@ -58,8 +62,8 @@ fun canvasToolRegistry(actions: CanvasActions, cardId: String?, maxOpened: Int =
     val opened = CallAllowance(maxOpened, "This reply has opened $maxOpened cards, the most one reply may open. " +
         "Answer with the cards already shown.")
     return ToolRegistry()
-        .register("reading the canvas: card sources, their clickable symbols, and every card and chain",
-            CanvasOverviewTool(canvas), ReadCardTool(canvas), ListSymbolsTool(canvas))
+        .register("reading the canvas: card sources, their clickable symbols, project usages of symbols, and every card and chain",
+            CanvasOverviewTool(canvas), ReadCardTool(canvas), ListSymbolsTool(canvas), FindUsagesTool(canvas))
         .register("showing code on the canvas: opening cards for symbols, selected lines, declarations anywhere in " +
             "the project or whole files, and highlighting an open card",
             listOf(ShowCardTool(canvas)) + listOf(OpenSymbolTool(canvas), OpenSelectionTool(canvas),
@@ -269,6 +273,62 @@ private class ListSymbolsTool(private val canvas: CanvasToolContext) : CanvasToo
         if (rows.isEmpty()) return "No clickable symbols${filter?.let { " matching '$it'" }.orEmpty()} in lines $from-$to of ${canvas.name(id).lowercase()}."
         return "Symbols in ${canvas.name(id).lowercase()}, lines $from-$to:\n" + rows.take(limit).joinToString("\n") +
             if (rows.size > limit) "\n[${rows.size - limit} more not shown; narrow the lines or name.]" else ""
+    }
+}
+
+private class FindUsagesTool(private val canvas: CanvasToolContext) : CanvasTool(
+    "find_usages",
+    "Find project callers and references to a symbol: either the symbol shown by a card (default: the current card) " +
+        "or a clickable symbol named in a card's source. Read-only; open referencing declarations with open_declaration or open_file.",
+    JsonSchemas.obj(
+        "card" to cardParameter,
+        "name" to JsonSchemas.string(description = "Optional symbol name in the card's source; omit to search usages of the symbol card itself."),
+        "line" to JsonSchemas.integer(description = "1-based document line when name occurs on several lines."),
+        "target" to JsonSchemas.integer(description = "Which declaration when list_symbols numbers several for name."),
+        required = emptyList(), additionalProperties = false,
+    ),
+) {
+    override suspend fun call(arguments: JsonObject): String {
+        val id = canvas.card(arguments.optionalStringArg("card"))
+        val name = arguments.optionalStringArg("name")?.trim()?.takeIf { it.isNotEmpty() }
+        val targetId = if (name == null) {
+            val source = canvas.actions.source(id) ?: throw ToolInputException("${canvas.name(id)} is not shown yet; try again shortly.")
+            val node = source.node
+            if (node == null || id == null || canvas.actions.session.card(id)?.wholeFile == true) {
+                throw ToolInputException("${canvas.name(id)} does not represent a single symbol; pass name to find usages of a symbol in its source.")
+            }
+            node
+        } else {
+            val line = arguments.lenientInt("line")
+            val shown = canvas.shown(id)
+            val links = shown.source.links.filter { line == null || shown.line(it.range.first) == line }
+            fun named(link: CanvasLink, ignoreCase: Boolean) = shown.text(link).trim().equals(name, ignoreCase) ||
+                link.targets.mapNotNull(canvas.actions::target).any { it.name.substringBefore('(').equals(name, ignoreCase) }
+            val found = links.filter { named(it, false) }.ifEmpty { links.filter { named(it, true) } }
+                .sortedWith(compareBy({ it.range.first }, { it.range.last - it.range.first }))
+            val link = found.firstOrNull() ?: throw ToolInputException("No clickable symbol '$name'" +
+                (line?.let { " on line $it" } ?: "") + " in ${canvas.name(id).lowercase()}. list_symbols shows its symbols.")
+            val targets = link.targets.mapNotNull(canvas.actions::target)
+            val index = arguments.lenientInt("target")
+            val chosen = when {
+                index != null -> targets.getOrNull(index - 1) ?: throw ToolInputException("target must be 1 to ${targets.size}.")
+                targets.size == 1 -> targets.single()
+                else -> targets.filter { it.name.substringBefore('(') == name }.singleOrNull()
+                    ?: throw ToolInputException("'$name' on line ${shown.line(link.range.first)} leads to several declarations; " +
+                        "pass target: " + targets.withIndex().joinToString("; ") { (i, t) -> "${i + 1}) ${t.label}" })
+            }
+            chosen.id
+        }
+        val found = canvas.actions.findUsages(targetId)
+        if (found.usages.isEmpty()) return "No project usages found for ${found.targetName}."
+        return buildString {
+            append("Usages of ${found.targetName} (${found.usages.size}${if (found.truncated) "+" else ""} sites):\n")
+            found.usages.forEach { usage ->
+                val kind = if (usage.kind == RelationKind.CALL) "Call" else "Use"
+                append("- $kind at ${usage.path}:${usage.line} in ${usage.ownerLabel}\n")
+            }
+            if (found.truncated) append("[More usages exist; showing ${found.usages.size} sites.]\n")
+        }.trimEnd()
     }
 }
 

@@ -111,6 +111,19 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
         val parameter = canvas.open(config, "= config", "config")
         assertTrue(parameter.text, parameter.text.contains("def __init__(self, config)"))
         assertEquals(listOf(run.id, routes.id, config.id, parameter.id), canvas.model.chain(parameter.id).map { it.id })
+
+        val initFromParameter = canvas.open(parameter, "__init__")
+        assertTrue("The enclosing method on the parameter's line should be clickable",
+            initFromParameter.text.contains("self.routes = RSSTagRoutes"))
+        val usages = background { canvas.findUsages(canvas.source(parameter.id)!!.node!!) }
+        assertTrue("Finding usages of the parameter should find its uses in __init__",
+            usages.usages.any { it.ownerName.startsWith("__init__") })
+
+        val rootSource = canvas.source(null)!!
+        val importTarget = linkAt(rootSource.links, rootSource.text.indexOf("App"))
+        assertNotNull("Imported class in the import statement should be clickable", importTarget)
+        val importModule = linkAt(rootSource.links, rootSource.text.indexOf("service"))
+        assertNotNull("Imported module in the import statement should be clickable", importModule)
     }
 
     fun testMultilineLocalBindingKeepsTheEntireInitializerAndItsLinks() {

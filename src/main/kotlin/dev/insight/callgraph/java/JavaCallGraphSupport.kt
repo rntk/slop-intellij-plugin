@@ -59,7 +59,9 @@ class JavaCallGraphSupport : CallGraphLanguageSupport {
     override fun callSite(element: PsiElement): CallResolution? = when (element) {
         is PsiMethodCallExpression -> CallResolution(element.methodExpression,
             resolveTargets(element.methodExpression), element.methodExpression.qualifierExpression)
-        is PsiNewExpression -> CallResolution(element.classReference ?: element, listOfNotNull(element.resolveConstructor()))
+        is PsiNewExpression -> CallResolution(element.classReference ?: element,
+            listOfNotNull(element.resolveConstructor()
+                ?: (element.classOrAnonymousClassReference ?: element.classReference)?.resolve()?.takeIf { it is PsiClass }))
         is PsiMethodReferenceExpression -> CallResolution(element, resolveTargets(element), element.qualifierExpression,
             CallOperation.CALLABLE_REFERENCE)
         else -> null

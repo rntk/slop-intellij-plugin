@@ -683,4 +683,98 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(CardKind.SELECTION, saved.cards.single().kind)
         assertEquals("void helper", saved.cards.single().text)
     }
+
+    fun testFindUsagesOnLeafCardOpensCallerAndFileCardsToContinueExploration() {
+        val file = myFixture.configureByText("Api.java", "class Api { static void work() {} }")
+        myFixture.addFileToProject("Client.java", "class Client { void run() { Api.work(); } }")
+        val services = CanvasSessionServices(null, { { Completion("Leaf symbol.", finishReason = FinishReason.COMPLETE) } }, summaryTools = { emptyList() }) { _, _ ->
+            error("No chat requested")
+        }
+        val session = CanvasSession.new("Api.java")
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should load", { panel.ready }, 30)
+            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "work")
+            val openWork = panel.openSymbol(null, link, target)
+            PlatformTestUtil.waitWithEventsDispatching("The work card should open", { openWork.isCompleted }, 30)
+            val workCard = panel.model.cards.single()
+            val workView = panel.cardViews.getValue(workCard.id)
+
+            fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
+                listOf(it) + if (it is Container) descendants(it) else emptyList()
+            }
+            fun links(container: Container = workView) = descendants(container).filterIsInstance<com.intellij.ui.components.ActionLink>()
+
+            val findUsages = links().single { it.name == "canvas-find-usages" }
+            assertTrue(findUsages.isVisible)
+            assertEquals("Find usages", findUsages.text)
+            findUsages.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Indexed caller should appear on the card", {
+                links().any { it.text.startsWith("Explore run") }
+            }, 30)
+            assertEquals("Hide usages", findUsages.text)
+            val branch = descendants(workView).single { it.name == "canvas-usage-branch" } as Container
+            assertTrue(links(branch).any { it.text.startsWith("Call: ") && it.text.contains("Client.java:1") })
+
+            links(branch).single { it.text.startsWith("Explore run") }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Caller symbol card should open beside the leaf card", {
+                panel.model.cards.size == 2
+            }, 30)
+            val callerCard = panel.model.cards.last()
+            assertEquals(workCard.id, callerCard.parentId)
+            assertTrue(callerCard.text.contains("Api.work();"))
+
+            links(branch).single { it.text.startsWith("Call: ") && it.text.contains("Client.java:1") }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Caller file card should open when clicking the usage site", {
+                panel.model.cards.size == 3
+            }, 30)
+            val fileCard = panel.model.cards.last()
+            assertEquals(workCard.id, fileCard.parentId)
+            assertTrue(fileCard.wholeFile)
+            assertTrue(fileCard.text.contains("class Client"))
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
+    fun testImportsParametersAndTypeScriptBindingsStayClickableAcrossCards() {
+        myFixture.addFileToProject("types.ts", """
+            export interface Config {
+                host: string;
+            }
+            export class Router {
+                dispatch(config: Config): string {
+                    return config.host;
+                }
+            }
+        """.trimIndent())
+        val tsFile = myFixture.configureByText("app.ts", """
+            import { Config, Router } from './types';
+
+            export function start(config: Config, router: Router): string {
+                return router.dispatch(config);
+            }
+        """.trimIndent())
+        val canvas = controller(tsFile, CanvasSession.new("app.ts"))
+        val root = background { canvas.loadRoot() }
+        val importEnd = root.text.indexOf('\n')
+        val importLinks = root.links.filter { it.range.last < importEnd }
+        val importedNames = importLinks.flatMap { it.targets }.mapNotNull { canvas.node(it)?.name?.substringBefore('(') }.toSet()
+        assertTrue("Imports in the root file should link to their target declarations and file: $importedNames",
+            importedNames.containsAll(setOf("Config", "Router", "types.ts")))
+
+        val startCard = canvas.open(null, "start")
+        val paramLink = canvas.source(startCard.id)!!.links.first {
+            startCard.text.substring(it.range.first, it.range.last + 1) == "config" &&
+                it.targets.any { id -> canvas.node(id)?.kind == dev.insight.graph.SymbolKind.PARAMETER }
+        }
+        val paramId = paramLink.targets.first { canvas.node(it)?.kind == dev.insight.graph.SymbolKind.PARAMETER }
+        val paramCard = background { canvas.openSymbol(startCard.id, paramLink.range.first, paramLink.range.last + 1, paramId) }
+        val paramSource = canvas.source(paramCard.id)!!
+        val paramCardTargets = paramSource.links.flatMap { it.targets }
+            .mapNotNull { canvas.node(it)?.name?.substringBefore('(')?.substringBefore(':')?.trim() }.toSet()
+        assertTrue("Opening a parameter card should keep its type, sibling parameters and enclosing function clickable: $paramCardTargets",
+            paramCardTargets.containsAll(setOf("start", "Config", "router", "Router")))
+    }
 }

@@ -33,6 +33,8 @@ import dev.insight.agent.ProjectFiles
 import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphService
 import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.CanvasZoomAnchor
@@ -197,7 +199,8 @@ internal class CanvasSessionPanel(
             if (!panned) openLink(pane, link, event)
         }
         override fun selectionChanged(pane: CanvasSourcePane) = showSelectionButton(pane)
-        override fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int) = showContextMenu(pane, event, line)
+        override fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int, link: CanvasLink?) =
+            showContextMenu(pane, event, line, link)
     }
 
     private val subscription = model.subscribe(::changed)
@@ -342,6 +345,8 @@ internal class CanvasSessionPanel(
         override suspend fun declarations(path: String, name: String): List<CanvasTarget> =
             controller.declarations(projectFile(path), name).mapNotNull { controller.target(it.id) }
 
+        override suspend fun findUsages(target: Int): CanvasUsageSearch = controller.findUsages(target)
+
         override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int) =
             revealing { controller.openSymbol(parentId, start, end, target, CardOpenedBy.LLM) }
 
@@ -440,10 +445,21 @@ internal class CanvasSessionPanel(
         content.repaint()
     }
 
-    private fun showContextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int) {
+    private fun showContextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int, link: CanvasLink? = null) {
         val selected = pane.selection()
+        val cardView = pane.owner?.let(views::get)
+        val linkTargets = link?.targets?.filter(controller::canFindUsages).orEmpty()
         JPopupMenu().apply {
             pane.owner?.let { add(sideBySideAction(it)) }
+            if (link != null && linkTargets.isNotEmpty()) {
+                add(JMenuItem("Find usages").apply {
+                    addActionListener { findLinkUsages(pane, link, event) }
+                })
+            } else if (cardView?.canFindUsages == true) {
+                add(JMenuItem("Find usages").apply {
+                    addActionListener { cardView.showUsages() }
+                })
+            }
             add(JMenuItem("Open card for selection").apply {
                 isEnabled = selected != null
                 addActionListener { openSelection(pane) }
@@ -458,6 +474,75 @@ internal class CanvasSessionPanel(
             })
         }.show(event.component, event.x, event.y)
     }
+
+    private fun findLinkUsages(pane: CanvasSourcePane, link: CanvasLink, event: MouseEvent) {
+        val targets = link.targets.filter(controller::canFindUsages).mapNotNull(controller::node)
+        when {
+            targets.isEmpty() -> showStatus("Cannot search usages for this symbol.")
+            targets.size == 1 -> searchLinkUsages(pane, link, targets.single().id, event)
+            else -> JBPopupFactory.getInstance().createPopupChooserBuilder(targets)
+                .setTitle("Find Usages Of")
+                .setRenderer(SimpleListCellRenderer.create("") { node: CallGraphNode -> canvasTargetLabel(node, controller::relative) })
+                .setItemChosenCallback { node -> searchLinkUsages(pane, link, node.id, event) }
+                .createPopup()
+                .show(RelativePoint(event))
+        }
+    }
+
+    internal fun searchLinkUsages(pane: CanvasSourcePane, link: CanvasLink, target: Int, event: MouseEvent): Job = scope.launch(Dispatchers.EDT) {
+        val name = controller.node(target)?.name ?: "symbol"
+        showStatus("Finding usages of $name…")
+        try {
+            val found = controller.findUsages(target)
+            showStatus(if (found.usages.isEmpty()) "No project usages found for $name." else "")
+            if (found.usages.isEmpty()) return@launch
+            JBPopupFactory.getInstance().createPopupChooserBuilder(found.usages)
+                .setTitle("Usages of ${found.targetName}")
+                .setRenderer(SimpleListCellRenderer.create("") { usage: CanvasUsage ->
+                    val kind = if (usage.kind == RelationKind.CALL) "Call" else "Use"
+                    "$kind in ${usage.ownerName} · ${usage.path}:${usage.line}"
+                })
+                .setItemChosenCallback { usage ->
+                    openUsageAt(pane.owner, link.range, usage.owner, usage.filePath, wholeFile = false)
+                }
+                .createPopup()
+                .show(RelativePoint(event))
+        } catch (e: Throwable) {
+            if (e is CancellationException || e is ControlFlowException) throw e
+            LOG.warn("Unable to find usages of $name", e)
+            showStatus("Could not find usages of $name: " +
+                (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+        }
+    }
+
+    override fun openUsage(cardId: String, owner: Int, filePath: String, wholeFile: Boolean) {
+        openUsageAt(cardId, controller.usageAnchor(cardId), owner, filePath, wholeFile)
+    }
+
+    internal fun openUsageAt(parentId: String?, range: IntRange, owner: Int, filePath: String, wholeFile: Boolean): Job =
+        scope.launch(Dispatchers.EDT) {
+            val start = range.first
+            val end = maxOf(range.first, range.last + 1)
+            val node = controller.node(owner)
+            val name = if (wholeFile || node?.kind == SymbolKind.FILE) filePath.substringAfterLast('/') else node?.name ?: "usage"
+            showStatus("Opening $name…")
+            try {
+                val card = if (wholeFile || node?.kind == SymbolKind.FILE) {
+                    val file = controller.findFile(filePath) ?: error("Cannot find $filePath.")
+                    controller.openFile(parentId, start, end, file)
+                } else {
+                    controller.openSymbol(parentId, start, end, owner)
+                }
+                showStatus("")
+                content.validate()
+                reveal(card.id)
+            } catch (e: Throwable) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                LOG.warn("Unable to open canvas usage $name", e)
+                showStatus("Could not open $name: " +
+                    (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+            }
+        }
 
     override fun navigate(source: CanvasSource?, path: String, line: Int) {
         val target = source?.file?.takeIf { it.isValid } ?: controller.findFile(path)

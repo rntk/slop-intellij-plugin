@@ -28,6 +28,11 @@ import org.jetbrains.kotlin.psi.KtPropertyAccessor
 class KotlinCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: com.intellij.psi.PsiFile) = file is KtFile
 
+    override fun explorationSource(element: PsiElement): PsiElement? = when (element) {
+        is KtDestructuringDeclarationEntry -> element.parent as? KtDestructuringDeclaration
+        else -> null
+    }
+
     override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
         is KtTypeAlias -> true
         is KtClassOrObject -> isDeclarationOnly(element)

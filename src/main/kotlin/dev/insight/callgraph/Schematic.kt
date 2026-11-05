@@ -7,7 +7,9 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiNameIdentifierOwner
+import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import dev.insight.graph.CallGraphEdge
 import dev.insight.graph.CallGraphResult
@@ -252,7 +254,7 @@ object SchematicBuilder {
             val declaration = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid && it.containingFile == psiFile } ?: return@mapNotNull null
             val (start, end) = lines(document, declaration.textRange)
             val headline = document.getLineNumber(declaration.textOffset.coerceIn(0, document.textLength))
-            val name = (declaration as? PsiNameIdentifierOwner)?.nameIdentifier?.textRange
+            val name = declarationNameRange(declaration, document)
             SchematicDeclaration(id, start, end, headline, name?.let { columns(document, it, headline) })
         }
 
@@ -261,9 +263,13 @@ object SchematicBuilder {
         // Initializers and parameter defaults have an enclosing function/class as occurrence scope. Their own
         // source range still owns the calls the reader sees when opening the binding itself.
         val binding = result.graph.nodes[scope].kind !in setOf(SymbolKind.FILE, SymbolKind.CLASS, SymbolKind.FUNCTION)
+        val lineStart = document.getLineStartOffset(first)
+        val lineEnd = document.getLineEndOffset(last)
+        val startOffset = if (whole) lineStart else element.textRange.startOffset
+        val endOffset = if (whole) lineEnd else element.textRange.endOffset
         val sites = if (result.graph.projectGraph) result.occurrences.filter {
-            it.filePath == virtualFile.path && (binding || it.scope in callers) && it.startOffset >= element.textRange.startOffset &&
-                it.startOffset < element.textRange.endOffset
+            it.filePath == virtualFile.path && (binding || it.scope in callers) && it.startOffset >= startOffset &&
+                it.startOffset < endOffset
         }.flatMap { occurrence ->
             val line = document.getLineNumber(occurrence.startOffset.coerceIn(0, document.textLength))
             val columns = calleeColumns(occurrence.startOffset, occurrence.text, occurrence.expression,
@@ -296,7 +302,7 @@ object SchematicBuilder {
         // Gaps follow the language's statements and declarations, so code rows are cut where they begin and end.
         val rows = schematicRows(first, last, declarations, sites, references)
         val gaps = schematicGapUnits(element, document, rows)
-        val mentions = if (whole) mentions(result, document, element, scope) else emptyList()
+        val mentions = if (whole) mentions(result, document, element, scope, lineStart, lineEnd) else emptyList()
         return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps, mentions)
     }
 
@@ -304,8 +310,8 @@ object SchematicBuilder {
     private val REFERENCED = setOf(SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
 
     /** Symbols a scope read whole links to: everything with a declaration of its own. */
-    private val MENTIONED = setOf(SymbolKind.CLASS, SymbolKind.FUNCTION, SymbolKind.PROPERTY, SymbolKind.PARAMETER,
-        SymbolKind.VARIABLE, SymbolKind.SYMBOL)
+    private val MENTIONED = setOf(SymbolKind.FILE, SymbolKind.CLASS, SymbolKind.FUNCTION, SymbolKind.PROPERTY,
+        SymbolKind.PARAMETER, SymbolKind.VARIABLE, SymbolKind.SYMBOL)
 
     /** Length at which [CallSiteAnalyzer] truncates [CallSite.text]. */
     private const val SITE_TEXT = 600
@@ -326,7 +332,7 @@ object SchematicBuilder {
                 val (start, end) = lines(document, element.textRange)
                 if (shown.nextSetBit(start).let { it < 0 || it > end }) return
                 for (reference in element.navigationReferences()) {
-                    val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
+                    val range = referenceRange(reference) ?: continue
                     val line = document.getLineNumber(range.startOffset.coerceIn(0, document.textLength))
                     if (!shown[line]) continue
                     val columns = columns(document, range, line) ?: continue
@@ -341,11 +347,12 @@ object SchematicBuilder {
     }
 
     /**
-     * Every name of a project symbol on the lines of [element], other than [scope] itself: uses of what the scope
+     * Every name of a project symbol on the shown lines of [element], other than [scope] itself: uses of what the scope
      * reaches, and the names of declarations inside it, so a nested function's parameters and the types in its body
-     * lead on too. Imports and comments are skipped.
+     * lead on too. Comments are skipped.
      */
-    private fun mentions(result: CallGraphResult, document: Document, element: PsiElement, scope: Int): List<SchematicMention> {
+    private fun mentions(result: CallGraphResult, document: Document, element: PsiElement, scope: Int,
+        lineStart: Int, lineEnd: Int): List<SchematicMention> {
         val id = graphIds(result, MENTIONED)
         val found = linkedSetOf<SchematicMention>()
         fun mention(target: Int, range: TextRange) {
@@ -354,20 +361,51 @@ object SchematicBuilder {
             val columns = columns(document, range, line) ?: return
             found += SchematicMention(target, line, columns, result.graph.nodes[target].kind != SymbolKind.FUNCTION)
         }
-        element.accept(object : PsiRecursiveElementWalkingVisitor() {
+        val container = ProjectGraphAnalyzer.shownContainer(element, TextRange(lineStart, lineEnd))
+        container.accept(object : PsiRecursiveElementWalkingVisitor() {
             override fun visitElement(element: PsiElement) {
                 ProgressManager.checkCanceled()
-                if (element is PsiComment || ProjectGraphAnalyzer.relationKind(element) == RelationKind.IMPORT) return
-                val name = (element as? PsiNameIdentifierOwner)?.nameIdentifier?.textRange
-                if (name != null) id(element)?.let { mention(it, name) }
+                if (element is PsiComment || element.textRange.endOffset <= lineStart || element.textRange.startOffset >= lineEnd) return
+                val name = declarationNameRange(element, document)
+                if (name != null && name.startOffset >= lineStart && name.endOffset <= lineEnd) {
+                    val target = CallGraphLanguageSupport.EP_NAME.extensionList.firstNotNullOfOrNull { it.unwrapImport(element) } ?: element
+                    id(target)?.let { mention(it, name) }
+                }
                 for (reference in element.navigationReferences()) {
-                    val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
+                    val range = referenceRange(reference) ?: continue
+                    if (range.startOffset < lineStart || range.endOffset > lineEnd) continue
                     for (target in resolveTargets(reference)) id(target)?.let { mention(it, range) }
                 }
                 super.visitElement(element)
             }
         })
+        val filePath = element.containingFile?.virtualFile?.path
+        for (occurrence in result.occurrences) {
+            if (occurrence.filePath != filePath || occurrence.startOffset !in lineStart until lineEnd) continue
+            val line = document.getLineNumber(occurrence.startOffset.coerceIn(0, document.textLength))
+            val columns = calleeColumns(occurrence.startOffset, occurrence.text, occurrence.expression,
+                document.getLineStartOffset(line), document.getLineEndOffset(line)) ?: continue
+            for (target in occurrence.displayTargets) {
+                if (target != scope && target in result.graph.nodes.indices) {
+                    val node = result.graph.nodes[target]
+                    if (node.inProject || node.unresolved) {
+                        found += SchematicMention(target, line, columns, node.kind != SymbolKind.FUNCTION && !node.unresolved)
+                    }
+                }
+            }
+        }
         return found.toList()
+    }
+
+    private fun declarationNameRange(element: PsiElement, document: Document): TextRange? {
+        if (element is PsiFile) return null
+        (element as? PsiNameIdentifierOwner)?.nameIdentifier?.textRange?.let { return it }
+        val named = element as? PsiNamedElement ?: return null
+        val name = named.name?.takeIf { it.isNotEmpty() } ?: return null
+        val offset = element.textOffset
+        if (offset < 0 || offset + name.length > document.textLength) return null
+        return if (document.charsSequence.subSequence(offset, offset + name.length).toString() == name)
+            TextRange(offset, offset + name.length) else null
     }
 
     /**

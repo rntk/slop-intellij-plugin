@@ -8,6 +8,7 @@ import com.intellij.lang.ecmascript6.psi.ES6ImportedBinding
 import com.intellij.lang.ecmascript6.psi.JSClassExpression
 import com.intellij.lang.javascript.psi.*
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptEnum
+import com.intellij.lang.javascript.psi.ecma6.TypeScriptEnumField
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptImportStatement
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptInterface
 import com.intellij.lang.javascript.psi.ecma6.TypeScriptTypeAlias
@@ -36,6 +37,12 @@ import dev.insight.graph.SymbolKind
  */
 class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is JSFile
+
+    override fun explorationSource(element: PsiElement): PsiElement? = when {
+        element is JSVariable && element !is JSParameter && element.initializer == null ->
+            PsiTreeUtil.getParentOfType(element, JSVarStatement::class.java)
+        else -> null
+    }
 
     override fun keepGapWhole(element: PsiElement): Boolean = when (element) {
         is TypeScriptInterface, is TypeScriptEnum, is TypeScriptTypeAlias -> true
@@ -77,6 +84,8 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         element is TypeScriptTypeParameter -> SymbolKind.PARAMETER
         element is JSParameter -> if (isParameterProperty(element)) SymbolKind.PROPERTY else SymbolKind.PARAMETER
         element is TypeScriptTypeAlias -> SymbolKind.SYMBOL
+        element is TypeScriptEnum -> SymbolKind.CLASS
+        element is TypeScriptEnumField -> SymbolKind.PROPERTY
         element is JSClass -> if (element.name != null) SymbolKind.CLASS else null
         element is JSField -> SymbolKind.PROPERTY
         element is JSVariable -> SymbolKind.VARIABLE
@@ -130,6 +139,9 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         is ES6ImportExportSpecifier -> element.references.firstNotNullOfOrNull { it.resolve() }
         else -> element
     }?.takeIf { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
+
+    override fun unwrapImport(element: PsiElement): PsiElement? =
+        declaration(element)?.takeIf { it !== element }
 
     override fun unwrap(element: PsiElement): PsiElement? = when (element) {
         // Implicit elements are index-level stand-ins for the declaration that provides them.

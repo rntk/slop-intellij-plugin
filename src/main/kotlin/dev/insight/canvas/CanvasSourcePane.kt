@@ -48,8 +48,8 @@ internal class CanvasSourcePane(
         /** A plain left click on [link], without a selection. */
         fun linkClicked(pane: CanvasSourcePane, link: CanvasLink, event: MouseEvent)
         fun selectionChanged(pane: CanvasSourcePane)
-        /** Right-click: the 0-based document line under the pointer. */
-        fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int)
+        /** Right-click: the 0-based document line and link (if any) under the pointer. */
+        fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int, link: CanvasLink? = null)
     }
 
     val editor = EditorFactory.getInstance().createViewer(EditorFactory.getInstance().createDocument(source.text), project) as EditorEx
@@ -80,7 +80,8 @@ internal class CanvasSourcePane(
         }
 
         editor.installPopupHandler { event ->
-            listener.contextMenu(this, event.mouseEvent, source.firstLine + event.logicalPosition.line)
+            val link = if (event.isOverText) linkAt(source.links, event.offset) else null
+            listener.contextMenu(this, event.mouseEvent, source.firstLine + event.logicalPosition.line, link)
             true
         }
         editor.addEditorMouseListener(object : EditorMouseListener {

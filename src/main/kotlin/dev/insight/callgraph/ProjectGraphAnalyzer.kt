@@ -3,6 +3,7 @@ package dev.insight.callgraph
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.TextRange
 import com.intellij.psi.*
 import dev.insight.graph.CallGraph
 import dev.insight.graph.CallGraphEdge
@@ -50,6 +51,14 @@ object ProjectGraphAnalyzer {
         occurrence: (PsiElement, PsiElement, CallResolution) -> Unit = { _, _, _ -> },
         scope: PsiElement = file,
         foldFunctions: Boolean = false,
+        emit: (PsiElement, PsiElement, RelationKind) -> Unit) =
+        relations(file, occurrence, scope, foldFunctions, null, emit)
+
+    internal fun relations(file: PsiFile,
+        occurrence: (PsiElement, PsiElement, CallResolution) -> Unit = { _, _, _ -> },
+        scope: PsiElement = file,
+        foldFunctions: Boolean = false,
+        lineRange: TextRange?,
         emit: (PsiElement, PsiElement, RelationKind) -> Unit) {
         fun owner(element: PsiElement?): PsiElement {
             var current = element
@@ -63,13 +72,18 @@ object ProjectGraphAnalyzer {
             override fun visitElement(element: PsiElement) {
                 ProgressManager.checkCanceled()
                 if (element is PsiComment) return
+                if (lineRange != null &&
+                    (element.textRange.endOffset <= lineRange.startOffset || element.textRange.startOffset >= lineRange.endOffset)) return
                 if (foldFunctions && element !== scope && kind(element) == SymbolKind.FUNCTION) {
                     headlineReferences(element) { target -> emit(element, source(target), RelationKind.REFERENCE) }
                     return
                 }
-                if (element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS)
-                for (method in supports.flatMap { it.superMethods(element) }) {
-                    emit(element, source(method), RelationKind.INHERITS)
+                val inRange = lineRange == null || element.textOffset in lineRange.startOffset..lineRange.endOffset
+                if (inRange && element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS)
+                if (inRange) {
+                    for (method in supports.flatMap { it.superMethods(element) }) {
+                        emit(element, source(method), RelationKind.INHERITS)
+                    }
                 }
                 var context: PsiElement? = element
                 var relation: RelationKind? = null
@@ -78,13 +92,23 @@ object ProjectGraphAnalyzer {
                     context = context.parent
                 }
                 val from = if (relation == RelationKind.IMPORT) file else owner(element)
-                val call = supports.firstNotNullOfOrNull { it.callSite(element) }
+                val call = if (lineRange == null || element.textRange.startOffset in lineRange.startOffset until lineRange.endOffset)
+                    supports.firstNotNullOfOrNull { it.callSite(element) } else null
                 if (call != null) {
                     occurrence(from, element, call)
                     val callKind = if (call.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                     call.targets.forEach { emit(from, source(it), relation ?: callKind) }
                 }
+                if (inRange && relation == RelationKind.IMPORT && element !is PsiFile) {
+                    supports.firstNotNullOfOrNull { it.unwrapImport(element) }?.let { imported ->
+                        emit(from, source(imported), RelationKind.IMPORT)
+                    }
+                }
                 for (reference in element.navigationReferences()) {
+                    if (lineRange != null) {
+                        val range = referenceRange(reference) ?: continue
+                        if (range.startOffset < lineRange.startOffset || range.endOffset > lineRange.endOffset) continue
+                    }
                     for (target in resolveTargets(reference)) emit(from, source(target), relation ?: RelationKind.REFERENCE)
                 }
                 super.visitElement(element)
@@ -103,7 +127,7 @@ object ProjectGraphAnalyzer {
                 ProgressManager.checkCanceled()
                 if (element is PsiComment || element.textRange.endOffset <= start || element.textRange.startOffset >= end) return
                 for (reference in element.navigationReferences()) {
-                    val range = reference.rangeInElement.shiftRight(element.textRange.startOffset)
+                    val range = referenceRange(reference) ?: continue
                     if (range.startOffset < start || range.endOffset > end) continue
                     resolveTargets(reference).filter {
                         kind(source(it)) in setOf(SymbolKind.CLASS, SymbolKind.PROPERTY, SymbolKind.SYMBOL)
@@ -121,11 +145,41 @@ object ProjectGraphAnalyzer {
      * [foldFunctions] is false. Read action only.
      */
     internal fun buildScope(project: Project, scope: PsiElement, declarationsOnly: Boolean = false,
-        foldFunctions: Boolean = true): CallGraphResult =
-        buildFiles(project, listOf(scope.containingFile), explorationSource(scope), declarationsOnly, foldFunctions)
+        foldFunctions: Boolean = true): CallGraphResult {
+        val source = explorationSource(scope)
+        val lineRange = if (!declarationsOnly && !foldFunctions && source !is PsiFile) shownLineRange(source) else null
+        val analyzed = if (lineRange != null) shownContainer(source, lineRange) else source
+        return buildFiles(project, listOf(scope.containingFile), analyzed, declarationsOnly, foldFunctions, lineRange)
+    }
+
+    private fun shownLineRange(element: PsiElement): TextRange? {
+        val file = element.containingFile ?: return null
+        val document = PsiDocumentManager.getInstance(file.project).getDocument(file) ?: return null
+        val start = element.textRange.startOffset.coerceIn(0, document.textLength)
+        val end = (element.textRange.endOffset - 1).coerceIn(start, document.textLength)
+        val first = document.getLineNumber(start)
+        val last = document.getLineNumber(end)
+        return TextRange(document.getLineStartOffset(first), document.getLineEndOffset(last))
+    }
+
+    internal fun shownContainer(element: PsiElement, lineRange: TextRange): PsiElement {
+        val file = element.containingFile ?: return element
+        val chars = file.viewProvider.contents
+        var start = lineRange.startOffset.coerceIn(0, chars.length)
+        var end = lineRange.endOffset.coerceIn(start, chars.length)
+        while (start < end && chars[start].isWhitespace()) start++
+        while (end > start && chars[end - 1].isWhitespace()) end--
+        var container = element
+        while (container !is PsiFile && container.parent != null &&
+            (container.textRange.startOffset > start || container.textRange.endOffset < end)) {
+            container = container.parent
+        }
+        return container
+    }
 
     private fun buildFiles(project: Project, selectedFiles: List<PsiFile>?, scope: PsiElement? = null,
-        declarationsOnly: Boolean = false, foldFunctions: Boolean = true, progress: (String) -> Unit = {}): CallGraphResult {
+        declarationsOnly: Boolean = false, foldFunctions: Boolean = true, lineRange: TextRange? = null,
+        progress: (String) -> Unit = {}): CallGraphResult {
         progress("Finding supported project files")
         val manager = PsiManager.getInstance(project)
         val files = mutableListOf<PsiFile>()
@@ -214,7 +268,7 @@ object ProjectGraphAnalyzer {
                 occurrences += record
                 val relation = if (resolution.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                 record.displayTargets.forEach { edges += CallGraphEdge(owner, it, relation) }
-            }, scope = scope ?: file, foldFunctions = selectedFiles != null && foldFunctions) { from, to, relation ->
+            }, scope = scope ?: file, foldFunctions = selectedFiles != null && foldFunctions, lineRange = lineRange) { from, to, relation ->
                 val fromId = key(from)?.let(ids::get)
                 // Package imports (for example Go) resolve to a directory: link every graph file directly inside it.
                 val toIds = if (to is PsiDirectory) filesByDirectory[to.virtualFile.path].orEmpty()

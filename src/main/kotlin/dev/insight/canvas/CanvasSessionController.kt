@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.graph.CallGraphNode
+import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +34,29 @@ class CanvasSource(
     /** Links within the text, so a bounded snapshot never points past its end. */
     val links: List<CanvasLink> = links.filter { it.range.first >= 0 && it.range.last < text.length }
 }
+
+/**
+ * One project reference to a symbol found by [CanvasSessionController.findUsages]: [owner] is the enclosing
+ * declaration in the graph (or FILE when at top level), [filePath] its absolute path, [path] project-relative, and
+ * [line] 1-based.
+ */
+data class CanvasUsage(
+    val owner: Int,
+    val ownerName: String,
+    val ownerLabel: String,
+    val filePath: String,
+    val path: String,
+    val offset: Int,
+    val line: Int,
+    val kind: RelationKind,
+)
+
+data class CanvasUsageSearch(
+    val target: Int,
+    val targetName: String,
+    val usages: List<CanvasUsage>,
+    val truncated: Boolean,
+)
 
 /**
  * The IDE side of one canvas session, without any Swing: builds the root file's source and each card's, opens cards
@@ -166,6 +190,48 @@ internal class CanvasSessionController(
     fun target(id: Int): CanvasTarget? = node(id)?.let { node ->
         CanvasTarget(node.id, node.name, canvasTargetLabel(node, ::relative), relative(node.filePath), nodeLine(node)?.plus(1),
             canvasTargetNote(node) == null)
+    }
+
+    /** Whether [node] is a project symbol whose usages can be searched. */
+    fun canFindUsages(node: Int?): Boolean {
+        val target = node?.let(::node) ?: return false
+        return !target.unresolved && target.kind != SymbolKind.FILE
+    }
+
+    /**
+     * Searches project files for references to graph symbol [target], adding the declarations of referencing files to
+     * the exploration without resolving their bodies. References whose enclosing declaration is [target] itself are
+     * left out.
+     */
+    suspend fun findUsages(target: Int, limit: Int = 100): CanvasUsageSearch {
+        val targetNode = node(target) ?: error("Unknown symbol #$target.")
+        val found = withContext(Dispatchers.Default) { exploration.findUsages(target, limit) }
+        val usages = found.usages.filterNot { it.owner == target }.mapNotNull { usage ->
+            val ownerNode = node(usage.owner) ?: return@mapNotNull null
+            val relative = relative(usage.filePath).orEmpty()
+            CanvasUsage(
+                owner = usage.owner,
+                ownerName = ownerNode.name,
+                ownerLabel = canvasTargetLabel(ownerNode, ::relative),
+                filePath = usage.filePath,
+                path = relative,
+                offset = usage.offset,
+                line = usage.line,
+                kind = usage.kind,
+            )
+        }
+        return CanvasUsageSearch(target, targetNode.name, usages, found.truncated)
+    }
+
+    /** Where a card opened from [cardId]'s usage list anchors in [cardId]'s source: its declared name or first line. */
+    fun usageAnchor(cardId: String?): IntRange {
+        val source = source(cardId) ?: return 0 until 0
+        val name = source.node?.let(::node)?.name?.substringBefore('(')?.substringBefore('<')?.substringBefore(':')?.trim()?.takeIf { it.isNotBlank() }
+        val match = name?.let { Regex("\\b${Regex.escape(it)}\\b").find(source.text) }
+        if (match != null) return match.range
+        val firstLine = source.text.lineSequence().firstOrNull().orEmpty()
+        val start = firstLine.indexOfFirst { !it.isWhitespace() }
+        return if (start < 0) 0 until firstLine.length else start..firstLine.indexOfLast { !it.isWhitespace() }
     }
 
     /** Replaces an excerpt with its full file and links, keeping the card's identity, chat and children. */

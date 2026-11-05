@@ -24,6 +24,9 @@ interface CallGraphLanguageSupport {
     /** Maps synthetic elements (for example Kotlin light methods seen from Java) to their source declaration. */
     fun unwrap(element: PsiElement): PsiElement? = null
 
+    /** Follows an import binding or alias returned by reference resolution to the imported declaration. */
+    fun unwrapImport(element: PsiElement): PsiElement? = null
+
     /** Complete source to read when opening a declaration whose PSI holds only its name (for example a binding). */
     fun explorationSource(element: PsiElement): PsiElement? = null
 

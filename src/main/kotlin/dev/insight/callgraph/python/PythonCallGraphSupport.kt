@@ -28,9 +28,10 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
     override fun explorationSource(element: PsiElement): PsiElement? {
         if (element !is PyTargetExpression) return null
         // The target alone excludes its annotation and RHS, including multiline calls and their arguments.
-        return PsiTreeUtil.getParentOfType(element, PyStatement::class.java)?.takeIf {
-            it is PyAssignmentStatement || it is PyTypeDeclarationStatement || it is PyAugAssignmentStatement
-        }
+        return PsiTreeUtil.getParentOfType(element, PyWithItem::class.java)
+            ?: PsiTreeUtil.getParentOfType(element, PyStatement::class.java)?.takeIf {
+                it is PyAssignmentStatement || it is PyTypeDeclarationStatement || it is PyAugAssignmentStatement
+            }
     }
 
     override fun navigationReferences(element: PsiElement): List<PsiReference>? {
@@ -73,6 +74,7 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
         is PyClass -> SymbolKind.CLASS
         is PyFunction -> SymbolKind.FUNCTION
         is PyNamedParameter -> SymbolKind.PARAMETER.takeUnless { isImplicit(element) }
+        is PyTypeAliasStatement -> SymbolKind.SYMBOL
         is PyTargetExpression -> targetKind(element)
         else -> null
     }
@@ -81,6 +83,15 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
         element is PyImportStatementBase -> RelationKind.IMPORT
         element is PyArgumentList && element.parent is PyClass -> RelationKind.INHERITS
         else -> null
+    }
+
+    override fun unwrapImport(element: PsiElement): PsiElement? {
+        if (element is PyImportElement || element.parent is PyImportElement) {
+            val importElement = element as? PyImportElement ?: element.parent as PyImportElement
+            val reference = importElement.importReferenceExpression ?: return null
+            return navigationReferences(reference).orEmpty().flatMap(::resolveTargets).firstOrNull()?.takeUnless { it === element }
+        }
+        return null
     }
 
     /** References to later assignments still belong to the binding's first declaration in this scope. */
@@ -140,6 +151,7 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
     }
 
     private fun targetKind(target: PyTargetExpression): SymbolKind? {
+        if (target.parent is PyImportElement) return null
         val name = nameOf(target) ?: return null
         if (target.qualifier != null) {
             val owner = target.containingClass ?: return null
@@ -161,7 +173,7 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
                 var child = element.firstChild
                 while (child != null) {
                     when (child) {
-                        is PyFunction, is PyClass, is PyLambdaExpression, is PyComprehensionElement -> {}
+                        is PyFunction, is PyClass, is PyLambdaExpression, is PyComprehensionElement, is PyImportStatementBase -> {}
                         is PyTargetExpression -> if (child.qualifier == null) nameOf(child)?.let { result.putIfAbsent(it, child) }
                         else -> walk(child)
                     }

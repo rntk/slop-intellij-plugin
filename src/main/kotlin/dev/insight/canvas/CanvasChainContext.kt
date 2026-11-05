@@ -173,7 +173,8 @@ val canvasChatPrompt = """
     Tools for reading, which leave the canvas as it is
     - read_file, search_text and list_files read anything in the project, inside the chain or not.
     - read_card shows any card's summary and source; list_symbols lists the clickable symbols in a card's source (or
-      the root file's) with their lines and where they lead; canvas_overview lists every card on the canvas.
+      the root file's) with their lines and where they lead; find_usages searches the project for callers and
+      references to a card's symbol or a symbol in its source; canvas_overview lists every card on the canvas.
 
     Tools for showing, which change what the developer sees
     - open_symbol clicks a symbol in a card's source, or the root file's, and opens its card, as the developer would.
