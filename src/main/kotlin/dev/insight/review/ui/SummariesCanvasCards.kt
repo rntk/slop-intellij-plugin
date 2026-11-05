@@ -4,6 +4,9 @@ import dev.insight.review.PatchSource
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.vfs.LocalFileSystem
+import dev.insight.canvas.OpenCanvasSessionAction
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
@@ -224,6 +227,15 @@ internal class SummariesCanvasCards(
                     inspectReviewFiles(project, if (node.kind == SummaryKind.ROOT) vocabulary.rootName else node.path, node.files.mapNotNull(sources::get))
                 }
                 inspect
+            },
+            openOnCanvas = project?.let { project ->
+                val open: (SummaryNode) -> Unit = { node ->
+                    val path = node.file?.absolutePath?.replace('\\', '/')
+                    val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByPath(it) }
+                    if (file != null && file.isValid && !file.isDirectory) OpenCanvasSessionAction().open(project, file)
+                    else Messages.showInfoMessage(project, "This file is not in the working tree, so it cannot be opened on a canvas.", "Open on Canvas")
+                }
+                open
             },
             resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { summaryActions.contextSummaries != null },
             resummaryEnabled = content.canRun && !summaryGenerationRunning,

@@ -62,6 +62,8 @@ internal class ChangeSummaryActions(
     val toChat: ((SummaryNode) -> Unit)? = null,
     /** Run the IDE's inspections over an entry's files and list the problems; null hides Inspect code. */
     val inspect: ((SummaryNode) -> Unit)? = null,
+    /** Open a file's canvas session (Open on canvas); null hides it. */
+    val openOnCanvas: ((SummaryNode) -> Unit)? = null,
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
         if (toChat != null && node.files.isNotEmpty()) menu.add(JMenuItem("To Chat").apply {
@@ -100,4 +102,7 @@ internal class ChangeSummaryActions(
 
     fun inspectAction(node: SummaryNode): (() -> Unit)? =
         if (node.files.isEmpty()) null else inspect?.let { inspect -> { inspect(node) } }
+
+    fun openOnCanvasAction(node: SummaryNode): (() -> Unit)? =
+        if (node.kind != SummaryKind.FILE) null else openOnCanvas?.let { open -> { open(node) } }
 }

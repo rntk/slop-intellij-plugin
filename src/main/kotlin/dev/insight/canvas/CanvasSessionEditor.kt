@@ -102,6 +102,11 @@ class OpenCanvasSessionAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
+        open(project, file)
+    }
+
+    /** Shows the canvas session of [file] in an editor tab: the open one, else a saved or new one. */
+    internal fun open(project: Project, file: VirtualFile) {
         val manager = FileEditorManager.getInstance(project)
         manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file }?.let {
             manager.openFile(it, true)
