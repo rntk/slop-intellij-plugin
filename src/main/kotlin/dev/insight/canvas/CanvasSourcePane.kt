@@ -35,7 +35,7 @@ import javax.swing.SwingUtilities
 /**
  * A native read-only viewer of one [source]: the plain text with the file's highlighting and its real line numbers,
  * links underlined, and native selection and copying. [owner] is the card the source belongs to, or null for the root
- * file. The canvas owns vertical scrolling; a line wider than [maxWidth] scrolls sideways within the pane.
+ * file. The canvas owns vertical scrolling unless the source is taller than [maxHeight]; a line wider than [maxWidth] scrolls sideways within the pane.
  */
 internal class CanvasSourcePane(
     project: Project,
@@ -58,6 +58,12 @@ internal class CanvasSourcePane(
     private var hovered: CanvasLink? = null
     /** The widest the pane grows before its lines scroll sideways, in pixels. */
     var maxWidth = Int.MAX_VALUE
+    /** The tallest the pane grows, in pixels; longer sources scroll vertically inside the pane. */
+    var maxHeight = Int.MAX_VALUE
+        set(value) {
+            field = value
+            capCanvasViewerHeight(editor, value)
+        }
 
     init {
         editor.highlighter = source.file?.let { EditorHighlighterFactory.getInstance().createEditorHighlighter(project, it) }
@@ -155,7 +161,7 @@ internal class CanvasSourcePane(
 
     private fun textOrigin(): Point = SwingUtilities.convertPoint(editor.contentComponent, 0, 0, this)
 
-    override fun getPreferredSize(): Dimension = canvasViewerSize(editor, width, maxWidth)
+    override fun getPreferredSize(): Dimension = canvasViewerSize(editor, width, maxWidth, maxHeight)
 
     override fun dispose() {
         if (!editor.isDisposed) EditorFactory.getInstance().releaseEditor(editor)
@@ -189,7 +195,7 @@ internal fun configureCanvasViewer(editor: EditorEx, wheel: (MouseWheelEvent) ->
     editor.setBorder(null)
     editor.scrollPane.isWheelScrollingEnabled = false
     val forwardWheel = MouseWheelListener { event ->
-        wheel(event)
+        if (!scrollInside(editor, event)) wheel(event)
         event.consume()
     }
     listOf(editor.contentComponent, editor.gutterComponentEx, editor.scrollPane).forEach { it.addMouseWheelListener(forwardWheel) }
@@ -197,15 +203,41 @@ internal fun configureCanvasViewer(editor: EditorEx, wheel: (MouseWheelEvent) ->
     editor.contentComponent.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
 }
 
+/** Lets [editor] scroll vertically within a height cap, or not at all when [maxHeight] is unbounded. */
+internal fun capCanvasViewerHeight(editor: EditorEx, maxHeight: Int) {
+    editor.scrollPane.verticalScrollBarPolicy =
+        if (maxHeight == Int.MAX_VALUE) ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER else ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+}
+
+/** Scrolls a height-capped [editor] by the wheel [event]; false when it can't move that way, so the canvas takes it. */
+private fun scrollInside(editor: EditorEx, event: MouseWheelEvent): Boolean {
+    if (event.isControlDown || event.isMetaDown) return false
+    if (editor.scrollPane.verticalScrollBarPolicy == ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER) return false
+    val model = editor.scrollingModel
+    val visible = model.visibleArea
+    val max = editor.contentComponent.preferredSize.height - visible.height
+    if (max <= 0) return false
+    val target = (visible.y + (event.preciseWheelRotation * editor.lineHeight * 3).toInt()).coerceIn(0, max)
+    if (target == visible.y) return false
+    model.disableAnimation()
+    try {
+        model.scrollVertically(target)
+    } finally {
+        model.enableAnimation()
+    }
+    return true
+}
+
 /**
- * A canvas viewer's size: its text, at most [maxWidth] wide. Laid out narrower than its text ([width], a card's), the
- * viewer scrolls sideways and needs room for the bar.
+ * A canvas viewer's size: its text, at most [maxWidth] wide and [maxHeight] tall. Laid out narrower than its text
+ * ([width], a card's), the viewer scrolls sideways; taller than [maxHeight], vertically. Each needs room for its bar.
  */
-internal fun canvasViewerSize(editor: EditorEx, width: Int, maxWidth: Int): Dimension {
+internal fun canvasViewerSize(editor: EditorEx, width: Int, maxWidth: Int, maxHeight: Int = Int.MAX_VALUE): Dimension {
     val text = editor.contentComponent.preferredSize
-    val natural = text.width + editor.gutterComponentEx.preferredSize.width
+    val verticalBar = if (text.height > maxHeight) editor.scrollPane.verticalScrollBar.preferredSize.width else 0
+    val natural = text.width + editor.gutterComponentEx.preferredSize.width + verticalBar
     val preferred = minOf(natural, maxWidth)
     val shown = if (width > 0) minOf(width, preferred) else preferred
     val bar = if (natural > shown) editor.scrollPane.horizontalScrollBar.preferredSize.height else 0
-    return Dimension(preferred, text.height + bar)
+    return Dimension(preferred, minOf(text.height, maxHeight) + bar)
 }

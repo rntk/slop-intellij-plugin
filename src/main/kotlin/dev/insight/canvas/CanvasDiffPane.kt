@@ -28,6 +28,12 @@ internal class CanvasDiffPane(project: Project, path: String, val rows: List<Can
     private val baseFontSize = editor.colorsScheme.editorFontSize2D
     /** The widest the pane grows before its lines scroll sideways, in pixels. */
     var maxWidth = Int.MAX_VALUE
+    /** The tallest the pane grows, in pixels; longer diffs scroll vertically inside the pane. */
+    var maxHeight = Int.MAX_VALUE
+        set(value) {
+            field = value
+            capCanvasViewerHeight(editor, value)
+        }
 
     init {
         editor.highlighter = EditorHighlighterFactory.getInstance().createEditorHighlighter(project,
@@ -56,7 +62,7 @@ internal class CanvasDiffPane(project: Project, path: String, val rows: List<Can
         revalidate()
     }
 
-    override fun getPreferredSize(): Dimension = canvasViewerSize(editor, width, maxWidth)
+    override fun getPreferredSize(): Dimension = canvasViewerSize(editor, width, maxWidth, maxHeight)
 
     override fun dispose() {
         if (!editor.isDisposed) EditorFactory.getInstance().releaseEditor(editor)

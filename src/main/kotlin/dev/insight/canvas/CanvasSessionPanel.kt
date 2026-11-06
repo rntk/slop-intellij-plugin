@@ -1030,6 +1030,8 @@ internal class CanvasSessionPanel(
                     val view = views[card.id] ?: return@mapNotNull null
                     view.sourcePane?.maxWidth = width - 2 * zoomScaled(9, zoom)
                     view.diffPane?.maxWidth = width - 2 * zoomScaled(9, zoom)
+                    view.sourcePane?.maxHeight = zoomScaled(CARD_SOURCE_MAX_HEIGHT, zoom)
+                    view.diffPane?.maxHeight = zoomScaled(CARD_SOURCE_MAX_HEIGHT, zoom)
                     view.setSize(width, maxOf(view.height, 1))
                     val height = view.preferredSize.height
                     view.setSize(width, height)
@@ -1094,7 +1096,8 @@ internal class CanvasSessionPanel(
         val LOG = logger<CanvasSessionPanel>()
         val ARROW = JBColor(Color(130, 150, 200), Color(110, 130, 175))
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
-        const val CARD_WIDTH = 560
+        const val CARD_WIDTH = 780
+        const val CARD_SOURCE_MAX_HEIGHT = 640
         const val ROOT_MAX_WIDTH = 960
         const val ROOT_CHAT_MIN_WIDTH = 480
         const val MIN_ZOOM = 0.05

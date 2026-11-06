@@ -12,7 +12,7 @@ Opening from Diff Review starts a new exploration with related changed files alr
 
 - Clicking a symbol or selecting text opens a card beside it, linked by an arrow. Every project name on every shown line is a symbol: imports, calls, types, type parameters, properties, parameters and variables, inside nested functions too.
 - A card shows meta information, a summary, the selection or the symbol's source, the chat history and a chat input. Every part folds.
-- A card's source works like the file: its symbols open further cards, so one chain can follow the code graph as far as the reader likes.
+- A card's source works like the file: its symbols open further cards, so one chain can follow the code graph as far as the reader likes.  Cards are wide enough for most lines, and a long source scrolls inside its card instead of stretching it.
 - Find usages on a symbol card, or in the context menu on any symbol, searches the project for callers and other references. Referencing declarations and source locations open as connected cards beside the current card so the walk can continue in either direction, even when a card's own text has no outgoing links.
 - Expand to file replaces a card's excerpt with its whole file, keeping its chat and branches. The reader can follow links anywhere in that file or chat about it; reopening the session keeps the expanded view.
 - Closing a card also closes the cards opened from it.
