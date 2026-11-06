@@ -45,9 +45,9 @@ intellijPlatform {
         ideaVersion {
             // Build against the lowest supported platform (2025.2, Java 21) so the
             // same artifact stays binary-compatible across the range; the ceiling
-            // must cover the newest validated IDE (2026.2, branch 262).
+            // must cover the newest supported IDE (2026.3, branch 263).
             sinceBuild = "252"
-            untilBuild = "262.*"
+            untilBuild = "263.*"
         }
     }
     pluginVerification { ides { create(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaUltimate, "2025.3.6") } }

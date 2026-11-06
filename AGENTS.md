@@ -40,7 +40,7 @@ Use `./build.sh` for compile, test, and packaging. Don't call `./gradlew` or `./
 - `src/main/resources/META-INF/`: `plugin.xml` and optional per-language descriptors (`call-graph-*.xml`, `diff-git.xml`).
 - `src/test/kotlin/dev/insight/`: JUnit 4 and IntelliJ Platform tests mirroring the main package structure.
 - `flows/`: design notes for the larger features.
-- `build.gradle.kts`: target platform (built against IU 2025.2.4, `sinceBuild` 252, `untilBuild` 262.*).
+- `build.gradle.kts`: target platform (built against IU 2025.2.4, `sinceBuild` 252, `untilBuild` 263.*).
 
 ## LLM workflow design
 

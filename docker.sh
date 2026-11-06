@@ -25,6 +25,9 @@ Examples:
   ./docker.sh test --rerun-tasks
   ./docker.sh gradle clean test buildPlugin verifyPluginStructure
 
+Packages the plugin for IDE builds 252 through 263. The SDK baseline and
+compatibility range are configured in build.gradle.kts, shared with build.sh.
+
 Docker commands use sudo. Run this script as your regular user; containers
 write bind-mounted output using your UID/GID. Gradle, dependencies, and the
 IntelliJ IDEA SDK (about 1.4 GB download, several GB unpacked) are cached in

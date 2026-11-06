@@ -22,6 +22,9 @@ Examples:
   ./build.sh test --tests 'dev.insight.chat.*'
   ./build.sh gradle compileKotlin compileTestKotlin --offline
 
+Packages the plugin for IDE builds 252 through 263. The SDK baseline and
+compatibility range are configured in build.gradle.kts, shared with docker.sh.
+
 The Docker-free counterpart of ./docker.sh, intended for coding agents that
 already run inside a container (.code_agents/). Gradle, dependencies, and the
 IntelliJ IDEA SDK (about 1.4 GB download, several GB unpacked) are cached in
