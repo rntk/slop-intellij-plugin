@@ -44,7 +44,9 @@ private val REVIEW_PRESENTATION_UPDATE = Key.create<() -> Unit>("insight.review.
 
 /** Follow new marks and links in a live checkbox, summary or status line, keeping the card's geometry and viewports. */
 internal fun updateReviewPresentation(component: JComponent) {
-    ClientProperty.get(component, REVIEW_PRESENTATION_UPDATE)?.invoke()
+    val update = ClientProperty.get(component, REVIEW_PRESENTATION_UPDATE) ?: return
+    update()
+    if (component is JTextComponent) updateWordTracing(component, resetColors = true)
 }
 
 internal fun installReviewPresentationUpdate(component: JComponent, update: () -> Unit) {
@@ -105,9 +107,10 @@ internal class SummaryReviewPresentation(
         }
         installReviewPresentationUpdate(area, update)
         update()
+        updateWordTracing(area, resetColors = true)
     }
 
-    /** Only review marks set foregrounds; word sizes and other run attributes stay. */
+    /** Clear foregrounds before applying review marks and restoring hover colors; keep other run attributes. */
     private fun clearForeground(doc: StyledDocument) {
         var offset = 0
         while (offset < doc.length) {

@@ -19,6 +19,9 @@ import javax.swing.JPopupMenu
 import javax.swing.SwingUtilities
 import javax.swing.text.DefaultHighlighter
 import javax.swing.text.JTextComponent
+import javax.swing.text.SimpleAttributeSet
+import javax.swing.text.StyleConstants
+import javax.swing.text.StyledDocument
 
 /**
  * The current trace and hover echo of one card's summaries. Every word context comes from the summaries' own citations
@@ -30,7 +33,7 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
     /** A node to scroll into view once the card is laid out again. */
     var reveal: String? = null
 
-    /** The segments linked to the last hover or selection, highlighted in the summaries below and above it. */
+    /** The segments linked to the last hover or selection, shown in the same color in the summaries below and above it. */
     var echo: SummaryEcho? = null
         private set
     /** Set by the session that owns this state: the citations of the current summaries, and how to repaint in place. */
@@ -145,13 +148,12 @@ internal fun traceMarks(tree: ReviewSummaryTree, trace: SummaryTrace?): Map<Stri
 
 /** Colors of word tracing, shared by the outline and both hierarchies. */
 internal object TraceStyle {
-    val TRACED_WORD = JBColor(Color(0xFFD866), Color(0x7A6420))
+    /** Shared foreground for the hovered passage and every linked summary passage. */
+    val HOVER_TEXT = JBColor(Color(0x006B76), Color(0x6ACBD4))
     val CONTEXT_WORD = JBColor(Color(0xD6E8FF), Color(0x2F4A6B))
     val BEST_MATCH = JBColor(Color(0xFFF1C2), Color(0x4A4126))
     val RELATED = JBColor(Color(0xEEF5FF), Color(0x2B3545))
     val MATCH_TEXT = JBColor(Color(0x8A6100), Color(0xD9B44A))
-    /** The words of segments linked to a hovered or selected part, in the summaries below and above it. */
-    val ECHO_WORD = JBColor(Color(0xE6DAFF), Color(0x463A66))
     /** The words of a match that continue the search below it, clicked to follow it. */
     val TRAIL_WORD = JBColor(Color(0xCDEFC4), Color(0x2F5A33))
     /** The outline of the traced card and every card on the way to a match. */
@@ -161,8 +163,8 @@ internal object TraceStyle {
 
 /** What hovering and searching do, for the status area; [selection] mentions searching selected text. */
 internal fun tracingHint(selection: Boolean = false): String =
-    "Hover over a summary to highlight what it condenses below and what condenses it above. " +
-        "Right-click a highlighted part and choose Search to open the summaries or lines it cites" +
+    "Hover over a summary to color its text and related summaries above and below. " +
+        "Right-click a colored part and choose Search to open the summaries or lines it cites" +
         if (selection) ", or select text and right-click Search." else "."
 
 /** The query and result of a trace; [where] says where its matches are shown. */
@@ -202,7 +204,7 @@ internal fun levelsBelow(match: SummaryMatch): String = "${match.levelsBelow} le
  * Moving the pointer over a word of [summary] immediately shows its context: the words of the cited segment it lies in. A
  * left click on such a word does not search, so the reader can place the caret or select words there; searching starts
  * only from the context menu: right-clicking a word offers searches for its whole segment, that word alone, and selected
- * text. The traced word is marked strongly and its context lightly. A click beside the words calls [select]. With
+ * text. The traced word and its context share a text color with their related passages. A click beside the words calls [select]. With
  * [searchSelection], right-clicking selected text offers to search for it. With [searchTab], both menus also offer Search
  * tab, which searches in a new tab of its own. With [follow], a summary the current search found related marks the words
  * that continue it, and clicking one, or choosing Search on it, searches further down from them.
@@ -222,14 +224,23 @@ internal fun installWordTracing(
     fun tracing() = state.tracing?.takeIf { it.identity == identity && it.summary == summary }
     fun trail() = follow?.let { state.resultTrace?.related?.firstOrNull { it.identity == identity }?.next?.takeIf { it.summary == summary } }
     val highlights = mutableListOf<Any>()
+    val document = area.document as? StyledDocument
+    // Preserve each word's normal color, including reviewed text, without changing font metrics.
+    fun colors() = document?.let { doc -> Array(doc.length) {
+        StyleConstants.getForeground(doc.getCharacterElement(it).attributes)
+    } }
+    var originalColors = colors()
+    var coloredOffsets = emptySet<Int>()
     var painted: SummaryTracing? = null
     var paintedTrail: SummaryContext? = null
     var paintedEcho: List<IntRange>? = null
-    fun updateHighlights() {
+    fun updateHighlights(resetColors: Boolean) {
+        // Review decoration has replaced all foregrounds; capture its new baseline before applying hover colors.
+        if (resetColors) { originalColors = colors(); coloredOffsets = emptySet() }
         val current = tracing()
         val next = trail()
         val echo = state.echo?.ranges?.get(identity)
-        if (current === painted && next === paintedTrail && echo == paintedEcho) return
+        if (!resetColors && current === painted && next === paintedTrail && echo == paintedEcho) return
         painted = current
         paintedTrail = next
         paintedEcho = echo
@@ -239,17 +250,31 @@ internal fun installWordTracing(
             if (start < end && end <= area.document.length)
                 highlights += area.highlighter.addHighlight(start, end, DefaultHighlighter.DefaultHighlightPainter(color))
         }
-        // Only the words of a segment are marked, so its spaces and punctuation stay plain.
-        echo?.let { ranges -> words.filter { word -> ranges.any { word.start <= it.last && word.end > it.first } } }
-            ?.forEach { mark(it.start, it.end, TraceStyle.ECHO_WORD) }
-        next?.context?.forEach { mark(it.start, it.end, TraceStyle.TRAIL_WORD) }
-        current?.let {
-            current.context.context.filter { it.index != current.word.index }.forEach { mark(it.start, it.end, TraceStyle.CONTEXT_WORD) }
-            mark(current.word.start, current.word.end, TraceStyle.TRACED_WORD)
+        // Only words are emphasized; spaces and punctuation keep their original style.
+        val emphasized = echo?.let { ranges ->
+            words.filter { word -> ranges.any { word.start <= it.last && word.end > it.first } }
+        }.orEmpty() + current?.context?.context.orEmpty()
+        val offsets = emphasized.flatMap { it.start until it.end }.toSet()
+        val baseline = originalColors
+        if (document != null && baseline != null) {
+            val changed = ((coloredOffsets - offsets) + (offsets - coloredOffsets)).sorted()
+            var index = 0
+            while (index < changed.size) {
+                val start = changed[index]
+                val color = if (start in offsets) TraceStyle.HOVER_TEXT else baseline[start]
+                var end = start + 1
+                index++
+                while (index < changed.size && changed[index] == end &&
+                    (if (end in offsets) TraceStyle.HOVER_TEXT else baseline[end]) == color) { end++; index++ }
+                val attributes = SimpleAttributeSet().apply { StyleConstants.setForeground(this, color) }
+                document.setCharacterAttributes(start, end - start, attributes, false)
+            }
         }
+        coloredOffsets = offsets
+        next?.context?.forEach { mark(it.start, it.end, TraceStyle.TRAIL_WORD) }
     }
     ClientProperty.put(area, WORD_TRACING_UPDATE, ::updateHighlights)
-    updateHighlights()
+    updateHighlights(false)
     /** The word of [candidates] under [point]: the nearest offset is not enough, the pointer must be on the word itself. */
     fun hit(point: Point, candidates: (SummaryWord) -> Boolean): SummaryWord? {
         val offset = area.viewToModel2D(point)
@@ -411,11 +436,11 @@ internal fun selectionMenu(area: JTextComponent, point: Point?): JPopupMenu? {
     return ClientProperty.get(area, SELECTION_MENU)?.invoke(point)
 }
 
-private val WORD_TRACING_UPDATE = Key.create<() -> Unit>("insight.summary.wordTracingUpdate")
+private val WORD_TRACING_UPDATE = Key.create<(Boolean) -> Unit>("insight.summary.wordTracingUpdate")
 
 /** Repaint word contexts and echoes without replacing text components or their scroll panes. */
-internal fun updateWordTracing(area: JTextComponent) {
-    ClientProperty.get(area, WORD_TRACING_UPDATE)?.invoke()
+internal fun updateWordTracing(area: JTextComponent, resetColors: Boolean = false) {
+    ClientProperty.get(area, WORD_TRACING_UPDATE)?.invoke(resetColors)
 }
 
 private val TRACE_DECORATION_RESET = Key.create<() -> Unit>("insight.summary.traceDecorationReset")

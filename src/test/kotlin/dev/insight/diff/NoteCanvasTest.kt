@@ -1324,10 +1324,17 @@ class NoteCanvasTest : BasePlatformTestCase() {
         layoutTree(canvas)
     }
 
-    private fun highlighted(area: javax.swing.text.JTextComponent): List<String> =
-        area.highlighter.highlights.sortedBy { it.startOffset }.map { area.text.substring(it.startOffset, it.endOffset) }
+    private fun coloredWords(area: javax.swing.text.JTextComponent): List<String> {
+        assertTrue("Hover must not add background highlights", area.highlighter.highlights.isEmpty())
+        val document = area.document as javax.swing.text.StyledDocument
+        return dev.insight.review.ui.SummaryWord.split(area.text).filter { word ->
+            (word.start until word.end).all { offset ->
+                javax.swing.text.StyleConstants.getForeground(document.getCharacterElement(offset).attributes) == dev.insight.review.ui.TraceStyle.HOVER_TEXT
+            }
+        }.map { it.text }
+    }
 
-    fun testHoverHighlightsTheCitedPartAndEchoesWhatItCondensesAndWhatCondensesIt() {
+    fun testHoverColorsTheCitedPartAndEchoesWhatItCondensesAndWhatCondensesIt() {
         val summaries = linkedSummaries()
         val tree = summaries.tree
         val canvas = NoteCanvas({}, {}).apply {
@@ -1341,21 +1348,25 @@ class NoteCanvasTest : BasePlatformTestCase() {
             fun rowBounds() = descendants(canvas).filter { it.name?.startsWith("summary:") == true }.associate { row ->
                 row.name to javax.swing.SwingUtilities.convertRectangle(row.parent, row.bounds, canvas)
             }
+            val texts = descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>()
+            fun characterBounds() = texts.map { area -> (0..area.document.length).map { area.modelToView2D(it) } }
+            val beforeCharacters = characterBounds()
             val before = rowBounds()
             val root = summaryText(canvas, "root")
             pointAtWord(canvas, root, "canvas", MouseEvent.MOUSE_MOVED)
             assertEquals("Hover must not move any summary row", before, rowBounds())
+            assertEquals("Hover must not shift any character", beforeCharacters, characterBounds())
             assertEquals("Removes the canvas and hierarchy views", canvas.summariesView.tracing!!.context.query)
-            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), highlighted(root))
+            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), coloredWords(root))
             // Both parts of ui/ and both of its files are echoed; the guide is not.
-            assertEquals(listOf("Deletes", "the", "canvas", "view", "the", "hierarchy", "view"), highlighted(summaryText(canvas, "directory:ui")))
-            assertEquals(listOf("Deletes", "the", "canvas", "view"), highlighted(summaryText(canvas, "file:ui/Canvas.kt")))
-            assertEquals(emptyList<String>(), highlighted(summaryText(canvas, "file:docs/Guide.md")))
+            assertEquals(listOf("Deletes", "the", "canvas", "view", "the", "hierarchy", "view"), coloredWords(summaryText(canvas, "directory:ui")))
+            assertEquals(listOf("Deletes", "the", "canvas", "view"), coloredWords(summaryText(canvas, "file:ui/Canvas.kt")))
+            assertEquals(emptyList<String>(), coloredWords(summaryText(canvas, "file:docs/Guide.md")))
             // Hovering a file echoes what condenses it above, up to the root.
             pointAtWord(canvas, summaryText(canvas, "file:ui/Hierarchy.kt"), "hierarchy", MouseEvent.MOUSE_MOVED)
-            assertEquals(listOf("the", "hierarchy", "view"), highlighted(summaryText(canvas, "directory:ui")))
-            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), highlighted(summaryText(canvas, "root")))
-            assertEquals(emptyList<String>(), highlighted(summaryText(canvas, "file:ui/Canvas.kt")))
+            assertEquals(listOf("the", "hierarchy", "view"), coloredWords(summaryText(canvas, "directory:ui")))
+            assertEquals(listOf("Removes", "the", "canvas", "and", "hierarchy", "views"), coloredWords(summaryText(canvas, "root")))
+            assertEquals(emptyList<String>(), coloredWords(summaryText(canvas, "file:ui/Canvas.kt")))
         } finally { canvas.dispose() }
     }
 

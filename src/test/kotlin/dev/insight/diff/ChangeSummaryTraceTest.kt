@@ -172,6 +172,65 @@ class ChangeSummaryTraceTest {
         assertTrue(links.targets(a.id, logging, SummaryKind.DIRECTORY).isEmpty())
     }
 
+    @Test fun `hover colors its context and related words then restores their original styles`() {
+        javax.swing.SwingUtilities.invokeAndWait {
+            val state = object : SummaryTraceState() {
+                override fun showTrace(tree: ReviewSummaryTree, trace: SummaryTrace) {}
+            }
+            val areas = listOf(root, a, one, three).associate { node ->
+                node.identity to javax.swing.JTextPane().apply { text = summaries.text(node.id)!! }
+            }
+            val related = areas.getValue(one.identity)
+            val original = javax.swing.text.SimpleAttributeSet().apply {
+                javax.swing.text.StyleConstants.setBold(this, true)
+                javax.swing.text.StyleConstants.setFontSize(this, 24)
+                javax.swing.text.StyleConstants.setForeground(this, java.awt.Color.GRAY)
+            }
+            related.styledDocument.setCharacterAttributes(0, 4, original, false)
+            val session = SummaryTraceSession(state, { summaries }, update = {
+                areas.values.forEach { dev.insight.review.ui.updateWordTracing(it) }
+            }) {}
+            areas.forEach { (identity, area) -> installWordTracing(area, identity, area.text, state, session::trace) }
+            session.trace(root.identity, wordIndex(root.id, "resilient"), search = false)
+            state.echo(root.identity, listOf(SummaryWord.split(summaries.text(root.id)!!).first()))
+            fun colored(area: javax.swing.JTextPane, offset: Int) =
+                javax.swing.text.StyleConstants.getForeground(area.styledDocument.getCharacterElement(offset).attributes) ==
+                    dev.insight.review.ui.TraceStyle.HOVER_TEXT
+            assertTrue(colored(areas.getValue(root.identity), 0))
+            assertTrue(colored(areas.getValue(a.identity), 0))
+            assertTrue(colored(related, related.text.indexOf("retries")))
+            assertFalse(colored(related, related.text.indexOf("logs")))
+            assertFalse(colored(areas.getValue(three.identity), 0))
+            areas.values.forEach { assertTrue("Hover uses no background highlights", it.highlighter.highlights.isEmpty()) }
+            session.clear()
+            assertFalse(colored(areas.getValue(root.identity), 0))
+            assertFalse(colored(areas.getValue(a.identity), 0))
+            assertFalse(colored(related, related.text.indexOf("retries")))
+            assertFalse(colored(related, 0))
+            val attributes = related.styledDocument.getCharacterElement(0).attributes
+            assertTrue("Existing bold survives", javax.swing.text.StyleConstants.isBold(attributes))
+            assertEquals(24, javax.swing.text.StyleConstants.getFontSize(attributes))
+            assertEquals(java.awt.Color.GRAY, javax.swing.text.StyleConstants.getForeground(attributes))
+            // Changing review marks while hovering must refresh the color restored when the hover clears.
+            state.echo(root.identity, listOf(SummaryWord.split(summaries.text(root.id)!!).first()))
+            dev.insight.review.ui.installReviewPresentationUpdate(related) {
+                val reviewed = javax.swing.text.SimpleAttributeSet().apply {
+                    javax.swing.text.StyleConstants.setForeground(this, java.awt.Color.LIGHT_GRAY)
+                }
+                related.styledDocument.setCharacterAttributes(0, related.document.length, reviewed, false)
+            }
+            dev.insight.review.ui.updateReviewPresentation(related)
+            assertTrue(colored(related, related.text.indexOf("retries")))
+            session.clear()
+            assertEquals(java.awt.Color.LIGHT_GRAY, javax.swing.text.StyleConstants.getForeground(
+                related.styledDocument.getCharacterElement(related.text.indexOf("retries")).attributes))
+            state.echo(root.identity, listOf(SummaryWord.split(summaries.text(root.id)!!).first()))
+            dev.insight.review.ui.SummaryReviewPresentation(summaries, ReviewedFiles(), emptyMap()) { _, _ -> }
+                .decorate(related, one)
+            assertTrue("Initial review styling preserves the hover color", colored(related, related.text.indexOf("retries")))
+        }
+    }
+
     @Test fun `To file and To directory mark every cited target and select the chosen one`() {
         javax.swing.SwingUtilities.invokeAndWait {
             val shown = mutableListOf<SummaryTrace>()

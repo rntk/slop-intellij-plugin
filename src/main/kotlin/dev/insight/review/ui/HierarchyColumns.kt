@@ -90,7 +90,7 @@ internal abstract class HierarchyColumnsPanel(
         preferredSize = Dimension(maxOf(availableWidth, right), (bottom - scaled(ROW_GAP)).coerceAtLeast(0))
     }
 
-    protected open fun summaryFont(): Font = font(JBFont.label())
+    protected open fun summaryFont(): Font = font(JBFont.label().asPlain())
 
     /**
      * Text beside a leaf or folded card; it starts one column to the right and takes the rest of the width. A traced match is

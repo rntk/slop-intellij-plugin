@@ -343,7 +343,7 @@ internal abstract class DocumentColumnsPanel(
     protected open fun noteBody(file: ReviewSource, summary: String?, missingSummary: String, width: Int): JComponent =
         summaryBody("file:${file.path}", summary, missingSummary, width)
 
-    protected open fun summaryFont(): Font = cardFont(JBFont.label())
+    protected open fun summaryFont(): Font = cardFont(JBFont.label().asPlain())
 
     protected open fun summaryWordWidth(identity: String, summary: String): Int =
         summary.split(Regex("\\s+")).maxOfOrNull(getFontMetrics(summaryFont())::stringWidth) ?: 0

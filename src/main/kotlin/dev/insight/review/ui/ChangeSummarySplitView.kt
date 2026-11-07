@@ -264,7 +264,7 @@ internal class ChangeSummarySplitPanel(
         val text: JComponent = if (repeated) JLabel(" ").apply { font = font(JBFont.label()).forSummaryText() }
             else if (summary != null) WrappedSummaryText(
             summary.replace('\n', ' ').replace('\r', ' ').replace('\u2028', ' ').replace('\u2029', ' '), null,
-            font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
+            font(JBFont.label().asPlain()).forSummaryText(),
             if (state.tagsCloud) wordWeights[node.id] else emptyMap(), breakLongWords = state.softWrap).also { area ->
                 if (!state.traced(node)) area.componentPopupMenu = menu(node)
                 actions.review?.decorate(area, node)

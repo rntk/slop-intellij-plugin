@@ -104,7 +104,7 @@ internal class ChangeSummariesPanel(
         val header = header(node, textWidth)
         val missing = if (card.running) "summarizing…" else "no summary yet"
         val summaryText = if (summary != null) WrappedSummaryText(summary, textWidth,
-                font(if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).forSummaryText(),
+                font(JBFont.label().asPlain()).forSummaryText(),
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
                 .also { area ->
                     actions.review?.decorate(area, node)
