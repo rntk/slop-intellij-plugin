@@ -7,6 +7,7 @@ import dev.insight.review.buildSummaryTree
 import org.junit.Assert.*
 import org.junit.Test
 import dev.insight.review.ui.SummaryWordWeights
+import dev.insight.review.ui.cloudHtml
 
 class SummaryWordWeightsTest {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
@@ -81,5 +82,15 @@ class SummaryWordWeightsTest {
         )))[0]
         assertEquals(baseline, withFiller)
         assertTrue(SummaryWordWeights(ReviewSummaries(tree, mapOf(a to "And the or", b to "with")))[0].isEmpty())
+    }
+
+    @Test fun `cloud html sizes weighted words only and escapes the rest`() {
+        val html = cloudHtml("Cache <b>token</b> & the end", mapOf("cache" to 1.0, "token" to 0.5), 10f)!!
+        assertEquals("<span style='font-size:18pt'>Cache</span> &lt;b&gt;<span style='font-size:14pt'>token</span>&lt;/b&gt; &amp; the end", html)
+    }
+
+    @Test fun `cloud html is absent when no word has a weight`() {
+        assertNull(cloudHtml("nothing weighted here", mapOf("other" to 1.0), 10f))
+        assertNull(cloudHtml("anything", emptyMap(), 10f))
     }
 }

@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.xml.util.XmlStringUtil
 import dev.insight.review.ReviewSummaries
 import java.awt.Dimension
 import java.awt.Font
@@ -28,6 +29,29 @@ internal class SummaryWordWeights(private val summaries: ReviewSummaries) {
             ln(1.0 + count) * (1.0 + ln((documents.size + 1.0) / (documentCounts.getValue(word) + 1.0)))
         }
     }
+}
+
+/** How much larger than its base size the heaviest word is drawn, as a fraction of the base size. */
+private const val CLOUD_EMPHASIS = 0.8f
+
+/**
+ * [text] as escaped HTML for a Swing label, with each weighted word sized as in [WrappedSummaryText]; null when no word
+ * carries a weight, so the caller can keep its plain markup. Sizes are points derived from [baseSize].
+ */
+internal fun cloudHtml(text: String, weights: Map<String, Double>, baseSize: Float): String? {
+    val maximum = weights.values.maxOrNull() ?: return null
+    val sized = SummaryWord.split(text).mapNotNull { word -> weights[word.text.lowercase()]?.let { word to it } }
+    if (sized.isEmpty() || maximum <= 0.0) return null
+    val html = StringBuilder()
+    var offset = 0
+    for ((word, weight) in sized) {
+        html.append(XmlStringUtil.escapeString(text.substring(offset, word.start)))
+        val size = (baseSize * (1f + CLOUD_EMPHASIS * (weight / maximum).toFloat())).roundToInt().coerceAtLeast(1)
+        html.append("<span style='font-size:").append(size).append("pt'>")
+            .append(XmlStringUtil.escapeString(text.substring(word.start, word.end))).append("</span>")
+        offset = word.end
+    }
+    return html.append(XmlStringUtil.escapeString(text.substring(offset))).toString()
 }
 
 /**
@@ -64,7 +88,7 @@ internal class WrappedSummaryText(
         for (word in SummaryWord.split(value)) {
             val weight = weights[word.text.lowercase()] ?: continue
             // Bound the emphasis so the summary remains readable as a sentence.
-            val scale = 1f + 0.8f * (weight / maximum).toFloat()
+            val scale = 1f + CLOUD_EMPHASIS * (weight / maximum).toFloat()
             val attributes = SimpleAttributeSet()
             StyleConstants.setFontSize(attributes, (baseFont.size2D * scale).roundToInt().coerceAtLeast(1))
             styledDocument.setCharacterAttributes(word.start, word.end - word.start, attributes, false)

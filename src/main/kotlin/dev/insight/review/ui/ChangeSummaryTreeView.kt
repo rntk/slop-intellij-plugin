@@ -34,6 +34,7 @@ internal class ChangeSummaryTreePanel(
     private val vocabulary: dev.insight.review.ReviewVocabulary = dev.insight.review.ReviewVocabulary.DIFF,
 ) : JPanel(null), Disposable {
     private val root = summaryLinkTree(card.summaries) { state.shows(it, card.summaries) }
+    private val wordWeights = SummaryWordWeights(card.summaries)
     internal var zoom = state.treeZoom ?: zoom
         private set
     private val editors = mutableMapOf<String, EditorFrame>()
@@ -431,11 +432,13 @@ internal class ChangeSummaryTreePanel(
         label.foreground = if (dimmed) help else UIUtil.getLabelForeground()
         val marker = if (node.children.isNotEmpty() || node.file) if (folded) "▸ " else "▾ " else ""
         val directory = node.directory().let { if (it.length > MAX_DIRECTORY) "…" + it.takeLast(MAX_DIRECTORY - 1) else it }
-        if (directory.isEmpty() && node.text.length <= 60) { label.text = marker + node.text; return }
+        // A claim is a segment of its owner's summary, so it is weighted against the owner's child summaries, as in the split view.
+        val cloud = if (state.tagsCloud && !node.file) cloudHtml(node.text, wordWeights[node.owner.id], label.font.size2D) else null
+        if (directory.isEmpty() && node.text.length <= 60 && cloud == null) { label.text = marker + node.text; return }
         val width = if (node.text.length > 60) " style='width:${scaled(WRAP_WIDTH)}px'" else ""
         val below = if (directory.isEmpty()) "" else "<br><small><font color='" + ColorUtil.toHtmlColor(help) + "'>" +
             XmlStringUtil.escapeString(directory) + "</font></small>"
-        label.text = "<html><div" + width + ">" + marker + XmlStringUtil.escapeString(node.text) + below + "</div></html>"
+        label.text = "<html><div" + width + ">" + marker + (cloud ?: XmlStringUtil.escapeString(node.text)) + below + "</div></html>"
     }
 
     /**
@@ -702,7 +705,7 @@ internal class ChangeSummaryTreePanel(
             unused.remove(key)
             // Only the position follows the zoom: like the native editors, the text stays readable when zoomed out.
             val width = JBUI.scale(bounds.width)
-            val fits = block.fill(full, card, width, 1.0, actions, vocabulary)
+            val fits = block.fill(full, card, width, 1.0, actions, vocabulary, if (state.tagsCloud) wordWeights else null)
             // Later blocks sit on top: Swing paints lower indices last.
             add(block, 0)
             block.bounds = Rectangle(scaled(bounds.x), scaled(bounds.y), width,

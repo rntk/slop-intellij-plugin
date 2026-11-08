@@ -111,9 +111,9 @@ internal class FullSummaryBlock(
         addMouseListener(object : MouseAdapter() { override fun mousePressed(e: MouseEvent) = front() })
     }
 
-    /** Lays the entries out for [width] at [zoom]; returns the height that fits them without scrolling. */
+    /** Lays the entries out for [width] at [zoom], sizing words by [weights] when given; returns the height that fits them without scrolling. */
     fun fill(entries: List<FullSummaryEntry>, card: SummariesCard, width: Int, zoom: Double,
-             actions: ChangeSummaryActions, vocabulary: ReviewVocabulary): Int {
+             actions: ChangeSummaryActions, vocabulary: ReviewVocabulary, weights: SummaryWordWeights? = null): Int {
         fun scaled(n: Int) = zoomScaled(n, zoom)
         val tree = card.summaries.tree
         val help = UIUtil.getContextHelpForeground()
@@ -142,7 +142,7 @@ internal class FullSummaryBlock(
                     foreground = help
                 }
                 else -> WrappedSummaryText(summary.text, textWidth,
-                    (if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).zoomed(zoom).forSummaryText(), emptyMap())
+                    (if (node.kind == SummaryKind.ROOT) JBFont.label().asBold() else JBFont.label()).zoomed(zoom).forSummaryText(), weights?.get(node.id) ?: emptyMap())
                     .also { area ->
                         actions.review?.decorate(area, node)
                         if (area.text == summary.text) for (segment in entry.route.sorted()) {

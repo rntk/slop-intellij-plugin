@@ -623,4 +623,24 @@ class SummaryTreeViewTest : BasePlatformTestCase() {
             assertTrue(canvas.summariesView.treeExpanded.isNotEmpty())
         } finally { canvas.dispose() }
     }
+
+    fun testTagsCloudSizesTreeWordsByTheirWeightAndOffRestoresPlainText() {
+        val summaries = deepSummaries()
+        fun widths(cloud: Boolean): List<Int> {
+            val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false),
+                ChangeSummariesViewState().apply { treeLevel = 100; tagsCloud = cloud }, 1.0, ChangeSummaryActions({}, {}, {}, {}), project)
+            try { return treeButtons(panel).map { it.preferredSize.width } } finally { panel.dispose() }
+        }
+        fun texts(cloud: Boolean): List<String> {
+            val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false),
+                ChangeSummariesViewState().apply { treeLevel = 100; tagsCloud = cloud }, 1.0, ChangeSummaryActions({}, {}, {}, {}), project)
+            try { return treeButtons(panel).map { it.text } } finally { panel.dispose() }
+        }
+        assertTrue("Sized words should widen the labels", widths(true).sum() > widths(false).sum())
+        assertTrue(texts(false).none { "font-size" in it })
+        val cloud = texts(true)
+        assertTrue(cloud.any { "<span style='font-size:" in it && "Level" in it })
+        // Words weigh the same everywhere they appear, so only the markup differs from the plain text.
+        assertEquals(texts(false).map { it.replace(Regex("<[^>]+>"), "") }, cloud.map { it.replace(Regex("<[^>]+>"), "") })
+    }
 }

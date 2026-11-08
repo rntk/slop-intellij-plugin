@@ -172,7 +172,7 @@ internal class SummariesCanvasCards(
                     toolTipText = "Wrap summaries to the available width and expand their tree rows to match"
                     addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
                 })
-                if (summariesView.mode != ReviewSummariesMode.TREE) add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
+                add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
                     name = "summaries-tags-cloud"
                     isOpaque = false
                     font = scaledFont(JBFont.small())
