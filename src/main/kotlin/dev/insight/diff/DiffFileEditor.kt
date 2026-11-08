@@ -138,6 +138,13 @@ internal class DiffFileEditor(val file: ReviewFile, project: Project?, scrollTo:
         add(panel.component, BorderLayout.CENTER)
     }
 
+    /** Scales only the viewer's text, for hosts that size the component themselves, such as the summary tree. */
+    fun zoomText(zoom: Double) {
+        if (this.zoom == zoom) return
+        this.zoom = zoom
+        applyZoom()
+    }
+
     fun resizeFor(width: Int, zoom: Double) {
         this.zoom = zoom
         applyZoom()

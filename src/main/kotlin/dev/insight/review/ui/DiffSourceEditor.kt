@@ -47,8 +47,14 @@ internal class DiffSourceEditor(val block: ReviewSourceBlock, project: Project?)
             block.range.startLine + line, column, block.absolutePath)
     }
 
+    /** Scales only the editor's text, for hosts that size the component themselves, such as the summary tree. */
+    fun zoomText(zoom: Double) {
+        val size = (baseFontSize * zoom).toFloat()
+        if (editor.colorsScheme.editorFontSize2D != size) editor.setFontSize(size)
+    }
+
     fun resizeFor(width: Int, zoom: Double) {
-        editor.setFontSize((baseFontSize * zoom).toFloat())
+        zoomText(zoom)
         val lines = block.range.endLine - block.range.startLine + 1
         preferredSize = Dimension(width, minOf(editor.lineHeight * lines + JBUI.scale(24), (JBUI.scale(400) * zoom).roundToInt()))
     }

@@ -28,6 +28,82 @@ class SummaryTreeViewTest : BasePlatformTestCase() {
         })
     }
 
+    private fun treeButtons(panel: Container) = descendants(panel).filterIsInstance<JButton>()
+        .filter { it.name?.startsWith("summary-tree:") == true }
+
+    fun testWrappedSummariesGetBoxesTallEnoughForTheirText() {
+        val files = listOf("a/b/c.kt", "other/d/e.kt").map {
+            ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1", "old\n", "new\n")
+        }
+        val tree = buildSummaryTree(files)
+        val long = "A rather long statement of what this part does, which needs several wrapped lines to be read in full. ".repeat(3)
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { node ->
+            node.id to Summary(listOf(SummarySegment(long + node.id,
+                if (node.kind == SummaryKind.FILE) listOf(SummarySource.Rows(1, 3))
+                else node.children.indices.map { SummarySource.Claim(it, 0) })))
+        })
+        val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false), ChangeSummariesViewState().apply { treeLevel = 100 },
+            1.0, ChangeSummaryActions({}, {}, {}, {}), project)
+        try {
+            val buttons = treeButtons(panel)
+            assertTrue(buttons.isNotEmpty())
+            for (button in buttons) {
+                val view = button.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey) as javax.swing.text.View
+                val insets = button.insets
+                view.setSize((button.width - insets.left - insets.right).toFloat(), 0f)
+                val needed = view.getPreferredSpan(javax.swing.text.View.Y_AXIS) + insets.top + insets.bottom
+                assertTrue("Text needs $needed but the box is ${button.height} high", button.height > needed + 2)
+            }
+        } finally { panel.dispose() }
+    }
+
+    fun testTreeTextIsTenPercentLargerThanTheLabelFont() {
+        val panel = ChangeSummaryTreePanel(SummariesCard(deepSummaries(), false, false), ChangeSummariesViewState(), 1.0,
+            ChangeSummaryActions({}, {}, {}, {}), project)
+        try {
+            val expected = UIUtil.getLabelFont().size2D * 1.1f
+            assertTrue(treeButtons(panel).all { Math.abs(it.font.size2D - expected) < 0.01f })
+        } finally { panel.dispose() }
+    }
+
+    fun testAnimatedFoldingKeepsTheClickedPartWhereItWasAndRemovesLeavingPartsAtTheEnd() {
+        val summaries = deepSummaries((0 until 10).flatMap { listOf("d$it/f1.kt", "d$it/f2.kt") })
+        val root = summaryLinkTree(summaries)
+        val state = ChangeSummariesViewState().apply { treeLevel = 100 }
+        val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false), state, 1.0,
+            ChangeSummaryActions({}, {}, {}, {}), project)
+        val scroll = javax.swing.JScrollPane(panel).apply { setSize(500, 200); doLayout(); viewport.doLayout() }
+        try {
+            val port = scroll.viewport
+            panel.animated = true
+            fun folders(node: SummaryLinkNode): List<SummaryLinkNode> = (if (node.children.size == 2 && node.children.all { it.file }) listOf(node) else emptyList()) + node.children.flatMap(::folders)
+            val key = folders(root)[5].key
+            fun clicked() = treeButtons(panel).single { it.name == "summary-tree:$key" }
+            port.viewPosition = java.awt.Point(0, clicked().y - 80)
+            val offset = clicked().y - port.viewPosition.y
+            assertTrue("The part starts in view: $offset", offset in 0..200)
+            val visible = treeButtons(panel).size
+            val canvasY = clicked().y
+            clicked().doClick()
+            // The leaving parts stay while they glide into their parent and fade.
+            assertEquals(visible, treeButtons(panel).size)
+            for (progress in listOf(0.0, 0.25, 0.5, 0.75, 1.0)) {
+                panel.motionFrame(progress)
+                assertEquals("Progress $progress", offset, clicked().y - port.viewPosition.y)
+            }
+            assertEquals(visible - 2, treeButtons(panel).size)
+            assertTrue("The fold reflowed the tree, so the view had to follow", clicked().y != canvasY)
+            // Unfolding again brings them back from their parent, still without moving the clicked part.
+            clicked().doClick()
+            assertEquals(visible - 2 + 2, treeButtons(panel).size)
+            panel.motionFrame(0.5)
+            assertEquals(offset, clicked().y - port.viewPosition.y)
+            panel.motionFrame(1.0)
+            assertEquals(visible, treeButtons(panel).size)
+            assertEquals(offset, clicked().y - port.viewPosition.y)
+        } finally { panel.dispose() }
+    }
+
     fun testLevelsUnfoldAllBranchesAndOverrideIndividualFolds() {
         val summaries = deepSummaries()
         val state = ChangeSummariesViewState()
@@ -492,6 +568,24 @@ class SummaryTreeViewTest : BasePlatformTestCase() {
             assertEquals(java.awt.Dimension(1000, 500), reopened.parent.size)
             panel.resizeDiff(key, 0, 0)
             assertEquals(java.awt.Dimension(320, 160), reopened.parent.size)
+        } finally { panel.dispose() }
+    }
+
+    fun testOpenedEditorsScaleTheirTextWithTheTreeZoom() {
+        val file = ReviewFile("a.kt", "/repo/a.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1", "old\n", "new\n")
+        val summaries = ReviewSummaries(buildSummaryTree(listOf(file)))
+        val state = ChangeSummariesViewState()
+        val panel = ChangeSummaryTreePanel(SummariesCard(summaries, false, false), state, 1.0,
+            ChangeSummaryActions({}, {}, {}, {}), project)
+        try {
+            descendants(panel).filterIsInstance<JButton>().single { it.text.contains("a.kt") }.doClick()
+            val editor = descendants(panel).filterIsInstance<DiffFileEditor>().single()
+            val size = editor.editors.first().colorsScheme.editorFontSize2D
+            assertTrue(editor.parent.width >= 800 && editor.parent.height >= 300)
+            panel.zoomTo(0.5)
+            assertEquals(size / 2, editor.editors.first().colorsScheme.editorFontSize2D, 0.6f)
+            panel.zoomTo(2.0)
+            assertEquals(size * 2, editor.editors.first().colorsScheme.editorFontSize2D, 0.6f)
         } finally { panel.dispose() }
     }
 
