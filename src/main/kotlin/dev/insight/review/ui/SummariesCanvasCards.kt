@@ -177,7 +177,7 @@ internal class SummariesCanvasCards(
                     isOpaque = false
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Size summary words by their importance in the child summaries"
+                    toolTipText = "Size summary words by their importance in the child summaries or file source"
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
                 add(viewSelector("summaries-mode", summaryModes(), summariesView.mode, scaled(4), scaledFont(JBFont.small()), ::summaryModeLabel, ::summaryModeTooltip) {

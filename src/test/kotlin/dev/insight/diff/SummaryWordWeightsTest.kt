@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.codereview.CodeFile
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.SourceChunk
 import dev.insight.review.SummaryKind
@@ -10,10 +11,15 @@ import dev.insight.review.ui.SummaryWordWeights
 import dev.insight.review.ui.cloudHtml
 
 class SummaryWordWeightsTest {
-    private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
+    private fun file(path: String, patch: String = "@@ -1 +1 @@\n-old\n+new\n") = ReviewFile(path, "/repo/$path", null, "modified", patch, "1")
 
     @Test fun `each parent counts only direct children including repetitions and ignoring case`() {
-        val tree = buildSummaryTree(listOf(file("app/a.kt"), file("app/b.kt"), file("docs/c.md"), file("docs/d.md")))
+        val tree = buildSummaryTree(listOf(
+            file("app/a.kt", "@@ -1,2 +1,2 @@\n-old old\n+new\n"),
+            file("app/b.kt"),
+            file("docs/c.md"),
+            file("docs/d.md"),
+        ))
         val app = tree.nodes.single { it.path == "app" }
         val docs = tree.nodes.single { it.path == "docs" }
         val summaries = ReviewSummaries(tree, mapOf(
@@ -31,7 +37,8 @@ class SummaryWordWeightsTest {
         assertEquals(setOf("token", "cache", "docs"), weights[tree.root.id].keys)
         assertEquals(1, weights[tree.root.id].values.toSet().size)
         assertTrue(weights[docs.id].getValue("token") > weights[app.id].getValue("token"))
-        assertTrue(weights[app.children[0]].isEmpty())
+        assertEquals(setOf("old", "new"), weights[app.children[0]].keys)
+        assertTrue(weights[app.children[0]].getValue("old") > weights[app.children[0]].getValue("new"))
         val changedSibling = ReviewSummaries(tree, tree.nodes.mapNotNull { node -> summaries.text(node.id)?.let {
             node.id to if (node.id == docs.children[0]) "cache ".repeat(100) else it
         } }.toMap())
@@ -50,8 +57,12 @@ class SummaryWordWeightsTest {
         assertTrue(SummaryWordWeights(ReviewSummaries(tree))[0].isEmpty())
     }
 
-    @Test fun `files with parts count their part summaries and part leaves have no counts`() {
-        val tree = buildSummaryTree(listOf(file("large.kt")), chunks = {
+    @Test fun `files with parts count their part summaries and part leaves count their own source lines`() {
+        val source = (1..20).joinToString("\n") { line ->
+            if (line <= 10) "fun parseToken() = token" else "fun cacheValue() = value"
+        } + "\n"
+        val codeFile = CodeFile("large.kt", "/repo/large.kt", source)
+        val tree = buildSummaryTree(listOf(codeFile), chunks = {
             listOf(SourceChunk(0, 1..10, "a"), SourceChunk(1, 11..20, "b"))
         })
         val file = tree.nodes.single { it.kind == SummaryKind.FILE }
@@ -60,7 +71,29 @@ class SummaryWordWeightsTest {
         assertEquals(setOf("parsing"), weights[file.id].keys)
         assertTrue(weights[file.id].getValue("parsing") > weights[tree.root.id].getValue("parsing"))
         assertTrue(weights[tree.root.id].getValue("parsing") > 0.0)
-        assertTrue(file.children.all { weights[it].isEmpty() })
+        assertEquals(setOf("fun", "parsetoken", "token"), weights[file.children[0]].keys)
+        assertEquals(setOf("fun", "cachevalue", "value"), weights[file.children[1]].keys)
+    }
+
+    @Test fun `leaf files count diff hunks for diffs and the whole file for source reviews`() {
+        val diffFile = ReviewFile(
+            "diff.kt", "/repo/diff.kt", null, "modified",
+            "diff --git a/diff.kt b/diff.kt\n--- a/diff.kt\n+++ b/diff.kt\n@@ -1,2 +1,2 @@\n contextLine\n-oldToken\n+newToken newToken\n",
+            "1",
+            before = "unseenBefore\ncontextLine\noldToken\n",
+            after = "unseenAfter\ncontextLine\nnewToken newToken\n",
+        )
+        val codeFile = CodeFile("code.kt", "/repo/code.kt", "class TokenCache {\n    val token = 1\n    val other = token\n}\n")
+        val tree = buildSummaryTree(listOf(diffFile, codeFile))
+        val diffNode = tree.nodes.single { it.path == "diff.kt" }
+        val codeNode = tree.nodes.single { it.path == "code.kt" }
+        val weights = SummaryWordWeights(ReviewSummaries(tree))
+        assertEquals(setOf("contextline", "oldtoken", "newtoken"), weights[diffNode.id].keys)
+        assertTrue(weights[diffNode.id].getValue("newtoken") > weights[diffNode.id].getValue("oldtoken"))
+        assertFalse("diff" in weights[diffNode.id])
+        assertFalse("unseenafter" in weights[diffNode.id])
+        assertEquals(setOf("class", "tokencache", "val", "token", "1", "other"), weights[codeNode.id].keys)
+        assertTrue(weights[codeNode.id].getValue("token") > weights[codeNode.id].getValue("tokencache"))
     }
 
     @Test fun `words spread across every child have less weight than equally frequent distinctive words`() {

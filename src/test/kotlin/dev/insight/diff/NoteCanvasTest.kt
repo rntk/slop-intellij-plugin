@@ -161,7 +161,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
     fun testSummaryWordSizesUseChildFrequenciesInEveryView() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }.forEach { mode ->
         val tree = buildSummaryTree(listOf("a.kt", "b.kt").map { path ->
-            ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1,2 +1,2 @@\n-token token token\n+cache\n", "1")
         })
         val summary = "Token cache and new; Token."
         val leafSummary = "token TOKEN token cache " + "and ".repeat(50)
@@ -205,11 +205,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("cache", area().selectedText)
             assertWordFitsOnOneLine(area(), "Token")
             assertWordFitsOnOneLine(area(), "cache")
-            // A leaf has no child summaries to support larger words.
+            // A leaf sizes words from its own source.
             if (mode != ReviewSummariesMode.HIERARCHY) {
                 if (mode == ReviewSummariesMode.EXPLORER) clickSummary(canvas)
                 val leaf = descendants(canvas).filterIsInstance<WrappedSummaryText>().first { it.text == leafSummary }
-                assertEquals(leaf.font.size, leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(0).attributes).size)
+                val leafToken = leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(leaf.text.indexOf("token")).attributes).size
+                val leafCache = leaf.styledDocument.getFont(leaf.styledDocument.getCharacterElement(leaf.text.indexOf("cache")).attributes).size
+                assertTrue(leafToken > leafCache)
+                assertTrue(leafCache > leaf.font.size)
                 if (mode == ReviewSummariesMode.EXPLORER)
                     (descendants(canvas).single { it.name == "summary-explorer-back" } as javax.swing.JButton).doClick()
             }

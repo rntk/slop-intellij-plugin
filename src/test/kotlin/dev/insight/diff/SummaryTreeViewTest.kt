@@ -642,5 +642,21 @@ class SummaryTreeViewTest : BasePlatformTestCase() {
         assertTrue(cloud.any { "<span style='font-size:" in it && "Level" in it })
         // Words weigh the same everywhere they appear, so only the markup differs from the plain text.
         assertEquals(texts(false).map { it.replace(Regex("<[^>]+>"), "") }, cloud.map { it.replace(Regex("<[^>]+>"), "") })
+
+        // A file leaf merged with its single claim sizes words from the file's own source; an unsummarized file name stays plain.
+        val files = listOf("a.kt", "b.kt").map {
+            ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1 @@\n-old\n+new new\n", "1", "old\n", "new new\n")
+        }
+        val tree = buildSummaryTree(files)
+        val leafSummaries = ReviewSummaries(tree, mapOf(
+            tree.nodes.single { it.path == "a.kt" }.id to Summary(listOf(SummarySegment("Adds new behavior", listOf(SummarySource.Rows(1, 2))))),
+        ))
+        val panel = ChangeSummaryTreePanel(SummariesCard(leafSummaries, false, false),
+            ChangeSummariesViewState().apply { treeLevel = 100; tagsCloud = true }, 1.0, ChangeSummaryActions({}, {}, {}, {}), project)
+        try {
+            val leafTexts = treeButtons(panel).map { it.text }
+            assertTrue(leafTexts.any { "<span style='font-size:" in it && "new</span>" in it })
+            assertTrue(leafTexts.none { "<span style='font-size:" in it && "b.kt" in it })
+        } finally { panel.dispose() }
     }
 }

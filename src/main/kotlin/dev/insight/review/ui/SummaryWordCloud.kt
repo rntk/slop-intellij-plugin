@@ -1,7 +1,9 @@
 package dev.insight.review.ui
 
 import com.intellij.xml.util.XmlStringUtil
+import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.SummaryNode
 import java.awt.Dimension
 import java.awt.Font
 import javax.swing.JTextPane
@@ -14,20 +16,41 @@ import javax.swing.text.ViewFactory
 import kotlin.math.ln
 import kotlin.math.roundToInt
 
-/** TF-IDF within a node's direct child summaries, independently of folding, filtering and other branches. */
+/**
+ * TF-IDF within a node's direct child summaries, or from a leaf's own source when it has no children, independently of
+ * folding, filtering and other branches.
+ */
 internal class SummaryWordWeights(private val summaries: ReviewSummaries) {
     private val weights = mutableMapOf<Int, Map<String, Double>>()
 
     operator fun get(id: Int): Map<String, Double> = weights.getOrPut(id) {
-        val documents = summaries.tree[id].children
-            .mapNotNull(summaries::text)
-            .map { text -> SummaryWord.split(text).filter { it.meaningful }.map { it.text.lowercase() } }
+        val node = summaries.tree[id]
+        val documents = if (node.children.isNotEmpty()) {
+            node.children.mapNotNull(summaries::text).map(::words)
+        } else {
+            val source = leafSource(node)
+            if (source.isBlank()) emptyList() else listOf(words(source))
+        }
         val counts = documents.flatten().groupingBy { it }.eachCount()
         val documentCounts = documents.flatMap { it.toSet() }.groupingBy { it }.eachCount()
         // Smoothing retains emphasis for words shared by all children, including when there is only one child.
         counts.mapValues { (word, count) ->
             ln(1.0 + count) * (1.0 + ln((documents.size + 1.0) / (documentCounts.getValue(word) + 1.0)))
         }
+    }
+
+    private fun words(text: String): List<String> =
+        SummaryWord.split(text).filter { it.meaningful }.map { it.text.lowercase() }
+
+    private fun leafSource(node: SummaryNode): String {
+        val file = node.file ?: return ""
+        file.text?.let { text ->
+            val range = node.lines ?: return text
+            val lines = text.replace("\r\n", "\n").replace('\r', '\n').removeSuffix("\n").split('\n')
+            return range.filter { it - 1 in lines.indices }.joinToString("\n") { lines[it - 1] }
+        }
+        val diff = file as? PatchSource ?: return ""
+        return patchLines(diff.patch).joinToString("\n") { it.text }
     }
 }
 

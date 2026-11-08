@@ -10,7 +10,7 @@ The Diff view keeps the file tree beside the IDE’s native diff viewer. Select 
 
 The descriptions are generated from the content they summarize, and every claim in one cites what it was written from: a file's claims cite its lines, and a folder's or topic's claims cite the claims of the summaries directly below it. These citations are recorded while the summaries are written, so the views read the links directly instead of matching text afterwards. Hovering or selecting part of a summary shows its text and related summaries above and below in the same text color. Searching from it opens the cited summaries, or a file's cited lines. To file and To directory open the levels down to the files or folders it cites at any depth, highlight them, and select and scroll to the chosen one. Use the summaries to find areas worth exploring, then check the source or diff directly.
 
-Choosing a level unfolds folders through that level and folds everything deeper. In the Tree view, levels follow the displayed claim branches instead. Readers can also open or close individual entries.
+Choosing a level unfolds folders through that level and folds everything deeper. In the Tree view, levels follow the displayed claim branches instead. Readers can also open or close individual entries. Tags cloud sizes the words of each summary by their weight in the child summaries directly below it, or for a leaf file or part by their weight in its diff source code or the file's source code.
 
 Readers can mark files or directories as reviewed. Their summaries dim, and a claim in a higher summary dims once every file it cites, directly or through the levels between, is reviewed. Review marks follow the underlying evidence.
 

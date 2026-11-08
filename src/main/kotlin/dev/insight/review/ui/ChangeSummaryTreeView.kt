@@ -432,8 +432,8 @@ internal class ChangeSummaryTreePanel(
         label.foreground = if (dimmed) help else UIUtil.getLabelForeground()
         val marker = if (node.children.isNotEmpty() || node.file) if (folded) "▸ " else "▾ " else ""
         val directory = node.directory().let { if (it.length > MAX_DIRECTORY) "…" + it.takeLast(MAX_DIRECTORY - 1) else it }
-        // A claim is a segment of its owner's summary, so it is weighted against the owner's child summaries, as in the split view.
-        val cloud = if (state.tagsCloud && !node.file) cloudHtml(node.text, wordWeights[node.owner.id], label.font.size2D) else null
+        // A claim is a segment of its owner's summary, so it is weighted against the owner's child summaries or leaf source, as in the split view.
+        val cloud = if (state.tagsCloud && (!node.file || node.parts.isNotEmpty())) cloudHtml(node.text, wordWeights[node.owner.id], label.font.size2D) else null
         if (directory.isEmpty() && node.text.length <= 60 && cloud == null) { label.text = marker + node.text; return }
         val width = if (node.text.length > 60) " style='width:${scaled(WRAP_WIDTH)}px'" else ""
         val below = if (directory.isEmpty()) "" else "<br><small><font color='" + ColorUtil.toHtmlColor(help) + "'>" +
