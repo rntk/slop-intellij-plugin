@@ -15,4 +15,5 @@ internal data class CanvasState(
     val topics: TopicsCard? = null,
     val fileView: FileViewCard? = null,
     val explanation: ExplainResult? = null,
+    val grouping: TopicsCard? = null,
 )

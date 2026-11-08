@@ -131,6 +131,7 @@ internal fun normalizeTopic(value: String): String? {
 }
 
 internal fun isTopicsRequest(text: String): Boolean = ReviewCommand.parse(text) == ReviewCommand.TOPICS
+internal fun isGroupingRequest(text: String): Boolean = ReviewCommand.parse(text) == ReviewCommand.GROUPING
 
 data class ReviewTopicsRun(val topics: ReviewTopics, val requests: Int, val error: String?)
 
@@ -266,5 +267,12 @@ internal fun topicsReply(run: ReviewTopicsRun, empty: String = "There are no cha
     if (run.topics.files.isEmpty()) return empty
     return "${run.topics.groups.size} topics on the canvas · ${run.topics.labels.size} of ${run.topics.files.size} files · ${run.requests} requests." +
         if (run.topics.complete) "" else "\n\nSome files still need topics. Run /topics to continue." +
+            (run.error?.let { " Last failure: ${it.take(300)}" } ?: "")
+}
+
+internal fun groupingReply(run: ReviewTopicsRun, empty: String = "There are no changed files to group."): String {
+    if (run.topics.files.isEmpty()) return empty
+    return "${run.topics.groups.size} groups on the canvas · ${run.topics.labels.size} of ${run.topics.files.size} files · ${run.requests} requests." +
+        if (run.topics.complete) "" else "\n\nSome files still need grouping. Run /grouping to continue." +
             (run.error?.let { " Last failure: ${it.take(300)}" } ?: "")
 }

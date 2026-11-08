@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.summarizeGrouping
 import dev.insight.review.summarizeTopics
 import dev.insight.review.summarize
 import com.google.gson.JsonParser
@@ -231,5 +232,28 @@ class ChangeTopicSummariesTest {
         tree.nodes.forEach { node -> node.parent?.let { assertTrue(it < node.id); assertTrue(node.id in tree[it].children) } }
         assertEquals("Shared F3.kt.", reading.text(tree.nodes.single { it.identity == "file:F3.kt" }.id))
         assertEquals("Every wallet file in ${sharedTree.root.label}.", reading.text(wallet.id))
+    }
+
+    @Test fun `grouping summaries share file summaries with main and topic trees while keeping independent group nodes`() = runBlocking {
+        val state = DiffReviewState()
+        state.update(ReviewSnapshot(listOf(file("storage/file.kt"), file("network/http.kt")), emptyList()))
+        state.assignTopic(state.revision, "storage/file.kt", "Storage > File > Errors handling")
+        state.assignTopic(state.revision, "network/http.kt", "Network > Http > Errors handling")
+        state.assignGrouping(state.revision, "storage/file.kt", "Errors handling > Storage > File")
+        state.assignGrouping(state.revision, "network/http.kt", "Errors handling > Network > Http")
+        val existingFile = state.summaries.tree.nodes.single { it.path == "storage/file.kt" && it.kind == SummaryKind.FILE }
+        state.summarize(state.revision, mapOf(existingFile.id to "Existing storage summary"))
+        val summarizer = diffSummarizer({ request ->
+            val nodes = JsonParser.parseString(request.messages.last().content).asJsonObject.getAsJsonArray("nodes")
+            Completion("{\"summaries\":[${nodes.joinToString { "{\"id\":${it.asJsonObject["id"]},\"segments\":[{\"text\":\"Grouped summary\",\"from\":[\"1\"]}]}" }}]}")
+        }, null)
+        val run = summarizer.run(state.startGroupingSummaries(state.revision), "", { state.summarizeGrouping(state.revision, it) })
+        assertTrue(run.summaries.complete)
+        val topGroup = state.groupingSummaries.tree.nodes.single { it.identity == "topic:errors handling" }
+        assertEquals("Grouped summary", state.groupingSummaries.text(topGroup.id))
+        // File summaries written during grouping summary generation are shared back into the main Summaries tree and Topics seeding.
+        assertTrue(state.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.all { state.summaries.text(it.id) != null })
+        val seededTopics = state.startTopicSummaries(state.revision)
+        assertTrue(seededTopics.tree.nodes.filter { it.kind == SummaryKind.FILE }.all { seededTopics.text(it.id) != null })
     }
 }

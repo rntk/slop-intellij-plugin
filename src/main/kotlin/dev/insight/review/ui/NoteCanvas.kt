@@ -46,6 +46,7 @@ internal class NoteCanvas(
     private val sourceActions: SourceCanvasActions = SourceCanvasActions(),
     private val summaryActions: SummaryCanvasActions = SummaryCanvasActions(),
     private val topicActions: TopicCanvasActions = TopicCanvasActions(),
+    private val groupingActions: TopicCanvasActions = TopicCanvasActions(),
     /** The review's own pages and the summaries Diff mode; see [CanvasExtension]. */
     private val extension: CanvasExtension? = null,
 ) : JPanel(BorderLayout()), Disposable {
@@ -71,14 +72,27 @@ internal class NoteCanvas(
     private val notes: List<ReviewNote> get() = state.notes
     private val sources: List<ReviewSourceBlock> get() = state.sources
     private val topics: TopicsCard? get() = state.topics
+    private val grouping: TopicsCard? get() = state.grouping
     internal val topicsView get() = topicsCardBuilder.view
+    internal val groupingView get() = groupingCardBuilder.view
     private val topicsCardBuilder = TopicsCanvasCard(vocabulary, reviewed, sourceActions, summaryActions, topicActions,
         TopicsCanvasActions(open, openSummaryNode, showSummaryNode, openSummaryLines, ::toggleReviewed,
             refresh = { refreshCard(CanvasTabKey.Topics) }), project)
+    private val groupingCardBuilder = TopicsCanvasCard(
+        vocabulary, reviewed, sourceActions, summaryActions, groupingActions,
+        TopicsCanvasActions(open, openSummaryNode, showSummaryNode, openSummaryLines, ::toggleReviewed,
+            refresh = { refreshCard(CanvasTabKey.Grouping) }),
+        project,
+        TopicsCardLabels(vocabulary.groupingTitle, vocabulary.groupingTooltip,
+            command = "/grouping", singular = "group", plural = "groups", closeText = "Remove change grouping"),
+    )
     private val summarySession: CanvasSummarySession = CanvasSummarySession(summaryActions.contextSummaries,
         currentTree = { summaries?.summaries?.tree }, changed = { version ->
             summariesCardBuilder.generationChanged(version)
-            if (version == null) refreshTopics()
+            if (version == null) {
+                refreshTopics()
+                refreshGrouping()
+            }
         })
     internal val topicSummariesRunning: Boolean get() = summarySession.topicsRunning
     private val summaryGenerationRunning: Boolean get() = summarySession.running
@@ -88,7 +102,7 @@ internal class NoteCanvas(
         summarySession, SummariesCanvasActions(
             open = open, openNode = openSummaryNode, showNode = showSummaryNode, openLines = openSummaryLines,
             toggleReviewed = ::toggleReviewed, replace = ::replaceSummaryCard, rebuildPages = { showNotes(state) },
-            focus = ::focusCard, restyleReview = ::restyleReview, refreshTopics = ::refreshTopics,
+            focus = ::focusCard, restyleReview = ::restyleReview, refreshTopics = { refreshTopics(); refreshGrouping() },
             documentZoom = { documentZoom }, zoomControls = ::documentZoomControls, installWheelZoom = ::installDocumentWheelZoom,
             requestInstructions = { node, recursive, destination -> requestResummaryInstructions(node, recursive, destination) },
         ), project, extension)
@@ -104,7 +118,9 @@ internal class NoteCanvas(
         if (summaryActions.markReviewed != null) summaryActions.markReviewed.invoke(node, value) else reviewed.set(node.files, value)
         summariesCardBuilder.syncReview()
         topicsCardBuilder.syncReview()
+        groupingCardBuilder.syncReview()
         restyleReview(CanvasTabKey.Topics)
+        restyleReview(CanvasTabKey.Grouping)
     }
 
     private fun restyleReview(key: CanvasTabKey) {
@@ -126,14 +142,14 @@ internal class NoteCanvas(
     }
 
     fun showNotes(state: CanvasState) {
-        if (state.topics == null) {
-            summarySession.stopTopics()
-        }
+        if (state.topics == null) summarySession.stopTopics(CanvasTabKey.Topics)
+        if (state.grouping == null) summarySession.stopTopics(CanvasTabKey.Grouping)
         fileViewCardBuilder.update(state.fileView)
         this.state = state
         extension?.update()
         val summaries = state.summaries
         topicsCardBuilder.update(topics)
+        groupingCardBuilder.update(grouping)
         summariesCardBuilder.update(summaries)
         snapshotCards.update(sources)
         val selected = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
@@ -142,8 +158,11 @@ internal class NoteCanvas(
         tabs.removeAll(); cards.clear(); pages.clear(); stickyTargets.clear()
         val flow = changeFlow(notes).takeIf { it.rows.isNotEmpty() }
         val summaryCards = summariesCardBuilder.buildCards()
-        val built = listOfNotNull(explanation?.let { CanvasTabKey.Explanation to explanationCard(it) },
-            topics?.let { CanvasTabKey.Topics to topicsCard(it) }).toMap() +
+        val built = listOfNotNull(
+            explanation?.let { CanvasTabKey.Explanation to explanationCard(it) },
+            topics?.let { CanvasTabKey.Topics to topicsCard(it) },
+            grouping?.let { CanvasTabKey.Grouping to groupingCard(it) },
+        ).toMap() +
             extension?.leadingCards().orEmpty() +
             summaryCards +
             listOfNotNull(fileView?.let { CanvasTabKey.FileView to fileViewCard(it) }, flow?.let { CanvasTabKey.SymbolFlow to snapshotCards.flowCard(it) }).toMap() +
@@ -194,6 +213,7 @@ internal class NoteCanvas(
     }
 
     internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
+    internal fun focusGrouping() { focusCard(CanvasTabKey.Grouping) }
 
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
     internal fun focusDiffOverview() { focusCard(CanvasTabKey.DiffOverview) }
@@ -229,6 +249,7 @@ internal class NoteCanvas(
 
     private fun tabTitle(key: CanvasTabKey): String = extension?.title(key) ?: when (key) {
         CanvasTabKey.Topics -> "Topics"
+        CanvasTabKey.Grouping -> "Grouping"
         CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
@@ -281,6 +302,7 @@ internal class NoteCanvas(
         )
         when (key) {
             CanvasTabKey.Topics -> topicsCardBuilder.scroll = target.y
+            CanvasTabKey.Grouping -> groupingCardBuilder.scroll = target.y
             CanvasTabKey.FileView -> fileViewCardBuilder.scroll = target.y
             else -> summariesCardBuilder.scrollTo(key, target.y)
         }
@@ -384,10 +406,29 @@ internal class NoteCanvas(
 
     private fun topicsCard(content: TopicsCard): JPanel = topicsCardBuilder.card(
         content, documentZoom, documentZoomControls(CanvasTabKey.Topics),
-        summaryGenerationRunning, summarySession.topicStatus, topicEntryMenu(content),
+        summaryGenerationRunning, summarySession.topicStatusFor(CanvasTabKey.Topics), topicEntryMenu(content, topicActions) { topics },
     ) { installDocumentWheelZoom(CanvasTabKey.Topics, it) }
 
     private fun refreshTopics() = topicsCardBuilder.refresh()
+
+    /** Follows grouping assignments, summaries and chat state without rebuilding the other cards while the card stays on the canvas. */
+    fun updateGrouping(content: TopicsCard?) {
+        if ((content == null) != (grouping == null) || (content != null && cards[CanvasTabKey.Grouping] == null)) {
+            showNotes(state.copy(grouping = content))
+            return
+        }
+        if (content == grouping) return
+        state = state.copy(grouping = content)
+        groupingCardBuilder.update(content)
+        refreshGrouping()
+    }
+
+    private fun groupingCard(content: TopicsCard): JPanel = groupingCardBuilder.card(
+        content, documentZoom, documentZoomControls(CanvasTabKey.Grouping),
+        summaryGenerationRunning, summarySession.topicStatusFor(CanvasTabKey.Grouping), topicEntryMenu(content, groupingActions) { grouping },
+    ) { installDocumentWheelZoom(CanvasTabKey.Grouping, it) }
+
+    private fun refreshGrouping() = groupingCardBuilder.refresh()
 
     internal var requestResummaryInstructions: (SummaryNode, Boolean, ResummaryDestination) -> String? = { node, recursive, destination ->
         ResummaryDialog(this, node, recursive, destination).let { if (it.showAndGet()) it.instructions else null }
@@ -397,8 +438,12 @@ internal class NoteCanvas(
      * Fill or regenerate one topic, file or level of the topic hierarchy without waiting for the whole hierarchy. Regeneration
      * rewrites topics only: file summaries are shared with the Summaries card, where Resummarize opens them as a version.
      */
-    private fun topicEntryMenu(content: TopicsCard): ((String) -> JPopupMenu)? {
-        val canSummarize = summaryActions.contextSummaries != null && topicActions.saveTopicSummaries != null
+    private fun topicEntryMenu(
+        content: TopicsCard,
+        actions: TopicCanvasActions = topicActions,
+        currentContent: () -> TopicsCard? = { topics },
+    ): ((String) -> JPopupMenu)? {
+        val canSummarize = summaryActions.contextSummaries != null && actions.saveTopicSummaries != null
         if (!canSummarize && summaryActions.chatNode == null) return null
         val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
         val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
@@ -419,20 +464,25 @@ internal class NoteCanvas(
                 }
                 if (!canSummarize) return@apply
                 item("Fill summaries", enabled && fillSummaryRequest(seeded, node).nodeIds.isNotEmpty(),
-                    "Write the missing summaries of this entry and everything beneath it") { summarizeTopic(identity, null) }
+                    "Write the missing summaries of this entry and everything beneath it") { summarizeTopic(identity, null, actions, currentContent) }
                 if (node.isTopicBranch) {
-                    item("Resummarize", enabled, "Regenerate this topic's summary from the summaries beneath it") { summarizeTopic(identity, false) }
-                    item("Resummarize all", enabled, "Regenerate this topic and every sub-topic beneath it") { summarizeTopic(identity, true) }
+                    item("Resummarize", enabled, "Regenerate this topic's summary from the summaries beneath it") { summarizeTopic(identity, false, actions, currentContent) }
+                    item("Resummarize all", enabled, "Regenerate this topic and every sub-topic beneath it") { summarizeTopic(identity, true, actions, currentContent) }
                 }
             }
         }
     }
 
     /** Fills the missing summaries beneath [identity] when [recursive] is null, else regenerates it, saving into the review. */
-    private fun summarizeTopic(identity: String, recursive: Boolean?) {
+    private fun summarizeTopic(
+        identity: String,
+        recursive: Boolean?,
+        actions: TopicCanvasActions = topicActions,
+        currentContent: () -> TopicsCard? = { topics },
+    ) {
         if (summaryActions.contextSummaries == null) return
-        val save = topicActions.saveTopicSummaries ?: return
-        val content = topics ?: return
+        val save = actions.saveTopicSummaries ?: return
+        val content = currentContent() ?: return
         if (!content.canRun || summaryGenerationRunning) return
         val seeded = seedTopicSummaries(content.topicSummaries, content.summaries)
         val node = seeded.tree.nodes.firstOrNull { it.identity == identity } ?: return
@@ -441,9 +491,9 @@ internal class NoteCanvas(
             resummaryRequest(seeded, node, recursive, instructions) { it.isTopicBranch }
         }
         // The dialog is modal; the topics may have changed or another run started meanwhile.
-        if (request.nodeIds.isEmpty() || topics !== content || summaryGenerationRunning) return
+        if (request.nodeIds.isEmpty() || currentContent() !== content || summaryGenerationRunning) return
         val start = if (request.regenerate) seeded.without(request.nodeIds) else seeded
-        summarySession.startTopics(start, request, save)
+        summarySession.startTopics(start, request, if (actions === groupingActions) CanvasTabKey.Grouping else CanvasTabKey.Topics, save)
     }
 
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
@@ -491,6 +541,7 @@ internal class NoteCanvas(
         val card = when (key) {
             CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
+            CanvasTabKey.Grouping -> grouping?.let(::groupingCard)
             CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
                 summariesCardBuilder.card(key)
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
@@ -521,6 +572,7 @@ internal class NoteCanvas(
         summarySession.dispose()
         summariesCardBuilder.dispose()
         topicsCardBuilder.dispose()
+        groupingCardBuilder.dispose()
         snapshotCards.dispose()
         extension?.dispose()
     }

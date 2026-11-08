@@ -12,4 +12,8 @@ interface ReviewContext {
     suspend fun assignTopic(path: String, label: String): ReviewTopics = throw ToolInputException("Review topics are unavailable")
     suspend fun startTopicSummaries(): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
     suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Topic summaries are unavailable")
+    suspend fun startGrouping(): ReviewTopics = throw ToolInputException("Review grouping is unavailable")
+    suspend fun assignGrouping(path: String, label: String): ReviewTopics = throw ToolInputException("Review grouping is unavailable")
+    suspend fun startGroupingSummaries(): ReviewSummaries = throw ToolInputException("Grouping summaries are unavailable")
+    suspend fun summarizeGrouping(entries: Map<Int, Summary>): ReviewSummaries = throw ToolInputException("Grouping summaries are unavailable")
 }

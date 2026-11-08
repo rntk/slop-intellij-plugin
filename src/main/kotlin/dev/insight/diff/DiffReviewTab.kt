@@ -36,9 +36,11 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.CapturedReviewContext
 import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.GROUPING_SUMMARIES_MISSING
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
 import dev.insight.review.current
+import dev.insight.review.groupingReply
 import dev.insight.review.summariesFocus
 import dev.insight.review.summariesReply
 import dev.insight.review.topicsReply
@@ -148,6 +150,12 @@ internal class DiffReviewTab(
             removeTopics = { state.hideTopics(); renderCanvas() },
             saveTopicSummaries = { updated, ids -> state.replaceTopicSummaries(updated, ids); summariesChanged() },
         ),
+        groupingActions = TopicCanvasActions(
+            fillTopicSummaries = { if (canSummarize) session.send("/grouping-summaries") },
+            generateTopics = { if (canSummarize) session.send("/grouping") },
+            removeTopics = { state.hideGrouping(); renderCanvas() },
+            saveTopicSummaries = { updated, ids -> state.replaceGroupingSummaries(updated, ids); summariesChanged() },
+        ),
         extension = diffCards,
     )
 
@@ -158,6 +166,8 @@ internal class DiffReviewTab(
             "Read the change as summaries, from the whole change down to each file (/summaries)"),
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"),
+        ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
+            "Read every diff as one document, grouped by shared change cause and affected code (/grouping)"),
         ReviewViewOption(CanvasTabKey.Words, "Words",
             "Chart the words of the removed and added lines: removed on the left, added on the right"),
         ReviewViewOption(CanvasTabKey.DiffOverview, "Diff overview",
@@ -183,7 +193,7 @@ internal class DiffReviewTab(
         "Ask about ${focus.label}. Its summaries and diff are in this chat's context; other project files are read when a " +
             "question needs them." else
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /summaries to read the change from the whole down to each file. " +
-            "Use /topics to read every diff as one document grouped by topic. " +
+            "Use /topics to read every diff as one document grouped by code topic, or /grouping to group by shared change cause. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
         override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change")
     }
@@ -192,7 +202,7 @@ internal class DiffReviewTab(
         override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
             val (context, snapshot, turnFocus) = withContext(Dispatchers.EDT) {
                 Triple(captureContext(), state.snapshot,
-                    focus?.current(state.snapshot.files.mapTo(hashSetOf()) { it.path }, state.summaries, state.topicSummaries))
+                    focus?.current(state.snapshot.files.mapTo(hashSetOf()) { it.path }, state.summaries, state.topicSummaries, state.groupingSummaries))
             }
             val files = snapshot.files
             val question = messages.lastOrNull()?.text.orEmpty()
@@ -206,15 +216,34 @@ internal class DiffReviewTab(
                 }
                 return topicsReply(run)
             }
-            if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
+            if (command == ReviewCommand.GROUPING) {
+                val run = withCountProgress("Grouping changed files…", "files grouped") { onProgress ->
+                    diffGroupingGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, contextCharsForOutput = configuredContextCharsForOutput(48_000))
+                        .run(context.startGrouping(), summariesFocus(question), context::assignGrouping, onToolCall, onProgress)
+                }
+                return groupingReply(run)
+            }
+            if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES || command == ReviewCommand.GROUPING_SUMMARIES) {
                 val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
+                val groupingSummaries = command == ReviewCommand.GROUPING_SUMMARIES
                 // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                 val run = withCountProgress("Summarizing the change…", "summaries") { onProgress ->
                     diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
-                        .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
-                            if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
+                        .run(when {
+                            topicSummaries -> context.startTopicSummaries()
+                            groupingSummaries -> context.startGroupingSummaries()
+                            else -> context.startSummaries()
+                        }, summariesFocus(question), when {
+                            topicSummaries -> context::summarizeTopics
+                            groupingSummaries -> context::summarizeGrouping
+                            else -> context::summarize
+                        }, onToolCall, onProgress)
                 }
-                return if (topicSummaries) summariesReply(run, missing = TOPIC_SUMMARIES_MISSING) else summariesReply(run)
+                return when {
+                    topicSummaries -> summariesReply(run, missing = TOPIC_SUMMARIES_MISSING)
+                    groupingSummaries -> summariesReply(run, missing = GROUPING_SUMMARIES_MISSING)
+                    else -> summariesReply(run)
+                }
             }
             val turn = chatTurn(messages, files, diff = true) ?: return "There are no changed files to explain."
             // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
@@ -235,7 +264,7 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/summaries, /topics, /explain or ask about this tab's changes…"
+        chat.input.emptyText.text = "/summaries, /topics, /grouping, /explain or ask about this tab's changes…"
         add(JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(scopeLabel, BorderLayout.NORTH)
@@ -342,7 +371,7 @@ internal class DiffReviewTab(
 
     private fun updateControls() {
         val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
-        viewSelector.isViewEnabled = { key -> hasFiles && (key != CanvasTabKey.Topics || !session.busy) }
+        viewSelector.isViewEnabled = { key -> hasFiles && ((key != CanvasTabKey.Topics && key != CanvasTabKey.Grouping) || !session.busy) }
         viewSelector.isEnabled = hasFiles
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
@@ -357,7 +386,7 @@ internal class DiffReviewTab(
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null)
-        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result))
+        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
     }
@@ -378,7 +407,8 @@ internal class DiffReviewTab(
             when (change) {
                 ReviewContextChange.SOURCE, ReviewContextChange.SUMMARIES_STARTED -> renderCanvas()
                 ReviewContextChange.TOPICS_STARTED, ReviewContextChange.TOPIC_ASSIGNED -> canvas.updateTopics(topicsCard())
-                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.SUMMARIES_SAVED -> summariesChanged()
+                ReviewContextChange.GROUPING_STARTED, ReviewContextChange.GROUPING_ASSIGNED -> canvas.updateGrouping(groupingCard())
+                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED, ReviewContextChange.SUMMARIES_SAVED -> summariesChanged()
             }
         }), DiffReviewContext {
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {

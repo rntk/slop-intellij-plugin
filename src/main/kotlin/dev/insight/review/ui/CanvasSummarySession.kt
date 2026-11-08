@@ -24,6 +24,11 @@ internal class CanvasSummarySession(
     private var topicRun: TopicRun? = null
     var topicStatus: String? = null
         private set
+    /** The card whose targeted run owns [topicStatus]; null for a run started without one. */
+    private var topicOwner: Any? = null
+
+    /** The status of the last targeted run when it belongs to [owner]: another card never shows it. */
+    fun topicStatusFor(owner: Any): String? = topicStatus.takeIf { topicOwner == null || topicOwner == owner }
     val topicsRunning: Boolean get() = topicRun != null
     val running: Boolean get() = topicsRunning || versions.any { it.running }
 
@@ -54,10 +59,13 @@ internal class CanvasSummarySession(
         }
     }
 
-    fun stopTopics() {
+    /** Stops the targeted run of [owner], or whichever run there is when no owner is given. */
+    fun stopTopics(owner: Any? = null) {
+        if (owner != null && topicOwner != owner) return
         val old = topicRun
         topicRun = null
         topicStatus = null
+        topicOwner = null
         old?.job?.cancel()
     }
 
@@ -105,11 +113,12 @@ internal class CanvasSummarySession(
         }
     }
 
-    fun startTopics(start: ReviewSummaries, request: ContextSummaryRequest, save: (ReviewSummaries, Set<Int>) -> Unit) {
+    fun startTopics(start: ReviewSummaries, request: ContextSummaryRequest, owner: Any? = null, save: (ReviewSummaries, Set<Int>) -> Unit) {
         val launcher = launcher ?: return
         if (disposed || running || request.nodeIds.isEmpty()) return
         val run = TopicRun(start)
         topicRun = run
+        topicOwner = owner
         topicStatus = "${request.label}…"
         // Persist the empty starting scope before a launcher can synchronously publish its result.
         save(start, request.nodeIds)

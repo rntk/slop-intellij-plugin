@@ -80,6 +80,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         when (key) {
             CanvasTabKey.Summaries -> openSummaries()
             CanvasTabKey.Topics -> openTopics()
+            CanvasTabKey.Grouping -> openGrouping()
             else -> {}
         }
     }
@@ -233,6 +234,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         if (!state.topics.complete && canSummarize) session.send("/topics")
     }
 
+    fun openGrouping() {
+        state.showGrouping()
+        renderCanvas()
+        showCanvas { canvas.focusGrouping() }
+        if (!state.grouping.complete && canSummarize) session.send("/grouping")
+    }
+
     /** Focusing a page opens its regular IDE editor tab. */
     protected fun showCanvas(focus: () -> Unit) {
         if (!disposed) focus()
@@ -242,10 +250,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     protected fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
-    /** The topics card shows the file summaries too, so it follows every summary and chat update. */
+    protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
+
+    /** The topics and grouping cards show the file summaries too, so they follow every summary and chat update. */
     protected open fun summariesChanged() {
         canvas.updateSummaries(summariesCard())
         canvas.updateTopics(topicsCard())
+        canvas.updateGrouping(groupingCard())
     }
 
     /** The focus of a To Chat on the files and folders [entries] of this tab's scope; null when they reach no file. */

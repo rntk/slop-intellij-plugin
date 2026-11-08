@@ -820,6 +820,45 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testGroupingCardReusesDocumentAndHierarchyViewsIndependentlyOfTopics() {
+        val files = listOf("storage/file.kt", "network/http.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val topics = ReviewTopics(files)
+            .assign("storage/file.kt", "Storage>File>Errors handling")
+            .assign("network/http.kt", "Network>Http>Errors handling")
+        val grouping = ReviewTopics(files)
+            .assign("storage/file.kt", "Errors handling>Storage>File")
+            .assign("network/http.kt", "Errors handling>Network>Http")
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900) }
+        try {
+            canvas.showNotes(CanvasState(
+                emptyList(),
+                topics = TopicsCard(topics, summaries, canRun = true),
+                grouping = TopicsCard(grouping, summaries, canRun = true),
+            ))
+            assertEquals(listOf("Topics", "Grouping"), (0 until canvas.tabs.tabCount).map(canvas.tabs::getTitleAt))
+            canvas.focusGrouping()
+            assertEquals("Grouping", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+            layoutTree(canvas)
+            val groupingPage = canvas.tabs.selectedComponent as Container
+            assertTrue(descendants(groupingPage).filterIsInstance<JLabel>().any {
+                it.text.startsWith("Change grouping · 2 groups · 2 of 2 files")
+            })
+            val documentPanel = descendants(groupingPage).filterIsInstance<ChangeTopicsPanel>().single()
+            assertNotNull(documentPanel.components.singleOrNull { it.name == "topic:0:errors handling" })
+            selectTopicsMode(descendants(groupingPage), "Hierarchy")
+            layoutTree(canvas)
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.groupingView.mode)
+            assertEquals(ChangeTopicsMode.DOCUMENT, canvas.topicsView.mode)
+            val hierarchyPanel = descendants(groupingPage).filterIsInstance<ChangeTopicHierarchyPanel>().single()
+            assertNotNull(hierarchyPanel.components.singleOrNull { it.name == "topic:0:errors handling" })
+            canvas.updateGrouping(null)
+            assertEquals(listOf("Topics"), (0 until canvas.tabs.tabCount).map(canvas.tabs::getTitleAt))
+        } finally { canvas.dispose() }
+    }
+
     fun testSummariesHierarchySpansFolderRowsWithSummariesBesideFilesAndFolds() {
         val files = listOf("src/wallet/Wallet.kt", "src/wallet/Ledger.kt", "src/auth/Auth.kt", "docs/README.md").map { path ->
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")

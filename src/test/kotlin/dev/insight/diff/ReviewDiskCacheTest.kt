@@ -1,6 +1,7 @@
 package dev.insight.diff
 
 import dev.insight.review.Summary
+import dev.insight.review.summarizeGrouping
 import dev.insight.review.summarizeTopics
 import dev.insight.review.summarize
 import com.google.gson.JsonPrimitive
@@ -156,6 +157,9 @@ class ReviewDiskCacheTest {
         state.assignTopic(state.revision, "a.kt", "Application > Values")
         state.startTopicSummaries(state.revision)
         fill({ state.topicSummaries }) { state.summarizeTopics(state.revision, it) }
+        state.assignGrouping(state.revision, "a.kt", "Errors handling > Application > Values")
+        state.startGroupingSummaries(state.revision)
+        fill({ state.groupingSummaries }) { state.summarizeGrouping(state.revision, it) }
         // The diff panel first gives a new tab its empty loading snapshot.
         val loading = load(ReviewSnapshot(emptyList(), emptyList()))
         loading.update(snapshot)
@@ -163,6 +167,9 @@ class ReviewDiskCacheTest {
         assertTrue(load().summaries.complete)
         assertTrue(load().topics.complete)
         assertTrue(load().topicSummaries.complete)
+        assertTrue(load().grouping.complete)
+        assertEquals(mapOf("a.kt" to "Errors handling > Application > Values"), load().grouping.labels)
+        assertTrue(load().groupingSummaries.complete)
         // Same request and evidence: the diff is identical, so a moved ref keeps the results, as it does in a live review.
         assertTrue(load(snapshot.copy(comparison = ReviewComparison(baseRevision = "new-head"))).summaries.complete)
         assertEquals(0, load(snapshot.copy(comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "main", "dev")))).summaries.count)

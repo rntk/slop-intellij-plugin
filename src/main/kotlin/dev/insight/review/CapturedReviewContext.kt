@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 /** Lets adapters retain immediate or throttled canvas updates without coupling the context to Swing. */
 internal enum class ReviewContextChange {
     SOURCE, SUMMARIES_STARTED, TOPICS_STARTED, TOPIC_SUMMARIES_STARTED, SUMMARIES_SAVED, TOPIC_ASSIGNED,
+    GROUPING_STARTED, GROUPING_SUMMARIES_STARTED, GROUPING_ASSIGNED,
 }
 
 /** A turn's canvas operations always check the captured revision on the EDT before reading or writing live state. */
@@ -59,5 +60,25 @@ internal abstract class CapturedReviewContext<S : ReviewSource>(
     final override suspend fun summarizeTopics(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
         current()
         state.summarizeTopics(capturedRevision, entries).also { onChanged(ReviewContextChange.SUMMARIES_SAVED) }
+    }
+
+    final override suspend fun startGrouping(): ReviewTopics = withContext(Dispatchers.EDT) {
+        current()
+        state.startGrouping().also { onChanged(ReviewContextChange.GROUPING_STARTED) }
+    }
+
+    final override suspend fun assignGrouping(path: String, label: String): ReviewTopics = withContext(Dispatchers.EDT) {
+        current()
+        state.assignGrouping(capturedRevision, path, label).also { onChanged(ReviewContextChange.GROUPING_ASSIGNED) }
+    }
+
+    final override suspend fun startGroupingSummaries(): ReviewSummaries = withContext(Dispatchers.EDT) {
+        current()
+        state.startGroupingSummaries(capturedRevision).also { onChanged(ReviewContextChange.GROUPING_SUMMARIES_STARTED) }
+    }
+
+    final override suspend fun summarizeGrouping(entries: Map<Int, Summary>): ReviewSummaries = withContext(Dispatchers.EDT) {
+        current()
+        state.summarizeGrouping(capturedRevision, entries).also { onChanged(ReviewContextChange.SUMMARIES_SAVED) }
     }
 }

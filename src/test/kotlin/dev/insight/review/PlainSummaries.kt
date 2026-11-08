@@ -15,3 +15,6 @@ internal fun ReviewTabState<*>.summarize(expected: Int, entries: Map<Int, String
 
 internal fun ReviewTabState<*>.summarizeTopics(expected: Int, entries: Map<Int, String>): ReviewSummaries =
     summarizeTopics(expected, entries.plain())
+
+internal fun ReviewTabState<*>.summarizeGrouping(expected: Int, entries: Map<Int, String>): ReviewSummaries =
+    summarizeGrouping(expected, entries.plain())

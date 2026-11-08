@@ -210,7 +210,7 @@ internal class CodeReviewTab(
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility. " +
             "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
-        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "code")
+        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "code", ReviewCommand.code)
     }
 
     private fun createBackend(): ChatBackend = object : ChatBackend {
@@ -223,7 +223,7 @@ internal class CodeReviewTab(
             val rawComplete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
             val complete = tracedFileCompletion(context.snapshot.files.map { TraceFile(it.path, source = it.text) },
                 rawComplete)
-            val command = ReviewCommand.parse(question)
+            val command = ReviewCommand.parse(question, ReviewCommand.code)
             if (command == ReviewCommand.TOPICS) {
                 val requests = withContext(Dispatchers.EDT) { estimateTopicRequests(state.topics) }
                 if (!confirm(requests, "topics")) return cancelledReply(requests)
@@ -556,8 +556,9 @@ internal class CodeReviewTab(
             when (change) {
                 ReviewContextChange.SOURCE, ReviewContextChange.SUMMARIES_STARTED -> renderCanvas()
                 ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
-                ReviewContextChange.TOPIC_SUMMARIES_STARTED -> summariesChanged()
-                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED -> scheduleCanvasRefresh()
+                ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
+                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> summariesChanged()
+                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED -> scheduleCanvasRefresh()
             }
         }), CodeReviewContext {
             override suspend fun pointToCode(point: dev.insight.agent.SourcePoint): String = withContext(Dispatchers.EDT) {

@@ -4,6 +4,7 @@ import dev.insight.review.summarize
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
 import dev.insight.review.SummaryLevel
+import dev.insight.review.asGrouping
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import dev.insight.review.chatFocus
@@ -135,5 +136,21 @@ class ChatFocusTest {
         val current = focus.current(paths.toSet(), regenerated, topicSummaries)
         assertEquals(listOf("Topic topic-root", "Topic topic:storage", "Topic topic:storage > wallet", "New file:src/app/Cache.kt"),
             current.context.map { it.text })
+    }
+
+    @Test fun `a grouping focus resolves against the grouping tree even when topics share its identities`() {
+        val files = paths.map(::file)
+        val topicTree = buildTopicSummaryTree(ReviewTopics(files, paths.associateWith { "Storage > Wallet" }))
+        val groupingTree = buildTopicSummaryTree(ReviewTopics(files, paths.associateWith { "Storage > Wallet" })).asGrouping()
+        val topicSummaries = ReviewSummaries(topicTree).summarize(topicTree.nodes.associate { it.id to "Topic ${it.identity}" }, reuseSingleChildren = false)
+        val groupingSummaries = ReviewSummaries(groupingTree).summarize(groupingTree.nodes.associate { it.id to "Group ${it.identity}" }, reuseSingleChildren = false)
+        listOf(groupingTree.root, groupingTree.nodes.single { it.identity == "topic:storage" }).forEach { node ->
+            val current = chatFocus(node, groupingSummaries).current(paths.toSet(), summaries, topicSummaries, groupingSummaries)
+            assertTrue(current.context.map { it.text }.toString(), current.context.all { it.text.startsWith("Group ") })
+            assertFalse(current.summaryUnavailable)
+        }
+        val fromTopics = chatFocus(topicTree.nodes.single { it.identity == "topic:storage" }, topicSummaries)
+            .current(paths.toSet(), summaries, topicSummaries, groupingSummaries)
+        assertTrue(fromTopics.context.all { it.text.startsWith("Topic ") })
     }
 }

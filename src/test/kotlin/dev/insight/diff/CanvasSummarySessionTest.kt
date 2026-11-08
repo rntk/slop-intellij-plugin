@@ -195,4 +195,18 @@ class CanvasSummarySessionTest {
         assertSame(nextTree, version.summaries.tree)
         session.dispose()
     }
+
+    @Test fun `a targeted run status belongs to the card that started it`() {
+        val launcher = Launcher()
+        val session = CanvasSummarySession(launcher, { tree }, {})
+        session.startTopics(start, request, "topics") { _, _ -> }
+        launcher.done(Result.success(ReviewSummaryRun(start, 1, "Failed")))
+        assertEquals("Failed", session.topicStatusFor("topics"))
+        assertNull(session.topicStatusFor("grouping"))
+        session.stopTopics("grouping")
+        assertEquals("Failed", session.topicStatusFor("topics"))
+        session.stopTopics("topics")
+        assertNull(session.topicStatusFor("topics"))
+        session.dispose()
+    }
 }

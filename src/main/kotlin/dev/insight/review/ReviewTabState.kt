@@ -33,7 +33,9 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         val keys = reviewed.set(node.files, value)
         disk.saveReviewed(keys, value)
     }
-    private fun persist() = disk.save(summaries, topics, topicSummaries)
+    /** The grouping reading tree: a topic tree under its own root, so a focus can tell which of the two trees it came from. */
+    private fun groupingTree(topics: ReviewTopics): ReviewSummaryTree = topicTree(topics).asGrouping()
+    private fun persist() = disk.save(summaries, topics, topicSummaries, grouping, groupingSummaries)
 
     /** The fixed files and folders of this tab; null follows the whole snapshot. */
     abstract val scopePaths: Set<String>?
@@ -64,6 +66,12 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         private set
     var topicsVisible = false
         private set
+    var grouping = ReviewTopics(emptyList())
+        private set
+    var groupingSummaries = ReviewSummaries(groupingTree(grouping))
+        private set
+    var groupingVisible = false
+        private set
 
     /**
      * Moves to a new revision of [next]: drops the notes and source blocks of [changed] paths, keeps the summaries and
@@ -78,6 +86,9 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         topics = if (reset) ReviewTopics(next) else topics.retainedIn(next)
         val topicSummaryTree = topicTree(topics)
         topicSummaries = if (reset) ReviewSummaries(topicSummaryTree) else topicSummaries.retainedIn(topicSummaryTree)
+        grouping = if (reset) ReviewTopics(next) else grouping.retainedIn(next)
+        val groupingSummaryTree = groupingTree(grouping)
+        groupingSummaries = if (reset) ReviewSummaries(groupingSummaryTree) else groupingSummaries.retainedIn(groupingSummaryTree)
         // Saved entries are keyed by content, so the slot alone picks them; changed files simply miss their keys.
         disk.load(slot)
         if (reset) reviewed.restore(next, emptySet())
@@ -85,6 +96,8 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
         topics = disk.restoreTopics(topics)
         topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(topicTree(topics)))
+        grouping = disk.restoreGrouping(grouping)
+        groupingSummaries = disk.restoreSummaries(ReviewDiskCache.GROUPING_FILLED, groupingSummaries.retainedIn(groupingTree(grouping)))
         revision++
     }
 
@@ -130,7 +143,7 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     fun removeSource(range: ReviewSourceRange) { sourceCards.remove(range) }
 
     /** Empties the canvas; summaries and topics are kept for when their cards are shown again. */
-    open fun clearNotes() { cards.clear(); sourceCards.clear(); summariesVisible = false; topicsVisible = false }
+    open fun clearNotes() { cards.clear(); sourceCards.clear(); summariesVisible = false; topicsVisible = false; groupingVisible = false }
 
     /** Starts /summaries: an incomplete tree is continued, a complete one is written again. */
     fun startSummaries(expected: Int): ReviewSummaries {
@@ -185,19 +198,78 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     fun summarizeTopics(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
         check(expected)
         topicSummaries = topicSummaries.summarize(entries)
-        val topicNodes = topicSummaries.tree.nodes
+        shareTopicFilesIntoSummaries(topicSummaries)
+        persist()
+        return topicSummaries
+    }
+
+    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the snapshot changed. */
+    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
+        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
+        return topicSummaries
+    }
+
+    /** Starts /grouping: an incomplete result is continued, a complete one is generated again. */
+    fun startGrouping(): ReviewTopics {
+        if (grouping.complete) {
+            grouping = ReviewTopics(snapshotFiles)
+            groupingSummaries = ReviewSummaries(groupingTree(grouping))
+            disk.forget(ReviewDiskCache.GROUPING, ReviewDiskCache.GROUPING_FILLED)
+            persist()
+        }
+        groupingVisible = true
+        return grouping
+    }
+
+    fun showGrouping() { groupingVisible = true }
+    fun hideGrouping() { groupingVisible = false }
+
+    fun assignGrouping(expected: Int, path: String, label: String): ReviewTopics {
+        check(expected)
+        return grouping.assign(path, label).also {
+            grouping = it
+            groupingSummaries = groupingSummaries.retainedIn(groupingTree(it))
+            persist()
+        }
+    }
+
+    /** Seeds the grouping tree with the summaries of the same files and parts before the missing ones are written. */
+    fun startGroupingSummaries(expected: Int): ReviewSummaries {
+        check(expected)
+        groupingSummaries = seedTopicSummaries(groupingSummaries, summaries)
+        persist()
+        return groupingSummaries
+    }
+
+    /** Saves grouping summaries and shares the file and part summaries among them with the ordinary Summaries tree. */
+    fun summarizeGrouping(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
+        check(expected)
+        groupingSummaries = groupingSummaries.summarize(entries)
+        shareTopicFilesIntoSummaries(groupingSummaries)
+        persist()
+        return groupingSummaries
+    }
+
+    /** Saves what a targeted grouping fill or resummarization has written so far; ignored once the grouping or the snapshot changed. */
+    fun replaceGroupingSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
+        if (!refreshing) targetedEntries(groupingSummaries, updated, ids).forEach { summarizeGrouping(revision, it) }
+        return groupingSummaries
+    }
+
+    private fun shareTopicFilesIntoSummaries(sourceSummaries: ReviewSummaries) {
+        val topicNodes = sourceSummaries.tree.nodes
         val files = HashMap<String, Summary>()
         val parts = HashMap<String, Summary>()
         for (node in topicNodes) {
-            val text = topicSummaries.summary(node.id) ?: continue
+            val text = sourceSummaries.summary(node.id) ?: continue
             when (node.kind) {
                 SummaryKind.FILE -> files[node.path] = text
                 SummaryKind.CHUNK -> parts[node.key] = text
                 else -> {}
             }
         }
-        val cachedKeys = topicNodes.filter { it.id in topicSummaries.cachedIds }.mapTo(hashSetOf()) { it.key }
-        val cachedFiles = topicNodes.filter { it.kind == SummaryKind.FILE && it.id in topicSummaries.cachedIds }
+        val cachedKeys = topicNodes.filter { it.id in sourceSummaries.cachedIds }.mapTo(hashSetOf()) { it.key }
+        val cachedFiles = topicNodes.filter { it.kind == SummaryKind.FILE && it.id in sourceSummaries.cachedIds }
             .mapTo(hashSetOf()) { it.path }
         summaries = shareInto(summaries, cached = { node ->
             if (node.kind == SummaryKind.FILE) node.path in cachedFiles else node.key in cachedKeys
@@ -208,14 +280,6 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
                 else -> null
             }
         }
-        persist()
-        return topicSummaries
-    }
-
-    /** Saves what a targeted topic fill or resummarization has written so far; ignored once the topics or the snapshot changed. */
-    fun replaceTopicSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
-        if (!refreshing) targetedEntries(topicSummaries, updated, ids).forEach { summarizeTopics(revision, it) }
-        return topicSummaries
     }
 
     private companion object {

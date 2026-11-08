@@ -35,6 +35,15 @@ internal data class TopicsCanvasActions(
     val refresh: () -> Unit,
 )
 
+internal data class TopicsCardLabels(
+    val title: String,
+    val tooltip: String,
+    val command: String = "/topics",
+    val singular: String = "topic",
+    val plural: String = "topics",
+    val closeText: String = "Remove change topics",
+)
+
 /** Topics presentation and the search, trace and reading state retained across card rebuilds. */
 internal class TopicsCanvasCard(
     private val vocabulary: ReviewVocabulary,
@@ -44,6 +53,7 @@ internal class TopicsCanvasCard(
     private val topicActions: TopicCanvasActions,
     private val canvasActions: TopicsCanvasActions,
     private val project: Project? = null,
+    private val labels: TopicsCardLabels = TopicsCardLabels(vocabulary.topicsTitle, vocabulary.topicsTooltip),
 ) : Disposable {
     val view = ChangeTopicsViewState(vocabulary.foldLargeTopics)
     var scroll = 0
@@ -56,8 +66,8 @@ internal class TopicsCanvasCard(
         update = { currentCard?.let { updateCanvasTracePresentation(it, view) } }, refresh = canvasActions.refresh)
 
     /** Search fields stay alive across rebuilds so typing keeps its focus and caret. */
-    private val topicSearchField = searchField("topics-topic-search", "Filter topics",
-        "Hide files whose topic does not match the typed words (fuzzy)", { view.topicFilter }) { view.topicFilter = it }
+    private val topicSearchField = searchField("topics-topic-search", "Filter ${labels.plural}",
+        "Hide files whose ${labels.singular} does not match the typed words (fuzzy)", { view.topicFilter }) { view.topicFilter = it }
     private val topicSummarySearchField = searchField("topics-summary-search", "Filter summaries",
         "Hide files whose name, path or summary does not match the typed words (fuzzy)", { view.summaryFilter }) { view.summaryFilter = it }
 
@@ -121,9 +131,9 @@ internal class TopicsCanvasCard(
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             val matching = if (view.filtering) " · ${shown.files.size} shown" else ""
-            add(JLabel("${vocabulary.topicsTitle} · ${topics.groups.size} topics · ${topics.labels.size} of ${files(topics.files.size)}$matching").apply {
+            add(JLabel("${labels.title} · ${topics.groups.size} ${labels.plural} · ${topics.labels.size} of ${files(topics.files.size)}$matching").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = vocabulary.topicsTooltip
+                toolTipText = labels.tooltip
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -131,7 +141,8 @@ internal class TopicsCanvasCard(
                 if (outline.depth > 0) add(topicLevels(outline))
                 add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
                     { if (it == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy" },
-                    { if (it == ChangeTopicsMode.DOCUMENT) "Every file in topic order, with its summary and the topic rail" else "Topics broad to specific, left to right, with each file's summary" }) {
+                    { if (it == ChangeTopicsMode.DOCUMENT) "Every file in ${labels.singular} order, with its summary and the ${labels.singular} rail"
+                        else "${labels.plural.replaceFirstChar { ch -> ch.titlecase() }} broad to specific, left to right, with each file's summary" }) {
                     view.mode = it; scroll = 0; canvasActions.refresh()
                 })
                 add(JButton(when {
@@ -142,14 +153,14 @@ internal class TopicsCanvasCard(
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && topics.files.isNotEmpty()
-                    toolTipText = if (topics.complete) "Classify every file again (/topics)" else "Give every remaining file a topic (/topics)"
+                    toolTipText = if (topics.complete) "Classify every file again (${labels.command})" else "Give every remaining file a ${labels.singular} (${labels.command})"
                     addActionListener { topicActions.generateTopics() }
                 })
                 if (hierarchy) add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && !generationRunning && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
-                    toolTipText = "Fill missing summaries for every topic and subtopic, including folded topics"
+                    toolTipText = "Fill missing summaries for every ${labels.singular} and sub${labels.singular}, including folded ${labels.plural}"
                     addActionListener { topicActions.fillTopicSummaries() }
                 })
                 val summaries = content.summaries
@@ -160,7 +171,7 @@ internal class TopicsCanvasCard(
                     toolTipText = vocabulary.topicsSummarizeTooltip
                     addActionListener { summaryActions.summarize() }
                 })
-                add(InplaceButton(IconButton("Remove change topics", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() }
+                add(InplaceButton(IconButton(labels.closeText, AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() }
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.WEST)
         }

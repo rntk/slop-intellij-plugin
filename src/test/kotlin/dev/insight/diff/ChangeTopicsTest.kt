@@ -14,6 +14,8 @@ import dev.insight.review.ReviewTopics
 import dev.insight.review.SummaryKind
 import dev.insight.review.TopicEntry
 import dev.insight.review.buildSummaryTree
+import dev.insight.review.groupingReply
+import dev.insight.review.isGroupingRequest
 import dev.insight.review.isTopicsRequest
 import dev.insight.review.normalizeTopic
 import dev.insight.review.reviewJson
@@ -316,6 +318,42 @@ class ChangeTopicsTest {
     @Test fun `command recognizes topics without capturing ordinary questions`() {
         listOf("topics", "/topics", " /TOPICS auth ").forEach { assertTrue(isTopicsRequest(it)) }
         listOf("topics about auth", "/topicsExtra", "What topics changed?").forEach { assertFalse(isTopicsRequest(it)) }
+        listOf("grouping", "/grouping", " /GROUPING errors ").forEach { assertTrue(isGroupingRequest(it)) }
+        listOf("grouping about errors", "/groupingExtra", "How are files grouped?").forEach { assertFalse(isGroupingRequest(it)) }
+    }
+
+    @Test fun `grouping generator orders change cause before code subsystem and stays independent of topics`() = runBlocking {
+        assertTrue(DIFF_GROUPING_SYSTEM.contains("""{"topic":"Errors handling>Storage>File"}"""))
+        assertTrue(DIFF_GROUPING_SYSTEM.contains("Start with the shared change, cause, or refactoring itself"))
+        val state = DiffReviewState()
+        state.update(ReviewSnapshot(listOf(file("storage/file.kt"), file("network/http.kt")), emptyList()))
+        val revision = state.revision
+        state.startTopics()
+        state.assignTopic(revision, "storage/file.kt", "Storage>File>Errors handling")
+        state.assignTopic(revision, "network/http.kt", "Network>Http>Errors handling")
+        val seenSystems = mutableListOf<String>()
+        val seenVocabularies = mutableListOf<List<String>>()
+        val run = diffGroupingGenerator({ request ->
+            seenSystems += request.messages.first().content
+            val input = JsonParser.parseString(request.messages.last { it.role == LlmRole.USER }.content).asJsonObject
+            seenVocabularies += input["existing_topics"].asJsonArray.map { it.asString }
+            val path = input["path"].asString
+            val subsystem = if (path.startsWith("storage")) "Storage>File" else "Network>Http"
+            Completion("""{"topic":"Errors handling>$subsystem"}""")
+        }, null).run(state.startGrouping(), "error handling", { path, label -> state.assignGrouping(revision, path, label) })
+        assertTrue(seenSystems.all { it == DIFF_GROUPING_SYSTEM })
+        assertEquals(listOf(emptyList(), listOf("Errors handling > Network > Http")), seenVocabularies)
+        assertTrue(run.topics.complete)
+        assertEquals("2 groups on the canvas · 2 of 2 files · 2 requests.", groupingReply(run))
+        // Both files share the top-level "Errors handling" group in the outline while keeping distinct code topics.
+        val groupingOutline = topicOutline(state.grouping)
+        assertEquals(listOf("Errors handling"), groupingOutline.children(null).map { (it as TopicEntry.Topic).node.fullPath })
+        assertEquals(listOf("Errors handling > Network", "Errors handling > Storage"),
+            groupingOutline.children(groupingOutline.nodes.first { it.level == 0 }).map { (it as TopicEntry.Topic).node.fullPath })
+        assertEquals(mapOf(
+            "storage/file.kt" to "Storage > File > Errors handling",
+            "network/http.kt" to "Network > Http > Errors handling",
+        ), state.topics.labels)
     }
     @Test fun longPatchesExposeBoundedInlineEvidenceAndReader() = runBlocking {
         val source = file("large.kt").copy(patch = "x".repeat(100))

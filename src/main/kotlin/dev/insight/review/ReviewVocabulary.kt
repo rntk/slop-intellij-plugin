@@ -38,6 +38,9 @@ internal data class ReviewVocabulary(
     val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
+    val groupingTitle: String = "Change grouping",
+    val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
+        "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
 ) {
     companion object {
         val DIFF = ReviewVocabulary(

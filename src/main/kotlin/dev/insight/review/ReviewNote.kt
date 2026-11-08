@@ -13,6 +13,7 @@ data class ReviewNote(
 internal sealed interface CanvasTabKey {
     data object Explanation : CanvasTabKey
     data object Topics : CanvasTabKey
+    data object Grouping : CanvasTabKey
     data object Words : CanvasTabKey
     data object DiffOverview : CanvasTabKey
     data object Semantic : CanvasTabKey

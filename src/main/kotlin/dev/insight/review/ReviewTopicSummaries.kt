@@ -1,5 +1,12 @@
 package dev.insight.review
 
+internal const val TOPIC_ROOT_IDENTITY = "topic-root"
+internal const val GROUPING_ROOT_IDENTITY = "grouping-root"
+
+/** The same tree for change groups: its root has its own identity and label, the nodes below keep theirs. */
+internal fun ReviewSummaryTree.asGrouping(): ReviewSummaryTree =
+    ReviewSummaryTree(nodes.mapIndexed { i, node -> if (i == 0) node.copy(label = "All groups", identity = GROUPING_ROOT_IDENTITY) else node })
+
 /** A summary tree with every topic prefix preserved, independent of the hierarchy's folded state. Files with [chunks] get their parts beneath them. */
 internal fun buildTopicSummaryTree(topics: ReviewTopics, chunks: (ReviewSource) -> List<SourceChunk> = { emptyList() }): ReviewSummaryTree {
     val outline = topicOutline(topics)
@@ -40,7 +47,7 @@ internal fun buildTopicSummaryTree(topics: ReviewTopics, chunks: (ReviewSource) 
             }
         }
     }
-    add(SummaryKind.ROOT, "", "All topics", "topic-root", null) {
+    add(SummaryKind.ROOT, "", "All topics", TOPIC_ROOT_IDENTITY, null) {
         outline.children(null).map { entry(it, 0) }
     }
     // Grouping adds nodes after their children; restore the summary tree's pre-order contract.

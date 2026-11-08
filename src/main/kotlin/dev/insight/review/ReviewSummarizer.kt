@@ -505,6 +505,9 @@ internal fun summariesFocus(text: String): String = text.trim().substringAfter("
 /** The [summariesReply] hint for /topic-summaries, whose unsummarized topics show in Hierarchy rather than the Summaries card. */
 internal const val TOPIC_SUMMARIES_MISSING = "Topics without summaries show file names in Hierarchy. Click Fill summaries to continue."
 
+/** The [summariesReply] hint for /grouping-summaries, whose unsummarized groups show in Hierarchy rather than the Summaries card. */
+internal const val GROUPING_SUMMARIES_MISSING = "Groups without summaries show file names in Hierarchy. Click Fill summaries to continue."
+
 /**
  * The chat reply to /summaries, written by code: the root summary, or what is still missing and why.
  * [empty] answers a tree without files; [missing] tells where unsummarized nodes show.

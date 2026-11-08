@@ -97,8 +97,10 @@ class ReviewDiskCache(private val directory: Path) {
         internal const val SUMMARIES = "summaries"
         internal const val TOPICS = "topics"
         internal const val FILLED = "filled"
+        internal const val GROUPING = "grouping"
+        internal const val GROUPING_FILLED = "grouping_filled"
         internal const val REVIEWED = "reviewed"
-        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED, REVIEWED)
+        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED, GROUPING, GROUPING_FILLED, REVIEWED)
         private val projects = ConcurrentHashMap<Path, ReviewDiskCache>()
         fun forProject(project: Project): ReviewDiskCache? = project.basePath?.let {
             projects.computeIfAbsent(Path.of(it, DIRECTORY, "review-cache"), ::ReviewDiskCache)
@@ -147,8 +149,8 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         }
     }
 
-    fun restoreTopics(current: ReviewTopics): ReviewTopics {
-        val saved = saved(ReviewDiskCache.TOPICS) ?: return current
+    fun restoreTopics(current: ReviewTopics, name: String = ReviewDiskCache.TOPICS): ReviewTopics {
+        val saved = saved(name) ?: return current
         var restored = current
         for (file in current.files) {
             if (file.path in restored.labels) continue
@@ -160,19 +162,29 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         return restored
     }
 
+    fun restoreGrouping(current: ReviewTopics): ReviewTopics = restoreTopics(current, ReviewDiskCache.GROUPING)
+
     /** Regenerate: drops the kinds' entries of every snapshot, since parents elsewhere were condensed from the old texts. */
     fun forget(vararg names: String) {
         if (disk == null || slot.isEmpty()) return
         disk.results(slot) { results -> names.forEach { results[it]?.clear() } }
     }
 
-    fun save(summaries: ReviewSummaries, topics: ReviewTopics, filled: ReviewSummaries) {
+    fun save(
+        summaries: ReviewSummaries,
+        topics: ReviewTopics,
+        filled: ReviewSummaries,
+        grouping: ReviewTopics = ReviewTopics(emptyList()),
+        groupingFilled: ReviewSummaries = ReviewSummaries(ReviewSummaryTree(emptyList())),
+    ) {
         if (disk == null || slot.isEmpty()) return
         fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.summary(node.id)?.takeIf { node.key.isNotEmpty() }?.let { summaryKey(node.key) to it.encode() } }
         disk.results(slot, save = true) { results ->
             merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
             merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })
             merge(results.getValue(ReviewDiskCache.FILLED), texts(filled))
+            merge(results.getValue(ReviewDiskCache.GROUPING), grouping.files.mapNotNull { file -> grouping.labels[file.path]?.let { topicKey(file) to it } })
+            merge(results.getValue(ReviewDiskCache.GROUPING_FILLED), texts(groupingFilled))
         }
     }
 

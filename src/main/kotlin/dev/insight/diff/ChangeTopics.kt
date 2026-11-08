@@ -22,6 +22,19 @@ internal fun diffTopicGenerator(
     contextCharsForOutput: (Int) -> Int = { maxContextChars },
 ): ReviewTopicGenerator = ReviewTopicGenerator(complete, readTool, patchChars, attempts, system, evidence, concurrency, maxContextChars, contextCharsForOutput)
 
+/** Supplies VCS patch evidence and change-first grouping instructions to the shared topic pipeline. */
+internal fun diffGroupingGenerator(
+    complete: CompletionFn,
+    readTool: ChatTool?,
+    patchChars: Int = 12_000,
+    attempts: Int = 5,
+    system: String = DIFF_GROUPING_SYSTEM,
+    evidence: (ReviewSource, ReviewTopics) -> TopicEvidence = { source, _ -> diffTopicEvidence(source as ReviewFile, patchChars) },
+    concurrency: Int = 1,
+    maxContextChars: Int = 48_000,
+    contextCharsForOutput: (Int) -> Int = { maxContextChars },
+): ReviewTopicGenerator = ReviewTopicGenerator(complete, readTool, patchChars, attempts, system, evidence, concurrency, maxContextChars, contextCharsForOutput)
+
 /** A changed file's status and patch, cut at [patchChars]. */
 internal fun diffTopicEvidence(file: ReviewFile, patchChars: Int): TopicEvidence = TopicEvidence(mapOf(
     "path" to file.path, "previous_path" to file.previousPath, "status" to file.status,
@@ -30,3 +43,4 @@ internal fun diffTopicEvidence(file: ReviewFile, patchChars: Int): TopicEvidence
 ), cut = file.patch.length > patchChars)
 
 internal val DIFF_TOPIC_SYSTEM = PromptTemplates.render("diff-topic-system.md", mapOf("CODE_AS_DATA" to CODE_AS_DATA))
+internal val DIFF_GROUPING_SYSTEM = PromptTemplates.render("diff-grouping-system.md", mapOf("CODE_AS_DATA" to CODE_AS_DATA))
