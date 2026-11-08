@@ -242,7 +242,7 @@ internal class SummariesCanvasCards(
             review = tab.review.presentation(content.summaries, actions.toggleReviewed),
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, panelActions, vocabulary) else null
+        val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, panelActions, vocabulary, project) else null
         val diff = if (diffMode) extension?.summaryDiffView(content, summariesView, zoom, panelActions)?.also { tab.diffPanel = it } else null
         val card = object : JPanel(SummaryOverlayLayout()) {
             override fun isOptimizedDrawingEnabled(): Boolean = false

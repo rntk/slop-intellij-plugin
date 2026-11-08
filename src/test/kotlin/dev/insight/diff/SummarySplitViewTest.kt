@@ -172,7 +172,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
             layoutTree(canvas)
-            val all = listOf("root", "directory:src", "file:src/a.kt", "directory:src/nested", "file:src/nested/b.kt", "directory:docs", "file:docs/readme.md")
+            val all = listOf("root", "directory:src", "file:src/a.kt", "directory:src/nested", "file:src/nested/b.kt", "directory:src", "file:docs/readme.md")
                 .filter { identity -> tree.nodes.any { it.identity == identity } }
             assertEquals(treeRows(), summaryRows())
             assertTrue(treeRows().containsAll(listOf("root", "file:src/a.kt", "file:docs/readme.md")))
@@ -352,7 +352,7 @@ class SummarySplitViewTest : BasePlatformTestCase() {
                 UiInterceptors.register(object : UiInterceptors.UiInterceptor<SummaryTextDialog>(SummaryTextDialog::class.java) {
                     override fun doIntercept(dialog: SummaryTextDialog) {
                         try {
-                            val scroll = dialog.createCenterPanel() as JScrollPane
+                            val scroll = dialog.createCenterPanel().let { it as? JScrollPane ?: descendants(it).single { c -> c.name == "summary-reader-scroll" } as JScrollPane }
                             val area = scroll.viewport.view as JTextPane
                             assertEquals(original, area.text)
                             assertFalse(area.isEditable)
@@ -376,6 +376,40 @@ class SummarySplitViewTest : BasePlatformTestCase() {
                 PlatformTestUtil.waitWithEventsDispatching("Open summary reader", { dialogs == expected }, 5)
             }
             assertNull("Reading a summary does not select or fold its tree entry", canvas.summariesView.selected)
+        } finally { UiInterceptors.clear(); canvas.dispose() }
+    }
+
+    fun testReaderShowsTheDiffOfAFileBeneathItsSummaryAndNothingForAFolder() {
+        val tree = buildSummaryTree(files.map { it.copy(before = "old\n", after = "new\n") })
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        val canvas = NoteCanvas({}, {}, project = project).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.SPLIT }
+        val viewers = mutableMapOf<String, List<String>>()
+        val heights = mutableMapOf<String, Pair<Int, Int>>()
+        try {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+            layoutTree(canvas)
+            for (identity in listOf("file:src/a.kt", "directory:src")) {
+                UiInterceptors.register(object : UiInterceptors.UiInterceptor<SummaryTextDialog>(SummaryTextDialog::class.java) {
+                    override fun doIntercept(dialog: SummaryTextDialog) {
+                        try {
+                            val panel = dialog.createCenterPanel()
+                            panel.setSize(panel.preferredSize); repeat(3) { layoutTree(panel) }
+                            descendants(panel).firstOrNull { it.name == "summary-reader-scroll" }?.let { heights[identity] = it.height to panel.height }
+                            viewers[identity] = descendants(panel).mapNotNull { it.name } +
+                                descendants(panel).filterIsInstance<DiffFileEditor>().map { "diff:${it.file.path}" }
+                        } finally { dialog.close(0) }
+                    }
+                })
+                val row = descendants(canvas).single { it.name == "summary:$identity" } as Container
+                val area = descendants(row).filterIsInstance<WrappedSummaryText>().single()
+                area.dispatchEvent(MouseEvent(area, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                PlatformTestUtil.waitWithEventsDispatching("Open summary reader", { identity in viewers }, 5)
+            }
+            val file = viewers.getValue("file:src/a.kt")
+            assertTrue("The summary stays on top", "summary-reader-scroll" in file)
+            assertTrue("The viewer leaves the summary room to be read: ${heights["file:src/a.kt"]}", heights.getValue("file:src/a.kt").first >= 120)
+            assertTrue("The diff is shown beneath it, in the same window", "diff:src/a.kt" in file && "summary-reader-source" in file)
+            assertFalse("A folder has no single diff to show", viewers.getValue("directory:src").any { it.startsWith("diff:") })
         } finally { UiInterceptors.clear(); canvas.dispose() }
     }
 

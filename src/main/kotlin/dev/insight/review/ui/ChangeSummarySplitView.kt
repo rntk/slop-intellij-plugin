@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
@@ -52,6 +53,7 @@ internal class ChangeSummarySplitPanel(
     private val zoom: Double,
     private val actions: ChangeSummaryActions,
     private val vocabulary: ReviewVocabulary = ReviewVocabulary.DIFF,
+    private val project: Project? = null,
 ) {
     private val summaries = card.summaries
     private val wordWeights = SummaryWordWeights(summaries)
@@ -249,7 +251,7 @@ internal class ChangeSummarySplitPanel(
         val summary = summaries.text(node.id)
         val read = Timer(clickDelay) {
             if (summary != null) SummaryTextDialog(summaryRows, node, summary,
-                font(JBFont.label()).forSummaryText(), state, actions, tree) { menu(node) }.show()
+                font(JBFont.label()).forSummaryText(), state, actions, tree, { menu(node) }, project).show()
         }.apply { isRepeats = false }
         fun summaryClick(clicks: Int) {
             read.stop()
