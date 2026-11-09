@@ -18,7 +18,8 @@ internal sealed interface CanvasTabKey {
     data object DiffOverview : CanvasTabKey
     data object Semantic : CanvasTabKey
     data object Moves : CanvasTabKey
-    data object DiffsWall : CanvasTabKey
+    /** The review's wall of file blocks: the Diffs wall, or a code review's wall of source files. */
+    data object Wall : CanvasTabKey
     data object Summaries : CanvasTabKey
     data object FileView : CanvasTabKey
     data object SymbolFlow : CanvasTabKey

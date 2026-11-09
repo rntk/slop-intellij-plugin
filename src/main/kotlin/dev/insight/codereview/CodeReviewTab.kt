@@ -39,6 +39,7 @@ import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSymbols
 import dev.insight.review.ReviewTopicGenerator
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
@@ -81,6 +82,9 @@ import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.openHighlightedLines
 import dev.insight.review.ui.readPsiThen
+import dev.insight.review.wall.WALL_CANVAS_CHAT
+import dev.insight.review.wall.WallChats
+import dev.insight.review.wall.WallScope
 
 private val LOG = logger<CodeReviewTab>()
 
@@ -120,8 +124,19 @@ internal class CodeReviewTab(
     }
 
     /** The Words page; counting runs in the background, so the page keeps the last count while the scope is recounted. */
+    /**
+     * The Code wall's chats about single files, and under [WALL_CANVAS_CHAT] its own chat about all its files, kept for the tab's
+     * life so they outlast the wall's layouts and scopes.
+     */
+    private val wallChats = WallChats(project, scope, ::wallChatBackend, welcome = { path ->
+        if (path == WALL_CANVAS_CHAT) "Ask about the files on the wall. Their source is in this chat's context; the rest of the " +
+            "scope and other project files are read when a question needs them."
+        else "Ask about ${path.substringAfterLast('/')}. Its source is in this chat's context; the rest of the scope and other " +
+            "project files are read when a question needs them."
+    }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's files" else path.substringAfterLast('/') })
     private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
-        chooseWordScope = ::chooseWordScope)
+        chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
+        showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats)
     /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
     private var wordCount: WordCount? = null
     private var allWords: WordCount? = null
@@ -167,6 +182,7 @@ internal class CodeReviewTab(
             },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
+            openOnWall = { files, title -> openCodeWall(files.filterIsInstance<CodeFile>(), title) },
         ),
         topicActions = TopicCanvasActions(
             generateTopics = { if (canSummarize) session.send("/topics") },
@@ -192,12 +208,18 @@ internal class CodeReviewTab(
             "Read every source file as one document, with file paths and summaries (/summaries)"),
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read every source file as one document, grouped by topic, with each file's summary (/topics)"),
+        ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,
+            "Lay out the source of every file in scope as a movable block on one canvas"),
         ReviewViewOption(CanvasTabKey.Words, "Words",
             "Chart the most frequent words of the source in scope: larger words occur more often"),
     )
 
     override fun openView(key: CanvasTabKey) {
-        if (key == CanvasTabKey.Words) openWords() else super.openView(key)
+        when (key) {
+            CanvasTabKey.Words -> openWords()
+            CanvasTabKey.Wall -> openCodeWall(state.snapshot.files, ALL_FILES)
+            else -> super.openView(key)
+        }
     }
 
     /** Coalesces canvas updates while a run saves summaries or topics. */
@@ -270,6 +292,43 @@ internal class CodeReviewTab(
         }
     }
 
+    /**
+     * One turn of a Code wall chat about [path]: that file's source and summary are pinned, and the rest of the scope, its
+     * summaries and current project files are read through tools. Canvas notes and source cards are not offered.
+     */
+    private fun wallChatBackend(path: String): ChatBackend = if (path == WALL_CANVAS_CHAT) wallCanvasChatBackend() else object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val turn = withContext(Dispatchers.EDT) {
+                state.snapshot.byPath[path]?.let { file ->
+                    Triple(captureContext(), file, fileSummaries()[path]) to codePromptScope(state.snapshot.scope, state.scopePaths)
+                }
+            } ?: return "$path is no longer in this review's scope, so there is no source to discuss."
+            val (captured, scopeName) = turn
+            val (context, file, summary) = captured
+            val complete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            return LlmChatBackend(complete, codeWallChatTools(context) + projectContextTools(project),
+                codeWallChatPrompt(file, summary, scopeName), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                .reply(messages, onToolCall)
+        }
+    }
+
+    /**
+     * One turn of the Code wall's own chat: the source of every file the wall shows when the question is asked is pinned as far
+     * as it fits, and the same tools as a file's chat read the rest.
+     */
+    private fun wallCanvasChatBackend(): ChatBackend = object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val (context, files, scopeName) = withContext(Dispatchers.EDT) {
+                Triple(captureContext(), state.wallFiles, codePromptScope(state.snapshot.scope, state.scopePaths))
+            }
+            if (files.isEmpty()) return "The wall shows no files, so there is no source to discuss."
+            val complete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            return LlmChatBackend(complete, codeWallChatTools(context) + projectContextTools(project),
+                codeWallCanvasChatPrompt(files, scopeName), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                .reply(messages, onToolCall)
+        }
+    }
+
     override val chat = ChatPanel(project, session, title = "Code Chat", showDashboard = false, showFileTrace = true)
     override val chatInput get() = chat.input
 
@@ -294,6 +353,7 @@ internal class CodeReviewTab(
         }, BorderLayout.NORTH)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
+        Disposer.register(this, wallChats)
         Disposer.register(this, sourcePoints)
         Disposer.register(this, followSession(before = { if (!session.busy) applyHeld() }, updateControls = ::updateControls))
         updateControls()
@@ -322,7 +382,7 @@ internal class CodeReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear() }
+        if (state.revision != previousRevision) { session.stop(); wallChats.stop(); sourcePoints.clear() }
         if (state.wordsVisible) countWords()
         // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
         if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
@@ -420,9 +480,27 @@ internal class CodeReviewTab(
         showCanvas { canvas.focusSource(block.range) }
     }
 
+    /**
+     * Shows [files] as the Code wall, titled [title], and switches to it. The whole scope keeps following the snapshot as it
+     * refreshes; a subset keeps its paths, so files that leave the scope drop off the wall.
+     */
+    fun openCodeWall(files: List<CodeFile>, title: String) {
+        val paths = files.map { it.path }.distinct()
+        state.showWall(WallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
+        renderCanvas()
+        showCanvas { canvas.focusWall() }
+    }
+
+    /** The summary text of each file in scope that has one, by path, for the Code wall. */
+    private fun fileSummaries(): Map<String, String> = state.summaries.let { summaries ->
+        summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
+            .mapNotNull { node -> summaries.text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
+    }
+
     override fun summariesChanged() {
         super.summariesChanged()
         canvas.updateFileView(fileViewCard())
+        codeCards.updateWallSummaries(fileSummaries())
     }
 
     /** File view reads the topics and summaries of the files [fileStructure] reaches, so it follows them like the topics card. */
@@ -531,6 +609,7 @@ internal class CodeReviewTab(
     override fun renderCanvas() {
         codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
             updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
+        codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
@@ -634,6 +713,7 @@ internal class CodeReviewTab(
     internal companion object {
         const val CANVAS_REFRESH_MS = 250
         const val ALL_FILES = "All files in scope"
+        const val WALL_CHAT_TOOL_ROUNDS = 40
     }
 }
 

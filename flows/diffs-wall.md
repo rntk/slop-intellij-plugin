@@ -10,7 +10,6 @@ Each block also has a Chat tab on its right edge that unfolds a small chat about
 
 Entry points for further exploration:
 
-- [DiffsWallView.kt](../src/main/kotlin/dev/insight/diff/DiffsWallView.kt) — the wall canvas, interaction, and navigation to diffs
-- [DiffsWallModel.kt](../src/main/kotlin/dev/insight/diff/DiffsWallModel.kt) — diff block preparation, layout, and zoom calculations
-- [DiffsWallChat.kt](../src/main/kotlin/dev/insight/diff/DiffsWallChat.kt) — per-file chats and their window on the wall
+- [review/wall](../src/main/kotlin/dev/insight/review/wall/) — the wall canvas, layout, and chats shared with Code Review's Code wall
+- [DiffsWallView.kt](../src/main/kotlin/dev/insight/diff/DiffsWallView.kt) — diff blocks and navigation to diffs
 - [DiffReviewTab.kt](../src/main/kotlin/dev/insight/diff/DiffReviewTab.kt) — opening the wall from a review session

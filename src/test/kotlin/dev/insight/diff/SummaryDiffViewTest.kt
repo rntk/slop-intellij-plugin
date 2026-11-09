@@ -103,7 +103,7 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
             showNode = { calls += "show" to it.identity },
             openWholeFile = { calls += "file" to it.path },
             openDirectory = { calls += "directory" to it.identity },
-            openOnDiffsWall = { calls += "wall" to it.identity },
+            openOnWall = { calls += "wall" to it.identity },
             explain = { calls += "explain" to it.identity },
             toChat = { calls += "chat" to it.identity },
             resummarize = { node, recursive -> calls += "resummarize:$recursive" to node.identity },

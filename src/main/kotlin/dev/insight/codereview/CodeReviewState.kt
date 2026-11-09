@@ -11,6 +11,7 @@ import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.wall.WallScope
 
 /** The summary tree of code files: folders and files, with the parts of large files beneath them. */
 internal fun codeSummaryTree(files: List<CodeFile>): ReviewSummaryTree =
@@ -47,9 +48,17 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showWords() { wordsVisible = true }
     fun hideWords() { wordsVisible = false }
 
+    /** The scope of the Code wall while it is on the canvas; see [wallFiles]. */
+    var wallScope: WallScope? = null
+        private set
+    fun showWall(scope: WallScope) { wallScope = scope }
+    /** The wall's files in the current snapshot, in the scope's order; files that left the scope drop out. */
+    internal val wallFiles: List<CodeFile> get() = wallScope?.paths?.let { paths -> paths.mapNotNull(snapshot.byPath::get) } ?: snapshot.files
+
     override fun clearNotes() {
         super.clearNotes()
         wordsVisible = false
+        wallScope = null
     }
 
     /** Whether [path] belongs to this tab: everything without a fixed scope, else a listed file or a file in a listed folder. */

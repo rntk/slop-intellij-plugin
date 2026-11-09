@@ -10,6 +10,8 @@ A Words view gives a compact picture of the vocabulary in scope: the most freque
 
 Source views offer the IDE's declaration navigation and usage search when the captured file matches current project source.
 
+The **Code wall** lays out the source of many files at once, one quiet block per file with numbered lines, on the same pannable, zoomable, rearrangeable canvas as the diff review's Diffs wall, with the same keyboard stepping, compact blocks and summaries in place. It opens on the whole scope from the view selector, and summary and topic entries can open just their files on it. A line opens its file there in the IDE. Each block can unfold its own chat about that file, with its source in context, and **Chat about these files** opens a chat about every file on the wall. Both keep their own conversations and history and read the rest of the scope and the project only when a question needs it.
+
 Hierarchy views place the chart beside source blocks. Hovering or selecting a topic or summary shows one block for each captured file within that entry.
 
 Entry points for further exploration:

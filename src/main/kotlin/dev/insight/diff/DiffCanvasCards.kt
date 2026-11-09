@@ -11,6 +11,9 @@ import dev.insight.review.ui.ChangeSummaryActions
 import dev.insight.review.ui.SnapshotCanvasCards
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.wall.WallChats
+import dev.insight.review.wall.WallLine
 import javax.swing.JPanel
 
 /** Metric card removal supplied by the review hosting the canvas. */
@@ -72,7 +75,7 @@ internal class DiffCanvasCards(
     }
 
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
-        content.wall?.let { CanvasTabKey.DiffsWall to wallCard(it) },
+        content.wall?.let { CanvasTabKey.Wall to wallCard(it) },
         content.words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) },
         content.diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
         content.semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) },
@@ -87,7 +90,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.DiffOverview -> content.diffOverview?.let { metricsCards.wordsCard(it, overview = true) }
         CanvasTabKey.Semantic -> content.semantic?.let(metricsCards::semanticCard)
         CanvasTabKey.Moves -> content.moves?.let(metricsCards::movesCard)
-        CanvasTabKey.DiffsWall -> content.wall?.let(::wallCard)
+        CanvasTabKey.Wall -> content.wall?.let(::wallCard)
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { diffCard(it, snapshots) }
         else -> null
     }
@@ -97,7 +100,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.DiffOverview -> "Diff overview"
         CanvasTabKey.Semantic -> "Semantic changes"
         CanvasTabKey.Moves -> "Moved code"
-        CanvasTabKey.DiffsWall -> "Diffs wall"
+        CanvasTabKey.Wall -> ReviewVocabulary.DIFF.wallName
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { "Diff · ${it.path.substringAfterLast('/')}" }
         else -> null
     }

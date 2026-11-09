@@ -12,6 +12,8 @@ import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmRole
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.chooseView
+import dev.insight.review.wall.WallChatPanel
+import dev.insight.review.wall.WallView
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.InputEvent
@@ -39,10 +41,10 @@ class DiffsWallChatPlatformTest : BasePlatformTestCase() {
             val files = listOf(file("src/a.kt"), file("src/b.kt"))
             tab.update(ReviewSnapshot(files, emptyList()))
             chooseView(tab, "Diffs wall")
-            val block = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>().first()
+            val block = descendants(tab.canvas).filterIsInstance<WallView.BlockView>().first()
             val surface = block.parent as JComponent
             surface.doLayout()
-            fun chatTabs() = descendants(tab.canvas).filterIsInstance<DiffsWallView.ChatTab>()
+            fun chatTabs() = descendants(tab.canvas).filterIsInstance<WallView.ChatTab>()
             fun panels() = descendants(tab.canvas).filterIsInstance<WallChatPanel>()
             assertEquals(files.map { "diffs-wall-chat-tab:${it.path}" }, chatTabs().map { it.name })
             val chatTab = chatTabs().first()

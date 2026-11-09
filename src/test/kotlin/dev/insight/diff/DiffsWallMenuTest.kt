@@ -1,7 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import dev.insight.review.PatchSource
+import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewTopics
@@ -44,8 +44,8 @@ class DiffsWallMenuTest : BasePlatformTestCase() {
 
     private fun wallItems(popup: JPopupMenu) = popup.components.filterIsInstance<JMenuItem>().filter { it.text == label }
 
-    private fun summariesCanvas(mode: ReviewSummariesMode, wall: ((List<PatchSource>, String) -> Unit)?) =
-        NoteCanvas({}, {}, project = project, summaryActions = SummaryCanvasActions(openOnDiffsWall = wall)).apply {
+    private fun summariesCanvas(mode: ReviewSummariesMode, wall: ((List<ReviewSource>, String) -> Unit)?) =
+        NoteCanvas({}, {}, project = project, summaryActions = SummaryCanvasActions(openOnWall = wall)).apply {
             setSize(1600, 900)
             summariesView.mode = mode
             showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
@@ -79,7 +79,7 @@ class DiffsWallMenuTest : BasePlatformTestCase() {
 
     fun testEntryMenuCarriesTheWallAloneAndBeforeOtherActions() {
         val opened = mutableListOf<Pair<String, String>>()
-        val actions = ChangeSummaryActions({}, {}, {}, {}, toChat = { }, openOnDiffsWall = { opened += it.identity to diffsTitle(it.path) })
+        val actions = ChangeSummaryActions({}, {}, {}, {}, toChat = { }, openOnWall = { opened += it.identity to diffsTitle(it.path) })
         for (node in tree.nodes) {
             val popup = JPopupMenu()
             actions.addEntryItems(popup, node)
@@ -90,7 +90,7 @@ class DiffsWallMenuTest : BasePlatformTestCase() {
         wallItems(JPopupMenu().also { actions.addEntryItems(it, tree.nodes.single { n -> n.identity == "directory:src" }) }).single().doClick()
         assertEquals(listOf("directory:src" to "src"), opened)
         // The wall alone is enough to install a menu on a component.
-        val only = ChangeSummaryActions({}, {}, {}, {}, openOnDiffsWall = { })
+        val only = ChangeSummaryActions({}, {}, {}, {}, openOnWall = { })
         val label = javax.swing.JLabel()
         only.installEntryMenu(label, tree.nodes.single { it.identity == "directory:src" })
         assertEquals(1, wallItems(label.componentPopupMenu).size)
@@ -101,8 +101,8 @@ class DiffsWallMenuTest : BasePlatformTestCase() {
 
     private fun diffsTitle(path: String) = path
 
-    private fun topicsCanvas(mode: ChangeTopicsMode, wall: ((List<PatchSource>, String) -> Unit)?, topics: ReviewTopics) =
-        NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openOnDiffsWall = wall)).apply {
+    private fun topicsCanvas(mode: ChangeTopicsMode, wall: ((List<ReviewSource>, String) -> Unit)?, topics: ReviewTopics) =
+        NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(openOnWall = wall)).apply {
             setSize(1600, 900)
             topicsView.mode = mode
             showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))

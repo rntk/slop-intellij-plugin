@@ -10,6 +10,7 @@ import dev.insight.review.ReviewTabState
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import dev.insight.review.diffCardKey
+import dev.insight.review.wall.WallScope
 
 /** Immutable review evidence, independent of PSI, graph construction and the Git plugin. */
 data class ReviewFile(
@@ -33,9 +34,6 @@ data class ReviewFile(
 }
 
 data class UntrackedFile(val path: String, val absolutePath: String)
-
-/** The files of the Diffs wall: [paths] in their order, or every file of the snapshot when null, under [title]. */
-data class DiffsWallScope(val paths: List<String>?, val title: String)
 
 data class ReviewSnapshot(
     val files: List<ReviewFile>,
@@ -104,9 +102,9 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showMoves() { movesVisible = true }
     fun hideMoves() { movesVisible = false }
     /** The scope of the Diffs wall while it is on the canvas; see [wallFiles]. */
-    var wallScope: DiffsWallScope? = null
+    var wallScope: WallScope? = null
         private set
-    fun showWall(scope: DiffsWallScope) { wallScope = scope }
+    fun showWall(scope: WallScope) { wallScope = scope }
     /** The wall's files in the current snapshot, in the scope's order; files that left the diff drop out. */
     internal val wallFiles: List<ReviewFile> get() = wallScope?.paths?.let { paths ->
         val byPath = snapshot.files.associateBy { it.path }

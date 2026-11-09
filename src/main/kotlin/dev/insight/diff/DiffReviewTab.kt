@@ -67,6 +67,9 @@ import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.changeFlow
 import dev.insight.review.ui.readPsiThen
+import dev.insight.review.wall.WALL_CANVAS_CHAT
+import dev.insight.review.wall.WallChats
+import dev.insight.review.wall.WallScope
 
 private val LOG = logger<DiffReviewTab>()
 
@@ -155,7 +158,7 @@ internal class DiffReviewTab(
                 }
             },
             openDirectoryDiff = { files -> openDirectoryDiff(files.filterIsInstance<ReviewFile>()) },
-            openOnDiffsWall = { files, title -> openDiffsWall(files.filterIsInstance<ReviewFile>(), title) },
+            openOnWall = { files, title -> openDiffsWall(files.filterIsInstance<ReviewFile>(), title) },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
         ),
@@ -183,7 +186,7 @@ internal class DiffReviewTab(
             "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"),
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
             "Read every diff as one document, grouped by shared change cause and affected code (/grouping)"),
-        ReviewViewOption(CanvasTabKey.DiffsWall, "Diffs wall",
+        ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
             "Lay out every changed file's raw diff as a movable block on one canvas"),
         ReviewViewOption(CanvasTabKey.Words, "Words",
             "Chart the words of the removed and added lines: removed on the left, added on the right"),
@@ -201,7 +204,7 @@ internal class DiffReviewTab(
             CanvasTabKey.DiffOverview -> openDiffOverview()
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
-            CanvasTabKey.DiffsWall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
+            CanvasTabKey.Wall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
             else -> super.openView(key)
         }
     }
@@ -398,9 +401,9 @@ internal class DiffReviewTab(
      */
     fun openDiffsWall(files: List<ReviewFile>, title: String) {
         val paths = files.map { it.path }.distinct()
-        state.showWall(DiffsWallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
+        state.showWall(WallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
         renderCanvas()
-        showCanvas { canvas.focusDiffsWall() }
+        showCanvas { canvas.focusWall() }
     }
 
     private var semanticJob: Job? = null

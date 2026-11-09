@@ -52,6 +52,7 @@ import dev.insight.review.ui.ReviewViewSelector
 import dev.insight.review.ui.chooseView
 import dev.insight.review.ui.shownView
 import dev.insight.review.ui.viewLabels
+import dev.insight.review.wall.WallView
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     fun testSummariesAndTopicsUseIndependentNativeEditorTabs() {
@@ -164,8 +165,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             chooseView(tab, "Diffs wall")
             assertEquals("Diffs wall", shownView(tab))
             assertNull(tab.state.wallScope!!.paths)
-            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>().onEach { it.parent.doLayout() }
-            assertEquals(files.map { it.path }, blocks().map { it.block.file.path })
+            fun blocks() = descendants(tab.canvas).filterIsInstance<WallView.BlockView>().onEach { it.parent.doLayout() }
+            assertEquals(files.map { it.path }, blocks().map { it.block.path })
             val moved = blocks().first()
             val start = moved.location
             fun mouse(id: Int, x: Int, y: Int) = moved.dispatchEvent(java.awt.event.MouseEvent(moved, id, 0L,
@@ -178,18 +179,18 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertSame(moved, moved.parent.getComponent(0))
             chooseView(tab, "Words")
             chooseView(tab, "Diffs wall")
-            assertEquals(target, blocks().single { it.block.file.path == "src/a.kt" }.location)
+            assertEquals(target, blocks().single { it.block.path == "src/a.kt" }.location)
 
             tab.openDiffsWall(listOf(files[2], files[1]), "Subset")
             assertEquals("Diffs wall", shownView(tab))
             assertEquals(listOf("src/c.kt", "src/b.kt"), tab.state.wallScope!!.paths)
-            assertEquals(listOf("src/c.kt", "src/b.kt"), blocks().map { it.block.file.path })
+            assertEquals(listOf("src/c.kt", "src/b.kt"), blocks().map { it.block.path })
             assertEquals(start, blocks().first().location)
             assertTrue(descendants(tab.canvas).filterIsInstance<JLabel>().any { it.text == "Diffs wall · Subset · 2 files" })
 
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertNull(tab.state.wallScope)
-            assertTrue(descendants(tab.canvas).none { it is DiffsWallView.BlockView })
+            assertTrue(descendants(tab.canvas).none { it is WallView.BlockView })
         } finally { Disposer.dispose(tab) }
     }
 
@@ -199,12 +200,12 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val files = listOf("src/a.kt", "src/b.kt").map { file(it).copy(patch = "@@ -1 +1 @@\n-old\n+new\n") }
             tab.update(ReviewSnapshot(files, emptyList()))
             chooseView(tab, "Diffs wall")
-            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>().onEach { it.parent.doLayout() }
-            fun paint(block: DiffsWallView.BlockView) {
+            fun blocks() = descendants(tab.canvas).filterIsInstance<WallView.BlockView>().onEach { it.parent.doLayout() }
+            fun paint(block: WallView.BlockView) {
                 val image = java.awt.image.BufferedImage(block.width.coerceAtLeast(1), block.height.coerceAtLeast(1), java.awt.image.BufferedImage.TYPE_INT_ARGB)
                 block.paint(image.createGraphics())
             }
-            fun press(block: DiffsWallView.BlockView, at: java.awt.Point) = block.dispatchEvent(java.awt.event.MouseEvent(block,
+            fun press(block: WallView.BlockView, at: java.awt.Point) = block.dispatchEvent(java.awt.event.MouseEvent(block,
                 java.awt.event.MouseEvent.MOUSE_PRESSED, 0L, java.awt.event.InputEvent.BUTTON1_DOWN_MASK, at.x, at.y, 1, false, java.awt.event.MouseEvent.BUTTON1))
             blocks().forEach(::paint)
             // Without summaries there is no link.
@@ -214,10 +215,10 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val tree = tab.state.summaries.tree
             tab.state.summarize(tab.state.revision, tree.nodes.filter { it.kind == SummaryKind.FILE && it.path == "src/a.kt" }.associate { it.id to "Adds the new behaviour." })
             tab.update(ReviewSnapshot(files, emptyList()))
-            val before = blocks().single { it.block.file.path == "src/a.kt" }.size
+            val before = blocks().single { it.block.path == "src/a.kt" }.size
             blocks().forEach(::paint)
-            val withSummary = blocks().single { it.block.file.path == "src/a.kt" }
-            assertNull(blocks().single { it.block.file.path == "src/b.kt" }.summaryToggle)
+            val withSummary = blocks().single { it.block.path == "src/a.kt" }
+            assertNull(blocks().single { it.block.path == "src/b.kt" }.summaryToggle)
             val link = withSummary.summaryToggle!!
             val at = java.awt.Point(link.centerX.toInt(), link.centerY.toInt())
 
@@ -237,7 +238,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val files = listOf(file("src/a.kt").copy(patch = tall), file("src/b.kt").copy(patch = "@@ -1 +1 @@\n-old\n+new\n"))
             tab.update(ReviewSnapshot(files, emptyList()))
             chooseView(tab, "Diffs wall")
-            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>()
+            fun blocks() = descendants(tab.canvas).filterIsInstance<WallView.BlockView>()
             val surface = blocks().first().parent as javax.swing.JComponent
             val pane = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, surface) as javax.swing.JScrollPane
             pane.setSize(1400, 900)
@@ -253,7 +254,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("100%", zoom())
 
             // A diff far taller than the viewport opens compact, capped below it, and its body scrolls under the wheel.
-            val a = blocks().single { it.block.file.path == "src/a.kt" }
+            val a = blocks().single { it.block.path == "src/a.kt" }
             assertTrue(a.isCompact)
             assertTrue(a.preferredSize.height < pane.height)
             val y = a.preferredSize.height / 2
@@ -266,7 +267,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             press("TAB")
             assertTrue(a.active)
             press("TAB")
-            val b = blocks().single { it.block.file.path == "src/b.kt" }
+            val b = blocks().single { it.block.path == "src/b.kt" }
             assertTrue(b.active && !a.active)
             assertEquals("150%", zoom())
             press("ESCAPE")
@@ -283,9 +284,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             press("shift TAB")
             assertTrue(a.active)
             press("C")
-            assertFalse(blocks().single { it.block.file.path == "src/a.kt" }.isCompact)
+            assertFalse(blocks().single { it.block.path == "src/a.kt" }.isCompact)
             press("C")
-            assertTrue(blocks().single { it.block.file.path == "src/a.kt" }.isCompact)
+            assertTrue(blocks().single { it.block.path == "src/a.kt" }.isCompact)
         } finally { Disposer.dispose(tab) }
     }
 

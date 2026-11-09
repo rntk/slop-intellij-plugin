@@ -2,8 +2,6 @@ package dev.insight.diff
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.insight.agent.ChatMessage
-import dev.insight.agent.ChatRole
 import dev.insight.agent.SourceSide
 import dev.insight.agent.ToolInputException
 import kotlinx.coroutines.runBlocking
@@ -130,12 +128,5 @@ class DiffsWallChatToolsTest {
         assertFalse(cut.contains("Diff of src/b.kt"))
         assertTrue(cut.contains("read these diffs with read_diff_files when a question needs them: src/b.kt."))
         assertTrue(cut.contains("- src/b.kt (added)"))
-    }
-
-    @Test
-    fun aChatIsNamedByItsFirstQuestion() {
-        assertEquals("New chat", wallChatTitle(listOf(ChatMessage(ChatRole.NOTICE, "Ask about a.kt"))))
-        assertEquals("Why is old removed?", wallChatTitle(listOf(ChatMessage(ChatRole.USER, "Why is old removed?"))))
-        assertEquals("Why does this ch…", wallChatTitle(listOf(ChatMessage(ChatRole.USER, "Why does this\n change the loader?")), max = 17))
     }
 }

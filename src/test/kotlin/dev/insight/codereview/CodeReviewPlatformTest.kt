@@ -171,7 +171,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
             assertTrue(buttons.containsAll(listOf("Open review", "Clear tabs")))
             assertFalse(buttons.any { it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
-            assertEquals(listOf("Summaries", "Topics", "Words"), viewLabels(tab))
+            assertEquals(listOf("Summaries", "Topics", "Code wall", "Words"), viewLabels(tab))
             assertSame(tab.viewSelector, descendants(tab).filterIsInstance<ReviewViewSelector>().single())
             assertTrue(tab.viewSelector.isEnabled)
             assertTrue(tab.state.summariesVisible)

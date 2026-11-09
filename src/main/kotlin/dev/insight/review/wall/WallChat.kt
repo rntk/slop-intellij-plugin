@@ -1,4 +1,4 @@
-package dev.insight.diff
+package dev.insight.review.wall
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
@@ -13,6 +13,7 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatRole
 import dev.insight.chat.ChatBackendFactory
 import dev.insight.chat.ChatSession
@@ -41,8 +42,9 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
 /**
- * The Diffs wall's chats, by file path. Each file keeps its own independent conversations, oldest first, and which one is
- * shown; they outlive the wall's layouts and scopes, so a file's chats are there whenever its block is. EDT.
+ * A wall's chats, by file path, and under [WALL_CANVAS_CHAT] the wall's own chat. Each file keeps its own independent
+ * conversations, oldest first, and which one is shown; they outlive the wall's layouts and scopes, so a file's chats are there
+ * whenever its block is. The client's [backend] decides what a chat knows and can read. EDT.
  */
 internal class WallChats(
     private val project: Project,
@@ -147,45 +149,27 @@ internal data class WallChatText(
     val placeholder: String,
     val historyTooltip: String,
     val newChatTooltip: String,
-) {
-    companion object {
-        /** The words of the chat about the single file at [path]. */
-        fun forFile(path: String) = WallChatText(
-            title = "Chat · ${path.substringAfterLast('/')}",
-            titleTooltip = "Ask about $path's diff; the rest of the change and project files are read when needed",
-            placeholder = "Ask about this diff… (Enter sends)",
-            historyTooltip = "Earlier chats about this file",
-            newChatTooltip = "Start an independent chat about this file; earlier chats stay in the list",
-        )
-
-        /** The words of the wall's own chat about every diff it shows. */
-        val CANVAS = WallChatText(
-            title = "Chat · all diffs on the wall",
-            titleTooltip = "Ask about every diff on the wall; the rest of the change and project files are read when needed",
-            placeholder = "Ask about these changes… (Enter sends)",
-            historyTooltip = "Earlier chats about the wall's changes",
-            newChatTooltip = "Start an independent chat about the wall's changes; earlier chats stay in the list",
-        )
-    }
-}
+)
 
 /**
- * The chat window a Diffs wall block unfolds, or the wall's own chat about all its diffs: the key's conversations to pick from,
- * the shown one's transcript and an input. Enter sends, Shift+Enter breaks the line and Escape folds the window; each
- * conversation keeps its own draft.
+ * The chat window a wall block unfolds, or the wall's own chat about all its files: the key's conversations to pick from, the
+ * shown one's transcript and an input. Enter sends, Shift+Enter breaks the line and Escape folds the window; each conversation
+ * keeps its own draft.
  */
 internal class WallChatPanel(
     /** The key of the conversations in [chats]: a file's path, or [WALL_CANVAS_CHAT]. */
     private val path: String,
     private val chats: WallChats,
+    private val words: WallChatText,
+    /** The prefix of the window's component names, as the wall's [WallLabels.id]. */
+    id: String,
     /** Folds the window. */
     private val onClose: () -> Unit,
     /** Brings the window in front of the blocks it overlaps. */
     private val onRaise: () -> Unit = {},
-    private val words: WallChatText = WallChatText.forFile(path),
 ) : JPanel(BorderLayout(0, JBUI.scale(6))), Disposable {
     private val history = ComboBox<ChatSession>().apply {
-        name = "diffs-wall-chat-history"
+        name = "$id-chat-history"
         toolTipText = words.historyTooltip
         renderer = SimpleListCellRenderer.create("") { session ->
             val count = session.messages.count { it.role == ChatRole.USER }
@@ -199,7 +183,7 @@ internal class WallChatPanel(
         horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
     }
     val input = JBTextArea(3, 0).apply {
-        name = "diffs-wall-chat-input"
+        name = "$id-chat-input"
         lineWrap = true
         wrapStyleWord = true
         font = UIUtil.getLabelFont()
@@ -220,7 +204,7 @@ internal class WallChatPanel(
     private val subscription = chats.subscribe { changed -> if (changed == path) render() }
 
     init {
-        name = "diffs-wall-chat:$path"
+        name = "$id-chat:$path"
         isOpaque = true
         background = UIUtil.getPanelBackground()
         border = BorderFactory.createCompoundBorder(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(6, 8))
@@ -233,7 +217,7 @@ internal class WallChatPanel(
             add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                 isOpaque = false
                 add(ActionLink("New chat") { chats.newChat(path); input.requestFocusInWindow() }.apply {
-                    name = "diffs-wall-new-chat"
+                    name = "$id-new-chat"
                     font = JBFont.small()
                     toolTipText = words.newChatTooltip
                 })
@@ -356,8 +340,8 @@ internal class WallChatPanel(
     }
 }
 
-/** The key of the wall's own chat about all its diffs, in the [WallChats] that hold it; never a file path. */
-internal const val WALL_CANVAS_CHAT = "\u0000diffs-wall"
+/** The key of the wall's own chat about all its files, in the [WallChats] that hold it; never a file path. */
+internal const val WALL_CANVAS_CHAT = "\u0000wall"
 
 /** A chat window's width on the wall, which stays at screen size whatever the zoom so it is always readable. */
 internal fun wallChatWidth(): Int = JBUI.scale(400)
@@ -367,3 +351,9 @@ internal fun wallChatHeight(blockHeight: Int): Int = blockHeight.coerceIn(JBUI.s
 
 /** The wall's own chat window's height when [room] is free in the shown part of the wall: as tall as it allows, within bounds. */
 internal fun wallCanvasChatHeight(room: Int): Int = room.coerceIn(JBUI.scale(340), JBUI.scale(640))
+
+/** A conversation's name in a chat's history: its first question on one line, clipped; "New chat" before one is asked. */
+internal fun wallChatTitle(messages: List<ChatMessage>, max: Int = 36): String {
+    val first = messages.firstOrNull { it.role == ChatRole.USER }?.text?.replace(Regex("\\s+"), " ")?.trim() ?: return "New chat"
+    return if (first.length <= max) first else first.take(max - 1).trimEnd() + "…"
+}

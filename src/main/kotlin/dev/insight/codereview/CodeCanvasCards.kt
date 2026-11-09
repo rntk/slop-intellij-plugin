@@ -11,6 +11,7 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ReviewVocabulary
 import dev.insight.review.WordScope
 import dev.insight.review.ui.CanvasExtension
 import dev.insight.review.ui.ChangeSummariesViewState
@@ -18,6 +19,7 @@ import dev.insight.review.ui.ChangeSummaryActions
 import dev.insight.review.ui.SnapshotCanvasCards
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
+import dev.insight.review.wall.WallChats
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BorderLayout
@@ -40,14 +42,27 @@ internal data class CodeWordsPage(
     val updating: Boolean = false,
 )
 
-/** The code review's own canvas pages: the cloud of the words in scope. Set [words] before the canvas rebuilds. */
+/**
+ * The code review's own canvas pages: the Code wall and the cloud of the words in scope. Set [wall] and [words] before the
+ * canvas rebuilds.
+ */
 internal class CodeCanvasCards(
     private val open: (String) -> Unit,
     private val removeWords: () -> Unit = {},
     /** Counts the words of one file or directory of the scope. */
     private val chooseWordScope: (WordScope) -> Unit = {},
+    /** Opens a wall block's file in the editor, at the double-clicked line when there is one. */
+    openWallFile: (path: String, line: Int?) -> Unit = { _, _ -> },
+    /** Shows every file of the scope on the wall. */
+    showAllFiles: () -> Unit = {},
+    /** The chats wall blocks unfold; null leaves blocks without a Chat tab. */
+    wallChats: WallChats? = null,
 ) : CanvasExtension {
     var words: CodeWordsPage? = null
+    var wall: CodeWallContent? = null
+    // One view for the tab session, so block positions survive canvas rebuilds.
+    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats) }
+    private val wallPage by wallView
     /** Placing the words is slow, so the cloud is kept across rebuilds while its counts are the same. */
     private var cloud: CodeWordCloud? = null
 
@@ -57,17 +72,36 @@ internal class CodeCanvasCards(
         if (cloud?.words !== words?.words) cloud = null
     }
 
-    override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(words?.let { CanvasTabKey.Words to wordsCard(it) }).toMap()
+    override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
+        wall?.let { CanvasTabKey.Wall to wallCard(it) },
+        words?.let { CanvasTabKey.Words to wordsCard(it) },
+    ).toMap()
 
     override fun trailingCards(snapshots: SnapshotCanvasCards): Map<CanvasTabKey, JPanel> = emptyMap()
 
-    override fun card(key: CanvasTabKey, snapshots: SnapshotCanvasCards): JPanel? =
-        if (key == CanvasTabKey.Words) words?.let(::wordsCard) else null
+    override fun card(key: CanvasTabKey, snapshots: SnapshotCanvasCards): JPanel? = when (key) {
+        CanvasTabKey.Words -> words?.let(::wordsCard)
+        CanvasTabKey.Wall -> wall?.let(::wallCard)
+        else -> null
+    }
 
-    override fun title(key: CanvasTabKey): String? = if (key == CanvasTabKey.Words) "Words" else null
+    override fun title(key: CanvasTabKey): String? = when (key) {
+        CanvasTabKey.Words -> "Words"
+        CanvasTabKey.Wall -> ReviewVocabulary.CODE.wallName
+        else -> null
+    }
 
     override fun summaryDiffView(card: SummariesCard, state: ChangeSummariesViewState, zoom: Double,
                                  actions: ChangeSummaryActions): SummaryDiffView? = null
+
+    private fun wallCard(content: CodeWallContent): JPanel = wallPage.card.also { wallPage.show(content) }
+
+    /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
+    fun updateWallSummaries(summaries: Map<String, String>) {
+        val current = wall ?: return
+        if (current.summaries == summaries) return
+        wall = current.copy(summaries = summaries).also(wallPage::show)
+    }
 
     /** The most frequent words of the source in scope; a word opens its file, or a list of its files. */
     private fun wordsCard(page: CodeWordsPage): JPanel {
@@ -145,7 +179,9 @@ internal class CodeCanvasCards(
 
     override fun dispose() {
         words = null
+        wall = null
         cloud = null
+        if (wallView.isInitialized()) wallPage.dispose()
     }
 
     private fun scaled(value: Int) = zoomScaled(value, 1.0)

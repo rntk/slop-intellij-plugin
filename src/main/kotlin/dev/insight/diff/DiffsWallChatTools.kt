@@ -1,7 +1,5 @@
 package dev.insight.diff
 
-import dev.insight.agent.ChatMessage
-import dev.insight.agent.ChatRole
 import dev.insight.agent.ChatTool
 import dev.insight.agent.SourceSide
 import dev.insight.agent.ToolChatRunner
@@ -20,6 +18,7 @@ import dev.insight.prompts.PromptTemplates
 import dev.insight.review.numberedRows
 import dev.insight.review.pathListSchema
 import dev.insight.review.reviewJson
+import dev.insight.review.wall.WallLine
 import java.util.regex.PatternSyntaxException
 
 /** Which patch rows a diff search looks at: every file line of the hunks, or only added or removed ones. */
@@ -220,12 +219,6 @@ internal fun wallCanvasChatPrompt(files: List<ReviewFile>, comparison: String, p
         if (unread.isNotEmpty()) append("\n[Not pinned for size; read these diffs with read_diff_files when a question needs them: ")
             .append(unread.joinToString(", ")).append(".]")
     }
-
-/** A conversation's name in a chat's history: its first question on one line, clipped; "New chat" before one is asked. */
-internal fun wallChatTitle(messages: List<ChatMessage>, max: Int = 36): String {
-    val first = messages.firstOrNull { it.role == ChatRole.USER }?.text?.replace(Regex("\\s+"), " ")?.trim() ?: return "New chat"
-    return if (first.length <= max) first else first.take(max - 1).trimEnd() + "…"
-}
 
 private val WALL_REVIEW_TOOLS = setOf("point_to_code", "get_current_diff", "read_diff_files")
 internal const val SEARCH_PAGE = 50

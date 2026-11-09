@@ -38,6 +38,11 @@ internal data class ReviewVocabulary(
     val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
+    /** The wall's name, as its view option, tab and label row call it: "Diffs wall" | "Code wall". */
+    val wallName: String,
+    /** The entry menu item that opens an entry's files on the wall, and its tooltip. */
+    val openOnWall: String,
+    val openOnWallTooltip: String,
     val groupingTitle: String = "Change grouping",
     val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
         "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
@@ -73,6 +78,9 @@ internal data class ReviewVocabulary(
             },
             summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = false,
+            wallName = "Diffs wall",
+            openOnWall = "Open on diffs wall",
+            openOnWallTooltip = "Show the raw diffs of this entry's files together on the diffs wall",
         )
 
         val CODE = ReviewVocabulary(
@@ -102,6 +110,9 @@ internal data class ReviewVocabulary(
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
             summariesMode = ReviewSummariesMode.SPLIT,
             foldLargeTopics = true,
+            wallName = "Code wall",
+            openOnWall = "Open on code wall",
+            openOnWallTooltip = "Show the source of this entry's files together on the code wall",
         )
     }
 }
