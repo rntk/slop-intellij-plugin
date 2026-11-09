@@ -215,6 +215,11 @@ internal class SummariesCanvasCards(
                 val navigate: (SummaryNode) -> Unit = { node -> open(node.files.mapNotNull(files::get)) }
                 navigate
             },
+            openOnDiffsWall = summaryActions.openOnDiffsWall?.let { open ->
+                val files = tree.nodes.mapNotNull { (it.file as? PatchSource)?.let { file -> file.path to file } }.toMap()
+                val navigate: (SummaryNode) -> Unit = { node -> open(node.files.mapNotNull(files::get), diffsWallTitle(node)) }
+                navigate
+            },
             trace = summariesTrace::trace,
             searchSelection = summariesTrace::searchSelection,
             searchTab = { context: SummaryContext -> openSearchTab(tab, context) },

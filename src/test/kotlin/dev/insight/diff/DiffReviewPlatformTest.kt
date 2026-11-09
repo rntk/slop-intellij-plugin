@@ -155,6 +155,102 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
+    fun testDiffsWallKeepsMovedBlocksUntilItsScopeChanges() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            val files = listOf("src/a.kt", "src/b.kt", "src/c.kt").map { file(it).copy(patch = "@@ -1 +1 @@\n-old\n+new\n") }
+            tab.update(ReviewSnapshot(files, emptyList()))
+            chooseView(tab, "Diffs wall")
+            assertEquals("Diffs wall", shownView(tab))
+            assertNull(tab.state.wallScope!!.paths)
+            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>().onEach { it.parent.doLayout() }
+            assertEquals(files.map { it.path }, blocks().map { it.block.file.path })
+            val moved = blocks().first()
+            val start = moved.location
+            fun mouse(id: Int, x: Int, y: Int) = moved.dispatchEvent(java.awt.event.MouseEvent(moved, id, 0L,
+                java.awt.event.InputEvent.BUTTON1_DOWN_MASK, x, y, 1, false, java.awt.event.MouseEvent.BUTTON1))
+            mouse(java.awt.event.MouseEvent.MOUSE_PRESSED, 5, 5)
+            mouse(java.awt.event.MouseEvent.MOUSE_DRAGGED, 405, 305)
+            mouse(java.awt.event.MouseEvent.MOUSE_RELEASED, 405, 305)
+            val target = java.awt.Point(start.x + 400, start.y + 300)
+            // The dragged block comes to front and keeps its place across a canvas rebuild and a return to the wall.
+            assertSame(moved, moved.parent.getComponent(0))
+            chooseView(tab, "Words")
+            chooseView(tab, "Diffs wall")
+            assertEquals(target, blocks().single { it.block.file.path == "src/a.kt" }.location)
+
+            tab.openDiffsWall(listOf(files[2], files[1]), "Subset")
+            assertEquals("Diffs wall", shownView(tab))
+            assertEquals(listOf("src/c.kt", "src/b.kt"), tab.state.wallScope!!.paths)
+            assertEquals(listOf("src/c.kt", "src/b.kt"), blocks().map { it.block.file.path })
+            assertEquals(start, blocks().first().location)
+            assertTrue(descendants(tab.canvas).filterIsInstance<JLabel>().any { it.text == "Diffs wall · Subset · 2 files" })
+
+            descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
+            assertNull(tab.state.wallScope)
+            assertTrue(descendants(tab.canvas).none { it is DiffsWallView.BlockView })
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun testDiffsWallZoomsStepsThroughBlocksAndCompactsFromTheKeyboard() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            val tall = "@@ -1,300 +1,300 @@\n" + (1..300).joinToString("\n") { "+line $it" } + "\n"
+            val files = listOf(file("src/a.kt").copy(patch = tall), file("src/b.kt").copy(patch = "@@ -1 +1 @@\n-old\n+new\n"))
+            tab.update(ReviewSnapshot(files, emptyList()))
+            chooseView(tab, "Diffs wall")
+            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>()
+            val surface = blocks().first().parent as javax.swing.JComponent
+            val pane = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, surface) as javax.swing.JScrollPane
+            pane.setSize(1400, 900)
+            // Headless, the page is laid out by hand.
+            pane.doLayout(); pane.viewport.doLayout()
+            surface.doLayout()
+            fun zoom() = descendants(tab.canvas).filterIsInstance<JLabel>().single { it.name == "diffs-wall-zoom" }.text
+            fun press(stroke: String) = surface.getActionForKeyStroke(javax.swing.KeyStroke.getKeyStroke(stroke))!!
+                .actionPerformed(java.awt.event.ActionEvent(surface, 0, null))
+            assertTrue(surface.isFocusable)
+            assertFalse(surface.focusTraversalKeysEnabled)
+            assertEquals("zoom-in", surface.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).get(javax.swing.KeyStroke.getKeyStroke("ctrl EQUALS")))
+            assertEquals("100%", zoom())
+
+            // A diff far taller than the viewport opens compact, capped below it, and its body scrolls under the wheel.
+            val a = blocks().single { it.block.file.path == "src/a.kt" }
+            assertTrue(a.isCompact)
+            assertTrue(a.preferredSize.height < pane.height)
+            val y = a.preferredSize.height / 2
+            val before = a.lineAt(y)!!
+            a.dispatchEvent(java.awt.event.MouseWheelEvent(a, java.awt.event.MouseEvent.MOUSE_WHEEL, 0L, 0, 10, y, 0, false,
+                java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 2))
+            assertTrue(a.lineAt(y)!!.new!! > before.new!!)
+
+            // Tab activates blocks in reading order and zooms in to read them; Escape returns to the overview.
+            press("TAB")
+            assertTrue(a.active)
+            press("TAB")
+            val b = blocks().single { it.block.file.path == "src/b.kt" }
+            assertTrue(b.active && !a.active)
+            assertEquals("150%", zoom())
+            press("ESCAPE")
+            assertEquals("100%", zoom())
+            assertTrue(b.active)
+            press("ctrl EQUALS")
+            assertEquals("125%", zoom())
+            press("ctrl 0")
+            assertEquals("100%", zoom())
+
+            // C toggles compact on the active block; a short block has nothing to compact.
+            press("C")
+            assertFalse(b.isCompact)
+            press("shift TAB")
+            assertTrue(a.active)
+            press("C")
+            assertFalse(blocks().single { it.block.file.path == "src/a.kt" }.isCompact)
+            press("C")
+            assertTrue(blocks().single { it.block.file.path == "src/a.kt" }.isCompact)
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test chat tools point at exact snapshot sides and flow tools require an explicit flow turn`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
@@ -726,7 +822,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Topics", "Grouping", "Words", "Diff overview", "Metrics", "Moves"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Topics", "Grouping", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.viewSelector })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })
             assertFalse(descendants(first).any { it is ChatPanel })

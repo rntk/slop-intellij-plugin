@@ -10,6 +10,7 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ExplainResult
+import dev.insight.review.PatchSource
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSourceBlock
@@ -219,6 +220,7 @@ internal class NoteCanvas(
     internal fun focusDiffOverview() { focusCard(CanvasTabKey.DiffOverview) }
     internal fun focusSemantic() { focusCard(CanvasTabKey.Semantic) }
     internal fun focusMoves() { focusCard(CanvasTabKey.Moves) }
+    internal fun focusDiffsWall() { focusCard(CanvasTabKey.DiffsWall) }
     internal fun focusExplanation() { focusCard(CanvasTabKey.Explanation) }
 
     /** Selects the source tab. */
@@ -252,7 +254,7 @@ internal class NoteCanvas(
         CanvasTabKey.Grouping -> "Grouping"
         CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
-        CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
+        CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.DiffsWall -> key.toString()
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
         is ReviewNoteKey -> {
@@ -444,7 +446,7 @@ internal class NoteCanvas(
         currentContent: () -> TopicsCard? = { topics },
     ): ((String) -> JPopupMenu)? {
         val canSummarize = summaryActions.contextSummaries != null && actions.saveTopicSummaries != null
-        if (!canSummarize && summaryActions.chatNode == null) return null
+        if (!canSummarize && summaryActions.chatNode == null && summaryActions.openOnDiffsWall == null) return null
         val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
         val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
         return { identity ->
@@ -460,6 +462,14 @@ internal class NoteCanvas(
                 summaryActions.chatNode?.let { chat ->
                     if (node.files.isNotEmpty()) item("To Chat", true, "Chat about this entry in a new tab") {
                         chat(node, content.reading)
+                    }
+                }
+                summaryActions.openOnDiffsWall?.let { openWall ->
+                    if (node.file == null && node.files.isNotEmpty()) {
+                        val sources = content.summaries.tree.nodes.mapNotNull { (it.file as? PatchSource)?.let { file -> file.path to file } }.toMap()
+                        item(DIFFS_WALL_LABEL, true, "Show the raw diffs of this entry's files together on the diffs wall") {
+                            openWall(node.files.mapNotNull(sources::get), diffsWallTitle(node))
+                        }
                     }
                 }
                 if (!canSummarize) return@apply
@@ -539,7 +549,7 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> extension?.card(key, snapshotCards)
+            CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.DiffsWall -> extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)
             CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->

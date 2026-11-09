@@ -33,6 +33,8 @@ internal data class SummaryCanvasActions(
     val deleteOriginalSummaries: (() -> Unit)? = null,
     val openWholeFile: ((PatchSource) -> Unit)? = null,
     val openDirectoryDiff: ((List<PatchSource>) -> Unit)? = null,
+    /** Lay out the diffs of several files, titled by the directory, group or topic they belong to, on the diffs wall; null hides Open on diffs wall. */
+    val openOnDiffsWall: ((files: List<PatchSource>, title: String) -> Unit)? = null,
     /** Ask the review chat to explain an entry; null hides Explain. */
     val explainNode: ((SummaryNode) -> Unit)? = null,
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */

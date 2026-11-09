@@ -64,8 +64,17 @@ internal class ChangeSummaryActions(
     val inspect: ((SummaryNode) -> Unit)? = null,
     /** Open a file's canvas session (Open on canvas); null hides it. */
     val openOnCanvas: ((SummaryNode) -> Unit)? = null,
+    /** Lay out the diffs of every file of a directory, group or topic on the diffs wall; null hides Open on diffs wall. */
+    val openOnDiffsWall: ((SummaryNode) -> Unit)? = null,
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
+        diffsWallAction(node)?.let { open ->
+            menu.add(JMenuItem(DIFFS_WALL_LABEL).apply {
+                name = "summary-action:$DIFFS_WALL_LABEL"
+                toolTipText = "Show the raw diffs of this entry's files together on the diffs wall"
+                addActionListener { open() }
+            })
+        }
         if (toChat != null && node.files.isNotEmpty()) menu.add(JMenuItem("To Chat").apply {
             name = "summary-action:To Chat"
             toolTipText = "Chat about this entry in a new tab, with its summaries and evidence in context"
@@ -84,7 +93,7 @@ internal class ChangeSummaryActions(
     }
 
     fun installEntryMenu(component: JComponent, node: SummaryNode) {
-        if (resummarize == null && toChat == null) return
+        if (resummarize == null && toChat == null && diffsWallAction(node) == null) return
         installSummaryEntryMenu(component) { JPopupMenu().also { addEntryItems(it, node) } }
     }
 
@@ -97,6 +106,10 @@ internal class ChangeSummaryActions(
         if (node.file == null && node.files.isNotEmpty() && node.kind in setOf(SummaryKind.ROOT, SummaryKind.DIRECTORY, SummaryKind.GROUP))
             openDirectory?.let { open -> { open(node) } } else null
 
+    /** Open the several files of a root, directory, group or topic on the diffs wall; a single file or part has its own diff. */
+    fun diffsWallAction(node: SummaryNode): (() -> Unit)? =
+        if (node.file == null && node.files.isNotEmpty()) openOnDiffsWall?.let { open -> { open(node) } } else null
+
     fun explainAction(node: SummaryNode): (() -> Unit)? =
         if (node.files.isEmpty() || node.isTopicBranch) null else explain?.let { explain -> { explain(node) } }
 
@@ -106,3 +119,9 @@ internal class ChangeSummaryActions(
     fun openOnCanvasAction(node: SummaryNode): (() -> Unit)? =
         if (node.kind != SummaryKind.FILE) null else openOnCanvas?.let { open -> { open(node) } }
 }
+
+internal const val DIFFS_WALL_LABEL = "Open on diffs wall"
+
+/** What the diffs wall calls the entries of [node]: the root, a group or topic by its label, a directory by its path. */
+internal fun diffsWallTitle(node: SummaryNode): String =
+    if (node.kind == SummaryKind.DIRECTORY) node.path.ifEmpty { node.label } else node.label

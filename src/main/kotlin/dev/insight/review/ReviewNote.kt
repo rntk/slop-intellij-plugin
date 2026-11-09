@@ -18,6 +18,7 @@ internal sealed interface CanvasTabKey {
     data object DiffOverview : CanvasTabKey
     data object Semantic : CanvasTabKey
     data object Moves : CanvasTabKey
+    data object DiffsWall : CanvasTabKey
     data object Summaries : CanvasTabKey
     data object FileView : CanvasTabKey
     data object SymbolFlow : CanvasTabKey

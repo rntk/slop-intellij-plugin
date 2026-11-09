@@ -92,6 +92,8 @@ internal class DiffReviewTab(
             removeSemantic = { state.hideSemantic(); renderCanvas() },
             removeMoves = { state.hideMoves(); renderCanvas() },
         ),
+        openWallDiff = { file, line -> openWallDiff(project, file, line) },
+        showAllChanges = { openDiffsWall(state.snapshot.files, ALL_CHANGES) },
     )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
@@ -141,6 +143,7 @@ internal class DiffReviewTab(
                 }
             },
             openDirectoryDiff = { files -> openDirectoryDiff(files.filterIsInstance<ReviewFile>()) },
+            openOnDiffsWall = { files, title -> openDiffsWall(files.filterIsInstance<ReviewFile>(), title) },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
         ),
@@ -168,6 +171,8 @@ internal class DiffReviewTab(
             "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"),
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
             "Read every diff as one document, grouped by shared change cause and affected code (/grouping)"),
+        ReviewViewOption(CanvasTabKey.DiffsWall, "Diffs wall",
+            "Lay out every changed file's raw diff as a movable block on one canvas"),
         ReviewViewOption(CanvasTabKey.Words, "Words",
             "Chart the words of the removed and added lines: removed on the left, added on the right"),
         ReviewViewOption(CanvasTabKey.DiffOverview, "Diff overview",
@@ -184,6 +189,7 @@ internal class DiffReviewTab(
             CanvasTabKey.DiffOverview -> openDiffOverview()
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
+            CanvasTabKey.DiffsWall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
             else -> super.openView(key)
         }
     }
@@ -336,6 +342,17 @@ internal class DiffReviewTab(
         showCanvas { canvas.focusMoves() }
     }
 
+    /**
+     * Shows [files] as the Diffs wall, titled [title], and switches to it. The whole snapshot keeps following the change as it
+     * refreshes; a subset keeps its paths, so files that leave the diff drop off the wall.
+     */
+    fun openDiffsWall(files: List<ReviewFile>, title: String) {
+        val paths = files.map { it.path }.distinct()
+        state.showWall(DiffsWallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
+        renderCanvas()
+        showCanvas { canvas.focusDiffsWall() }
+    }
+
     private var semanticJob: Job? = null
     private var semanticCounting: List<ReviewFile>? = null
 
@@ -385,7 +402,8 @@ internal class DiffReviewTab(
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
-            semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null)
+            semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles) })
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
@@ -469,5 +487,6 @@ internal class DiffReviewTab(
     private companion object {
         // Small diffs arrive with the question, so an answer often needs no read calls at all.
         const val INLINE_PATCH_CHARS = 24_000
+        const val ALL_CHANGES = "All changes"
     }
 }

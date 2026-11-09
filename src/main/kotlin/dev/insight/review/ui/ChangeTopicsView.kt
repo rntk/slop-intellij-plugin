@@ -732,6 +732,11 @@ internal class ChangeTopicsPanel(
         })
         val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
         layoutDocument(outline.files, summaries, items, depth, width)
+        // A rail card is a topic's entry: it offers the same actions as the topic in the hierarchy.
+        for (component in components) {
+            val node = component.name?.takeIf { it.startsWith("topic:") }?.let { nodesByKey[it.removePrefix("topic:")] }
+            if (node != null && component is JComponent) actions.installEntryMenu(component, ChangeTopicsViewState.identity(node))
+        }
     }
 
     override fun openFile(file: ReviewSource) = actions.openFile(file.path)

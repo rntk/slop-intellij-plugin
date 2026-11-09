@@ -103,6 +103,7 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
             showNode = { calls += "show" to it.identity },
             openWholeFile = { calls += "file" to it.path },
             openDirectory = { calls += "directory" to it.identity },
+            openOnDiffsWall = { calls += "wall" to it.identity },
             explain = { calls += "explain" to it.identity },
             toChat = { calls += "chat" to it.identity },
             resummarize = { node, recursive -> calls += "resummarize:$recursive" to node.identity },
@@ -133,6 +134,9 @@ class SummaryDiffViewTest : BasePlatformTestCase() {
             item(heading, "Resummarize").doClick()
             assertEquals("resummarize:false" to file, calls.last())
             assertFalse(menu(row).components.filterIsInstance<JMenuItem>().any { it.text in listOf("Fold", "Resummarize all") })
+            item(folderRow, "Open on diffs wall").doClick()
+            assertEquals("wall" to folder, calls.last())
+            assertFalse(menu(row).components.filterIsInstance<JMenuItem>().any { it.text == "Open on diffs wall" })
             item(folderRow, "Open diff").doClick()
             assertEquals("directory" to folder, calls.last())
             item(folderRow, "Resummarize all").doClick()
