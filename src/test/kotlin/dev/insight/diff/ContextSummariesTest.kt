@@ -80,6 +80,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
         descendants(canvas.tabs.getComponentAt(tab) as Container).single { it.name == name }
     private fun button(canvas: NoteCanvas, tab: Int, name: String) = named(canvas, tab, name) as JButton
     private fun versions(canvas: NoteCanvas, tab: Int) = named(canvas, tab, "summaries-version") as JComboBox<*>
+    private fun hasVersions(canvas: NoteCanvas, tab: Int) =
+        descendants(canvas.tabs.getComponentAt(tab) as Container).any { it.name == "summaries-version" || it.name == "delete-summary-version" }
     private fun summary(canvas: NoteCanvas, tab: Int, identity: String): JTextComponent =
         descendants(named(canvas, tab, "summary:$identity") as Container).filterIsInstance<JTextComponent>().first()
 
@@ -130,7 +132,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             val entry = named(canvas, 0, "summary:${app.identity}") as javax.swing.JComponent
             fun all() = entry.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Resummarize all" }.doClick()
             all()
-            assertEquals(1, versions(canvas, 0).itemCount)
+            assertFalse(hasVersions(canvas, 0))
             canvas.requestResummaryInstructions = { node, recursive, destination ->
                 assertEquals(ResummaryDestination.VERSION, destination)
                 assertEquals(app.identity, node.identity)
@@ -286,7 +288,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
             assertEquals(2, versions(canvas, 0).itemCount)
             button(canvas, 0, "delete-summary-version").doClick()
-            assertEquals(1, versions(canvas, 0).itemCount)
+            assertFalse(hasVersions(canvas, 0))
             assertEquals("Original app/", summary(canvas, 0, app.identity).text)
             tree.nodes.forEach { assertEquals("Original ${it.location}", original.text(it.id)) }
         } finally { canvas.dispose() }
@@ -302,8 +304,8 @@ class ContextSummariesTest : BasePlatformTestCase() {
             button(canvas, 1, "delete-summary-version").doClick()
             assertTrue(launcher.job.isCancelled)
             launcher.finish()
-            assertEquals(1, versions(canvas, 0).itemCount)
-            assertEquals(1, versions(canvas, 1).itemCount)
+            assertFalse(hasVersions(canvas, 0))
+            assertFalse(hasVersions(canvas, 1))
             assertEquals("Original app/", summary(canvas, 1, app.identity).text)
         } finally { canvas.dispose() }
     }

@@ -360,39 +360,8 @@ internal class SummariesCanvasCards(
         JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(0, 12)
-            add(JLabel("Version"))
-            add(JComboBox<Any>((listOf("Original") + summarySession.versions).toTypedArray()).apply {
-                name = "summaries-version"
-                selectedItem = version(tab) ?: "Original"
-                maximumRowCount = 12
-                val selected = version(tab)
-                toolTipText = selected?.request?.query ?: "The ordinary summaries, without query context"
-                preferredSize = Dimension(scaled(250), preferredSize.height)
-                addActionListener {
-                    tab.trace.stop()
-                    tab.version = (selectedItem as? ContextSummaryVersion)?.id
-                    reading(tab)?.let { tab.trace.retain(it) }
-                    refreshSummaries(tab)
-                }
-            })
-            add(JButton("Delete version").apply {
-                name = "delete-summary-version"
-                isEnabled = version(tab) != null || summaryActions.deleteOriginalSummaries != null && content.summaries.count > 0
-                addActionListener {
-                    val selected = version(tab)
-                    if (selected == null) summaryActions.deleteOriginalSummaries?.invoke()
-                    else {
-                        summarySession.delete(selected)
-                        summaryTabs().filter { it.version == selected.id }.forEach {
-                            it.trace.stop()
-                            it.version = null
-                            reading(it)?.let(it.trace::retain)
-                        }
-                    }
-                    summaryTabs().forEach { refreshSummaries(it) }
-                    actions.refreshTopics()
-                }
-            })
+            // Versions are rare; their controls appear only once one exists or this tab reads one.
+            if (summarySession.versions.isNotEmpty() || version(tab) != null) addVersionControls(this, tab, content)
             val request = contextSummaryRequest(tab)
             add(JButton("Resummarize with context").apply {
                 name = "resummarize-with-context"
@@ -423,6 +392,42 @@ internal class SummariesCanvasCards(
                 })
             }
         }
+
+    private fun addVersionControls(row: JPanel, tab: SummariesTab, content: SummariesCard) {
+        row.add(JLabel("Version"))
+        row.add(JComboBox<Any>((listOf("Original") + summarySession.versions).toTypedArray()).apply {
+            name = "summaries-version"
+            selectedItem = version(tab) ?: "Original"
+            maximumRowCount = 12
+            val selected = version(tab)
+            toolTipText = selected?.request?.query ?: "The ordinary summaries, without query context"
+            preferredSize = Dimension(scaled(250), preferredSize.height)
+            addActionListener {
+                tab.trace.stop()
+                tab.version = (selectedItem as? ContextSummaryVersion)?.id
+                reading(tab)?.let { tab.trace.retain(it) }
+                refreshSummaries(tab)
+            }
+        })
+        row.add(JButton("Delete version").apply {
+            name = "delete-summary-version"
+            isEnabled = version(tab) != null || summaryActions.deleteOriginalSummaries != null && content.summaries.count > 0
+            addActionListener {
+                val selected = version(tab)
+                if (selected == null) summaryActions.deleteOriginalSummaries?.invoke()
+                else {
+                    summarySession.delete(selected)
+                    summaryTabs().filter { it.version == selected.id }.forEach {
+                        it.trace.stop()
+                        it.version = null
+                        reading(it)?.let(it.trace::retain)
+                    }
+                }
+                summaryTabs().forEach { refreshSummaries(it) }
+                actions.refreshTopics()
+            }
+        })
+    }
 
     /** Page navigation stays above the scrolling summaries, independently of search breadcrumbs. */
     private fun summaryExplorerNavigation(tab: SummariesTab, tree: ReviewSummaryTree): JComponent =
