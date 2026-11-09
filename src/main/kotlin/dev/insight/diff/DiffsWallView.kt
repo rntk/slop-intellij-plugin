@@ -1,7 +1,9 @@
 package dev.insight.diff
 
 import com.intellij.diff.DiffManager
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
@@ -60,6 +62,7 @@ import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.ToolTipManager
+import javax.swing.event.ChangeListener
 import javax.swing.text.JTextComponent
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -83,7 +86,9 @@ internal class DiffsWallView(
     private val openDiff: (ReviewFile, WallLine?) -> Unit,
     /** Shown as a link when the wall holds a subset of the change. */
     private val showAllChanges: () -> Unit,
-) {
+    /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
+    private val chats: WallChats? = null,
+) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
         font = JBFont.small()
@@ -100,12 +105,20 @@ internal class DiffsWallView(
         })
     }
     private val allLink = ActionLink("Show all changes") { showAllChanges() }.apply { font = JBFont.small() }
+    /** Unfolds the wall's own chat about all its diffs; there only with [chats]. */
+    private val canvasChatLink = ActionLink(CANVAS_CHAT_SHOW) { toggleCanvasChat() }.apply {
+        name = "diffs-wall-canvas-chat-link"
+        font = JBFont.small()
+        toolTipText = "Chat about every diff on the wall"
+        isVisible = chats != null
+    }
     private val surface = Surface()
     private val header = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), JBUI.scale(4))).apply {
         isOpaque = false
         add(label)
         add(zoomLabel)
         add(allLink)
+        add(canvasChatLink)
     }
     val card: JPanel = JPanel(BorderLayout()).apply {
         name = "diffs-wall"
@@ -142,6 +155,18 @@ internal class DiffsWallView(
     private var overview: Pair<Double, Point>? = null
     private var animation: Timer? = null
     private var watched: JScrollPane? = null
+    /** Each block's Chat tab, by path; empty without [chats]. */
+    private var chatTabs: Map<String, ChatTab> = emptyMap()
+    /** Blocks whose chat window is unfolded. */
+    private val chatOpen = linkedSetOf<String>()
+    /** Each file's chat window once opened, kept with its draft while folded or off the wall. */
+    private val chatPanels = mutableMapOf<String, WallChatPanel>()
+    private val chatSubscription = chats?.subscribe { path -> chatTabs[path]?.repaint() }
+    /** The wall's own chat window once opened, kept with its draft while folded; it stays open across scopes. */
+    private var canvasChatPanel: WallChatPanel? = null
+    private var canvasChatOpen = false
+    /** Keeps the wall's own chat window in the visible corner of the wall while the page scrolls. */
+    private val scrolled = ChangeListener { if (canvasChatOpen) { placeCanvasChat(); canvasChatPanel?.repaint() } }
     private val resized = object : ComponentAdapter() {
         override fun componentResized(e: ComponentEvent) {
             if (!arranged) { surface.revalidate(); surface.repaint() }
@@ -178,6 +203,8 @@ internal class DiffsWallView(
             setZoom(1.0)
             activePath = null
             overview = null
+            // A new layout starts folded; each file's chats stay to be unfolded again.
+            chatOpen.clear()
             // The canvas restores the page's previous scroll after its rebuild; a new layout starts at the top instead.
             SwingUtilities.invokeLater { SwingUtilities.invokeLater { viewport()?.viewPosition = Point(0, 0); focusWhenOpened() } }
         }
@@ -192,6 +219,14 @@ internal class DiffsWallView(
         surface.removeAll()
         views = wall.map { BlockView(it, width, metrics) }
         views.forEach(surface::add)
+        if (chats != null) {
+            chatTabs = views.associate { it.block.file.path to ChatTab(it) }
+            chatTabs.values.forEach(surface::add)
+            chatOpen.retainAll(chatTabs.keys)
+            chatOpen.forEach { surface.add(chatPanel(it)) }
+            if (canvasChatOpen) surface.add(canvasChat())
+            raiseChats()
+        }
         // Files that join an arranged scope go below the others rather than reshuffling them.
         if (arranged) views.filter { it.block.file.path !in positions }.forEach { joined ->
             val bottom = views.filter { it.block.file.path in positions }
@@ -355,6 +390,111 @@ internal class DiffsWallView(
         view.repaint()
     }
 
+    /** [path]'s chat window, made when first unfolded. */
+    private fun chatPanel(path: String): WallChatPanel = chatPanels.getOrPut(path) {
+        WallChatPanel(path, chats!!, onClose = { if (path in chatOpen) toggleChat(path) },
+            onRaise = { chatPanels[path]?.let { if (it.parent === surface) surface.setComponentZOrder(it, 0); it.repaint() } })
+    }
+
+    /** Keeps unfolded chat windows in front of the blocks they reach over, the latest unfolded frontmost. */
+    private fun raiseChats() {
+        chatOpen.forEach { path -> chatPanels[path]?.takeIf { it.parent === surface }?.let { surface.setComponentZOrder(it, 0) } }
+        canvasChatPanel?.takeIf { canvasChatOpen && it.parent === surface }?.let { surface.setComponentZOrder(it, 0) }
+    }
+
+    /** The wall's own chat window, made when first unfolded. */
+    private fun canvasChat(): WallChatPanel = canvasChatPanel ?: WallChatPanel(WALL_CANVAS_CHAT, chats!!,
+        onClose = { if (canvasChatOpen) toggleCanvasChat() },
+        onRaise = { canvasChatPanel?.let { if (it.parent === surface) surface.setComponentZOrder(it, 0); it.repaint() } },
+        words = WallChatText.CANVAS).apply { name = "diffs-wall-canvas-chat" }.also { canvasChatPanel = it }
+
+    /**
+     * Unfolds the wall's own chat about all its diffs in the visible top-right corner of the wall and focuses its input, or folds
+     * it and returns focus to the wall.
+     */
+    internal fun toggleCanvasChat() {
+        if (chats == null) return
+        val panel = canvasChat()
+        canvasChatOpen = !canvasChatOpen
+        if (canvasChatOpen) {
+            surface.add(panel)
+            surface.setComponentZOrder(panel, 0)
+        } else {
+            surface.remove(panel)
+            surface.requestFocusInWindow()
+        }
+        canvasChatLink.text = if (canvasChatOpen) CANVAS_CHAT_HIDE else CANVAS_CHAT_SHOW
+        surface.revalidate()
+        surface.repaint()
+        if (canvasChatOpen) SwingUtilities.invokeLater {
+            if (panel.parent !== surface) return@invokeLater
+            surface.doLayout()
+            panel.input.requestFocusInWindow()
+        }
+    }
+
+    /** Whether the wall's own chat window is unfolded. */
+    internal fun canvasChatShown(): Boolean = canvasChatOpen
+
+    /** The wall's own chat window, once it has been unfolded. */
+    internal fun canvasChatWindow(): WallChatPanel? = canvasChatPanel
+
+    /** Puts the wall's own chat window in the top-right corner of the part of the wall the page shows, at screen size. */
+    private fun placeCanvasChat() {
+        val panel = canvasChatPanel?.takeIf { canvasChatOpen && it.parent === surface } ?: return
+        val margin = JBUI.scale(8)
+        val visible = surface.visibleRect.takeIf { !it.isEmpty } ?: Rectangle(0, 0, surface.width, surface.height)
+        val width = wallChatWidth().coerceAtMost((surface.width - 2 * margin).coerceAtLeast(JBUI.scale(200)))
+        val height = wallCanvasChatHeight(visible.height - 2 * margin).coerceAtMost((surface.height - 2 * margin).coerceAtLeast(JBUI.scale(120)))
+        val x = (visible.x + visible.width - width - margin).coerceAtLeast(visible.x + margin).coerceAtMost((surface.width - width - margin).coerceAtLeast(0))
+        val y = (visible.y + margin).coerceAtMost((surface.height - height - margin).coerceAtLeast(0))
+        if (panel.bounds != Rectangle(x, y, width, height)) {
+            panel.setBounds(x, y, width, height)
+            panel.validate()
+        }
+    }
+
+    /** Unfolds [path]'s chat window beside its block and focuses its input, or folds it and returns focus to the wall. */
+    internal fun toggleChat(path: String) {
+        if (chats == null || path !in chatTabs) return
+        val panel = chatPanel(path)
+        if (chatOpen.remove(path)) {
+            surface.remove(panel)
+            surface.requestFocusInWindow()
+        } else {
+            chatOpen += path
+            surface.add(panel)
+            surface.setComponentZOrder(panel, 0)
+        }
+        chatTabs[path]?.repaint()
+        surface.revalidate()
+        surface.repaint()
+        if (path in chatOpen) SwingUtilities.invokeLater {
+            if (panel.parent !== surface) return@invokeLater
+            surface.doLayout()
+            surface.scrollRectToVisible(panel.bounds)
+            panel.input.requestFocusInWindow()
+        }
+    }
+
+    /** Whether [path]'s chat window is unfolded. */
+    internal fun chatShown(path: String): Boolean = path in chatOpen
+
+    /** [path]'s chat window, once it has been unfolded. */
+    internal fun chatWindow(path: String): WallChatPanel? = chatPanels[path]
+
+    override fun dispose() {
+        stopAnimation()
+        chatSubscription?.dispose()
+        chatPanels.values.forEach(Disposer::dispose)
+        chatPanels.clear()
+        chatOpen.clear()
+        canvasChatPanel?.let(Disposer::dispose)
+        canvasChatPanel = null
+        canvasChatOpen = false
+        watch(null)
+    }
+
     private fun activate(view: BlockView) {
         val previous = views.firstOrNull { it.block.file.path == activePath }
         activePath = view.block.file.path
@@ -424,8 +564,10 @@ internal class DiffsWallView(
     private fun watch(pane: JScrollPane?) {
         if (pane === watched) return
         watched?.removeComponentListener(resized)
+        watched?.viewport?.removeChangeListener(scrolled)
         watched = pane
         pane?.addComponentListener(resized)
+        pane?.viewport?.addChangeListener(scrolled)
     }
 
     /** One keyboard command of the wall, bound to its [strokes] while the surface has focus. */
@@ -531,9 +673,10 @@ internal class DiffsWallView(
                 actionMap.put(key.name, action)
                 key.strokes.forEach { getInputMap(WHEN_FOCUSED).put(it, key.name) }
                 // Component shortcuts come before the IDE keymap, whose editor actions would otherwise take keys like Tab or Escape.
+                // They reach the surface's children too, so typing in a chat window must not scroll or step the wall.
                 object : DumbAwareAction() {
-                    override fun actionPerformed(e: AnActionEvent) { key.run() }
-                    override fun update(e: AnActionEvent) { e.presentation.isEnabled = key.enabled() }
+                    override fun actionPerformed(e: AnActionEvent) { if (!typing()) key.run() }
+                    override fun update(e: AnActionEvent) { e.presentation.isEnabled = !typing() && key.enabled() }
                     override fun getActionUpdateThread() = ActionUpdateThread.EDT
                 }.registerCustomShortcutSet(CustomShortcutSet(*key.strokes.map { KeyboardShortcut(it, null) }.toTypedArray()), this)
             }
@@ -541,20 +684,59 @@ internal class DiffsWallView(
 
         private fun repaintActive() { views.firstOrNull { it.block.file.path == activePath }?.repaint() }
 
+        /** Whether the keyboard is in one of the surface's text fields, such as a chat input, rather than on the wall. */
+        private fun typing(): Boolean {
+            val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            return owner is JTextComponent && SwingUtilities.isDescendingFrom(owner, this)
+        }
+
         override fun doLayout() {
             ensureLayout()
             views.forEach { view ->
-                val at = positions[view.block.file.path] ?: Point(0, 0)
+                val path = view.block.file.path
+                val at = positions[path] ?: Point(0, 0)
                 val size = view.preferredSize
                 view.setBounds((at.x * zoom).roundToInt(), (at.y * zoom).roundToInt(), size.width, size.height)
+                val tab = chatTabs[path] ?: return@forEach
+                tab.bounds = chatTabBounds(view.bounds)
+                chatPanels[path]?.takeIf { path in chatOpen }?.let { panel ->
+                    panel.setBounds(tab.x + tab.width, view.y, wallChatWidth(), wallChatHeight(view.height))
+                    panel.validate()
+                }
             }
+            placeCanvasChat()
+        }
+
+        /** The Chat tab hanging off a block's right edge near its top, scaled with the zoom so it stays in the gap. */
+        private fun chatTabBounds(block: Rectangle): Rectangle {
+            val width = (CHAT_TAB_WIDTH * zoom).roundToInt().coerceAtLeast(JBUI.scale(4))
+            val height = (CHAT_TAB_HEIGHT * zoom).roundToInt().coerceAtLeast(JBUI.scale(12)).coerceAtMost(block.height.coerceAtLeast(1))
+            // One pixel under the block's border, so the tab reads as part of it.
+            return Rectangle(block.x + block.width - 1, block.y + (JBUI.scale(10) * zoom).roundToInt(), width, height)
         }
 
         override fun getPreferredSize(): Dimension {
             ensureLayout()
             if (views.isEmpty()) return Dimension(gap, gap)
             val extent = wallExtent(rects(), gap)
-            return Dimension((extent.width * zoom).roundToInt(), (extent.height * zoom).roundToInt())
+            var width = (extent.width * zoom).roundToInt()
+            var height = (extent.height * zoom).roundToInt()
+            // An unfolded chat window may reach past the blocks; the page grows so it can be scrolled to.
+            chatOpen.forEach { path ->
+                val view = views.firstOrNull { it.block.file.path == path } ?: return@forEach
+                val at = positions[path] ?: Point(0, 0)
+                val x = (at.x * zoom).roundToInt() + view.preferredSize.width + (CHAT_TAB_WIDTH * zoom).roundToInt()
+                val y = (at.y * zoom).roundToInt()
+                width = maxOf(width, x + wallChatWidth() + gap)
+                height = maxOf(height, y + wallChatHeight(view.preferredSize.height) + gap)
+            }
+            // The wall's own chat window needs room even on a small wall.
+            if (canvasChatOpen) {
+                val margin = JBUI.scale(8)
+                width = maxOf(width, wallChatWidth() + 2 * margin)
+                height = maxOf(height, wallCanvasChatHeight(0) + 2 * margin)
+            }
+            return Dimension(width, height)
         }
 
         override fun paintComponent(g: Graphics) {
@@ -872,7 +1054,82 @@ internal class DiffsWallView(
         }
     }
 
+    /**
+     * The tab on [view]'s right edge that folds and unfolds the file's chat window. It reads "Chat" upright at legible zooms,
+     * marks a file that has a conversation with a dot, and takes the link colour while its window is open.
+     */
+    internal inner class ChatTab(private val view: BlockView) : JComponent() {
+        private val path = view.block.file.path
+
+        init {
+            name = "diffs-wall-chat-tab:$path"
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    activate(view)
+                    toggleChat(path)
+                }
+            })
+            ToolTipManager.sharedInstance().registerComponent(this)
+        }
+
+        override fun getToolTipText(event: MouseEvent): String =
+            if (chatShown(path)) "Fold the chat about this file" else "Chat about this file's diff" +
+                if (chats?.hasConversation(path) == true) " (has earlier chats)" else ""
+
+        override fun paintComponent(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+                val open = chatShown(path)
+                val link = JBUI.CurrentTheme.Link.Foreground.ENABLED
+                val background = scheme().defaultBackground
+                val arc = (JBUI.scale(8) * zoom).roundToInt().coerceAtLeast(2)
+                // Squared off on the left, where it meets the block, and rounded on the right.
+                val shape = java.awt.geom.Area(RoundRectangle2D.Float(-arc.toFloat(), 0f, width + arc - 1f, height - 1f, arc.toFloat(), arc.toFloat()))
+                g2.color = if (open) ColorUtil.mix(background, link, 0.18) else background
+                g2.fill(shape)
+                g2.color = if (open) ColorUtil.withAlpha(link, 0.7) else ColorUtil.withAlpha(JBColor.border(), 0.6)
+                g2.draw(shape)
+                val muted = UIUtil.getContextHelpForeground()
+                val talked = chats?.hasConversation(path) == true
+                val font = headerFont().let { it.deriveFont(it.size2D * 0.85f * zoom.toFloat()) }
+                if (font.size2D < MIN_TAB_FONT_SIZE) {
+                    // Too small to read: a dot marks a file that has a chat.
+                    if (talked || open) {
+                        g2.color = link
+                        val d = (width / 2).coerceAtLeast(2)
+                        g2.fillOval((width - d) / 2, (height - d) / 2, d, d)
+                    }
+                    return
+                }
+                g2.font = font
+                val fm = g2.fontMetrics
+                val label = "Chat"
+                val dot = if (talked && !open) (JBUI.scale(5) * zoom).roundToInt().coerceIn(2, (width - 2).coerceAtLeast(2)) else 0
+                if (dot > 0) {
+                    g2.color = if (chats!!.busy(path)) muted else link
+                    g2.fillOval((width - dot) / 2, (JBUI.scale(4) * zoom).roundToInt(), dot, dot)
+                }
+                g2.color = if (open) link else muted
+                // Read top to bottom, as side tabs are: turned a quarter clockwise, glyphs rise to the right of the baseline.
+                g2.translate((width - fm.ascent + fm.descent) / 2.0, (height - fm.stringWidth(label) + dot) / 2.0)
+                g2.rotate(Math.PI / 2)
+                g2.drawString(label, 0f, 0f)
+            } finally {
+                g2.dispose()
+            }
+        }
+    }
+
     private companion object {
+        val CHAT_TAB_WIDTH = JBUI.scale(18)
+        val CHAT_TAB_HEIGHT = JBUI.scale(60)
+        const val MIN_TAB_FONT_SIZE = 7f
+        const val CANVAS_CHAT_SHOW = "Chat about these changes"
+        const val CANVAS_CHAT_HIDE = "Hide chat"
         val ADDED = JBColor(0xDDF5E3, 0x2D4535)
         val REMOVED = JBColor(0xF9DEDE, 0x4D3134)
         const val KEY_ZOOM = 1.25
@@ -889,7 +1146,9 @@ internal class DiffsWallView(
             |Arrows, Page Up/Down and Home/End scroll; Shift scrolls sideways<br>
             |Tab / Shift+Tab step through the blocks, Esc returns to the overview<br>
             |Compact in a block's header, or C, caps a tall block; its diff scrolls inside<br>
-            |Summary in a block's header shows the file's summary in place of its diff</html>""".trimMargin()
+            |Summary in a block's header shows the file's summary in place of its diff<br>
+            |Chat on a block's right edge unfolds a chat about that file's diff; Esc in it folds it again<br>
+            |Chat about these changes, above the wall, opens a chat about every diff it shows</html>""".trimMargin()
 
         /** The scheme's diff colour softened toward the background, so dozens of tinted blocks stay calm. */
         fun tint(scheme: EditorColorsScheme, key: TextAttributesKey, fallback: Color, background: Color): Color =

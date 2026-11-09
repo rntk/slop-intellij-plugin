@@ -28,6 +28,13 @@ interface DiffReviewContext : ReviewContext {
         throw ToolInputException("Symbol discovery is unavailable")
 
     suspend fun summaries(offset: Int): String = throw ToolInputException("Change summaries are unavailable")
+
+    /** One page of the snapshot patch rows matching [search]; see [diffSearchResult]. */
+    suspend fun searchDiffs(search: DiffSearch): String = throw ToolInputException("Diff search is unavailable")
+
+    /** Lines of a changed file's [side] snapshot source; see [diffSourceResult]. */
+    suspend fun readSource(path: String, side: SourceSide, start: Int, end: Int?): String =
+        throw ToolInputException("Snapshot source is unavailable")
 }
 
 fun diffReviewTools(context: DiffReviewContext): List<ChatTool> {

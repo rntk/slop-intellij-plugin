@@ -84,6 +84,16 @@ internal class DiffReviewTab(
     ReviewVocabulary.DIFF) {
     private val sourcePoints = SourcePoints(project, "Diff chat")
     private val openDirectoryDiff: (List<ReviewFile>) -> Unit = { files -> showDirectoryDiff(project, files) }
+    /**
+     * The Diffs wall's chats about single files, and under [WALL_CANVAS_CHAT] its own chat about all its diffs, kept for the
+     * tab's life so they outlast the wall's layouts and scopes.
+     */
+    private val wallChats = WallChats(project, scope, ::wallChatBackend, welcome = { path ->
+        if (path == WALL_CANVAS_CHAT) "Ask about the changes on the wall. Every diff it shows is in this chat's context; the rest of " +
+            "the change and other project files are read when a question needs them."
+        else "Ask about the changes in ${path.substringAfterLast('/')}. Its diff is in this chat's context; the rest of the change " +
+            "and other project files are read when a question needs them."
+    }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's changes" else path.substringAfterLast('/') })
     private val diffCards = DiffCanvasCards(showDiff, project,
         removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         openDirectoryDiff = openDirectoryDiff,
@@ -95,6 +105,7 @@ internal class DiffReviewTab(
         ),
         openWallDiff = { file, line -> openWallDiff(project, file, line) },
         showAllChanges = { openDiffsWall(state.snapshot.files, ALL_CHANGES) },
+        wallChats = wallChats,
     )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
@@ -266,6 +277,43 @@ internal class DiffReviewTab(
         }
     }
 
+    /**
+     * One turn of a Diffs wall chat about [path]: that file's diff and summary are pinned, and the rest of the change, both sides
+     * of its files and current project files are read through tools. Canvas notes and source cards are not offered.
+     */
+    private fun wallChatBackend(path: String): ChatBackend = if (path == WALL_CANVAS_CHAT) wallCanvasChatBackend() else object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val turn = withContext(Dispatchers.EDT) {
+                state.snapshot.files.firstOrNull { it.path == path }?.let { file ->
+                    Triple(captureContext(), file, fileSummaries()[path]) to state.snapshot.comparison.summary
+                }
+            } ?: return "$path is no longer part of this change, so there is no diff to discuss."
+            val (captured, comparison) = turn
+            val (context, file, summary) = captured
+            val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project),
+                wallChatPrompt(file, summary, comparison), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                .reply(messages, onToolCall)
+        }
+    }
+
+    /**
+     * One turn of the Diffs wall's own chat: the diffs of every file the wall shows when the question is asked are pinned, and the
+     * same tools as a file's chat read the rest of the change, both sides of its files and current project files.
+     */
+    private fun wallCanvasChatBackend(): ChatBackend = object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val (context, files, comparison) = withContext(Dispatchers.EDT) {
+                Triple(captureContext(), state.wallFiles, state.snapshot.comparison.summary)
+            }
+            if (files.isEmpty()) return "The wall shows no changed files, so there is no diff to discuss."
+            val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project),
+                wallCanvasChatPrompt(files, comparison), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                .reply(messages, onToolCall)
+        }
+    }
+
     override val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
     override val chatInput get() = chat.input
 
@@ -290,6 +338,7 @@ internal class DiffReviewTab(
         }, BorderLayout.NORTH)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
+        Disposer.register(this, wallChats)
         Disposer.register(this, sourcePoints)
         Disposer.register(this, followSession(updateControls = ::updateControls))
         updateControls()
@@ -310,7 +359,7 @@ internal class DiffReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { session.stop(); sourcePoints.clear(); fullFileSnapshots.clear() }
+        if (state.revision != previousRevision) { session.stop(); wallChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear() }
         renderCanvas()
         updateControls()
         return previousNotes - state.notes.size
@@ -486,6 +535,16 @@ internal class DiffReviewTab(
                 current()
                 changeSummariesJson(live.summaries, offset)
             }
+
+            override suspend fun searchDiffs(search: DiffSearch): String = withContext(Dispatchers.EDT) {
+                current()
+                diffSearchResult(snapshot.files, search)
+            }
+
+            override suspend fun readSource(path: String, side: SourceSide, start: Int, end: Int?): String = withContext(Dispatchers.EDT) {
+                current()
+                diffSourceResult(file(path), side, start, end)
+            }
         }
     }
 
@@ -499,6 +558,7 @@ internal class DiffReviewTab(
     private companion object {
         // Small diffs arrive with the question, so an answer often needs no read calls at all.
         const val INLINE_PATCH_CHARS = 24_000
+        const val WALL_CHAT_TOOL_ROUNDS = 40
         const val ALL_CHANGES = "All changes"
     }
 }

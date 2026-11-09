@@ -46,12 +46,15 @@ internal class DiffCanvasCards(
     openWallDiff: (ReviewFile, WallLine?) -> Unit = { _, _ -> },
     /** Shows every file of the change on the wall. */
     showAllChanges: () -> Unit = {},
+    /** The chats wall blocks unfold; null leaves blocks without a Chat tab. */
+    wallChats: WallChats? = null,
 ) : CanvasExtension {
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wall by lazy { DiffsWallView(openWallDiff, showAllChanges) }
+    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats) }
+    private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, removeWords = metricActions.removeWords,
         removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
@@ -126,5 +129,6 @@ internal class DiffCanvasCards(
         diffEditors.values.forEach { Disposer.dispose(it) }
         diffEditors.clear()
         metricsCards.dispose()
+        if (wallView.isInitialized()) wall.dispose()
     }
 }
