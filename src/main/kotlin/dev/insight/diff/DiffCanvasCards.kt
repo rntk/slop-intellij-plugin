@@ -107,6 +107,14 @@ internal class DiffCanvasCards(
 
     private fun wallCard(content: DiffsWallContent): JPanel = wall.card.also { wall.show(content) }
 
+    /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
+    fun updateWallSummaries(summaries: Map<String, String>) {
+        val current = content.wall ?: return
+        if (current.summaries == summaries) return
+        content = content.copy(wall = current.copy(summaries = summaries))
+        wall.show(content.wall!!)
+    }
+
     private fun diffCard(file: ReviewFile, snapshots: SnapshotCanvasCards): JPanel =
         snapshots.diffCard(file.path, file.status, { removeDiff(file.path) }) { width, zoom ->
             diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }.also { it.resizeFor(width, zoom) }

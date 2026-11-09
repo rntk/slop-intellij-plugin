@@ -197,4 +197,23 @@ class DiffsWallModelTest {
         // Rows scrolled up under the header are not hit through it.
         assertNull(wallRowAt(20.0, 32, metrics))
     }
+
+    @Test
+    fun summaryTextWrapsAtWordsAndKeepsLineBreaks() {
+        assertEquals(listOf("one two", "three", "", "four"), wallWrap("one two three\n\nfour", 8))
+        assertEquals(listOf("abcd", "efgh", "ij"), wallWrap("abcdefghij", 4))
+        assertEquals(listOf("ab", "cdef", "gh"), wallWrap("ab cdefgh", 4).let { listOf(it[0], it[1], it[2]) })
+        assertEquals(listOf(""), wallWrap("  ", 10))
+    }
+
+    @Test
+    fun summaryScrollStaysWithinTheRowsThatDoNotFit() {
+        assertEquals(0, wallSummaryScroll(0, -3, total = 10, visible = 4))
+        assertEquals(6, wallSummaryScroll(5, 9, total = 10, visible = 4))
+        assertEquals(0, wallSummaryScroll(0, 3, total = 3, visible = 4))
+        // The body shows what is left under the header and padding, and at least one row.
+        assertEquals(4, wallBodyRows(24 + 2 * 4 + 4 * 16, metrics))
+        assertEquals(1, wallBodyRows(10, metrics))
+    }
 }
+

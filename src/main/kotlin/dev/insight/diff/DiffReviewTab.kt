@@ -36,6 +36,7 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.CapturedReviewContext
 import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
 import dev.insight.review.GROUPING_SUMMARIES_MISSING
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
@@ -399,11 +400,22 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
+    /** The summary text of each changed file that has one, by path, for the Diffs wall. */
+    private fun fileSummaries(): Map<String, String> = state.summaries.let { summaries ->
+        summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
+            .mapNotNull { node -> summaries.text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
+    }
+
+    override fun summariesChanged() {
+        super.summariesChanged()
+        diffCards.updateWallSummaries(fileSummaries())
+    }
+
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles) })
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaries()) })
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())

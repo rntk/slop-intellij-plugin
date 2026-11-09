@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.SummaryKind
 import dev.insight.review.summarize
 import com.google.gson.JsonParser
 import dev.insight.agent.SourceSide
@@ -189,6 +190,43 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertNull(tab.state.wallScope)
             assertTrue(descendants(tab.canvas).none { it is DiffsWallView.BlockView })
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun testDiffsWallShowsAFileSummaryInPlaceOfItsDiffWhenItHasOne() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            val files = listOf("src/a.kt", "src/b.kt").map { file(it).copy(patch = "@@ -1 +1 @@\n-old\n+new\n") }
+            tab.update(ReviewSnapshot(files, emptyList()))
+            chooseView(tab, "Diffs wall")
+            fun blocks() = descendants(tab.canvas).filterIsInstance<DiffsWallView.BlockView>().onEach { it.parent.doLayout() }
+            fun paint(block: DiffsWallView.BlockView) {
+                val image = java.awt.image.BufferedImage(block.width.coerceAtLeast(1), block.height.coerceAtLeast(1), java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                block.paint(image.createGraphics())
+            }
+            fun press(block: DiffsWallView.BlockView, at: java.awt.Point) = block.dispatchEvent(java.awt.event.MouseEvent(block,
+                java.awt.event.MouseEvent.MOUSE_PRESSED, 0L, java.awt.event.InputEvent.BUTTON1_DOWN_MASK, at.x, at.y, 1, false, java.awt.event.MouseEvent.BUTTON1))
+            blocks().forEach(::paint)
+            // Without summaries there is no link.
+            assertTrue(blocks().all { it.summaryToggle == null && !it.showsSummary })
+
+            // The summary arrives while the wall is open; only the file that has one gets the link.
+            val tree = tab.state.summaries.tree
+            tab.state.summarize(tab.state.revision, tree.nodes.filter { it.kind == SummaryKind.FILE && it.path == "src/a.kt" }.associate { it.id to "Adds the new behaviour." })
+            tab.update(ReviewSnapshot(files, emptyList()))
+            val before = blocks().single { it.block.file.path == "src/a.kt" }.size
+            blocks().forEach(::paint)
+            val withSummary = blocks().single { it.block.file.path == "src/a.kt" }
+            assertNull(blocks().single { it.block.file.path == "src/b.kt" }.summaryToggle)
+            val link = withSummary.summaryToggle!!
+            val at = java.awt.Point(link.centerX.toInt(), link.centerY.toInt())
+
+            press(withSummary, at)
+            assertTrue(withSummary.showsSummary)
+            assertEquals(before, withSummary.size)
+            assertNull(withSummary.lineAt(at.y))
+            press(withSummary, at)
+            assertFalse(withSummary.showsSummary)
         } finally { Disposer.dispose(tab) }
     }
 

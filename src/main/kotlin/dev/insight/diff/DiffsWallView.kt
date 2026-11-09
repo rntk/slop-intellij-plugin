@@ -66,8 +66,11 @@ import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-/** What the Diffs wall shows: [scope] names it and keeps its layout; [files] are its current snapshot files, in order. */
-internal data class DiffsWallContent(val scope: DiffsWallScope, val files: List<ReviewFile>)
+/**
+ * What the Diffs wall shows: [scope] names it and keeps its layout; [files] are its current snapshot files, in order; [summaries]
+ * holds the summary text of the files that have one, by path.
+ */
+internal data class DiffsWallContent(val scope: DiffsWallScope, val files: List<ReviewFile>, val summaries: Map<String, String> = emptyMap())
 
 /**
  * The Diffs wall page: one custom-painted `git diff` block per file on a pannable, zoomable surface. Blocks drag anywhere and come
@@ -112,6 +115,12 @@ internal class DiffsWallView(
     }
     private var scope: DiffsWallScope? = null
     private var files: List<ReviewFile> = emptyList()
+    /** The summary text of the files that have one, by path. */
+    private var summaries: Map<String, String> = emptyMap()
+    /** Blocks showing their summary in place of their diff. */
+    private val summarized = mutableSetOf<String>()
+    /** The first summary row shown in each block that shows its summary. */
+    private val summaryScrolls = mutableMapOf<String, Int>()
     /** Where each block sits at 100%, by path. */
     private val positions = mutableMapOf<String, Point>()
     private var views: List<BlockView> = emptyList()
@@ -147,13 +156,23 @@ internal class DiffsWallView(
         val count = content.files.size
         label.text = "Diffs wall · ${content.scope.title} · $count file${if (count == 1) "" else "s"}"
         allLink.isVisible = content.scope.paths != null
-        if (content.scope == scope && content.files == files) return
+        if (content.scope == scope && content.files == files) {
+            // Only summaries arrived or changed: blocks keep their size and place, and repaint with the new text.
+            if (content.summaries != summaries) {
+                summaries = content.summaries
+                forgetMissingSummaries()
+                views.forEach { it.repaint() }
+            }
+            return
+        }
         if (content.scope != scope) {
             stopAnimation()
             positions.clear()
             compact.clear()
             expanded.clear()
             scrolls.clear()
+            summarized.clear()
+            summaryScrolls.clear()
             arranged = false
             zoomTouched = false
             setZoom(1.0)
@@ -165,6 +184,8 @@ internal class DiffsWallView(
         packedFor = null
         scope = content.scope
         files = content.files
+        summaries = content.summaries
+        forgetMissingSummaries()
         val metrics = metrics()
         val wall = content.files.map { wallBlock(it) }
         val width = wallBlockWidth(wall, metrics)
@@ -316,6 +337,22 @@ internal class DiffsWallView(
         if (!arranged) packedFor = null
         surface.revalidate()
         surface.repaint()
+    }
+
+    /** A block whose summary is gone shows its diff again. */
+    private fun forgetMissingSummaries() {
+        summarized.retainAll(summaries.keys)
+        summaryScrolls.keys.retainAll(summarized)
+    }
+
+    /** Shows [view]'s summary in place of its diff, or its diff again; the block keeps its size. */
+    private fun toggleSummary(view: BlockView) {
+        val path = view.block.file.path
+        if (path in summarized) {
+            summarized -= path
+            summaryScrolls.remove(path)
+        } else if (path in summaries) summarized += path
+        view.repaint()
     }
 
     private fun activate(view: BlockView) {
@@ -542,9 +579,16 @@ internal class DiffsWallView(
         val logical: Dimension get() = Dimension(blockWidth, cap ?: fullHeight)
         /** Whether Tab, Enter, C and the focus outline are on this block. */
         internal val active: Boolean get() = activePath == block.file.path
-        private val offset: Int get() = if (isCompact) scrolls[block.file.path] ?: 0 else 0
+        private val offset: Int get() = if (isCompact && !showsSummary) scrolls[block.file.path] ?: 0 else 0
         /** Where the Compact switch was last painted, or null when the block is too short for it. */
         private var toggle: Rectangle? = null
+        /** Where the Summary switch was last painted, or null when the file has no summary. */
+        internal var summaryToggle: Rectangle? = null
+            private set
+        /** The file's summary text, if it has one. */
+        private val summary: String? get() = summaries[block.file.path]
+        /** Whether the summary is shown in place of the diff. */
+        internal val showsSummary: Boolean get() = block.file.path in summarized && summary != null
 
         init {
             name = "diffs-wall-block:${block.file.path}"
@@ -557,6 +601,10 @@ internal class DiffsWallView(
                     activate(this@BlockView)
                     if (onToggle(e.point)) {
                         toggleCompact(this@BlockView)
+                        return
+                    }
+                    if (onSummaryToggle(e.point)) {
+                        toggleSummary(this@BlockView)
                         return
                     }
                     grab = Point2D.Double(e.x / zoom, e.y / zoom)
@@ -581,10 +629,10 @@ internal class DiffsWallView(
                     cursor = Cursor.getDefaultCursor()
                 }
                 override fun mouseClicked(e: MouseEvent) {
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point)) openDiff(block.file, lineAt(e.y))
+                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point) && !onSummaryToggle(e.point)) openDiff(block.file, lineAt(e.y))
                 }
                 override fun mouseMoved(e: MouseEvent) {
-                    cursor = if (onToggle(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+                    cursor = if (onToggle(e.point) || onSummaryToggle(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
                 }
             }
             addMouseListener(drag)
@@ -594,6 +642,20 @@ internal class DiffsWallView(
             addMouseMotionListener(pan)
             // A compact body takes the wheel while it has more to show; the canvas gets the rest, and Ctrl/Cmd for zoom.
             addMouseWheelListener { e ->
+                if (showsSummary && !e.isControlDown && !e.isMetaDown && !e.isShiftDown) {
+                    val rows = summaryRows()
+                    val visible = wallBodyRows(logical.height, metrics)
+                    val first = summaryScrolls[block.file.path] ?: 0
+                    val moved = wallSummaryScroll(first, (e.preciseWheelRotation * WHEEL_ROWS).roundToInt(), rows.size, visible)
+                    if (moved != first) {
+                        e.consume()
+                        summaryScrolls[block.file.path] = moved
+                        repaint()
+                        return@addMouseWheelListener
+                    }
+                    surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
+                    return@addMouseWheelListener
+                }
                 val cap = cap
                 val moved = if (cap == null || e.isControlDown || e.isMetaDown || e.isShiftDown) null
                 else wallBodyScroll(offset, (e.preciseWheelRotation * WHEEL_ROWS * metrics.lineHeight).roundToInt(), fullHeight, cap)
@@ -609,16 +671,23 @@ internal class DiffsWallView(
 
         private fun onToggle(point: Point) = toggle?.contains(point) == true
 
+        private fun onSummaryToggle(point: Point) = summaryToggle?.contains(point) == true
+
+        /** The summary wrapped to the rows this block's width holds. */
+        private fun summaryRows(): List<String> =
+            wallWrap(summary.orEmpty(), (blockWidth - 2 * metrics.padding) / metrics.charWidth.coerceAtLeast(1))
+
         override fun getToolTipText(event: MouseEvent): String? = when {
-            !onToggle(event.point) -> null
-            isCompact -> "Show the whole diff (C)"
-            else -> "Cap the block's height; its diff scrolls inside (C)"
+            onToggle(event.point) -> if (isCompact) "Show the whole diff (C)" else "Cap the block's height; its diff scrolls inside (C)"
+            onSummaryToggle(event.point) -> if (showsSummary) "Show the diff again" else "Show this file's summary in place of its diff"
+            else -> null
         }
 
         override fun getPreferredSize() = logical.let { Dimension((it.width * zoom).roundToInt(), (it.height * zoom).roundToInt()) }
 
         /** The row at [y] (painted, at the current zoom), or null on the header and padding. */
-        internal fun lineAt(y: Int): WallLine? = wallRowAt(y / zoom, offset, metrics)?.let(block.lines::getOrNull)
+        internal fun lineAt(y: Int): WallLine? =
+            if (showsSummary) null else wallRowAt(y / zoom, offset, metrics)?.let(block.lines::getOrNull)
 
         override fun paintComponent(g: Graphics) {
             val g2 = g.create() as Graphics2D
@@ -652,39 +721,67 @@ internal class DiffsWallView(
                 fun rowTop(index: Int) = (top + index * lineHeight).roundToInt()
                 val clip = g2.clipBounds ?: Rectangle(0, 0, width, height)
                 val from = floor((clip.y - top) / lineHeight).toInt().coerceAtLeast(0)
-                val to = (ceil((clip.y + clip.height - top) / lineHeight).toInt() + 1).coerceAtMost(block.lines.size)
+                val wrapped = if (showsSummary) summaryRows() else null
+                val first = wrapped?.let { (summaryScrolls[block.file.path] ?: 0).coerceAtMost((it.size - 1).coerceAtLeast(0)) } ?: 0
+                val shown = wrapped?.drop(first)
+                val rowCount = shown?.size ?: block.lines.size
+                val to = (ceil((clip.y + clip.height - top) / lineHeight).toInt() + 1).coerceAtMost(rowCount)
                 val added = tint(scheme, DiffColors.DIFF_INSERTED, ADDED, background)
                 val removed = tint(scheme, DiffColors.DIFF_DELETED, REMOVED, background)
-                for (index in from until to) {
-                    val line = block.lines[index]
-                    val y = rowTop(index)
-                    val next = rowTop(index + 1)
-                    when (line.kind) {
-                        WallLine.Kind.ADDED -> added
-                        WallLine.Kind.REMOVED -> removed
-                        else -> null
-                    }?.let { g2.color = it; g2.fillRect(1, y, width - 2, next - y) }
-                    g2.color = when (line.kind) {
-                        WallLine.Kind.HUNK, WallLine.Kind.NOTE -> muted
-                        else -> scheme.defaultForeground
+                if (shown != null) {
+                    g2.color = scheme.defaultForeground
+                    for (index in from until to) {
+                        val y = rowTop(index)
+                        if (sketch) sketch(g2, " " + shown[index], pad, y, rowTop(index + 1) - y)
+                        else g2.drawString(shown[index], pad.toFloat(), (top + index * lineHeight + ascent).toFloat())
                     }
-                    if (sketch) sketch(g2, line.text, pad, y, next - y)
-                    else g2.drawString(line.text, pad.toFloat(), (top + index * lineHeight + ascent).toFloat())
+                    paintSummaryIndicator(g2, first + shown.size, first, bodyTop, muted)
+                } else {
+                    for (index in from until to) {
+                        val line = block.lines[index]
+                        val y = rowTop(index)
+                        val next = rowTop(index + 1)
+                        when (line.kind) {
+                            WallLine.Kind.ADDED -> added
+                            WallLine.Kind.REMOVED -> removed
+                            else -> null
+                        }?.let { g2.color = it; g2.fillRect(1, y, width - 2, next - y) }
+                        g2.color = when (line.kind) {
+                            WallLine.Kind.HUNK, WallLine.Kind.NOTE -> muted
+                            else -> scheme.defaultForeground
+                        }
+                        if (sketch) sketch(g2, line.text, pad, y, next - y)
+                        else g2.drawString(line.text, pad.toFloat(), (top + index * lineHeight + ascent).toFloat())
+                    }
+                    val footer = when {
+                        block.lines.isEmpty() -> "No textual changes"
+                        block.hiddenLines > 0 -> "⋯ ${block.hiddenLines} more lines; double-click to open the diff"
+                        else -> null
+                    }
+                    if (footer != null && !sketch) {
+                        g2.color = muted
+                        g2.drawString(footer, pad.toFloat(), (top + block.lines.size * lineHeight + ascent).toFloat())
+                    }
+                    cap?.let { paintScrollIndicator(g2, it, bodyTop, muted) }
                 }
-                val footer = when {
-                    block.lines.isEmpty() -> "No textual changes"
-                    block.hiddenLines > 0 -> "⋯ ${block.hiddenLines} more lines; double-click to open the diff"
-                    else -> null
-                }
-                if (footer != null && !sketch) {
-                    g2.color = muted
-                    g2.drawString(footer, pad.toFloat(), (top + block.lines.size * lineHeight + ascent).toFloat())
-                }
-                cap?.let { paintScrollIndicator(g2, it, bodyTop, muted) }
             } finally {
                 g2.dispose()
             }
             if (active && surface.isFocusOwner) paintFocus(g, arc)
+        }
+
+        /** The same thumb for a long summary: [first] of [total] rows is at the top of the body. */
+        private fun paintSummaryIndicator(g2: Graphics2D, total: Int, first: Int, bodyTop: Int, muted: Color) {
+            val visible = wallBodyRows(logical.height, metrics)
+            if (total <= visible) return
+            val inset = (metrics.padding * zoom).roundToInt().coerceAtLeast(1)
+            val track = height - bodyTop - 2 * inset
+            if (track <= 0) return
+            val thumb = (track.toDouble() * visible / total).roundToInt().coerceIn(JBUI.scale(8).coerceAtMost(track), track)
+            val y = bodyTop + inset + ((track - thumb).toDouble() * first / (total - visible)).roundToInt()
+            val thickness = JBUI.scale(3)
+            g2.color = ColorUtil.withAlpha(muted, 0.35)
+            g2.fillRoundRect(width - thickness - JBUI.scale(2), y, thickness, thumb, thickness, thickness)
         }
 
         /** A thin, quiet thumb at the right edge showing which part of a compact body is in view. */
@@ -727,7 +824,7 @@ internal class DiffsWallView(
             g2.color = color
         }
 
-        /** The path with its folder muted, then the line counts and the Compact switch, in a smaller editor font. */
+        /** The path with its folder muted, then the line counts and the Compact and Summary switches, in a smaller editor font. */
         private fun paintHeader(g2: Graphics2D, scheme: EditorColorsScheme, muted: Color, sketch: Boolean) {
             val z = zoom
             val pad = metrics.padding * z
@@ -735,6 +832,7 @@ internal class DiffsWallView(
             val title = block.title
             val split = title.lastIndexOf('/') + 1
             toggle = null
+            summaryToggle = null
             if (sketch) {
                 g2.color = scheme.defaultForeground
                 sketch(g2, " " + title, pad - metrics.charWidth * z, (headerHeight / 4).roundToInt(), (headerHeight / 2).roundToInt())
@@ -754,13 +852,23 @@ internal class DiffsWallView(
             val counts = "+${block.added} −${block.removed}"
             g2.drawString(counts, x, baseline)
             x += fm.stringWidth(counts) + fm.charWidth(' ') * 2
-            // Only a block taller than the cap has anything to compact.
-            if (!isCompact && compactCap(metrics)?.let { fullHeight > it } != true) return
             g2.font = g2.font.deriveFont(g2.font.size2D * 0.9f)
             val small = g2.fontMetrics
-            g2.color = if (isCompact) JBUI.CurrentTheme.Link.Foreground.ENABLED else ColorUtil.withAlpha(muted, 0.7)
-            g2.drawString(COMPACT, x, baseline)
-            toggle = Rectangle(x.toInt() - JBUI.scale(2), 0, small.stringWidth(COMPACT) + JBUI.scale(4), headerHeight.roundToInt())
+            val link = JBUI.CurrentTheme.Link.Foreground.ENABLED
+            val quiet = ColorUtil.withAlpha(muted, 0.7)
+            // Only a block taller than the cap has anything to compact.
+            if (isCompact || compactCap(metrics)?.let { fullHeight > it } == true) {
+                g2.color = if (isCompact) link else quiet
+                g2.drawString(COMPACT, x, baseline)
+                toggle = Rectangle(x.toInt() - JBUI.scale(2), 0, small.stringWidth(COMPACT) + JBUI.scale(4), headerHeight.roundToInt())
+                x += small.stringWidth(COMPACT) + small.charWidth(' ') * 2
+            }
+            // Only a file with a summary has one to show.
+            if (summary != null) {
+                g2.color = if (showsSummary) link else quiet
+                g2.drawString(SUMMARY, x, baseline)
+                summaryToggle = Rectangle(x.toInt() - JBUI.scale(2), 0, small.stringWidth(SUMMARY) + JBUI.scale(4), headerHeight.roundToInt())
+            }
         }
     }
 
@@ -773,13 +881,15 @@ internal class DiffsWallView(
         const val SKETCH_FONT_SIZE = 4.5f
         const val WHEEL_ROWS = 3
         const val COMPACT = "Compact"
+        const val SUMMARY = "Summary"
         val MENU = if (SystemInfo.isMac) "⌘" else "Ctrl+"
         val CONTROLS = """<html>Drag a block to move it; drag the empty canvas, or middle-drag anywhere, to pan<br>
             |Double-click a line, or press Enter on the active block, to open its diff<br>
             |${MENU}wheel or $MENU= / $MENU− zooms, ${MENU}0 resets to 100%, F or ${MENU}Shift+0 fits the whole wall<br>
             |Arrows, Page Up/Down and Home/End scroll; Shift scrolls sideways<br>
             |Tab / Shift+Tab step through the blocks, Esc returns to the overview<br>
-            |Compact in a block's header, or C, caps a tall block; its diff scrolls inside</html>""".trimMargin()
+            |Compact in a block's header, or C, caps a tall block; its diff scrolls inside<br>
+            |Summary in a block's header shows the file's summary in place of its diff</html>""".trimMargin()
 
         /** The scheme's diff colour softened toward the background, so dozens of tinted blocks stay calm. */
         fun tint(scheme: EditorColorsScheme, key: TextAttributesKey, fallback: Color, background: Color): Color =

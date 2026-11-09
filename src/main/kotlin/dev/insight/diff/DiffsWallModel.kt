@@ -199,6 +199,41 @@ internal fun wallDefaultCompact(height: Int, viewportHeight: Int, zoom: Double, 
 internal fun wallBodyScroll(offset: Int, delta: Int, height: Int, cap: Int): Int =
     (offset + delta).coerceIn(0, (height - cap).coerceAtLeast(0))
 
+/**
+ * [text] broken into rows of at most [columns] characters: at spaces where it can, mid-word for words longer than a row, with
+ * line breaks kept. The wall's text is monospace, so characters measure the width.
+ */
+internal fun wallWrap(text: String, columns: Int): List<String> {
+    val width = columns.coerceAtLeast(1)
+    val rows = mutableListOf<String>()
+    for (paragraph in text.replace("\r\n", "\n").trim().split('\n')) {
+        var row = ""
+        for (word in paragraph.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+            var rest = word
+            while (rest.length > width) {
+                if (row.isNotEmpty()) { rows += row; row = "" }
+                rows += rest.take(width)
+                rest = rest.drop(width)
+            }
+            row = when {
+                row.isEmpty() -> rest
+                row.length + 1 + rest.length <= width -> "$row $rest"
+                else -> { rows += row; rest }
+            }
+        }
+        rows += row
+    }
+    return rows
+}
+
+/** How many rows the body of a block [height] tall (at 100%) shows: what is left under its header and padding. */
+internal fun wallBodyRows(height: Int, metrics: WallMetrics): Int =
+    ((height - metrics.headerHeight - 2 * metrics.padding) / metrics.lineHeight).coerceAtLeast(1)
+
+/** The first row shown of [total] summary rows after moving [first] by [delta] rows, with [visible] rows in view. */
+internal fun wallSummaryScroll(first: Int, delta: Int, total: Int, visible: Int): Int =
+    (first + delta).coerceIn(0, (total - visible).coerceAtLeast(0))
+
 /** The index of the row at [y] (at 100%, from the block's top) in a body scrolled by [offset], or null on the header. */
 internal fun wallRowAt(y: Double, offset: Int, metrics: WallMetrics): Int? {
     val top = metrics.headerHeight + metrics.padding
