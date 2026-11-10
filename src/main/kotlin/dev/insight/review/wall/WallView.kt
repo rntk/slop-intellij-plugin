@@ -141,6 +141,8 @@ internal class WallView(
     /** Set once the reader zooms, so a later pack keeps their zoom. */
     private var zoomTouched = false
     private var activePath: String? = null
+    /** The first Tab focuses the initially active block before navigation advances. */
+    private var firstStep = true
     /** The zoom and view position from before Tab navigation zoomed in, restored by Escape. */
     private var overview: Pair<Double, Point>? = null
     private var animation: Timer? = null
@@ -191,6 +193,7 @@ internal class WallView(
             zoomTouched = false
             setZoom(1.0)
             activePath = null
+            firstStep = true
             overview = null
             // A new layout starts folded; each file's chats stay to be unfolded again.
             chatOpen.clear()
@@ -207,6 +210,11 @@ internal class WallView(
         surface.removeAll()
         views = content.blocks.map { BlockView(it, width, metrics) }
         views.forEach(surface::add)
+        if (views.none { it.block.path == activePath }) {
+            activePath = null
+            views.firstOrNull()?.let(::activate)
+            firstStep = true
+        }
         if (chats != null) {
             chatTabs = views.associate { it.block.path to ChatTab(it) }
             chatTabs.values.forEach(surface::add)
@@ -496,9 +504,11 @@ internal class WallView(
         if (views.isEmpty()) return
         val rects = rects()
         val current = views.indexOfFirst { it.block.path == activePath }.takeIf { it >= 0 }
-        val next = wallNextBlock(wallReadingOrder(rects, gap), current, forward) ?: return
+        val next = (if (firstStep) current else null)
+            ?: wallNextBlock(wallReadingOrder(rects, gap), current, forward) ?: return
         activate(views[next])
         val viewport = viewport() ?: return
+        firstStep = false
         if (overview == null) overview = zoom to viewport.viewPosition
         val margin = gap
         val capped = views[next].block.path in compact
@@ -622,7 +632,7 @@ internal class WallView(
     }
 
     /** The null-layout, focusable surface: empty space pans the enclosing page, Ctrl/Cmd + wheel zooms, keys scroll and step. */
-    private inner class Surface : JComponent() {
+    internal inner class Surface : JComponent() {
         init {
             name = "${labels.id}-surface"
             layout = null

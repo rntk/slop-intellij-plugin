@@ -185,6 +185,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Diffs wall", shownView(tab))
             assertEquals(listOf("src/c.kt", "src/b.kt"), tab.state.wallScope!!.paths)
             assertEquals(listOf("src/c.kt", "src/b.kt"), blocks().map { it.block.path })
+            assertTrue("A new scope starts with its own first block active", blocks().first().active)
             assertEquals(start, blocks().first().location)
             assertTrue(descendants(tab.canvas).filterIsInstance<JLabel>().any { it.text == "Diffs wall · Subset · 2 files" })
 
@@ -240,6 +241,10 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             chooseView(tab, "Diffs wall")
             fun blocks() = descendants(tab.canvas).filterIsInstance<WallView.BlockView>()
             val surface = blocks().first().parent as javax.swing.JComponent
+            val wallFile = FileEditorManager.getInstance(project).openFiles.filterIsInstance<ReviewCanvasFile>()
+                .single { it.name.endsWith("Diffs wall") }
+            assertSame("Opening the wall gives its keyboard surface focus", surface,
+                FileEditorManager.getInstance(project).getEditors(wallFile).single().preferredFocusedComponent)
             val pane = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, surface) as javax.swing.JScrollPane
             pane.setSize(1400, 900)
             // Headless, the page is laid out by hand.
@@ -255,6 +260,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             // A diff far taller than the viewport opens compact, capped below it, and its body scrolls under the wheel.
             val a = blocks().single { it.block.path == "src/a.kt" }
+            assertTrue("The first block starts active before Tab is pressed", a.active)
             assertTrue(a.isCompact)
             assertTrue(a.preferredSize.height < pane.height)
             val y = a.preferredSize.height / 2
@@ -266,6 +272,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             // Tab activates blocks in reading order and zooms in to read them; Escape returns to the overview.
             press("TAB")
             assertTrue(a.active)
+            assertEquals("150%", zoom())
             press("TAB")
             val b = blocks().single { it.block.path == "src/b.kt" }
             assertTrue(b.active && !a.active)

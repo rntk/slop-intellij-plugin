@@ -10,7 +10,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.util.ui.UIUtil
+import dev.insight.review.wall.WallView
 import java.awt.BorderLayout
+import java.awt.Component
 import java.beans.PropertyChangeListener
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -78,7 +81,14 @@ internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserData
     }
 
     override fun getComponent(): JComponent = panel
-    override fun getPreferredFocusedComponent(): JComponent = file.review.canvas
+    override fun getPreferredFocusedComponent(): JComponent {
+        val canvas = file.review.canvas
+        val wall = UIUtil.findComponentOfType(canvas, WallView.Surface::class.java) ?: return canvas
+        // The IDE can ask before the editor is showing; only visibility within its canvas matters here.
+        val visible = generateSequence<Component>(wall) { it.parent }
+            .takeWhile { it !== canvas }.all { it.isVisible }
+        return if (visible) wall else canvas
+    }
     override fun getName() = file.review.canvasTitle
     override fun getFile(): VirtualFile = file
     override fun setState(state: FileEditorState) = Unit
