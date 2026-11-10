@@ -49,3 +49,4 @@ gradle/
 
 # Generated review results
 .insight/
+.claude/
