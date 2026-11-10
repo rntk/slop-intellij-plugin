@@ -60,6 +60,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String = vocabulary.canvasTitle
     var onCanvasSelected: () -> Unit = {}
+    /** The row above each of this tab's view pages that leads back to the panel's Start page; see [ReviewStartScreen.bar]. */
+    var viewHeader: ((Disposable) -> JComponent)? = null
     override fun canvasSelected() = onCanvasSelected()
     abstract override val canvas: NoteCanvas
     abstract val session: ChatConversation
@@ -91,6 +93,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             override val canvas get() = this@ReviewTab.canvas.editorPage(key)
             override val isDisposed get() = disposed
             override val canvasTitle get() = this@ReviewTab.canvasTitle
+            override fun header(parent: Disposable) = this@ReviewTab.viewHeader?.invoke(parent)
             override fun canvasSelected() {
                 this@ReviewTab.canvas.selectPage(key)
                 this@ReviewTab.viewSelector.show(key)
@@ -265,6 +268,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override fun dispose() {
         disposed = true
         onCanvasSelected = {}
+        viewHeader = null
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         artifactFiles.values.forEach {

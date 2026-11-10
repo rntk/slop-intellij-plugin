@@ -23,6 +23,8 @@ internal interface ReviewCanvasOwner {
     val canvasTitle: String
     /** The canvas editor was selected. */
     fun canvasSelected()
+    /** A row above the canvas in each editor that shows it, such as the way back to the Start page; it lives as long as [parent]. */
+    fun header(parent: com.intellij.openapi.Disposable): JComponent? = null
 }
 
 /** The review owns its canvas; closing this editor only detaches the view. */
@@ -50,7 +52,10 @@ class ReviewCanvasEditorProvider : FileEditorProvider, DumbAware {
 internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserDataHolderBase(), FileEditor {
     private val panel = JPanel(BorderLayout())
 
-    init { attachCanvas() }
+    init {
+        file.review.header(this)?.let { panel.add(it, BorderLayout.NORTH) }
+        attachCanvas()
+    }
 
     internal fun attachCanvas() {
         val canvas = file.review.canvas

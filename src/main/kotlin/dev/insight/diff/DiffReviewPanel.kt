@@ -45,6 +45,9 @@ import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
 import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ui.ReviewStartScreen
+import dev.insight.review.ui.ReviewStartText
+import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ui.ReviewTabsController
 import dev.insight.review.ui.openFilesOnActivate
 import dev.insight.review.ui.selectedFilePaths
@@ -67,7 +70,7 @@ class OpenDiffReviewAction : DumbAwareAction() {
         e.project?.let { project ->
             ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.let { window ->
                 window.activate {
-                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openCanvas(true)
+                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openReview(true)
                 }
             }
         }
@@ -94,11 +97,17 @@ internal class DiffReviewPanel(
         if (selected) included += file.absolutePath else included -= file.absolutePath
         invalidateDiff(setOf(file.path, file.absolutePath)); refresh()
     }
-    private val untrackedBlock = JPanel(BorderLayout())
+    private val untrackedBlock = JPanel(BorderLayout()).apply {
+        add(JLabel("Untracked · include in review").apply {
+            toolTipText = "Selection only includes a file in this review; it does not stage it in version control."
+        }, BorderLayout.NORTH)
+        add(JBScrollPane(untracked), BorderLayout.CENTER)
+    }
     private val status = JLabel("Loading diff…")
     private val sourceControls = DiffReviewSourceControls(onRefresh = { refreshDiff() }) { draft ->
         try {
             request = draft.validated()
+            showSource()
             invalidateDiff()
             refresh()
         } catch (e: IllegalArgumentException) {
@@ -110,12 +119,39 @@ internal class DiffReviewPanel(
         toolTipText = "Start a fresh chat and canvas scoped to the selected files or folders"
         addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { tabs.add(it) } }
     }
+    /** The changed files, the untracked files to include and the status line, below the diff on the Start page. */
+    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        minimumSize = JBUI.size(280, 120)
+        val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+            add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+                add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
+                add(newSelectedTab, BorderLayout.CENTER)
+            }, BorderLayout.NORTH)
+            add(JBScrollPane(tree), BorderLayout.CENTER)
+        }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, files, untrackedBlock).apply {
+            resizeWeight = 0.7; setDividerLocation(0.7)
+        }, BorderLayout.CENTER)
+        add(status, BorderLayout.SOUTH)
+    }
+    /**
+     * The Start page in the editor area, where the diff is chosen and its files browsed; the side panel and every view page
+     * lead back to it.
+     */
+    internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.DIFF, ReviewStartText(
+        heading = "Choose the diff to review",
+        hint = "Review uncommitted changes, or compare a revision with the working tree, two branches or commits, or a branch " +
+            "with its merge base. Apply diff loads the changed files listed below, where untracked files can be included; " +
+            "Continue goes on to the summaries, topics, Diffs wall and charts.",
+        change = "Change diff",
+        changeTooltip = "Open the Start page to compare other changes, branches or commits, and browse the changed files",
+    ), sourceControls, filesPanel) { tabs.openCanvas(true) }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
-    /** Source controls, files and review tab controls; the selected review tab's chat has its own page. */
+    /** The way back to the Start page and the review tab controls; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
     private val pages = ReviewSidePages(main)
-    private val tabs = ReviewTabsController(project, this, "Diff Review", "All changes", "Insight.DiffReviewTabs", pages,
-        startupReady, ::selectedPaths, create = { paths, focus, toChat ->
+    private val tabs: ReviewTabsController<DiffReviewTab> = ReviewTabsController(project, this, "Diff Review", "All changes", "Insight.DiffReviewTabs", pages,
+        startupReady, ::selectedPaths, start = start, create = { paths, focus, toChat ->
             DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = toChat)
         }) { tab ->
         tab.update(state.snapshot)
@@ -124,28 +160,6 @@ internal class DiffReviewPanel(
 
     init {
         border = JBUI.Borders.empty(6)
-        val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-                add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
-                add(newSelectedTab, BorderLayout.CENTER)
-            }, BorderLayout.NORTH)
-            add(JBScrollPane(tree), BorderLayout.CENTER)
-        }
-        untrackedBlock.apply {
-            add(JLabel("Untracked · include in review").apply {
-                toolTipText = "Selection only includes a file in this review; it does not stage it in version control."
-            }, BorderLayout.NORTH)
-            add(JBScrollPane(untracked), BorderLayout.CENTER)
-        }
-        val fileLists = JSplitPane(JSplitPane.VERTICAL_SPLIT, files, untrackedBlock).apply {
-            resizeWeight = 0.7; setDividerLocation(0.7)
-        }
-        val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            minimumSize = JBUI.size(280, 120)
-            add(sourceControls, BorderLayout.NORTH)
-            add(fileLists, BorderLayout.CENTER)
-            add(status, BorderLayout.SOUTH)
-        }
         val reviewPanel = JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply {
                 border = JBUI.Borders.emptyBottom(6)
@@ -156,9 +170,11 @@ internal class DiffReviewPanel(
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        main.add(filesPanel, BorderLayout.CENTER)
-        main.add(reviewPanel, BorderLayout.SOUTH)
+        main.add(start.bar(this), BorderLayout.NORTH)
+        main.add(reviewPanel, BorderLayout.CENTER)
         add(pages, BorderLayout.CENTER)
+        com.intellij.openapi.util.Disposer.register(this, start)
+        showSource()
         tabs.add()
         tree.isRootVisible = false
         tree.showsRootHandles = true
@@ -316,6 +332,11 @@ internal class DiffReviewPanel(
     }
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
+
+    /** Opens the Start page until a review has been shown, then the selected tab's canvas. */
+    fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
+
+    private fun showSource() { start.showSource("Diff: ${request.label}", request.repository) }
 
     private fun openSelectionOnCanvas() {
         if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return

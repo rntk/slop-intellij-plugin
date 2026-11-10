@@ -33,8 +33,9 @@ import javax.swing.tree.DefaultMutableTreeNode
 
 /**
  * The review tabs of a tool window: adding, renaming, selecting and closing them, To Chat, and opening the selected tab's
- * canvas when the tool window shows once the project has started. [create] makes a tab for a scope (null: everything) and
- * chat focus; [prepare] brings a new tab up to date with the panel's snapshot.
+ * canvas when the tool window shows once the project has started. With a [start] page, that page opens instead until a review
+ * canvas has been shown, so the source is chosen first. [create] makes a tab for a scope (null: everything) and chat focus;
+ * [prepare] brings a new tab up to date with the panel's snapshot.
  */
 internal class ReviewTabsController<T : ReviewTab<*, *>>(
     private val project: Project,
@@ -47,6 +48,8 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
     private val pages: ReviewSidePages,
     startupReady: Boolean,
     private val selectedPaths: () -> List<String>,
+    /** The panel's Start page, where the source is chosen; null opens the canvas directly. */
+    private val start: ReviewStartScreen? = null,
     private val create: (paths: Set<String>?, focus: ChatFocus?, toChat: (ChatFocus) -> Unit) -> T,
     private val prepare: (T) -> Unit,
 ) : Disposable {
@@ -54,6 +57,8 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
     private var readyToOpenCanvas = startupReady
     private var selectingFromCanvas = false
     private var chatActivations = 0
+    /** A review canvas has been shown or a second tab added: automatic opens show the canvas rather than the Start page. */
+    private var started = start == null
     private val tabs = JBTabsFactory.createTabs(project, this).apply {
         presentation.isHideTabs = false
         presentation.setSingleRow(true).setSupportsCompression(false).setTabLabelActionsAutoHide(false)
@@ -71,7 +76,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
                 showSelectedChat()
                 tabOf(newSelection)?.let {
                     it.highlight(selectedPaths().toSet())
-                    if (!selectingFromCanvas && readyToOpenCanvas) it.openCanvas()
+                    if (!selectingFromCanvas && readyToOpenCanvas) openDefault()
                 }
             }
         }, this)
@@ -83,7 +88,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
                     ?: tabs.findInfo(e) ?: return
                 if (e.clickCount == 1) {
                     if (e.component !is InplaceButton && SwingUtilities.getAncestorOfClass(InplaceButton::class.java, e.component) == null) {
-                        tabOf(info)?.openCanvas(true)
+                        tabOf(info)?.let { started = true; it.openCanvas(true) }
                     }
                     return
                 }
@@ -99,7 +104,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         project.messageBus.connect(this).subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
             override fun toolWindowShown(toolWindow: ToolWindow) {
                 if (toolWindow.id == toolWindowId && readyToOpenCanvas && !disposed &&
-                    !selectingFromCanvas && chatActivations == 0) openCanvas()
+                    !selectingFromCanvas && chatActivations == 0) openDefault()
             }
         })
         if (!readyToOpenCanvas) {
@@ -107,7 +112,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
                 val open = Runnable {
                     if (!disposed) {
                         readyToOpenCanvas = true
-                        openCanvas()
+                        openDefault()
                     }
                 }
                 if (SwingUtilities.isEventDispatchThread()) open.run() else SwingUtilities.invokeLater(open)
@@ -120,7 +125,17 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
 
     val selected: T? get() = tabOf(tabs.selectedInfo)
 
-    fun openCanvas(focus: Boolean = false) { selected?.openCanvas(focus) }
+    /** Opens the selected tab's canvas, which also ends the Start page's turn to open automatically. */
+    fun openCanvas(focus: Boolean = false) {
+        started = true
+        selected?.openCanvas(focus)
+    }
+
+    /** Opens the Start page until a review canvas has been shown, then the selected tab's canvas. */
+    fun openDefault(focus: Boolean = false) {
+        val start = start
+        if (started || start == null) openCanvas(focus) else start.open(focus)
+    }
 
     /**
      * Opens a new tab with the scope [paths] whose chat is focused on [focus], and shows its chat. The canvas stays
@@ -140,6 +155,8 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
     }
 
     fun add(paths: Set<String>? = null, focus: ChatFocus? = null) {
+        // Only the panel adds the first tab; a later one is the reader's, who has moved past the Start page.
+        if (reviewTabs.isNotEmpty()) started = true
         val number = nextTab++
         val name = when {
             focus != null -> chatFocusTabName(focus)
@@ -153,7 +170,9 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         prepare(tab)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
         tab.rename(name)
+        start?.let { tab.viewHeader = it::bar }
         tab.onCanvasSelected = {
+            started = true
             if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {
                 selectingFromCanvas = true
                 try { tabs.select(info, false) } finally { selectingFromCanvas = false }

@@ -21,6 +21,7 @@ import dev.insight.review.summarize
 import dev.insight.review.ui.ReviewViewSelector
 import dev.insight.review.ui.viewLabels
 import java.awt.Container
+import javax.swing.JLabel
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.JButton
 import javax.swing.JRootPane
@@ -232,20 +233,31 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             }, 20)
             assertEquals(listOf("review/a.kt", "review/sub/b.kt"), panel.listedFiles())
             assertEquals("2 files · 1 skipped", panel.status.text)
-            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val first = tabs.selectedInfo!!.component as CodeReviewTab
             assertEquals("Whole scope", tabs.selectedInfo!!.text)
             assertEquals("Code Review: Whole scope · Summaries", first.canvasFile.name)
+            // The Start page opens first, so the scope is chosen before the summaries; Continue goes on to them.
+            assertEquals("Code Review: Start", panel.start.file.name)
+            assertTrue(manager.isFileOpen(panel.start.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            assertEquals("Scope: review", withStart(panel).filterIsInstance<JLabel>().single { it.parent?.name == "review-start-bar" }.text)
+            panel.start.continueButton.doClick()
             assertTrue(manager.isFileOpen(first.canvasFile))
+            // Every view page, like the side panel, leads back to the Start page.
+            manager.closeFile(panel.start.file)
+            descendants(manager.getEditors(first.canvasFile).single().component).filterIsInstance<JButton>()
+                .single { it.name == "review-start-open" }.doClick()
+            assertTrue(manager.isFileOpen(panel.start.file))
             assertEquals(listOf("review/a.kt", "review/sub/b.kt"), first.state.snapshot.files.map { it.path })
 
-            val tree = descendants(panel).filterIsInstance<Tree>().single()
+            val tree = withStart(panel).filterIsInstance<Tree>().single()
             val root = tree.model.root as DefaultMutableTreeNode
             val sub = root.depthFirstEnumeration().toList().map { it as DefaultMutableTreeNode }
                 .single { it.userObject.toString() == "sub" }
             tree.selectionPath = TreePath(sub.path)
             assertEquals(listOf("review/sub/b.kt"), panel.selectedPaths())
-            val newSelection = descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }
+            val newSelection = withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }
             val previous = panel.snapshot
             panel.setScope(myFixture.findFileInTempDir("review"))
             assertFalse(newSelection.isEnabled)
@@ -274,16 +286,16 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         try {
             panel.setScope(myFixture.findFileInTempDir("fv"))
             PlatformTestUtil.waitWithEventsDispatching("The folder should load", { panel.listedFiles().size == 2 && panel.snapshot != null }, 20)
-            val view = descendants(panel).filterIsInstance<JButton>().single { it.text == "View" }
+            val view = withStart(panel).filterIsInstance<JButton>().single { it.text == "View" }
             PlatformTestUtil.waitWithEventsDispatching("Loading should finish", { panel.status.text.startsWith("2 files") }, 20)
             assertFalse(view.isEnabled)
-            val tree = descendants(panel).filterIsInstance<Tree>().single()
+            val tree = withStart(panel).filterIsInstance<Tree>().single()
             val main = (tree.model.root as DefaultMutableTreeNode).depthFirstEnumeration().toList().map { it as DefaultMutableTreeNode }
                 .single { (it.userObject as? CodeFile)?.path == "fv/Main.java" }
             tree.selectionPath = TreePath(main.path)
             assertTrue(view.isEnabled)
             view.doClick()
-            val tab = descendants(panel).filterIsInstance<JBTabs>().single().selectedInfo!!.component as CodeReviewTab
+            val tab = withStart(panel).filterIsInstance<JBTabs>().single().selectedInfo!!.component as CodeReviewTab
             PlatformTestUtil.waitWithEventsDispatching("File view should follow the calls", {
                 descendants(tab.canvas).any { it is dev.insight.review.ui.FileStructurePanel }
             }, 20)
@@ -304,7 +316,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         try {
             panel.setScope(myFixture.findFileInTempDir("excl"))
             PlatformTestUtil.waitWithEventsDispatching("The folder should load", { panel.listedFiles().size == 3 }, 20)
-            val tree = descendants(panel).filterIsInstance<Tree>().single()
+            val tree = withStart(panel).filterIsInstance<Tree>().single()
             val sub = (tree.model.root as DefaultMutableTreeNode).depthFirstEnumeration().toList().map { it as DefaultMutableTreeNode }
                 .single { it.userObject.toString() == "sub" }
             tree.selectionPath = TreePath(sub.path)
@@ -312,7 +324,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             panel.exclude(panel.excludeSelectionPatterns())
             PlatformTestUtil.waitWithEventsDispatching("The folder should reload", { panel.listedFiles() == listOf("excl/a.kt") }, 20)
             assertEquals("1 file · 0 skipped · 1 excluded", panel.status.text)
-            val exclude = descendants(panel).filterIsInstance<JBTextField>().single { it.emptyText.text.startsWith("Nothing excluded") }
+            val exclude = descendants(panel.start.page as Container).filterIsInstance<JBTextField>().single { it.emptyText.text.startsWith("Nothing excluded") }
             assertEquals("excl/sub/", exclude.text)
 
             panel.setScope(myFixture.findFileInTempDir("excl/sub"))
@@ -320,7 +332,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             // The chosen folder itself is never excluded.
             PlatformTestUtil.waitWithEventsDispatching("The subfolder should load", { panel.listedFiles().size == 2 }, 20)
             exclude.text = "*.js"
-            descendants(panel).filterIsInstance<JButton>().single { it.text == "Load" }.doClick()
+            descendants(panel.start.page as Container).filterIsInstance<JButton>().single { it.text == "Load" }.doClick()
             PlatformTestUtil.waitWithEventsDispatching("The subfolder should reload", { panel.listedFiles() == listOf("excl/sub/b.kt") }, 20)
         } finally { Disposer.dispose(panel) }
     }
@@ -484,6 +496,9 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             failure?.let { throw it }
         } finally { scope.cancel() }
     }
+
+    /** The side panel and its Start page in the editor area, where the source and its files are. */
+    private fun withStart(panel: CodeReviewPanel): List<java.awt.Component> = descendants(panel) + descendants(panel.start.page as Container)
 
     private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {

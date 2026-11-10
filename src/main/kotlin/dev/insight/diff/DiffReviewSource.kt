@@ -33,6 +33,14 @@ data class ReviewDiffRequest(
         }
         return copy(base = ref(base, "Base"), target = if (mode.usesWorkingTree) "HEAD" else ref(target, "Target"))
     }
+
+    /** What is compared, in a few words: "Uncommitted changes", "main → working tree", "merge-base(main, topic) → topic". */
+    val label: String get() = when (mode) {
+        ReviewDiffMode.LOCAL -> mode.title
+        ReviewDiffMode.WORKING_TREE -> "$base → working tree"
+        ReviewDiffMode.REVISIONS -> "$base → $target"
+        ReviewDiffMode.MERGE_BASE -> "merge-base($base, $target) → $target"
+    } + (repository?.trimEnd('/')?.substringAfterLast('/')?.takeIf { mode != ReviewDiffMode.LOCAL && it.isNotEmpty() }?.let { " · $it" } ?: "")
 }
 
 data class ReviewComparison(

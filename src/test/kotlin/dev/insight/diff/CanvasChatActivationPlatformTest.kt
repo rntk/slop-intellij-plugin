@@ -48,6 +48,13 @@ class CanvasChatActivationPlatformTest : FileEditorManagerTestCase() {
         try {
             val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
             val original = canvas(tabs.selectedInfo!!.component as JPanel)
+            val start = when (panel) {
+                is DiffReviewPanel -> panel.start
+                is CodeReviewPanel -> panel.start
+                else -> error("Unexpected review panel")
+            }
+            assertFalse("The Start page opens before the canvas", manager.isFileOpen(original))
+            start.continueButton.doClick()
             assertTrue(manager.isFileOpen(original))
             val controller = panel.javaClass.getDeclaredField("tabs").apply { isAccessible = true }.get(panel) as ReviewTabsController<*>
             controller.openChat(ChatFocus("a.kt", listOf("a.kt")), null)

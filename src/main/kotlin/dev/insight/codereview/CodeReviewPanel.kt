@@ -64,6 +64,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ui.ReviewStartScreen
+import dev.insight.review.ui.ReviewStartText
+import dev.insight.review.ReviewVocabulary
+import com.intellij.openapi.util.Disposer
 import dev.insight.review.ui.ReviewTabsController
 import dev.insight.review.ui.openFilesOnActivate
 import dev.insight.review.ui.selectedFilePaths
@@ -93,7 +97,7 @@ class OpenCodeReviewAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
     override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = e.project != null }
     override fun actionPerformed(e: AnActionEvent) {
-        e.project?.let { project -> withCodeReviewPanel(project) { it.openCanvas(true) } }
+        e.project?.let { project -> withCodeReviewPanel(project) { it.openReview(true) } }
     }
 }
 
@@ -128,7 +132,8 @@ class ReviewDirectoryAction : DumbAwareAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val target = target(e) ?: return
-        withCodeReviewPanel(project) { it.setScope(target) }
+        // Choosing the folder or file here is the Start page's choice, so the review continues to its views.
+        withCodeReviewPanel(project) { if (it.setScope(target)) it.openCanvas(true) }
     }
 
     private fun target(e: AnActionEvent): VirtualFile? {
@@ -215,12 +220,39 @@ internal class CodeReviewPanel(
         toolTipText = "Open the selected file in File view, with neighboring topics and summaries on hover"
         addActionListener { viewSelectedFile() }
     }
+    /** The files in scope, the skipped files and the status line, below the scope on the Start page. */
+    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        minimumSize = JBUI.size(280, 120)
+        add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+            add(JLabel("Files in scope · double-click to open"), BorderLayout.NORTH)
+            add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+                add(newSelectedTab, BorderLayout.CENTER)
+                add(viewFile, BorderLayout.EAST)
+            }, BorderLayout.CENTER)
+        }, BorderLayout.NORTH)
+        add(JBScrollPane(tree), BorderLayout.CENTER)
+        add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+            add(skippedBlock, BorderLayout.CENTER)
+            add(status, BorderLayout.SOUTH)
+        }, BorderLayout.SOUTH)
+    }
+    /**
+     * The Start page in the editor area, where the scope is chosen and its files browsed; the side panel and every view page
+     * lead back to it.
+     */
+    internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.CODE, ReviewStartText(
+        heading = "Choose the code to review",
+        hint = "Review a project folder, or an entry file with the project files it depends on. Leave the folder empty for the " +
+            "project root. Load reads the files listed below; Continue goes on to the summaries, topics, Code wall and words.",
+        change = "Change scope",
+        changeTooltip = "Open the Start page to choose another folder, entry file or exclusions, and browse the files in scope",
+    ), scopeControls, filesPanel) { tabs.openCanvas(true) }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
-    /** Scope controls, files and review tab controls; the selected review tab's chat has its own page. */
+    /** The way back to the Start page and the review tab controls; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
     private val pages = ReviewSidePages(main)
-    private val tabs = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
-        startupReady, ::selectedPaths, create = { paths, focus, toChat ->
+    private val tabs: ReviewTabsController<CodeReviewTab> = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
+        startupReady, ::selectedPaths, start = start, create = { paths, focus, toChat ->
             CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = toChat)
         }) { tab ->
         snapshot?.let { tab.update(it) }
@@ -229,23 +261,6 @@ internal class CodeReviewPanel(
 
     init {
         border = JBUI.Borders.empty(6)
-        val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-                add(JLabel("Files in scope · double-click to open"), BorderLayout.NORTH)
-                add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
-                    add(newSelectedTab, BorderLayout.CENTER)
-                    add(viewFile, BorderLayout.EAST)
-                }, BorderLayout.CENTER)
-            }, BorderLayout.NORTH)
-            add(JBScrollPane(tree), BorderLayout.CENTER)
-            add(skippedBlock, BorderLayout.SOUTH)
-        }
-        val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            minimumSize = JBUI.size(280, 120)
-            add(scopeControls, BorderLayout.NORTH)
-            add(files, BorderLayout.CENTER)
-            add(status, BorderLayout.SOUTH)
-        }
         val reviewPanel = JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply {
                 border = JBUI.Borders.emptyBottom(6)
@@ -256,9 +271,10 @@ internal class CodeReviewPanel(
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        main.add(filesPanel, BorderLayout.CENTER)
-        main.add(reviewPanel, BorderLayout.SOUTH)
+        main.add(start.bar(this), BorderLayout.NORTH)
+        main.add(reviewPanel, BorderLayout.CENTER)
         add(pages, BorderLayout.CENTER)
+        Disposer.register(this, start)
         tabs.add()
         tree.isRootVisible = false
         tree.showsRootHandles = true
@@ -335,14 +351,19 @@ internal class CodeReviewPanel(
         }
     }
 
-    /** Reviews the folder or entry file [file] with the current exclusions; an invalid one is reported in the status line. */
-    fun setScope(file: VirtualFile) {
+    /**
+     * Reviews the folder or entry file [file] with the current exclusions; an invalid one is reported in the status line and
+     * returns false.
+     */
+    fun setScope(file: VirtualFile): Boolean {
         try {
             setScope(ReadAction.compute<CodeScope, RuntimeException> { codeScope(project, file) }.copy(excludes = scope?.excludes.orEmpty()))
+            return true
         } catch (e: IllegalArgumentException) {
             LOG.debug("Invalid code review scope", e)
             status.text = e.message ?: "Choose a project folder."
             status.toolTipText = status.text
+            return false
         }
     }
 
@@ -353,6 +374,9 @@ internal class CodeReviewPanel(
         scopeRoot = scope.absolutePath.trimEnd('/')
         watchedFiles = if (scope.entry) setOf(scope.absolutePath) else null
         scopeControls.show(scope)
+        val excluded = scope.excludes.takeIf { it.isNotEmpty() }
+        start.showSource("Scope: ${scope.displayName}" + (excluded?.let { " · ${it.size} excluded" } ?: ""),
+            scope.absolutePath.ifEmpty { scope.displayName } + (excluded?.let { "\nExcluded: ${CodeExclusions.format(it)}" } ?: ""))
         refresh(stopTabs = true)
     }
 
@@ -460,6 +484,9 @@ internal class CodeReviewPanel(
     }
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
+
+    /** Opens the Start page until a review has been shown, then the selected tab's canvas. */
+    fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
     /** Opens the current tab's summaries in the Tree view on [file]; a file outside the tab's scope is reported. */
     fun showInSummaryTree(file: VirtualFile) {

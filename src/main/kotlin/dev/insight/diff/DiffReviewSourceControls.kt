@@ -1,7 +1,6 @@
 package dev.insight.diff
 
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.Dimension
@@ -33,8 +32,6 @@ internal class DiffReviewSourceControls(
     }
 
     init {
-        border = JBUI.Borders.compound(
-            JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.emptyBottom(12))
         val labels = listOf(JLabel("Diff"), repositoryLabel, baseLabel, targetLabel)
         val fields = listOf(mode, repository, base, target)
         // Keep the field column stable when repository/ref rows are hidden.

@@ -384,16 +384,23 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         JRootPane().contentPane.add(panel)
         val manager = FileEditorManager.getInstance(project)
         try {
-            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
+            // The Start page opens first, so the diff is chosen before the summaries; Continue goes on to them.
+            assertEquals("Diff Review: Start", panel.start.file.name)
+            assertTrue(manager.isFileOpen(panel.start.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            assertTrue(descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().any { it.name == "diffMode" })
+            assertEquals("Diff: Uncommitted changes", withStart(panel).filterIsInstance<JLabel>().single { it.parent?.name == "review-start-bar" }.text)
+            panel.start.continueButton.doClick()
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertTrue(first.state.summariesVisible)
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
             assertFalse(first.session.busy)
             assertTrue(first.session.messages.none { it.role == ChatRole.USER })
-            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
+            withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             val second = tabs.selectedInfo!!.component as DiffReviewTab
             assertTrue(manager.isFileOpen(second.canvasFile))
             assertNotSame(first.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries).parent,
@@ -403,7 +410,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 tabs.selectedInfo === firstInfo
             }, 10 /* seconds */)
             assertSame(firstInfo, tabs.selectedInfo)
-            assertTrue(descendants(panel).any { it === first })
+            assertTrue(withStart(panel).any { it === first })
             closeButton(tabs, firstInfo).doClick()
             assertFalse(manager.isFileOpen(first.canvasFile))
             assertTrue(first.isDisposed)
@@ -421,14 +428,22 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val panel = DiffReviewPanel(project, startupReady = false)
         JRootPane().contentPane.add(panel)
         try {
-            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
             assertFalse("Tool window restored during IDE startup must wait for editor restoration before opening canvas",
                 manager.isFileOpen(first.canvasFile))
             val pending = activitiesField.get(startup) as java.util.ArrayDeque<*>
             while (pending.isNotEmpty()) (pending.removeFirst() as Runnable).run()
-            assertTrue("Canvas must open once post-startup activities run", manager.isFileOpen(first.canvasFile))
+            assertTrue("The Start page must open once post-startup activities run", manager.isFileOpen(panel.start.file))
+            assertFalse("The source is chosen before the canvas opens", manager.isFileOpen(first.canvasFile))
+            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC)
+                .toolWindowShown(object : com.intellij.toolWindow.ToolWindowHeadlessManagerImpl.MockToolWindow(project) {
+                    override fun getId() = "Diff Review"
+                }.also { Disposer.register(testRootDisposable, it.disposable) })
+            assertFalse("Showing the tool window keeps the Start page until a review is shown", manager.isFileOpen(first.canvasFile))
+            panel.start.continueButton.doClick()
+            assertTrue("Continue must open the canvas", manager.isFileOpen(first.canvasFile))
 
             // Closing the canvas tab and clicking "Open review", the tab header, or showing the tool window must reopen it.
             val openCanvasButton = descendants(first).filterIsInstance<JButton>().single { it.text == "Open review" }
@@ -537,9 +552,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         }), testRootDisposable)
         val panel = DiffReviewPanel(project)
         try {
-            val combo = descendants(panel).filterIsInstance<JComboBox<*>>().single { it.name == "diffRepository" }
+            val combo = descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().single { it.name == "diffRepository" }
             PlatformTestUtil.waitWithEventsDispatching("Initial discovery should finish", {
-                loads.get() > 0 && descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+                loads.get() > 0 && withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             assertEquals(0, combo.itemCount)
             val current = ReviewRepository(project.basePath!!, listOf("HEAD", "main"))
@@ -784,20 +799,20 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val panel = DiffReviewPanel(project)
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
-                descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+                withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val state = DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState
             state.update(ReviewSnapshot(listOf(file("src/a.kt")), listOf(UntrackedFile("new.kt", "/project/new.kt"))))
             DiffReviewPanel::class.java.getDeclaredMethod("renderFiles").apply { isAccessible = true }.invoke(panel)
-            val tree = descendants(panel).filterIsInstance<JTree>().single { it !is UntrackedFilesTree && it.name != "Change summaries" }
+            val tree = withStart(panel).filterIsInstance<JTree>().single { it !is UntrackedFilesTree && it.name != "Change summaries" }
             val root = tree.model.root as DefaultMutableTreeNode
             val node = root.depthFirstEnumeration().toList().filterIsInstance<DefaultMutableTreeNode>().single { it.userObject is ReviewFile }
             tree.selectionPath = TreePath(node.path)
-            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }.doClick()
-            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }.doClick()
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val scoped = tabs.selectedInfo!!.component as DiffReviewTab
             assertEquals(setOf("src/a.kt"), scoped.state.scopePaths)
-            val untracked = descendants(panel).filterIsInstance<UntrackedFilesTree>().single()
+            val untracked = withStart(panel).filterIsInstance<UntrackedFilesTree>().single()
             val untrackedRoot = untracked.model.root as com.intellij.ui.CheckedTreeNode
             val checkbox = untrackedRoot.firstChild as com.intellij.ui.CheckedTreeNode
             repeat(2) {
@@ -832,29 +847,32 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val panel = DiffReviewPanel(project)
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
-                descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+                withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
-            val buttons = descendants(panel).filterIsInstance<JButton>()
-            assertFalse(descendants(panel).filterIsInstance<ReviewViewSelector>().single().isEnabled)
+            val buttons = withStart(panel).filterIsInstance<JButton>()
+            assertFalse(withStart(panel).filterIsInstance<ReviewViewSelector>().single().isEnabled)
             assertTrue(buttons.any { it.text == "Send" })
             assertTrue(buttons.any { it.text == "LLM settings" })
             assertFalse(buttons.any { it.text == "Open dashboard" })
-            assertTrue(descendants(panel).filterIsInstance<JLabel>().any { it.text == "Untracked · include in review" })
+            assertTrue(withStart(panel).filterIsInstance<JLabel>().any { it.text == "Untracked · include in review" })
         } finally { Disposer.dispose(panel) }
     }
 
-    fun `test global files sit above review controls with independent drafts notes and chat resets`() {
+    fun `test files sit on the Start page beside review controls with independent drafts notes and chat resets`() {
         val panel = DiffReviewPanel(project)
         JRootPane().contentPane.add(panel)
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
-                descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+                withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val pages = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as ReviewSidePages
             assertEquals(listOf("Main", "Chat"), (0 until pages.tabCount).map(pages::getTitleAt))
             val main = pages.getComponentAt(0) as Container
             val chatPage = pages.getComponentAt(1) as Container
-            assertTrue(descendants(main).any { it is JTree })
+            // The files are browsed on the Start page; the side panel keeps the way back to it and the review tabs.
+            assertFalse(descendants(main).any { it is JTree })
+            assertTrue(descendants(panel.start.page as Container).any { it is JTree })
+            assertTrue(descendants(main).any { it.name == "review-start-bar" })
             assertFalse(descendants(main).any { it is ChatPanel })
             val tabs = descendants(main).filterIsInstance<JBTabs>().single()
             assertFalse(tabs.presentation.isHideTabs)
@@ -872,7 +890,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             first.update(snapshot)
             first.state.addNote(first.state.revision, listOf("src/a.kt"), "First note")
 
-            descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
+            withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             assertEquals("Review 2", tabs.selectedInfo!!.text)
             tabs.tabs.forEach { assertVisibleHeader(panel, tabs, it) }
             val second = tabs.selectedInfo!!.component as DiffReviewTab
@@ -899,14 +917,14 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Second topic draft", secondChat.input.text)
 
             // Folder selection creates a fixed scope; subsequent tree selections do not change it.
-            val tree = descendants(panel).filterIsInstance<JTree>().single { it !is UntrackedFilesTree && it.name != "Change summaries" }
+            val tree = withStart(panel).filterIsInstance<JTree>().single { it !is UntrackedFilesTree && it.name != "Change summaries" }
             val root = DefaultMutableTreeNode("Changes")
             val folder = DefaultMutableTreeNode("src").also(root::add)
             folder.add(DefaultMutableTreeNode(file("src/a.kt")))
             folder.add(DefaultMutableTreeNode(file("src/b.kt")))
             tree.model = DefaultTreeModel(root)
             tree.selectionPath = TreePath(folder.path)
-            val selectedTabButton = descendants(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }
+            val selectedTabButton = withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab from selection" }
             assertTrue(selectedTabButton.isEnabled)
             selectedTabButton.doClick()
             val scoped = tabs.selectedInfo!!.component as DiffReviewTab
@@ -938,14 +956,14 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         JRootPane().contentPane.add(panel)
         try {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
-                descendants(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
+                withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
-            val tabs = descendants(panel).filterIsInstance<JBTabs>().single()
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val tab = tabs.selectedInfo!!.component as DiffReviewTab
             val snapshot = ReviewSnapshot(listOf(file("src/app/a.kt"), file("src/app/b.kt"), file("docs/guide.md")), emptyList())
             (DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState).update(snapshot)
             tab.update(snapshot)
-            assertTrue(descendants(panel).filterIsInstance<ChangeSummariesPanel>().isEmpty())
+            assertTrue(withStart(panel).filterIsInstance<ChangeSummariesPanel>().isEmpty())
 
             val nodes = tab.state.summaries.tree.nodes
             assertEquals(listOf("./", "docs/", "docs/guide.md", "src/", "src/app/", "src/app/a.kt", "src/app/b.kt"), nodes.map { it.location })
@@ -1086,6 +1104,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     private suspend fun rejected(action: suspend () -> Unit) {
         try { action(); fail("Expected a rejected tool call") } catch (_: ToolInputException) { }
     }
+
+    /** The side panel and its Start page in the editor area, where the source and its files are. */
+    private fun withStart(panel: DiffReviewPanel): List<java.awt.Component> = descendants(panel) + descendants(panel.start.page as Container)
 
     private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {

@@ -7,7 +7,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
@@ -39,7 +38,6 @@ internal class CodeScopeControls(
     }
 
     init {
-        border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.emptyBottom(8))
         val descriptor = FileChooserDescriptorFactory.createSingleFileOrFolderDescriptor()
             .withTitle("Code Review Scope")
             .withDescription("Choose a project folder to review, or an entry file to review with the files it depends on")
