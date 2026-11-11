@@ -34,9 +34,11 @@ internal data class CodeMoves(val sources: List<FileMoves>) {
 /**
  * Finds code removed from one file and added to another, from the snapshot patches alone. Lines are compared trimmed
  * and with whitespace collapsed, so reindented code still matches; blank, punctuation-only and import lines are skipped
- * so that boilerplate does not pair unrelated files. A run of matching lines counts once it has [minLines] significant
- * lines and [minChars] characters; nearby runs between the same two files merge into one block. Moves within one file
- * are not reported.
+ * so that boilerplate does not pair unrelated files. A run starts only at an exact match that is rare among the added
+ * lines and not a comment, and counts once it has [minLines] significant lines and [minChars] characters. Once started,
+ * a run also takes [similar] lines, such as a renamed identifier, and continues after small gaps into the same file;
+ * nearby runs between the same two files merge into one block. Moves within one file are not reported, and when
+ * several files lose the same code, the first one in [files] claims it.
  */
 internal fun codeMoves(files: List<ReviewFile>, minLines: Int = 3, minChars: Int = 60): CodeMoves {
     val sides = files.map { it to patchSides(it.patch) }
@@ -47,26 +49,48 @@ internal fun codeMoves(files: List<ReviewFile>, minLines: Int = 3, minChars: Int
     val sources = sides.mapNotNull { (file, side) ->
         val removed = side.removed
         if (removed.isEmpty()) return@mapNotNull null
+
+        /** The run through removed line [from] and added line [to] of [path], grown back to [floor] and forwards over unclaimed similar lines. */
+        fun grow(path: String, from: Int, to: Int, floor: Int): Run {
+            val target = addedLines.getValue(path)
+            val free = used.getValue(path)
+            fun pairs(a: Int, b: Int) = a in removed.indices && b in target.indices && !free[b] && similar(removed[a].text, target[b].text)
+            var back = 0
+            while (from - back - 1 >= floor && pairs(from - back - 1, to - back - 1)) back++
+            var length = 0
+            while (pairs(from + length, to + length)) length++
+            return Run(path, from - back, to - back, back + length)
+        }
+
+        /** Whether [run] may start a move: long enough, with an exact line that is rare in the review and not a comment. */
+        fun seeds(run: Run): Boolean {
+            val target = addedLines.getValue(run.to)
+            val lines = (0 until run.length).map { removed[run.fromStart + it].text }
+            return lines.size >= minLines && lines.sumOf { it.length } >= minChars && lines.withIndex().any { (k, text) ->
+                text == target[run.toStart + k].text && !comment(text) && added.getValue(text).size <= RARE
+            }
+        }
+
         val runs = mutableListOf<Run>()
         var i = 0
         while (i < removed.size) {
-            var best: Run? = null
-            for ((path, start, _) in added[removed[i].text].orEmpty()) {
-                if (path == file.path || used.getValue(path)[start]) continue
-                val target = addedLines.getValue(path)
-                val free = used.getValue(path)
-                var length = 0
-                while (i + length < removed.size && start + length < target.size && !free[start + length] &&
-                    removed[i + length].text == target[start + length].text) length++
-                val candidate = Run(path, i, start, length)
-                if (best == null || length > best.length || (length == best.length && continues(runs.lastOrNull(), candidate))) best = candidate
+            val last = runs.lastOrNull()
+            val floor = last?.let { it.fromStart + it.length } ?: 0
+            val text = removed[i].text
+            val starts = added[text].orEmpty().takeIf { it.size <= HOTSPOT && !comment(text) }.orEmpty()
+            val seed = starts.filter { (path, start, _) -> path != file.path && !used.getValue(path)[start] }
+                .map { (path, start, _) -> grow(path, i, start, floor) }.filter(::seeds).maxByOrNull { it.length }
+            // A continuation looks only just past the end of the last run, so it also finds similar and hotspot lines.
+            val next = last?.takeIf { i - floor <= MAX_GAP }?.let { run ->
+                val end = run.toStart + run.length
+                (end..minOf(end + MAX_GAP, addedLines.getValue(run.to).size - 1)).map { grow(run.to, i, it, i) }
+                    .filter { it.length > 0 }.maxByOrNull { it.length }
             }
-            val run = best
-            if (run != null && (continues(runs.lastOrNull(), run) ||
-                    run.length >= minLines && (0 until run.length).sumOf { removed[i + it].text.length } >= minChars)) {
+            val run = if (seed != null && (next == null || seed.length > next.length)) seed else next
+            if (run != null) {
                 runs += run
                 for (k in 0 until run.length) used.getValue(run.to)[run.toStart + k] = true
-                i += run.length
+                i = run.fromStart + run.length
             } else i++
         }
         val blocks = merge(runs).map { group ->
@@ -119,6 +143,28 @@ internal fun significant(line: String): String? {
     return text
 }
 
+/**
+ * Whether two significant lines are the same or near enough to belong to one move: they share a non-trivial token, and
+ * their identifier, number and punctuation tokens differ in one identifier only or share a long common subsequence.
+ */
+internal fun similar(a: String, b: String): Boolean {
+    if (a == b) return true
+    val x = tokens(a)
+    val y = tokens(b)
+    if (x.none { it.length >= 3 && it[0].isLetterOrDigit() && it in y }) return false
+    if (x.size == y.size && x.indices.singleOrNull { x[it] != y[it] }?.let { x[it][0].isLetter() && y[it][0].isLetter() } == true) return true
+    val common = Array(x.size + 1) { IntArray(y.size + 1) }
+    for (m in x.indices.reversed()) for (n in y.indices.reversed()) {
+        common[m][n] = if (x[m] == y[n]) common[m + 1][n + 1] + 1 else maxOf(common[m + 1][n], common[m][n + 1])
+    }
+    return 2.0 * common[0][0] / (x.size + y.size) >= SIMILARITY
+}
+
+private fun tokens(text: String): List<String> = TOKEN.findAll(text).map { it.value }.toList()
+
+/** Whether the line is only a comment, which may sit inside a move but does not start one, as licence headers repeat. */
+private fun comment(text: String): Boolean = COMMENTS.any { text.startsWith(it) }
+
 private data class Run(val to: String, val fromStart: Int, val toStart: Int, val length: Int)
 
 /** Whether [run] follows [last] into the same file after small gaps on both sides, such as a line edited on the way. */
@@ -135,6 +181,13 @@ private fun merge(runs: List<Run>): List<List<Run>> {
 }
 
 private const val MAX_GAP = 3
+/** A new run needs an exact line added at most this often in the review, so common code does not pair files. */
+private const val RARE = 2
+/** Lines added more often than this do not start runs, which keeps repetitive code from making the search quadratic. */
+private const val HOTSPOT = 50
+private const val SIMILARITY = 0.6
+private val COMMENTS = listOf("//", "/*", "*", "#", "--", "'''", "\"\"\"")
+private val TOKEN = Regex("""[\p{L}_][\p{L}\p{N}_]*|\p{N}+|\S""")
 // Hunk starts are one-based, or the line before an empty side; counting from them numbers the lines as in the file.
 private val HUNK = Regex("""@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*""")
 private val WHITESPACE = Regex("\\s+")

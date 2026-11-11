@@ -4,7 +4,7 @@ Diff moves shows code that was relocated within a review rather than written or 
 
 Choosing a move opens the diffs of its source and destination side by side, scrolled to the moved code and highlighted, so the two places can be compared. **Open on diffs wall** shows those files on the Diffs wall for a broader, rearrangeable overview; a selection without a destination opens the source alone. The view follows the review's comparison and is one of its metric views.
 
-The view is a guide, not proof: matches are textual, so a move may be coincidental and should be checked against the source.
+A move tolerates small edits such as a renamed identifier, while common boilerplate such as licence headers does not start one. The view is a guide, not proof: matches are textual, so a move may be coincidental and should be checked against the source.
 
 Entry points for further exploration:
 

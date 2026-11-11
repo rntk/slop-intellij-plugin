@@ -71,7 +71,7 @@ class CodeMovesTest : TestCase() {
     }
 
     fun testAnEditedLineInsideAMovedBlockKeepsOneBlock() {
-        val edited = validate.replace("negative total", "total below zero")
+        val edited = validate.replace("if (order.total < 0) errors += \"negative total\"", "errors += checkTotal(order)")
         val file = codeMoves(listOf(deleted("Old.kt", validate), added("New.kt", edited))).sources.single()
         val block = file.targets.single().blocks.single()
         assertEquals(1..5, block.fromLines)
@@ -91,6 +91,62 @@ class CodeMovesTest : TestCase() {
     fun testEachAddedLineIsClaimedOnce() {
         val moves = codeMoves(listOf(deleted("A.kt", validate), deleted("B.kt", validate), added("C.kt", validate, "untracked")))
         assertEquals(listOf("A.kt"), moves.sources.map { it.path })
+    }
+
+    fun testSharedCommentHeadersAndCommonCodeDoNotStartAMove() {
+        val header = "// Copyright 2024 Example Corporation and its contributors\n// Licensed under the Apache License, Version 2.0\n" +
+            "// You may not use this file except in compliance with the License\n// See the LICENSE file in the project root"
+        assertTrue(codeMoves(listOf(deleted("Old.kt", "$header\nfun old() = 1"), added("New.kt", "$header\nfun new() = 2"))).sources.isEmpty())
+        val common = "val logger = LoggerFactory.getLogger(javaClass)\nval clock = Clock.systemUTC()\nval registry = MetricsRegistry.global()"
+        val targets = (1..3).map { added("T$it.kt", "class T$it {\n$common\n}") }
+        assertTrue(codeMoves(listOf(deleted("A.kt", common)) + targets).sources.isEmpty())
+        // The same lines inside a move still count, so the header travels with the code below it.
+        val file = codeMoves(listOf(deleted("Old.kt", "$header\n$validate"), added("New.kt", "$header\n$validate"))).sources.single()
+        assertEquals(1..9, file.targets.single().blocks.single().fromLines)
+    }
+
+    fun testRenamedIdentifiersInsideAMoveStillMatch() {
+        val collect = """
+            fun collect(order: Order): List<String> {
+                val errors = mutableListOf<String>()
+                if (order.items.isEmpty()) errors += "no items"
+                if (order.total < 0) errors += "negative total"
+                if (order.customer == null) errors += "no customer"
+                return errors
+            }
+        """.trimIndent()
+        val file = codeMoves(listOf(deleted("Old.kt", collect), added("New.kt", "class Checks {\n${collect.replace("errors", "problems")}\n}")))
+            .sources.single()
+        val block = file.targets.single().blocks.single()
+        assertEquals(1..6, block.fromLines)
+        assertEquals(2..7, block.toLines)
+        assertEquals(6, block.lines)
+        // Similar lines alone do not start a move.
+        val renamed = validate.lines().drop(1).joinToString("\n")
+        assertTrue(codeMoves(listOf(deleted("Old.kt", renamed), added("New.kt", renamed.replace("errors", "problems")))).sources.isEmpty())
+        assertTrue(similar("val errors = mutableListOf<String>()", "val problems = mutableListOf<String>()"))
+        assertFalse(similar("return errors", "return x + 1"))
+    }
+
+    fun testAContinuationBeatsALongerRunThatCannotStartAMove() {
+        val tail = "logger.info(\"validated order\")\nmetrics.count(\"orders.validated\")"
+        val source = deleted("A.kt", "$validate\n$tail")
+        val destination = added("B.kt", "$validate\naudit.record(order)\n${tail.lines().first()}")
+        val moves = codeMoves(listOf(source, destination, added("C.kt", tail)))
+        val block = moves.sources.single().targets.single().blocks.single()
+        assertEquals("B.kt", block.to)
+        assertEquals(1..7, block.fromLines)
+        assertEquals(6, block.lines)
+    }
+
+    fun testCommonLinesDoNotStartRunsButExtendThem() {
+        val common = "return result"
+        val noise = List(3000) { common }.joinToString("\n")
+        assertTrue(codeMoves(listOf(deleted("A.kt", noise), added("B.kt", noise))).sources.isEmpty())
+        val body = "fun total(items: List<Item>): Int {\nvar result = items.sumOf { it.price * it.count }\n$common\n}"
+        val block = codeMoves(listOf(deleted("A.kt", body), added("B.kt", "$noise\n$body"))).sources.single().targets.single().blocks.single()
+        assertEquals(1..3, block.fromLines)
+        assertEquals(3001..3003, block.toLines)
     }
 
     fun testPatchSidesNumberLinesOnTheirOwnSide() {
