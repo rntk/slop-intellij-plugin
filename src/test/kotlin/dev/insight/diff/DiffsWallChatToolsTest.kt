@@ -83,11 +83,22 @@ class DiffsWallChatToolsTest {
         assertTrue(prompt.contains("Renames old to new."))
         assertTrue(prompt.contains("1|@@ -1,3 +1,3 @@ class A\n2| fun keep() = loadUser()\n3|-fun old()"))
         assertFalse(prompt.contains("The diff continues"))
+        assertTrue(prompt.startsWith("You answer a developer's questions about one changed file"))
+        assertTrue(prompt.contains("Paths are project-relative."))
+        assertTrue(prompt.contains("Foo.kt:12 (after)"))
+        assertFalse(prompt.contains("review scope"))
+        assertFalse(prompt.contains("not on the wall"))
+        // The summary follows the diff, so one arriving mid-chat leaves the diff's cached prefix unchanged.
+        val summaryAt = prompt.indexOf("Generated summary of this file (model interpretation, not proof):\nRenames old to new.")
+        assertTrue(summaryAt > prompt.indexOf("+fun new() = loadUser(2)"))
+        assertTrue(prompt.endsWith("Renames old to new."))
+        assertEquals(wallChatPrompt(a, null, "Working tree vs HEAD"), prompt.substring(0, prompt.indexOf("\n\nGenerated summary")))
 
         val cut = wallChatPrompt(a, null, "", patchChars = 30)
         assertFalse(cut.contains("+fun new()"))
         assertTrue(cut.contains("call read_diff_files with path src/a.kt and offset"))
         assertFalse(cut.contains("Generated summary"))
+        assertTrue(wallChatPrompt(a, "Renames.", "", patchChars = 30).indexOf("Generated summary") > cut.indexOf("The diff continues"))
     }
 
     @Test
@@ -121,6 +132,13 @@ class DiffsWallChatToolsTest {
         assertTrue(prompt.contains("+val user = loadUser()"))
         assertFalse(prompt.contains("continues"))
         assertFalse(prompt.contains("Not pinned"))
+        assertTrue(prompt.startsWith("You answer a developer's questions about a code change as a whole"))
+        assertTrue(prompt.contains("say when a related change seems missing"))
+        assertTrue(prompt.contains("get_current_diff also lists changed files that are not on the wall"))
+        assertFalse(prompt.contains("review scope"))
+        // Both chats share one policy, word for word.
+        val policy = wallChatPrompt(a, null, "").let { it.substring(it.indexOf("You are read-only"), it.indexOf("\n\nFocused file")) }
+        assertTrue(prompt.contains(policy + "\n\nFiles on the wall"))
 
         // The diff that runs past the budget is cut at a line and says where to read on; later ones are listed.
         val cut = wallCanvasChatPrompt(listOf(a, b), "", patchChars = 30)

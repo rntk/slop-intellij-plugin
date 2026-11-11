@@ -34,11 +34,11 @@ internal fun projectContextTools(project: Project): List<ChatTool> {
 internal fun openFileTool(files: ProjectFiles): ChatTool = OpenFileTool(files)
 
 internal val projectContextPrompt = """
-    The review scope is a starting focus, not a boundary for exploration. Read any relevant project content file with read_file.
-    Use list_files and search_text to locate that context. Paths are relative to the project, not the review scope.
-    point_to_code shows snapshot source for included files and current project content for other project files.
-    These tools return current project content, including unsaved edits; it may differ from the captured snapshot.
-    Distinguish current project context from snapshot evidence, and use snapshot tools to verify claims about the review.
+    The review scope is a starting focus, not a boundary. read_file reads any project content file; list_files and
+    search_text locate them. Paths are relative to the project, not the review scope. These tools return current project
+    content, including unsaved edits, which may differ from the snapshot; point_to_code shows snapshot source for included
+    files and current content for other project files. Keep current project context apart from snapshot evidence, and
+    verify claims about the review with snapshot tools.
 """.trimIndent()
 
 internal class ProjectFiles(val project: Project) {
