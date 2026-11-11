@@ -170,7 +170,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         prepare(tab)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
         tab.rename(name)
-        start?.let { tab.viewHeader = it::bar }
+        start?.let { tab.startButton = it::button }
         tab.onCanvasSelected = {
             started = true
             if (!disposed && tab in reviewTabs && tabs.selectedInfo !== info) {

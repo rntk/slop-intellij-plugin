@@ -241,7 +241,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Code Review: Start", panel.start.file.name)
             assertTrue(manager.isFileOpen(panel.start.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
-            assertEquals("Scope: review", withStart(panel).filterIsInstance<JLabel>().single { it.parent?.name == "review-start-bar" }.text)
+            assertEquals("Scope: review", withStart(panel).filterIsInstance<JButton>().single { it.name == "review-start-open" }.text)
             panel.start.continueButton.doClick()
             assertTrue(manager.isFileOpen(first.canvasFile))
             // Every view page, like the side panel, leads back to the Start page.

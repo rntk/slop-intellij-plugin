@@ -32,6 +32,7 @@ import dev.insight.review.isExplainRequest
 import dev.insight.review.openReviewCanvas
 import dev.insight.review.textOf
 import dev.insight.review.typedExplainTarget
+import dev.insight.ui.EdgeTab
 import java.awt.BorderLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -60,8 +61,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String = vocabulary.canvasTitle
     var onCanvasSelected: () -> Unit = {}
-    /** The row above each of this tab's view pages that leads back to the panel's Start page; see [ReviewStartScreen.bar]. */
-    var viewHeader: ((Disposable) -> JComponent)? = null
+    /** The button floating on each of this tab's view pages that leads back to the panel's Start page; see [ReviewStartScreen.button]. */
+    var startButton: ((Disposable) -> EdgeTab)? = null
     override fun canvasSelected() = onCanvasSelected()
     abstract override val canvas: NoteCanvas
     abstract val session: ChatConversation
@@ -93,7 +94,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             override val canvas get() = this@ReviewTab.canvas.editorPage(key)
             override val isDisposed get() = disposed
             override val canvasTitle get() = this@ReviewTab.canvasTitle
-            override fun header(parent: Disposable) = this@ReviewTab.viewHeader?.invoke(parent)
+            override fun floatingButton(parent: Disposable) = this@ReviewTab.startButton?.invoke(parent)
             override fun canvasSelected() {
                 this@ReviewTab.canvas.selectPage(key)
                 this@ReviewTab.viewSelector.show(key)
@@ -268,7 +269,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override fun dispose() {
         disposed = true
         onCanvasSelected = {}
-        viewHeader = null
+        startButton = null
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         artifactFiles.values.forEach {

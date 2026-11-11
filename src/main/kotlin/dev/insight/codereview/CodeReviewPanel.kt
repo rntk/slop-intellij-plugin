@@ -262,9 +262,9 @@ internal class CodeReviewPanel(
         changeTooltip = "Open the Start page to choose another folder, entry file or exclusions, and browse the files in scope",
     ), scopeControls, filesPanel) { tabs.openCanvas(true) }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
-    /** The way back to the Start page and the review tab controls; the selected review tab's chat has its own page. */
+    /** The review tab controls, with the way back to the Start page floating on their edge; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
-    private val pages = ReviewSidePages(main)
+    private val pages = ReviewSidePages(start.floating(main, this))
     private val tabs: ReviewTabsController<CodeReviewTab> = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
         startupReady, ::selectedPaths, start = start, create = { paths, focus, toChat ->
             CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = toChat)
@@ -285,7 +285,6 @@ internal class CodeReviewPanel(
             }, BorderLayout.NORTH)
             add(tabs.component, BorderLayout.CENTER)
         }
-        main.add(start.bar(this), BorderLayout.NORTH)
         main.add(reviewPanel, BorderLayout.CENTER)
         add(pages, BorderLayout.CENTER)
         Disposer.register(this, start)

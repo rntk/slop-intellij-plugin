@@ -399,7 +399,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(manager.isFileOpen(panel.start.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
             assertTrue(descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().any { it.name == "diffMode" })
-            assertEquals("Diff: Uncommitted changes", withStart(panel).filterIsInstance<JLabel>().single { it.parent?.name == "review-start-bar" }.text)
+            assertEquals("Diff: Uncommitted changes", withStart(panel).filterIsInstance<JButton>().single { it.name == "review-start-open" }.text)
             panel.start.continueButton.doClick()
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertTrue(first.state.summariesVisible)
@@ -879,7 +879,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             // The files are browsed on the Start page; the side panel keeps the way back to it and the review tabs.
             assertFalse(descendants(main).any { it is JTree })
             assertTrue(descendants(panel.start.page as Container).any { it is JTree })
-            assertTrue(descendants(main).any { it.name == "review-start-bar" })
+            assertTrue(descendants(main).any { it.name == "review-start-open" })
             assertFalse(descendants(main).any { it is ChatPanel })
             val tabs = descendants(main).filterIsInstance<JBTabs>().single()
             assertFalse(tabs.presentation.isHideTabs)
