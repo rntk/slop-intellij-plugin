@@ -63,7 +63,8 @@ internal val CODE_WALL_LABELS = WallLabels(
     controls = """<html>Drag a block to move it; drag the empty canvas, or middle-drag anywhere, to pan<br>
         |Double-click a line, or press Enter on the active block, to open the file in the editor at that line<br>
         |${WALL_MENU_KEY}wheel or $WALL_MENU_KEY= / $WALL_MENU_KEY− zooms, ${WALL_MENU_KEY}0 resets to 100%, F or ${WALL_MENU_KEY}Shift+0 fits the whole wall<br>
-        |Arrows, Page Up/Down and Home/End scroll; Shift scrolls sideways<br>
+        |Arrows, Page Up/Down, Space / Shift+Space and Home/End scroll; Shift scrolls sideways<br>
+        |In Tab focus mode, scrolling stays inside the active block; Esc restores canvas navigation<br>
         |Tab / Shift+Tab step through the blocks, Esc returns to the overview<br>
         |Compact in a block's header, or C, caps a tall block; its source scrolls inside<br>
         |Summary in a block's header shows the file's summary in place of its source<br>

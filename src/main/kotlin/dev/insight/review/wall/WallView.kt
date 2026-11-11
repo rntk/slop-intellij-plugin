@@ -140,6 +140,8 @@ internal class WallView(
     private val expanded = mutableSetOf<String>()
     /** How far (at 100%) each compact block's body is scrolled. */
     private val scrolls = mutableMapOf<String, Int>()
+    /** Horizontal body offsets at 100%, independent of the fixed headers. */
+    private val horizontalScrolls = mutableMapOf<String, Int>()
     /** Set once the reader moves a block: the layout is theirs and viewport changes no longer repack it. */
     private var arranged = false
     /** The viewport size the blocks were last packed for; null asks for a pack. */
@@ -209,6 +211,7 @@ internal class WallView(
             compact.clear()
             expanded.clear()
             scrolls.clear()
+            horizontalScrolls.clear()
             summarized.clear()
             summaryScrolls.clear()
             arranged = false
@@ -649,6 +652,25 @@ internal class WallView(
         pane?.viewport?.addChangeListener(scrolled)
     }
 
+    /** In Tab focus mode navigation stays inside the active body, including at its scroll limits. */
+    private fun navigate(dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false) {
+        val focused = views.firstOrNull { it.block.path == activePath }?.takeIf { overview != null }
+        if (focused == null) {
+            scrollBy(dx, dy)
+            return
+        }
+        fun delta(value: Int, size: Int): Int {
+            val direction = if (value < 0) -1 else 1
+            return when {
+                value == 0 -> 0
+                edge -> direction * (Int.MAX_VALUE / 2)
+                page -> direction * (size - focused.metrics.lineHeight).coerceAtLeast(focused.metrics.lineHeight)
+                else -> (value / zoom).roundToInt()
+            }
+        }
+        focused.scrollContent(delta(dx, focused.logical.width), delta(dy, focused.logical.height - focused.metrics.headerHeight))
+    }
+
     /** One keyboard command of the wall, bound to its [strokes] while the surface has focus. */
     private class Key(val name: String, val strokes: List<KeyStroke>, val enabled: () -> Boolean = { true }, val run: () -> Unit)
 
@@ -660,18 +682,18 @@ internal class WallView(
         fun page(vertical: Boolean) = viewport()?.let { if (vertical) it.height else it.width }?.minus(step)?.coerceAtLeast(step) ?: step
         fun far() = viewport()?.view?.let { maxOf(it.width, it.height) } ?: 0
         return listOf(
-            Key("up", listOf(key(KeyEvent.VK_UP))) { scrollBy(0, -step) },
-            Key("down", listOf(key(KeyEvent.VK_DOWN))) { scrollBy(0, step) },
-            Key("left", listOf(key(KeyEvent.VK_LEFT), key(KeyEvent.VK_LEFT, shift), key(KeyEvent.VK_UP, shift))) { scrollBy(-step, 0) },
-            Key("right", listOf(key(KeyEvent.VK_RIGHT), key(KeyEvent.VK_RIGHT, shift), key(KeyEvent.VK_DOWN, shift))) { scrollBy(step, 0) },
-            Key("page-up", listOf(key(KeyEvent.VK_PAGE_UP))) { scrollBy(0, -page(true)) },
-            Key("page-down", listOf(key(KeyEvent.VK_PAGE_DOWN))) { scrollBy(0, page(true)) },
-            Key("page-left", listOf(key(KeyEvent.VK_PAGE_UP, shift))) { scrollBy(-page(false), 0) },
-            Key("page-right", listOf(key(KeyEvent.VK_PAGE_DOWN, shift))) { scrollBy(page(false), 0) },
-            Key("top", listOf(key(KeyEvent.VK_HOME))) { scrollBy(0, -far()) },
-            Key("bottom", listOf(key(KeyEvent.VK_END))) { scrollBy(0, far()) },
-            Key("start", menu(KeyEvent.VK_HOME)) { scrollBy(-far(), -far()) },
-            Key("end", menu(KeyEvent.VK_END)) { scrollBy(far(), far()) },
+            Key("up", listOf(key(KeyEvent.VK_UP))) { navigate(0, -step) },
+            Key("down", listOf(key(KeyEvent.VK_DOWN))) { navigate(0, step) },
+            Key("left", listOf(key(KeyEvent.VK_LEFT), key(KeyEvent.VK_LEFT, shift), key(KeyEvent.VK_UP, shift))) { navigate(-step, 0) },
+            Key("right", listOf(key(KeyEvent.VK_RIGHT), key(KeyEvent.VK_RIGHT, shift), key(KeyEvent.VK_DOWN, shift))) { navigate(step, 0) },
+            Key("page-up", listOf(key(KeyEvent.VK_PAGE_UP), key(KeyEvent.VK_SPACE, shift))) { navigate(0, -page(true), page = true) },
+            Key("page-down", listOf(key(KeyEvent.VK_PAGE_DOWN), key(KeyEvent.VK_SPACE))) { navigate(0, page(true), page = true) },
+            Key("page-left", listOf(key(KeyEvent.VK_PAGE_UP, shift))) { navigate(-page(false), 0, page = true) },
+            Key("page-right", listOf(key(KeyEvent.VK_PAGE_DOWN, shift))) { navigate(page(false), 0, page = true) },
+            Key("top", listOf(key(KeyEvent.VK_HOME))) { navigate(0, -far(), edge = true) },
+            Key("bottom", listOf(key(KeyEvent.VK_END))) { navigate(0, far(), edge = true) },
+            Key("start", menu(KeyEvent.VK_HOME)) { navigate(-far(), -far(), edge = true) },
+            Key("end", menu(KeyEvent.VK_END)) { navigate(far(), far(), edge = true) },
             Key("zoom-in", menu(KeyEvent.VK_EQUALS) + menu(KeyEvent.VK_EQUALS, shift) + menu(KeyEvent.VK_PLUS) + menu(KeyEvent.VK_ADD)) {
                 zoomTo(wallZoomBy(zoom, KEY_ZOOM))
             },
@@ -843,6 +865,9 @@ internal class WallView(
         /** Whether Tab, Enter, C and the focus outline are on this block. */
         internal val active: Boolean get() = activePath == block.path
         private val offset: Int get() = if (isCompact && !showsSummary) scrolls[block.path] ?: 0 else 0
+        /** Current body scroll at 100%, for both the diff/source and summary views. */
+        internal val bodyScroll: Point get() = if (showsSummary) Point(0, (summaryScrolls[block.path] ?: 0) * metrics.lineHeight)
+            else Point(horizontalScrolls[block.path] ?: 0, offset)
         /** Where the Compact switch was last painted, or null when the block is too short for it. */
         private var toggle: Rectangle? = null
         /** Where the Summary switch was last painted, or null when the file has no summary. */
@@ -932,6 +957,25 @@ internal class WallView(
             ToolTipManager.sharedInstance().registerComponent(this)
         }
 
+        /** Scrolls the body without moving the canvas or header. Summary offsets are measured in rows. */
+        internal fun scrollContent(dx: Int, dy: Int) {
+            if (showsSummary) {
+                val rows = summaryRows()
+                val delta = if (dy == 0) 0 else (dy / metrics.lineHeight).let {
+                    if (it == 0) (if (dy < 0) -1 else 1) else it
+                }
+                summaryScrolls[block.path] = wallSummaryScroll(summaryScrolls[block.path] ?: 0, delta,
+                    rows.size, wallBodyRows(logical.height, metrics))
+            } else {
+                cap?.let { scrolls[block.path] = wallBodyScroll(offset, dy, fullHeight, it) }
+                horizontalScrolls[block.path] = ((horizontalScrolls[block.path] ?: 0) + dx).coerceIn(0, maxHorizontalScroll)
+            }
+            repaint()
+        }
+
+        private val maxHorizontalScroll: Int = ((block.lines.maxOfOrNull { it.text.length } ?: 0) + gutter)
+            .let { (it * metrics.charWidth + 2 * metrics.padding - blockWidth).coerceAtLeast(0) }
+
         private fun onToggle(point: Point) = toggle?.contains(point) == true
 
         private fun onSummaryToggle(point: Point) = summaryToggle?.contains(point) == true
@@ -989,6 +1033,9 @@ internal class WallView(
                 val shown = wrapped?.drop(first)
                 val rowCount = shown?.size ?: block.lines.size
                 val to = (ceil((clip.y + clip.height - top) / lineHeight).toInt() + 1).coerceAtMost(rowCount)
+                val bodyTransform = g2.transform
+                val horizontal = if (showsSummary) 0 else horizontalScrolls[block.path] ?: 0
+                g2.translate(-horizontal * z, 0.0)
                 val spans = rowSpans(block)
                 val added = tint(scheme, DiffColors.DIFF_INSERTED, ADDED, background)
                 val removed = tint(scheme, DiffColors.DIFF_DELETED, REMOVED, background)
@@ -1009,7 +1056,7 @@ internal class WallView(
                             WallLine.Kind.ADDED -> added
                             WallLine.Kind.REMOVED -> removed
                             else -> null
-                        }?.let { g2.color = it; g2.fillRect(1, y, width - 2, next - y) }
+                        }?.let { g2.color = it; g2.fillRect((horizontal * z).roundToInt() + 1, y, width - 2, next - y) }
                         val baseline = (top + index * lineHeight + ascent).toFloat()
                         if (line.kind == WallLine.Kind.SOURCE) {
                             // A source row has no marker: its number, right-aligned in the gutter, comes before its text.
@@ -1039,7 +1086,9 @@ internal class WallView(
                         g2.color = muted
                         g2.drawString(footer, pad.toFloat(), (top + block.lines.size * lineHeight + ascent).toFloat())
                     }
+                    g2.transform = bodyTransform
                     cap?.let { paintScrollIndicator(g2, it, bodyTop, muted) }
+                    paintHorizontalScrollIndicator(g2, horizontal, muted)
                 }
             } finally {
                 g2.dispose()
@@ -1099,6 +1148,19 @@ internal class WallView(
             val thickness = JBUI.scale(3)
             g2.color = ColorUtil.withAlpha(muted, 0.35)
             g2.fillRoundRect(width - thickness - JBUI.scale(2), y, thickness, thumb, thickness, thickness)
+        }
+
+        private fun paintHorizontalScrollIndicator(g2: Graphics2D, offset: Int, muted: Color) {
+            val max = maxHorizontalScroll
+            if (max == 0) return
+            val inset = (metrics.padding * zoom).roundToInt().coerceAtLeast(1)
+            val track = width - 2 * inset
+            if (track <= 0) return
+            val thumb = (track.toDouble() * blockWidth / (blockWidth + max)).roundToInt().coerceIn(1, track)
+            val x = inset + ((track - thumb).toDouble() * offset / max).roundToInt()
+            val thickness = JBUI.scale(3)
+            g2.color = ColorUtil.withAlpha(muted, 0.35)
+            g2.fillRoundRect(x, height - thickness - JBUI.scale(2), thumb, thickness, thickness, thickness)
         }
 
         /** A thin focus-coloured outline in place of the border. */
