@@ -143,6 +143,19 @@ class ReviewDirectoryAction : DumbAwareAction() {
     }
 }
 
+class OpenCodeWallAction : DumbAwareAction() {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+    override fun update(e: AnActionEvent) {
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
+        e.presentation.isEnabledAndVisible = file != null && e.project?.let { ProjectFileIndex.getInstance(it).isInContent(file) } == true
+    }
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
+        withCodeReviewPanel(project) { it.openOnCodeWall(file) }
+    }
+}
+
 /** Project View, editor and editor tabs: read the file's place in the Code Review summaries, in the Tree view. */
 class ShowInSummaryTreeAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
@@ -177,6 +190,7 @@ internal class CodeReviewPanel(
         StartupManager.getInstance(project).postStartupActivityPassed(),
 ) : JPanel(BorderLayout()), Disposable {
     private val coroutines = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+    private var pendingWall: VirtualFile? = null
     private var disposed = false
     private var refreshJob: Job? = null
     /** The applied folder; null until one is valid. */
@@ -370,6 +384,7 @@ internal class CodeReviewPanel(
     /** Applies [scope] and loads it; applying the current scope again reloads it. Running reviews stop. */
     fun setScope(scope: CodeScope) {
         if (disposed) return
+        pendingWall = null
         this.scope = scope
         scopeRoot = scope.absolutePath.trimEnd('/')
         watchedFiles = if (scope.entry) setOf(scope.absolutePath) else null
@@ -439,6 +454,11 @@ internal class CodeReviewPanel(
                     snapshot = loaded
                     if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
                     val removed = tabs.all.sumOf { it.update(loaded) }
+                    pendingWall?.let { target ->
+                        pendingWall = null
+                        val files = loaded.files.filter { it.absolutePath == target.path || (target.isDirectory && it.absolutePath.startsWith(target.path.trimEnd('/') + "/")) }
+                        tabs.selected?.openCodeWall(files, target.name)
+                    }
                     renderFiles(loaded)
                     updateSkipped(loaded)
                     status.text = codeStatusText(loaded) + if (removed > 0) " · $removed outdated notes removed" else ""
@@ -480,6 +500,13 @@ internal class CodeReviewPanel(
         if (!tab.openFileView(file.path)) {
             status.text = "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
             status.toolTipText = status.text
+        }
+    }
+
+    fun openOnCodeWall(file: VirtualFile) {
+        if (setScope(file)) {
+            pendingWall = file
+            openCanvas(true)
         }
     }
 

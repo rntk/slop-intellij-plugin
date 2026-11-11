@@ -76,6 +76,15 @@
                text="Navigate in Project" popup="true">
             <add-to-group group-id="Diff.EditorPopupMenu" anchor="first"/>
         </group>
+        <group id="Insight.ContextMenu" text="Insights review" popup="true" icon="/icons/insight.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
+        </group>
+        <action id="Insight.OpenCodeWall" class="dev.insight.codereview.OpenCodeWallAction" icon="/icons/insight.svg">
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
+        </action>
         <action id="Insight.OpenPromptConstructor" class="dev.insight.prompts.OpenPromptConstructorAction"
                 icon="/icons/insight.svg">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
@@ -90,14 +99,11 @@
         </action>
         <action id="Insight.ReviewDirectory" class="dev.insight.codereview.ReviewDirectoryAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
-            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.ShowInSummaryTree" class="dev.insight.codereview.ShowInSummaryTreeAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
-            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenDashboard" class="dev.insight.dashboard.OpenDashboardAction"
                 icon="/icons/insight.svg">
@@ -105,31 +111,24 @@
         </action>
         <action id="Insight.ShowCallGraph" class="dev.insight.callgraph.ShowCallGraphAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.AddToFlowChart" class="dev.insight.callgraph.AddToFlowChartAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenSideBySide" class="dev.insight.callgraph.OpenSideBySideAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="StructureViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenSchematic" class="dev.insight.callgraph.OpenSchematicAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
-            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenCanvasSession" class="dev.insight.canvas.OpenCanvasSessionAction"
                 icon="/icons/insight.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
-            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.ShowChanges" class="dev.insight.callgraph.ShowChangesInGraphAction"
                 icon="/icons/insight.svg">
