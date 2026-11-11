@@ -1,15 +1,14 @@
 package dev.insight.review.wall
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
-import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
-import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.agent.ChatBackend
@@ -22,6 +21,10 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.GridLayout
+import java.awt.RenderingHints
 import java.awt.Rectangle
 import java.awt.event.ActionEvent
 import java.awt.event.FocusAdapter
@@ -31,10 +34,10 @@ import java.awt.event.MouseEvent
 import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.AbstractAction
-import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
+import javax.swing.Icon
 import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.Scrollable
@@ -142,7 +145,7 @@ internal class WallChats(
     }
 }
 
-/** The words a chat window shows: its title and the title's tooltip, the input's placeholder, and its history and New chat tips. */
+/** A chat window's accessible title, context tooltip, input placeholder, and action tips. */
 internal data class WallChatText(
     val title: String,
     val titleTooltip: String,
@@ -176,6 +179,8 @@ internal class WallChatPanel(
             wallChatTitle(session.messages) + if (count > 1) " · $count questions" else ""
         }
         isSwingPopup = true
+        minimumSize = Dimension(0, preferredSize.height)
+        accessibleContext.accessibleName = "Chat history"
     }
     private val transcript = WidthTracking().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false }
     private val scroll = JBScrollPane(transcript).apply {
@@ -192,11 +197,13 @@ internal class WallChatPanel(
     }
     private val send = JButton("Send").apply { isFocusable = false }
     private val stop = JButton("Stop").apply { isFocusable = false }
-    private val delete = ActionLink("Delete") { chats.deleteActive(path) }.apply {
-        font = JBFont.small()
-        toolTipText = "Delete the shown chat and stop its reply"
+    private val delete = iconButton(AllIcons.Actions.GC, "Delete the shown chat and stop its reply") { chats.deleteActive(path) }.apply {
+        name = "$id-delete-chat"
     }
-    private val status = JBLabel("", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER)
+    private val status = JBLabel("", UIUtil.ComponentStyle.SMALL, UIUtil.FontColor.BRIGHTER).apply {
+        name = "$id-chat-provider"
+        minimumSize = Dimension(0, preferredSize.height)
+    }
     /** Each conversation's unsent text, kept while another one is shown. */
     private val drafts = IdentityHashMap<ChatSession, String>()
     private var shown: ChatSession? = null
@@ -205,34 +212,34 @@ internal class WallChatPanel(
 
     init {
         name = "$id-chat:$path"
-        isOpaque = true
+        isOpaque = false
         background = UIUtil.getPanelBackground()
-        border = BorderFactory.createCompoundBorder(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(6, 8))
+        border = JBUI.Borders.empty(8, 10)
+        getAccessibleContext().accessibleName = words.title
+        toolTipText = words.titleTooltip
         add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
-            add(JBLabel(words.title).apply {
-                font = JBFont.label().asBold()
-                toolTipText = words.titleTooltip
-            }, BorderLayout.WEST)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+            add(history, BorderLayout.CENTER)
+            add(JPanel(GridLayout(1, 0, JBUI.scale(2), 0)).apply {
                 isOpaque = false
-                add(ActionLink("New chat") { chats.newChat(path); input.requestFocusInWindow() }.apply {
+                add(iconButton(AllIcons.General.Add, words.newChatTooltip) { chats.newChat(path); input.requestFocusInWindow() }.apply {
                     name = "$id-new-chat"
-                    font = JBFont.small()
-                    toolTipText = words.newChatTooltip
+                    accessibleContext.accessibleName = "New chat"
                 })
                 add(delete)
-                add(ActionLink("Hide") { onClose() }.apply { font = JBFont.small(); toolTipText = "Fold the chat (Esc)" })
+                add(iconButton(AllIcons.Actions.Close, "Fold the chat (Esc)") { onClose() }.apply {
+                    name = "$id-hide-chat"
+                    accessibleContext.accessibleName = "Hide chat"
+                })
             }, BorderLayout.EAST)
-            add(history, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
         add(scroll, BorderLayout.CENTER)
         add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
             isOpaque = false
             add(JBScrollPane(input).apply { border = JBUI.Borders.customLine(JBColor.border(), 1) }, BorderLayout.CENTER)
-            add(JPanel(BorderLayout()).apply {
+            add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
                 isOpaque = false
-                add(status, BorderLayout.WEST)
+                add(status, BorderLayout.CENTER)
                 add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
                     isOpaque = false
                     add(stop)
@@ -252,6 +259,29 @@ internal class WallChatPanel(
         // The window takes its own presses, so they neither pan the wall nor reach the blocks under it.
         addMouseListener(object : MouseAdapter() { override fun mousePressed(e: MouseEvent) = onRaise() })
         render()
+    }
+
+    override fun paintComponent(g: Graphics) {
+        super.paintComponent(g)
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val arc = JBUI.scale(8)
+            g2.color = background
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = JBColor.border()
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+        } finally {
+            g2.dispose()
+        }
+    }
+
+    private fun iconButton(icon: Icon, tooltip: String, action: () -> Unit) = JButton(icon).apply {
+        toolTipText = tooltip
+        accessibleContext.accessibleName = tooltip
+        putClientProperty("JButton.buttonType", "toolBarButton")
+        preferredSize = JBUI.size(24, 24)
+        addActionListener { action() }
     }
 
     /** Asks the shown chat [text]. */
@@ -306,6 +336,8 @@ internal class WallChatPanel(
         stop.isEnabled = busy
         delete.isEnabled = !(sessions.size == 1 && active.messages.none { it.role == ChatRole.USER })
         status.text = if (busy) "Answering…" else active.backendLabel
+        status.toolTipText = active.backendLabel
+        status.accessibleContext.accessibleName = status.text
         transcript.revalidate()
         transcript.repaint()
         SwingUtilities.invokeLater { scroll.verticalScrollBar.let { it.value = it.maximum } }

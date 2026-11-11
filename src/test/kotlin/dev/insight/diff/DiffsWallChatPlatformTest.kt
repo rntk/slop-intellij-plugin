@@ -5,6 +5,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import dev.insight.agent.ChatRole
 import dev.insight.llm.Completion
@@ -20,6 +21,8 @@ import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.JComponent
+import javax.swing.JButton
+import javax.swing.SwingUtilities
 
 /** A Diffs wall block's Chat tab unfolds independent chats about that file, which outlast folding and the wall's scopes. */
 class DiffsWallChatPlatformTest : BasePlatformTestCase() {
@@ -33,6 +36,49 @@ class DiffsWallChatPlatformTest : BasePlatformTestCase() {
 
     private fun press(component: JComponent) = component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_PRESSED, 0L,
         InputEvent.BUTTON1_DOWN_MASK, 2, 2, 1, false, MouseEvent.BUTTON1))
+
+    fun `test long provider labels leave room for the chat controls`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { Completion("Reply.") })
+        try {
+            tab.update(ReviewSnapshot(listOf(file("src/a.kt")), emptyList()))
+            chooseView(tab, "Diffs wall")
+            descendants(tab.canvas).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-canvas-chat-link" }.doClick()
+            val panel = descendants(tab.canvas).filterIsInstance<WallChatPanel>().single()
+            val provider = descendants(panel).filterIsInstance<JBLabel>().single { it.name == "diffs-wall-chat-provider" }
+            assertEquals(provider.text, provider.toolTipText)
+            provider.text = "OpenAI-compatible provider · " + "very-long-model-name-".repeat(20)
+            val history = descendants(panel).filterIsInstance<ComboBox<*>>().single()
+            val buttons = descendants(panel).filterIsInstance<JButton>()
+            fun layoutTree(container: Container) {
+                container.doLayout()
+                container.components.filterIsInstance<Container>().forEach(::layoutTree)
+            }
+            for (width in listOf(400, 320)) {
+                panel.setSize(width, 400)
+                layoutTree(panel)
+                val providerBounds = SwingUtilities.convertRectangle(provider.parent, provider.bounds, panel)
+                assertTrue(provider.width > 0)
+                assertTrue(provider.width < provider.preferredSize.width)
+                for (button in buttons.filter { it.text == "Send" || it.text == "Stop" }) {
+                    val bounds = SwingUtilities.convertRectangle(button.parent, button.bounds, panel)
+                    assertFalse(providerBounds.intersects(bounds))
+                    assertTrue(bounds.x >= 0 && bounds.x + bounds.width <= panel.width)
+                    assertEquals(button.preferredSize.width, button.width)
+                }
+                val historyBounds = SwingUtilities.convertRectangle(history.parent, history.bounds, panel)
+                for (name in listOf("new", "delete", "hide")) {
+                    val button = buttons.single { it.name == "diffs-wall-$name-chat" }
+                    val bounds = SwingUtilities.convertRectangle(button.parent, button.bounds, panel)
+                    assertTrue(button.icon != null)
+                    assertTrue(button.text.isNullOrEmpty())
+                    assertFalse(historyBounds.intersects(bounds))
+                    assertEquals(historyBounds.y + historyBounds.height / 2, bounds.y + bounds.height / 2)
+                }
+            }
+            buttons.single { it.name == "diffs-wall-hide-chat" }.doClick()
+            assertTrue(descendants(tab.canvas).filterIsInstance<WallChatPanel>().isEmpty())
+        } finally { Disposer.dispose(tab) }
+    }
 
     fun `test a block's chat tab unfolds independent chats about its file`() {
         val requests = CopyOnWriteArrayList<CompletionRequest>()
@@ -78,7 +124,7 @@ class DiffsWallChatPlatformTest : BasePlatformTestCase() {
             assertTrue(tab.session.messages.none { it.role == ChatRole.USER })
 
             val history = descendants(panel).filterIsInstance<ComboBox<*>>().single()
-            val newChat = descendants(panel).filterIsInstance<ActionLink>().single { it.text == "New chat" }
+            val newChat = descendants(panel).filterIsInstance<JButton>().single { it.name == "diffs-wall-new-chat" }
             newChat.doClick()
             assertEquals(2, history.itemCount)
             assertEquals(1, history.selectedIndex)
