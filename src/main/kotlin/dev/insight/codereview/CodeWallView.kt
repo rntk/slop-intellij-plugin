@@ -1,13 +1,18 @@
 package dev.insight.codereview
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.project.Project
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallContent
+import dev.insight.review.wall.WallHighlighter
 import dev.insight.review.wall.WallLabels
+import dev.insight.review.wall.WallSyntax
 import dev.insight.review.wall.WallView
+import dev.insight.review.wall.wallRowSpans
+import dev.insight.review.wall.wallSideExtents
 import javax.swing.JPanel
 
 /**
@@ -21,10 +26,13 @@ internal class CodeWallView(
     showAllFiles: () -> Unit,
     /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
     chats: WallChats? = null,
+    /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
+    project: Project? = null,
 ) : Disposable {
     private var files: List<CodeFile> = emptyList()
     private var shown: WallContent? = null
-    val view = WallView(CODE_WALL_LABELS, { path, line -> openFile(path, line?.new) }, showAllFiles, chats)
+    val view = WallView(CODE_WALL_LABELS, { path, line -> openFile(path, line?.new) }, showAllFiles, chats,
+        codeWallHighlighter(project) { path -> files.firstOrNull { it.path == path } })
     val card: JPanel get() = view.card
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
@@ -38,6 +46,14 @@ internal class CodeWallView(
     }
 
     override fun dispose() = view.dispose()
+}
+
+/** Colours a source block from its file's whole text, lexed only as far as the block shows. */
+internal fun codeWallHighlighter(project: Project?, file: (path: String) -> CodeFile?) = WallHighlighter { block ->
+    val code = file(block.path) ?: return@WallHighlighter null
+    val last = wallSideExtents(block.lines).second
+    if (last == 0) return@WallHighlighter null
+    { WallSyntax.side(project, code.path, code.text, last)?.let { wallRowSpans(block.lines, null, it) } }
 }
 
 /** The words and component names of the Code wall. */

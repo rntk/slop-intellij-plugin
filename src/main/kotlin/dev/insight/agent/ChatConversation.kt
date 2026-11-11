@@ -1,4 +1,4 @@
-package dev.insight.agent
+    package dev.insight.agent
 
 import com.intellij.openapi.Disposable
 

@@ -56,7 +56,7 @@ internal class DiffCanvasCards(
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats) }
+    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project) }
     private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, removeWords = metricActions.removeWords,

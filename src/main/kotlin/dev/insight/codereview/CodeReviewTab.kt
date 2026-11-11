@@ -136,7 +136,7 @@ internal class CodeReviewTab(
     }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's files" else path.substringAfterLast('/') })
     private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
         chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
-        showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats)
+        showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project)
     /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
     private var wordCount: WordCount? = null
     private var allWords: WordCount? = null

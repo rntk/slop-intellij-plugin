@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import com.intellij.openapi.project.Project
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -57,11 +58,13 @@ internal class CodeCanvasCards(
     showAllFiles: () -> Unit = {},
     /** The chats wall blocks unfold; null leaves blocks without a Chat tab. */
     wallChats: WallChats? = null,
+    /** The project the wall's syntax highlighting is looked up for. */
+    project: Project? = null,
 ) : CanvasExtension {
     var words: CodeWordsPage? = null
     var wall: CodeWallContent? = null
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats) }
+    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project) }
     private val wallPage by wallView
     /** Placing the words is slow, so the cloud is kept across rebuilds while its counts are the same. */
     private var cloud: CodeWordCloud? = null

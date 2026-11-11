@@ -7,11 +7,16 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.colors.EditorColorsListener
 import com.intellij.openapi.diff.DiffColors
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorColorsScheme
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.colors.TextAttributesKey
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
@@ -78,6 +83,8 @@ internal class WallView(
     private val showAll: () -> Unit,
     /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
     private val chats: WallChats? = null,
+    /** Colours the blocks' rows with the IDE's syntax highlighting; without it rows paint in plain colours. */
+    private val highlighter: WallHighlighter? = null,
 ) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -159,6 +166,21 @@ internal class WallView(
     private var canvasChatOpen = false
     /** Keeps the wall's own chat window in the visible corner of the wall while the page scrolls. */
     private val scrolled = ChangeListener { if (canvasChatOpen) { placeCanvasChat(); canvasChatPanel?.repaint() } }
+    /** Each block's row colours once worked out, by path, with the block they were worked out for; null rows for a plain block. */
+    private val highlights = mutableMapOf<String, Pair<WallBlock, List<List<WallSpan>?>?>>()
+    /** Blocks whose row colours are being worked out, by path. */
+    private val highlighting = mutableMapOf<String, WallBlock>()
+    /** Bumped when the colour scheme changes, so colours worked out for the old one are dropped. */
+    @Volatile private var highlightGeneration = 0
+    @Volatile private var disposed = false
+    /** Works the colours out again when the reader changes the editor's colour scheme. */
+    private val schemeConnection = highlighter?.let {
+        ApplicationManager.getApplication()?.messageBus?.connect()?.apply {
+            subscribe(EditorColorsManager.TOPIC, EditorColorsListener {
+                ApplicationManager.getApplication().invokeLater({ if (!disposed) rehighlight() }, ModalityState.any())
+            })
+        }
+    }
     private val resized = object : ComponentAdapter() {
         override fun componentResized(e: ComponentEvent) {
             if (!arranged) { surface.revalidate(); surface.repaint() }
@@ -231,7 +253,64 @@ internal class WallView(
         }
         surface.revalidate()
         surface.repaint()
+        requestHighlights()
     }
+
+    /** Drops every block's colours and works them out again, as after a colour scheme change. */
+    private fun rehighlight() {
+        highlightGeneration++
+        highlights.clear()
+        highlighting.clear()
+        requestHighlights()
+        views.forEach { it.repaint() }
+    }
+
+    /**
+     * Works out, one block after another in the background, the row colours of the shown blocks that have none yet; each block
+     * repaints as its colours arrive.
+     */
+    private fun requestHighlights() {
+        val highlighter = highlighter ?: return
+        val app = ApplicationManager.getApplication() ?: return
+        val paths = views.map { it.block.path }.toSet()
+        highlights.keys.retainAll(paths)
+        highlighting.keys.retainAll(paths)
+        val work = views.mapNotNull { view ->
+            val block = view.block
+            if (highlights[block.path]?.first == block || highlighting[block.path] == block) return@mapNotNull null
+            val job = highlighter.prepare(block)
+            if (job == null) {
+                highlights[block.path] = block to null
+                return@mapNotNull null
+            }
+            highlighting[block.path] = block
+            block to job
+        }
+        if (work.isEmpty()) return
+        val generation = highlightGeneration
+        app.executeOnPooledThread {
+            for ((block, job) in work) {
+                if (disposed || generation != highlightGeneration) return@executeOnPooledThread
+                val rows = try {
+                    runReadAction { job() }
+                } catch (e: ProcessCanceledException) {
+                    null
+                } catch (e: Exception) {
+                    LOG.warn("Could not highlight ${block.path} on the wall", e)
+                    null
+                }
+                app.invokeLater({
+                    if (disposed || generation != highlightGeneration || highlighting[block.path] != block) return@invokeLater
+                    highlighting.remove(block.path)
+                    highlights[block.path] = block to rows
+                    views.firstOrNull { it.block == block }?.repaint()
+                }, ModalityState.any())
+            }
+        }
+    }
+
+    /** [block]'s row colours, once worked out for it. */
+    internal fun rowSpans(block: WallBlock): List<List<WallSpan>?>? = highlights[block.path]?.takeIf { it.first == block }?.second
 
     private fun viewport(): JViewport? = SwingUtilities.getAncestorOfClass(JViewport::class.java, surface) as? JViewport
 
@@ -480,6 +559,8 @@ internal class WallView(
     internal fun chatWindow(path: String): WallChatPanel? = chatPanels[path]
 
     override fun dispose() {
+        disposed = true
+        schemeConnection?.disconnect()
         stopAnimation()
         chatSubscription?.dispose()
         chatPanels.values.forEach(Disposer::dispose)
@@ -908,6 +989,7 @@ internal class WallView(
                 val shown = wrapped?.drop(first)
                 val rowCount = shown?.size ?: block.lines.size
                 val to = (ceil((clip.y + clip.height - top) / lineHeight).toInt() + 1).coerceAtMost(rowCount)
+                val spans = rowSpans(block)
                 val added = tint(scheme, DiffColors.DIFF_INSERTED, ADDED, background)
                 val removed = tint(scheme, DiffColors.DIFF_DELETED, REMOVED, background)
                 if (shown != null) {
@@ -938,7 +1020,7 @@ internal class WallView(
                             }
                             g2.color = scheme.defaultForeground
                             if (sketch) sketch(g2, " " + line.text, indent, y, next - y)
-                            else g2.drawString(line.text, (indent + metrics.charWidth * z).toFloat(), baseline)
+                            else drawRow(g2, line.text, (indent + metrics.charWidth * z).toFloat(), baseline, spans?.getOrNull(index))
                             continue
                         }
                         g2.color = when (line.kind) {
@@ -946,7 +1028,7 @@ internal class WallView(
                             else -> scheme.defaultForeground
                         }
                         if (sketch) sketch(g2, line.text, pad, y, next - y)
-                        else g2.drawString(line.text, pad.toFloat(), baseline)
+                        else drawRow(g2, line.text, pad.toFloat(), baseline, spans?.getOrNull(index))
                     }
                     val footer = when {
                         block.lines.isEmpty() -> labels.emptyBlock
@@ -963,6 +1045,33 @@ internal class WallView(
                 g2.dispose()
             }
             if (active && surface.isFocusOwner) paintFocus(g, arc)
+        }
+
+        /** Fonts in the bold and italic styles of the last row font, which every row of a paint shares. */
+        private var styled: Pair<Font, MutableMap<Int, Font>>? = null
+
+        /**
+         * [text] in the current font and colour, with its syntax [spans] in their own colours and styles. Each piece advances by
+         * its width in the plain font, so columns stay where the plain row has them.
+         */
+        private fun drawRow(g2: Graphics2D, text: String, x: Float, baseline: Float, spans: List<WallSpan>?) {
+            if (spans == null) {
+                g2.drawString(text, x, baseline)
+                return
+            }
+            val base = g2.font
+            val color = g2.color
+            val fonts = styled?.takeIf { it.first == base }?.second ?: mutableMapOf<Int, Font>().also { styled = base to it }
+            val context = g2.fontRenderContext
+            var at = x
+            for ((piece, style) in wallSegments(text, spans)) {
+                g2.font = style?.fontStyle?.takeIf { it != Font.PLAIN }?.let { fonts.getOrPut(it) { base.deriveFont(it) } } ?: base
+                g2.color = style?.color ?: color
+                g2.drawString(piece, at, baseline)
+                at += base.getStringBounds(piece, context).width.toFloat()
+            }
+            g2.font = base
+            g2.color = color
         }
 
         /** The same thumb for a long summary: [first] of [total] rows is at the top of the body. */
@@ -1139,6 +1248,7 @@ internal class WallView(
     }
 
     private companion object {
+        val LOG = Logger.getInstance(WallView::class.java)
         val CHAT_TAB_WIDTH = JBUI.scale(18)
         val CHAT_TAB_HEIGHT = JBUI.scale(60)
         const val MIN_TAB_FONT_SIZE = 7f

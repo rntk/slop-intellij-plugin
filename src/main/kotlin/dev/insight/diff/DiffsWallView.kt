@@ -11,9 +11,13 @@ import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallContent
+import dev.insight.review.wall.WallHighlighter
 import dev.insight.review.wall.WallLabels
 import dev.insight.review.wall.WallLine
+import dev.insight.review.wall.WallSyntax
 import dev.insight.review.wall.WallView
+import dev.insight.review.wall.wallRowSpans
+import dev.insight.review.wall.wallSideExtents
 import javax.swing.JPanel
 
 /**
@@ -27,11 +31,13 @@ internal class DiffsWallView(
     showAllChanges: () -> Unit,
     /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
     chats: WallChats? = null,
+    /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
+    project: Project? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
     val view = WallView(DIFFS_WALL_LABELS, { path, line -> files.firstOrNull { it.path == path }?.let { openDiff(it, line) } },
-        showAllChanges, chats)
+        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } })
     val card: JPanel get() = view.card
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
@@ -45,6 +51,21 @@ internal class DiffsWallView(
     }
 
     override fun dispose() = view.dispose()
+}
+
+/**
+ * Colours a diff block from both whole sides of its file, so a row inside a comment or string that starts outside its hunk is
+ * still coloured right; the old side is lexed by its old name, for renames. Rows whose side is missing stay plain.
+ */
+internal fun diffsWallHighlighter(project: Project?, file: (path: String) -> ReviewFile?) = WallHighlighter { block ->
+    val review = file(block.path) ?: return@WallHighlighter null
+    val (lastBefore, lastAfter) = wallSideExtents(block.lines)
+    if (lastBefore == 0 && lastAfter == 0) return@WallHighlighter null
+    {
+        val before = WallSyntax.side(project, review.previousPath ?: review.path, review.before, lastBefore)
+        val after = WallSyntax.side(project, review.path, review.after, lastAfter)
+        if (before == null && after == null) null else wallRowSpans(block.lines, before, after)
+    }
 }
 
 /** The words and component names of the Diffs wall. */
