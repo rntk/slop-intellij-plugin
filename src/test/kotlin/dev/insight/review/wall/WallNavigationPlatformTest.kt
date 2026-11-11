@@ -84,6 +84,22 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         assertTrue("Escape restores canvas scrolling", pane.viewport.viewPosition.y > 0)
     }
 
+    fun testFocusedExpandedCardPansCanvasOnUnscrollableAxis() = withWall { wall, pane, surface ->
+        val first = wall.blocks.first()
+        press(surface, "TAB")
+        press(surface, "C")
+        assertFalse(first.isCompact)
+        pane.viewport.viewSize = java.awt.Dimension(pane.viewport.width + 200, pane.viewport.height + 200)
+        pane.viewport.viewPosition = Point()
+        press(surface, "DOWN")
+        assertTrue(pane.viewport.viewPosition.y > 0)
+        assertEquals(0, first.bodyScroll.y)
+        val canvas = pane.viewport.viewPosition
+        press(surface, "RIGHT")
+        assertTrue(first.bodyScroll.x > 0)
+        assertEquals(canvas, pane.viewport.viewPosition)
+    }
+
     fun testFocusedSummaryNavigationUsesSummaryRowsAndPreservesDiffScroll() = withWall { wall, pane, surface ->
         val first = wall.blocks.first()
         press(surface, "TAB")

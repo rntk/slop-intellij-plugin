@@ -652,7 +652,7 @@ internal class WallView(
         pane?.viewport?.addChangeListener(scrolled)
     }
 
-    /** In Tab focus mode navigation stays inside the active body, including at its scroll limits. */
+    /** In Tab focus mode each scrollable body axis owns navigation, including at its scroll limits. */
     private fun navigate(dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false) {
         val focused = views.firstOrNull { it.block.path == activePath }?.takeIf { overview != null }
         if (focused == null) {
@@ -668,7 +668,10 @@ internal class WallView(
                 else -> (value / zoom).roundToInt()
             }
         }
-        focused.scrollContent(delta(dx, focused.logical.width), delta(dy, focused.logical.height - focused.metrics.headerHeight))
+        val bodyX = dx.takeIf { focused.canScrollHorizontally } ?: 0
+        val bodyY = dy.takeIf { focused.canScrollVertically } ?: 0
+        focused.scrollContent(delta(bodyX, focused.logical.width), delta(bodyY, focused.logical.height - focused.metrics.headerHeight))
+        scrollBy(dx - bodyX, dy - bodyY)
     }
 
     /** One keyboard command of the wall, bound to its [strokes] while the surface has focus. */
@@ -972,6 +975,10 @@ internal class WallView(
             }
             repaint()
         }
+
+        val canScrollHorizontally: Boolean get() = !showsSummary && maxHorizontalScroll > 0
+        val canScrollVertically: Boolean get() = if (showsSummary)
+            summaryRows().size > wallBodyRows(logical.height, metrics) else cap != null
 
         private val maxHorizontalScroll: Int = ((block.lines.maxOfOrNull { it.text.length } ?: 0) + gutter)
             .let { (it * metrics.charWidth + 2 * metrics.padding - blockWidth).coerceAtLeast(0) }
