@@ -100,6 +100,7 @@ internal class DiffReviewTab(
     private val diffCards = DiffCanvasCards(showDiff, project,
         removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         openDirectoryDiff = openDirectoryDiff,
+        openMovesOnWall = { files -> openDiffsWall(files, "Moved code") },
         metricActions = MetricCardActions(
             removeWords = { state.hideWords(); renderCanvas() },
             removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },

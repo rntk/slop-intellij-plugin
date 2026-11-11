@@ -44,6 +44,7 @@ internal class DiffCanvasCards(
     private val project: Project? = null,
     private val removeDiff: (String) -> Unit = {},
     openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
+    openMovesOnWall: (List<ReviewFile>) -> Unit = {},
     metricActions: MetricCardActions = MetricCardActions(),
     /** Opens a wall block's native diff, at the double-clicked line when there is one. */
     openWallDiff: (ReviewFile, WallLine?) -> Unit = { _, _ -> },
@@ -59,7 +60,7 @@ internal class DiffCanvasCards(
     private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project) }
     private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
-        open = open, openDirectoryDiff = openDirectoryDiff, removeWords = metricActions.removeWords,
+        open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
         removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
         removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
     ), project)

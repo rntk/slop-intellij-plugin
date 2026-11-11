@@ -27,6 +27,7 @@ import dev.insight.review.ui.viewSelector
 internal data class MetricsCanvasActions(
     val open: (String) -> Unit,
     val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
+    val openOnWall: (List<ReviewFile>) -> Unit = {},
     val removeWords: () -> Unit = {},
     val removeDiffOverview: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
@@ -275,7 +276,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
             ?: return JLabel("${selection.source} is not in this diff.").apply { foreground = UIUtil.getContextHelpForeground() }
         val target = selection.target?.let { path -> wordFiles.firstOrNull { it.path == path } }
         val blocks = if (target == null) emptyList() else moves.blocks.filter { it.from == source.path && it.to == target.path }
-        return CodeMoveDetail(project, selection, source, target, blocks) { paths -> openPaths(paths.toSet()) }
+        return CodeMoveDetail(project, selection, source, target, blocks, { paths -> openPaths(paths.toSet()) }, actions.openOnWall)
             .also { moveDetail = moves to it }
     }
 

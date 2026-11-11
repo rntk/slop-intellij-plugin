@@ -34,6 +34,7 @@ internal class CodeMoveDetail(
     private val blocks: List<MovedBlock>,
     /** Opens the diffs of the given paths in their own tabs. */
     open: (List<String>) -> Unit,
+    openOnWall: (List<ReviewFile>) -> Unit,
 ) : JPanel(BorderLayout()), Disposable {
     private val viewers = JPanel(GridLayout(if (target == null) 1 else 2, 1, 0, JBUI.scale(8))).apply { isOpaque = false }
     private val editors = mutableListOf<DiffFileEditor>()
@@ -59,8 +60,14 @@ internal class CodeMoveDetail(
                     font = JBFont.small(); foreground = UIUtil.getContextHelpForeground()
                 })
             }, BorderLayout.CENTER)
-            add(ActionLink("Open in diff tabs") { open(listOfNotNull(source.path, target?.path)) }.apply {
-                name = "move-open-diffs"; font = JBFont.small()
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply {
+                isOpaque = false
+                add(ActionLink("Open on diffs wall") { openOnWall(listOfNotNull(source, target).distinctBy { it.path }) }.apply {
+                    name = "move-open-wall"; font = JBFont.small()
+                })
+                add(ActionLink("Open in diff tabs") { open(listOfNotNull(source.path, target?.path)) }.apply {
+                    name = "move-open-diffs"; font = JBFont.small()
+                })
             }, BorderLayout.EAST)
         }, BorderLayout.NORTH)
         add(viewers, BorderLayout.CENTER)

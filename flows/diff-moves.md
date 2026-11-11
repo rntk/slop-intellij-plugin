@@ -2,7 +2,7 @@
 
 Diff moves shows code that was relocated within a review rather than written or deleted outright. It finds runs of lines removed from one changed file that reappear in another, and presents them as flows from where the code left to where it arrived. A reviewer can see at a glance which files exchanged code and how much of each file moved, with the rest split into code that stayed and code that was removed.
 
-Choosing a move opens the diffs of its source and destination side by side, scrolled to the moved code and highlighted, so the two places can be compared. The view follows the review's comparison and is one of its metric views.
+Choosing a move opens the diffs of its source and destination side by side, scrolled to the moved code and highlighted, so the two places can be compared. **Open on diffs wall** shows those files on the Diffs wall for a broader, rearrangeable overview; a selection without a destination opens the source alone. The view follows the review's comparison and is one of its metric views.
 
 The view is a guide, not proof: matches are textual, so a move may be coincidental and should be checked against the source.
 

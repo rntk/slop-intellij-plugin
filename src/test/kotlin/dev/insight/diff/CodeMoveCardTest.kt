@@ -3,6 +3,7 @@ package dev.insight.diff
 import com.intellij.diff.util.Side
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.InplaceButton
+import com.intellij.ui.components.ActionLink
 import dev.insight.callgraph.LineChange
 import dev.insight.review.ui.NoteCanvas
 import java.awt.Container
@@ -27,7 +28,9 @@ class CodeMoveCardTest : BasePlatformTestCase() {
         val files = files()
         var removed = 0
         val opened = mutableListOf<String>()
-        val cards = DiffCanvasCards({ opened += it }, project, metricActions = MetricCardActions(removeMoves = { removed++ }))
+        val wallScopes = mutableListOf<List<String>>()
+        val cards = DiffCanvasCards({ opened += it }, project, openMovesOnWall = { wallScopes += it.map(ReviewFile::path) },
+            metricActions = MetricCardActions(removeMoves = { removed++ }))
         val canvas = NoteCanvas({}, {}, extension = cards)
         try {
             val moves = codeMoves(files)
@@ -48,6 +51,8 @@ class CodeMoveCardTest : BasePlatformTestCase() {
             assertEquals(MoveSelection("Service.kt", "Format.kt"), chart.selected)
             val second = detail(canvas)
             assertEquals(listOf("Service.kt", "Format.kt"), second.shown.map { it.file.path })
+            (descendants(canvas).single { it.name == "move-open-wall" } as ActionLink).doClick()
+            assertEquals(listOf("Service.kt", "Format.kt"), wallScopes.last())
             assertTrue("The replaced viewers are released", first.shown.isEmpty())
             assertEquals("In place, without another tab", 1, canvas.tabs.tabCount)
 
@@ -63,6 +68,8 @@ class CodeMoveCardTest : BasePlatformTestCase() {
             val stayed = fan.links.single { it.to.label.endsWith("Stayed") }
             fan.dispatchEvent(MouseEvent(fan, MouseEvent.MOUSE_CLICKED, 0, 0, stayed.to.bounds.x + 2, stayed.to.y, 1, false, MouseEvent.BUTTON1))
             assertEquals(listOf("Service.kt"), detail(canvas).shown.map { it.file.path })
+            (descendants(canvas).single { it.name == "move-open-wall" } as ActionLink).doClick()
+            assertEquals(listOf("Service.kt"), wallScopes.last())
 
             descendants(canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove moved code" }.doClick()
             assertEquals(1, removed)

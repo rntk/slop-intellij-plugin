@@ -31,7 +31,7 @@ run_agent() {
     local project_name
     project_name="$(basename "$(pwd)")"
     case "$choice" in
-        1) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.claude:/home/appuser/.claude" -v "$HOME/.claude/.claude.json:/home/appuser/.claude.json" -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" "${project_name}-claude-code:latest" --verbose --dangerously-skip-permissions ;;
+        1) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.claude:/home/appuser/.claude" -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" "${project_name}-claude-code:latest" --verbose --dangerously-skip-permissions ;;
         2) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.codex:/home/appuser/.codex" -e OPENAI_API_KEY="${OPENAI_API_KEY}" "${project_name}-codex-cli:latest" -a never --sandbox danger-full-access --no-daemon;;
         3) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.gemini:/home/appuser/.gemini" -v "$HOME/.config/Antigravity:/home/appuser/.config/Antigravity" -v "$HOME/.config/Antigravity IDE:/home/appuser/.config/Antigravity IDE" "${project_name}-antigravity-cli:latest" --dangerously-skip-permissions ;;
         4) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.config/muse:/home/appuser/.config/muse" "${project_name}-muse-code-cli:latest" --yolo ;;
