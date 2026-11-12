@@ -947,6 +947,20 @@ internal class WallView(
                     surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
                     return@addMouseWheelListener
                 }
+                // Shift is how Swing delivers horizontal (touchpad) scrolling: the body takes it until its edge, then the canvas.
+                if (e.isShiftDown && !e.isControlDown && !e.isMetaDown && canScrollHorizontally) {
+                    val first = horizontalScrolls[block.path] ?: 0
+                    val moved = (first + (e.preciseWheelRotation * WHEEL_ROWS * metrics.lineHeight).roundToInt())
+                        .coerceIn(0, maxHorizontalScroll)
+                    if (moved != first) {
+                        e.consume()
+                        horizontalScrolls[block.path] = moved
+                        repaint()
+                        return@addMouseWheelListener
+                    }
+                    surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
+                    return@addMouseWheelListener
+                }
                 val cap = cap
                 val moved = if (cap == null || e.isControlDown || e.isMetaDown || e.isShiftDown) null
                 else wallBodyScroll(offset, (e.preciseWheelRotation * WHEEL_ROWS * metrics.lineHeight).roundToInt(), fullHeight, cap)
