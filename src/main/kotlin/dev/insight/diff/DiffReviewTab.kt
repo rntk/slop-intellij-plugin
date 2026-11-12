@@ -357,7 +357,7 @@ internal class DiffReviewTab(
             (state.scopePaths != null && state.scopePaths.none { it in affectedPaths } &&
                 state.snapshot.files.none { it.absolutePath in affectedPaths }))) return
         state.refreshing = true
-        if (stop) session.stop()
+        if (stop) { requeueRunningPipeline(); session.stop() }
         updateControls()
         summariesChanged()
     }
@@ -367,9 +367,10 @@ internal class DiffReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { session.stop(); wallChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear() }
+        if (state.revision != previousRevision) { requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear() }
         renderCanvas()
         updateControls()
+        runScheduled()
         return previousNotes - state.notes.size
     }
 
@@ -446,7 +447,7 @@ internal class DiffReviewTab(
 
     private fun updateControls() {
         val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
-        viewSelector.isViewEnabled = { key -> hasFiles && ((key != CanvasTabKey.Topics && key != CanvasTabKey.Grouping) || !session.busy) }
+        viewSelector.isViewEnabled = { hasFiles }
         viewSelector.isEnabled = hasFiles
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"

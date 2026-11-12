@@ -18,6 +18,8 @@ import dev.insight.review.ExplainResults
 import dev.insight.review.ExplainTarget
 import dev.insight.review.ReviewCanvasFile
 import dev.insight.review.ReviewCanvasOwner
+import dev.insight.review.ReviewPipeline
+import dev.insight.review.ReviewPipelineQueue
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewTabState
 import dev.insight.review.ReviewVocabulary
@@ -28,6 +30,7 @@ import dev.insight.review.explainChartPrompt
 import dev.insight.review.explainCommand
 import dev.insight.review.explainRequest
 import dev.insight.review.explainTarget
+import dev.insight.review.isDone
 import dev.insight.review.isExplainRequest
 import dev.insight.review.openReviewCanvas
 import dev.insight.review.textOf
@@ -36,6 +39,7 @@ import dev.insight.ui.EdgeTab
 import java.awt.BorderLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -78,7 +82,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     /** The views of this tab, in the order of its [viewSelector]; the first is the one shown initially. */
     protected abstract fun viewOptions(): List<ReviewViewOption>
-    /** Opens the page of [key], generating its content where it has none yet. */
+    /** Opens the page of [key]; summaries, topics and grouping are generated only from their page's buttons or a [schedule]. */
     protected open fun openView(key: CanvasTabKey) {
         when (key) {
             CanvasTabKey.Summaries -> openSummaries()
@@ -210,24 +214,22 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         return ChatTurn(request, (chart as? ExplainChartResult.Ready)?.chart?.tools.orEmpty())
     }
 
-    /** Puts the summaries card on the canvas, shows the canvas and starts /summaries if the tree is incomplete and the chat is idle. */
+    /** Puts the summaries card on the canvas and shows it; the summaries are generated from the card or a [schedule]. */
     fun openSummaries() {
         state.showSummaries()
         renderCanvas()
         showCanvas { canvas.focusSummaries() }
-        if (!state.summaries.complete) summarize()
     }
 
     /**
      * Opens the summaries in the Tree view on the route to [path], a relative or absolute file path; false when the file is not in
-     * this tab's scope. Like [openSummaries], it starts /summaries when the tree is incomplete.
+     * this tab's scope. Like [openSummaries], it generates nothing.
      */
     fun showInSummaryTree(path: String): Boolean {
         if (disposed || state.snapshotFiles.none { it.path == path || it.absolutePath == path }) return false
         state.showSummaries()
         renderCanvas()
         showCanvas { canvas.showSummariesInTree(path) }
-        if (!state.summaries.complete) summarize()
         return true
     }
 
@@ -235,14 +237,52 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         state.showTopics()
         renderCanvas()
         showCanvas { canvas.focusTopics() }
-        if (!state.topics.complete && canSummarize) session.send("/topics")
     }
 
     fun openGrouping() {
         state.showGrouping()
         renderCanvas()
         showCanvas { canvas.focusGrouping() }
-        if (!state.grouping.complete && canSummarize) session.send("/grouping")
+    }
+
+    private val pipelines = ReviewPipelineQueue()
+    private var pipelineCheck = false
+    /** The scheduled pipeline whose chat turn runs now, if any. */
+    private var runningPipeline: ReviewPipeline? = null
+
+    /** The pipelines still waiting to run; see [schedule]. */
+    val scheduledPipelines: Set<ReviewPipeline> get() = pipelines.scheduled
+
+    /**
+     * Runs [scheduled] one after another through this tab's chat, each once the chat and canvas are idle and the source is
+     * loaded. Pipelines with nothing left to generate are skipped rather than regenerated.
+     */
+    fun schedule(scheduled: Collection<ReviewPipeline>) {
+        if (disposed) return
+        pipelines.schedule(scheduled)
+        runScheduled()
+    }
+
+    /** Starts the next scheduled pipeline when the tab is ready; deferred, so it never sends from within a chat notification. */
+    protected fun runScheduled() {
+        if (pipelineCheck || disposed || pipelines.scheduled.isEmpty()) return
+        pipelineCheck = true
+        SwingUtilities.invokeLater {
+            pipelineCheck = false
+            if (disposed) return@invokeLater
+            if (!session.busy) runningPipeline = null
+            pipelines.next(canSummarize) { state.isDone(it) }?.let {
+                runningPipeline = it
+                session.send(it.command.command)
+            }
+        }
+    }
+
+    /** Before a source refresh stops the chat: the scheduled pipeline it interrupts runs again, continuing on the new source. */
+    protected fun requeueRunningPipeline() {
+        val running = runningPipeline?.takeIf { session.busy } ?: return
+        runningPipeline = null
+        pipelines.schedule(listOf(running))
     }
 
     /** Focusing a page opens its regular IDE editor tab. */
@@ -261,6 +301,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.updateSummaries(summariesCard())
         canvas.updateTopics(topicsCard())
         canvas.updateGrouping(groupingCard())
+        runScheduled()
     }
 
     /** The focus of a To Chat on the files and folders [entries] of this tab's scope; null when they reach no file. */
@@ -268,6 +309,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     override fun dispose() {
         disposed = true
+        pipelines.clear()
         onCanvasSelected = {}
         startButton = null
         canvas.onPageFocused = {}

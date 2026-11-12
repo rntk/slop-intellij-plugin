@@ -64,6 +64,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ReviewPipeline
 import dev.insight.review.ui.ReviewStartScreen
 import dev.insight.review.ui.ReviewStartText
 import dev.insight.review.ReviewVocabulary
@@ -260,7 +261,10 @@ internal class CodeReviewPanel(
             "project root. Load reads the files listed below; Continue goes on to the summaries, topics, Code wall and words.",
         change = "Change scope",
         changeTooltip = "Open the Start page to choose another folder, entry file or exclusions, and browse the files in scope",
-    ), scopeControls, filesPanel) { tabs.openCanvas(true) }
+    ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
+        tabs.openCanvas(true)
+        tabs.selected?.schedule(pipelines)
+    }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
     /** The review tab controls, with the way back to the Start page floating on their edge; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))

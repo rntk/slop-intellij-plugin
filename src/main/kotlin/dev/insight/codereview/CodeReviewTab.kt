@@ -366,6 +366,7 @@ internal class CodeReviewTab(
     /** Blocks the tools until the next update; [stop] (a new scope or an explicit refresh) also ends a held run. */
     fun invalidate(stop: Boolean) {
         if (stop) {
+            requeueRunningPipeline()
             session.stop()
             holding = false
             pendingSnapshot = null
@@ -386,13 +387,14 @@ internal class CodeReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { session.stop(); wallChats.stop(); sourcePoints.clear() }
+        if (state.revision != previousRevision) { requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear() }
         if (state.wordsVisible) countWords()
         // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
         if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
         else if (fileViewPath != null && state.revision != previousRevision) { fileStructure = null; analyzeFileView() }
         renderCanvas()
         updateControls()
+        runScheduled()
         return previousNotes - state.notes.size
     }
 
@@ -590,7 +592,7 @@ internal class CodeReviewTab(
 
     private fun updateControls() {
         val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
-        viewSelector.isViewEnabled = { key -> hasFiles && (key != CanvasTabKey.Topics || !session.busy) }
+        viewSelector.isViewEnabled = { hasFiles }
         viewSelector.isEnabled = hasFiles
         val snapshot = state.snapshot
         val paths = state.scopePaths

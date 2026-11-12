@@ -46,6 +46,7 @@ import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
 import dev.insight.review.ui.ReviewSidePages
+import dev.insight.review.ReviewPipeline
 import dev.insight.review.ui.ReviewStartScreen
 import dev.insight.review.ui.ReviewStartText
 import dev.insight.review.ReviewVocabulary
@@ -151,7 +152,10 @@ internal class DiffReviewPanel(
             "Continue goes on to the summaries, topics, Diffs wall and charts.",
         change = "Change diff",
         changeTooltip = "Open the Start page to compare other changes, branches or commits, and browse the changed files",
-    ), sourceControls, filesPanel) { tabs.openCanvas(true) }
+    ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
+        tabs.openCanvas(true)
+        tabs.selected?.schedule(pipelines)
+    }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
     /** The review tab controls, with the way back to the Start page floating on their edge; the selected review tab's chat has its own page. */
     private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
