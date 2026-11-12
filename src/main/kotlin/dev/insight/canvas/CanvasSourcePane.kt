@@ -76,7 +76,6 @@ internal class CanvasSourcePane(
         })
 
         val linkAttributes = TextAttributes().apply {
-            backgroundColor = LINK_BACKGROUND
             effectType = EffectType.LINE_UNDERSCORE
             effectColor = LINK_UNDERLINE
         }
@@ -168,7 +167,6 @@ internal class CanvasSourcePane(
     }
 
     private companion object {
-        val LINK_BACKGROUND = JBColor(Color(238, 243, 255), Color(45, 52, 66))
         val LINK_UNDERLINE = JBColor(Color(120, 150, 225), Color(105, 135, 200))
         val ANCHOR_BACKGROUND = JBColor(Color(255, 236, 179), Color(84, 72, 40))
     }

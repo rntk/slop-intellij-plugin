@@ -101,10 +101,9 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             span.javaClass.getMethod("showSummary", String::class.java).invoke(span, "Defines the flow and its store.")
             val viewer = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
             val blocks = schematic.rows.filterIsInstance<BlockRow>().size
-            // Declarations spanning several lines tint their native source too.
-            val tints = 1 + schematic.rows.count { it is BlockRow && it.last > it.first }
             assertEquals("Native source keeps blocks as its only folds", blocks, viewer.editor.foldingModel.allFoldRegions.size)
-            assertEquals("The summarized gap is tinted", tints, viewer.editor.markupModel.allHighlighters.size)
+            assertEquals("Only the summarized gap is tinted; clickable declarations have no background", 1,
+                viewer.editor.markupModel.allHighlighters.size)
             val card = descendants(panel.canvas).single { it.javaClass.simpleName == "GapSummaryCard" } as java.awt.Container
             assertSame("Gap cards belong to the external card column", level, card.parent)
             val sourceLink = descendants(card).filterIsInstance<com.intellij.ui.components.ActionLink>().single { it.text == "Source" }
@@ -172,7 +171,7 @@ class SchematicBuilderTest : LightJavaCodeInsightFixtureTestCase() {
             assertFalse(sourceLink.isShowingInTree())
             val native = descendants(level).filterIsInstance<SchematicSourceEditor>().single()
             assertEquals(blocks, native.editor.foldingModel.allFoldRegions.size)
-            assertEquals("A recreated native editor keeps the tint", tints, native.editor.markupModel.allHighlighters.size)
+            assertEquals("A recreated native editor keeps only the gap tint", 1, native.editor.markupModel.allHighlighters.size)
             assertEquals(schematic.lines.joinToString("\n"), native.editor.document.text)
             layOut(panel)
             checkHover(native.editor.contentComponent)

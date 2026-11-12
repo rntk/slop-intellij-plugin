@@ -16,7 +16,6 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
-import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorPolicy
@@ -205,8 +204,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS)
     private val code: Font = EditorColorsManager.getInstance().globalScheme.getFont(EditorFontType.PLAIN)
     private val codeFont get() = code.zoomed(zoom)
-    private val blockBackground = JBColor(Color(235, 240, 255), Color(47, 57, 77))
-    private val blockFocusedBackground = JBColor(Color(215, 228, 255), Color(62, 80, 112))
     private val blockOpen = JBColor(Color(76, 112, 220), Color(110, 150, 240))
     private val gapBackground = JBColor(Color(255, 247, 230), Color(65, 55, 38))
     private val gapFocusedBackground = JBColor(Color(255, 237, 199), Color(82, 66, 39))
@@ -1305,10 +1302,6 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 }, onLineClick = { line ->
                     if (!panned) blockAt(line)?.pin() ?: spans.firstOrNull { line in it.unit && it.summary != null }?.toggle()
                 }).also {
-                    // Declarations show their source natively, behind any gap holding them.
-                    lines.filter { it.multiline }.forEach { line ->
-                        it.tint(line.row.first, line.row.last, blockBackground, HighlighterLayer.SELECTION - 2)
-                    }
                     spans.filter { it.summary != null }.forEach { span -> it.tint(span.unit.first, span.unit.last, gapBackground) }
                     sourceEditors += it
                     // Earlier children paint above the native editor, inside the space reserved by its folds.
@@ -1768,7 +1761,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                 } else {
                     val line = JPanel().apply {
                         layout = BoxLayout(this, BoxLayout.X_AXIS)
-                        background = blockBackground
+                        isOpaque = false
                     }
                     headline = line
                     fun plain(text: String) {
@@ -1801,7 +1794,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
                     line.toolTipText = "<html>Calls, types and properties on this line are separate links<br>" +
                         "<i>Click one, or reach it with Tab</i></html>"
                     box = if (!multiline) line else JPanel(BorderLayout()).apply {
-                        background = blockBackground
+                        isOpaque = false
                         add(line, BorderLayout.CENTER)
                         code(main, row.first, row.headline - 1)?.let { add(it, BorderLayout.NORTH) }
                         code(main, row.headline + 1, row.last)?.let { add(it, BorderLayout.SOUTH) }
@@ -1877,7 +1870,7 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
 
             init {
                 isOpaque = false
-                box.background = blockBackground
+                box.isOpaque = false
                 box.add(title, BorderLayout.CENTER)
                 add(box, BorderLayout.WEST)
                 applyZoom()
@@ -1920,13 +1913,11 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
             }
 
             fun repaintBorder() {
-                val focused = this === (hoveredBlock ?: activeBlock)
                 // A constant inset keeps focusing a block from moving the source under the pointer.
                 box.border = if (row.split) BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 1),
                     pixelBorder(0, scaled(2), 0, scaled(2)))
                 else BorderFactory.createCompoundBorder(line(if (marked) blockOpen else JBColor.border(), 2),
                     pixelBorder(scaled(1), scaled(6), scaled(1), scaled(6)))
-                box.background = if (focused) blockFocusedBackground else blockBackground
             }
 
             override fun getMaximumSize(): Dimension = preferredSize
