@@ -107,15 +107,17 @@ val canvasHelpHtml = """
     The file is shown on the left; underlined names lead into the code graph. Click one to open its card beside it, or
     select any text and choose <b>Open card</b> (also in the right-click menu). Cards open further cards from their own
     source, so a chain can follow the code as far as you like; an arrow links each card to where it was opened.
-    <b>Find usages</b> on a symbol card (or in the right-click menu on any symbol) searches the project for callers and
+    Each card and the file keep their commands in the <b>⋯</b> menu (also on right-click): <b>Find usages</b> on a
+    symbol card (or in the right-click menu on any symbol) searches the project for callers and
     other references and opens them as connected cards.<br><br>
-    Each card has independent chat tabs. Use <b>New chat</b> to start another conversation; switch tabs to return to
+    Ask in the input at the bottom of each card. Each card has independent chat tabs: <b>+</b> beside Chat (or
+    <b>New chat</b> in the menu) starts another conversation; switch tabs to return to
     its history and draft. All tabs use the chain from the file down to the card as context, and can open cards on the
     canvas to show you the code they talk about. The file has its own chat tabs below its source, to ask about the
     whole file right away; they use the file and the cards opened from it as context. Click <b>Summarize</b> to
     request the file summary. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
-    <b>Close</b> also closes the cards opened from it; <b>Source</b> opens the real file.<br><br>
+    <b>×</b> closes a card and the cards opened from it; <b>Go to source</b> opens the real file.<br><br>
     <b>Attach file</b> links documents, screenshots or other local files to the file or card. Text and pictures
     have previews and become context for chats on that chain. <b>Open file</b> opens the original in the IDE.<br><br>
     Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the

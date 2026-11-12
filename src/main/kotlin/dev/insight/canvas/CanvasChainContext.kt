@@ -198,4 +198,15 @@ fun canvasWelcome(card: CanvasCard): String = when {
 /** The first notice of the root file's chat. */
 fun canvasRootWelcome(rootPath: String): String = "Ask about the file $rootPath.$CANVAS_WELCOME_TOOLS"
 
-private const val CANVAS_WELCOME_TOOLS = " I read the project to answer and can open cards on the canvas to show you code."
+internal const val CANVAS_WELCOME_TOOLS = " I read the project to answer and can open cards on the canvas to show you code."
+
+/** The empty input's short prompt for [card]'s chat; the welcome notice says the rest. */
+fun canvasAskPlaceholder(card: CanvasCard): String = when {
+    card.kind == CardKind.ATTACHMENT -> "Ask about this attachment…"
+    card.wholeFile -> "Ask about ${card.filePath.substringAfterLast('/')}…"
+    card.kind == CardKind.SELECTION || card.symbol == null -> "Ask about this selection…"
+    else -> "Ask about ${card.symbol.name}…"
+}
+
+/** The empty input's short prompt for the root file's chat. */
+fun canvasRootAskPlaceholder(rootPath: String): String = "Ask about ${rootPath.substringAfterLast('/')}…"

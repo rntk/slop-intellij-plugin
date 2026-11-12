@@ -7,6 +7,7 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import dev.insight.chat.ChatBackendFactory
 import dev.insight.chat.ChatSession
 import dev.insight.ui.zoomScaled
@@ -17,7 +18,6 @@ import java.awt.Font
 import java.awt.event.ActionEvent
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -27,8 +27,9 @@ import javax.swing.event.DocumentListener
 
 /**
  * The chat tabs of card [cardId], or of the root file for null: each tab's transcript, draft and running reply, and
- * the input. [history] and [ask] are the bodies of the Chat and Ask sections; [onTitle] receives the Chat section's
- * title as messages arrive. Histories and drafts are kept in the model; replies keep running when the tab changes.
+ * the input. The transcript fills [section], whose header gains a + for a new tab and whose title counts the messages;
+ * the section shows only once there is a conversation, so a fresh card offers just the [ask] input. Tabs show only
+ * when there are several. Histories and drafts are kept in the model; replies keep running when the tab changes.
  */
 internal class CanvasChatView(
     private val host: CanvasCardHost,
@@ -36,62 +37,69 @@ internal class CanvasChatView(
     initial: CanvasChatHolder,
     private val welcome: () -> String,
     placeholder: String,
-    private val onTitle: (String) -> Unit,
+    private val section: CanvasFoldSection,
 ) : Disposable {
     private var holder: CanvasChatHolder = initial
     private val conversations = linkedMapOf<String, Pair<ChatSession, Disposable>>()
     private val chat: ChatSession get() = conversation(holder.activeChat)
     private var syncing = false
-    private val tabs = host.zoomFont(CanvasChatTabs { host.zoom })
-    private val body = JPanel(StackLayout { scaled(4) }).apply { isOpaque = false }
-    private val closeChat = host.zoomFont(ActionLink("Close chat") { host.model.removeChat(cardId, holder.activeChatId) }.apply {
-        name = "canvas-close-chat"
-        toolTipText = "Close the selected conversation and stop its reply"
-    })
-    private val transcript = JPanel(StackLayout { scaled(6) }).apply { isOpaque = false }
+    /** One underlined chip per chat, like the Source and Diff tabs; the selected chat's chip also offers ×. */
+    private val tabs = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(10), 0)).apply {
+        isOpaque = false
+        name = "canvas-chat-tabs"
+    }
+    private val closeChat = canvasGlyphButton(host, "×", "Close the selected conversation and stop its reply", "canvas-close-chat") {
+        host.model.removeChat(cardId, holder.activeChatId)
+    }
+    private val transcript = JPanel(StackLayout { scaled(8) }).apply { isOpaque = false }
     private val busy = host.zoomFont(JLabel("Working…", AnimatedIcon.Default(), JLabel.LEFT).apply {
         foreground = UIUtil.getContextHelpForeground()
         isVisible = false
     })
 
-    val history: JComponent = JPanel(StackLayout { scaled(4) }).apply {
+    /** The body of the Chat section: the tabs, when there are several, then the selected tab's transcript. */
+    val history: JComponent = JPanel(StackLayout { scaled(6) }).apply {
         isOpaque = false
-        add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
-            isOpaque = false
-            add(host.zoomFont(ActionLink("New chat") { host.model.addChat(cardId) }.apply { name = "canvas-new-chat" }))
-            add(closeChat)
-        })
         add(tabs)
+        add(transcript)
+        add(busy)
     }
 
-    val input = host.zoomFont(JBTextArea(initial.draft, 2, 0).apply {
+    val input = host.zoomFont(object : JBTextArea(initial.draft, 1, 0) {
+        // False while the superclass constructor sets the first font, before the placeholder exists.
+        private var built = true
+
+        // The placeholder follows the zoom with the text.
+        override fun setFont(font: Font?) {
+            super.setFont(font)
+            if (built && font != null) emptyText.setFont(font)
+        }
+    }.apply {
         lineWrap = true
         wrapStyleWord = true
         font = UIUtil.getLabelFont()
         emptyText.text = placeholder
-        border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBColor.border()), JBUI.Borders.empty(4))
+        toolTipText = "Enter sends · Shift+Enter adds a line. ${CANVAS_WELCOME_TOOLS.trim()}"
+        border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBColor.border()), JBUI.Borders.empty(4, 6))
     })
-    private val send = host.zoomFont(JButton("Send").apply { isFocusable = false })
-    private val stop = host.zoomFont(JButton("Stop").apply { isFocusable = false })
+    /** Sends the draft, or stops the running reply. */
+    private val sendOrStop = host.zoomFont(ActionLink("Send") { if (chat.busy) chat.stop() else submit() }.apply {
+        name = "canvas-send"
+    })
 
-    val ask: JComponent = JPanel(StackLayout { scaled(4) }).apply {
+    /** The input, with Send (Stop while a reply runs) beside it. */
+    val ask: JComponent = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
         isOpaque = false
-        add(input)
-        add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+        add(input, BorderLayout.CENTER)
+        add(JPanel(BorderLayout()).apply {
             isOpaque = false
-            add(stop)
-            add(send)
-        })
+            add(sendOrStop, BorderLayout.SOUTH)
+        }, BorderLayout.EAST)
     }
 
     init {
-        body.add(transcript)
-        body.add(busy)
-        tabs.addChangeListener {
-            if (!syncing && tabs.selectedIndex >= 0) host.model.selectChat(cardId, holder.chats[tabs.selectedIndex].id)
-        }
-        send.addActionListener { submit() }
-        stop.addActionListener { chat.stop() }
+        section.body.let { it as JPanel }.add(history)
+        section.addToHeader(canvasGlyphButton(host, "+", "New chat", "canvas-new-chat") { host.model.addChat(cardId) })
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "canvas-send")
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("shift ENTER"), "insert-break")
         input.actionMap.put("canvas-send", object : AbstractAction() {
@@ -156,17 +164,17 @@ internal class CanvasChatView(
         } }
         syncing = true
         try {
-            closeChat.isEnabled = holder.chats.size > 1
-            val ids = holder.chats.map { it.id }
-            val shownIds = (0 until tabs.tabCount).map { tabs.getComponentAt(it).name }
-            if (shownIds != ids) {
-                tabs.removeAll()
-                holder.chats.forEach { saved ->
-                    tabs.addTab(saved.title, JPanel(BorderLayout()).apply { isOpaque = false; name = saved.id })
-                }
+            tabs.removeAll()
+            holder.chats.forEach { saved ->
+                val selected = saved.id == holder.activeChatId
+                tabs.add(host.zoomFont(JLabel(saved.title).apply {
+                    name = "canvas-chat-tab"
+                    foreground = if (selected) UIUtil.getLabelForeground() else UIUtil.getContextHelpForeground()
+                    border = if (selected) JBUI.Borders.customLineBottom(TAB_UNDERLINE) else JBUI.Borders.emptyBottom(1)
+                }, UIUtil.getLabelFont().deriveFont(Font.BOLD)).onLeftClick { if (!selected) host.model.selectChat(cardId, saved.id) })
+                if (selected) tabs.add(closeChat)
             }
-            tabs.selectedIndex = holder.chats.indexOfFirst { it.id == holder.activeChatId }
-            (tabs.selectedComponent as JPanel).add(body, BorderLayout.CENTER)
+            tabs.isVisible = holder.chats.size > 1
             if (input.text != holder.draft) input.text = holder.draft
         } finally {
             syncing = false
@@ -176,7 +184,8 @@ internal class CanvasChatView(
 
     private fun render() {
         transcript.removeAll()
-        val lines = canvasTranscript(chat.messages)
+        // The welcome notice repeats what the card shows; the input's placeholder and tooltip say it instead.
+        val lines = canvasTranscript(chat.messages.drop(1))
         for (line in lines) {
             transcript.add(when (line.kind) {
                 CanvasChatLineKind.TOOL -> host.zoomFont(JLabel("${line.label} · ${line.text}").apply {
@@ -187,17 +196,19 @@ internal class CanvasChatView(
                 else -> JPanel(StackLayout { scaled(2) }).apply {
                     isOpaque = false
                     add(host.zoomFont(JLabel(line.label).apply {
-                        foreground = if (line.kind == CanvasChatLineKind.USER) USER else UIUtil.getLabelForeground()
-                    }, UIUtil.getLabelFont().deriveFont(Font.BOLD)))
+                        foreground = if (line.kind == CanvasChatLineKind.USER) USER else UIUtil.getContextHelpForeground()
+                    }, JBUI.Fonts.smallFont().deriveFont(Font.BOLD)))
                     add(host.zoomFont(wrappedText(line.text)))
                 }
             })
         }
         val count = lines.count { it.kind == CanvasChatLineKind.USER || it.kind == CanvasChatLineKind.ASSISTANT }
-        onTitle(if (count == 0) "Chat" else "Chat · $count ${if (count == 1) "message" else "messages"}")
+        section.title.text = if (count == 0) "Chat" else "Chat · $count ${if (count == 1) "message" else "messages"}"
+        section.isVisible = lines.isNotEmpty() || chat.busy || holder.chats.size > 1
+        transcript.isVisible = lines.isNotEmpty()
         busy.isVisible = chat.busy
-        send.isEnabled = !chat.busy
-        stop.isEnabled = chat.busy
+        sendOrStop.text = if (chat.busy) "Stop" else "Send"
+        sendOrStop.toolTipText = if (chat.busy) "Stop the reply" else "Send (Enter)"
         transcript.revalidate()
         history.revalidate()
         history.repaint()
@@ -216,6 +227,7 @@ internal class CanvasChatView(
 
     private companion object {
         val USER = JBColor(Color(50, 90, 190), Color(120, 160, 240))
+        val TAB_UNDERLINE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
     }
 }
 
@@ -236,6 +248,11 @@ internal open class CanvasFoldSection(private val host: CanvasCardHost, private 
         isOpaque = false
         add(header)
         add(body)
+    }
+
+    /** Adds [component] after the title, e.g. a small action for this part. */
+    fun addToHeader(component: JComponent) {
+        header.add(component)
     }
 
     protected open fun titleClicked() {

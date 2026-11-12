@@ -618,7 +618,7 @@ internal class CanvasSessionPanel(
 
     /** Folds the file and every card's summary, source and chat; again to unfold them. */
     private fun foldAll() {
-        val sections = listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT)
+        val sections = listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT)
         val rootSections = sections
         val fold = !(model.cards.all { it.folded.containsAll(sections) } && model.session.root.folded.containsAll(rootSections))
         model.cards.map { it.id }.forEach { id -> sections.forEach { model.setFolded(id, it, fold) } }
@@ -770,9 +770,11 @@ internal class CanvasSessionPanel(
             val underPointer = SwingUtilities.getDeepestComponentAt(content, point.x, point.y) ?: e.component
             val ancestors = generateSequence(underPointer) { it.parent }.toList()
             val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
-            if (card != null && ancestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
+            val root = ancestors.filterIsInstance<RootView>().firstOrNull()
+            val actions = card?.menuActions() ?: root?.menuActions()
+            if (actions != null && ancestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
                 endDrag()
-                JPopupMenu().apply { add(sideBySideAction(card.id)) }.show(e.component, e.x, e.y)
+                canvasActionMenu(actions).show(e.component, e.x, e.y)
                 return
             }
         }
@@ -850,7 +852,6 @@ internal class CanvasSessionPanel(
      */
     private inner class RootView(private val source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
         val pane = CanvasSourcePane(project, null, source, sourceListener)
-        private val metaToggle = canvasFoldToggle(this@CanvasSessionPanel, null, CardSection.META)
         private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
         private val summaryText = zoomFont(wrappedText(""))
         private val summaryStatus = zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
@@ -869,35 +870,24 @@ internal class CanvasSessionPanel(
         private val sourceSection = CanvasSourceSection(this@CanvasSessionPanel, null,
             "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines", pane)
             .apply { setDiff(diffPane, canvasDiffTitle(diffRows)) }
-        private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
-        private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat", historyBody)
+        private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat",
+            JPanel(BorderLayout()).apply { isOpaque = false })
         val chat = CanvasChatView(this@CanvasSessionPanel, null, model.session.root, { canvasRootWelcome(model.session.rootPath) },
-            "Ask about this file… (Enter sends, Shift+Enter for a new line)") { history.title.text = it }
-        private val ask = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.INPUT, "Ask", chat.ask)
+            canvasRootAskPlaceholder(model.session.rootPath), history)
+        internal val header = CanvasCardHeader(this@CanvasSessionPanel, null,
+            zoomFont(CanvasTitleLabel(file.source.name, file.source.fileType.icon), UIUtil.getLabelFont().deriveFont(Font.BOLD)),
+            null, ::menuActions)
         private var rendered: CanvasRootState? = null
 
         init {
             isOpaque = false
             name = "canvas-root"
-            historyBody.add(chat.history)
-            add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-                isOpaque = false
-                add(metaToggle, BorderLayout.WEST)
-                add(zoomFont(CanvasTitleLabel(file.source.name, file.source.fileType.icon),
-                    UIUtil.getLabelFont().deriveFont(Font.BOLD)), BorderLayout.CENTER)
-                add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
-                    isOpaque = false
-                    add(zoomFont(ActionLink("Attach file") { attachFile(null) }.apply { name = "canvas-attach-file" }))
-                    add(zoomFont(ActionLink("Source") { navigate(source, source.path, source.firstLine) }.apply {
-                        toolTipText = "Open ${source.path} in the editor"
-                    }))
-                }, BorderLayout.EAST)
-            })
+            add(header)
             add(meta)
             add(summary)
             add(sourceSection)
             add(history)
-            add(ask)
+            add(chat.ask)
             update(model.session.root)
         }
 
@@ -908,8 +898,8 @@ internal class CanvasSessionPanel(
             rendered = root
             if (previous != null && !chatChanged && previous.copy(chats = root.chats) == root) return
             meta.isVisible = CardSection.META !in root.folded
-            metaToggle.text = canvasFoldGlyph(meta.isVisible)
-            listOf(summary, sourceSection, history, ask).forEach { it.fold(it.section in root.folded) }
+            header.metaToggle.text = canvasFoldGlyph(meta.isVisible)
+            listOf(summary, sourceSection, history).forEach { it.fold(it.section in root.folded) }
             val pending = summaryJob?.isActive == true
             summaryText.text = root.summary.orEmpty()
             summaryText.isVisible = root.summary != null
@@ -931,6 +921,17 @@ internal class CanvasSessionPanel(
             cardResized()
         }
 
+
+        /** The entries of the file's ⋯ menu (also on right-click). */
+        fun menuActions(): List<CanvasCardAction> = listOf(
+            CanvasCardAction("canvas-summarize", summarize.text, "Summarize this file", enabled = summarize.isEnabled) { requestSummary() },
+            CanvasCardAction("canvas-source", "Go to source", "Open ${source.path} in the editor") {
+                navigate(source, source.path, source.firstLine)
+            },
+            CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this file",
+                separated = true) { attachFile(null) },
+            CanvasCardAction("canvas-new-chat", "New chat", "Start another conversation about this file") { model.addChat(null) },
+        )
         private fun requestSummary() {
             if (summaryJob?.isActive == true || source.text.isBlank()) return
             val input = CanvasSummaryInput(CardKind.SYMBOL, file.source.name, source.path, source.firstLine,

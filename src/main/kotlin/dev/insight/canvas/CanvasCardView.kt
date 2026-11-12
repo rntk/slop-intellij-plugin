@@ -77,7 +77,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             repaint()
         }
 
-    private val metaToggle = canvasFoldToggle(host, id, CardSection.META)
     private val metaLabel = host.zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
     private val notice = host.zoomFont(wrappedText(source?.notice.orEmpty()).apply {
         foreground = NOTICE
@@ -123,9 +122,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         foreground = ACCENT
         isVisible = card.openedBy == CardOpenedBy.LLM
     }, JBUI.Fonts.smallFont().deriveFont(Font.BOLD))
-    private val expand = host.zoomFont(ActionLink("Expand to file") { host.expandToFile(id) }.apply {
-        toolTipText = "Show the whole file here, with links and this card's chat"
-    })
     private var usageSearch: Job? = null
     private var usagesLoaded = false
     internal val usages = JPanel(StackLayout { scaled(2) }).apply {
@@ -133,62 +129,60 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         isOpaque = false
         isVisible = false
     }
-    private val usagesToggle = host.zoomFont(ActionLink("Find usages") { showUsages() }.apply {
-        name = "canvas-find-usages"
-        toolTipText = "Find project callers and references to this symbol"
-    })
     val canFindUsages: Boolean
         get() = card.kind == CardKind.SYMBOL && !card.wholeFile && host.controller.canFindUsages(source?.node)
+    private val canExpand: Boolean
+        get() = card.kind != CardKind.ATTACHMENT && !card.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() &&
+            card.symbol?.kind != "FILE"
+    internal val header = CanvasCardHeader(host, id, titleLabel, openedByLabel, ::menuActions,
+        "Close this card and the cards opened from it") { host.close(id) }
 
     // The history section is created first, so the chat view can name it as messages arrive.
     private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
     private val history = CanvasFoldSection(host, id, CardSection.CHAT, "Chat", historyBody)
-    private val chat = CanvasChatView(host, id, initial, { canvasWelcome(card) },
-        "Ask about this card… (Enter sends, Shift+Enter for a new line)") { history.title.text = it }
+    private val chat = CanvasChatView(host, id, initial, { canvasWelcome(card) }, canvasAskPlaceholder(initial), history)
     val input get() = chat.input
-    private val inputSection = CanvasFoldSection(host, id, CardSection.INPUT, "Ask", chat.ask)
 
     init {
         isOpaque = true
         background = UIUtil.getPanelBackground()
         name = "canvas-card-$id"
-        historyBody.add(chat.history)
-        add(header())
+        add(header)
         add(meta)
         add(summary)
         add(sourceSection)
         add(usages)
         add(history)
-        add(inputSection)
+        add(chat.ask)
         update(initial)
         applyZoom()
         requestSummary(force = false)
     }
 
-    private fun header(): JComponent = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-        isOpaque = false
-        add(metaToggle, BorderLayout.WEST)
-        add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-            isOpaque = false
-            add(titleLabel, BorderLayout.CENTER)
-            add(openedByLabel, BorderLayout.EAST)
-        }, BorderLayout.CENTER)
-        add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
-            isOpaque = false
-            add(usagesToggle)
-            add(host.zoomFont(ActionLink("Attach file") { host.attachFile(id) }.apply { name = "canvas-attach-file" }))
-            add(expand)
-            add(host.zoomFont(ActionLink("Side by side") { host.openSideBySide(id) }.apply {
-                toolTipText = "Open the chain from the root file to this card in a new tab"
-            }))
-            add(host.zoomFont(ActionLink(if (card.kind == CardKind.ATTACHMENT) "Open file" else "Source") { host.navigate(source, card.filePath, card.firstLine) }.apply {
-                toolTipText = "Open ${card.location} in the editor"
-                isEnabled = card.filePath.isNotEmpty()
-            }))
-            add(host.zoomFont(ActionLink("Close") { host.close(id) }.apply {
-                toolTipText = "Close this card and the cards opened from it"
-            }))
-        }, BorderLayout.EAST)
+    /** The entries of the card's ⋯ menu (also on right-click), for its current state. */
+    fun menuActions(): List<CanvasCardAction> = buildList {
+        if (canFindUsages) add(CanvasCardAction("canvas-find-usages", usagesLabel(), "Find project callers and references to this symbol",
+            enabled = usageSearch?.isActive != true) { showUsages() })
+        if (canExpand) add(CanvasCardAction("canvas-expand", "Expand to file", "Show the whole file here, with links and this card's chat") {
+            host.expandToFile(id)
+        })
+        add(CanvasCardAction("canvas-side-by-side", "Side by side", "Open the chain from the root file to this card in a new tab") {
+            host.openSideBySide(id)
+        })
+        add(CanvasCardAction("canvas-source", if (card.kind == CardKind.ATTACHMENT) "Open file" else "Go to source",
+            "Open ${card.location} in the editor", enabled = card.filePath.isNotEmpty()) { host.navigate(source, card.filePath, card.firstLine) })
+        add(CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this card",
+            separated = true) { host.attachFile(id) })
+        add(CanvasCardAction("canvas-new-chat", "New chat", "Start another conversation about this card") { host.model.addChat(id) })
+        add(CanvasCardAction("canvas-close-card", "Close card", "Close this card and the cards opened from it", separated = true) {
+            host.close(id)
+        })
+    }
+
+    private fun usagesLabel() = when {
+        usagesLoaded -> if (usages.isVisible) "Hide usages" else "Show usages"
+        usages.isVisible -> "Retry usages"
+        else -> "Find usages"
     }
 
     /** Shows [next], the card's state in the model. */
@@ -210,8 +204,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             usagesLoaded = false
             usages.removeAll()
             usages.isVisible = false
-            usagesToggle.text = "Find usages"
-            usagesToggle.isEnabled = true
             sourcePane?.let(Disposer::dispose)
             source = fresh
             sourcePane = fresh?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
@@ -231,14 +223,12 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         openedByLabel.isVisible = next.openedBy == CardOpenedBy.LLM
         titleLabel.icon = if (next.wholeFile) AllIcons.FileTypes.Any_type else kindIcon(next)
         titleLabel.toolTipText = "${canvasKindLabel(next)} ${next.title}"
-        usagesToggle.isVisible = canFindUsages
-        expand.isVisible = next.kind != CardKind.ATTACHMENT && !next.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() && next.symbol?.kind != "FILE"
         val shown = if (next.wholeFile && fresh != null) next.copy(text = fresh.text, textTruncated = false) else next
         metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(shown)}"
         metaLabel.toolTipText = metaLabel.text
         meta.isVisible = CardSection.META !in next.folded
-        metaToggle.text = canvasFoldGlyph(CardSection.META !in next.folded)
-        listOf(summary, sourceSection, history, inputSection).forEach { it.fold(it.section in next.folded) }
+        header.metaToggle.text = canvasFoldGlyph(CardSection.META !in next.folded)
+        listOf(summary, sourceSection, history).forEach { it.fold(it.section in next.folded) }
         sourcePane?.isVisible = CardSection.SOURCE !in next.folded
         sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
@@ -309,7 +299,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         if (usageSearch?.isActive == true) return
         if (usagesLoaded) {
             usages.isVisible = !usages.isVisible
-            usagesToggle.text = if (usages.isVisible) "Hide usages" else "Show usages"
             revalidate()
             repaint()
             host.cardResized()
@@ -320,17 +309,20 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         usages.add(host.zoomFont(JLabel("Finding project usages…").apply {
             foreground = UIUtil.getContextHelpForeground()
         }))
-        usagesToggle.isEnabled = false
         val requestedSource = source
         usageSearch = host.scope.launch(Dispatchers.EDT) {
             try {
                 val found = host.controller.findUsages(target)
                 if (source !== requestedSource) return@launch
                 usages.removeAll()
-                usages.add(host.zoomFont(JLabel(
-                    if (found.usages.isEmpty()) "No project usages found."
-                    else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)"
-                ).apply { foreground = UIUtil.getContextHelpForeground() }))
+                usages.add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+                    isOpaque = false
+                    add(host.zoomFont(JLabel(
+                        if (found.usages.isEmpty()) "No project usages found."
+                        else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)"
+                    ).apply { foreground = UIUtil.getContextHelpForeground() }))
+                    add(host.zoomFont(ActionLink("Hide") { showUsages() }.apply { name = "canvas-hide-usages" }))
+                })
                 found.usages.groupBy { it.owner }.forEach { (ownerId, locations) ->
                     val first = locations.first()
                     usages.add(JPanel(StackLayout { scaled(2) }).apply {
@@ -361,7 +353,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                     }))
                 }
                 usagesLoaded = true
-                usagesToggle.text = "Hide usages"
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Unable to find canvas usages", e)
@@ -375,9 +366,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                     if (!usagesLoaded) {
                         usages.components.filterIsInstance<JLabel>().firstOrNull { it.text == "Finding project usages…" }
                             ?.text = "Usage search cancelled."
-                        usagesToggle.text = "Retry usages"
                     }
-                    usagesToggle.isEnabled = true
                     revalidate()
                     repaint()
                     host.cardResized()

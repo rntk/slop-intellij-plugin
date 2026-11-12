@@ -92,6 +92,9 @@ class CanvasChainContextTest {
         assertEquals("Ask about run (function at src/App.kt:10-12). I read the project to answer and can open cards on the canvas " +
             "to show you code.", canvasWelcome(run))
         assertTrue(canvasWelcome(selection).startsWith("Ask about the selected code at src/App.kt:11."))
+        assertEquals("Ask about run…", canvasAskPlaceholder(run))
+        assertEquals("Ask about this selection…", canvasAskPlaceholder(selection))
+        assertEquals("Ask about Main.kt…", canvasRootAskPlaceholder("src/Main.kt"))
         for (word in listOf("chain", "root file", "read_file", "search_text", "list_files", "read_card", "list_symbols", "find_usages",
             "canvas_overview", "open_symbol", "open_selection", "open_declaration", "open_file", "show_card", "search_tools"))
             assertTrue(word, canvasChatPrompt.contains(word))

@@ -119,8 +119,8 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             val pictureView = panel.cardViews.getValue(picture.id)
             assertEquals(1, descendants(pictureView).filterIsInstance<CanvasImagePreview>().size)
             assertEquals(document.text, panel.cardViews.getValue(text.id).sourcePane!!.source.text)
-            assertTrue(descendants(pictureView).filterIsInstance<com.intellij.ui.components.ActionLink>().any { it.text == "Open file" })
-            assertTrue(descendants(panel.canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().count { it.name == "canvas-attach-file" } >= 3)
+            assertTrue(pictureView.menuActions().any { it.label == "Open file" })
+            assertTrue(panel.cardViews.values.all { view -> view.menuActions().any { it.name == "canvas-attach-file" } })
             panel.navigate(panel.controller.source(text.id), text.filePath, 0)
             PlatformTestUtil.waitWithEventsDispatching("Open file should open the original in the IDE",
                 { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).isFileOpen(document.virtualFile) }, 30)
@@ -444,7 +444,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
                     .components.filterIsInstance<CanvasFoldSection>()
             val opened = open(CanvasSession.new("Flow.java"))
             assertEquals(0, calls.get())
-            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT),
+            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT),
                 sections(opened).map { it.section })
             for (section in sections(opened)) {
                 opened.model.toggleFolded(null, section.section)
@@ -464,7 +464,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(1, calls.get())
             assertEquals("The Flow file.", opened.model.session.root.summary)
             opened.model.setFolded(null, CardSection.SOURCE, true)
-            opened.model.setFolded(null, CardSection.INPUT, true)
+            opened.model.setFolded(null, CardSection.CHAT, true)
             val saved = opened.model.session
             assertTrue(store.save(saved))
             Disposer.dispose(opened)
@@ -472,7 +472,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             val restored = open(store.load(saved.id)!!)
             assertEquals(saved.root, restored.model.session.root)
             assertFalse(sections(restored).single { it.section == CardSection.SOURCE }.body.isVisible)
-            assertFalse(sections(restored).single { it.section == CardSection.INPUT }.body.isVisible)
+            assertFalse(sections(restored).single { it.section == CardSection.CHAT }.body.isVisible)
             assertEquals(1, calls.get())
         } finally {
             panel?.let(Disposer::dispose)
@@ -494,7 +494,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
             val rootSections = (panel.canvas.components.single { it.name == "canvas-root" } as Container)
                 .components.filterIsInstance<CanvasFoldSection>()
-            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT, CardSection.INPUT),
+            assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT),
                 rootSections.map { it.section })
             val tabs = rootSections.single { it.section == CardSection.SOURCE } as CanvasSourceSection
             val body = tabs.body as Container
@@ -706,14 +706,13 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             }
             fun links(container: Container = workView) = descendants(container).filterIsInstance<com.intellij.ui.components.ActionLink>()
 
-            val findUsages = links().single { it.name == "canvas-find-usages" }
-            assertTrue(findUsages.isVisible)
-            assertEquals("Find usages", findUsages.text)
-            findUsages.doClick()
+            fun findUsages() = workView.menuActions().single { it.name == "canvas-find-usages" }
+            assertEquals("Find usages", findUsages().label)
+            findUsages().run()
             PlatformTestUtil.waitWithEventsDispatching("Indexed caller should appear on the card", {
                 links().any { it.text.startsWith("Explore run") }
             }, 30)
-            assertEquals("Hide usages", findUsages.text)
+            assertEquals("Hide usages", findUsages().label)
             val branch = descendants(workView).single { it.name == "canvas-usage-branch" } as Container
             assertTrue(links(branch).any { it.text.startsWith("Call: ") && it.text.contains("Client.java:1") })
 
