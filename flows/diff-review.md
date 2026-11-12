@@ -18,6 +18,8 @@ The **Diffs wall** lays out the raw diffs of many files at once, one quiet block
 
 Hierarchy views place the chart beside diff blocks. Hovering or selecting a topic or summary shows one block for each changed file within that entry.
 
+Document view reveals the full summary when a diff block or topic/group card is hovered or focused, with room for the summary to grow.
+
 Document and Hierarchy views of topics and change grouping offer Tags cloud, sizing summary words by their weight in child summaries or captured diff source, as in Summaries.
 
 Entry points for further exploration:

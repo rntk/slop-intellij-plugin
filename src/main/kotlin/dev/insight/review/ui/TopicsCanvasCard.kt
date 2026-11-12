@@ -164,7 +164,7 @@ internal class TopicsCanvasCard(
                     toolTipText = if (topics.complete) "Classify every file again (${labels.command})" else "Give every remaining file a ${labels.singular} (${labels.command})"
                     addActionListener { topicActions.generateTopics() }
                 })
-                if (hierarchy) add(JButton("Fill summaries").apply {
+                add(JButton("Fill summaries").apply {
                     font = scaledFont(JBFont.small())
                     cursor = Cursor.getDefaultCursor()
                     isEnabled = content.canRun && !generationRunning && outline.nodes.isNotEmpty() && !content.topicSummaries.complete

@@ -45,6 +45,8 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Box
@@ -226,8 +228,7 @@ internal class ChangeTopicActions(
 
 /**
  * A review read as one document: every file's diff or source down the middle, its summary in the left margin and the
- * hierarchy on the right, broadest level outermost. Each rail card spans its files, and a section is as tall as the taller
- * of its contents and summary, so the three columns stay aligned.
+ * hierarchy on the right, broadest level outermost. Each rail card spans its files, and summaries appear on hover or focus without enlarging the source sections.
  */
 internal abstract class DocumentColumnsPanel(
     protected val zoom: Double,
@@ -267,8 +268,11 @@ internal abstract class DocumentColumnsPanel(
     private var hovered: RailItem? = null
     private var sourceSummary: RailItem? = null
     private var sourceCards: Set<String> = emptySet()
-    /** File view reveals a summary only for the hovered call line or rail card. */
-    protected open val hoverSummariesOnly: Boolean = false
+    /** Summaries occupy the margin only while their source or rail card is active. */
+    protected open val hoverSummariesOnly: Boolean = true
+    private var focusedRail: RailItem? = null
+    private var hoveredFile: Int? = null
+    private var focusedFile: Int? = null
     protected open fun activeChanged(item: RailItem?) {}
     protected fun hoverSource(item: RailItem?, cards: Set<String> = emptySet()) {
         if (sourceSummary == item && sourceCards == cards) return
@@ -400,7 +404,7 @@ internal abstract class DocumentColumnsPanel(
         files.forEachIndexed { index, file ->
             val section = section(file, docWidth)
             val note = note(file, summaries[file.path], missingSummary, summaryWidth)
-            val height = maxOf(section.preferredSize.height, note.preferredSize.height, rowMinimums[index])
+            val height = maxOf(section.preferredSize.height, rowMinimums[index])
             section.setBounds(docX, y, docWidth, height)
             val column = noteColumn(file, note).apply {
                 setBounds(0, y, summaryWidth, height)
@@ -408,6 +412,8 @@ internal abstract class DocumentColumnsPanel(
             }
             add(section); add(column)
             sections += section; notes += note; noteColumns += column
+            installActivation(section, { hoveredFile = if (it) index else hoveredFile?.takeUnless { it == index }; applyActive() },
+                { focusedFile = if (it) index else focusedFile?.takeUnless { it == index }; applyActive() })
             tops[index] = y; bottoms[index] = y + height
             y += height + scaled(SECTION_GAP)
         }
@@ -428,11 +434,21 @@ internal abstract class DocumentColumnsPanel(
      * own summary in the margin in place of theirs.
      */
     protected fun applyActive() {
-        val active = hovered ?: sourceSummary ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
+        val active = hovered ?: focusedRail ?: sourceSummary ?: rail.firstOrNull { (item, _) -> !item.placeholder && isSelected(item) }?.first
         val range = active?.let { it.first..it.last } ?: selectedFiles()
         sections.forEachIndexed { index, section -> section.border = frame(range != null && index in range) }
         notes.forEachIndexed { index, note -> note.border = noteBorder(range != null && index in range) }
-        showCardSummary(active?.takeUnless { it.placeholder })
+        showCardSummary((hovered ?: focusedRail ?: sourceSummary)?.takeUnless { it.placeholder })
+        if (cardSummary == null) {
+            val index = hoveredFile ?: focusedFile
+            noteColumns.forEachIndexed { i, column ->
+                column.isVisible = i == index
+                column.setSize(column.width, maxOf(bottoms[i] - tops[i], notes[i].preferredSize.height))
+            }
+            preferredSize = Dimension(preferredSize.width,
+                maxOf(documentHeight, index?.let { noteColumns[it].let { c -> c.y + c.height } } ?: 0))
+            revalidate()
+        }
         rail.forEach { (item, component) ->
             component.border = railBorder(item, item == active || (hovered == null && item.key in sourceCards))
             component.background = resultColor(item.key)
@@ -626,6 +642,30 @@ internal abstract class DocumentColumnsPanel(
             if (component is Container) component.components.forEach(::attach)
         }
         attach(this)
+        installActivation(this, {}, { focusedRail = if (it) item else focusedRail?.takeUnless { it == item }; applyActive() })
+    }
+
+    /** Descendants include source controls and keyboard navigation targets. */
+    private fun installActivation(root: JComponent, hover: (Boolean) -> Unit, focus: (Boolean) -> Unit) {
+        root.isFocusable = true
+        val mouse = object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) = hover(true)
+            override fun mouseExited(e: MouseEvent) {
+                if (!root.contains(SwingUtilities.convertPoint(e.component, e.point, root))) hover(false)
+            }
+        }
+        val keyboard = object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent) = focus(true)
+            override fun focusLost(e: FocusEvent) {
+                if (e.oppositeComponent == null || !SwingUtilities.isDescendingFrom(e.oppositeComponent, root)) focus(false)
+            }
+        }
+        fun attach(component: Component) {
+            component.addMouseListener(mouse)
+            component.addFocusListener(keyboard)
+            if (component is Container) component.components.forEach(::attach)
+        }
+        attach(root)
     }
 
     private fun frame(active: Boolean): Border? =
@@ -685,7 +725,7 @@ internal abstract class DocumentColumnsPanel(
 /**
  * The review read as one document, like an article with its topic rail: every file in topic order down the middle,
  * its summary in the left margin and the topic hierarchy on the right, broad topics outermost. Each rail card spans exactly
- * the diffs of its files, and a section is as tall as the taller of its diff and summary, so the three columns stay aligned.
+ * the diffs of its files, and summaries grow freely in the margin while their block or card is active.
  */
 internal class ChangeTopicsPanel(
     card: TopicsCard,

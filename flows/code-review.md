@@ -14,6 +14,8 @@ The **Code wall** lays out the source of many files at once, one quiet block per
 
 Hierarchy views place the chart beside source blocks. Hovering or selecting a topic or summary shows one block for each captured file within that entry.
 
+Document view reveals the full summary when a source block or topic/group card is hovered or focused, with room for the summary to grow.
+
 Document and Hierarchy views of topics offer Tags cloud, sizing summary words by their weight in child summaries or captured source, as in Summaries.
 
 Entry points for further exploration:

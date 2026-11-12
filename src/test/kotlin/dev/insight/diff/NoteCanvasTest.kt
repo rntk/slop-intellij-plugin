@@ -168,7 +168,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val summaries = ReviewSummaries(tree, mapOf(0 to summary,
             tree.root.children[0] to leafSummary, tree.root.children[1] to "Token and"))
         val canvas = NoteCanvas({}, {}).apply { setSize(1600, 900); summariesView.mode = mode }
-        fun area(): WrappedSummaryText = descendants(canvas).filterIsInstance<WrappedSummaryText>().single { it.text == summary }
+        fun area(): WrappedSummaryText {
+            if (mode == ReviewSummariesMode.DOCUMENT) {
+                val rail = descendants(canvas).single { it.name == "node:root" }
+                rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
+                layoutTree(canvas)
+            }
+            return descendants(canvas).filterIsInstance<WrappedSummaryText>().single { it.text == summary }
+        }
         fun size(word: String): Int = area().let { it.styledDocument.getFont(it.styledDocument.getCharacterElement(it.text.indexOf(word)).attributes).size }
         fun cloud() = descendants(canvas).single { it.name == "summaries-tags-cloud" } as javax.swing.JCheckBox
         try {
@@ -176,11 +183,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
             layoutTree(canvas)
             if (mode == ReviewSummariesMode.HIERARCHY) {
                 val toggle = descendants(canvas).single { it.name == "toggle:root" }
+                toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
                 toggle.dispatchEvent(MouseEvent(toggle, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 layoutTree(canvas)
             }
             if (mode == ReviewSummariesMode.DOCUMENT) {
                 val rail = descendants(canvas).single { it.name == "node:root" }
+                rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
                 rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
                 layoutTree(canvas)
             }
@@ -455,6 +464,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertWordFitsOnOneLine(title, label)
             assertWordFitsOnOneLine(summaryText, longWord)
             assertTrue(rail.height >= (rail as JComponent).preferredSize.height)
+            rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
             val selectedSummary = panel.components.single { it.name?.startsWith("card-summary:") == true } as Container
@@ -499,6 +509,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(railWidth > initialRailWidth)
             assertTrue(summaryWidth > initialSummaryWidth)
             val rail = rail()
+            rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             layoutTree(canvas)
             val selectedSummary = document().components.single { it.name == "card-summary:${folderNode.identity}" } as Container
@@ -562,6 +573,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
             // Selecting a topic outlines its files and survives summary updates.
             val auth = named("topic:2:storage > user > auth") as JComponent
+            auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             auth.dispatchEvent(MouseEvent(auth, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertTrue(canvas.topicsView.isSelected(panel.outline.nodes.single { it.identity == "storage > user > auth" }))
             // The selected topic's summary replaces its files' notes in the margin, level with its card.
@@ -569,9 +581,9 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(auth.y, authSummary.y)
             assertTrue(authSummary.x + authSummary.width <= sections[1].x)
             assertFalse(named("summary:src/auth.kt").isVisible)
-            assertTrue(named("summary:src/wallet.kt").isVisible)
+            assertFalse(named("summary:src/wallet.kt").isVisible)
             assertTrue(descendants(authSummary).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Adds token refresh." })
-            // Hovering another card shows its summary instead; leaving it brings the selection's back.
+            // Hovering another card shows its summary instead; leaving it clears the summary.
             val storage = named("topic:0:storage") as JComponent
             storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             val storageSummary = named("card-summary:0:storage") as Container
@@ -581,8 +593,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(descendants(storageSummary).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "No summary yet" })
             storage.dispatchEvent(MouseEvent(storage, MouseEvent.MOUSE_EXITED, 0, 0, -5, -5, 0, false))
             assertTrue(panel.components.none { it.name == "card-summary:0:storage" })
-            assertTrue(named("summary:src/wallet.kt").isVisible)
-            named("card-summary:2:storage > user > auth")
+            assertFalse(named("summary:src/wallet.kt").isVisible)
+            assertTrue(panel.components.none { it.name == "card-summary:2:storage > user > auth" })
             val bounds = canvas.components.single().bounds
             val more = summaries.summarize(mapOf(tree.nodes.single { it.path == "ui/form.kt" }.id to "Validates the card number."))
             canvas.updateTopics(TopicsCard(topics, more, canRun = false))
@@ -1048,6 +1060,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(3, texts.count { it == "No summary yet" })
 
             // Selecting a folder on the rail outlines it, survives updates, and carries over to Hierarchy and Outline.
+            src.dispatchEvent(MouseEvent(src, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             src.dispatchEvent(MouseEvent(src, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
             assertEquals("directory:src", canvas.summariesView.selected)
             // The folder's own summary replaces the notes of its files; the rest keep theirs.
@@ -1056,7 +1069,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(srcSummary.height >= src.height)
             assertTrue(descendants(srcSummary).filterIsInstance<JLabel>().any { it.text == "Folder summary · 3 files" })
             assertTrue(panel.files.drop(1).none { named("summary:${it.path}").isVisible })
-            assertTrue(named("summary:docs/README.md").isVisible)
+            assertFalse(named("summary:docs/README.md").isVisible)
             val more = summaries.summarize(mapOf(id("file:docs/README.md") to "Documents the setup."))
             canvas.updateSummaries(SummariesCard(more, running = false, canRun = false))
             assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == "Documents the setup." })
