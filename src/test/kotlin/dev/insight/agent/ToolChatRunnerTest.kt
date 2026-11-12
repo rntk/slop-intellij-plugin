@@ -197,7 +197,7 @@ class ToolChatRunnerTest {
         val tool = EchoTool()
         val looping = Completion("", toolCalls = listOf(call("echo", """{"text":"again"}""")))
         val model = FakeModel(*(List(100) { looping } + Completion("Done.")).toTypedArray())
-        val backend = LlmChatBackend(model::complete, listOf(tool), "SYSTEM", maxToolRounds = 100)
+        val backend = LlmChatBackend(model::complete, listOf(tool), "SYSTEM", ChatBudget.of(ChatProfile.ASSISTANT))
         assertEquals("Done.", backend.reply(listOf(ChatMessage(ChatRole.USER, "Hi"))))
         assertEquals(100, tool.received.size)
         assertEquals(101, model.requests.size)
@@ -232,12 +232,12 @@ class ToolChatRunnerTest {
         )
         assertEquals(
             listOf(LlmMessage.user("old question"), LlmMessage.assistant("old answer"), LlmMessage.user("new question"), LlmMessage.assistant("new answer")),
-            compactHistory(history),
+            conversationHistory(history, 24_000).turns,
         )
-        assertEquals(listOf(LlmMessage.user("new question"), LlmMessage.assistant("new answer")), compactHistory(history, maxMessages = 2))
-        // The latest turn survives a small budget; short messages are not clipped to nothing.
-        assertEquals(listOf(LlmMessage.user("new question"), LlmMessage.assistant("new answer")), compactHistory(history, maxChars = 12))
-        assertEquals(emptyList<LlmMessage>(), compactHistory(history, maxChars = 0))
+        val capped = conversationHistory(history, 24_000, maxMessages = 2)
+        assertEquals(listOf(LlmMessage.user("new question"), LlmMessage.assistant("new answer")), capped.turns)
+        assertEquals(1, capped.foldedTurns)
+        assertEquals(emptyList<LlmMessage>(), conversationHistory(history, 0).turns)
     }
 
     @Test fun `history clips an oversized latest turn and keeps the start of each message`() {
@@ -247,10 +247,12 @@ class ToolChatRunnerTest {
             ChatMessage(ChatRole.USER, "x".repeat(1000)),
             ChatMessage(ChatRole.ASSISTANT, "short answer"),
         )
-        val kept = compactHistory(history, maxChars = 500)
-        assertEquals(2, kept.size)
-        assertEquals("x".repeat(488) + "\n[Truncated 512 characters.]", kept[0].content)
-        assertEquals("short answer", kept[1].content)
+        // The digest takes its minimum share and the latest turn is clipped to the rest instead of folding too.
+        val kept = conversationHistory(history, 1_300)
+        assertEquals(1, kept.foldedTurns)
+        assertEquals(2, kept.turns.size)
+        assertEquals("x".repeat(488) + "\n[Truncated 512 characters.]", kept.turns[0].content)
+        assertEquals("short answer", kept.turns[1].content)
     }
 
     @Test fun `backend sends system prompt, history and question, and marks truncated replies`() = runBlocking {

@@ -643,7 +643,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             view.send("Independent question")
             PlatformTestUtil.waitWithEventsDispatching("The second tab should answer while the first is busy",
                 { panel.model.card(card.id)!!.messages.any { it.role == ChatRole.ASSISTANT } }, 30)
-            assertEquals(listOf("Independent question"), asked.last().map { it.text })
+            assertEquals(listOf("Independent question"), asked.last().filter { it.role != ChatRole.NOTICE }.map { it.text })
             slowReply.complete(Unit)
             PlatformTestUtil.waitWithEventsDispatching("The first tab should save its background reply",
                 { panel.model.card(card.id)!!.chats.first().messages.count { it.role == ChatRole.ASSISTANT } == 3 }, 30)

@@ -263,11 +263,14 @@ class ChatContextWindowTest {
         assertEquals(2, requests)
     }
 
-    @Test fun `backend retains an omission notice when history is dropped`() = runBlocking {
+    @Test fun `backend folds history beyond its budget into a digest in the system prompt`() = runBlocking {
         var sent: CompletionRequest? = null
-        val backend = LlmChatBackend({ sent = it; Completion("Answer") }, emptyList(), "System", maxHistoryChars = 0)
+        val budget = ChatBudget.of(ChatProfile.ASSISTANT, 4_000).copy(historyChars = 400)
+        val backend = LlmChatBackend({ sent = it; Completion("Answer") }, emptyList(), "System", budget)
         backend.reply(listOf(ChatMessage(ChatRole.USER, "Old"), ChatMessage(ChatRole.ASSISTANT, "Answer"), ChatMessage(ChatRole.USER, "Current")))
         assertEquals(2, sent!!.messages.size)
-        assertTrue(sent.messages.last().content.contains("1 earlier conversation turns"))
+        assertTrue(sent.messages.first().content.startsWith("System\n\nEarlier in this conversation (1 turn"))
+        assertTrue(sent.messages.first().content.contains("Asked: Old"))
+        assertEquals("Current", sent.messages.last().content)
     }
 }

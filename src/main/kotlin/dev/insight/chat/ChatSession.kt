@@ -77,7 +77,8 @@ open class ChatSession(
         busy = true
         chart?.beginReply()
         notifyViews()
-        val request = messages.filter { it.role == ChatRole.USER || it.role == ChatRole.ASSISTANT }
+        // The whole transcript goes to the backend: it replays the conversation and digests tool events, never sending them as messages.
+        val request = messages
         turn = scope.launch(Dispatchers.EDT) {
             try {
                 val reply = withBackgroundProgress(project, replyProgressTitle(text.trim())) {

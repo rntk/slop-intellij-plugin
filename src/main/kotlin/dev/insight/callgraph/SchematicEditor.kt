@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import dev.insight.agent.ChatProfile
+import dev.insight.settings.configuredChatBudget
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -897,8 +899,8 @@ internal class SchematicPanel(private val project: Project, private val file: Sc
         }
 
         private fun createBackend(): ChatBackend = LlmChatBackend(ChatSettings.getInstance().createClient()::complete, tools,
-            schematicChatPrompt, maxContextChars = configuredContextChars(120_000), maxToolRounds = 60, context = canvasAccess::snapshot,
-            contextLabel = "Current schematic", evictionTarget = 0.7)
+            schematicChatPrompt, configuredChatBudget(ChatProfile.REVIEW), context = canvasAccess::snapshot,
+            contextLabel = "Current schematic")
 
         val chat = ChatPanel(project, session, title = "Schematic Chat", showDashboard = false, compactTools = true)
         /** What the user right-clicked to open the chat; the next questions are likely about it. */

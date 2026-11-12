@@ -7,6 +7,9 @@ import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatRole
 import dev.insight.agent.ToolCallEvent
+import dev.insight.agent.conversationHistory
+import dev.insight.llm.LlmMessage
+import com.google.gson.JsonObject
 
 class ChatSessionTest : BasePlatformTestCase() {
     fun `test clear and discard release the injected factory resources`() {
@@ -150,7 +153,38 @@ class ChatSessionTest : BasePlatformTestCase() {
             assertEquals(listOf("Ask about run.", "Why?", "Because.", "Stopped."), session.messages.map { it.text })
             session.send("And?")
             PlatformTestUtil.waitWithEventsDispatching("Reply should arrive", { !session.busy }, 5 /* seconds */)
-            assertEquals(listOf("Why?", "Because.", "And?"), requests.single().map { it.text })
+            // The backend gets the whole transcript, notices included; the history builder decides what the model sees.
+            assertEquals(listOf("Ask about run.", "Why?", "Because.", "Stopped.", "And?"), requests.single().map { it.text })
         } finally { scope.cancel() }
+    }
+
+    fun `test the next turn's backend receives earlier tool events for the history digest`() {
+        val scope = CoroutineScope(SupervisorJob())
+        val received = mutableListOf<List<ChatMessage>>()
+        val session = ChatSession(project, scope, backendFactory = { _ ->
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+                    received += messages
+                    if (received.size == 1) onToolCall(ToolCallEvent("read_file", JsonObject().apply { addProperty("path", "a.kt") }, "fun a()", false))
+                    return "Reply ${received.size}"
+                }
+            }
+        })
+        try {
+            session.send("First")
+            PlatformTestUtil.waitWithEventsDispatching("First turn", { !session.busy }, 5)
+            session.send("Second")
+            PlatformTestUtil.waitWithEventsDispatching("Second turn", { !session.busy }, 5)
+            val second = received[1]
+            assertEquals(listOf(ChatRole.NOTICE, ChatRole.USER, ChatRole.TOOL, ChatRole.ASSISTANT, ChatRole.USER), second.map { it.role })
+            assertEquals("read_file", second[2].toolCall?.name)
+            val folded = conversationHistory(second.dropLast(1), historyChars = 500)
+            assertEquals(1, folded.foldedTurns)
+            assertTrue(folded.digest!!.contains("Read: read_file(a.kt)"))
+            assertEquals(listOf(LlmMessage.user("First"), LlmMessage.assistant("Reply 1")), conversationHistory(second.dropLast(1), 10_000).turns)
+        } finally {
+            session.discard()
+            scope.cancel()
+        }
     }
 }

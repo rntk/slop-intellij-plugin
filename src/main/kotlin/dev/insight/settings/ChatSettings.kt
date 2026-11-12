@@ -10,6 +10,8 @@ import com.intellij.openapi.components.SimplePersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
+import dev.insight.agent.ChatBudget
+import dev.insight.agent.ChatProfile
 import dev.insight.apilog.ApiLogs
 import dev.insight.core.ApiRequestLimits
 import dev.insight.core.ApiTrafficLog
@@ -135,3 +137,6 @@ internal fun configuredContextCharsForOutput(fallback: Int = 64_000): (Int) -> I
     val config = ChatSettings.getInstance().state.configuration()
     return { outputTokens -> dev.insight.llm.contextInputChars(config.contextWindowTokens, outputTokens, fallback) }
 }
+
+/** The budget of a chat of [profile] over the configured context window, or the profile's fallback window. */
+internal fun configuredChatBudget(profile: ChatProfile): ChatBudget = ChatBudget.of(profile, configuredContextChars(profile.fallbackContextChars))

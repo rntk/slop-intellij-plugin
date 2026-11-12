@@ -54,6 +54,7 @@ class ToolChatRunner(
     private val maxHistoryChars: Int = 24_000,
     private val maxContextRetries: Int = 3,
     private val evictionTarget: Double = 1.0,
+    private val maxHistoryMessages: Int = 20,
     /** Checked when the model answers; a non-null note is sent back as a user message and the turn continues. */
     private val followUp: (suspend () -> String?)? = null,
     private val maxFollowUps: Int = 2,
@@ -68,11 +69,24 @@ class ToolChatRunner(
         require(maxHistoryChars >= 0) { "Max history size must not be negative" }
         require(maxContextRetries >= 0) { "Max context retries must not be negative" }
         require(maxFollowUps >= 0) { "Max follow-ups must not be negative" }
+        require(maxHistoryMessages >= 0) { "Max history messages must not be negative" }
     }
+
+    /** A runner spending a chat's [budget]; interactive chats use this, workflows pass their own limits. */
+    constructor(
+        complete: CompletionFn,
+        tools: List<ChatTool>,
+        budget: ChatBudget,
+        followUp: (suspend () -> String?)? = null,
+        maxFollowUps: Int = 2,
+        registry: ToolRegistry? = null,
+    ) : this(complete, tools, maxToolRounds = budget.toolRounds, maxToolResultChars = budget.toolResultChars,
+        maxContextChars = budget.contextChars, maxHistoryChars = budget.historyChars, evictionTarget = budget.evictionTarget,
+        maxHistoryMessages = budget.historyMessages, followUp = followUp, maxFollowUps = maxFollowUps, registry = registry)
 
     suspend fun run(messages: List<LlmMessage>, onToolCall: suspend (ToolCallEvent) -> Unit = {}): ToolChatResult {
         require(messages.isNotEmpty()) { "At least one message is required" }
-        val window = ChatContextWindow(messages, maxContextChars, maxHistoryChars, evictionTarget = evictionTarget)
+        val window = ChatContextWindow(messages, maxContextChars, maxHistoryChars, maxHistoryMessages, evictionTarget)
         val transcript = mutableListOf<LlmMessage>()
         var requestCount = 0
         var followUps = 0
@@ -191,21 +205,3 @@ class ToolChatRunner(
     }
 }
 
-/**
- * Keeps complete recent user-visible turns within a character budget, clipping the latest turn rather
- * than dropping it (see [recentTurns]). Tool events and notices are
- * not replayed: earlier tool output multiplies token use and is rarely relevant to the next question.
- */
-fun compactHistory(history: List<ChatMessage>, maxChars: Int = 24_000, maxMessages: Int = 20): List<LlmMessage> {
-    require(maxChars >= 0 && maxMessages >= 0) { "History budgets must not be negative" }
-    val messages = history.mapNotNull { message ->
-        val content = message.text.trim()
-        if (content.isEmpty()) return@mapNotNull null
-        when (message.role) {
-            ChatRole.USER -> LlmMessage.user(content)
-            ChatRole.ASSISTANT -> LlmMessage.assistant(content)
-            else -> null
-        }
-    }
-    return recentTurns(historyTurns(messages), maxChars, maxMessages).flatten()
-}

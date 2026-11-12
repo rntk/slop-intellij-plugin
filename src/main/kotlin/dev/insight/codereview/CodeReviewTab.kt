@@ -1,5 +1,7 @@
 package dev.insight.codereview
 
+import dev.insight.agent.ChatProfile
+import dev.insight.settings.configuredChatBudget
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
@@ -284,10 +286,10 @@ internal class CodeReviewTab(
             return LlmChatBackend(rawComplete,
                 chatTools(context) + turn.chartTools,
                 turn.prompt(codeReviewPrompt(scopeName)) + codeFocusPrompt(context.snapshot, turnFocus),
-                maxContextChars = configuredContextChars(160_000), maxToolRounds = 100,
+                configuredChatBudget(ChatProfile.REVIEW),
                 context = if (turnFocus == null) { { context.overview() } }
                     else { { withContext(Dispatchers.EDT) { focusOverview(context.snapshot, turnFocus) } } },
-                contextLabel = if (turnFocus == null) "Current code scope" else "Current focus", evictionTarget = 0.7)
+                contextLabel = if (turnFocus == null) "Current code scope" else "Current focus")
                 .reply(turn.request, onToolCall)
         }
     }
@@ -306,8 +308,9 @@ internal class CodeReviewTab(
             val (captured, scopeName) = turn
             val (context, file, summary) = captured
             val complete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val budget = configuredChatBudget(ChatProfile.FOCUSED)
             return LlmChatBackend(complete, codeWallChatTools(context) + projectContextTools(project),
-                codeWallChatPrompt(file, summary, scopeName), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                codeWallChatPrompt(file, summary, scopeName, budget.pinnedChars), budget)
                 .reply(messages, onToolCall)
         }
     }
@@ -323,8 +326,9 @@ internal class CodeReviewTab(
             }
             if (files.isEmpty()) return "The wall shows no files, so there is no source to discuss."
             val complete = this@CodeReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val budget = configuredChatBudget(ChatProfile.FOCUSED)
             return LlmChatBackend(complete, codeWallChatTools(context) + projectContextTools(project),
-                codeWallCanvasChatPrompt(files, scopeName), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                codeWallCanvasChatPrompt(files, scopeName, budget.pinnedChars), budget)
                 .reply(messages, onToolCall)
         }
     }
@@ -713,7 +717,6 @@ internal class CodeReviewTab(
     internal companion object {
         const val CANVAS_REFRESH_MS = 250
         const val ALL_FILES = "All files in scope"
-        const val WALL_CHAT_TOOL_ROUNDS = 40
     }
 }
 

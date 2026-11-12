@@ -1,5 +1,7 @@
 package dev.insight.canvas
 
+import dev.insight.agent.ChatProfile
+import dev.insight.settings.configuredChatBudget
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -63,7 +65,7 @@ internal class CanvasSessionServices(
             val canvas = canvasToolRegistry(actions, cardId)
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
                 projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
-                maxContextChars = configuredContextChars(64_000), maxToolRounds = 30,
+                configuredChatBudget(ChatProfile.FOCUSED),
                 context = { canvasChainContext(actions.session, cardId, actions.source(null)) },
                 images = { canvasContextImages(actions.session, cardId) },
                 contextLabel = if (cardId == null) "Canvas file" else "Canvas chain",

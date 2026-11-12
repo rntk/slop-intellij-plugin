@@ -9,6 +9,9 @@ data class ChatMessage(val role: ChatRole, val text: String, val revision: Int? 
 
 /** Replace this boundary with a provider; never perform network work on the EDT. */
 interface ChatBackend {
-    /** [messages] ends with the new user message. [onToolCall] reports each tool call as it completes. */
+    /**
+     * [messages] is the whole transcript, tool events and notices included, ending with the new user message; only [ChatRole.USER]
+     * and [ChatRole.ASSISTANT] text may reach the model as messages. [onToolCall] reports each tool call as it completes.
+     */
     suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit = {}): String
 }

@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.agent.ChatProfile
+import dev.insight.settings.configuredChatBudget
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.smartReadAction
@@ -269,14 +271,14 @@ internal class DiffReviewTab(
             }
             val turn = chatTurn(messages, files, diff = true) ?: return "There are no changed files to explain."
             // Reviews accumulate evidence for many rounds; evict in chunks so the request prefix stays cacheable.
+            val budget = configuredChatBudget(ChatProfile.REVIEW)
             return LlmChatBackend(rawComplete,
                 chatTools(context) + turn.chartTools,
                 turn.prompt(diffReviewPrompt()) + diffFocusPrompt(files, turnFocus),
-                maxContextChars = configuredContextChars(160_000), maxToolRounds = 100,
-                context = if (turnFocus == null) { { context.state(0, INLINE_PATCH_CHARS) } }
+                budget,
+                context = if (turnFocus == null) { { context.state(0, budget.snapshotChars) } }
                     else { { withContext(Dispatchers.EDT) { focusState(snapshot, turnFocus) } } },
-                contextLabel = if (turnFocus == null) "Current diff snapshot" else "Current focus snapshot",
-                evictionTarget = 0.7)
+                contextLabel = if (turnFocus == null) "Current diff snapshot" else "Current focus snapshot")
                 .reply(turn.request, onToolCall)
         }
     }
@@ -295,8 +297,9 @@ internal class DiffReviewTab(
             val (captured, comparison) = turn
             val (context, file, summary) = captured
             val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val budget = configuredChatBudget(ChatProfile.FOCUSED)
             return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project),
-                wallChatPrompt(file, summary, comparison), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                wallChatPrompt(file, summary, comparison, budget.pinnedChars), budget)
                 .reply(messages, onToolCall)
         }
     }
@@ -312,8 +315,9 @@ internal class DiffReviewTab(
             }
             if (files.isEmpty()) return "The wall shows no changed files, so there is no diff to discuss."
             val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val budget = configuredChatBudget(ChatProfile.FOCUSED)
             return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project),
-                wallCanvasChatPrompt(files, comparison), maxContextChars = configuredContextChars(), maxToolRounds = WALL_CHAT_TOOL_ROUNDS)
+                wallCanvasChatPrompt(files, comparison, budget.pinnedChars), budget)
                 .reply(messages, onToolCall)
         }
     }
@@ -561,8 +565,6 @@ internal class DiffReviewTab(
 
     private companion object {
         // Small diffs arrive with the question, so an answer often needs no read calls at all.
-        const val INLINE_PATCH_CHARS = 24_000
-        const val WALL_CHAT_TOOL_ROUNDS = 40
         const val ALL_CHANGES = "All changes"
     }
 }
