@@ -33,6 +33,7 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.ui.PopupHandler
+import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.treeStructure.Tree
@@ -98,6 +99,7 @@ internal class DiffReviewPanel(
         invalidateDiff(setOf(file.path, file.absolutePath)); refresh()
     }
     private val untrackedBlock = JPanel(BorderLayout()).apply {
+        minimumSize = JBUI.size(200, 120)
         add(JLabel("Untracked · include in review").apply {
             toolTipText = "Selection only includes a file in this review; it does not stage it in version control."
         }, BorderLayout.NORTH)
@@ -123,14 +125,18 @@ internal class DiffReviewPanel(
     private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
         minimumSize = JBUI.size(280, 120)
         val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+            minimumSize = JBUI.size(280, 120)
             add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
                 add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
                 add(newSelectedTab, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
             add(JBScrollPane(tree), BorderLayout.CENTER)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, files, untrackedBlock).apply {
-            resizeWeight = 0.7; setDividerLocation(0.7)
+        add(OnePixelSplitter(false, 0.65f).apply {
+            // Apply the proportion at layout time, including when the Start page first gets its editor size.
+            firstComponent = files
+            secondComponent = untrackedBlock
+            setHonorComponentsMinimumSize(true)
         }, BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
     }

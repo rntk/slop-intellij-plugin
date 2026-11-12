@@ -2,6 +2,8 @@
 
 Diff Review is a read-only workspace for understanding a code change. It opens on a Start page in the editor area, where the comparison is chosen (uncommitted changes by default) and its changed files are browsed, with untracked files to include, and continues from there to the summaries in Split view. The side panel, which keeps the review tabs and chat, and every view lead back to the Start page through a button floating on their edge that names the current comparison; it takes no room from the page and keeps off its controls, shrinking to its icon or a thin handle where the edge is busy. It presents a comparison and its changed files, with independent review sessions for focused exploration. Conversation, notes, summaries, topics, change grouping, and other generated views help readers organize questions and connect evidence to the change. Topics classify files by code subsystem first and narrow down to the specific capability, whereas Grouping organizes files by the shared change cause or refactoring first and narrows down to the affected code area. A changed file, folder or summary entry can be taken to chat: a new session focused on it, with its summaries and diff in context and the rest of the change reachable on demand.
 
+The Start page shows changed files and untracked files side by side, with untracked files on the right when the comparison includes the working tree.
+
 The workspace is separate from the application graph, though some views can relate changed code to broader structure. Interpretations are grounded in the comparison and can be checked against the source and diff.
 
 Chat can also read current project files outside the change for supporting context, keeping that context distinct from the comparison.

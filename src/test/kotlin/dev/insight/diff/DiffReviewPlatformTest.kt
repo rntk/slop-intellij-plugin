@@ -862,6 +862,22 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(buttons.any { it.text == "LLM settings" })
             assertFalse(buttons.any { it.text == "Open dashboard" })
             assertTrue(withStart(panel).filterIsInstance<JLabel>().any { it.text == "Untracked · include in review" })
+            val page = panel.start.page as Container
+            val untracked = descendants(page).filterIsInstance<UntrackedFilesTree>().single()
+            val changed = descendants(page).filterIsInstance<JTree>().single { it !== untracked }
+            fun layout(container: Container) {
+                container.doLayout()
+                container.components.filterIsInstance<Container>().forEach(::layout)
+            }
+            for ((width, height) in listOf(960 to 720, 760 to 600, 1200 to 800)) {
+                page.setSize(width, height)
+                layout(page)
+                val left = javax.swing.SwingUtilities.convertRectangle(changed.parent, changed.bounds, page)
+                val right = javax.swing.SwingUtilities.convertRectangle(untracked.parent, untracked.bounds, page)
+                assertTrue("Untracked files stay to the right at $width x $height", right.x >= left.x + left.width)
+                assertTrue("Both file trees have usable height at $width x $height", left.height > 100 && right.height > 100)
+                assertTrue("Both file trees have usable width at $width x $height", left.width > 150 && right.width > 150)
+            }
         } finally { Disposer.dispose(panel) }
     }
 
