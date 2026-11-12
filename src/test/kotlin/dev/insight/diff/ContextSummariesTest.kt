@@ -214,7 +214,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
             assertTrue(launcher.request.regenerate)
             assertNull(launcher.start.text(wallet.id))
             assertEquals(complete.text(wallet.children.first()), launcher.start.text(wallet.children.first()))
-            assertEquals("Resummarize all · Storage…", (named(canvas, 0, "topic-summary-status") as javax.swing.JLabel).text)
+            assertTrue((named(canvas, 0, "topics-status") as javax.swing.JLabel).toolTipText.contains("Resummarize all · Storage…"))
         } finally { canvas.dispose() }
     }
 

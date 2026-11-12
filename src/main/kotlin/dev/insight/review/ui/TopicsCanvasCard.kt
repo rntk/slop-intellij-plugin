@@ -127,13 +127,16 @@ internal class TopicsCanvasCard(
         val viewZoom = if (document) documentZoom else 1.0
         val width = if (hierarchy) cardWidth(HierarchyColumnsPanel.defaultWidth(outline.depth))
             else ChangeTopicsPanel.defaultWidth(view.railDepth(outline), viewZoom)
-        val header = JPanel(BorderLayout()).apply {
+        val header = JPanel(BorderLayout(scaled(8), 0)).apply {
+            name = "topics-controls"
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             val matching = if (view.filtering) " · ${shown.files.size} shown" else ""
             add(JLabel("${labels.title} · ${topics.groups.size} ${labels.plural} · ${topics.labels.size} of ${files(topics.files.size)}$matching").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                name = "topics-status"
                 toolTipText = labels.tooltip
+                installReviewStatus(this, project, status ?: text)
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -193,10 +196,6 @@ internal class TopicsCanvasCard(
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
-                canvasTraceStatusLines(view, trace, inner).forEach(::add)
-                status?.let { status ->
-                    add(JLabel(status).apply { name = "topic-summary-status"; foreground = UIUtil.getContextHelpForeground(); toolTipText = status })
-                }
                 if (shown.files.isEmpty() && outline.files.isNotEmpty()) add(JLabel("No files match the search.").apply {
                     name = "topics-no-matches"
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
@@ -207,19 +206,17 @@ internal class TopicsCanvasCard(
         }
         val search = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(8), 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(4, 12, 4, 8))
             for ((field, text) in listOf(topicSearchField to view.topicFilter, topicSummarySearchField to view.summaryFilter))
                 add(field.apply {
-                    preferredSize = Dimension(scaled(220), preferredSize.height)
+                    preferredSize = Dimension(scaled(180), preferredSize.height)
                     if (this.text != text) this.text = text
                 })
         }
-        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder() }
-        card.add(JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(header, BorderLayout.NORTH)
-            add(search, BorderLayout.SOUTH)
-        }, BorderLayout.NORTH)
+        header.add(search, BorderLayout.EAST)
+        val card = object : JPanel(SummaryOverlayLayout()) {
+            override fun isOptimizedDrawingEnabled(): Boolean = false
+        }.apply { background = UIUtil.getListBackground(); border = cardBorder() }
+        card.add(header, BorderLayout.NORTH)
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             // A deep hierarchy may scroll sideways; leave room for that scroll bar.
@@ -246,7 +243,7 @@ internal class TopicsCanvasCard(
             HierarchyPreviewPanel(it, bodyScroll, project, hierarchyPreviewPaths, { paths -> hierarchyPreviewPaths = paths })
                 .also { preview -> hierarchyPreview = preview }
         } ?: bodyScroll
-        card.add(readingArea, BorderLayout.CENTER)
+        installSummariesTraceOverlay(card, readingArea, view, trace, width - scaled(2 * PADDING + 4) - scaled(16), "highlighted in the view.")
         currentCard = card
         return card
     }

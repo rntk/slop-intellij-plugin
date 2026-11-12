@@ -34,14 +34,11 @@ internal fun revealCanvasTrace(body: Container, target: String) {
     row.scrollRectToVisible(Rectangle(0, 0, row.width, row.height))
 }
 
-/**
- * Two fixed-height status lines: changing hover queries never changes the reading area's geometry. [where] tells what
- * became of a search's matches.
- */
-internal fun canvasTraceStatusLines(
-    state: SummaryTraceState, session: SummaryTraceSession, width: Int, selection: Boolean = false,
+/** Feedback for an active search, displayed over the reading area without reserving a row. */
+private fun canvasTraceStatus(
+    state: SummaryTraceState, session: SummaryTraceSession, width: Int,
     where: String = "highlighted in the view.",
-): List<JComponent> {
+): JComponent {
     fun line(text: String, name: String, lineWidth: Int = width) = JLabel(text).apply {
         this.name = name
         isOpaque = false
@@ -49,7 +46,7 @@ internal fun canvasTraceStatusLines(
         toolTipText = text.takeIf { it.isNotBlank() }
         preferredSize = Dimension(lineWidth.coerceAtLeast(1), getFontMetrics(font).height)
     }
-    return listOf(line(tracingHint(selection), "tracing-hint"), JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+    return JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
         isOpaque = false
         add(line(" ", "trace-status", width - JBUI.scale(56)).apply {
             val update = {
@@ -65,7 +62,7 @@ internal fun canvasTraceStatusLines(
             name = "trace-clear"; font = JBFont.small().zoomed(1.0); isEnabled = state.tracing != null || state.resultTrace != null
             ClientProperty.put(this, TRACE_PRESENTATION_UPDATE) { isEnabled = state.tracing != null || state.resultTrace != null }
         }, BorderLayout.EAST)
-    })
+    }
 }
 
 /** A border layout with a trace block painted over the center component. */
@@ -93,7 +90,7 @@ internal class SummaryOverlayLayout : BorderLayout() {
 internal fun installSummariesTraceOverlay(
     card: JPanel, content: JComponent, state: SummaryTraceState, session: SummaryTraceSession, width: Int, where: String,
 ) {
-    val status = canvasTraceStatusLines(state, session, width, true, where)[1]
+    val status = canvasTraceStatus(state, session, width, where)
     val block = JPanel(BorderLayout()).apply {
         name = "summaries-trace-overlay"
         background = UIUtil.getPanelBackground()

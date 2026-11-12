@@ -19,7 +19,7 @@ internal fun Font.forSummaryText(): Font = deriveFont(size2D * 1.15f)
 /** File and folder headings stand out from the surrounding metadata. */
 internal fun Font.forReviewName(): Font = deriveFont(size2D * 1.2f)
 
-/** How far summarizing has come, shown at the top of both modes. */
+/** How far summarizing has come, available in the view's metadata. */
 internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabulary.DIFF.noFiles): String {
     val summaries = card.summaries
     val count = summaries.count

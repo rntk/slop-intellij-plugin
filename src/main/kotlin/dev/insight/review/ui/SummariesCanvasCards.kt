@@ -151,6 +151,7 @@ internal class SummariesCanvasCards(
             document -> DocumentColumnsPanel.defaultWidth(ChangeSummaryDocumentPanel.railDepth(tree, summariesView), viewZoom)
             else -> cardWidth(SUMMARIES_WIDTH)
         }
+        val compactControls = document || hierarchy
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "summaries-controls"
             isOpaque = false
@@ -158,6 +159,7 @@ internal class SummariesCanvasCards(
             add(JLabel(vocabulary.summariesTitle + if (tab.search) " · Search" else "").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.summariesTooltip
+                installReviewStatus(this, project, summariesStatus(content, vocabulary.noFiles))
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -201,6 +203,7 @@ internal class SummariesCanvasCards(
                     else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { summaryActions.removeSummaries() }
                         .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.WEST)
+            if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false), BorderLayout.EAST)
         }
         val panelActions = ChangeSummaryActions(
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
@@ -260,7 +263,12 @@ internal class SummariesCanvasCards(
             add(header, BorderLayout.NORTH)
             add(JPanel(VerticalLayout(0)).apply {
                 isOpaque = false
-                add(summaryVersionRow(tab, original))
+                if (!compactControls) add(summaryVersionRow(tab, original))
+                else if (summarySession.versions.isNotEmpty() || version != null) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.empty(0, 12)
+                    addVersionControls(this, tab, original)
+                })
                 if (tab.search) add(searchRow(tab))
                 if (explorer) add(summaryExplorerNavigation(tab, tree))
                 if (split != null) add(JLabel(summariesStatus(content, vocabulary.noFiles) +
@@ -300,16 +308,8 @@ internal class SummariesCanvasCards(
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(when {
-                hierarchy -> JPanel(VerticalLayout(scaled(8))).apply {
-                    isOpaque = false
-                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary))
-                }
-                document -> JPanel(VerticalLayout(scaled(8))).apply {
-                    isOpaque = false
-                    add(JLabel(summariesStatus(content, vocabulary.noFiles)).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
-                    add(ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary, project))
-                }
+                hierarchy -> ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary)
+                document -> ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary, project)
                 else -> ChangeSummariesPanel(content, summariesView, inner, zoom, panelActions, vocabulary,
                     browse = if (explorer) { identity ->
                         summariesView.browse(identity, tree)
@@ -363,12 +363,12 @@ internal class SummariesCanvasCards(
         return card
     }
 
-    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard): JComponent =
+    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard, includeVersions: Boolean = true): JComponent =
         JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(0, 12)
+            border = if (includeVersions) JBUI.Borders.empty(0, 12) else JBUI.Borders.empty()
             // Versions are rare; their controls appear only once one exists or this tab reads one.
-            if (summarySession.versions.isNotEmpty() || version(tab) != null) addVersionControls(this, tab, content)
+            if (includeVersions && (summarySession.versions.isNotEmpty() || version(tab) != null)) addVersionControls(this, tab, content)
             val request = contextSummaryRequest(tab)
             add(JButton("Resummarize with context").apply {
                 name = "resummarize-with-context"
@@ -389,15 +389,6 @@ internal class SummariesCanvasCards(
                 toolTipText = "Cancel the current search and clear highlights, selected words and all filters in this tab"
                 addActionListener { cancelSearch(tab) }
             })
-            version(tab)?.let { selected ->
-                val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
-                add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} summaries"
-                    else "$count of ${selected.request.nodeIds.size} summaries rewritten").apply {
-                    name = "summary-version-status"
-                    foreground = UIUtil.getContextHelpForeground()
-                    toolTipText = text
-                })
-            }
         }
 
     private fun addVersionControls(row: JPanel, tab: SummariesTab, content: SummariesCard) {
@@ -434,6 +425,15 @@ internal class SummariesCanvasCards(
                 actions.refreshTopics()
             }
         })
+        version(tab)?.let { selected ->
+            val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
+            row.add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} summaries"
+                else "$count of ${selected.request.nodeIds.size} summaries rewritten").apply {
+                name = "summary-version-status"
+                foreground = UIUtil.getContextHelpForeground()
+                toolTipText = text
+            })
+        }
     }
 
     /** Page navigation stays above the scrolling summaries, independently of search breadcrumbs. */

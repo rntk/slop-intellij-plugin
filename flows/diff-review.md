@@ -22,6 +22,8 @@ Document view reveals the full summary when a diff block or topic/group card is 
 
 Document and Hierarchy views of topics and change grouping offer Tags cloud, sizing summary words by their weight in child summaries or captured diff source, as in Summaries.
 
+Document and Hierarchy views keep search alongside the other controls, with status details available on hover instead of permanent hint rows.
+
 Entry points for further exploration:
 
 - [DiffReviewPanel.kt](../src/main/kotlin/dev/insight/diff/DiffReviewPanel.kt) — review workspace

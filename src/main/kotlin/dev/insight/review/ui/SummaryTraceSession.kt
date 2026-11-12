@@ -161,12 +161,6 @@ internal object TraceStyle {
 }
 
 
-/** What hovering and searching do, for the status area; [selection] mentions searching selected text. */
-internal fun tracingHint(selection: Boolean = false): String =
-    "Hover over a summary to color its text and related summaries above and below. " +
-        "Right-click a colored part and choose Search to open the summaries or lines it cites" +
-        if (selection) ", or select text and right-click Search." else "."
-
 /** The query and result of a trace; [where] says where its matches are shown. */
 internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted below. Right-click and choose Search to jump to the best."): String {
     val trace = tracing.trace
