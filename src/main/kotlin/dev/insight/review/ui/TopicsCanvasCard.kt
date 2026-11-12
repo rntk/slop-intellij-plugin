@@ -139,6 +139,14 @@ internal class TopicsCanvasCard(
                 isOpaque = false
                 if (document) add(controls)
                 if (outline.depth > 0) add(topicLevels(outline))
+                add(JCheckBox("Tags cloud", view.tagsCloud).apply {
+                    name = "topics-tags-cloud"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Size summary words by their importance in the child summaries or file source"
+                    addActionListener { view.tagsCloud = isSelected; canvasActions.refresh() }
+                })
                 add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
                     { if (it == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy" },
                     { if (it == ChangeTopicsMode.DOCUMENT) "Every file in ${labels.singular} order, with its summary and the ${labels.singular} rail"

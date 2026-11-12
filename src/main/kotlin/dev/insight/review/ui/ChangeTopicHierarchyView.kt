@@ -25,6 +25,7 @@ internal class ChangeTopicHierarchyPanel(
     private val fileSummaries = fileNodes.mapValues { summaries.text(it.value.id) }
     /** Topic summaries, else the summary of exactly a topic's files, by reading identity; see [topicReadingSummaries]. */
     private val reading = card.reading
+    private val wordWeights = SummaryWordWeights(reading)
     private val readingIds = reading.tree.nodes.associate { it.identity to it.id }
     private val active = outline.nodes.firstOrNull(state::isSelected)?.let { it.first..it.last }
     private val trace = state.tracing?.trace
@@ -91,7 +92,7 @@ internal class ChangeTopicHierarchyPanel(
         val height = if (collapsed) {
             rowsPlaced++
             val summary = readingIds[identity]?.let(reading::text)
-            val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, emptyMap())
+            val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, weights(identity))
             readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
             summary?.let { installWordTracing(note, identity, it, state, actions.trace) }
             preview(note, (node.first..node.last).map { outline.files[it] })
@@ -120,7 +121,7 @@ internal class ChangeTopicHierarchyPanel(
             { fileNodes[file.path]?.let(actions.openNode) ?: actions.openFile(file.path) },
             actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity),
             review = readingIds[identity]?.let { actions.review?.control(reading.tree[it], summaryFont()) })
-        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, emptyMap())
+        val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, weights(identity))
         readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
         if (summary != null) installWordTracing(note, identity, summary, state, actions.trace)
         preview(leaf, listOf(file))
@@ -132,6 +133,9 @@ internal class ChangeTopicHierarchyPanel(
         anchors[identity] = leaf
         return height
     }
+
+    private fun weights(identity: String): Map<String, Double> =
+        if (state.tagsCloud) readingIds[identity]?.let { wordWeights[it] }.orEmpty() else emptyMap()
 
     private fun badge(identity: String): String? = trace?.related?.firstOrNull { it.identity == identity }?.let { matchBadge(it, trace) }
 

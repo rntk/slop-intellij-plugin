@@ -87,6 +87,52 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testTopicsTagsCloudWeightsSourceAndDiffSummariesAcrossReadingModes() {
+        for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
+            val file = if (vocabulary == ReviewVocabulary.CODE) Source("src/a.kt") else
+                dev.insight.diff.ReviewFile("src/a.kt", "/repo/src/a.kt", null, "modified",
+                    "@@ -1 +1 @@\n-old\n+val answer = 42\n", "1")
+            val topics = ReviewTopics(listOf(file)).assign(file.path, "Storage>Wallet")
+            val tree = buildSummaryTree(listOf(file))
+            val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to Summary.plain("answer purpose") })
+            val initial = TopicsCard(topics, summaries, canRun = true)
+            val topicSummaries = ReviewSummaries(initial.topicSummaries.tree, initial.topicSummaries.tree.nodes
+                .filter { it.kind != SummaryKind.FILE }.associate {
+                    it.id to Summary.plain(if (it.label == "Wallet") "answer detail" else "answer overview")
+                })
+            val content = initial.copy(topicSummaries = topicSummaries)
+            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
+            fun toggle() = descendants(canvas).filterIsInstance<javax.swing.JCheckBox>()
+                .single { it.name == "topics-tags-cloud" }
+            fun assertSizes(text: String, cloud: Boolean) {
+                val area = descendants(canvas).filterIsInstance<WrappedSummaryText>().first { it.text == text }
+                val answer = javax.swing.text.StyleConstants.getFontSize(area.styledDocument.getCharacterElement(0).attributes)
+                val other = javax.swing.text.StyleConstants.getFontSize(area.styledDocument.getCharacterElement(7).attributes)
+                if (cloud) assertTrue("Expected weighted words in $text", answer > other) else assertEquals(other, answer)
+            }
+            try {
+                val state = CanvasState(emptyList(), topics = content)
+                canvas.showNotes(state)
+                assertFalse(toggle().isSelected)
+                assertSizes("answer purpose", false)
+                toggle().doClick()
+                assertTrue(canvas.topicsView.tagsCloud)
+                assertSizes("answer purpose", true)
+                canvas.named("topic:0:storage").dispatchEvent(MouseEvent(canvas.named("topic:0:storage"),
+                    MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
+                assertSizes("answer overview", true)
+                selectTopicsMode(descendants(canvas), "Hierarchy")
+                assertTrue(toggle().isSelected)
+                assertSizes("answer purpose", true)
+                canvas.topicsView.selectLevel(0, canvas.topicsView.fullOutline(content))
+                canvas.showNotes(state)
+                assertSizes("answer overview", true)
+                toggle().doClick()
+                assertSizes("answer overview", false)
+            } finally { canvas.dispose() }
+        }
+    }
+
     fun testCodeSummariesLeafCardsUseOpenFileAndDimFacts() {
         val files = listOf(Source("src/a.kt"), Source("src/b.kt"), Source("lib/c.kt"))
         val tree = buildSummaryTree(files, rootLabel = ReviewVocabulary.CODE.rootName)

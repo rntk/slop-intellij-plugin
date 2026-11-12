@@ -88,6 +88,7 @@ internal class ChangeTopicsViewState(
     private val foldLargeOutline: Boolean = false,
     var mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
 ) : SummaryTraceState(traceRoot = false) {
+    var tagsCloud = false
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
@@ -697,12 +698,14 @@ internal class ChangeTopicsPanel(
 ) : DocumentColumnsPanel(zoom, vocabulary, project) {
     val outline = state.outline(card)
     private val nodesByKey = outline.nodes.associateBy { "${it.level}:${it.identity}" }
+    private val reading = card.reading
+    private val readingIds = reading.tree.nodes.associate { it.identity to it.id }
+    private val wordWeights = SummaryWordWeights(reading)
 
     init {
         // Files awaiting a topic still get a placeholder in the leaf column.
         val depth = maxOf(state.railDepth(outline), if (outline.pending != null) 1 else 0)
         // A topic reads its own summary, else the summary of exactly its files, as in the hierarchy.
-        val reading = card.reading
         val topicTexts = reading.tree.nodes.mapNotNull { node -> reading.text(node.id)?.let { node.identity to it } }.toMap()
         val items = outline.nodes.filter { it.level < depth }.map { node ->
             RailItem(
@@ -742,7 +745,7 @@ internal class ChangeTopicsPanel(
     override fun openFile(file: ReviewSource) = actions.openFile(file.path)
     override fun showFile(file: ReviewSource) = actions.showDiffCard(file.path)
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
-        (if (summary != null) WrappedSummaryText(summary, width, summaryFont(), emptyMap())
+        (if (summary != null) summaryText(identity, summary, width)
             else super.summaryBody(identity, summary, missingSummary, width)).also { area ->
             val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
             if (summary != null) installWordTracing(area as javax.swing.text.JTextComponent, readingIdentity, summary, state, actions.trace)
@@ -750,6 +753,14 @@ internal class ChangeTopicsPanel(
             val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
             actions.review?.body(readingIdentity, area) ?: area
         }
+    private fun summaryText(identity: String, summary: String, width: Int): WrappedSummaryText {
+        val readingIdentity = nodesByKey[identity]?.let(ChangeTopicsViewState::identity) ?: identity
+        return WrappedSummaryText(summary, width, summaryFont(),
+            if (state.tagsCloud) readingIds[readingIdentity]?.let { wordWeights[it] }.orEmpty() else emptyMap())
+    }
+
+    override fun summaryWordWidth(identity: String, summary: String): Int = summaryText(identity, summary, 1).longestWordWidth()
+
     override fun isSelected(item: RailItem): Boolean = nodesByKey[item.key]?.let(state::isSelected) == true
     override fun select(item: RailItem) { nodesByKey[item.key]?.let(state::select) }
 
