@@ -1,25 +1,10 @@
 # Summaries flow
 
-Summaries provide a hierarchical guide to a review scope, from an overall view down to individual files and relevant sections. They help readers navigate a large body of source or a code change while keeping the underlying evidence close at hand.
+Summaries provide a hierarchical guide to a review scope—organized by folders or topics—from an overall view down to individual files and sections. Every generated claim records citations to the child summaries or source/diff lines it was written from, letting readers trace summaries directly back to evidence.
 
-The same summary process describes both the folder hierarchy and an existing topic hierarchy; topic classification happens separately. In the views, a chain of folders that each hold only another folder reads as one entry with one summary; the summary tree itself keeps every folder. Likewise, an open folder holding a single file leaves its row's summary blank, since the file's row repeats it.
-
-File and summary context menus can regenerate one entry or its entire subtree, with optional custom instructions. Results open as a separate summary version for comparison. In the topic hierarchy, entries can likewise fill their missing summaries or regenerate their topics at any level, without waiting for the whole hierarchy; those results are saved in place.
-
-The Diff view keeps the file tree beside the IDE’s native diff viewer. Select a file to inspect its changes, or a directory or All changes to read every matching file’s diff one after another. In both views an entry's menu can also run the IDE's own inspections over its working-tree files and list the errors and warnings as plain text ready to hand to a coding agent.
-
-The descriptions are generated from the content they summarize, and every claim in one cites what it was written from: a file's claims cite its lines, and a folder's or topic's claims cite the claims of the summaries directly below it. These citations are recorded while the summaries are written, so the views read the links directly instead of matching text afterwards. Hovering or selecting part of a summary shows its text and related summaries above and below in the same text color. Searching from it opens the cited summaries, or a file's cited lines. To file and To directory open the levels down to the files or folders it cites at any depth, highlight them, and select and scroll to the chosen one. Use the summaries to find areas worth exploring, then check the source or diff directly.
-
-Choosing a level unfolds folders through that level and folds everything deeper. In the Tree view, levels follow the displayed claim branches instead. Readers can also open or close individual entries. Tags cloud sizes the words of each summary by their weight in the child summaries directly below it, or for a leaf file or part by their weight in its diff source code or the file's source code.
-
-Readers can mark files or directories as reviewed. Their summaries dim, and a claim in a higher summary dims once every file it cites, directly or through the levels between, is reviewed. Review marks follow the underlying evidence.
-
-Summaries favor a short statement of purpose or behavior, with only essential distinctions supported by the evidence. They omit file names, paths, code, and implementation inventories. Simple items need very little text; subtle behavior may need more explanation. Higher levels condense the main themes rather than repeat the details below.
+Readers can regenerate entries, track reviewed status across the hierarchy, and browse cited branches in a navigable tree alongside source or diff viewers.
 
 Entry points for further exploration:
 
-- [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure
-- [Summary.kt](../src/main/kotlin/dev/insight/review/Summary.kt) — segments and their citations
+- [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure and citations
 - [ChangeSummarizer.kt](../src/main/kotlin/dev/insight/diff/ChangeSummarizer.kt) — summary generation
-
-The Tree view follows the recorded citations from summary parts to the parts below them, with curved branches read from left to right. A single shared part forms the root; independent parts branch immediately from an empty root. Parts can be folded individually or unfolded through all descendants from their context menu, optionally opening every leaf's source or diff. Navigate accepts a file path and unfolds only the routes to that file, optionally opening its source or diff blocks. Previously opened branches and viewers stay open; unrelated folded branches stay folded, including those exposed along the route. The Summary Tree item in a project file's context menu opens the Code Review summaries in this view and navigates to that file. File leaves show the file name and unfold the native source or diff viewer on click. A part's Full summary opens a block outlining every summary from the root down to it, with the parts its branch passes highlighted; these blocks and the source or diff viewers can be moved and resized freely, so summaries can be read side by side with the code they describe.

@@ -1,32 +1,10 @@
 # Schematic flow
 
-A schematic is a lossy, explorable reading of one file through the application's call graph. The reader starts from a file and opens its declarations and the calls they make, one level at a time, reading a summary of each symbol as it opens.
+A schematic is a lossy, explorable reading of a file through the application's call graph. Starting from a file, readers unfold declarations, calls, project usages, and on-demand summaries—including surrounding code gaps—while keeping the original source visible and verifiable.
 
-## Opening
+Calls come from static analysis and summaries from a model, with source links bridging the two. An attached chat can investigate the graph and project and unfold call chains directly onto the schematic.
 
-Opening builds or reuses the project's call graph. If the file cannot be shown, the reader gets a notification; details go to the IDE log. Analysis runs locally.
-
-## Exploring
-
-- Declarations and calls appear as clickable blocks, shown on a canvas or in a read-only IDE editor. Switching views keeps the exploration.
-- Source is never hidden: a declaration spanning several lines is one clickable frame around all of its source, like a summarized gap, while a one-line symbol stays a one-line block.
-- Summaries appear on demand and can be pinned. Each summary condenses the tree below its symbol, and unfolding one shows that reading beneath it, so several branches stay open at once.
-- A breadcrumb trail shows the path from the root and lets the reader return to earlier symbols.
-- A card's Side by side link or context menu opens that explored path in a separate source view, with each file positioned at that step and any generated summary above its source.
-- Exploration is never discarded; the reader can move freely beyond the initial graph.
-- Each opened source card keeps its resolved symbols clickable, including the references inside complete initializers and multiline statements.
-- Find usages on a symbol searches the project for callers and other references. Their source locations stay linked, and referencing symbols unfold alongside the existing exploration, so the initial file is a starting point rather than a boundary.
-- Summarize gaps describes meaningful source between known symbols on demand. Each gap grows to the complete statements or declarations the language parses around it, within a size bound; a construct too long to read whole is described by its header. A gap may hold known symbols, which stay clickable inside its frame while its folded bodies stay out of the summary. Original code stays visible, framed and linked by an arrow to an external summary card with a source link, alongside known-symbol cards; summaries have no generated title; the model uses relevant IDE facts and bounded surrounding source, and can read and search the file.
-
-## Trust
-
-Calls come from static analysis and summaries from a model, so source links are the way to verify them. External and unresolved calls stay visible rather than being hidden.
-
-## Chat
-
-A chat is attached to the canvas and lasts as long as the schematic. It investigates the graph and project on its own, then answers by unfolding call chains as ordinary cards the reader can keep exploring or fold away.
-
-## Entry points
+Entry points for further exploration:
 
 - [Schematic.kt](../src/main/kotlin/dev/insight/callgraph/Schematic.kt) — the model of rows and blocks
 - [SchematicEditor.kt](../src/main/kotlin/dev/insight/callgraph/SchematicEditor.kt) — the view and its actions
