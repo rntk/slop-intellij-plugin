@@ -253,6 +253,18 @@ internal abstract class DocumentColumnsPanel(
         val levelLabel: String? = null,
     )
 
+    /** The canvas owns zoom and navigation history; this panel identifies the clicked file. */
+    var focusFile: (Int) -> Unit = {}
+    fun fileSection(index: Int): JComponent? = sections.getOrNull(index)
+    /** File rows top to bottom, in panel coordinates; zooming keeps the reader's place within a row. */
+    internal fun zoomRows(): List<Pair<Int, Int>> = tops.indices.map { tops[it] to bottoms[it] }
+    /** Summary, diff and rail columns left to right, in panel coordinates. */
+    internal fun zoomColumns(): List<Pair<Int, Int>> {
+        val doc = sections.firstOrNull() ?: return emptyList()
+        return listOf(0 to doc.x, doc.x to doc.x + doc.width, doc.x + doc.width to maxOf(width, preferredSize.width))
+    }
+    internal val navigation by lazy { DocumentNavigation(this) }
+
     private val sections = mutableListOf<JComponent>()
     private val notes = mutableListOf<JComponent>()
     private val noteColumns = mutableListOf<JComponent>()
@@ -287,7 +299,15 @@ internal abstract class DocumentColumnsPanel(
     protected fun cardFont(base: Font) = base.zoomed(cardScale(zoom))
     protected val help: Color get() = UIUtil.getContextHelpForeground()
 
-    init { isOpaque = false }
+    init {
+        isOpaque = false
+        isFocusable = true
+        addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) requestFocusInWindow()
+            }
+        })
+    }
 
     protected abstract fun openFile(file: ReviewSource)
     protected abstract fun showFile(file: ReviewSource)
@@ -403,6 +423,7 @@ internal abstract class DocumentColumnsPanel(
         var y = 0
         files.forEachIndexed { index, file ->
             val section = section(file, docWidth)
+            installSectionZoom(section, index)
             val note = note(file, summaries[file.path], missingSummary, summaryWidth)
             val height = maxOf(section.preferredSize.height, rowMinimums[index])
             section.setBounds(docX, y, docWidth, height)
@@ -427,6 +448,7 @@ internal abstract class DocumentColumnsPanel(
         documentHeight = (y - scaled(SECTION_GAP)).coerceAtLeast(0)
         preferredSize = Dimension(railX + railWidth, documentHeight)
         applyActive()
+        navigation
     }
 
     /**
@@ -633,7 +655,11 @@ internal abstract class DocumentColumnsPanel(
             override fun mouseExited(e: MouseEvent) {
                 if (hovered == item && !card.contains(SwingUtilities.convertPoint(e.component, e.point, card))) { hovered = null; applyActive() }
             }
-            override fun mouseClicked(e: MouseEvent) { if (SwingUtilities.isLeftMouseButton(e)) { select(item); applyActive() } }
+            override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1 && e.modifiersEx == 0 && !e.isConsumed) {
+                    select(item); applyActive(); focusFile(item.first)
+                }
+            }
         }
         fun attach(component: Component) {
             if (component is ActionLink) return
@@ -643,6 +669,22 @@ internal abstract class DocumentColumnsPanel(
         }
         attach(this)
         installActivation(this, {}, { focusedRail = if (it) item else focusedRail?.takeUnless { it == item }; applyActive() })
+    }
+
+    /** Plain clicks on the diff focus it; links, scrollbars and other controls keep their own actions. */
+    private fun installSectionZoom(root: JComponent, index: Int) {
+        val listener = object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1 && e.modifiersEx == 0 && !e.isConsumed)
+                    focusFile(index)
+            }
+        }
+        fun attach(component: Component) {
+            if (component is javax.swing.AbstractButton || component is ActionLink || component is javax.swing.JScrollBar) return
+            component.addMouseListener(listener)
+            if (component is Container) component.components.forEach(::attach)
+        }
+        attach(root)
     }
 
     /** Descendants include source controls and keyboard navigation targets. */

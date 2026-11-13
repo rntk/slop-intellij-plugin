@@ -370,6 +370,258 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
+    fun testDocumentClickZoomAndBackRestoreScaleAndReadingPosition() {
+        val files = (0..7).map { index ->
+            ReviewFile("src/$index.kt", "/repo/src/$index.kt", null, "modified",
+                "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(80), "1")
+        }
+        val topics = ReviewTopics(files).assign(files[0].path, "Earlier>Other")
+            .assign(files[1].path, "Target>Details").assign(files[2].path, "Target>Details")
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
+            fun settle() {
+                layoutTree(canvas)
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                layoutTree(canvas)
+            }
+            fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
+            fun panel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, panel()) as javax.swing.JScrollPane
+            fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text
+            fun click(component: Component) {
+                component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+                settle()
+            }
+            settle()
+            repeat(4) { button("document-zoom-out").doClick() }
+            settle()
+            val originalScale = percentage()
+            scroll().viewport.viewPosition = Point(0, 110)
+            val originalPosition = Point(scroll().viewport.viewPosition)
+            val page = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, scroll()) as javax.swing.JScrollPane
+            page.viewport.viewPosition = Point(70, 20)
+            val originalPagePosition = Point(page.viewport.viewPosition)
+            assertFalse(button("document-zoom-back").isEnabled)
+            val title = descendants(panel()).filterIsInstance<javax.swing.text.JTextComponent>().single { it.text == "Target" }
+            click(title)
+            assertEquals("100%", percentage())
+            val first = panel().fileSection(1)!!
+            val expected = javax.swing.SwingUtilities.convertPoint(panel(), first.location, scroll().viewport.view)
+            assertEquals(expected.y, scroll().viewport.viewPosition.y)
+            assertEquals(0, javax.swing.SwingUtilities.convertPoint(first, 0, 0, page.viewport).x)
+            val focusedPosition = Point(scroll().viewport.viewPosition)
+            // A second click has its own return point, including when the scale is already readable.
+            click(descendants(panel().fileSection(2)!!).filterIsInstance<PatchView>().single())
+            assertTrue(button("document-zoom-back").isEnabled)
+            scroll().actionMap.get("document-back").actionPerformed(java.awt.event.ActionEvent(scroll(), 0, "Escape"))
+            settle()
+            assertEquals("100%", percentage())
+            assertEquals(focusedPosition, scroll().viewport.viewPosition)
+            button("document-zoom-back").doClick()
+            settle()
+            assertEquals(originalScale, percentage())
+            assertEquals(originalPosition, scroll().viewport.viewPosition)
+            assertEquals(originalPagePosition, page.viewport.viewPosition)
+            assertFalse(button("document-zoom-back").isEnabled)
+        } finally { canvas.dispose() }
+    }
+
+    fun testDocumentNavigationAnimatesAndCanReverseOrBeInterrupted() {
+        val files = (0..7).map { index ->
+            ReviewFile("src/$index.kt", "/repo/src/$index.kt", null, "modified",
+                "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(80), "1")
+        }
+        val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature")
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
+            fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
+            fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text.removeSuffix("%").toInt()
+            fun panel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun settle() {
+                layoutTree(canvas)
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                layoutTree(canvas)
+            }
+            fun click() {
+                val file = panel().fileSection(1)!!
+                file.dispatchEvent(MouseEvent(file, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            }
+            repeat(4) { button("document-zoom-out").doClick(); settle(); canvas.documentMotionFrame(1.0) }
+            settle()
+            val original = percentage()
+            assertFalse(canvas.documentMotionRunning)
+            // The destination is built once; frames only move snapshots, so the scale is final immediately.
+            val before = panel()
+            click()
+            assertEquals(100, percentage())
+            assertTrue(canvas.documentMotionRunning)
+            settle()
+            val rebuilt = panel()
+            assertNotSame(before, rebuilt)
+            canvas.documentMotionFrame(0.5)
+            canvas.documentMotionFrame(0.75)
+            assertSame(rebuilt, panel())
+            // Escape reverses from the current frame.
+            val back = descendants(canvas).filterIsInstance<javax.swing.JScrollPane>().first { it.actionMap.get("document-back") != null }
+            back.actionMap.get("document-back").actionPerformed(java.awt.event.ActionEvent(back, 0, "Escape"))
+            assertEquals(original, percentage())
+            assertTrue(canvas.documentMotionRunning)
+            settle()
+            canvas.documentMotionFrame(1.0)
+            assertFalse(canvas.documentMotionRunning)
+            assertFalse(button("document-zoom-back").isEnabled)
+            click()
+            settle()
+            canvas.documentMotionFrame(0.5)
+            button("document-zoom-reset").doClick()
+            settle()
+            canvas.documentMotionFrame(1.0)
+            assertEquals(100, percentage())
+            click()
+            settle()
+            canvas.documentMotionFrame(1.0)
+            settle()
+            val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, panel()) as javax.swing.JScrollPane
+            val target = javax.swing.SwingUtilities.convertPoint(panel(), panel().fileSection(1)!!.location, scroll.viewport.view)
+            assertEquals(target.y, scroll.viewport.viewPosition.y)
+            // Ctrl+wheel scales a snapshot and rebuilds once the gesture settles.
+            val wheelPanel = panel()
+            repeat(2) {
+                wheelPanel.dispatchEvent(java.awt.event.MouseWheelEvent(wheelPanel, MouseEvent.MOUSE_WHEEL, 1,
+                    java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
+                    java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1))
+            }
+            assertSame(wheelPanel, panel())
+            assertEquals(76, percentage())
+            canvas.commitWheelZoom()
+            settle()
+            assertNotSame(wheelPanel, panel())
+            assertEquals(76, percentage())
+            canvas.documentMotionFrame(1.0)
+            assertFalse(canvas.documentMotionRunning)
+        } finally { canvas.dispose() }
+        // A disposed canvas cannot receive a delayed timer frame.
+        canvas.documentMotionFrame(1.0)
+    }
+
+    fun testFolderDocumentCardZoomsToItsFirstDiff() {
+        val files = listOf("a/one.kt", "b/two.kt", "b/three.kt").map { path ->
+            ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val canvas = NoteCanvas({}, {}).apply {
+            setSize(1200, 700)
+            summariesView.mode = ReviewSummariesMode.DOCUMENT
+        }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(buildSummaryTree(files)), false, false)))
+            repeat(3) { (descendants(canvas).single { it.name == "document-zoom-out" } as javax.swing.JButton).doClick() }
+            val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
+            val folder = panel.components.single { it.name == "node:directory:b" }
+            folder.dispatchEvent(MouseEvent(folder, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            assertEquals("100%", (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text)
+            assertTrue((descendants(canvas).single { it.name == "document-zoom-back" } as javax.swing.JButton).isEnabled)
+        } finally { canvas.dispose() }
+    }
+
+    fun testDocumentZoomKeepsTheFileRowUnderThePointer() {
+        val files = (0..23).map { index ->
+            ReviewFile("src/$index.kt", "/repo/src/$index.kt", null, "modified",
+                "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(20 + index % 4 * 10), "1")
+        }
+        val topics = files.fold(ReviewTopics(files)) { acc, file -> acc.assign(file.path, "Product>Area ${file.path}") }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700) }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
+            fun settle() {
+                layoutTree(canvas)
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                layoutTree(canvas)
+            }
+            fun panel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun scroll() = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, panel()) as javax.swing.JScrollPane
+            /** The file row and fraction of it under the viewport point. */
+            fun spot(point: Point): Pair<Int, Double> {
+                val inPanel = javax.swing.SwingUtilities.convertPoint(scroll().viewport, point, panel())
+                val rows = panel().zoomRows()
+                val row = rows.indexOfLast { it.first <= inPanel.y }
+                val end = rows.getOrNull(row + 1)?.first ?: rows[row].second
+                return row to (inPanel.y - rows[row].first).toDouble() / (end - rows[row].first)
+            }
+            fun wheel(rotation: Int, point: Point) {
+                val target = panel()
+                val at = javax.swing.SwingUtilities.convertPoint(scroll().viewport, point, target)
+                target.dispatchEvent(java.awt.event.MouseWheelEvent(target, MouseEvent.MOUSE_WHEEL, 1,
+                    java.awt.event.InputEvent.CTRL_DOWN_MASK, at.x, at.y, 0, false,
+                    java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, rotation))
+                settle()
+            }
+            settle()
+            scroll().viewport.viewPosition = Point(0, 2400)
+            settle()
+            val pointer = Point(400, 300)
+            val before = spot(pointer)
+            // Rails scale differently from diffs, so a large zoom-out re-lays out rows unevenly; the row stays put.
+            repeat(3) { wheel(3, pointer) }
+            val after = spot(pointer)
+            assertEquals(before.first, after.first)
+            assertEquals(before.second, after.second, 0.02)
+            repeat(3) { wheel(-3, pointer) }
+            assertEquals(before.first, spot(pointer).first)
+        } finally { canvas.dispose() }
+    }
+
+    fun testWheelZoomRebuildsDuringLargeGesturesAndCrossFades() {
+        val files = (0..5).map { index ->
+            ReviewFile("src/$index.kt", "/repo/src/$index.kt", null, "modified",
+                "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(40), "1")
+        }
+        val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature")
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
+            fun settle() {
+                layoutTree(canvas)
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                layoutTree(canvas)
+            }
+            fun panel() = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            fun percentage() = (descendants(canvas).single { it.name == "document-zoom-level" } as JLabel).text.removeSuffix("%").toInt()
+            fun wheel(rotation: Int) {
+                val target = panel()
+                target.dispatchEvent(java.awt.event.MouseWheelEvent(target, MouseEvent.MOUSE_WHEEL, 1,
+                    java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
+                    java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, rotation))
+            }
+            settle()
+            val start = panel()
+            wheel(2)
+            // 1.15² stays within the bitmap budget: no rebuild yet.
+            assertSame(start, panel())
+            wheel(2)
+            // 1.15⁴ exceeds it, so the real layout is rebuilt under the bitmap mid-gesture.
+            assertNotSame(start, panel())
+            assertEquals(57, percentage())
+            settle()
+            val rebuilt = panel()
+            wheel(1)
+            // A rebuild cross-fades before the next one; the gesture keeps going on the bitmap meanwhile.
+            assertSame(rebuilt, panel())
+            assertEquals(50, percentage())
+            canvas.documentMotionFrame(0.5)
+            assertTrue(canvas.documentMotionRunning)
+            canvas.commitWheelZoom()
+            canvas.documentMotionFrame(1.0)
+            // The fade has ended and the gesture paused, so the remaining step is rebuilt and faded in.
+            assertNotSame(rebuilt, panel())
+            settle()
+            assertEquals(50, percentage())
+            canvas.documentMotionFrame(1.0)
+            assertFalse(canvas.documentMotionRunning)
+        } finally { canvas.dispose() }
+    }
+
     fun testDocumentZoomReachesTenPercentWithButtonsAndWheel() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
@@ -387,9 +639,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
             button("document-zoom-reset").doClick()
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
-            panel.dispatchEvent(java.awt.event.MouseWheelEvent(panel, MouseEvent.MOUSE_WHEEL, 1,
-                java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
-                java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 100))
+            // A single event is capped, so a flick steps instead of leaping; repeated events still reach the minimum.
+            repeat(12) {
+                val current = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+                current.dispatchEvent(java.awt.event.MouseWheelEvent(current, MouseEvent.MOUSE_WHEEL, 1,
+                    java.awt.event.InputEvent.CTRL_DOWN_MASK, 5, 5, 0, false,
+                    java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 100))
+                if (it == 0) assertEquals("66%", percentage())
+            }
             assertEquals("10%", percentage())
             button("document-zoom-in").doClick()
             assertEquals("12%", percentage())
@@ -466,8 +723,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(rail.height >= (rail as JComponent).preferredSize.height)
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            val focusedPanel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
+            val focusedRail = focusedPanel.components.single { it.name == rail.name }
+            focusedRail.dispatchEvent(MouseEvent(focusedRail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             layoutTree(canvas)
-            val selectedSummary = panel.components.single { it.name?.startsWith("card-summary:") == true } as Container
+            val selectedSummary = focusedPanel.components.single { it.name?.startsWith("card-summary:") == true } as Container
             assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.text.JTextComponent>()
                 .single { it.text == longWord }, longWord)
         } finally { canvas.dispose() }
@@ -511,6 +771,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             val rail = rail()
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false))
             rail.dispatchEvent(MouseEvent(rail, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            rail().let { it.dispatchEvent(MouseEvent(it, MouseEvent.MOUSE_ENTERED, 0, 0, 5, 5, 0, false)) }
             layoutTree(canvas)
             val selectedSummary = document().components.single { it.name == "card-summary:${folderNode.identity}" } as Container
             assertWordFitsOnOneLine(descendants(selectedSummary).filterIsInstance<javax.swing.text.JTextComponent>()
@@ -643,10 +904,48 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(100, scroll.viewport.viewPosition.y)
             assertEquals(200, scroll.viewport.viewPosition.x)
             assertEquals(documentPosition, document.location)
+            val canvasPanes = generateSequence(scroll.parent) { it.parent }.filterIsInstance<javax.swing.JScrollPane>().toList()
+            val canvasPositions = canvasPanes.map { Point(it.viewport.viewPosition) }
+            fun wheel(target: Component, horizontal: Boolean = false, rotation: Int = 1) {
+                val event = java.awt.event.MouseWheelEvent(target, MouseEvent.MOUSE_WHEEL, 1,
+                    if (horizontal) java.awt.event.InputEvent.SHIFT_DOWN_MASK else 0,
+                    20, 20, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, rotation)
+                target.dispatchEvent(event)
+                assertTrue(event.isConsumed)
+            }
+            // Real input can land on the painted source, viewport, or the scroll pane itself.
+            for (target in listOf(scroll.viewport.view, scroll.viewport, scroll)) {
+                scroll.viewport.viewPosition = Point(200, 100)
+                wheel(target)
+                assertTrue(scroll.viewport.viewPosition.y > 100)
+                assertEquals(200, scroll.viewport.viewPosition.x)
+                wheel(target, horizontal = true)
+                assertTrue(scroll.viewport.viewPosition.x > 200)
+                assertEquals(canvasPositions, canvasPanes.map { Point(it.viewport.viewPosition) })
+            }
+            scroll.verticalScrollBar.value = scroll.verticalScrollBar.maximum
+            scroll.horizontalScrollBar.value = scroll.horizontalScrollBar.maximum
+            wheel(scroll.viewport.view)
+            wheel(scroll.viewport.view, horizontal = true)
+            assertEquals(canvasPositions, canvasPanes.map { Point(it.viewport.viewPosition) })
+            scroll.viewport.viewPosition = Point()
+            wheel(scroll.viewport.view, rotation = -1)
+            wheel(scroll.viewport.view, horizontal = true, rotation = -1)
+            assertEquals(Point(), scroll.viewport.viewPosition)
+            assertEquals(canvasPositions, canvasPanes.map { Point(it.viewport.viewPosition) })
             val narrowSection = document.components.single { it.name == "file:${narrow.path}" } as Container
             val narrowScroll = descendants(narrowSection).single { it.name == "document-source-scroll" } as javax.swing.JScrollPane
             assertTrue(narrowScroll.verticalScrollBar.isVisible)
             assertFalse(narrowScroll.horizontalScrollBar.isVisible)
+            wheel(narrowScroll.viewport.view, horizontal = true)
+            assertTrue("An axis without block overflow pans the canvas",
+                canvasPanes.zip(canvasPositions).any { (pane, before) -> pane.viewport.viewPosition.x > before.x })
+            val blockPosition = Point(scroll.viewport.viewPosition)
+            scroll.dispatchEvent(java.awt.event.MouseWheelEvent(scroll, MouseEvent.MOUSE_WHEEL, 1,
+                java.awt.event.InputEvent.CTRL_DOWN_MASK, 20, 20, 0, false,
+                java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1))
+            assertEquals("Zoom must not also scroll the old block", blockPosition, scroll.viewport.viewPosition)
+            assertNotSame(document, descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single())
         } finally { canvas.dispose() }
     }
 

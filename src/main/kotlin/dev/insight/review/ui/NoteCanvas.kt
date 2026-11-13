@@ -1,6 +1,7 @@
 package dev.insight.review.ui
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -22,6 +23,7 @@ import dev.insight.review.explanationCard
 import dev.insight.review.fillSummaryRequest
 import dev.insight.review.resummaryRequest
 import dev.insight.review.seedTopicSummaries
+import dev.insight.ui.layoutZoomContent
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BorderLayout
@@ -30,9 +32,11 @@ import java.awt.Container
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Point
+import java.awt.geom.Point2D
 import java.awt.Rectangle
-import java.awt.event.MouseWheelEvent
 import javax.swing.*
+import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -133,6 +137,47 @@ internal class NoteCanvas(
     private val zoom = 1.0
     private val snapshotCards = SnapshotCanvasCards(open, remove, ::focusNote, sourceActions, vocabulary, project, zoom)
     private var documentZoom = 1.0
+    private data class DocumentView(val zoom: Double, val position: Point, val pagePosition: Point)
+    private val documentHistory = mutableMapOf<CanvasTabKey, ArrayDeque<DocumentView>>()
+    /** The card is rebuilt once at the destination; frames only transform two bitmaps on [DocumentZoomOverlay]. */
+    private inner class DocumentMotion(val key: CanvasTabKey, val card: JPanel, val from: DocumentZoomSnapshot, val duration: Double) {
+        var to: DocumentZoomSnapshot? = null
+        /** Zooms end where the old bitmap, scaled around the anchor, lands; [to] is rebased to appear there. */
+        var toView: DocumentZoomView? = null
+        var started = System.nanoTime()
+        val timer = Timer(1000 / 60) {
+            documentMotionFrame((System.nanoTime() - started) / 1e6 / duration)
+        }.apply { isCoalesce = true }
+    }
+    /**
+     * Ctrl+wheel scales a bitmap immediately. The real layout is not uniform in zoom, so the card is rebuilt whenever
+     * the bitmap drifts more than [WHEEL_REBUILD_RATIO] from it and once the gesture pauses; each rebuild keeps the
+     * content under the pointer in place and cross-fades into the new layout.
+     */
+    private inner class DocumentWheelZoom(val key: CanvasTabKey, var scroll: JScrollPane, var from: DocumentZoomSnapshot) {
+        var view = from.view
+        /** The pointer in [scroll]'s viewport. */
+        var point = Point()
+        /** The bitmap before the latest rebuild, fading out over [from]. */
+        var previous: DocumentZoomSnapshot? = null
+        var fade = 0.0
+        var fadeStarted = 0L
+        var rebuilding = false
+        var settled = false
+        val settle = Timer(WHEEL_SETTLE_MS) { settled = true; advanceWheelZoom() }.apply { isRepeats = false }
+        val fadeTimer = Timer(1000 / 60) {
+            wheelFadeFrame((System.nanoTime() - fadeStarted) / 1e6 / WHEEL_FADE_MS)
+        }.apply { isCoalesce = true }
+    }
+    /** A reader's spot in the live document, tied to its file row and column so it survives a non-uniform re-layout. */
+    private class DocumentAnchor(val viewportPoint: Point, val viewPoint: Point2D.Double, val zoom: Double,
+                                 val row: DocumentBandAnchor?, val column: DocumentBandAnchor?)
+    private var documentMotion: DocumentMotion? = null
+    private var documentWheel: DocumentWheelZoom? = null
+    private var documentOverlay: DocumentZoomOverlay? = null
+    private var documentMotionVersion = 0
+    /** Allows deterministic animation frames in headless tests. */
+    internal var animatedDocuments: Boolean? = null
 
     init {
         minimumSize = Dimension(100, 100)
@@ -142,6 +187,7 @@ internal class NoteCanvas(
     }
 
     fun showNotes(state: CanvasState) {
+        stopDocumentMotion()
         if (state.topics == null) summarySession.stopTopics(CanvasTabKey.Topics)
         if (state.grouping == null) summarySession.stopTopics(CanvasTabKey.Grouping)
         fileViewCardBuilder.update(state.fileView)
@@ -189,6 +235,7 @@ internal class NoteCanvas(
                 if (pages[key] === page) page.viewport.viewPosition = position
             } }
         }
+        documentHistory.keys.retainAll(pages.keys)
         pages[selected]?.let { tabs.selectedComponent = it }
         if (built.isEmpty()) tabs.addTab("Review", JBScrollPane(emptyState()))
         editorPages.keys.retainAll(pages.keys)
@@ -289,32 +336,322 @@ internal class NoteCanvas(
 
     /** Zoom the document around a point in its viewport, keeping that content under the pointer. */
     private fun zoomDocument(key: CanvasTabKey, requested: Double, anchor: Point? = null) {
+        finishWheelZoom()
         val old = cards[key]?.let(::bodyScroll) ?: return
         val next = requested.coerceIn(MIN_DOCUMENT_ZOOM, MAX_DOCUMENT_ZOOM)
         if (next == documentZoom) return
         val point = anchor ?: Point(old.viewport.width / 2, old.viewport.height / 2)
-        val previous = Point(old.viewport.viewPosition)
-        val ratio = next / documentZoom
-        documentZoom = next
-        refreshCard(key)
-        val updated = cards[key]?.let(::bodyScroll) ?: return
+        val position = old.viewport.viewPosition
+        val spot = documentAnchor(old, point, Point2D.Double((position.x + point.x).toDouble(), (position.y + point.y).toDouble()))
+        val host = SwingUtilities.convertPoint(old.viewport, point, documentHost(key))
+        navigateDocument(key, next, ZOOM_MOTION_MS, host) { placeDocument(key, it, spot, next) }
+    }
+
+    private fun rememberDocumentScroll(key: CanvasTabKey, y: Int) = when (key) {
+        CanvasTabKey.Topics -> topicsCardBuilder.scroll = y
+        CanvasTabKey.Grouping -> groupingCardBuilder.scroll = y
+        CanvasTabKey.FileView -> fileViewCardBuilder.scroll = y
+        else -> summariesCardBuilder.scrollTo(key, y)
+    }
+
+    private fun documentPanel(scroll: JScrollPane): DocumentColumnsPanel? =
+        descendantsOf(scroll.viewport).filterIsInstance<DocumentColumnsPanel>().firstOrNull()
+
+    /** [viewPoint] is in the document view's pixels at the current zoom; [viewportPoint] is where it appears. */
+    private fun documentAnchor(scroll: JScrollPane, viewportPoint: Point, viewPoint: Point2D.Double): DocumentAnchor {
+        val panel = documentPanel(scroll)
+        val origin = panel?.let { SwingUtilities.convertPoint(it, 0, 0, scroll.viewport.view) } ?: Point()
+        return DocumentAnchor(Point(viewportPoint), viewPoint, documentZoom,
+            panel?.let { documentBandAnchor(it.zoomRows(), viewPoint.y - origin.y) },
+            panel?.let { documentBandAnchor(it.zoomColumns(), viewPoint.x - origin.x) })
+    }
+
+    /** Scrolls a rebuilt, laid-out document so the anchored content is back under the same viewport point. */
+    private fun placeDocument(key: CanvasTabKey, scroll: JScrollPane, anchor: DocumentAnchor, zoom: Double) {
+        val view = scroll.viewport.view ?: return
+        val ratio = zoom / anchor.zoom
+        val panel = documentPanel(scroll)
+        val origin = panel?.let { SwingUtilities.convertPoint(it, 0, 0, view) } ?: Point()
+        val x = panel?.let { p -> anchor.column?.let { resolveDocumentBandAnchor(it, p.zoomColumns()) } }?.plus(origin.x)
+            ?: (anchor.viewPoint.x * ratio)
+        val y = panel?.let { p -> anchor.row?.let { resolveDocumentBandAnchor(it, p.zoomRows()) } }?.plus(origin.y)
+            ?: (anchor.viewPoint.y * ratio)
+        val extent = scroll.viewport.extentSize
+        val width = maxOf(view.width, view.preferredSize.width)
+        val height = maxOf(view.height, view.preferredSize.height)
         val target = Point(
-            ((previous.x + point.x) * ratio - point.x).roundToInt().coerceAtLeast(0),
-            ((previous.y + point.y) * ratio - point.y).roundToInt().coerceAtLeast(0),
+            (x - anchor.viewportPoint.x).roundToInt().coerceIn(0, (width - extent.width).coerceAtLeast(0)),
+            (y - anchor.viewportPoint.y).roundToInt().coerceIn(0, (height - extent.height).coerceAtLeast(0)),
         )
-        when (key) {
-            CanvasTabKey.Topics -> topicsCardBuilder.scroll = target.y
-            CanvasTabKey.Grouping -> groupingCardBuilder.scroll = target.y
-            CanvasTabKey.FileView -> fileViewCardBuilder.scroll = target.y
-            else -> summariesCardBuilder.scrollTo(key, target.y)
-        }
+        scroll.viewport.viewPosition = target
+        rememberDocumentScroll(key, target.y)
+    }
+
+    private fun layoutDocumentHost(key: CanvasTabKey) {
+        // IDE editor pages can be hosted outside the standalone preview canvas.
+        val host = pages[key]?.parent ?: this
+        layoutZoomContent(if (SwingUtilities.isDescendingFrom(host, this)) this else host)
+    }
+
+    /** Rebuilds the card at [zoom] and keeps [anchor] in place, including after builders restore their old scroll. */
+    private fun rebuildDocument(key: CanvasTabKey, zoom: Double, anchor: DocumentAnchor): JScrollPane? {
+        documentZoom = zoom
+        refreshCard(key)
+        val card = cards[key] ?: return null
+        val updated = bodyScroll(card) ?: return null
+        layoutDocumentHost(key)
+        placeDocument(key, updated, anchor, zoom)
         SwingUtilities.invokeLater {
-            if (cards[key]?.let(::bodyScroll) === updated) updated.viewport.viewPosition = target
+            if (cards[key] !== card || documentZoom != zoom) return@invokeLater
+            layoutDocumentHost(key)
+            placeDocument(key, updated, anchor, zoom)
         }
+        return updated
+    }
+
+    private fun wheelZoomDocument(key: CanvasTabKey, scroll: JScrollPane, factor: Double, point: Point) {
+        if (!documentAnimated(key)) { zoomDocument(key, documentZoom * factor, point); return }
+        val wheel = documentWheel?.takeIf { it.key == key && it.scroll === scroll } ?: run {
+            finishWheelZoom()
+            // Wheel frames scale a bitmap of the real layout, so the gesture starts from what is laid out now.
+            stopDocumentMotion()
+            val from = documentSnapshot(key, live = true) ?: run { zoomDocument(key, documentZoom * factor, point); return }
+            DocumentWheelZoom(key, scroll, from).also { documentWheel = it }
+        }
+        val zoom = (wheel.view.zoom * factor).coerceIn(MIN_DOCUMENT_ZOOM, MAX_DOCUMENT_ZOOM)
+        wheel.point = Point(point)
+        wheel.settled = false
+        wheel.view = documentZoomAround(wheel.view, SwingUtilities.convertPoint(scroll.viewport, point, documentHost(key)), zoom)
+        showWheelZoom(wheel)
+        cards[key]?.let(::descendantsOf)?.firstOrNull { it.name == "document-zoom-level" }
+            ?.let { (it as? JLabel)?.text = "${(zoom * 100).roundToInt()}%" }
+        wheel.settle.restart()
+        advanceWheelZoom()
+    }
+
+    private fun showWheelZoom(wheel: DocumentWheelZoom) {
+        val previous = wheel.previous
+        if (previous == null) showDocumentOverlay(wheel.key, wheel.from, null, wheel.view, 0.0)
+        else showDocumentOverlay(wheel.key, previous, wheel.from, wheel.view, wheel.fade)
+    }
+
+    private fun wheelDrift(wheel: DocumentWheelZoom) = abs(ln(wheel.view.zoom / documentZoom))
+
+    /** Rebuilds when the bitmap has drifted too far from the real layout or the gesture has paused; ends once both agree. */
+    private fun advanceWheelZoom() {
+        val wheel = documentWheel ?: return
+        if (wheel.rebuilding || wheel.previous != null) return
+        val drift = wheelDrift(wheel)
+        when {
+            drift > ln(WHEEL_REBUILD_RATIO) || (wheel.settled && drift > ZOOM_EPSILON) -> rebuildWheelZoom(wheel)
+            wheel.settled -> stopDocumentMotion()
+        }
+    }
+
+    /** The live content under the pointer. Wheel views use the live layout's coordinates at 100%. */
+    private fun wheelAnchor(wheel: DocumentWheelZoom): DocumentAnchor {
+        val host = SwingUtilities.convertPoint(wheel.scroll.viewport, wheel.point, documentHost(wheel.key))
+        val view = wheel.view
+        return documentAnchor(wheel.scroll, wheel.point, Point2D.Double(
+            (view.content.x + (host.x - view.screen.x) / view.zoom) * documentZoom,
+            (view.content.y + (host.y - view.screen.y) / view.zoom) * documentZoom,
+        ))
+    }
+
+    private fun rebuildWheelZoom(wheel: DocumentWheelZoom) {
+        val key = wheel.key
+        if (cards[key]?.let(::bodyScroll) !== wheel.scroll) { stopDocumentMotion(); return }
+        wheel.rebuilding = true
+        val updated = rebuildDocument(key, wheel.view.zoom, wheelAnchor(wheel)) ?: run { stopDocumentMotion(); return }
+        wheel.scroll = updated
+        val card = cards[key]
+        // Runs after the rebuild has restored its final position.
+        SwingUtilities.invokeLater {
+            if (documentWheel !== wheel) return@invokeLater
+            if (cards[key] !== card) { stopDocumentMotion(); return@invokeLater }
+            val next = documentSnapshot(key, live = true) ?: run { stopDocumentMotion(); return@invokeLater }
+            val shown = wheel.view
+            // Steps taken during the rebuild continue from the new layout; the old bitmap fades out where it is.
+            val view = documentZoomAround(next.view, SwingUtilities.convertPoint(updated.viewport, wheel.point, documentHost(key)), shown.zoom)
+            wheel.previous = documentZoomRebase(wheel.from, shown, view)
+            wheel.from = next
+            wheel.view = view
+            wheel.rebuilding = false
+            wheel.fade = 0.0
+            wheel.fadeStarted = System.nanoTime()
+            showWheelZoom(wheel)
+            if (animatedDocuments == null) wheel.fadeTimer.start()
+        }
+    }
+
+    private fun wheelFadeFrame(progress: Double) {
+        val wheel = documentWheel ?: return
+        if (wheel.previous == null) return
+        if (cards[wheel.key]?.let(::bodyScroll) !== wheel.scroll) { stopDocumentMotion(); return }
+        if (progress < 1.0) {
+            wheel.fade = easeDocumentZoom(progress)
+            showWheelZoom(wheel)
+            return
+        }
+        wheel.fadeTimer.stop()
+        wheel.previous = null
+        wheel.fade = 0.0
+        showWheelZoom(wheel)
+        advanceWheelZoom()
+    }
+
+    /** Settles the wheel gesture now, as if it had paused. */
+    internal fun commitWheelZoom() {
+        val wheel = documentWheel ?: return
+        wheel.settle.stop()
+        wheel.settled = true
+        advanceWheelZoom()
+    }
+
+    /** Other moves start from the real layout, so a pending wheel zoom is applied without animation. */
+    private fun finishWheelZoom() {
+        val wheel = documentWheel ?: return
+        val current = cards[wheel.key]?.let(::bodyScroll) === wheel.scroll
+        val anchor = if (current && !wheel.rebuilding && wheelDrift(wheel) > ZOOM_EPSILON) wheelAnchor(wheel) else null
+        val zoom = wheel.view.zoom
+        stopDocumentMotion()
+        anchor?.let { rebuildDocument(wheel.key, zoom, it) }
+    }
+
+    private fun focusDocumentFile(key: CanvasTabKey, index: Int) {
+        finishWheelZoom()
+        val scroll = cards[key]?.let(::bodyScroll) ?: return
+        val from = DocumentView(documentZoom, Point(scroll.viewport.viewPosition), Point(pages[key]?.viewport?.viewPosition ?: Point()))
+        documentHistory.getOrPut(key) { ArrayDeque() }.addLast(from)
+        navigateDocument(key, maxOf(documentZoom, 1.0)) { updated ->
+            val panel = descendantsOf(updated.viewport).filterIsInstance<DocumentColumnsPanel>().firstOrNull() ?: return@navigateDocument
+            val section = panel.fileSection(index) ?: return@navigateDocument
+            val target = SwingUtilities.convertPoint(panel, section.location, updated.viewport.view)
+            val horizontalRoom = (updated.viewport.view.width - updated.viewport.extentSize.width).coerceAtLeast(0)
+            updated.viewport.viewPosition = Point(target.x.coerceIn(0, horizontalRoom), target.y.coerceAtLeast(0))
+            // Wide documents can scroll in the containing page instead of the document's own viewport.
+            pages[key]?.viewport?.let { viewport ->
+                val x = SwingUtilities.convertPoint(section, 0, 0, viewport.view).x
+                val room = (viewport.view.width - viewport.extentSize.width).coerceAtLeast(0)
+                viewport.viewPosition = Point(x.coerceIn(0, room), 0)
+            }
+            section.requestFocusInWindow()
+        }
+    }
+
+    private fun backDocument(key: CanvasTabKey) {
+        finishWheelZoom()
+        val previous = documentHistory[key]?.removeLastOrNull() ?: return
+        navigateDocument(key, previous.zoom) { updated ->
+            updated.viewport.viewPosition = previous.position
+            pages[key]?.viewport?.viewPosition = previous.pagePosition
+            descendantsOf(updated.viewport).filterIsInstance<DocumentColumnsPanel>().firstOrNull()?.requestFocusInWindow()
+        }
+    }
+
+    /**
+     * Like wall navigation, ease scale and both scroll positions together, with one history entry per click.
+     * Rebuilding the card per frame re-lays out every diff, so the card is rebuilt once at [targetZoom] and the
+     * move is played on bitmaps of the views before and after.
+     */
+    private fun navigateDocument(key: CanvasTabKey, targetZoom: Double, duration: Double = NAVIGATION_MOTION_MS,
+                                 zoomAnchor: Point? = null, place: (JScrollPane) -> Unit) {
+        val from = if (documentAnimated(key)) documentSnapshot(key) else null
+        stopDocumentMotion()
+        documentZoom = targetZoom
+        refreshCard(key)
+        val card = cards[key] ?: return
+        val updated = bodyScroll(card) ?: return
+        val version = documentMotionVersion
+        fun place(): Boolean {
+            if (version != documentMotionVersion || cards[key] !== card || bodyScroll(card) !== updated) return false
+            layoutDocumentHost(key)
+            place(updated)
+            return true
+        }
+        place()
+        if (from == null) {
+            // Card builders restore their old scroll asynchronously; this move owns the final position.
+            SwingUtilities.invokeLater { place() }
+            return
+        }
+        val motion = DocumentMotion(key, card, from, duration)
+        documentMotion = motion
+        // The previous view covers the rebuilt card until the destination can be captured.
+        showDocumentOverlay(key, from, null, from.view, 0.0)
+        SwingUtilities.invokeLater {
+            if (!place() || documentMotion !== motion) return@invokeLater
+            val to = documentSnapshot(key, live = true) ?: run { stopDocumentMotion(); return@invokeLater }
+            if (zoomAnchor == null) motion.to = to else {
+                // Scale the old bitmap around the anchor and fade in the new layout where it actually lands, rather than
+                // sliding between layouts whose coordinates do not scale uniformly.
+                val target = documentZoomAround(from.view, zoomAnchor, targetZoom)
+                motion.toView = target
+                motion.to = documentZoomRebase(to, to.view, target)
+            }
+            motion.started = System.nanoTime()
+            if (animatedDocuments == null) motion.timer.start()
+        }
+    }
+
+    internal fun documentMotionFrame(progress: Double) {
+        if (documentWheel != null) { wheelFadeFrame(progress); return }
+        val motion = documentMotion ?: return
+        if (cards[motion.key] !== motion.card || (animatedDocuments == null && !motion.card.isShowing)) {
+            stopDocumentMotion(); return
+        }
+        val to = motion.to ?: return
+        if (progress >= 1.0) { stopDocumentMotion(); return }
+        val t = easeDocumentZoom(progress)
+        showDocumentOverlay(motion.key, motion.from, to, documentZoomViewAt(motion.from.view, motion.toView ?: to.view, t), t)
+    }
+
+    internal val documentMotionRunning: Boolean get() = documentMotion != null || documentWheel != null
+
+    private fun stopDocumentMotion() {
+        documentMotion?.timer?.stop()
+        documentMotion = null
+        documentWheel?.let { it.settle.stop(); it.fadeTimer.stop() }
+        documentWheel = null
+        documentOverlay?.detach()
+        documentOverlay = null
+        documentMotionVersion++
+    }
+
+    private fun documentAnimated(key: CanvasTabKey) = animatedDocuments
+        ?: (cards[key]?.isShowing == true && ApplicationManager.getApplication()?.isUnitTestMode == false)
+
+    private fun documentView(scroll: JScrollPane): JComponent? = scroll.viewport.view as? JComponent
+
+    /** Overlays live above the card wherever it is hosted, including IDE editor tabs. */
+    private fun documentHost(key: CanvasTabKey): Component = cards[key]?.let(SwingUtilities::getRootPane)?.layeredPane ?: this
+
+    /** What readers currently see: the overlay frame while one is shown, otherwise the live document. */
+    private fun documentSnapshot(key: CanvasTabKey, live: Boolean = false): DocumentZoomSnapshot? {
+        if (!live) documentOverlay?.takeIf { it.view != null }?.snapshot(this)?.let { return it }
+        val view = cards[key]?.let(::bodyScroll)?.let(::documentView) ?: return null
+        return captureDocumentZoom(view, view.visibleRect, documentZoom, documentHost(key), documentBackground(view))
+    }
+
+    private fun documentBackground(view: Component): java.awt.Color =
+        generateSequence(view) { it.parent }.firstOrNull { it.isOpaque }?.background ?: UIUtil.getPanelBackground()
+
+    private fun showDocumentOverlay(key: CanvasTabKey, from: DocumentZoomSnapshot, to: DocumentZoomSnapshot?, view: DocumentZoomView, fade: Double) {
+        val fill = cards[key]?.let(::bodyScroll)?.let(::documentView)?.let(::documentBackground) ?: UIUtil.getPanelBackground()
+        val overlay = documentOverlay ?: DocumentZoomOverlay(fill).also { documentOverlay = it }
+        overlay.fill = fill
+        (documentHost(key) as? JLayeredPane)?.let(overlay::attach)
+        overlay.show(from, to, view, fade)
     }
 
     private fun documentZoomControls(key: CanvasTabKey): JComponent = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(2), 0)).apply {
         isOpaque = false
+        add(JButton("Back").apply {
+            name = "document-zoom-back"
+            toolTipText = "Return to the view before clicking a card or diff (Esc)"
+            isEnabled = documentHistory[key]?.isNotEmpty() == true
+            addActionListener { backDocument(key) }
+        })
         add(JButton("−").apply {
             name = "document-zoom-out"
             toolTipText = "Zoom out (Ctrl/⌘ + wheel)"
@@ -337,21 +674,45 @@ internal class NoteCanvas(
     }
 
     private fun installDocumentWheelZoom(key: CanvasTabKey, scroll: JScrollPane) {
-        val listener = java.awt.event.MouseWheelListener { event: MouseWheelEvent ->
-            if (!event.isControlDown && !event.isMetaDown) {
-                if (event.component !== scroll) {
-                    scroll.dispatchEvent(SwingUtilities.convertMouseEvent(event.component, event, scroll))
+        descendantsOf(scroll.viewport).filterIsInstance<DocumentColumnsPanel>().forEach { panel ->
+            panel.focusFile = { index -> focusDocumentFile(key, index) }
+        }
+        scroll.getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke("ESCAPE"), "document-back")
+        scroll.actionMap.put("document-back", object : AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent) { backDocument(key) }
+        })
+        // Intercept before the native listeners so a gesture scrolls exactly one pane,
+        // and Ctrl/⌘+wheel only zooms, without first scrolling a nested block.
+        val components = listOf<Component>(scroll, scroll.viewport) + descendantsOf(scroll.viewport)
+        components.distinct().forEach { component ->
+            val nativeListeners = component.mouseWheelListeners.toList()
+            nativeListeners.forEach(component::removeMouseWheelListener)
+            component.addMouseWheelListener { event ->
+                if (event.isControlDown || event.isMetaDown) {
+                    val point = SwingUtilities.convertPoint(event.component, event.point, scroll.viewport)
+                    wheelZoomDocument(key, scroll, 1.15.pow(-event.preciseWheelRotation.coerceIn(-MAX_WHEEL_ROTATION, MAX_WHEEL_ROTATION)), point)
+                    event.consume()
+                } else {
+                    // The overlay cannot follow a scroll, so the real layout takes over first.
+                    if (documentWheel?.key == key) finishWheelZoom()
+                    val panes = generateSequence(event.component) { it.parent }
+                        .filterIsInstance<JScrollPane>()
+                    val target = panes.firstOrNull { pane ->
+                        val bar = if (event.isShiftDown) pane.horizontalScrollBar else pane.verticalScrollBar
+                        pane.isWheelScrollingEnabled && bar.maximum - bar.minimum > bar.visibleAmount
+                    } ?: scroll
+                    if (target === component) {
+                        val bar = if (event.isShiftDown) target.horizontalScrollBar else target.verticalScrollBar
+                        val canMove = if (event.preciseWheelRotation < 0) bar.value > bar.minimum
+                            else bar.value < bar.maximum - bar.visibleAmount
+                        // JBScrollPane forwards wheel input to its parent at an edge; stop it here.
+                        if (canMove) nativeListeners.forEach { it.mouseWheelMoved(event) }
+                    } else target.dispatchEvent(SwingUtilities.convertMouseEvent(component, event, target))
+                    // A scrollable block owns the gesture even at its limits.
                     event.consume()
                 }
-                return@MouseWheelListener
             }
-            val point = SwingUtilities.convertPoint(event.component, event.point, scroll.viewport)
-            zoomDocument(key, documentZoom * 1.15.pow(-event.preciseWheelRotation), point)
-            event.consume()
         }
-        scroll.addMouseWheelListener(listener)
-        scroll.viewport.addMouseWheelListener(listener)
-        descendantsOf(scroll.viewport).forEach { it.addMouseWheelListener(listener) }
     }
 
     /** Both the card and its editor page can scroll; use whichever top edge currently hides more of the card. */
@@ -359,6 +720,11 @@ internal class NoteCanvas(
         val inner = bodyScroll(card) ?: return
         val target = descendantsOf(card).filterIsInstance<JComponent>()
             .firstOrNull { it is DocumentColumnsPanel || it is HierarchyColumnsPanel } ?: return
+        if (target is DocumentColumnsPanel) {
+            target.navigation.install(page)
+            card.getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke("ESCAPE"), "document-back")
+            card.actionMap.put("document-back", inner.actionMap.get("document-back"))
+        }
         stickyTargets[key] = target
         inner.viewport.addChangeListener { updateStickyScrolling(key, page) }
         if (page.getClientProperty("diff.stickyScrolling") != true) {
@@ -579,6 +945,7 @@ internal class NoteCanvas(
     private fun scaled(value: Int) = zoomScaled(value, zoom)
     private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)
     override fun dispose() {
+        stopDocumentMotion()
         summarySession.dispose()
         summariesCardBuilder.dispose()
         topicsCardBuilder.dispose()
@@ -590,6 +957,15 @@ internal class NoteCanvas(
     private companion object {
         const val MIN_DOCUMENT_ZOOM = 0.1
         const val MAX_DOCUMENT_ZOOM = 3.0
+        const val NAVIGATION_MOTION_MS = 260.0
+        const val ZOOM_MOTION_MS = 160.0
+        const val WHEEL_SETTLE_MS = 140
+        const val WHEEL_FADE_MS = 90.0
+        /** How far a wheel bitmap may be scaled before the real layout is rebuilt under it. */
+        const val WHEEL_REBUILD_RATIO = 1.5
+        /** Caps one wheel event (one notch is 1), so fast flicks step instead of leaping. */
+        const val MAX_WHEEL_ROTATION = 3.0
+        const val ZOOM_EPSILON = 1e-6
         const val GAP = 20
     }
 }
