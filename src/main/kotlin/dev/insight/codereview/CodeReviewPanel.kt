@@ -63,6 +63,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import dev.insight.review.ui.ReviewHubScreen
 import dev.insight.review.ui.ReviewSidePages
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.ui.ReviewStartScreen
@@ -86,12 +87,14 @@ class CodeReviewToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-/** Activates the Code Review tool window, creating its panel, and passes the panel to [action]. */
+/**
+ * Passes the Code Review panel to [action], creating it without showing the tool window: the review opens in the editor area,
+ * and the side panel shows only once a chat is opened. Should the window have no panel yet, it is activated, which opens the hub.
+ */
 private fun withCodeReviewPanel(project: Project, action: (CodeReviewPanel) -> Unit) {
     val window = ToolWindowManager.getInstance(project).getToolWindow(CODE_REVIEW_TOOL_WINDOW) ?: return
-    window.activate {
-        window.contentManager.contents.firstNotNullOfOrNull { it.component as? CodeReviewPanel }?.let(action)
-    }
+    fun panel() = window.contentManager.contents.firstNotNullOfOrNull { it.component as? CodeReviewPanel }
+    panel()?.let(action) ?: window.activate { panel()?.let(action) }
 }
 
 class OpenCodeReviewAction : DumbAwareAction() {
@@ -133,8 +136,8 @@ class ReviewDirectoryAction : DumbAwareAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val target = target(e) ?: return
-        // Choosing the folder or file here is the Start page's choice, so the review continues to its views.
-        withCodeReviewPanel(project) { if (it.setScope(target)) it.openCanvas(true) }
+        // Choosing the folder or file here is the Start page's choice, so the review continues to the hub of its views.
+        withCodeReviewPanel(project) { if (it.setScope(target)) it.openReview(true) }
     }
 
     private fun target(e: AnActionEvent): VirtualFile? {
@@ -252,25 +255,24 @@ internal class CodeReviewPanel(
         }, BorderLayout.SOUTH)
     }
     /**
-     * The Start page in the editor area, where the scope is chosen and its files browsed; the side panel and every view page
-     * lead back to it.
+     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it,
+     * and the Start page and every view page lead back to it.
      */
+    internal val hub = ReviewHubScreen(project, ReviewVocabulary.CODE) { tabs.add() }
+    /** The Start page in the editor area, where the scope is chosen and its files browsed; each tab's Scope tile opens it. */
     internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.CODE, ReviewStartText(
         heading = "Choose the code to review",
         hint = "Review a project folder, or an entry file with the project files it depends on. Leave the folder empty for the " +
             "project root. Load reads the files listed below; Continue goes on to the summaries, topics, Code wall and words.",
-        change = "Change scope",
-        changeTooltip = "Open the Start page to choose another folder, entry file or exclusions, and browse the files in scope",
-    ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
-        tabs.openCanvas(true)
+    ), scopeControls, filesPanel, ReviewPipeline.code, back = hub::button) { pipelines ->
+        tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
-    /** The review tab controls, with the way back to the Start page floating on their edge; the selected review tab's chat has its own page. */
-    private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
-    private val pages = ReviewSidePages(start.floating(main, this))
+    /** The tool window's content: the selected review tab's chat. */
+    private val pages = ReviewSidePages()
     private val tabs: ReviewTabsController<CodeReviewTab> = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
-        startupReady, ::selectedPaths, start = start, create = { paths, focus, toChat ->
+        startupReady, ::selectedPaths, hub = hub, start = start, create = { paths, focus, toChat ->
             CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = toChat)
         }) { tab ->
         snapshot?.let { tab.update(it) }
@@ -278,19 +280,8 @@ internal class CodeReviewPanel(
     }
 
     init {
-        border = JBUI.Borders.empty(6)
-        val reviewPanel = JPanel(BorderLayout()).apply {
-            add(JPanel(BorderLayout()).apply {
-                border = JBUI.Borders.emptyBottom(6)
-                add(JButton("New tab").apply {
-                    toolTipText = "Start a fresh chat and canvas for the whole scope"
-                    addActionListener { tabs.add() }
-                }, BorderLayout.WEST)
-            }, BorderLayout.NORTH)
-            add(tabs.component, BorderLayout.CENTER)
-        }
-        main.add(reviewPanel, BorderLayout.CENTER)
         add(pages, BorderLayout.CENTER)
+        Disposer.register(this, hub)
         Disposer.register(this, start)
         tabs.add()
         tree.isRootVisible = false
@@ -393,7 +384,7 @@ internal class CodeReviewPanel(
         watchedFiles = if (scope.entry) setOf(scope.absolutePath) else null
         scopeControls.show(scope)
         val excluded = scope.excludes.takeIf { it.isNotEmpty() }
-        start.showSource("Scope: ${scope.displayName}" + (excluded?.let { " · ${it.size} excluded" } ?: ""),
+        hub.showSource("Scope: ${scope.displayName}" + (excluded?.let { " · ${it.size} excluded" } ?: ""),
             scope.absolutePath.ifEmpty { scope.displayName } + (excluded?.let { "\nExcluded: ${CodeExclusions.format(it)}" } ?: ""))
         refresh(stopTabs = true)
     }
@@ -515,7 +506,7 @@ internal class CodeReviewPanel(
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
 
-    /** Opens the Start page until a review has been shown, then the selected tab's canvas. */
+    /** Opens the hub, with the review tabs and their views. */
     fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
     /** Opens the current tab's summaries in the Tree view on [file]; a file outside the tab's scope is reported. */
@@ -660,7 +651,7 @@ internal class CodeReviewPanel(
 }
 
 /** Skipped files, counting every file over the limits rather than only the listed ones. */
-private fun skippedCount(snapshot: CodeSnapshot?): Int {
+internal fun skippedCount(snapshot: CodeSnapshot?): Int {
     if (snapshot == null) return 0
     val listedOverLimit = snapshot.skipped.count { it.reason == SkipReason.LIMIT }
     return snapshot.skipped.size - listedOverLimit + snapshot.overLimit

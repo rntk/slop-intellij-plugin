@@ -21,7 +21,6 @@ import java.awt.BorderLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JTabbedPane
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -94,26 +93,22 @@ internal class ReviewContextSummaryLauncher(
 }
 
 /**
- * A review tool window's two pages: Main holds the scope, files and review tab controls, and Chat gives the selected review
- * tab's chat the full height. A Swing chat has one parent, so it moves here whenever its review tab is selected.
+ * A review tool window's content: the selected review tab's chat, at the full height of the side panel. The tabs and their
+ * views live on the hub in the editor area (see [ReviewHubScreen]); a Swing chat has one parent, so it moves here whenever
+ * its review tab is selected.
  */
-internal class ReviewSidePages(main: JComponent) : JTabbedPane() {
+internal class ReviewSidePages : JPanel(BorderLayout()) {
     private val chatTitle = JLabel().apply { border = JBUI.Borders.empty(4, 12, 0, 12) }
     private val chatHost = JPanel(BorderLayout())
     private var chat: JComponent? = null
     private var input: JComponent? = null
 
     init {
-        addTab("Main", main)
-        addTab("Chat", JPanel(BorderLayout()).apply {
-            add(chatTitle, BorderLayout.NORTH)
-            add(chatHost, BorderLayout.CENTER)
-        })
-        setToolTipTextAt(CHAT, "The selected review tab's conversation")
-        addChangeListener { if (selectedIndex == CHAT) input?.requestFocusInWindow() }
+        add(chatTitle, BorderLayout.NORTH)
+        add(chatHost, BorderLayout.CENTER)
     }
 
-    /** Shows [chat], the conversation of the review tab named [name], focusing [input] on selection; null leaves the page empty. */
+    /** Shows [chat], the conversation of the review tab named [name], focused through [input]; null leaves the page empty. */
     fun showChat(chat: JComponent?, input: JComponent?, name: String) {
         chatTitle.text = if (chat == null) "" else "Review tab: $name"
         this.input = input
@@ -125,10 +120,6 @@ internal class ReviewSidePages(main: JComponent) : JTabbedPane() {
         chatHost.repaint()
     }
 
-    /** Switches to the Chat page, which focuses its input. */
-    fun selectChat() { selectedIndex = CHAT }
-
-    private companion object {
-        const val CHAT = 1
-    }
+    /** Focuses the shown chat's input, once the tool window has been activated to show it. */
+    fun selectChat() { input?.requestFocusInWindow() }
 }

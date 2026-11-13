@@ -13,7 +13,6 @@ import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.util.ui.JBUI
 import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatTool
@@ -52,8 +51,6 @@ import dev.insight.settings.configuredContextCharsForOutput
 import dev.insight.settings.ChatSettings
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.GridLayout
-import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import kotlinx.coroutines.*
@@ -62,7 +59,12 @@ import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.ReviewTileStat
 import dev.insight.review.ui.ReviewViewOption
+import dev.insight.review.ui.countStat
+import dev.insight.review.ui.summaryStats
+import dev.insight.review.ui.tileCount
+import dev.insight.review.ui.topicStats
 import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
@@ -184,22 +186,37 @@ internal class DiffReviewTab(
 
     override fun viewOptions() = listOf(
         ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
-            "Read the change as summaries, from the whole change down to each file (/summaries)"),
+            "Read the change as summaries, from the whole change down to each file (/summaries)") { summaryStats(state.summaries) },
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
-            "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)"),
+            "Read every diff as one document, grouped by topic, with each file's summary beside it (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
-            "Read every diff as one document, grouped by shared change cause and affected code (/grouping)"),
+            "Read every diff as one document, grouped by shared change cause and affected code (/grouping)") { topicStats(state.grouping, "group") },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
-            "Lay out every changed file's raw diff as a movable block on one canvas"),
+            "Lay out every changed file's raw diff as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
-            "Chart the words of the removed and added lines: removed on the left, added on the right"),
+            "Chart the words of the removed and added lines: removed on the left, added on the right") { lineStats() },
         ReviewViewOption(CanvasTabKey.DiffOverview, "Diff overview",
-            "Compare deleted and added line counts with compact word lists filling opposite corners"),
+            "Compare deleted and added line counts with compact word lists filling opposite corners") { lineStats() },
         ReviewViewOption(CanvasTabKey.Semantic, "Metrics",
-            "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs"),
+            "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs") {
+            state.readySemantic?.let { listOf(countStat(it.declarations.size, "function counted", "functions counted")) }.orEmpty()
+        },
         ReviewViewOption(CanvasTabKey.Moves, "Moves",
-            "Find code removed from one file and added to another, and chart where each file's code went"),
+            "Find code removed from one file and added to another, and chart where each file's code went") {
+            state.foundMoves?.let { listOf(countStat(it.blocks.size, "moved block")) }.orEmpty()
+        },
     )
+
+    /** The changed lines, once the words have been counted for the current snapshot; counting is left to the charts. */
+    private fun lineStats(): List<ReviewTileStat> = state.countedWords?.lines?.let {
+        listOf(ReviewTileStat("+${tileCount(it.added)}", "added"), ReviewTileStat("−${tileCount(it.deleted)}", "deleted"))
+    }.orEmpty()
+
+    override fun sourceStats(): List<ReviewTileStat> {
+        val files = state.snapshot.files
+        val untracked = files.count { it.status == "untracked" }
+        return listOfNotNull(countStat(files.size, "file"), untracked.takeIf { it > 0 }?.let { countStat(it, "untracked included", "untracked included") })
+    }
 
     override fun openView(key: CanvasTabKey) {
         when (key) {
@@ -328,22 +345,7 @@ internal class DiffReviewTab(
     init {
         minimumSize = Dimension(300, 200)
         chat.input.emptyText.text = "/summaries, /topics, /grouping, /explain or ask about this tab's changes…"
-        add(JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4)
-            add(scopeLabel, BorderLayout.NORTH)
-            add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(viewSelector, BorderLayout.NORTH)
-                add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
-                    add(JButton("Open review").apply {
-                        toolTipText = "Open this review's tabs in the IDE editor area"
-                        addActionListener { openCanvas(true) }
-                    })
-                    add(JButton("Clear tabs").apply {
-                        addActionListener { state.clearNotes(); renderCanvas() }
-                    })
-                }, BorderLayout.CENTER)
-            }, BorderLayout.CENTER)
-        }, BorderLayout.NORTH)
+        add(tileArea(scopeLabel) { state.clearNotes(); renderCanvas() }, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, wallChats)
@@ -371,6 +373,7 @@ internal class DiffReviewTab(
         renderCanvas()
         updateControls()
         runScheduled()
+        scheduleTileRefresh()
         return previousNotes - state.notes.size
     }
 
@@ -446,9 +449,7 @@ internal class DiffReviewTab(
     }
 
     private fun updateControls() {
-        val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
-        viewSelector.isViewEnabled = { hasFiles }
-        viewSelector.isEnabled = hasFiles
+        updateViewTiles()
         val paths = state.scopePaths
         scopeLabel.text = if (paths == null) "Scope: All changes · ${state.snapshot.files.size} files"
             else "Scope: ${paths.size} files · ${state.snapshot.files.size} currently changed"
@@ -477,6 +478,7 @@ internal class DiffReviewTab(
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
+        scheduleTileRefresh()
     }
 
     /** Snapshot tools stay scoped; current project files remain readable for supporting context. */

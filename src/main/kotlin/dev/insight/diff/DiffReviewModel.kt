@@ -66,6 +66,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     internal val words: WordChanges get() = counted?.takeIf { wordsOf === snapshot.files } ?: wordChanges(snapshot.files).also {
         counted = it; wordsOf = snapshot.files
     }
+    /** [words] when already counted for the current snapshot, else null; it never counts, so a hub tile may read it. */
+    internal val countedWords: WordChanges? get() = counted?.takeIf { wordsOf === snapshot.files }
     fun showWords() { wordsVisible = true }
     fun hideWords() { wordsVisible = false }
     var diffOverviewVisible = false
@@ -80,6 +82,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     /** The result for the current snapshot; [SemanticResult.Counting] until one is delivered. */
     internal val semantic: SemanticResult get() = semanticCounted?.takeIf { semanticOf === snapshot.files } ?: SemanticResult.Counting
     internal val semanticPending: Boolean get() = semantic === SemanticResult.Counting
+    /** The semantic changes when counted for the current snapshot, else null; reading it starts no count. */
+    internal val readySemantic: SemanticChanges? get() = (semantic as? SemanticResult.Ready)?.changes
     /** Keeps [result] unless the snapshot changed since [files] were counted. */
     internal fun setSemantic(files: List<ReviewFile>, result: SemanticResult): Boolean {
         if (files !== snapshot.files) return false
@@ -99,6 +103,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     internal val moves: CodeMoves get() = found?.takeIf { movesOf === snapshot.files } ?: codeMoves(snapshot.files).also {
         found = it; movesOf = snapshot.files
     }
+    /** [moves] when already found for the current snapshot, else null; it never searches, so a hub tile may read it. */
+    internal val foundMoves: CodeMoves? get() = found?.takeIf { movesOf === snapshot.files }
     fun showMoves() { movesVisible = true }
     fun hideMoves() { movesVisible = false }
     /** The scope of the Diffs wall while it is on the canvas; see [wallFiles]. */

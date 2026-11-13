@@ -18,8 +18,10 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.SummaryKind
 import dev.insight.review.summarize
-import dev.insight.review.ui.ReviewViewSelector
+import dev.insight.review.ui.chooseView
+import dev.insight.review.ui.tileStats
 import dev.insight.review.ui.viewLabels
+import dev.insight.review.ui.viewsEnabled
 import java.awt.Container
 import javax.swing.JLabel
 import java.util.concurrent.atomic.AtomicInteger
@@ -170,11 +172,15 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         try {
             tab.update(codeSnapshot(codeFile("src/a.kt", "val a = 1\n")))
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
-            assertTrue(buttons.containsAll(listOf("Open review", "Clear tabs")))
-            assertFalse(buttons.any { it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
+            assertTrue(buttons.contains("Clear tabs"))
+            assertFalse(buttons.any { it == "Open review" || it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
             assertEquals(listOf("Summaries", "Topics", "Code wall", "Words"), viewLabels(tab))
-            assertSame(tab.viewSelector, descendants(tab).filterIsInstance<ReviewViewSelector>().single())
-            assertTrue(tab.viewSelector.isEnabled)
+            assertEquals(listOf("Scope", "Summaries", "Topics", "Code wall", "Words", "Open chat"), tab.tileGrid.tiles.map { it.title })
+            assertTrue(descendants(tab).any { it === tab.tileGrid })
+            assertTrue(viewsEnabled(tab))
+            assertEquals(listOf("1 file"), tileStats(tab, "source"))
+            assertEquals(listOf("1 file"), tileStats(tab, "view-wall"))
+            assertTrue("Words are counted only by the Words page", tileStats(tab, "view-words").isEmpty())
             assertTrue(tab.state.summariesVisible)
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, tab.canvas.summariesView.mode)
             assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
@@ -192,6 +198,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Words", tab.canvas.pageTitle(dev.insight.review.CanvasTabKey.Words))
             fun cloudWords() = descendants(tab.canvas).filterIsInstance<CodeWordCloud>().singleOrNull()?.words?.words?.map { it.word }?.toSet()
             PlatformTestUtil.waitWithEventsDispatching("The words should be counted", { cloudWords() != null }, 20)
+            assertEquals("2 distinct words", tileStats(tab, "view-words").first())
             assertEquals(setOf("fun", "alpha"), cloudWords())
             tab.update(codeSnapshot(codeFile("src/a.kt", "val beta = 1\n")))
             PlatformTestUtil.waitWithEventsDispatching("The words should be counted again", { cloudWords() == setOf("val", "beta") }, 20)
@@ -237,18 +244,26 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val first = tabs.selectedInfo!!.component as CodeReviewTab
             assertEquals("Whole scope", tabs.selectedInfo!!.text)
             assertEquals("Code Review: Whole scope · Summaries", first.canvasFile.name)
-            // The Start page opens first, so the scope is chosen before the summaries; Continue goes on to them.
+            // The hub opens first; the Scope tile opens the Start page, where the scope is chosen, and Continue returns to the hub.
+            assertEquals("Code Review: Views", panel.hub.file.name)
+            assertTrue(manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            first.tileGrid.click("source")
             assertEquals("Code Review: Start", panel.start.file.name)
             assertTrue(manager.isFileOpen(panel.start.file))
-            assertFalse(manager.isFileOpen(first.canvasFile))
-            assertEquals("Scope: review", withStart(panel).filterIsInstance<JButton>().single { it.name == "review-start-open" }.text)
+            assertEquals("Scope: review", descendants(manager.getEditors(panel.start.file).single().component).filterIsInstance<JButton>()
+                .single { it.name == "review-hub-open" }.text)
+            manager.closeFile(panel.hub.file)
             panel.start.continueButton.doClick()
+            assertTrue(manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            chooseView(first, "Summaries")
             assertTrue(manager.isFileOpen(first.canvasFile))
-            // Every view page, like the side panel, leads back to the Start page.
-            manager.closeFile(panel.start.file)
+            // Every view page, like the Start page, leads back to the hub.
+            manager.closeFile(panel.hub.file)
             descendants(manager.getEditors(first.canvasFile).single().component).filterIsInstance<JButton>()
-                .single { it.name == "review-start-open" }.doClick()
-            assertTrue(manager.isFileOpen(panel.start.file))
+                .single { it.name == "review-hub-open" }.doClick()
+            assertTrue(manager.isFileOpen(panel.hub.file))
             assertEquals(listOf("review/a.kt", "review/sub/b.kt"), first.state.snapshot.files.map { it.path })
 
             val tree = withStart(panel).filterIsInstance<Tree>().single()
@@ -273,6 +288,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertNotSame(first, selection)
             assertEquals(setOf("review/sub"), selection.state.scopePaths)
             assertEquals(listOf("review/sub/b.kt"), selection.state.snapshot.files.map { it.path })
+            assertFalse("A new tab waits on the hub until one of its views is chosen", manager.isFileOpen(selection.canvasFile))
+            chooseView(selection, "Summaries")
             assertTrue(manager.isFileOpen(selection.canvasFile))
         } finally { Disposer.dispose(panel) }
         assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
@@ -497,8 +514,9 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { scope.cancel() }
     }
 
-    /** The side panel and its Start page in the editor area, where the source and its files are. */
-    private fun withStart(panel: CodeReviewPanel): List<java.awt.Component> = descendants(panel) + descendants(panel.start.page as Container)
+    /** The side panel, its Start page in the editor area, where the source and its files are, and its hub. */
+    private fun withStart(panel: CodeReviewPanel): List<java.awt.Component> =
+        descendants(panel) + descendants(panel.start.page as Container) + descendants(panel.hub.page as Container)
 
     private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {

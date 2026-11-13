@@ -11,7 +11,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.util.ui.JBUI
 import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.chat.ChatPanel
@@ -56,8 +55,6 @@ import dev.insight.review.summariesReply
 import dev.insight.review.topicsReply
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.GridLayout
-import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.Timer
@@ -77,7 +74,11 @@ import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.ReviewTileStat
 import dev.insight.review.ui.ReviewViewOption
+import dev.insight.review.ui.countStat
+import dev.insight.review.ui.summaryStats
+import dev.insight.review.ui.topicStats
 import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
@@ -207,14 +208,24 @@ internal class CodeReviewTab(
 
     override fun viewOptions() = listOf(
         ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
-            "Read every source file as one document, with file paths and summaries (/summaries)"),
+            "Read every source file as one document, with file paths and summaries (/summaries)") { summaryStats(state.summaries) },
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
-            "Read every source file as one document, grouped by topic, with each file's summary (/topics)"),
+            "Read every source file as one document, grouped by topic, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,
-            "Lay out the source of every file in scope as a movable block on one canvas"),
+            "Lay out the source of every file in scope as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
-            "Chart the most frequent words of the source in scope: larger words occur more often"),
+            "Chart the most frequent words of the source in scope: larger words occur more often") {
+            // Only a count that matches the current files and scope; counting is left to the Words page.
+            wordCount?.takeIf { it.counts(state.snapshot.files, wordScope) }?.words
+                ?.let { listOf(countStat(it.distinctWords, "distinct word"), countStat(it.totalWords, "word")) }.orEmpty()
+        },
     )
+
+    override fun sourceStats(): List<ReviewTileStat> {
+        val snapshot = state.snapshot
+        val skipped = skippedCount(snapshot)
+        return listOfNotNull(countStat(snapshot.files.size, "file"), skipped.takeIf { it > 0 }?.let { countStat(it, "skipped", "skipped") })
+    }
 
     override fun openView(key: CanvasTabKey) {
         when (key) {
@@ -339,22 +350,7 @@ internal class CodeReviewTab(
     init {
         minimumSize = Dimension(300, 200)
         chat.input.emptyText.text = "/summaries, /topics, /explain or ask about the code in scope…"
-        add(JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4)
-            add(scopeLabel, BorderLayout.NORTH)
-            add(JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                add(viewSelector, BorderLayout.NORTH)
-                add(JPanel(GridLayout(1, 2, JBUI.scale(4), 0)).apply {
-                    add(JButton("Open review").apply {
-                        toolTipText = "Open this review's tabs in the IDE editor area"
-                        addActionListener { openCanvas(true) }
-                    })
-                    add(JButton("Clear tabs").apply {
-                        addActionListener { state.clearNotes(); closeFileView() }
-                    })
-                }, BorderLayout.CENTER)
-            }, BorderLayout.CENTER)
-        }, BorderLayout.NORTH)
+        add(tileArea(scopeLabel) { state.clearNotes(); closeFileView() }, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, wallChats)
@@ -395,6 +391,7 @@ internal class CodeReviewTab(
         renderCanvas()
         updateControls()
         runScheduled()
+        scheduleTileRefresh()
         return previousNotes - state.notes.size
     }
 
@@ -591,9 +588,7 @@ internal class CodeReviewTab(
     }
 
     private fun updateControls() {
-        val hasFiles = !state.refreshing && state.snapshot.files.isNotEmpty()
-        viewSelector.isViewEnabled = { hasFiles }
-        viewSelector.isEnabled = hasFiles
+        updateViewTiles()
         val snapshot = state.snapshot
         val paths = state.scopePaths
         val files = "${snapshot.files.size} ${if (snapshot.files.size == 1) "file" else "files"}"
@@ -619,6 +614,7 @@ internal class CodeReviewTab(
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
+        scheduleTileRefresh()
     }
 
     /** Snapshot tools stay scoped; current project files remain readable for supporting context. */

@@ -43,6 +43,18 @@ internal data class ReviewVocabulary(
     /** The entry menu item that opens an entry's files on the wall, and its tooltip. */
     val openOnWall: String,
     val openOnWallTooltip: String,
+    /** The hub tile that opens the Start page, where the source is chosen: "Diff" | "Scope", and what it does. */
+    val sourceTitle: String,
+    val sourceHint: String,
+    /** The hub tile that opens the tab's chat in the side panel. */
+    val chatHint: String,
+    /** The hub page's heading and hint; see [dev.insight.review.ui.ReviewHubScreen]. */
+    val hubHeading: String,
+    val hubHint: String,
+    /** The tooltip of the hub's New tab button. */
+    val newTabTooltip: String,
+    /** What the floating button on the Start and view pages does: "Back to the Diff review views". */
+    val backToHub: String,
     val groupingTitle: String = "Change grouping",
     val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
         "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
@@ -81,6 +93,14 @@ internal data class ReviewVocabulary(
             wallName = "Diffs wall",
             openOnWall = "Open on diffs wall",
             openOnWallTooltip = "Show the raw diffs of this entry's files together on the diffs wall",
+            sourceTitle = "Diff",
+            sourceHint = "Choose the diff to review and browse its changed files",
+            chatHint = "Ask about this tab's changes; /summaries, /topics, /grouping and /explain run here too",
+            hubHeading = "Diff review views",
+            hubHint = "Each review tab has its own chat and views of the chosen diff. Pick a view to open it in the editor; " +
+                "the side panel shows only the selected tab's chat.",
+            newTabTooltip = "Start a fresh chat and canvas for all files in the selected diff",
+            backToHub = "Back to the Diff review views",
         )
 
         val CODE = ReviewVocabulary(
@@ -113,6 +133,14 @@ internal data class ReviewVocabulary(
             wallName = "Code wall",
             openOnWall = "Open on code wall",
             openOnWallTooltip = "Show the source of this entry's files together on the code wall",
+            sourceTitle = "Scope",
+            sourceHint = "Choose the folder or entry file to review and browse its files",
+            chatHint = "Ask about this tab's code; /summaries, /topics and /explain run here too",
+            hubHeading = "Code review views",
+            hubHint = "Each review tab has its own chat and views of the chosen scope. Pick a view to open it in the editor; " +
+                "the side panel shows only the selected tab's chat.",
+            newTabTooltip = "Start a fresh chat and canvas for the whole scope",
+            backToHub = "Back to the Code review views",
         )
     }
 }

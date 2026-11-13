@@ -9,6 +9,7 @@ import com.intellij.psi.util.PsiModificationTracker
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.agent.ChatConversation
 import dev.insight.agent.ChatMessage
+import dev.insight.agent.ChatRole
 import dev.insight.agent.ChatTool
 import dev.insight.agent.ToolInputException
 import dev.insight.review.ChatFocus
@@ -36,7 +37,14 @@ import dev.insight.review.openReviewCanvas
 import dev.insight.review.textOf
 import dev.insight.review.typedExplainTarget
 import dev.insight.ui.EdgeTab
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.util.ui.JBFont
+import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
+import java.awt.FlowLayout
+import javax.swing.JButton
+import javax.swing.ScrollPaneConstants
+import javax.swing.Timer
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
@@ -49,13 +57,17 @@ import kotlinx.coroutines.withContext
 /**
  * What the Diff Review and Code Review tabs share: one conversation and canvas over a [state], the summaries and topics
  * cards, Explain and To Chat. A subclass creates the [canvas] and [session], lays out its controls and renders the canvas.
+ *
+ * On the hub (see [ReviewHubScreen]) the tab shows its scope above a [tileGrid]: the source tile, which opens the Start page,
+ * one tile per view of [viewOptions], and the tile that opens the chat. The tiles' stats follow the tab through
+ * [scheduleTileRefresh].
  */
 internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected val project: Project,
     val state: T,
     /** Pinned to every turn of this tab's chat; see [ChatFocus]. */
     val focus: ChatFocus?,
-    vocabulary: ReviewVocabulary,
+    private val vocabulary: ReviewVocabulary,
 ) : JPanel(BorderLayout()), Disposable, ReviewCanvasOwner {
     init { state.showSummaries() }
 
@@ -65,8 +77,12 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String = vocabulary.canvasTitle
     var onCanvasSelected: () -> Unit = {}
-    /** The button floating on each of this tab's view pages that leads back to the panel's Start page; see [ReviewStartScreen.button]. */
-    var startButton: ((Disposable) -> EdgeTab)? = null
+    /** The button floating on each of this tab's view pages that leads back to the hub; see [ReviewHubScreen.button]. */
+    var hubButton: ((Disposable) -> EdgeTab)? = null
+    /** What the source tile does: open the panel's Start page. */
+    var onOpenSource: () -> Unit = {}
+    /** What the chat tile does: select this tab and show its chat in the tool window. */
+    var onOpenChat: () -> Unit = {}
     override fun canvasSelected() = onCanvasSelected()
     abstract override val canvas: NoteCanvas
     abstract val session: ChatConversation
@@ -80,7 +96,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
 
-    /** The views of this tab, in the order of its [viewSelector]; the first is the one shown initially. */
+    /** The views of this tab, in the order of their tiles; the first is the one selected initially. */
     protected abstract fun viewOptions(): List<ReviewViewOption>
     /** Opens the page of [key]; summaries, topics and grouping are generated only from their page's buttons or a [schedule]. */
     protected open fun openView(key: CanvasTabKey) {
@@ -91,17 +107,86 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             else -> {}
         }
     }
-    val viewSelector: ReviewViewSelector by lazy { ReviewViewSelector(viewOptions(), ::openView) }
+    /** The stats of the source tile, read from values in memory like those of the views; see [ReviewViewOption.stats]. */
+    protected open fun sourceStats(): List<ReviewTileStat> = emptyList()
+
+    /** Built on first use, after the subclass has initialized what [viewOptions] reads. */
+    private val views: List<ReviewViewOption> by lazy { viewOptions() }
+
+    /** The source tile, a tile per view, and the chat tile; the selected one follows the view page shown in the editor. */
+    val tileGrid: ReviewTileGrid by lazy {
+        ReviewTileGrid(listOf(ReviewTile(SOURCE_TILE, vocabulary.sourceTitle, vocabulary.sourceHint) { onOpenSource() }) +
+            views.map { option ->
+                ReviewTile(viewTileId(option.key), option.label, option.tooltip) {
+                    tileGrid.setSelected(viewTileId(option.key))
+                    openView(option.key)
+                }
+            } +
+            ReviewTile(CHAT_TILE, "Open chat", vocabulary.chatHint) { onOpenChat() },
+        ).apply { setSelected(viewTileId(views.first().key)) }
+    }
+
+    /** Selects the tile of the view on [key]'s page; pages that are not views leave the selection as it is. */
+    private fun showView(key: CanvasTabKey) {
+        if (views.any { it.key == key }) tileGrid.setSelected(viewTileId(key))
+    }
+
+    /**
+     * The tab's controls on the hub: [scopeLabel] above the tiles, and below them a small button that empties the canvas
+     * with [clear].
+     */
+    protected fun tileArea(scopeLabel: JComponent, clear: () -> Unit): JComponent = JPanel(BorderLayout(0, JBUI.scale(8))).apply {
+        border = JBUI.Borders.empty(8, 4, 4, 4)
+        add(scopeLabel, BorderLayout.NORTH)
+        add(JBScrollPane(tileGrid, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER).apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+        }, BorderLayout.CENTER)
+        add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            add(JButton("Clear tabs").apply {
+                font = JBFont.small()
+                toolTipText = "Remove this tab's notes, cards and views from its canvas; summaries and topics are kept"
+                addActionListener { clear() }
+            })
+        }, BorderLayout.SOUTH)
+    }
+
+    /** View tiles open only while the tab has files and is not refreshing; the reason shows on the disabled tiles. */
+    protected fun updateViewTiles() {
+        val enabled = !state.refreshing && state.snapshotFiles.isNotEmpty()
+        val reason = if (state.refreshing) "Loading the files; the views open once they are loaded" else vocabulary.noFiles
+        views.forEach { tileGrid.setTileEnabled(viewTileId(it.key), enabled, reason.takeUnless { enabled }) }
+        scheduleTileRefresh()
+    }
+
+    /** Coalesces the tile stats updates of a burst of changes, such as a run saving summaries. */
+    private val tileTimer = Timer(TILE_REFRESH_MS) { refreshTiles() }.apply { isRepeats = false }
+
+    /** Updates the tiles' stats shortly, once for every call within [TILE_REFRESH_MS]. */
+    protected fun scheduleTileRefresh() {
+        if (!disposed) tileTimer.restart()
+    }
+
+    /** Sets every tile's stats now; they read values in memory only (EDT). Internal for tests. */
+    internal fun refreshTiles() {
+        if (disposed) return
+        val grid = tileGrid
+        grid.setStats(SOURCE_TILE, sourceStats())
+        views.forEach { grid.setStats(viewTileId(it.key), it.stats()) }
+        // Questions and answers only: the welcome, notices and tool steps are not counted.
+        grid.setStats(CHAT_TILE, chatStats(session.messages.count { it.role == ChatRole.USER || it.role == ChatRole.ASSISTANT }, session.busy))
+    }
 
     private fun artifactFile(key: CanvasTabKey): ReviewCanvasFile = artifactFiles.getOrPut(key) {
         ReviewCanvasFile(object : ReviewCanvasOwner {
             override val canvas get() = this@ReviewTab.canvas.editorPage(key)
             override val isDisposed get() = disposed
             override val canvasTitle get() = this@ReviewTab.canvasTitle
-            override fun floatingButton(parent: Disposable) = this@ReviewTab.startButton?.invoke(parent)
+            override fun floatingButton(parent: Disposable) = this@ReviewTab.hubButton?.invoke(parent)
             override fun canvasSelected() {
                 this@ReviewTab.canvas.selectPage(key)
-                this@ReviewTab.viewSelector.show(key)
+                this@ReviewTab.showView(key)
                 this@ReviewTab.canvasSelected()
             }
         })
@@ -143,7 +228,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     /** Follows the chat: [before] runs first on every change, then the controls, cards and explanation are updated. */
     protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
-        canvas.onPageFocused = { viewSelector.show(it); openArtifact(it) }
+        canvas.onPageFocused = { showView(it); openArtifact(it) }
         canvas.onPagesChanged = {
             val added = canvas.pageKeys - knownPages - CanvasTabKey.Summaries
             knownPages = canvas.pageKeys.toSet()
@@ -154,6 +239,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             before()
             updateControls()
             summariesChanged()
+            scheduleTileRefresh()
             if (explanations.update(session.messages, session.busy)) {
                 renderCanvas()
                 if (explanations.result != null) showCanvas { canvas.focusExplanation() }
@@ -302,6 +388,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.updateTopics(topicsCard())
         canvas.updateGrouping(groupingCard())
         runScheduled()
+        scheduleTileRefresh()
     }
 
     /** The focus of a To Chat on the files and folders [entries] of this tab's scope; null when they reach no file. */
@@ -311,7 +398,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         disposed = true
         pipelines.clear()
         onCanvasSelected = {}
-        startButton = null
+        hubButton = null
+        onOpenSource = {}
+        onOpenChat = {}
+        tileTimer.stop()
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         artifactFiles.values.forEach {

@@ -46,9 +46,10 @@
                     factoryClass="dev.insight.chat.ChatToolWindowFactory"/>
         <toolWindow id="Canvas Sessions" anchor="right" icon="/icons/insight.svg"
                     factoryClass="dev.insight.canvas.CanvasSessionsToolWindowFactory"/>
-        <toolWindow id="Diff Review" anchor="right" icon="/icons/diff-review.svg"
+        <!-- Review tool windows hold only the selected review tab's chat; their stripe buttons open the hub in the editor. -->
+        <toolWindow id="Diff Review" anchor="right" icon="/icons/diff-review.svg" doNotActivateOnStart="true"
                     factoryClass="dev.insight.diff.DiffReviewToolWindowFactory"/>
-        <toolWindow id="Code Review" anchor="right" icon="/icons/code-review.svg"
+        <toolWindow id="Code Review" anchor="right" icon="/icons/code-review.svg" doNotActivateOnStart="true"
                     factoryClass="dev.insight.codereview.CodeReviewToolWindowFactory"/>
         <!-- Raw request/response traffic of the LLM and Decisions APIs, for debugging. -->
         <toolWindow id="Insight API Logs" anchor="bottom" icon="/icons/api-logs.svg"

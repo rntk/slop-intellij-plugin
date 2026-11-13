@@ -45,6 +45,7 @@ import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
+import dev.insight.review.ui.ReviewHubScreen
 import dev.insight.review.ui.ReviewSidePages
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.ui.ReviewStartScreen
@@ -65,17 +66,14 @@ class DiffReviewToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
+/** Tools → Open Diff Review: opens the hub in the editor area; the tool window stays hidden until a chat is opened. */
 class OpenDiffReviewAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
     override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = e.project != null }
     override fun actionPerformed(e: AnActionEvent) {
-        e.project?.let { project ->
-            ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.let { window ->
-                window.activate {
-                    (window.contentManager.selectedContent?.component as? DiffReviewPanel)?.openReview(true)
-                }
-            }
-        }
+        val window = e.project?.let { ToolWindowManager.getInstance(it).getToolWindow("Diff Review") } ?: return
+        // Reading the contents creates the panel; showing the window instead would open the hub through its listener.
+        window.contentManager.contents.firstNotNullOfOrNull { it.component as? DiffReviewPanel }?.openReview(true) ?: window.activate(null)
     }
 }
 
@@ -142,26 +140,25 @@ internal class DiffReviewPanel(
         add(status, BorderLayout.SOUTH)
     }
     /**
-     * The Start page in the editor area, where the diff is chosen and its files browsed; the side panel and every view page
-     * lead back to it.
+     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it,
+     * and the Start page and every view page lead back to it.
      */
+    internal val hub = ReviewHubScreen(project, ReviewVocabulary.DIFF) { tabs.add() }
+    /** The Start page in the editor area, where the diff is chosen and its files browsed; each tab's Diff tile opens it. */
     internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.DIFF, ReviewStartText(
         heading = "Choose the diff to review",
         hint = "Review uncommitted changes, or compare a revision with the working tree, two branches or commits, or a branch " +
             "with its merge base. Apply diff loads the changed files listed below, where untracked files can be included; " +
             "Continue goes on to the summaries, topics, Diffs wall and charts.",
-        change = "Change diff",
-        changeTooltip = "Open the Start page to compare other changes, branches or commits, and browse the changed files",
-    ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
-        tabs.openCanvas(true)
+    ), sourceControls, filesPanel, ReviewPipeline.entries, back = hub::button) { pipelines ->
+        tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
-    /** The review tab controls, with the way back to the Start page floating on their edge; the selected review tab's chat has its own page. */
-    private val main = JPanel(BorderLayout(0, JBUI.scale(6)))
-    private val pages = ReviewSidePages(start.floating(main, this))
+    /** The tool window's content: the selected review tab's chat. */
+    private val pages = ReviewSidePages()
     private val tabs: ReviewTabsController<DiffReviewTab> = ReviewTabsController(project, this, "Diff Review", "All changes", "Insight.DiffReviewTabs", pages,
-        startupReady, ::selectedPaths, start = start, create = { paths, focus, toChat ->
+        startupReady, ::selectedPaths, hub = hub, start = start, create = { paths, focus, toChat ->
             DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = toChat)
         }) { tab ->
         tab.update(state.snapshot)
@@ -169,19 +166,8 @@ internal class DiffReviewPanel(
     }
 
     init {
-        border = JBUI.Borders.empty(6)
-        val reviewPanel = JPanel(BorderLayout()).apply {
-            add(JPanel(BorderLayout()).apply {
-                border = JBUI.Borders.emptyBottom(6)
-                add(JButton("New tab").apply {
-                    toolTipText = "Start a fresh chat and canvas for all files in the selected diff"
-                    addActionListener { tabs.add() }
-                }, BorderLayout.WEST)
-            }, BorderLayout.NORTH)
-            add(tabs.component, BorderLayout.CENTER)
-        }
-        main.add(reviewPanel, BorderLayout.CENTER)
         add(pages, BorderLayout.CENTER)
+        com.intellij.openapi.util.Disposer.register(this, hub)
         com.intellij.openapi.util.Disposer.register(this, start)
         showSource()
         tabs.add()
@@ -342,10 +328,10 @@ internal class DiffReviewPanel(
 
     fun openCanvas(focus: Boolean = false) { tabs.openCanvas(focus) }
 
-    /** Opens the Start page until a review has been shown, then the selected tab's canvas. */
+    /** Opens the hub, with the review tabs and their views. */
     fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
-    private fun showSource() { start.showSource("Diff: ${request.label}", request.repository) }
+    private fun showSource() { hub.showSource("Diff: ${request.label}", request.repository) }
 
     private fun openSelectionOnCanvas() {
         if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return

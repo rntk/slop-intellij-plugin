@@ -48,10 +48,11 @@ import dev.insight.review.ui.ChangeSummariesPanel
 import dev.insight.review.ui.DiffSourceEditor
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewSidePages
-import dev.insight.review.ui.ReviewViewSelector
 import dev.insight.review.ui.chooseView
 import dev.insight.review.ui.shownView
 import dev.insight.review.ui.viewLabels
+import dev.insight.review.ui.viewsEnabled
+import dev.insight.review.ui.tileStats
 import dev.insight.review.wall.WallView
 
 class DiffReviewPlatformTest : FileEditorManagerTestCase() {
@@ -98,17 +99,31 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
     }
 
-    fun `test the view dropdown opens each view follows the focused page and leaves Open review working`() {
+    fun `test the view tiles open each view follow the focused page and reopen a closed page`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
         try {
-            val selector = tab.viewSelector
-            assertFalse("No files, nothing to open", selector.isEnabled)
+            assertEquals(listOf("Diff", "Summaries", "Topics", "Grouping", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves",
+                "Open chat"), tab.tileGrid.tiles.map { it.title })
+            assertFalse("No files, nothing to open", viewsEnabled(tab))
+            assertTrue("The source and chat tiles stay enabled", tab.tileGrid.isTileEnabled("source") && tab.tileGrid.isTileEnabled("chat"))
             tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+newWord\n")), emptyList()))
-            assertTrue(selector.isEnabled)
+            assertTrue(viewsEnabled(tab))
             assertEquals("Summaries", shownView(tab))
 
+            // Stats come only from what is already in memory: nothing is counted for a tile before its view counts it.
+            assertEquals(listOf("1 file"), tileStats(tab, "source"))
+            assertEquals(listOf("0 / 2 summaries written"), tileStats(tab, "view-summaries"))
+            assertEquals(listOf("1 file"), tileStats(tab, "view-wall"))
+            assertTrue(tileStats(tab, "view-words").isEmpty())
+            assertTrue(tileStats(tab, "view-moves").isEmpty())
+            assertTrue(tileStats(tab, "view-metrics").isEmpty())
+            assertTrue(tileStats(tab, "view-topics").isEmpty())
+            assertTrue(tileStats(tab, "chat").isEmpty())
+
             chooseView(tab, "Words")
+            assertEquals(listOf("+1 added", "−1 deleted"), tileStats(tab, "view-words"))
+            assertEquals(listOf("+1 added", "−1 deleted"), tileStats(tab, "view-diff-overview"))
             assertTrue(tab.state.wordsVisible)
             assertEquals(dev.insight.review.CanvasTabKey.Words, tab.canvas.selectedKey)
             chooseView(tab, "Metrics")
@@ -118,19 +133,22 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(tab.state.summariesVisible)
             assertEquals(dev.insight.review.CanvasTabKey.Summaries, tab.canvas.selectedKey)
 
-            // Focusing a page from the canvas moves the dropdown to it without running its open action.
+            // Focusing a page from the canvas selects its tile without running its open action.
             tab.canvas.focusWords()
             assertEquals("Words", shownView(tab))
             assertFalse(tab.state.diffOverviewVisible)
 
-            // Open review reopens the page of the shown view once its editor tab is closed.
+            // A tile reopens the page of its view once its editor tab is closed.
             manager.openFiles.filterIsInstance<ReviewCanvasFile>().forEach(manager::closeFile)
-            descendants(tab).filterIsInstance<JButton>().single { it.text == "Open review" }.doClick()
-            assertTrue(manager.openFiles.any { it is ReviewCanvasFile })
+            chooseView(tab, "Words")
+            assertTrue(manager.openFiles.any { it is ReviewCanvasFile && it.name.endsWith("Word changes") })
 
-            // While the files refresh nothing can be chosen.
+            // While the files refresh nothing can be chosen, and the tiles say why.
             tab.invalidate(false)
-            assertFalse(selector.isEnabled)
+            assertFalse(viewsEnabled(tab))
+            assertTrue(tab.tileGrid.tileComponents.getValue("view-words").toolTipText.startsWith("Loading"))
+            chooseView(tab, "Summaries")
+            assertEquals("Words", shownView(tab))
         } finally { Disposer.dispose(tab) }
     }
 
@@ -394,14 +412,31 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
-            // The Start page opens first, so the diff is chosen before the summaries; Continue goes on to them.
+            // The hub opens first, with the tabs and their tiles; the Diff tile opens the Start page, and Continue returns to the hub.
+            assertEquals("Diff Review: Views", panel.hub.file.name)
+            assertTrue(manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(panel.start.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            first.tileGrid.click("source")
             assertEquals("Diff Review: Start", panel.start.file.name)
             assertTrue(manager.isFileOpen(panel.start.file))
-            assertFalse(manager.isFileOpen(first.canvasFile))
             assertTrue(descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().any { it.name == "diffMode" })
-            assertEquals("Diff: Uncommitted changes", withStart(panel).filterIsInstance<JButton>().single { it.name == "review-start-open" }.text)
+            val back = descendants(manager.getEditors(panel.start.file).single().component).filterIsInstance<JButton>()
+                .single { it.name == "review-hub-open" }
+            assertEquals("Diff: Uncommitted changes", back.text)
+            assertTrue(back.toolTipText.contains("Back to the Diff review views"))
+            manager.closeFile(panel.hub.file)
             panel.start.continueButton.doClick()
+            assertTrue("Continue opens the hub", manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
+            // Without changed files the view tiles are disabled, so the canvas is opened directly.
+            panel.openCanvas(true)
             assertTrue(manager.isFileOpen(first.canvasFile))
+            // Every view page leads back to the hub.
+            manager.closeFile(panel.hub.file)
+            descendants(manager.getEditors(first.canvasFile).single().component).filterIsInstance<JButton>()
+                .single { it.name == "review-hub-open" }.doClick()
+            assertTrue(manager.isFileOpen(panel.hub.file))
             assertTrue(first.state.summariesVisible)
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
@@ -409,6 +444,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(first.session.messages.none { it.role == ChatRole.USER })
             withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             val second = tabs.selectedInfo!!.component as DiffReviewTab
+            assertFalse("A new tab waits on the hub until one of its views is chosen", manager.isFileOpen(second.canvasFile))
+            second.openCanvas(true)
             assertTrue(manager.isFileOpen(second.canvasFile))
             assertNotSame(first.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries).parent,
                 second.canvas.editorPage(dev.insight.review.CanvasTabKey.Summaries).parent)
@@ -418,6 +455,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             }, 10 /* seconds */)
             assertSame(firstInfo, tabs.selectedInfo)
             assertTrue(withStart(panel).any { it === first })
+            // Laid out offscreen in a root pane, as the tabs' label actions update there; the hub's editor belongs to no window here.
+            manager.closeFile(panel.hub.file)
+            JRootPane().contentPane.add(panel.hub.page)
             closeButton(tabs, firstInfo).doClick()
             assertFalse(manager.isFileOpen(first.canvasFile))
             assertTrue(first.isDisposed)
@@ -438,27 +478,37 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
-            assertFalse("Tool window restored during IDE startup must wait for editor restoration before opening canvas",
-                manager.isFileOpen(first.canvasFile))
+            assertFalse("Tool window restored during IDE startup must wait for editor restoration before opening the hub",
+                manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(first.canvasFile))
             val pending = activitiesField.get(startup) as java.util.ArrayDeque<*>
             while (pending.isNotEmpty()) (pending.removeFirst() as Runnable).run()
-            assertTrue("The Start page must open once post-startup activities run", manager.isFileOpen(panel.start.file))
-            assertFalse("The source is chosen before the canvas opens", manager.isFileOpen(first.canvasFile))
-            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC)
-                .toolWindowShown(object : com.intellij.toolWindow.ToolWindowHeadlessManagerImpl.MockToolWindow(project) {
-                    override fun getId() = "Diff Review"
-                }.also { Disposer.register(testRootDisposable, it.disposable) })
-            assertFalse("Showing the tool window keeps the Start page until a review is shown", manager.isFileOpen(first.canvasFile))
+            assertTrue("The hub must open once post-startup activities run", manager.isFileOpen(panel.hub.file))
+            assertFalse("The views open from their tiles", manager.isFileOpen(first.canvasFile))
+            var hidden = 0
+            fun shownWindow() = object : com.intellij.toolWindow.ToolWindowHeadlessManagerImpl.MockToolWindow(project) {
+                override fun getId() = "Diff Review"
+                override fun hide(runnable: Runnable?) { hidden++ }
+                override fun hide() { hidden++ }
+            }.also { Disposer.register(testRootDisposable, it.disposable) }
+            manager.closeFile(panel.hub.file)
+            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC).toolWindowShown(shownWindow())
+            assertTrue("Showing the tool window opens the hub", manager.isFileOpen(panel.hub.file))
+            assertEquals("The side panel stays hidden until a chat is opened", 1, hidden)
+            assertFalse(manager.isFileOpen(first.canvasFile))
             panel.start.continueButton.doClick()
-            assertTrue("Continue must open the canvas", manager.isFileOpen(first.canvasFile))
+            assertFalse("Continue opens the hub, not a view", manager.isFileOpen(first.canvasFile))
 
-            // Closing the canvas tab and clicking "Open review", the tab header, or showing the tool window must reopen it.
-            val openCanvasButton = descendants(first).filterIsInstance<JButton>().single { it.text == "Open review" }
+            // The canvas opens, and reopens once closed; without changed files the view tiles are disabled, so it opens directly.
+            val openCanvasButton = object { fun doClick() = panel.openCanvas(true) }
+            openCanvasButton.doClick()
+            assertTrue("Opening the canvas must show it", manager.isFileOpen(first.canvasFile))
             manager.closeFile(first.canvasFile)
             assertFalse(manager.isFileOpen(first.canvasFile))
             openCanvasButton.doClick()
-            assertTrue("Open review button must reopen a closed canvas tab", manager.isFileOpen(first.canvasFile))
+            assertTrue("Opening the canvas must reopen a closed canvas tab", manager.isFileOpen(first.canvasFile))
 
+            // Clicking a tab label only selects the tab; showing the tool window opens the hub rather than a view.
             manager.closeFile(first.canvasFile)
             assertFalse(manager.isFileOpen(first.canvasFile))
             val label = tabs.getTabLabel(firstInfo)!!
@@ -466,16 +516,14 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 System.currentTimeMillis(), 0, 5, 5, 1, false, java.awt.event.MouseEvent.BUTTON1)
             tabs.component.mouseListeners.forEach { it.mouseClicked(click) }
             label.mouseListeners.forEach { it.mouseClicked(click) }
-            assertTrue("Clicking the selected review tab must reopen its closed canvas", manager.isFileOpen(first.canvasFile))
-
-            manager.closeFile(first.canvasFile)
+            assertFalse("Clicking a review tab only selects it", manager.isFileOpen(first.canvasFile))
+            manager.closeFile(panel.hub.file)
+            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC).toolWindowShown(shownWindow())
+            assertTrue("Showing the Diff Review tool window must reopen a closed hub", manager.isFileOpen(panel.hub.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
-            val toolWindow = object : com.intellij.toolWindow.ToolWindowHeadlessManagerImpl.MockToolWindow(project) {
-                override fun getId() = "Diff Review"
-            }
-            project.messageBus.syncPublisher(com.intellij.openapi.wm.ex.ToolWindowManagerListener.TOPIC).toolWindowShown(toolWindow)
-            assertTrue("Showing the Diff Review tool window must reopen a closed canvas", manager.isFileOpen(first.canvasFile))
-            Disposer.dispose(toolWindow.disposable)
+            assertEquals(2, hidden)
+            openCanvasButton.doClick()
+            assertTrue(manager.isFileOpen(first.canvasFile))
 
             // Simulate EditorsSplitters.restoreEditors replacing BorderLayout.CENTER with a new EditorWindow while
             // leaving the earlier EditorWindow (with canvasFile open) detached in splitters.windows and currentWindow.
@@ -857,7 +905,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
             val buttons = withStart(panel).filterIsInstance<JButton>()
-            assertFalse(withStart(panel).filterIsInstance<ReviewViewSelector>().single().isEnabled)
+            assertFalse(viewsEnabled(withStart(panel).filterIsInstance<JBTabs>().single().selectedInfo!!.component as DiffReviewTab))
             assertTrue(buttons.any { it.text == "Send" })
             assertTrue(buttons.any { it.text == "LLM settings" })
             assertFalse(buttons.any { it.text == "Open dashboard" })
@@ -888,22 +936,24 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("Local changes should load", {
                 withStart(panel).filterIsInstance<JLabel>().any { it.text.startsWith("0 files") }
             }, 10 /* seconds */)
-            val pages = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as ReviewSidePages
-            assertEquals(listOf("Main", "Chat"), (0 until pages.tabCount).map(pages::getTitleAt))
-            val main = pages.getComponentAt(0) as Container
-            val chatPage = pages.getComponentAt(1) as Container
-            // The files are browsed on the Start page; the side panel keeps the way back to it and the review tabs.
-            assertFalse(descendants(main).any { it is JTree })
+            val chatPage = (panel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER) as ReviewSidePages
+            val hub = panel.hub.page as Container
+            // Laid out offscreen in a root pane, like the side panel used to be; the hub's editor belongs to no window here.
+            FileEditorManager.getInstance(project).closeFile(panel.hub.file)
+            JRootPane().contentPane.add(hub)
+            // The files are browsed on the Start page and the review tabs on the hub; the side panel holds only the chat.
+            assertFalse(descendants(chatPage).any { it is JTree || it is JBTabs })
             assertTrue(descendants(panel.start.page as Container).any { it is JTree })
-            assertTrue(descendants(main).any { it.name == "review-start-open" })
-            assertFalse(descendants(main).any { it is ChatPanel })
-            val tabs = descendants(main).filterIsInstance<JBTabs>().single()
+            assertFalse(descendants(hub).any { it is JTree })
+            assertFalse(descendants(hub).any { it is ChatPanel })
+            val tabs = descendants(hub).filterIsInstance<JBTabs>().single()
             assertFalse(tabs.presentation.isHideTabs)
             assertEquals("All changes", tabs.selectedInfo!!.text)
-            assertVisibleHeader(panel, tabs, tabs.selectedInfo!!)
+            assertVisibleHeader(hub, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
             assertEquals(listOf("Summaries", "Topics", "Grouping", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves"), viewLabels(first))
-            assertTrue(descendants(first).any { it === first.viewSelector })
+            assertTrue(descendants(first).any { it === first.tileGrid })
+            assertTrue(descendants(first).none { it is JComboBox<*> })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })
             assertFalse(descendants(first).any { it is ChatPanel })
             val firstChat = first.chat
@@ -915,7 +965,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             withStart(panel).filterIsInstance<JButton>().single { it.text == "New tab" }.doClick()
             assertEquals("Review 2", tabs.selectedInfo!!.text)
-            tabs.tabs.forEach { assertVisibleHeader(panel, tabs, it) }
+            tabs.tabs.forEach { assertVisibleHeader(hub, tabs, it) }
             val second = tabs.selectedInfo!!.component as DiffReviewTab
             assertNotSame(first, second)
             assertNotSame(first.session, second.session)
@@ -1086,9 +1136,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     }
 
     private fun assertVisibleHeader(panel: Container, tabs: JBTabs, info: TabInfo) {
-        // Run the same action update as visible native tabs before laying out this offscreen root pane.
+        // Run the same action update as visible native tabs before laying out the offscreen hierarchy, such as the hub's editor.
         (tabs.getTabLabel(info) as TabLabel).updateTabActions()
-        val root = javax.swing.SwingUtilities.getRootPane(panel)
+        val root = javax.swing.SwingUtilities.getRootPane(panel) ?: generateSequence<Container>(panel) { it.parent }.last()
         root.setSize(1200, 900)
         fun layout(container: Container) {
             container.doLayout()
@@ -1129,7 +1179,9 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
     }
 
     /** The side panel and its Start page in the editor area, where the source and its files are. */
-    private fun withStart(panel: DiffReviewPanel): List<java.awt.Component> = descendants(panel) + descendants(panel.start.page as Container)
+    /** The side panel, its Start page and its hub in the editor area. */
+    private fun withStart(panel: DiffReviewPanel): List<java.awt.Component> =
+        descendants(panel) + descendants(panel.start.page as Container) + descendants(panel.hub.page as Container)
 
     private fun descendants(container: Container): List<java.awt.Component> = (if (container is dev.insight.review.ui.NoteCanvas)
         container.pageKeys.map(container::editorPage) else container.components.toList()).flatMap {
