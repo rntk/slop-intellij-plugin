@@ -36,7 +36,6 @@ import dev.insight.review.isExplainRequest
 import dev.insight.review.openReviewCanvas
 import dev.insight.review.textOf
 import dev.insight.review.typedExplainTarget
-import dev.insight.ui.EdgeTab
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -77,8 +76,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override val isDisposed: Boolean get() = disposed
     override val canvasTitle: String = vocabulary.canvasTitle
     var onCanvasSelected: () -> Unit = {}
-    /** The button floating on each of this tab's view pages that leads back to the hub; see [ReviewHubScreen.button]. */
-    var hubButton: ((Disposable) -> EdgeTab)? = null
     /** What the source tile does: open the panel's Start page. */
     var onOpenSource: () -> Unit = {}
     /** What the chat tile does: select this tab and show its chat in the tool window. */
@@ -183,7 +180,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             override val canvas get() = this@ReviewTab.canvas.editorPage(key)
             override val isDisposed get() = disposed
             override val canvasTitle get() = this@ReviewTab.canvasTitle
-            override fun floatingButton(parent: Disposable) = this@ReviewTab.hubButton?.invoke(parent)
             override fun canvasSelected() {
                 this@ReviewTab.canvas.selectPage(key)
                 this@ReviewTab.showView(key)
@@ -398,7 +394,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         disposed = true
         pipelines.clear()
         onCanvasSelected = {}
-        hubButton = null
         onOpenSource = {}
         onOpenChat = {}
         tileTimer.stop()

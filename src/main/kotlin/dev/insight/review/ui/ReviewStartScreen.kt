@@ -13,7 +13,6 @@ import dev.insight.review.ReviewCanvasOwner
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.openReviewCanvas
-import dev.insight.ui.EdgeTab
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -34,8 +33,7 @@ internal class ReviewStartText(
  * A review panel's Start page in the editor area, where the code or diff to review is chosen and its files are browsed before
  * the summaries and the other views. One per panel, shared by its review tabs: [controls] choose the source, [files] list what
  * it holds and fill the rest of the page, and [proceed] continues to the hub with the checked [pipelines] to run in the
- * selected tab. The [back] button floats on the page's edge and returns to the hub, like on every view page; see
- * [ReviewHubScreen.button].
+ * selected tab.
  */
 internal class ReviewStartScreen(
     private val project: Project,
@@ -45,8 +43,6 @@ internal class ReviewStartScreen(
     files: JComponent,
     /** The pipelines that can be scheduled from this page, in their run order. */
     pipelines: List<ReviewPipeline> = emptyList(),
-    /** Makes the floating button back to the hub, living as long as its argument. */
-    private val back: ((Disposable) -> EdgeTab)? = null,
     private val proceed: (Set<ReviewPipeline>) -> Unit,
 ) : Disposable {
     private var disposed = false
@@ -129,7 +125,6 @@ internal class ReviewStartScreen(
         override val isDisposed: Boolean get() = disposed
         override val canvasTitle: String = vocabulary.canvasTitle
         override fun canvasSelected() = Unit
-        override fun floatingButton(parent: Disposable) = back?.invoke(parent)
     }).apply { renameReview("Start") }
 
     /** Shows the Start page; [focus] moves the keyboard focus to it. */

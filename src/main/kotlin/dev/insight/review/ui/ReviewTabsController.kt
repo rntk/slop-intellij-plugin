@@ -179,7 +179,6 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         prepare(tab)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
         tab.rename(name)
-        tab.hubButton = hub::button
         tab.onOpenSource = { start?.open(true) }
         tab.onOpenChat = { showChat(tab) }
         tab.onCanvasSelected = {

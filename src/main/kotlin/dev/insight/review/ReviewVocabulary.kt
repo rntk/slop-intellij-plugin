@@ -53,8 +53,6 @@ internal data class ReviewVocabulary(
     val hubHint: String,
     /** The tooltip of the hub's New tab button. */
     val newTabTooltip: String,
-    /** What the floating button on the Start and view pages does: "Back to the Diff review views". */
-    val backToHub: String,
     val groupingTitle: String = "Change grouping",
     val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
         "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
@@ -100,7 +98,6 @@ internal data class ReviewVocabulary(
             hubHint = "Each review tab has its own chat and views of the chosen diff. Pick a view to open it in the editor; " +
                 "the side panel shows only the selected tab's chat.",
             newTabTooltip = "Start a fresh chat and canvas for all files in the selected diff",
-            backToHub = "Back to the Diff review views",
         )
 
         val CODE = ReviewVocabulary(
@@ -140,7 +137,6 @@ internal data class ReviewVocabulary(
             hubHint = "Each review tab has its own chat and views of the chosen scope. Pick a view to open it in the editor; " +
                 "the side panel shows only the selected tab's chat.",
             newTabTooltip = "Start a fresh chat and canvas for the whole scope",
-            backToHub = "Back to the Code review views",
         )
     }
 }

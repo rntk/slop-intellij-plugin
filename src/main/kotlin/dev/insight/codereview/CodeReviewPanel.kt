@@ -255,8 +255,7 @@ internal class CodeReviewPanel(
         }, BorderLayout.SOUTH)
     }
     /**
-     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it,
-     * and the Start page and every view page lead back to it.
+     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it.
      */
     internal val hub = ReviewHubScreen(project, ReviewVocabulary.CODE) { tabs.add() }
     /** The Start page in the editor area, where the scope is chosen and its files browsed; each tab's Scope tile opens it. */
@@ -264,7 +263,7 @@ internal class CodeReviewPanel(
         heading = "Choose the code to review",
         hint = "Review a project folder, or an entry file with the project files it depends on. Leave the folder empty for the " +
             "project root. Load reads the files listed below; Continue goes on to the summaries, topics, Code wall and words.",
-    ), scopeControls, filesPanel, ReviewPipeline.code, back = hub::button) { pipelines ->
+    ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
         tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
@@ -383,9 +382,6 @@ internal class CodeReviewPanel(
         scopeRoot = scope.absolutePath.trimEnd('/')
         watchedFiles = if (scope.entry) setOf(scope.absolutePath) else null
         scopeControls.show(scope)
-        val excluded = scope.excludes.takeIf { it.isNotEmpty() }
-        hub.showSource("Scope: ${scope.displayName}" + (excluded?.let { " · ${it.size} excluded" } ?: ""),
-            scope.absolutePath.ifEmpty { scope.displayName } + (excluded?.let { "\nExcluded: ${CodeExclusions.format(it)}" } ?: ""))
         refresh(stopTabs = true)
     }
 

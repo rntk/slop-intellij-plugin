@@ -108,7 +108,6 @@ internal class DiffReviewPanel(
     private val sourceControls = DiffReviewSourceControls(onRefresh = { refreshDiff() }) { draft ->
         try {
             request = draft.validated()
-            showSource()
             invalidateDiff()
             refresh()
         } catch (e: IllegalArgumentException) {
@@ -140,8 +139,7 @@ internal class DiffReviewPanel(
         add(status, BorderLayout.SOUTH)
     }
     /**
-     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it,
-     * and the Start page and every view page lead back to it.
+     * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it.
      */
     internal val hub = ReviewHubScreen(project, ReviewVocabulary.DIFF) { tabs.add() }
     /** The Start page in the editor area, where the diff is chosen and its files browsed; each tab's Diff tile opens it. */
@@ -150,7 +148,7 @@ internal class DiffReviewPanel(
         hint = "Review uncommitted changes, or compare a revision with the working tree, two branches or commits, or a branch " +
             "with its merge base. Apply diff loads the changed files listed below, where untracked files can be included; " +
             "Continue goes on to the summaries, topics, Diffs wall and charts.",
-    ), sourceControls, filesPanel, ReviewPipeline.entries, back = hub::button) { pipelines ->
+    ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
         tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
@@ -169,7 +167,6 @@ internal class DiffReviewPanel(
         add(pages, BorderLayout.CENTER)
         com.intellij.openapi.util.Disposer.register(this, hub)
         com.intellij.openapi.util.Disposer.register(this, start)
-        showSource()
         tabs.add()
         tree.isRootVisible = false
         tree.showsRootHandles = true
@@ -331,7 +328,6 @@ internal class DiffReviewPanel(
     /** Opens the hub, with the review tabs and their views. */
     fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
-    private fun showSource() { hub.showSource("Diff: ${request.label}", request.repository) }
 
     private fun openSelectionOnCanvas() {
         if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return

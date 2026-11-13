@@ -421,10 +421,6 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("Diff Review: Start", panel.start.file.name)
             assertTrue(manager.isFileOpen(panel.start.file))
             assertTrue(descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().any { it.name == "diffMode" })
-            val back = descendants(manager.getEditors(panel.start.file).single().component).filterIsInstance<JButton>()
-                .single { it.name == "review-hub-open" }
-            assertEquals("Diff: Uncommitted changes", back.text)
-            assertTrue(back.toolTipText.contains("Back to the Diff review views"))
             manager.closeFile(panel.hub.file)
             panel.start.continueButton.doClick()
             assertTrue("Continue opens the hub", manager.isFileOpen(panel.hub.file))
@@ -432,11 +428,6 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             // Without changed files the view tiles are disabled, so the canvas is opened directly.
             panel.openCanvas(true)
             assertTrue(manager.isFileOpen(first.canvasFile))
-            // Every view page leads back to the hub.
-            manager.closeFile(panel.hub.file)
-            descendants(manager.getEditors(first.canvasFile).single().component).filterIsInstance<JButton>()
-                .single { it.name == "review-hub-open" }.doClick()
-            assertTrue(manager.isFileOpen(panel.hub.file))
             assertTrue(first.state.summariesVisible)
             assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)

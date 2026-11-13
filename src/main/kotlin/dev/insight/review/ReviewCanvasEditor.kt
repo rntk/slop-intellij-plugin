@@ -12,8 +12,6 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.wall.WallView
-import dev.insight.ui.EdgeTab
-import dev.insight.ui.EdgeTabHost
 import java.awt.BorderLayout
 import java.awt.Component
 import java.beans.PropertyChangeListener
@@ -28,8 +26,6 @@ internal interface ReviewCanvasOwner {
     val canvasTitle: String
     /** The canvas editor was selected. */
     fun canvasSelected()
-    /** A button floating on the edge of each editor that shows the canvas, such as the way back to the Start page; it lives as long as [parent]. */
-    fun floatingButton(parent: com.intellij.openapi.Disposable): EdgeTab? = null
 }
 
 /** The review owns its canvas; closing this editor only detaches the view. */
@@ -56,11 +52,7 @@ class ReviewCanvasEditorProvider : FileEditorProvider, DumbAware {
 
 internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserDataHolderBase(), FileEditor {
     private val panel = JPanel(BorderLayout())
-    /** The [panel], with the owner's floating button on its edge where it has one. */
-    private val host: JComponent
-
     init {
-        host = file.review.floatingButton(this)?.let { EdgeTabHost(panel, it) } ?: panel
         attachCanvas()
     }
 
@@ -84,7 +76,7 @@ internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserData
         file.review.canvasSelected()
     }
 
-    override fun getComponent(): JComponent = host
+    override fun getComponent(): JComponent = panel
     override fun getPreferredFocusedComponent(): JComponent {
         val canvas = file.review.canvas
         val wall = UIUtil.findComponentOfType(canvas, WallView.Surface::class.java) ?: return canvas
