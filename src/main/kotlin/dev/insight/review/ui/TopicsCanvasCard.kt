@@ -59,6 +59,7 @@ internal class TopicsCanvasCard(
     var scroll = 0
     private var content: TopicsCard? = null
     private var hierarchyPreview: HierarchyPreviewPanel? = null
+    private var showHierarchyDiffs = false
     private var hierarchyPreviewPaths = emptyList<String>()
     private var currentCard: JPanel? = null
     private val review = SummaryReviewSession(reviewed)
@@ -142,6 +143,14 @@ internal class TopicsCanvasCard(
                 isOpaque = false
                 if (document) add(controls)
                 if (outline.depth > 0) add(topicLevels(outline))
+                if (hierarchy) add(JCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs", showHierarchyDiffs).apply {
+                    name = "topics-show-diffs"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Show file previews beside the hierarchy"
+                    addActionListener { showHierarchyDiffs = isSelected; canvasActions.refresh() }
+                })
                 add(JCheckBox("Tags cloud", view.tagsCloud).apply {
                     name = "topics-tags-cloud"
                     isOpaque = false
@@ -238,7 +247,7 @@ internal class TopicsCanvasCard(
                 revealCanvasTrace(body, target)
             }
         }
-        val chart = findHierarchyPanel(body)
+        val chart = if (showHierarchyDiffs) findHierarchyPanel(body) else null
         val readingArea = chart?.let {
             HierarchyPreviewPanel(it, bodyScroll, project, hierarchyPreviewPaths, { paths -> hierarchyPreviewPaths = paths })
                 .also { preview -> hierarchyPreview = preview }

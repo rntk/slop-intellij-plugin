@@ -8,15 +8,59 @@ import dev.insight.diff.DiffFileEditor
 import dev.insight.codereview.CodeFile
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
+import dev.insight.review.ReviewVocabulary
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JPanel
+import javax.swing.JCheckBox
 
 class HierarchyPreviewTest : BasePlatformTestCase() {
     private val files get() = listOf("src/a.kt", "src/b.kt", "docs/readme.md").map {
         ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+    }
+
+    fun testHierarchyPreviewsAreOptInAndCanBeHiddenAcrossRefreshes() {
+        for (vocabulary in listOf(ReviewVocabulary.DIFF, ReviewVocabulary.CODE)) {
+            for (topics in listOf(false, true)) {
+                val files = if (vocabulary == ReviewVocabulary.DIFF) files else
+                    listOf(CodeFile("src/a.kt", "/repo/src/a.kt", "val answer = 42\n"))
+                val summaries = ReviewSummaries(buildSummaryTree(files))
+                val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(
+                    ReviewTopics(files).assign(files.first().path, "Product>Storage"), summaries, canRun = true))
+                    else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
+                val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
+                val checkboxName = if (topics) "topics-show-diffs" else "summaries-show-diffs"
+                fun checkbox() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name == checkboxName }
+                fun previews() = descendants(canvas).filterIsInstance<HierarchyPreviewPanel>()
+                try {
+                    canvas.showNotes(state)
+                    if (topics) selectTopicsMode(descendants(canvas), "Hierarchy")
+                    else selectSummariesMode(descendants(canvas), "hierarchy")
+                    assertFalse(checkbox().isSelected)
+                    assertTrue(previews().isEmpty())
+                    checkbox().doClick()
+                    assertTrue(checkbox().isSelected)
+                    previews().single().showFiles(files.take(1))
+                    canvas.showNotes(state)
+                    assertTrue(checkbox().isSelected)
+                    val preview = previews().single()
+                    val editor = descendants(preview).filterIsInstance<Disposable>().single {
+                        it is DiffFileEditor || it is DiffSourceEditor
+                    }
+                    checkbox().doClick()
+                    assertTrue(if (editor is DiffFileEditor) editor.isDisposed else (editor as DiffSourceEditor).editor.isDisposed)
+                    assertFalse(checkbox().isSelected)
+                    assertTrue(previews().isEmpty())
+                    canvas.showNotes(state)
+                    assertTrue(previews().isEmpty())
+                    checkbox().doClick()
+                    assertEquals(1, previews().size)
+                    assertEquals(1, descendants(previews().single()).count { it.name == "hierarchy-preview:${files.first().path}" })
+                } finally { canvas.dispose() }
+            }
+        }
     }
 
     fun testNativeDiffAndSourceViewersAreDisposedWhenScopeChanges() {

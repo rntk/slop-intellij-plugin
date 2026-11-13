@@ -91,6 +91,7 @@ internal class SummariesCanvasCards(
         var scrollX = 0
         var treeScrollX = 0
         var treeWidth: Int? = null
+        var showHierarchyDiffs = false
         var hierarchyPreviewPaths = emptyList<String>()
         var diffPanel: com.intellij.openapi.Disposable? = null
         var version: Int? = null
@@ -166,6 +167,14 @@ internal class SummariesCanvasCards(
                 if (document) add(actions.zoomControls(key))
                 val summaries = content.summaries
                 if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
+                if (hierarchy) add(JCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs", tab.showHierarchyDiffs).apply {
+                    name = "summaries-show-diffs"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Show file previews beside the hierarchy"
+                    addActionListener { tab.showHierarchyDiffs = isSelected; refreshSummaries(tab) }
+                })
                 if (splitMode) add(JCheckBox("Soft-wrap", summariesView.softWrap).apply {
                     name = "summaries-soft-wrap"
                     isOpaque = false
@@ -352,7 +361,7 @@ internal class SummariesCanvasCards(
                 revealCanvasTrace(body, target)
             }
         }
-        val hierarchyPanel = findHierarchyPanel(body)
+        val hierarchyPanel = if (tab.showHierarchyDiffs) findHierarchyPanel(body) else null
         val hierarchyReading = hierarchyPanel?.let {
             HierarchyPreviewPanel(it, bodyScroll, project, tab.hierarchyPreviewPaths, { paths -> tab.hierarchyPreviewPaths = paths })
                 .also { preview -> tab.diffPanel = preview }
