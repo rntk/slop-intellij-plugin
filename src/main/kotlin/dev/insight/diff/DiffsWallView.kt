@@ -33,11 +33,13 @@ internal class DiffsWallView(
     chats: WallChats? = null,
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
     project: Project? = null,
+    /** Opens a file of the wall on a canvas session; null leaves the block menu without that item. */
+    openOnCanvas: ((path: String) -> Unit)? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
     val view = WallView(DIFFS_WALL_LABELS, { path, line -> files.firstOrNull { it.path == path }?.let { openDiff(it, line) } },
-        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } })
+        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } }, openOnCanvas)
     val card: JPanel get() = view.card
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */

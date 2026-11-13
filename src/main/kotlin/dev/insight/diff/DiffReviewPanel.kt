@@ -157,7 +157,7 @@ internal class DiffReviewPanel(
     private val pages = ReviewSidePages()
     private val tabs: ReviewTabsController<DiffReviewTab> = ReviewTabsController(project, this, "Diff Review", "All changes", "Insight.DiffReviewTabs", pages,
         startupReady, ::selectedPaths, hub = hub, start = start, create = { paths, focus, toChat ->
-            DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = toChat)
+            DiffReviewTab(project, paths, ::selectedPaths, ::showDiff, focus = focus, toChat = toChat, openOnCanvas = ::openPathOnCanvas)
         }) { tab ->
         tab.update(state.snapshot)
         if (state.refreshing) tab.invalidate(stop = false)
@@ -330,8 +330,17 @@ internal class DiffReviewPanel(
 
 
     private fun openSelectionOnCanvas() {
-        if (state.refreshing || openJob?.isActive == true || tree.selectionCount != 1) return
-        val selected = selectedFile() ?: return
+        if (tree.selectionCount != 1) return
+        openOnCanvas(selectedFile() ?: return)
+    }
+
+    /** Opens a wall block's file, which need not be the tree's selection. */
+    private fun openPathOnCanvas(path: String) {
+        openOnCanvas(state.snapshot.files.firstOrNull { it.path == path } ?: return)
+    }
+
+    private fun openOnCanvas(selected: ReviewFile) {
+        if (state.refreshing || openJob?.isActive == true) return
         val snapshot = state.snapshot
         openJob = scope.launch {
             status.text = "Finding related changes for ${selected.path}…"

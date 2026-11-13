@@ -92,6 +92,8 @@ internal class DiffReviewTab(
     focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
+    /** Opens a file of the change on a canvas session, with its related changed files. */
+    openOnCanvas: ((path: String) -> Unit)? = null,
 ) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
     ReviewVocabulary.DIFF) {
     private val sourcePoints = SourcePoints(project, "Diff chat")
@@ -119,6 +121,7 @@ internal class DiffReviewTab(
         openWallDiff = { file, line -> openWallDiff(project, file, line) },
         showAllChanges = { openDiffsWall(state.snapshot.files, ALL_CHANGES) },
         wallChats = wallChats,
+        openWallOnCanvas = openOnCanvas,
     )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(

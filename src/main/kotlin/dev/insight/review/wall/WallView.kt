@@ -57,6 +57,8 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JViewport
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.Timer
@@ -85,6 +87,8 @@ internal class WallView(
     private val chats: WallChats? = null,
     /** Colours the blocks' rows with the IDE's syntax highlighting; without it rows paint in plain colours. */
     private val highlighter: WallHighlighter? = null,
+    /** Opens the file at a block's path on a canvas session; without it the block's "..." menu has no such item. */
+    private val openOnCanvas: ((path: String) -> Unit)? = null,
 ) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -873,6 +877,8 @@ internal class WallView(
             else Point(horizontalScrolls[block.path] ?: 0, offset)
         /** Where the Compact switch was last painted, or null when the block is too short for it. */
         private var toggle: Rectangle? = null
+        /** Where the "..." menu button was last painted, or null while the header is sketched. */
+        private var menuToggle: Rectangle? = null
         /** Where the Summary switch was last painted, or null when the file has no summary. */
         internal var summaryToggle: Rectangle? = null
             private set
@@ -898,6 +904,10 @@ internal class WallView(
                         toggleSummary(this@BlockView)
                         return
                     }
+                    if (onMenu(e.point)) {
+                        showMenu(e.point)
+                        return
+                    }
                     grab = Point2D.Double(e.x / zoom, e.y / zoom)
                 }
                 override fun mouseDragged(e: MouseEvent) {
@@ -920,10 +930,10 @@ internal class WallView(
                     cursor = Cursor.getDefaultCursor()
                 }
                 override fun mouseClicked(e: MouseEvent) {
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point) && !onSummaryToggle(e.point)) openLine(block.path, lineAt(e.y))
+                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point) && !onSummaryToggle(e.point) && !onMenu(e.point)) openLine(block.path, lineAt(e.y))
                 }
                 override fun mouseMoved(e: MouseEvent) {
-                    cursor = if (onToggle(e.point) || onSummaryToggle(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+                    cursor = if (onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
                 }
             }
             addMouseListener(drag)
@@ -1001,6 +1011,34 @@ internal class WallView(
 
         private fun onSummaryToggle(point: Point) = summaryToggle?.contains(point) == true
 
+        private fun onMenu(point: Point) = menuToggle?.contains(point) == true
+
+        /** Only a block taller than the cap has anything to compact. */
+        private fun canCompact(): Boolean = isCompact || compactCap(metrics)?.let { fullHeight > it } == true
+
+        /** The block's "..." menu: the header's Compact and Summary switches, and the file on a canvas session. */
+        private fun showMenu(at: Point) {
+            val menu = JPopupMenu().apply { name = "${labels.id}-menu:${block.path}" }
+            fun item(text: String, tooltip: String?, enabled: Boolean, action: () -> Unit) {
+                menu.add(JMenuItem(text).apply {
+                    name = "${labels.id}-menu-item:$text"
+                    toolTipText = tooltip
+                    isEnabled = enabled
+                    addActionListener { action() }
+                })
+            }
+            item(if (isCompact) "Expand" else COMPACT, if (isCompact) labels.expandTooltip else labels.compactTooltip, canCompact()) {
+                toggleCompact(this@BlockView)
+            }
+            item(if (showsSummary) "Hide summary" else SUMMARY, if (showsSummary) labels.bodyTooltip else labels.summaryTooltip, summary != null) {
+                toggleSummary(this@BlockView)
+            }
+            openOnCanvas?.let { open ->
+                item("Open on canvas", "Explore this file as source cards on a canvas session", true) { open(block.path) }
+            }
+            menu.show(this, at.x, at.y)
+        }
+
         /** The summary wrapped to the rows this block's width holds. */
         private fun summaryRows(): List<String> =
             wallWrap(summary.orEmpty(), (blockWidth - 2 * metrics.padding) / metrics.charWidth.coerceAtLeast(1))
@@ -1008,6 +1046,7 @@ internal class WallView(
         override fun getToolTipText(event: MouseEvent): String? = when {
             onToggle(event.point) -> if (isCompact) labels.expandTooltip else labels.compactTooltip
             onSummaryToggle(event.point) -> if (showsSummary) labels.bodyTooltip else labels.summaryTooltip
+            onMenu(event.point) -> "More actions"
             else -> null
         }
 
@@ -1220,6 +1259,7 @@ internal class WallView(
             val split = title.lastIndexOf('/') + 1
             toggle = null
             summaryToggle = null
+            menuToggle = null
             if (sketch) {
                 g2.color = scheme.defaultForeground
                 sketch(g2, " " + title, pad - metrics.charWidth * z, (headerHeight / 4).roundToInt(), (headerHeight / 2).roundToInt())
@@ -1244,8 +1284,7 @@ internal class WallView(
             val small = g2.fontMetrics
             val link = JBUI.CurrentTheme.Link.Foreground.ENABLED
             val quiet = ColorUtil.withAlpha(muted, 0.7)
-            // Only a block taller than the cap has anything to compact.
-            if (isCompact || compactCap(metrics)?.let { fullHeight > it } == true) {
+            if (canCompact()) {
                 g2.color = if (isCompact) link else quiet
                 g2.drawString(COMPACT, x, baseline)
                 toggle = Rectangle(x.toInt() - JBUI.scale(2), 0, small.stringWidth(COMPACT) + JBUI.scale(4), headerHeight.roundToInt())
@@ -1256,6 +1295,15 @@ internal class WallView(
                 g2.color = if (showsSummary) link else quiet
                 g2.drawString(SUMMARY, x, baseline)
                 summaryToggle = Rectangle(x.toInt() - JBUI.scale(2), 0, small.stringWidth(SUMMARY) + JBUI.scale(4), headerHeight.roundToInt())
+                x += small.stringWidth(SUMMARY) + small.charWidth(' ') * 2
+            }
+            // The menu sits at the header's right end, where the title cannot push it away.
+            val menuWidth = small.stringWidth(MENU) + JBUI.scale(8)
+            val menuX = (blockWidth * z - pad).toFloat() - menuWidth
+            if (menuX >= x) {
+                g2.color = quiet
+                g2.drawString(MENU, menuX + JBUI.scale(4), baseline)
+                menuToggle = Rectangle(menuX.toInt(), 0, menuWidth, headerHeight.roundToInt())
             }
         }
     }
@@ -1345,6 +1393,7 @@ internal class WallView(
         const val WHEEL_ROWS = 3
         const val COMPACT = "Compact"
         const val SUMMARY = "Summary"
+        const val MENU = "..."
 
         /** The scheme's diff colour softened toward the background, so dozens of tinted blocks stay calm. */
         fun tint(scheme: EditorColorsScheme, key: TextAttributesKey, fallback: Color, background: Color): Color =
