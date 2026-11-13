@@ -74,6 +74,11 @@ import dev.insight.review.ui.readPsiThen
 import dev.insight.review.wall.WALL_CANVAS_CHAT
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
+import dev.insight.board.BoardOrigin
+import dev.insight.board.ReviewBoardSources
+import dev.insight.board.boardGraph
+import dev.insight.board.ui.BoardLauncher
+import dev.insight.review.ui.viewTileId
 
 private val LOG = logger<DiffReviewTab>()
 
@@ -182,6 +187,8 @@ internal class DiffReviewTab(
         extension = diffCards,
     )
 
+    /** The explainer boards of this change; see [openBoards]. */
+    private val boards = BoardLauncher(project, scope) { scheduleTileRefresh() }
     private val scopeLabel = JLabel()
 
     override fun viewOptions() = listOf(
@@ -205,6 +212,10 @@ internal class DiffReviewTab(
             "Find code removed from one file and added to another, and chart where each file's code went") {
             state.foundMoves?.let { listOf(countStat(it.blocks.size, "moved block")) }.orEmpty()
         },
+        ReviewViewOption(CanvasTabKey.Board, "Explainer board",
+            "Let the model compose a grounded explainer page of the change: prose and callouts around real source, diff and call-chain blocks") {
+            boards.savedCount(boardOrigin())?.takeIf { it > 0 }?.let { listOf(countStat(it, "saved board")) }.orEmpty()
+        },
     )
 
     /** The changed lines, once the words have been counted for the current snapshot; counting is left to the charts. */
@@ -225,6 +236,7 @@ internal class DiffReviewTab(
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
             CanvasTabKey.Wall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
+            CanvasTabKey.Board -> openBoards()
             else -> super.openView(key)
         }
     }
@@ -413,6 +425,20 @@ internal class DiffReviewTab(
         state.showWall(WallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
         renderCanvas()
         showCanvas { canvas.focusWall() }
+    }
+
+    /** What this tab's boards explain: the comparison, with the paths of its changed files. */
+    private fun boardOrigin() = BoardOrigin("diff", state.snapshot.comparison.summary, state.snapshot.files.map { it.path })
+
+    /**
+     * Shows the board menu below the tile: a new board or a saved one of this comparison, reading the snapshot's files as
+     * they are now, both sides and patches, with the call graph once a graph tool needs it.
+     */
+    private fun openBoards() {
+        val files = state.snapshot.files
+        boards.show(tileGrid.tileComponents[viewTileId(CanvasTabKey.Board)], boardOrigin()) {
+            ReviewBoardSources(files, boardGraph(project))
+        }
     }
 
     private var semanticJob: Job? = null

@@ -1,5 +1,7 @@
 package dev.insight.callgraph.javascript
 
+import com.intellij.lang.Language
+import com.intellij.lang.javascript.JavascriptLanguage
 import com.intellij.lang.ecmascript6.psi.ES6ExportDeclaration
 import com.intellij.lang.ecmascript6.psi.ES6ExportDefaultAssignment
 import com.intellij.lang.ecmascript6.psi.ES6ImportDeclaration
@@ -37,6 +39,7 @@ import dev.insight.graph.SymbolKind
  */
 class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is JSFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(JavascriptLanguage)
 
     override fun explorationSource(element: PsiElement): PsiElement? = when {
         element is JSVariable && element !is JSParameter && element.initializer == null ->

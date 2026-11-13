@@ -1,5 +1,7 @@
 package dev.insight.callgraph.go
 
+import com.intellij.lang.Language
+import com.goide.GoLanguage
 import com.goide.psi.*
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -15,6 +17,7 @@ import dev.insight.graph.SymbolKind
  */
 class GoCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is GoFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(GoLanguage.INSTANCE)
 
     override fun explorationSource(element: PsiElement): PsiElement? = when (element) {
         is GoVarDefinition -> element.parent as? GoVarSpec

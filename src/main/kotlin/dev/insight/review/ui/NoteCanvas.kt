@@ -304,6 +304,7 @@ internal class NoteCanvas(
         CanvasTabKey.Wall -> vocabulary.wallName
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
+        CanvasTabKey.Board -> "Explainer board"
         is ReviewNoteKey -> {
             val path = key.paths.firstOrNull()?.substringAfterLast('/') ?: "Note"
             val source = sources.firstOrNull { it.key == key }
@@ -922,7 +923,7 @@ internal class NoteCanvas(
                 summariesCardBuilder.card(key)
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
             CanvasTabKey.SymbolFlow -> snapshotCards.flowCard(changeFlow(notes))
-            CanvasTabKey.Explanation -> null
+            CanvasTabKey.Explanation, CanvasTabKey.Board -> null
             is ReviewNoteKey -> notes.firstOrNull { it.key == key }?.let(snapshotCards::noteCard)
                 ?: sources.firstOrNull { it.key == key }?.let(snapshotCards::sourceCard)
                 ?: extension?.card(key, snapshotCards)

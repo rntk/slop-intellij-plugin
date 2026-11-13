@@ -1,5 +1,7 @@
 package dev.insight.callgraph.rust
 
+import com.intellij.lang.Language
+import org.rust.lang.RsLanguage
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -17,6 +19,7 @@ import org.rust.lang.core.psi.ext.functions
 /** Loaded only with the JetBrains Rust plugin (META-INF/call-graph-rust.xml). */
 class RustCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is RsFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(RsLanguage)
 
     override fun explorationSource(element: PsiElement): PsiElement? {
         if (element !is RsPatBinding) return null

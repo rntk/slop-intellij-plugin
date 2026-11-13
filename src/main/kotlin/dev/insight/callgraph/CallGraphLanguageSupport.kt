@@ -35,6 +35,12 @@ interface CallGraphLanguageSupport {
 
     fun supportsFile(file: com.intellij.psi.PsiFile): Boolean = false
 
+    /**
+     * True for the PSI languages of the files this support covers (dialects included), so the application graph is
+     * rebuilt only when code in them changes. The default counts every language, rebuilding on any PSI change.
+     */
+    fun supportsLanguage(language: com.intellij.lang.Language): Boolean = true
+
     fun symbolKind(element: PsiElement): SymbolKind? = if (isFunction(element)) SymbolKind.FUNCTION else null
 
     fun relationKind(element: PsiElement): RelationKind? = null

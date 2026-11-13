@@ -1,5 +1,7 @@
 package dev.insight.callgraph.java
 
+import com.intellij.lang.Language
+import com.intellij.lang.java.JavaLanguage
 import com.intellij.psi.*
 import com.intellij.psi.PsiCall
 import com.intellij.psi.PsiElement
@@ -16,6 +18,7 @@ import dev.insight.graph.SymbolKind
 /** Loaded only when the Java plugin is present (see META-INF/call-graph-java.xml). */
 class JavaCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is PsiJavaFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(JavaLanguage.INSTANCE)
 
     override fun keepGapWhole(element: PsiElement): Boolean =
         element is PsiClass && element !is PsiTypeParameter && element !is PsiAnonymousClass && isDeclarationOnly(element)

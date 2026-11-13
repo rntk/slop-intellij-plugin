@@ -38,6 +38,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Insight Schematic" displayType="BALLOON" isLogByDefault="true"/>
         <notificationGroup id="Insight Canvas Session" displayType="BALLOON" isLogByDefault="true"/>
+        <notificationGroup id="Insight Board" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
@@ -66,6 +67,7 @@
         <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.diff.DiffFlowChartEditorProvider"/>
+        <fileEditorProvider implementation="dev.insight.board.ui.BoardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->

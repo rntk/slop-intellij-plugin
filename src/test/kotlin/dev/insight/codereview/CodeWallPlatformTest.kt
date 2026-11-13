@@ -41,7 +41,7 @@ class CodeWallPlatformTest : BasePlatformTestCase() {
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
         try {
             tab.update(codeSnapshot(*files.toTypedArray()))
-            assertEquals(listOf("Summaries", "Topics", "Code wall", "Words"), viewLabels(tab))
+            assertEquals(listOf("Summaries", "Topics", "Code wall", "Words", "Explainer board"), viewLabels(tab))
             chooseView(tab, "Code wall")
             assertEquals("Code wall", shownView(tab))
             assertNull(tab.state.wallScope!!.paths)

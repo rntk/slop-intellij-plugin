@@ -218,7 +218,7 @@ class ProjectGraphToolWindowFactory : ToolWindowFactory, DumbAware {
         val flowsContent = ContentFactory.getInstance().createContent(flows, "Flows", false)
         flowsContent.setDisposer(flows)
         toolWindow.contentManager.addContent(flowsContent)
-        panel.rebuild()
+        panel.refresh()
     }
 }
 
@@ -248,6 +248,8 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
     }
     private var job: Job? = null
     private var buildGeneration = 0L
+    /** The code stamp the last scheduled rebuild covers; PSI changes outside call graph languages leave it, and the graph, as is. */
+    private var scheduledStamp: Long? = null
     private var disposed = false
     private val status = JLabel("Building application graph…")
     private val activeFile = JLabel()
@@ -402,7 +404,9 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
                 override fun selectionChanged(event: FileEditorManagerEvent) { highlight(event.newFile); canvas.revealFile() }
             })
-            subscribe(PsiModificationTracker.TOPIC, PsiModificationTracker.Listener { SwingUtilities.invokeLater { rebuild(600) } })
+            subscribe(PsiModificationTracker.TOPIC, PsiModificationTracker.Listener {
+                SwingUtilities.invokeLater { if (service.codeStamp() != scheduledStamp) refresh(600) }
+            })
             subscribe(ChangeListListener.TOPIC, object : ChangeListListener {
                 override fun changeListUpdateDone() { SwingUtilities.invokeLater { if (!disposed) changesTimer.restart() } }
             })
@@ -800,8 +804,15 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
         }.takeIf { it.componentCount > 0 }
     }
 
-    fun rebuild(debounce: Long = 0) {
+    /** Builds a fresh graph after [debounce] ms. */
+    fun rebuild(debounce: Long = 0) = schedule(debounce, force = true)
+
+    /** Shows the graph after [debounce] ms, reusing the service's last one while the code is unchanged. */
+    fun refresh(debounce: Long = 0) = schedule(debounce, force = false)
+
+    private fun schedule(debounce: Long, force: Boolean) {
         if (disposed) return
+        scheduledStamp = service.codeStamp()
         val generation = ++buildGeneration
         job?.cancel()
         // Consumers must stop using the previous graph as soon as a rebuild is scheduled.
@@ -812,7 +823,7 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
                 delay(debounce)
                 status.text = "Building application graph…"
                 runCatchingReported(thisLogger(), "Application graph failed") {
-                    val built = service.buildProject()
+                    val built = if (force) service.buildProject() else service.currentProject()
                     val tree = built.graph.hierarchy()
                     result = built
                     hierarchy = tree

@@ -17,6 +17,8 @@ import dev.insight.graph.CallGraphResult
 import dev.insight.graph.exploreCalls
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class CallGraphRequest(
     val direction: CallDirection = CallDirection.BOTH,
@@ -28,10 +30,15 @@ data class CallGraphRequest(
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
     private val log = logger<CallGraphService>()
-    /** The last application graph and the PSI modification count it was built at. */
+    /** The last application graph and the [codeStamp] it was built at. */
     @Volatile private var latestProject: Pair<Long, CallGraphResult>? = null
+    /** Serializes application graph builds, so concurrent callers of [currentProject] share one build. */
+    private val building = Mutex()
 
-    suspend fun buildProject(): CallGraphResult = withBackgroundProgress(project, "Building application graph") {
+    /** Builds a fresh application graph, after any build already running. */
+    suspend fun buildProject(): CallGraphResult = building.withLock { buildProjectLocked() }
+
+    private suspend fun buildProjectLocked(): CallGraphResult = withBackgroundProgress(project, "Building application graph") {
         val started = System.nanoTime()
         var stage = "Waiting for project indexes"
         log.info("Building application graph for ${project.name}")
@@ -39,7 +46,7 @@ class CallGraphService(private val project: Project, val scope: CoroutineScope) 
             reportRawProgress { reporter ->
                 reporter.text(stage)
                 smartReadAction(project) {
-                    val stamp = PsiModificationTracker.getInstance(project).modificationCount
+                    val stamp = codeStamp()
                     ProjectGraphAnalyzer.build(project) {
                         stage = it
                         reporter.text(it)
@@ -59,11 +66,24 @@ class CallGraphService(private val project: Project, val scope: CoroutineScope) 
         }
     }
 
-    /** The last application graph while no code changed since it was built, otherwise a fresh one. */
+    /**
+     * The last application graph while no code changed since it was built, otherwise a fresh one. Callers arriving during
+     * a build wait for it and reuse its graph.
+     */
     suspend fun currentProject(): CallGraphResult {
-        val latest = latestProject
-        val stamp = smartReadAction(project) { PsiModificationTracker.getInstance(project).modificationCount }
-        return latest?.takeIf { it.first == stamp }?.second ?: buildProject()
+        fun reusable(stamp: Long) = latestProject?.takeIf { it.first == stamp }?.second
+        reusable(codeStamp())?.let { return it }
+        return building.withLock { reusable(codeStamp()) ?: buildProjectLocked() }
+    }
+
+    /**
+     * Changes to the PSI of languages the call graph reads (and to roots, file types and deleted directories, which count
+     * for every language), so edits to Markdown, JSON or saved boards keep the graph. Any thread; needs no read action.
+     */
+    fun codeStamp(): Long {
+        val supports = CallGraphLanguageSupport.EP_NAME.extensionList
+        return PsiModificationTracker.getInstance(project).forLanguages { language -> supports.any { it.supportsLanguage(language) } }
+            .modificationCount
     }
 
     /**

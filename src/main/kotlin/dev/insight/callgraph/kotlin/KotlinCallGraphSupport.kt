@@ -1,5 +1,7 @@
 package dev.insight.callgraph.kotlin
 
+import com.intellij.lang.Language
+import org.jetbrains.kotlin.idea.KotlinLanguage
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphAnalyzer
@@ -27,6 +29,7 @@ import org.jetbrains.kotlin.psi.KtPropertyAccessor
  */
 class KotlinCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: com.intellij.psi.PsiFile) = file is KtFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(KotlinLanguage.INSTANCE)
 
     override fun explorationSource(element: PsiElement): PsiElement? = when (element) {
         is KtDestructuringDeclarationEntry -> element.parent as? KtDestructuringDeclaration

@@ -1,5 +1,7 @@
 package dev.insight.callgraph.python
 
+import com.intellij.lang.Language
+import com.jetbrains.python.PythonLanguage
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiNamedElement
@@ -24,6 +26,7 @@ import dev.insight.graph.SymbolKind
  */
 class PythonCallGraphSupport : CallGraphLanguageSupport {
     override fun supportsFile(file: PsiFile) = file is PyFile
+    override fun supportsLanguage(language: Language) = language.isKindOf(PythonLanguage.getInstance())
 
     override fun explorationSource(element: PsiElement): PsiElement? {
         if (element !is PyTargetExpression) return null
