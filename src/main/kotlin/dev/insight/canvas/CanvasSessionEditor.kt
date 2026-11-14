@@ -12,6 +12,7 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorPolicy
@@ -22,6 +23,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.UserDataHolderBase
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.testFramework.LightVirtualFile
@@ -30,7 +32,6 @@ import dev.insight.agent.projectContextTools
 import dev.insight.callgraph.CallGraphService
 import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.chat.LlmChatBackend
-import dev.insight.graph.SymbolKind
 import dev.insight.llm.CompletionFn
 import dev.insight.settings.configuredContextChars
 import dev.insight.settings.ChatSettings
@@ -87,6 +88,16 @@ internal class CanvasSessionFile(
     val diffs: Map<String, String> = emptyMap(),
 ) : LightVirtualFile("Canvas: ${source.name}") {
     @Volatile var session: CanvasSession = session
+
+    /** Each diff file's stamp while its source still matched the diff's new side. */
+    private val diffStamps = diffs.keys.associateWith(::diffStamp)
+
+    /** [diffs] of the files not edited since; an edited file's patch no longer numbers its current lines. */
+    val currentDiffs: Map<String, String> get() = diffs.filterKeys { diffStamps[it] == diffStamp(it) }
+
+    private fun diffStamp(path: String): Long? = (source.fileSystem.findFileByPath(path) ?: LocalFileSystem.getInstance().findFileByPath(path))?.let {
+        FileDocumentManager.getInstance().getCachedDocument(it)?.modificationStamp ?: it.modificationStamp
+    }
 }
 
 /** Opens a canvas session of the selected file: the most recent saved one, else a new one. */
@@ -156,13 +167,12 @@ class OpenCanvasSessionAction : AnAction() {
 internal suspend fun openCanvasSessionFile(project: Project, file: VirtualFile,
     store: CanvasSessionStore? = CanvasSessionStore.forProject(project), saved: CanvasSession? = null,
     diffs: Map<String, String> = emptyMap()): CanvasSessionFile? {
-    val exploration = ProgressiveSchematic.open(project, file) ?: return null
-    val root = exploration.result.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path } ?: return null
+    val (exploration, root) = openExploration(project, file) ?: return null
     val rootPath = relativePath(project, file.path)
     val session = saved ?: withContext(Dispatchers.IO) {
         store?.list(rootPath)?.firstNotNullOfOrNull { store.load(it.id) }
     } ?: CanvasSession.new(rootPath)
-    return CanvasSessionFile(file, rootPath, exploration, root.id, session, diffs)
+    return CanvasSessionFile(file, rootPath, exploration, root, session, diffs)
 }
 
 /** Called on the EDT after loading a saved session; reuse its file's tab when it is already open. */

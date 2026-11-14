@@ -127,7 +127,8 @@ val canvasHelpHtml = """
     arrows, Page Up/Down, Home and End scroll, + and − zoom, 0 resets the zoom, and Tab / Shift+Tab move between cards. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
     cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
-    to another session of this file, or deletes this one. Reopening resolves symbols
+    to another session of this file, or deletes this one. After the code changes, <b>Refresh</b> reads it again in
+    place, keeping cards, chats and layout; reopening does the same. Either resolves symbols
     again; a card whose symbol is gone keeps its saved text and chat.
     </div></html>
 """.trimIndent().replace("\n", " ")

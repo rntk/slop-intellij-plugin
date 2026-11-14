@@ -73,15 +73,20 @@ data class CanvasUsageSearch(
 /**
  * The IDE side of one canvas session, without any Swing: builds the root file's source and each card's, opens cards
  * in [model] from links and selections, and resolves a saved session's symbols again. [exploration] is the graph of
- * [rootFile], whose FILE symbol is [rootNode]. Model mutations happen on the EDT; graph work runs in the background.
+ * [rootFile], whose FILE symbol is [rootNode]; [reopen] reads both again for [refresh]. Model mutations happen on the
+ * EDT; graph work runs in the background.
  */
 internal class CanvasSessionController(
     private val project: Project,
     val rootFile: VirtualFile,
-    private val exploration: ProgressiveSchematic,
-    private val rootNode: Int,
+    exploration: ProgressiveSchematic,
+    rootNode: Int,
     val model: CanvasSessionModel,
+    private val reopen: suspend () -> Pair<ProgressiveSchematic, Int>? = { openExploration(project, rootFile) },
 ) : Disposable {
+    // Replaced together by refresh: symbol ids belong to one exploration.
+    @Volatile private var exploration: ProgressiveSchematic = exploration
+    @Volatile private var rootNode: Int = rootNode
     private val sources = ConcurrentHashMap<String, CanvasSource>()
     /** The source of the card being opened; the model's listener takes it once the card has an id. */
     private var opening: CanvasSource? = null
@@ -121,6 +126,25 @@ internal class CanvasSessionController(
         val schematic = withContext(Dispatchers.Default) { exploration.schematic(rootNode, whole = true) }
             ?: error("The source of ${rootName} is no longer available. Reopen the canvas session.")
         return schematicSource(schematic, model.session.rootPath, rootNode).also { root = it }
+    }
+
+    /**
+     * Reads the code again after it changed: a fresh exploration of [rootFile] replaces the current one, then every
+     * card is resolved again as [restore] does, keeping the cards, their chats and layout. Symbol ids of the previous
+     * exploration mean nothing afterwards. Throws, leaving everything as it was, when the root file cannot be read.
+     */
+    suspend fun refresh(onProgress: (Int, Int) -> Unit = { _, _ -> }): CanvasSource {
+        val (next, nextRoot) = withContext(Dispatchers.Default) { reopen() }
+            ?: error("The source of $rootName is no longer available.")
+        val schematic = withContext(Dispatchers.Default) { next.schematic(nextRoot, whole = true) }
+            ?: error("The source of $rootName is no longer available.")
+        exploration = next
+        rootNode = nextRoot
+        lifted = null
+        sources.clear()
+        val fresh = schematicSource(schematic, model.session.rootPath, nextRoot).also { root = it }
+        restore(onProgress)
+        return fresh
     }
 
     /**
@@ -255,7 +279,7 @@ internal class CanvasSessionController(
         // A selection may start within a line, so locate its exact text from that document line.
         val lineOffset = fresh.text.lineSequence().take(previous.firstLine).sumOf { it.length + 1 }
         val offset = fresh.text.indexOf(previous.text, lineOffset).takeIf { it >= 0 }
-            ?: error("Source changed. Reopen the canvas session to expand this card.")
+            ?: error("Source changed. Refresh the canvas to expand this card.")
         val anchors = withContext(Dispatchers.Default) {
             val candidates = linkTargets(fresh.links).mapNotNull(::node)
             model.children(cardId).mapNotNull { child ->
@@ -437,6 +461,13 @@ internal class CanvasSessionController(
     private companion object {
         val LOG = logger<CanvasSessionController>()
     }
+}
+
+/** A fresh exploration of [file] and its FILE symbol; null when the file cannot be shown. Off the EDT. */
+internal suspend fun openExploration(project: Project, file: VirtualFile): Pair<ProgressiveSchematic, Int>? {
+    val exploration = ProgressiveSchematic.open(project, file) ?: return null
+    val root = exploration.result.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path } ?: return null
+    return exploration to root.id
 }
 
 /** [path] relative to the project's base directory, or unchanged when it lies elsewhere. */

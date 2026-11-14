@@ -299,6 +299,9 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Asks the card's selected chat [text]. */
     internal fun send(text: String) = chat.send(text)
 
+    /** Whether a reply runs in any of the card's chats. */
+    val chatBusy: Boolean get() = chat.replying
+
     /** Searches the project for references to this card's symbol, or toggles the loaded usage list. */
     fun showUsages() {
         val target = source?.node?.takeIf { canFindUsages } ?: return

@@ -24,7 +24,7 @@ internal fun schematicGapSource(project: Project, file: VirtualFile, firstLine: 
     val document = checkNotNull(PsiDocumentManager.getInstance(project).getDocument(psi)) { "Source is unavailable" }
     val lines = document.text.split('\n')
     check(lines.drop(firstLine).take(shown.size) == shown) {
-        "Source changed. Reopen the canvas session to summarize its gaps."
+        "Source changed. Refresh the canvas to summarize its gaps."
     }
     val start = document.getLineStartOffset(unit.first)
     val end = document.getLineEndOffset(unit.last)

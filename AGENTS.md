@@ -33,6 +33,21 @@ Use `./build.sh` for compile, test, and packaging. Don't call `./gradlew` or `./
 - `runIde` requires a display and won't work in agent containers.
 - Reports: `build/reports/tests/test/index.html`; per-class XML: `build/test-results/test/`. Find failures with `grep -l '<failure' build/test-results/test/*.xml`.
 - Tests run headless. Swing and Java2D use fonts already installed in the agent image.
+- **Always delegate testing to a subagent** when running full test suites or tests that generate long outputs.
+- The subagent should execute the tests, analyze the log files/terminal output, and report back only the critical details (e.g., overall pass/fail status and a concise summary of specific failures).
+- **Do not** dump full test outputs/logs into the main conversation history.
+
+## Use Cheaper and Faster Models for Subagents
+
+When delegating tasks to subagents, optimize for speed and cost. High-reasoning frontier models (like Gemini Pro, Opus/Fable or GPT-6 Astra/Sol) are not always necessary for routine tasks.
+
+### Guidelines:
+
+- Select faster, lightweight, and cost-effective models for subagents unless complex reasoning, planning, or architecture design is required.
+- **Recommended models for routine subagent tasks:**
+  - **Gemini:** Gemini Flash models
+  - **Claude:** Claude Sonnet / Haiku
+  - **OpenAI:** GPT mini, Luna, Terra
 
 ## Project layout
 

@@ -233,6 +233,86 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(restored.source(selection.id)!!.links.isNotEmpty())
     }
 
+    fun testRefreshAfterAnEditReadsTheCodeAgainAndKeepsCardsAndChats() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val canvas = controller(file, CanvasSession.new("Flow.java"))
+        background { canvas.loadRoot() }
+        val entry = canvas.open(null, "entry")
+        val messages = listOf(SavedMessage(ChatRole.USER, "Why?"), SavedMessage(ChatRole.ASSISTANT, "It delegates."))
+        canvas.model.setMessages(entry.id, messages)
+        val (link, target) = canvas.link(canvas.source(entry.id)!!, "helper")
+
+        WriteCommandAction.runWriteCommandAction(project) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(file)!!
+            document.setText(source.replace("void entry() {", "void entry() {\n        int y = 2;"))
+            PsiDocumentManager.getInstance(project).commitDocument(document)
+        }
+        val stale = runCatching { background { canvas.openSymbol(entry.id, link.range.first, link.range.last + 1, target) } }
+        assertTrue("An edit stops the stale graph", stale.exceptionOrNull()?.message.orEmpty().startsWith("Source changed"))
+
+        val root = background { canvas.refresh() }
+        assertTrue(root.text.contains("int y = 2;"))
+        assertSame(root, canvas.source(null))
+        val entryNow = canvas.source(entry.id)!!
+        assertEquals(CANVAS_SOURCE_CHANGED, entryNow.notice)
+        assertTrue(entryNow.text.contains("int y = 2;"))
+        assertEquals(entry.id, canvas.model.cards.single().id)
+        assertEquals(messages, canvas.model.card(entry.id)!!.messages)
+        assertTrue("The snapshot follows the current code", canvas.model.card(entry.id)!!.text.contains("int y = 2;"))
+        val helper = canvas.open(entry.id, "helper")
+        assertEquals(entry.id, helper.parentId)
+        assertTrue(helper.text.contains("int x = 1;"))
+    }
+
+    fun testPanelRefreshKeepsViewsAndChatsAndDropsTheDiffOfAnEditedFile() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val services = CanvasSessionServices(null, { { Completion("Summary.", finishReason = FinishReason.COMPLETE) } },
+            summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        val session = CanvasSession.new("Flow.java")
+        val plain = sessionFile(file, session)
+        val patch = "@@ -6,1 +6,1 @@\n-        int x = 0;\n+        int x = 1;\n"
+        val opened = CanvasSessionFile(plain.source, plain.rootPath, plain.exploration, plain.root, session,
+            mapOf(file.virtualFile.path to patch))
+        val panel = CanvasSessionPanel(project, opened, session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "entry")
+            val job = panel.openSymbol(null, link, target)
+            PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
+            val card = panel.model.cards.single()
+            val messages = listOf(SavedMessage(ChatRole.USER, "Why?"), SavedMessage(ChatRole.ASSISTANT, "It delegates."))
+            panel.model.setMessages(card.id, messages)
+            val view = panel.cardViews.getValue(card.id)
+            val rootSource = (panel.canvas.components.single { it.name == "canvas-root" } as Container)
+                .components.filterIsInstance<CanvasSourceSection>().single()
+            assertTrue(rootSource.diffTab.isVisible)
+
+            WriteCommandAction.runWriteCommandAction(project) {
+                val document = PsiDocumentManager.getInstance(project).getDocument(file)!!
+                document.setText(source.replace("void entry() {", "void entry() {\n        int y = 2;"))
+                PsiDocumentManager.getInstance(project).commitDocument(document)
+            }
+            val refresh = panel.refresh()!!
+            assertFalse("Nothing opens while refreshing", panel.ready)
+            PlatformTestUtil.waitWithEventsDispatching("The canvas should refresh", { refresh.isCompleted && panel.ready }, 30)
+
+            assertSame("The card view and its chat stay", view, panel.cardViews.getValue(card.id))
+            assertEquals(messages, view.card.messages)
+            assertTrue(view.sourcePane!!.source.text.contains("int y = 2;"))
+            val rootPane = (rootSource.body as Container).components.single() as CanvasSourcePane
+            assertTrue(rootPane.source.text.contains("int y = 2;"))
+            assertFalse("The patch no longer numbers the edited file", rootSource.diffTab.isVisible)
+
+            val (helperLink, helper) = panel.controller.link(panel.controller.source(card.id)!!, "helper")
+            val next = panel.openSymbol(card.id, helperLink, helper)
+            PlatformTestUtil.waitWithEventsDispatching("A card should open from the refreshed code", { next.isCompleted }, 30)
+            assertEquals(2, panel.model.cards.size)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
     fun testExpandCrossFileSymbolDiscoversLinksOutsideItsOriginalScope() {
         val other = myFixture.addFileToProject("Other.java", """
             class Other {

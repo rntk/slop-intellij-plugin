@@ -361,7 +361,7 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
         WriteCommandAction.runWriteCommandAction(project) { document.insertString(document.textLength, "\n// changed") }
         val failure = background { runCatching { exploration.expand(last) }.exceptionOrNull() }
         assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message!!.contains("Reopen the canvas session"))
+        assertTrue(failure!!.message!!.contains("Refresh the canvas"))
         assertSame(beforeEdit, exploration.result)
     }
 }

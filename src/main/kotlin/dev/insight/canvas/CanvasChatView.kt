@@ -136,6 +136,9 @@ internal class CanvasChatView(
         return true
     }
 
+    /** Whether a reply runs in any of the tabs. */
+    val replying: Boolean get() = conversations.values.any { it.first.busy }
+
     /** Asks the selected chat [text]. */
     fun send(text: String) = chat.send(text)
 
@@ -271,7 +274,7 @@ internal open class CanvasFoldSection(private val host: CanvasCardHost, private 
  * the shown tab folds the section; clicking the other shows it, unfolded. The source is shown first.
  */
 internal class CanvasSourceSection(private val host: CanvasCardHost, private val cardId: String?, title: String,
-    private val source: JComponent) : CanvasFoldSection(host, cardId, CardSection.SOURCE, title,
+    private var source: JComponent) : CanvasFoldSection(host, cardId, CardSection.SOURCE, title,
         JPanel(BorderLayout()).apply { isOpaque = false }) {
     val diffTab: JLabel = host.zoomFont(JLabel().apply { isVisible = false }, UIUtil.getLabelFont().deriveFont(Font.BOLD))
         .onLeftClick { if (showsDiff) host.model.toggleFolded(cardId, section) else select(diff = true) }
@@ -291,6 +294,12 @@ internal class CanvasSourceSection(private val host: CanvasCardHost, private val
         diffTab.text = tabTitle
         if (component == null) showsDiff = false
         showTab()
+    }
+
+    /** Shows [component] as the source from now on, with [diff] (titled [tabTitle]) in the Diff tab as [setDiff] does. */
+    fun setSource(component: JComponent, diff: JComponent?, tabTitle: String) {
+        source = component
+        setDiff(diff, tabTitle)
     }
 
     override fun titleClicked() = if (showsDiff) select(diff = false) else super.titleClicked()

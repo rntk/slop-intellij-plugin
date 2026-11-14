@@ -170,10 +170,17 @@ internal class CanvasSessionPanel(
         toolTipText = "Fuzzy search the cards on the canvas and move to one (Ctrl/⌘ + F outside source text, where it finds in the text)"
         addActionListener { openCardSearch() }
     }
+    private val refreshButton = JButton("Refresh").apply {
+        name = "canvas-refresh"
+        isFocusable = false
+        toolTipText = "Read the code again after it changed, keeping the cards, chats and layout"
+        addActionListener { refresh() }
+    }
     private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
         add(sessions)
         add(sessionActions)
         add(findCard)
+        add(refreshButton)
         add(JButton("Fold all").apply {
             isFocusable = false
             toolTipText = "Fold the file and every card's summary, source and chat; again to unfold them"
@@ -220,16 +227,20 @@ internal class CanvasSessionPanel(
     /** The trail from the root file to the current card, as its crumbs read: the file name, then each card's title. */
     internal val trailTitles: List<String> get() = listOf(file.source.name) + trail.mapNotNull { model.card(it)?.title }
 
-    override val diffs: Map<String, String> get() = file.diffs
+    override val diffs: Map<String, String> get() = file.currentDiffs
 
+    // While refreshing, sources are replaced and their symbol ids change, so they open nothing.
     override val sourceListener = object : CanvasSourcePane.Listener {
         override fun wheel(event: MouseWheelEvent) = this@CanvasSessionPanel.wheel(event)
         override fun linkClicked(pane: CanvasSourcePane, link: CanvasLink, event: MouseEvent) {
-            if (!panned) openLink(pane, link, event)
+            if (!panned && ready) openLink(pane, link, event)
         }
-        override fun selectionChanged(pane: CanvasSourcePane) = showSelectionButton(pane)
-        override fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int, link: CanvasLink?) =
-            showContextMenu(pane, event, line, link)
+        override fun selectionChanged(pane: CanvasSourcePane) {
+            if (ready) showSelectionButton(pane)
+        }
+        override fun contextMenu(pane: CanvasSourcePane, event: MouseEvent, line: Int, link: CanvasLink?) {
+            if (ready) showContextMenu(pane, event, line, link)
+        }
     }
 
     private val subscription = model.subscribe(::changed)
@@ -294,6 +305,60 @@ internal class CanvasSessionPanel(
     }
 
     private fun currentActive() = scope.isActive
+
+    /**
+     * Reads the root file and every card's code again in place, as reopening the session would, keeping the views and
+     * their chats. Not while a chat replies, since its tools hold symbol ids of the current graph. EDT.
+     */
+    internal fun refresh(): Job? {
+        if (disposed || !ready) return null
+        if (rootView?.chat?.replying == true || views.values.any { it.chatBusy }) {
+            showStatus("Wait for the chat replies to finish, or stop them, then refresh.")
+            return null
+        }
+        gapJobs.values.forEach(Job::cancel)
+        gapJobs.clear()
+        hideSelectionButton()
+        ready = false
+        refreshButton.isEnabled = false
+        return scope.launch(Dispatchers.EDT) {
+            showStatus("Reading ${file.source.name} again…")
+            var problem: String? = null
+            try {
+                val root = controller.refresh { index, count -> showStatus("Refreshing card $index of $count…") }
+                rootView?.show(root)
+            } catch (e: Throwable) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                LOG.warn("Unable to refresh canvas session of ${file.rootPath}", e)
+                problem = "Could not refresh: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                if (!disposed) {
+                    ready = true
+                    refreshButton.isEnabled = true
+                    resyncViews()
+                    showStatus(problem.orEmpty())
+                }
+            }
+        }
+    }
+
+    /** Brings the views in line with the model and the controller's sources after changes made while not [ready]. */
+    private fun resyncViews() {
+        views.keys.filter { model.card(it) == null }.forEach { id ->
+            views.remove(id)?.let { view ->
+                content.remove(view)
+                Disposer.dispose(view)
+            }
+            anchorYs.remove(id)
+        }
+        model.cards.forEach { card -> views[card.id]?.update(card) ?: addView(card) }
+        rootView?.update(model.session.root)
+        if (current != null && model.card(current!!) == null) current = trail.lastOrNull { model.card(it) != null }
+        refreshTrail()
+        refreshAnchors()
+        content.revalidate()
+        content.repaint()
+    }
 
     private fun changed(change: CanvasChange) {
         if (persist) autosave?.request(model.session)
@@ -1048,8 +1113,9 @@ internal class CanvasSessionPanel(
      * The initial file folds like a card, with an explicitly requested summary and chat below its source, and a Diff tab
      * beside the source when opened from a diff.
      */
-    private inner class RootView(private val source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
-        val pane = CanvasSourcePane(project, null, source, sourceListener)
+    private inner class RootView(private var source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
+        var pane = CanvasSourcePane(project, null, source, sourceListener)
+            private set
         private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
         private val summaryText = zoomFont(wrappedText(""))
         private val summaryStatus = zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
@@ -1062,12 +1128,29 @@ internal class CanvasSessionPanel(
                 add(summaryStatus)
                 add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summarize) })
             })
-        private val diffRows = canvasSourceDiff(file.diffs, source, wholeFile = true)
+        private var diffRows = canvasSourceDiff(diffs, source, wholeFile = true)
         /** The file's changed hunks; null, with no Diff tab, when it was not opened from a diff. */
-        val diffPane = diffRows.takeIf { it.isNotEmpty() }?.let { CanvasDiffPane(project, source.path, it, sourceListener::wheel) }
-        private val sourceSection = CanvasSourceSection(this@CanvasSessionPanel, null,
-            "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines", pane)
+        var diffPane = diffPane()
+            private set
+        private val sourceSection = CanvasSourceSection(this@CanvasSessionPanel, null, sourceTitle(), pane)
             .apply { setDiff(diffPane, canvasDiffTitle(diffRows)) }
+
+        private fun diffPane() = diffRows.takeIf { it.isNotEmpty() }?.let { CanvasDiffPane(project, source.path, it, sourceListener::wheel) }
+        private fun sourceTitle() = "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines"
+
+        /** Shows [fresh], the file read again, in place of the current source; the chats and summary stay. */
+        fun show(fresh: CanvasSource) {
+            Disposer.dispose(pane)
+            diffPane?.let(Disposer::dispose)
+            source = fresh
+            pane = CanvasSourcePane(project, null, fresh, sourceListener).also { it.applyZoom(zoom) }
+            diffRows = canvasSourceDiff(diffs, fresh, wholeFile = true)
+            diffPane = diffPane()?.also { it.applyZoom(zoom) }
+            sourceSection.setSource(pane, diffPane, canvasDiffTitle(diffRows))
+            sourceSection.title.text = sourceTitle()
+            rendered = null
+            update(model.session.root)
+        }
         private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat",
             JPanel(BorderLayout()).apply { isOpaque = false })
         val chat = CanvasChatView(this@CanvasSessionPanel, null, model.session.root, { canvasRootWelcome(model.session.rootPath) },
