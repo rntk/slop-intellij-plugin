@@ -38,6 +38,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.JBFont
 import java.awt.BorderLayout
 import javax.swing.*
 import javax.swing.tree.DefaultMutableTreeNode
@@ -97,9 +98,11 @@ internal class DiffReviewPanel(
         if (selected) included += file.absolutePath else included -= file.absolutePath
         invalidateDiff(setOf(file.path, file.absolutePath)); refresh()
     }
-    private val untrackedBlock = JPanel(BorderLayout()).apply {
+    private val untrackedBlock = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
         minimumSize = JBUI.size(200, 120)
+        border = JBUI.Borders.emptyLeft(8)
         add(JLabel("Untracked · include in review").apply {
+            font = JBFont.label().asBold()
             toolTipText = "Selection only includes a file in this review; it does not stage it in version control."
         }, BorderLayout.NORTH)
         add(JBScrollPane(untracked), BorderLayout.CENTER)
@@ -119,15 +122,15 @@ internal class DiffReviewPanel(
         toolTipText = "Start a fresh chat and canvas scoped to the selected files or folders"
         addActionListener { selectedPaths().toSet().takeIf { it.isNotEmpty() }?.let { tabs.add(it) } }
     }
-    /** The changed files, the untracked files to include and the status line, below the diff on the Start page. */
-    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+    /**
+     * The changed files beside the untracked files to include, above the status line and the selection's action, on the Start
+     * page below the diff.
+     */
+    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(8))).apply {
         minimumSize = JBUI.size(280, 120)
-        val files = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        val files = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
             minimumSize = JBUI.size(280, 120)
-            add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-                add(JLabel("Changed files · double-click to view diff"), BorderLayout.NORTH)
-                add(newSelectedTab, BorderLayout.CENTER)
-            }, BorderLayout.NORTH)
+            add(JLabel("Tracked changes").apply { font = JBFont.label().asBold() }, BorderLayout.NORTH)
             add(JBScrollPane(tree), BorderLayout.CENTER)
         }
         add(OnePixelSplitter(false, 0.65f).apply {
@@ -136,7 +139,10 @@ internal class DiffReviewPanel(
             secondComponent = untrackedBlock
             setHonorComponentsMinimumSize(true)
         }, BorderLayout.CENTER)
-        add(status, BorderLayout.SOUTH)
+        add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
+            add(status, BorderLayout.CENTER)
+            add(newSelectedTab, BorderLayout.EAST)
+        }, BorderLayout.SOUTH)
     }
     /**
      * The hub in the editor area, with the review tabs and the tiles of their views; the tool window's stripe button opens it.
@@ -145,9 +151,12 @@ internal class DiffReviewPanel(
     /** The Start page in the editor area, where the diff is chosen and its files browsed; each tab's Diff tile opens it. */
     internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.DIFF, ReviewStartText(
         heading = "Choose the diff to review",
-        hint = "Review uncommitted changes, or compare a revision with the working tree, two branches or commits, or a branch " +
-            "with its merge base. Apply diff loads the changed files listed below, where untracked files can be included; " +
-            "Continue goes on to the summaries, topics, Diffs wall and charts.",
+        hint = "Pick a comparison, check its files, then start the review: summaries, topics, the Diffs wall and charts.",
+        source = "Comparison",
+        sourceHint = "Uncommitted changes, a revision against the working tree, two branches or commits, or a branch against " +
+            "its merge base. Apply diff loads the files below.",
+        files = "Files",
+        filesHint = "Double-click a changed file to view its diff; check untracked files to include them in the review.",
     ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
         tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)

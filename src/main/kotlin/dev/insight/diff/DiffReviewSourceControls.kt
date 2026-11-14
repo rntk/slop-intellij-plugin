@@ -6,7 +6,7 @@ import com.intellij.util.ui.UIUtil
 import java.awt.Dimension
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
-import java.awt.GridLayout
+import java.awt.FlowLayout
 import javax.swing.*
 
 /** Draft selection is applied explicitly, so typing a ref never starts intermediate reviews. */
@@ -55,16 +55,21 @@ internal class DiffReviewSourceControls(
             })
         }
         help.minimumSize = Dimension(0, help.getFontMetrics(help.font).height)
+        // The help and the buttons line up with the fields; the buttons keep their natural width.
         add(help, GridBagConstraints().apply {
-            gridx = 0; gridy = 4; gridwidth = 2; weightx = 1.0
+            gridx = 1; gridy = 4; weightx = 1.0
             fill = GridBagConstraints.HORIZONTAL
-            insets = JBUI.insets(2, 0, 8, 0)
+            insets = JBUI.insets(0, 0, 10, 0)
         })
-        add(JPanel(GridLayout(1, 2, JBUI.scale(8), 0)).apply {
+        add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             add(applyButton)
-            add(JButton("Refresh").apply { addActionListener { onRefresh() } })
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
+            add(JButton("Refresh").apply {
+                toolTipText = "Find repositories and branches again and reload the diff"
+                addActionListener { onRefresh() }
+            })
         }, GridBagConstraints().apply {
-            gridx = 0; gridy = 5; gridwidth = 2; weightx = 1.0
+            gridx = 1; gridy = 5; weightx = 1.0
             fill = GridBagConstraints.HORIZONTAL
         })
         base.toolTipText = "Choose a branch or type a tag, commit hash or revision such as HEAD~3"

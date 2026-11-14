@@ -41,7 +41,9 @@ import dev.insight.agent.findSourceFile
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
 import java.awt.BorderLayout
+import java.awt.FlowLayout
 import java.util.Locale
+import javax.swing.Box
 import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JLabel
@@ -238,20 +240,20 @@ internal class CodeReviewPanel(
         toolTipText = "Open the selected file in File view, with neighboring topics and summaries on hover"
         addActionListener { viewSelectedFile() }
     }
-    /** The files in scope, the skipped files and the status line, below the scope on the Start page. */
-    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+    /** The files in scope and the skipped files, above the status line and the selection's actions, below the scope on the Start page. */
+    private val filesPanel = JPanel(BorderLayout(0, JBUI.scale(8))).apply {
         minimumSize = JBUI.size(280, 120)
-        add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            add(JLabel("Files in scope · double-click to open"), BorderLayout.NORTH)
-            add(JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
-                add(newSelectedTab, BorderLayout.CENTER)
-                add(viewFile, BorderLayout.EAST)
-            }, BorderLayout.CENTER)
-        }, BorderLayout.NORTH)
         add(JBScrollPane(tree), BorderLayout.CENTER)
-        add(JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        add(JPanel(BorderLayout(0, JBUI.scale(8))).apply {
             add(skippedBlock, BorderLayout.CENTER)
-            add(status, BorderLayout.SOUTH)
+            add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
+                add(status, BorderLayout.CENTER)
+                add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+                    add(newSelectedTab)
+                    add(Box.createHorizontalStrut(JBUI.scale(8)))
+                    add(viewFile)
+                }, BorderLayout.EAST)
+            }, BorderLayout.SOUTH)
         }, BorderLayout.SOUTH)
     }
     /**
@@ -261,8 +263,12 @@ internal class CodeReviewPanel(
     /** The Start page in the editor area, where the scope is chosen and its files browsed; each tab's Scope tile opens it. */
     internal val start: ReviewStartScreen = ReviewStartScreen(project, ReviewVocabulary.CODE, ReviewStartText(
         heading = "Choose the code to review",
-        hint = "Review a project folder, or an entry file with the project files it depends on. Leave the folder empty for the " +
-            "project root. Load reads the files listed below; Continue goes on to the summaries, topics, Code wall and words.",
+        hint = "Pick a scope, check its files, then start the review: summaries, topics, the Code wall and words.",
+        source = "Scope",
+        sourceHint = "A project folder, or an entry file with the project files it depends on. Leave the folder empty for the " +
+            "project root; Load reads the files below.",
+        files = "Files in scope",
+        filesHint = "Double-click a file to open it; files left out of the review are listed below the tree.",
     ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
         tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)

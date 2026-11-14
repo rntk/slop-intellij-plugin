@@ -10,7 +10,10 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.GridLayout
+import java.awt.FlowLayout
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
+import javax.swing.Box
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -57,20 +60,32 @@ internal class CodeScopeControls(
                 override fun textChanged(e: DocumentEvent) = updateButton()
             })
         }
-        add(JPanel(GridLayout(2, 1, 0, JBUI.scale(6))).apply {
-            add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-                add(JLabel("Folder or file").apply { labelFor = field }, BorderLayout.WEST)
-                add(field, BorderLayout.CENTER)
-            })
-            add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-                add(JLabel("Exclude").apply { labelFor = excludeField }, BorderLayout.WEST)
-                add(excludeField, BorderLayout.CENTER)
+        // Labels in one column so both fields start at the same x; the buttons line up with the fields at their natural width.
+        val rows = listOf(JLabel("Folder or file") to field, JLabel("Exclude") to excludeField)
+        add(JPanel(GridBagLayout()).apply {
+            rows.forEachIndexed { index, (label, input) ->
+                label.labelFor = input
+                add(label, GridBagConstraints().apply {
+                    gridx = 0; gridy = index
+                    anchor = GridBagConstraints.WEST
+                    insets = JBUI.insets(0, 0, 6, 8)
+                })
+                add(input, GridBagConstraints().apply {
+                    gridx = 1; gridy = index; weightx = 1.0
+                    fill = GridBagConstraints.HORIZONTAL
+                    insets = JBUI.insetsBottom(6)
+                })
+            }
+            add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+                add(applyButton)
+                add(Box.createHorizontalStrut(JBUI.scale(8)))
+                add(rootButton)
+            }, GridBagConstraints().apply {
+                gridx = 1; gridy = rows.size; weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                insets = JBUI.insetsTop(4)
             })
         }, BorderLayout.NORTH)
-        add(JPanel(GridLayout(1, 2, JBUI.scale(8), 0)).apply {
-            add(applyButton)
-            add(rootButton)
-        }, BorderLayout.CENTER)
         updateButton()
     }
 

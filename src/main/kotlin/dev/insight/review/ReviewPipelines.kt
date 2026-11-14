@@ -11,6 +11,13 @@ internal enum class ReviewPipeline(val command: ReviewCommand, val label: String
     GROUPING(ReviewCommand.GROUPING, "Grouping", "Group every changed file by shared change cause and affected code"),
     GROUPING_SUMMARIES(ReviewCommand.GROUPING_SUMMARIES, "Fill grouping summaries", "Fill missing summaries for every group and subgroup");
 
+    /** The pipeline whose result this one fills in, so the Start page shows it beneath; null for a pipeline of its own. */
+    val follows: ReviewPipeline? get() = when (this) {
+        TOPIC_SUMMARIES -> TOPICS
+        GROUPING_SUMMARIES -> GROUPING
+        else -> null
+    }
+
     companion object {
         /** Grouping reads a diff, so code reviews offer only the other pipelines. */
         val code: List<ReviewPipeline> = entries.filter { it.command in ReviewCommand.code }
