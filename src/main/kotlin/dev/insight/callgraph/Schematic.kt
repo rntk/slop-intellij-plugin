@@ -65,9 +65,11 @@ data class SchematicReference(val target: Int, val line: Int, val columns: IntRa
 /**
  * A name of project symbol [target] at [columns] of [line], on any line of a scope read whole: a use of a type,
  * function, property, parameter or variable, or the name of a declaration inside the scope. A [reference] does not
- * call its target.
+ * call its target. A [definition] is the name declaring the scope itself: it leads to the scope's callers and users
+ * rather than to the scope.
  */
-data class SchematicMention(val target: Int, val line: Int, val columns: IntRange, val reference: Boolean = true)
+data class SchematicMention(val target: Int, val line: Int, val columns: IntRange, val reference: Boolean = true,
+    val definition: Boolean = false)
 
 /**
  * A lossy reading of the file, class or function [scope]: [lines] are its source lines from document line
@@ -349,17 +351,19 @@ object SchematicBuilder {
     /**
      * Every name of a project symbol on the shown lines of [element], other than [scope] itself: uses of what the scope
      * reaches, and the names of declarations inside it, so a nested function's parameters and the types in its body
-     * lead on too. Comments are skipped.
+     * lead on too. The scope's own name is a [SchematicMention.definition]; other uses of the scope are left out.
+     * Comments are skipped.
      */
     private fun mentions(result: CallGraphResult, document: Document, element: PsiElement, scope: Int,
         lineStart: Int, lineEnd: Int): List<SchematicMention> {
         val id = graphIds(result, MENTIONED)
         val found = linkedSetOf<SchematicMention>()
-        fun mention(target: Int, range: TextRange) {
-            if (target == scope) return
+        fun mention(target: Int, range: TextRange, declares: Boolean = false) {
+            val definition = target == scope
+            if (definition && !declares) return
             val line = document.getLineNumber(range.startOffset.coerceIn(0, document.textLength))
             val columns = columns(document, range, line) ?: return
-            found += SchematicMention(target, line, columns, result.graph.nodes[target].kind != SymbolKind.FUNCTION)
+            found += SchematicMention(target, line, columns, result.graph.nodes[target].kind != SymbolKind.FUNCTION, definition)
         }
         val container = ProjectGraphAnalyzer.shownContainer(element, TextRange(lineStart, lineEnd))
         container.accept(object : PsiRecursiveElementWalkingVisitor() {
@@ -369,7 +373,7 @@ object SchematicBuilder {
                 val name = declarationNameRange(element, document)
                 if (name != null && name.startOffset >= lineStart && name.endOffset <= lineEnd) {
                     val target = CallGraphLanguageSupport.EP_NAME.extensionList.firstNotNullOfOrNull { it.unwrapImport(element) } ?: element
-                    id(target)?.let { mention(it, name) }
+                    id(target)?.let { mention(it, name, declares = target === element) }
                 }
                 for (reference in element.navigationReferences()) {
                     val range = referenceRange(reference) ?: continue

@@ -114,7 +114,7 @@ internal class CanvasSourcePane(
                 if (link == hovered) return
                 hovered = link
                 editor.setCustomCursor(this@CanvasSourcePane, link?.let { Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) })
-                editor.contentComponent.toolTipText = null
+                editor.contentComponent.toolTipText = if (link?.definition == true) "Show callers and usages" else null
             }
         }, this)
         editor.selectionModel.addSelectionListener(object : SelectionListener {

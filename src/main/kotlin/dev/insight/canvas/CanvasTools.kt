@@ -295,7 +295,8 @@ private class ListSymbolsTool(private val canvas: CanvasToolContext) : CanvasToo
                 1 -> targets.single().label
                 else -> targets.withIndex().joinToString("; ") { (index, target) -> "${index + 1}) ${target.label}" }
             }
-            "$line: $name → $leads"
+            if (link.definition) "$line: $name → declares $leads; find_usages lists its callers and users"
+            else "$line: $name → $leads"
         }.toList()
         if (rows.isEmpty()) return "No clickable symbols${filter?.let { " matching '$it'" }.orEmpty()} in lines $from-$to of ${canvas.name(id).lowercase()}."
         return "Symbols in ${canvas.name(id).lowercase()}, lines $from-$to:\n" + rows.take(limit).joinToString("\n") +

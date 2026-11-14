@@ -8,9 +8,11 @@ import dev.insight.callgraph.SchematicRow
 /**
  * A clickable part of a text viewer showing a schematic's text: [range] holds offsets into that text (both ends
  * inclusive), and clicking it leads to graph symbols [targets]. A [reference] names types and properties without
- * calling them.
+ * calling them. A [definition] is the name declaring the shown symbol itself, so it leads to that symbol's callers and
+ * users instead.
  */
-data class CanvasLink(val range: IntRange, val targets: List<Int>, val reference: Boolean = false)
+data class CanvasLink(val range: IntRange, val targets: List<Int>, val reference: Boolean = false,
+    val definition: Boolean = false)
 
 /** The text a viewer shows for [schematic], which [canvasLinks] offsets point into. */
 fun canvasText(schematic: Schematic): String = schematic.lines.joinToString("\n")
@@ -55,7 +57,7 @@ fun canvasLinks(firstLine: Int, lines: List<String>, rows: List<SchematicRow>,
     }.filter { (range, _) -> placed.none { it.first <= range.last && range.first <= it.last } }
         .groupBy({ it.first }, { it.second })
         .forEach { (range, group) ->
-            links += CanvasLink(range, group.map { it.target }.distinct(), group.all { it.reference })
+            links += CanvasLink(range, group.map { it.target }.distinct(), group.all { it.reference }, group.any { it.definition })
         }
     return links.sortedBy { it.range.first }
 }

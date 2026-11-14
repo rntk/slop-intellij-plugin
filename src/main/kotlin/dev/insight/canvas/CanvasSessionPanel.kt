@@ -348,7 +348,9 @@ internal class CanvasSessionPanel(
         views.values.forEach { view -> view.sourcePane?.highlightAnchors(model.children(view.id).map { it.anchor }) }
     }
 
+    /** Follows [link]: a use opens the card of what it names; a symbol's own declared name lists its callers and users. */
     private fun openLink(pane: CanvasSourcePane, link: CanvasLink, event: MouseEvent) {
+        if (link.definition) return findLinkUsages(pane, link, event)
         val targets = link.targets.mapNotNull(controller::node)
         when {
             targets.isEmpty() -> showStatus("This link leads nowhere the graph knows.")

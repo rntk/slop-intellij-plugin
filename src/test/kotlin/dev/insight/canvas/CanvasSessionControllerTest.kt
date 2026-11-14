@@ -737,6 +737,53 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testDeclaredNamesLeadUpToCallersWhoseCallsLeadBackDown() {
+        val file = myFixture.configureByText("Api.java", "interface Shape {}\nclass Api implements Shape {\n    void work() {}\n}")
+        myFixture.addFileToProject("Client.java", "class Client { Shape shape; void run() { new Api().work(); } }")
+        val canvas = controller(file, CanvasSession.new("Api.java"))
+        background { canvas.loadRoot() }
+        assertTrue("The root file links nested declarations down, not to their callers",
+            canvas.source(null)!!.links.none { it.definition })
+
+        fun definition(card: CanvasCard): CanvasLink {
+            val source = canvas.source(card.id)!!
+            val link = source.links.single { it.definition }
+            assertEquals(listOf(source.node), link.targets)
+            return link
+        }
+        val work = canvas.open(null, "work")
+        val workName = definition(work)
+        assertEquals("work", work.text.substring(workName.range.first, workName.range.last + 1))
+        val callers = background { canvas.findUsages(workName.targets.single()) }
+        val call = callers.usages.single()
+        assertEquals(dev.insight.graph.RelationKind.CALL, call.kind)
+        assertEquals("run", canvas.node(call.owner)!!.name.substringBefore('('))
+
+        val caller = background { canvas.openSymbol(work.id, workName.range.first, workName.range.last + 1, call.owner) }
+        assertEquals(work.id, caller.parentId)
+        assertEquals("The caller's call leads back down to the declaration", workName.targets,
+            canvas.link(canvas.source(caller.id)!!, "work").second.let(::listOf))
+
+        val shape = canvas.open(null, "Shape")
+        val users = background { canvas.findUsages(definition(shape).targets.single()) }
+        assertEquals("A type with no body still leads to its users", setOf("Api", "shape"),
+            users.usages.map { canvas.node(it.owner)!!.name.substringBefore('(') }.toSet())
+
+        val kotlin = myFixture.addFileToProject("Port.kt", "interface Port\nclass Svc(val port: Port) {\n    fun go() {}\n}")
+        val kotlinCanvas = controller(kotlin, CanvasSession.new("Port.kt"))
+        background { kotlinCanvas.loadRoot() }
+        for (name in listOf("Port", "Svc", "go")) {
+            val (declared, target) = kotlinCanvas.source(null)!!.links.firstNotNullOf { link ->
+                link.targets.firstOrNull { id -> kotlinCanvas.node(id)!!.let { it.name.substringBefore('(') == name &&
+                    (name == "go" || it.kind == dev.insight.graph.SymbolKind.CLASS) } }?.let { link to it }
+            }
+            val card = background { kotlinCanvas.openSymbol(null, declared.range.first, declared.range.last + 1, target) }
+            val link = kotlinCanvas.source(card.id)!!.links.singleOrNull { it.definition }
+            assertNotNull("The $name card should link its own name to its callers: ${card.text}", link)
+            assertEquals(name, card.text.substring(link!!.range.first, link.range.last + 1))
+        }
+    }
+
     fun testImportsParametersAndTypeScriptBindingsStayClickableAcrossCards() {
         myFixture.addFileToProject("types.ts", """
             export interface Config {

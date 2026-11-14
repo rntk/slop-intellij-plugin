@@ -7,7 +7,9 @@ import dev.insight.callgraph.Schematic
 import dev.insight.callgraph.SchematicLink
 import dev.insight.callgraph.SchematicMention
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanvasLinksTest {
@@ -62,6 +64,15 @@ class CanvasLinksTest {
         val whole = canvasLinks(10, lines, rows, listOf(SchematicMention(7, line = 11, columns = 8..10)))
         assertEquals("A name inside a whole-row link wins at its place", listOf(7), linkAt(whole, 12 + 9)!!.targets)
         assertEquals(listOf(1), linkAt(whole, 12 + 4)!!.targets)
+    }
+
+    @Test
+    fun `a symbol's own declared name is a definition link`() {
+        val links = canvasLinks(10, lines, rows, listOf(SchematicMention(1, line = 11, columns = 8..10, reference = false, definition = true),
+            SchematicMention(7, line = 12, columns = 8..12)))
+        assertTrue(linkAt(links, 12 + 9)!!.definition)
+        assertFalse(linkAt(links, 28 + 9)!!.definition)
+        assertTrue("Slices keep the flag", linksInSlice(links, 12, 28).any { it.definition })
     }
 
     @Test
