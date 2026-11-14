@@ -72,7 +72,9 @@ class CanvasToolsTest {
             val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
             model.findOpen(parentId, CardKind.SYMBOL, anchor, ref)?.let { shown += it.id; return it }
             return model.open(parentId, CardKind.SYMBOL, anchor, info.path, line, text, ref).also {
-                sources[it.id] = CanvasSource(text, emptyList(), line, info.path, null, target)
+                // run() calls save(), so a chain can continue from its card.
+                val links = if (target == 2) listOf(CanvasLink(at(text, "save", 1), listOf(5))) else emptyList()
+                sources[it.id] = CanvasSource(text, links, line, info.path, null, target)
                 shown += it.id
             }
         }
@@ -96,6 +98,8 @@ class CanvasToolsTest {
         override suspend fun show(cardId: String) {
             shown += cardId
         }
+
+        override var graph: CanvasGraph? = null
     }
 
     private fun args(json: String): JsonObject = JsonParser.parseString(json).asJsonObject
@@ -271,5 +275,67 @@ class CanvasToolsTest {
         assertTrue(tools.fails("show_card", """{"card":"root"}""").contains("always shown"))
         assertFalse(canvas.shown.contains("root"))
         assertNull(canvas.model.card("root"))
+    }
+
+    @Test
+    fun `show_call_chain opens each symbol from the previous card and stops where the chain leaves the code`() {
+        val canvas = FakeCanvas()
+        val tools = canvasTools(canvas, null)
+        // Local models sometimes quote ids or keep the # of the context.
+        val shown = tools.call("show_call_chain", """{"symbol_ids":["2","#5"]}""")
+        val (run, save) = canvas.model.cards
+        assertEquals(null, run.parentId)
+        assertEquals(run.id, save.parentId)
+        assertEquals("save()", save.symbol?.name)
+        assertTrue(shown, shown.startsWith("Shown on the canvas: run() [card ${run.id}] → save() [card ${save.id}].\nOpened card ${save.id}"))
+        assertEquals(save.id, canvas.shown.last())
+
+        // Open cards are shown again without using the reply's allowance.
+        val again = canvasTools(canvas, null, maxOpened = 0).call("show_call_chain", """{"symbol_ids":[2,5]}""")
+        assertTrue(again, again.contains("Card ${save.id} was already open"))
+        assertEquals(2, canvas.model.cards.size)
+
+        val stopped = tools.call("show_call_chain", """{"symbol_ids":[2,3]}""")
+        assertTrue(stopped, stopped.contains("Stopped at step 2: #3 log(String) is not linked from #2's card. It links to: #5 save()."))
+        assertTrue(tools.fails("show_call_chain", """{"symbol_ids":[5]}""").contains("Nothing was shown: #5 save() is not linked from the root file"))
+        for (bad in listOf("""{"symbol_ids":[]}""", """{"symbol_ids":["x"]}""", """{"symbol_ids":[-1]}""")) tools.fails("show_call_chain", bad)
+        assertEquals(2, canvas.model.cards.size)
+
+        val fresh = FakeCanvas()
+        val limited = canvasTools(fresh, null, maxOpened = 1).call("show_call_chain", """{"symbol_ids":[2,5]}""")
+        assertTrue(limited, limited.contains("Stopped at step 2: this reply has opened 1 cards"))
+        assertEquals(1, fresh.model.cards.size)
+    }
+
+    @Test
+    fun `graph tools come with an explored graph and call paths start from the card's links`() {
+        val canvas = FakeCanvas()
+        assertTrue(canvasTools(canvas, null).none { it.definition.name in setOf("find_symbols", "inspect_symbol", "call_path") })
+        val asked = mutableListOf<String>()
+        canvas.graph = object : CanvasGraph {
+            override fun findSymbols(query: String, kind: dev.insight.graph.SymbolKind?, limit: Int) = "find $query $kind $limit".also { asked += it }
+            override suspend fun inspect(id: Int) = "inspect $id".also { asked += it }
+            override fun callPaths(from: Int?, roots: List<Int>, target: Int, maxDepth: Int) =
+                "paths $from $roots $target $maxDepth".also { asked += it }
+        }
+        val tools = canvasTools(canvas, null)
+        assertEquals("find save FUNCTION 30", tools.call("find_symbols", """{"query":"save","kind":"function"}"""))
+        assertEquals("inspect 5", tools.call("inspect_symbol", """{"id":"#5"}"""))
+        assertEquals("paths null [1, 2, 3, 4] 5 8", tools.call("call_path", """{"to":5}"""))
+        assertEquals("paths 2 [] 5 15", tools.call("call_path", """{"to":5,"from":2,"max_depth":40}"""))
+        assertTrue(tools.fails("find_symbols", """{"query":"x","kind":"module"}""").contains("kind must be"))
+        assertTrue(tools.fails("inspect_symbol", """{"id":"save"}""").contains("symbol id"))
+        assertEquals(4, asked.size)
+        assertTrue("Reading the graph changes nothing on the canvas", canvas.model.cards.isEmpty())
+    }
+
+    @Test
+    fun `read_card lists the gap summaries that still match the source`() {
+        val canvas = FakeCanvas()
+        canvas.model.addGapSummary(null, GapSummary(1, 1, canvas.sources.getValue(null).gapHash(1, 1)!!, "Creates the app."))
+        canvas.model.addGapSummary(null, GapSummary(3, 3, 42, "Stale."))
+        val read = canvasTools(canvas, null).call("read_card", """{"card":"root"}""")
+        assertTrue(read, read.contains("Gap summaries (model-written):\n- lines 2-2: Creates the app.\nSource"))
+        assertFalse(read.contains("Stale."))
     }
 }

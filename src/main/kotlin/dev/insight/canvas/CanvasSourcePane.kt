@@ -2,8 +2,11 @@ package dev.insight.canvas
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorCustomElementRenderer
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.LineNumberConverter
+import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.event.EditorMouseMotionListener
@@ -18,13 +21,19 @@ import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.KeyboardFocusManager
 import java.awt.Point
+import java.awt.Rectangle
+import java.awt.RenderingHints
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.event.MouseWheelListener
@@ -55,6 +64,8 @@ internal class CanvasSourcePane(
     val editor = EditorFactory.getInstance().createViewer(EditorFactory.getInstance().createDocument(source.text), project) as EditorEx
     private val baseFontSize = editor.colorsScheme.editorFontSize2D
     private val anchorHighlighters = mutableListOf<RangeHighlighter>()
+    private val gapHighlighters = mutableListOf<RangeHighlighter>()
+    private val gapInlays = mutableListOf<Inlay<*>>()
     private var hovered: CanvasLink? = null
     /** The widest the pane grows before its lines scroll sideways, in pixels. */
     var maxWidth = Int.MAX_VALUE
@@ -114,6 +125,8 @@ internal class CanvasSourcePane(
 
     fun applyZoom(zoom: Double) {
         editor.setFontSize((baseFontSize * zoom).toFloat())
+        // Gap summaries wrap and measure in the editor's font, so they resize with it.
+        gapInlays.forEach { it.update() }
         revalidate()
     }
 
@@ -129,6 +142,32 @@ internal class CanvasSourcePane(
             anchorHighlighters += editor.markupModel.addRangeHighlighter(start, end, HighlighterLayer.SELECTION - 1,
                 TextAttributes().apply { backgroundColor = ANCHOR_BACKGROUND }, HighlighterTargetArea.EXACT_RANGE)
         }
+    }
+
+    /** The gap summaries shown, as last passed to [showGapSummaries]. */
+    var gapSummaries: List<GapSummary> = emptyList()
+        private set
+
+    /** Tints the lines of each of [summaries] and shows its text above them; replaces what was shown before. */
+    fun showGapSummaries(summaries: List<GapSummary>) {
+        if (summaries == gapSummaries) return
+        gapSummaries = summaries
+        gapHighlighters.forEach { editor.markupModel.removeHighlighter(it) }
+        gapHighlighters.clear()
+        gapInlays.forEach(Disposer::dispose)
+        gapInlays.clear()
+        val document = editor.document
+        for (summary in summaries) {
+            val first = summary.first - source.firstLine
+            val last = summary.last - source.firstLine
+            if (first < 0 || last < first || last >= document.lineCount) continue
+            val start = document.getLineStartOffset(first)
+            gapHighlighters += editor.markupModel.addRangeHighlighter(start, document.getLineEndOffset(last), HighlighterLayer.SELECTION - 2,
+                TextAttributes().apply { backgroundColor = GAP_BACKGROUND }, HighlighterTargetArea.LINES_IN_RANGE)
+            editor.inlayModel.addBlockElement(start, false, true, 0, GapSummaryRenderer(summary.text))?.let { gapInlays += it }
+        }
+        revalidate()
+        repaint()
     }
 
     /** The selected range (end exclusive) when it holds more than whitespace. */
@@ -169,6 +208,73 @@ internal class CanvasSourcePane(
     private companion object {
         val LINK_UNDERLINE = JBColor(Color(120, 150, 225), Color(105, 135, 200))
         val ANCHOR_BACKGROUND = JBColor(Color(255, 236, 179), Color(84, 72, 40))
+    }
+}
+
+internal val GAP_BACKGROUND = JBColor(Color(255, 248, 225), Color(58, 52, 38))
+private val GAP_ACCENT = JBColor(Color(214, 160, 40), Color(190, 145, 60))
+
+/**
+ * A gap summary above its lines: wrapped in the editor's font, as wide as the source's longest line within limits,
+ * with an amber rule on the left like the tint of the lines it describes.
+ */
+internal class GapSummaryRenderer(val text: String) : EditorCustomElementRenderer {
+    private fun font(editor: Editor) = editor.colorsScheme.getFont(EditorFontType.ITALIC)
+    private fun columns(editor: Editor): Int {
+        val document = editor.document
+        val longest = (0 until document.lineCount).maxOfOrNull { document.getLineEndOffset(it) - document.getLineStartOffset(it) } ?: 0
+        return longest.coerceIn(MIN_COLUMNS, MAX_COLUMNS)
+    }
+    private fun padding(editor: Editor) = maxOf(2, editor.lineHeight / 4)
+
+    /** [text] wrapped at word boundaries to the renderer's width in the editor's italic font. */
+    private fun lines(editor: Editor): List<String> {
+        val metrics = editor.contentComponent.getFontMetrics(font(editor))
+        val width = columns(editor) * metrics.charWidth(' ')
+        return text.lines().flatMap { paragraph ->
+            val wrapped = mutableListOf<String>()
+            var line = StringBuilder()
+            for (word in paragraph.split(' ').filter { it.isNotEmpty() }) {
+                val next = if (line.isEmpty()) word else "$line $word"
+                if (line.isNotEmpty() && metrics.stringWidth(next) > width) {
+                    wrapped += line.toString()
+                    line = StringBuilder(word)
+                } else line = StringBuilder(next)
+            }
+            if (line.isNotEmpty() || wrapped.isEmpty()) wrapped += line.toString()
+            wrapped
+        }
+    }
+
+    override fun calcWidthInPixels(inlay: Inlay<*>): Int {
+        val editor = inlay.editor
+        val metrics = editor.contentComponent.getFontMetrics(font(editor))
+        return columns(editor) * metrics.charWidth(' ') + 4 * padding(editor)
+    }
+
+    override fun calcHeightInPixels(inlay: Inlay<*>): Int = lines(inlay.editor).size * inlay.editor.lineHeight + 2 * padding(inlay.editor)
+
+    override fun paint(inlay: Inlay<*>, g: Graphics, targetRegion: Rectangle, textAttributes: TextAttributes) {
+        val editor = inlay.editor
+        val pad = padding(editor)
+        g.color = GAP_BACKGROUND
+        g.fillRect(targetRegion.x, targetRegion.y, targetRegion.width, targetRegion.height)
+        g.color = GAP_ACCENT
+        g.fillRect(targetRegion.x, targetRegion.y, maxOf(2, pad), targetRegion.height)
+        val font = font(editor)
+        g.font = font
+        g.color = UIUtil.getContextHelpForeground()
+        val ascent = editor.contentComponent.getFontMetrics(font).ascent
+        val left = targetRegion.x + 3 * pad
+        (g as? Graphics2D)?.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+        lines(editor).forEachIndexed { index, line ->
+            g.drawString(line, left, targetRegion.y + pad + index * editor.lineHeight + ascent)
+        }
+    }
+
+    private companion object {
+        const val MIN_COLUMNS = 48
+        const val MAX_COLUMNS = 100
     }
 }
 

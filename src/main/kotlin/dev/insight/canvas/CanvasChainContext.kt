@@ -166,10 +166,14 @@ val canvasChatPrompt = """
     - Reading: read_file, search_text and list_files read the project; read_card shows a card's summary and source;
       list_symbols lists the symbols in a card's or the root's source and where they lead; find_usages finds callers
       and references; canvas_overview lists every card.
-    - Showing: open_symbol clicks a symbol in a card's or the root's source and opens its card; open_selection opens
-      chosen lines of a card; open_declaration opens any project declaration and open_file a whole project file;
-      show_card scrolls to and highlights an open card. New cards attach to the current card unless you name another
-      card and line.
+    - The call graph, read-only: find_symbols finds discovered symbols by name and gives their #ids; inspect_symbol
+      resolves one and lists its calls, callers and members; call_path finds static call chains to a symbol, by
+      default from the symbols the current card links to. The graph grows as code is opened or inspected, so a
+      missing path or caller is not proof of absence; calls through interfaces, callbacks or reflection may be missing.
+    - Showing: open_symbol clicks a symbol in a card's or the root's source and opens its card; show_call_chain opens a
+      chain of #ids from call_path card by card; open_selection opens chosen lines of a card; open_declaration opens
+      any project declaration and open_file a whole project file; show_card scrolls to and highlights an open card.
+      New cards attach to the current card unless you name another card and line.
 
     When to open cards
     - When seeing code helps more than describing it: where a call leads, where a value comes from, the declaration

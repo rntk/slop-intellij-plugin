@@ -36,7 +36,6 @@
                         interface="dev.insight.diff.ReviewDiffProvider" dynamic="true"/>
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
-        <notificationGroup id="Insight Schematic" displayType="BALLOON" isLogByDefault="true"/>
         <notificationGroup id="Insight Canvas Session" displayType="BALLOON" isLogByDefault="true"/>
         <notificationGroup id="Insight Board" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
@@ -64,7 +63,6 @@
         <fileEditorProvider implementation="dev.insight.callgraph.CallGraphEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.callgraph.SourceCallChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.ui.SourceChainEditorProvider"/>
-        <fileEditorProvider implementation="dev.insight.callgraph.SchematicEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.diff.DiffFlowChartEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.board.ui.BoardEditorProvider"/>
@@ -122,10 +120,6 @@
             <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>
         <action id="Insight.OpenSideBySide" class="dev.insight.callgraph.OpenSideBySideAction"
-                icon="/icons/insight.svg">
-            <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
-        </action>
-        <action id="Insight.OpenSchematic" class="dev.insight.callgraph.OpenSchematicAction"
                 icon="/icons/insight.svg">
             <add-to-group group-id="Insight.ContextMenu" anchor="last"/>
         </action>

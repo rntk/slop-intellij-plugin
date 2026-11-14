@@ -51,6 +51,10 @@ internal interface CanvasCardHost {
     fun openSideBySide(cardId: String)
     fun attachFile(cardId: String?)
     fun openUsage(cardId: String, owner: Int, filePath: String, wholeFile: Boolean = false)
+    /** Summarizes the gaps of [cardId]'s source (the root file's for null) that have no summary yet. */
+    fun summarizeGaps(cardId: String?)
+    /** Whether the gaps of [cardId], or of the root file for null, are being summarized. */
+    fun summarizingGaps(cardId: String?): Boolean
     fun navigate(source: CanvasSource?, path: String, line: Int)
 }
 
@@ -166,6 +170,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         if (canExpand) add(CanvasCardAction("canvas-expand", "Expand to file", "Show the whole file here, with links and this card's chat") {
             host.expandToFile(id)
         })
+        addAll(canvasGapActions(host, id, source, card.gapSummaries))
         add(CanvasCardAction("canvas-side-by-side", "Side by side", "Open the chain from the root file to this card in a new tab") {
             host.openSideBySide(id)
         })
@@ -228,6 +233,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         metaLabel.toolTipText = metaLabel.text
         meta.isVisible = CardSection.META !in next.folded
         header.metaToggle.text = canvasFoldGlyph(CardSection.META !in next.folded)
+        source?.let { shown -> sourcePane?.showGapSummaries(shown.shownGapSummaries(next.gapSummaries)) }
         listOf(summary, sourceSection, history).forEach { it.fold(it.section in next.folded) }
         sourcePane?.isVisible = CardSection.SOURCE !in next.folded
         sourceSection.title.text = canvasSourceTitle(shown)
@@ -426,4 +432,23 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             else -> AllIcons.Nodes.Unknown
         }
     }
+}
+
+/**
+ * The gap entries of the ⋯ menu of card [cardId] (the root file's for null) showing [source]: summarize the gaps with no
+ * summary among [summaries], and clear those shown. None for a source without gaps.
+ */
+internal fun canvasGapActions(host: CanvasCardHost, cardId: String?, source: CanvasSource?, summaries: List<GapSummary>): List<CanvasCardAction> {
+    if (source == null || source.gaps.isEmpty()) return emptyList()
+    val running = host.summarizingGaps(cardId)
+    val pending = source.unsummarizedGaps(summaries).size
+    val shown = source.shownGapSummaries(summaries).isNotEmpty()
+    return listOfNotNull(
+        CanvasCardAction("canvas-summarize-gaps", if (running) "Summarizing gaps…" else "Summarize gaps",
+            if (pending == 0) "Every gap of this source is summarized"
+            else "Summarize the code between the symbols of this source ($pending ${if (pending == 1) "gap" else "gaps"})",
+            enabled = !running && pending > 0, separated = true) { host.summarizeGaps(cardId) },
+        CanvasCardAction("canvas-clear-gaps", "Clear gap summaries", "Remove the gap summaries shown in this source",
+            enabled = !running) { host.model.clearGapSummaries(cardId) }.takeIf { shown },
+    )
 }

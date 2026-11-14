@@ -776,4 +776,86 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue("Opening a parameter card should keep its type, sibling parameters and enclosing function clickable: $paramCardTargets",
             paramCardTargets.containsAll(setOf("start", "Config", "router", "Router")))
     }
+
+    fun testPanelSummarizesGapsFollowsTheTrailTakesKeysAndAnswersGraphQuestions() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val prompts = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val services = CanvasSessionServices(null, { { request ->
+            prompts += request.messages.joinToString("\n") { it.content }
+            Completion("Sets x to one.", finishReason = FinishReason.COMPLETE)
+        } }, summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        val session = CanvasSession.new("Flow.java")
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            assertEquals(listOf("Flow.java"), panel.trailTitles)
+            fun open(parentId: String?, name: String): CanvasCard {
+                val (link, target) = panel.controller.link(panel.controller.source(parentId)!!, name)
+                val job = panel.openSymbol(parentId, link, target)
+                PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
+                return panel.model.cards.last()
+            }
+            val entry = open(null, "entry")
+            val helper = open(entry.id, "helper")
+            assertEquals("Opening a card leads the trail to it", listOf("Flow.java", entry.title, helper.title), panel.trailTitles)
+
+            // Gaps: the helper's body is code between symbols, summarized on request and shown above its lines.
+            val view = panel.cardViews.getValue(helper.id)
+            val source = panel.controller.source(helper.id)!!
+            assertTrue(source.gaps.isNotEmpty())
+            val menu = { view.menuActions().associateBy { it.name } }
+            assertTrue(menu().getValue("canvas-summarize-gaps").enabled)
+            assertNull(menu()["canvas-clear-gaps"])
+            panel.summarizeGaps(helper.id)
+            PlatformTestUtil.waitWithEventsDispatching("The gaps should be summarized",
+                { !panel.summarizingGaps(helper.id) && panel.model.card(helper.id)!!.gapSummaries.isNotEmpty() }, 30)
+            val gaps = panel.model.card(helper.id)!!.gapSummaries
+            assertTrue(gaps.all { it.text == "Sets x to one." })
+            assertTrue(prompts.any { it.contains("int x = 1;") })
+            assertTrue(gaps.any { gap -> (gap.first..gap.last).any { source.text.split('\n')[it - source.firstLine].contains("int x = 1;") } })
+            assertEquals(gaps, view.sourcePane!!.gapSummaries)
+            assertEquals(gaps.size, view.sourcePane!!.editor.inlayModel.getBlockElementsInRange(0, source.text.length).size)
+            assertFalse("Every gap is summarized", menu().getValue("canvas-summarize-gaps").enabled)
+            menu().getValue("canvas-clear-gaps").run()
+            assertTrue(panel.model.card(helper.id)!!.gapSummaries.isEmpty())
+            assertTrue(view.sourcePane!!.editor.inlayModel.getBlockElementsInRange(0, source.text.length).isEmpty())
+
+            // Keys: the canvas binds zoom and Tab between cards.
+            val keys = panel.canvas.getInputMap(javax.swing.JComponent.WHEN_FOCUSED)
+            fun press(stroke: String) = panel.canvas.actionMap.get(keys.get(javax.swing.KeyStroke.getKeyStroke(stroke)))
+                .actionPerformed(java.awt.event.ActionEvent(panel.canvas, 0, stroke))
+            val zoom = panel.zoom
+            press("typed +")
+            assertTrue(panel.zoom > zoom)
+            press("typed 0")
+            assertEquals(1.0, panel.zoom, 0.0)
+            press("TAB")
+            assertEquals("Tab wraps from the last card to the root file", listOf("Flow.java"), panel.trailTitles)
+            press("TAB")
+            assertEquals(listOf("Flow.java", entry.title), panel.trailTitles)
+            press("shift TAB")
+            assertEquals(listOf("Flow.java"), panel.trailTitles)
+            panel.stepCard(forward = false)
+            assertEquals(listOf("Flow.java", entry.title, helper.title), panel.trailTitles)
+
+            // Closing the current card steps the trail back to its parent.
+            panel.close(helper.id)
+            assertEquals(listOf("Flow.java", entry.title), panel.trailTitles)
+
+            PlatformTestUtil.waitWithEventsDispatching("The entry card should be summarized", { panel.model.card(entry.id)!!.summary != null }, 30)
+            // The chats' graph tools read the explored graph without changing the canvas.
+            val graph = panel.actions.graph!!
+            val entryId = panel.controller.source(entry.id)!!.node!!
+            val helperId = panel.controller.link(panel.controller.source(entry.id)!!, "helper").second
+            assertTrue(graph.findSymbols("helper", null, 10).startsWith("#$helperId function helper"))
+            val inspected = background { graph.inspect(entryId) }
+            assertTrue(inspected, inspected.contains("Calls (1):\n  #$helperId function helper"))
+            assertTrue(inspected, inspected.contains("Summary (model-written): Sets x to one."))
+            assertEquals("Chain 1: #$entryId entry() → #$helperId helper()", graph.callPaths(entryId, emptyList(), helperId, 8))
+            assertEquals(1, panel.model.cards.size)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
 }

@@ -1,5 +1,6 @@
 package dev.insight.canvas
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import dev.insight.agent.CallAllowance
 import dev.insight.agent.ChatTool
@@ -10,6 +11,7 @@ import dev.insight.agent.lenientInt
 import dev.insight.agent.optionalStringArg
 import dev.insight.agent.stringArg
 import dev.insight.graph.RelationKind
+import dev.insight.graph.SymbolKind
 import dev.insight.llm.JsonSchemas
 import dev.insight.llm.LlmTool
 import kotlin.math.abs
@@ -44,6 +46,21 @@ interface CanvasActions {
     suspend fun openFile(parentId: String?, start: Int, end: Int, path: String): CanvasCard
     /** Scrolls to [cardId] and highlights it. */
     suspend fun show(cardId: String)
+    /** The call graph explored so far, for the graph tools; null leaves them out. */
+    val graph: CanvasGraph? get() = null
+}
+
+/**
+ * The call graph a session has explored so far, as a card's chat queries it: symbols are named `#id`, as
+ * [CanvasTarget.id]. Answers are text for the model; failures it can fix throw [ToolInputException].
+ */
+interface CanvasGraph {
+    /** Discovered symbols whose names fuzzily match [query], project code first; [kind] narrows them. */
+    fun findSymbols(query: String, kind: SymbolKind?, limit: Int): String
+    /** [id]'s place, summary, owner, members, direct calls, discovered callers and call sites, resolving its scope first. */
+    suspend fun inspect(id: Int): String
+    /** Shortest static call chains to [target] from [from], or else from any of [roots]. */
+    fun callPaths(from: Int?, roots: List<Int>, target: Int, maxDepth: Int): String
 }
 
 /** Cards a chat may open in one reply, so one answer cannot flood the canvas. */
@@ -61,13 +78,20 @@ fun canvasToolRegistry(actions: CanvasActions, cardId: String?, maxOpened: Int =
     val canvas = CanvasToolContext(actions, cardId)
     val opened = CallAllowance(maxOpened, "This reply has opened $maxOpened cards, the most one reply may open. " +
         "Answer with the cards already shown.")
-    return ToolRegistry()
+    val registry = ToolRegistry()
         .register("reading the canvas: card sources, their clickable symbols, project usages of symbols, and every card and chain",
             CanvasOverviewTool(canvas), ReadCardTool(canvas), ListSymbolsTool(canvas), FindUsagesTool(canvas))
         .register("showing code on the canvas: opening cards for symbols, selected lines, declarations anywhere in " +
-            "the project or whole files, and highlighting an open card",
+            "the project or whole files, call chains, and highlighting an open card",
             listOf(ShowCardTool(canvas)) + listOf(OpenSymbolTool(canvas), OpenSelectionTool(canvas),
-                OpenDeclarationTool(canvas), OpenFileCardTool(canvas)).map { LimitedTool(it, opened) })
+                OpenDeclarationTool(canvas), OpenFileCardTool(canvas)).map { LimitedTool(it, opened) } +
+                ShowCallChainTool(canvas, opened))
+    actions.graph?.let { graph ->
+        registry.register("following the call graph: finding symbols by name, inspecting a symbol's calls and callers, " +
+            "and static call paths between symbols",
+            FindSymbolsTool(graph), InspectSymbolTool(graph), CallPathTool(canvas, graph))
+    }
+    return registry
 }
 
 /** The canvas tools a card's chat starts with, for walking the chain; the others are found with search_tools. */
@@ -220,6 +244,9 @@ private class ReadCardTool(private val canvas: CanvasToolContext) : CanvasTool(
                 if (children.isNotEmpty()) append("Cards opened from it: ${children.joinToString("; ") { "${it.title} [card ${it.id}] from line ${it.anchor.line + 1}" }}\n")
             }
             source?.notice?.let { append("Notice: $it\n") }
+            val gaps = source?.shownGapSummaries((card ?: canvas.actions.session.root).gapSummaries).orEmpty()
+            if (gaps.isNotEmpty()) append("Gap summaries (model-written):\n" +
+                gaps.joinToString("\n") { "- lines ${it.first + 1}-${it.last + 1}: ${clip(it.text.trim(), 400)}" } + "\n")
             val text = source?.text ?: card?.text.orEmpty()
             val firstLine = source?.firstLine ?: card?.firstLine ?: 0
             if (text.isEmpty()) {
@@ -466,6 +493,128 @@ private class OpenFileCardTool(private val canvas: CanvasToolContext) : CanvasTo
         val anchor = canvas.anchor(parent, arguments.lenientInt("from_line"), path.substringAfterLast('/').substringBefore('.'))
         return canvas.opening { canvas.actions.openFile(parentId, anchor.first, anchor.last + 1, path) }
     }
+}
+
+private class FindSymbolsTool(private val graph: CanvasGraph) : CanvasTool(
+    "find_symbols",
+    "Find classes, functions and files discovered so far by name (fuzzy, project code first). Returns #id lines for " +
+        "inspect_symbol, call_path and show_call_chain. Read-only.",
+    JsonSchemas.obj(
+        "query" to JsonSchemas.string(description = "Name or part of it, such as addHandler or HttpServer."),
+        "kind" to JsonSchemas.enum(listOf("file", "class", "function", "property")),
+        "max_results" to JsonSchemas.integer(description = "Default 30, at most 100."),
+        required = listOf("query"), additionalProperties = false,
+    ),
+) {
+    override suspend fun call(arguments: JsonObject): String {
+        val kind = arguments.optionalStringArg("kind")?.let { value ->
+            SymbolKind.entries.firstOrNull { it.name.equals(value.trim(), ignoreCase = true) }
+                ?: throw ToolInputException("kind must be file, class, function or property")
+        }
+        return graph.findSymbols(arguments.stringArg("query"), kind, (arguments.lenientInt("max_results") ?: 30).coerceIn(1, 100))
+    }
+}
+
+private class InspectSymbolTool(private val graph: CanvasGraph) : CanvasTool(
+    "inspect_symbol",
+    "Resolve a symbol's scope on demand and return its location, summary, declaring class, members, direct calls, " +
+        "discovered callers and the call expressions in its body with their resolved targets. Read-only.",
+    JsonSchemas.obj("id" to JsonSchemas.integer(description = "Symbol id, without #."), required = listOf("id"),
+        additionalProperties = false),
+) {
+    override suspend fun call(arguments: JsonObject): String = graph.inspect(arguments.symbolId("id")!!)
+}
+
+private class CallPathTool(private val canvas: CanvasToolContext, private val graph: CanvasGraph) : CanvasTool(
+    "call_path",
+    "Shortest static call chains (up to 3) in the explored graph to a symbol, from another symbol or, by default, from " +
+        "the symbols a card's source links to. Chains from a card can be passed to show_call_chain. Read-only.",
+    JsonSchemas.obj(
+        "to" to JsonSchemas.integer(description = "Target symbol id."),
+        "from" to JsonSchemas.integer(description = "Start symbol id; omit to start from the symbols the card links to."),
+        "card" to cardParameter,
+        "max_depth" to JsonSchemas.integer(description = "Most calls in a chain (default 8, at most 15)."),
+        required = listOf("to"), additionalProperties = false,
+    ),
+) {
+    override suspend fun call(arguments: JsonObject): String {
+        val from = arguments.symbolId("from", required = false)
+        val roots = if (from != null) emptyList() else {
+            canvas.actions.source(canvas.card(arguments.optionalStringArg("card")))?.links.orEmpty().flatMap { it.targets }.distinct()
+        }
+        return graph.callPaths(from, roots, arguments.symbolId("to")!!, (arguments.lenientInt("max_depth") ?: 8).coerceIn(1, 15))
+    }
+}
+
+/** Opens one card per step, each counted against [allowance] like the other opening tools; open cards are reused for free. */
+private class ShowCallChainTool(private val canvas: CanvasToolContext, private val allowance: CallAllowance) : CanvasTool(
+    "show_call_chain",
+    "Show a call chain on the canvas as the developer would click it: starting at a card (default: the current card), " +
+        "open the card of each symbol from the previous card's source, so the chain grows to the right. The first id must " +
+        "be linked from the starting card's source and each next id from the previous symbol's source; call_path gives " +
+        "such chains. Cards already open there are reused. Changes the canvas.",
+    JsonSchemas.obj(
+        "symbol_ids" to JsonSchemas.array(JsonSchemas.integer(), minItems = 1, maxItems = MAX_CHAIN,
+            description = "Chain of symbol ids, outermost first."),
+        "card" to cardParameter,
+        required = listOf("symbol_ids"), additionalProperties = false,
+    ),
+) {
+    override suspend fun call(arguments: JsonObject): String {
+        val ids = chainArg(arguments.get("symbol_ids"))
+        val initially = canvas.actions.session.cards.map { it.id }.toSet()
+        var parentId = canvas.card(arguments.optionalStringArg("card"))
+        val shown = mutableListOf<CanvasCard>()
+        var problem: String? = null
+        for ((step, id) in ids.withIndex()) {
+            val parent = canvas.shown(parentId)
+            val link = parent.source.links.filter { id in it.targets }.minByOrNull { it.range.first }
+            if (link == null) {
+                val leads = parent.source.links.flatMap { it.targets }.distinct().take(40)
+                    .joinToString { "#$it ${canvas.actions.target(it)?.name ?: "?"}" }.ifEmpty { "nothing" }
+                problem = "#$id ${canvas.actions.target(id)?.name ?: ""} is not linked from " +
+                    (if (step == 0) canvas.name(parentId).lowercase() else "#${ids[step - 1]}'s card") + ". It links to: $leads."
+                break
+            }
+            val open = canvas.actions.session.children(parentId).any { card ->
+                card.kind == CardKind.SYMBOL && card.anchor.startOffset == link.range.first &&
+                    card.anchor.endOffset == link.range.last + 1 && card.symbol?.name == canvas.actions.target(id)?.name
+            }
+            if (!open && allowance.used >= allowance.max) {
+                problem = "this reply has opened ${allowance.max} cards, the most one reply may open."
+                break
+            }
+            val before = canvas.actions.session.cards.map { it.id }.toSet()
+            val card = canvas.actions.openSymbol(parentId, link.range.first, link.range.last + 1, id)
+            if (card.id !in before) allowance.consume()
+            shown += card
+            parentId = card.id
+        }
+        if (shown.isEmpty()) throw ToolInputException("Nothing was shown: $problem")
+        val last = canvas.actions.session.card(shown.last().id) ?: shown.last()
+        canvas.actions.show(last.id)
+        return "Shown on the canvas: ${shown.joinToString(" → ") { "${it.title} [card ${it.id}]" }}." +
+            problem?.let { " Stopped at step ${shown.size + 1}: $it" }.orEmpty() + "\n" + canvas.report(last, wasOpen = last.id in initially)
+    }
+}
+
+private const val MAX_CHAIN = 15
+
+private fun chainArg(value: JsonElement?): List<Int> {
+    if (value == null || !value.isJsonArray || value.asJsonArray.size() !in 1..MAX_CHAIN)
+        throw ToolInputException("symbol_ids must contain 1 to $MAX_CHAIN symbol ids")
+    return value.asJsonArray.map { parseSymbolId(it) ?: throw ToolInputException("symbol_ids must be integers such as 12") }
+}
+
+/** Some local models quote numbers or keep the # of the context. */
+private fun parseSymbolId(value: JsonElement?): Int? =
+    value?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.removePrefix("#")?.toIntOrNull()?.takeIf { it >= 0 }
+
+/** The symbol id [name]; null only when it is missing and not [required]. */
+private fun JsonObject.symbolId(name: String, required: Boolean = true): Int? {
+    val value = get(name)?.takeUnless { it.isJsonNull }
+    if (value == null && !required) return null
+    return parseSymbolId(value) ?: throw ToolInputException("$name must be a symbol id such as 12")
 }
 
 private fun clip(text: String, max: Int) = if (text.length <= max) text else text.take(max - 1) + "…"

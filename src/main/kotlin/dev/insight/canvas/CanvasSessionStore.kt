@@ -108,10 +108,19 @@ class CanvasSessionStore(private val directory: Path) {
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
                     card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
                     card.folded.map { it.name }.sorted(), null, null, card.wholeFile,
-                    encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment)
+                    encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment, encodeGaps(card.gapSummaries))
             }, session.view.zoom, session.view.x, session.view.y,
-            session.root.let { StoredRoot(encodeChats(it.chats), it.activeChatId, it.folded.map { section -> section.name }.sorted(), it.summary, it.summaryError) })))
+            session.root.let { StoredRoot(encodeChats(it.chats), it.activeChatId, it.folded.map { section -> section.name }.sorted(), it.summary, it.summaryError,
+                encodeGaps(it.gapSummaries)) })))
     }
+
+    private fun encodeGaps(gaps: List<GapSummary>) = gaps.map { StoredGap(it.first, it.last, it.hash, it.text) }.ifEmpty { null }
+
+    private fun decodeGaps(gaps: List<StoredGap?>?): List<GapSummary> = gaps.orEmpty().mapNotNull { gap ->
+        val first = gap?.first ?: return@mapNotNull null
+        val last = gap.last?.takeIf { it >= first } ?: return@mapNotNull null
+        GapSummary(first, last, gap.hash ?: return@mapNotNull null, gap.text?.takeIf { it.isNotBlank() } ?: return@mapNotNull null)
+    }.sortedBy { it.first }
 
     private fun encodeChats(chats: List<CanvasChat>) =
         chats.map { StoredChat(it.id, it.title, it.messages.map { m -> StoredMessage(m.role.name, m.text) }, it.draft) }
@@ -139,7 +148,7 @@ class CanvasSessionStore(private val directory: Path) {
                 card.filePath.orEmpty(), card.firstLine ?: 0, card.text.orEmpty(), card.truncated ?: false, card.summary, card.summaryError,
                 card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
                 chats, card.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id, card.wholeFile ?: false,
-                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment)
+                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment, decodeGaps(card.gapSummaries))
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
@@ -150,7 +159,8 @@ class CanvasSessionStore(private val directory: Path) {
     private fun decodeRoot(root: StoredRoot?): CanvasRootState {
         val chats = decodeChats(root?.chats).ifEmpty { return CanvasRootState() }
         return CanvasRootState(chats, root?.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id,
-            root?.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) }, root?.summary, root?.summaryError)
+            root?.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) }, root?.summary, root?.summaryError,
+            decodeGaps(root?.gapSummaries))
     }
 
     private fun decodeChats(chats: List<StoredChat?>?): List<CanvasChat> = chats.orEmpty().filterNotNull().mapNotNull { chat ->
@@ -167,11 +177,13 @@ class CanvasSessionStore(private val directory: Path) {
     private class StoredSession(val id: String?, val rootPath: String?, val title: String?, val created: Long?, val updated: Long?,
         val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?)
     private class StoredRoot(val chats: List<StoredChat?>?, val activeChatId: String?, val folded: List<String?>?,
-        val summary: String?, val summaryError: String?)
+        val summary: String?, val summaryError: String?, val gapSummaries: List<StoredGap?>?)
     private class StoredCard(val id: String?, val parentId: String?, val kind: String?, val start: Int?, val end: Int?, val line: Int?,
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
         val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
-        val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?, val attachment: CanvasAttachment?)
+        val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?, val attachment: CanvasAttachment?,
+        val gapSummaries: List<StoredGap?>?)
+    private class StoredGap(val first: Int?, val last: Int?, val hash: Int?, val text: String?)
     private class StoredChat(val id: String?, val title: String?, val messages: List<StoredMessage?>?, val draft: String?)
     private class StoredSymbol(val filePath: String?, val name: String?, val kind: String?, val container: String?, val offset: Int?, val line: Int?)
     private class StoredMessage(val role: String?, val text: String?)

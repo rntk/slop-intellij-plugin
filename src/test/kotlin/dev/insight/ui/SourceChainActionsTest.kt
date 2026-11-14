@@ -1,18 +1,10 @@
 package dev.insight.ui
 
-import com.google.gson.JsonParser
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
-import com.intellij.ui.components.ActionLink
-import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.callgraph.SchematicEditorProvider
-import dev.insight.callgraph.SchematicFile
-import dev.insight.callgraph.SchematicPanel
-import dev.insight.callgraph.schematicCanvasTools
 import dev.insight.canvas.*
-import dev.insight.graph.SymbolKind
 import dev.insight.llm.Completion
 import dev.insight.llm.FinishReason
 import java.awt.Component
@@ -81,35 +73,6 @@ class SourceChainActionsTest : FileEditorManagerTestCase() {
             assertEquals("The opened view retains the chosen chain", 3, tab.locations.size)
         } finally {
             Disposer.dispose(panel)
-            manager.openFiles.filterIsInstance<SourceChainFile>().forEach(manager::closeFile)
-        }
-    }
-
-    fun testSchematicCardLinkUsesTheUnfoldedBranchIncludingItsCallSite() {
-        myFixture.configureByText("Flow.java", source)
-        val result = ProjectGraphAnalyzer.build(project)
-        val root = result.graph.nodes.single { it.kind == SymbolKind.FILE }.id
-        val entry = result.graph.nodes.single { it.kind == SymbolKind.FUNCTION && it.name.startsWith("entry(") }.id
-        val helper = result.graph.nodes.single { it.kind == SymbolKind.FUNCTION && it.name.startsWith("helper(") }.id
-        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, root))
-        val manager = FileEditorManager.getInstance(project)
-        try {
-            val panel = editor.component as SchematicPanel
-            PlatformTestUtil.waitWithEventsDispatching("Schematic should load", {
-                descendants(panel).filterIsInstance<ActionLink>().any { it.text == "Side by side" }
-            }, 30)
-            val show = schematicCanvasTools(panel.chatCanvas).single { it.definition.name == "show_call_chain" }
-            background { show.call(JsonParser.parseString("""{"symbol_ids":[$entry,$helper]}""").asJsonObject) }
-            val nested = descendants(panel).filterIsInstance<Container>().single { card ->
-                card.javaClass.simpleName == "SummaryCard" &&
-                    generateSequence(card.parent) { it.parent }.any { it.javaClass.simpleName == "SummaryCard" }
-            }
-            descendants(nested).filterIsInstance<ActionLink>().single { it.text == "Side by side" }.doClick()
-            val tab = manager.openFiles.filterIsInstance<SourceChainFile>().single()
-            assertEquals(listOf(1, 2, 4), tab.locations.map { it.line })
-            assertTrue(tab.locations.all { it.path.endsWith("Flow.java") })
-        } finally {
-            Disposer.dispose(editor)
             manager.openFiles.filterIsInstance<SourceChainFile>().forEach(manager::closeFile)
         }
     }

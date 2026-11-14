@@ -6,22 +6,30 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.graph.RelationKind
 
-/** Read action only. Never mix live IDE facts or tool results with stale schematic lines. */
-internal fun schematicGapSource(project: Project, schematic: Schematic, unit: GapUnit): GapSource {
-    val psi = checkNotNull(PsiManager.getInstance(project).findFile(schematic.file)) { "Source is unavailable" }
+/** Read action only. [unit] of [schematic], as the file is now. */
+internal fun schematicGapSource(project: Project, schematic: Schematic, unit: GapUnit): GapSource =
+    schematicGapSource(project, schematic.file, schematic.firstLine, schematic.lines, unit)
+
+/**
+ * Read action only. [unit] of [file], whose [shown] lines from 0-based [firstLine] were read for the reader. Never mix
+ * live IDE facts or tool results with stale lines: throws when the file no longer holds them.
+ */
+internal fun schematicGapSource(project: Project, file: VirtualFile, firstLine: Int, shown: List<String>, unit: GapUnit): GapSource {
+    val psi = checkNotNull(PsiManager.getInstance(project).findFile(file)) { "Source is unavailable" }
     val document = checkNotNull(PsiDocumentManager.getInstance(project).getDocument(psi)) { "Source is unavailable" }
     val lines = document.text.split('\n')
-    check(lines.drop(schematic.firstLine).take(schematic.lines.size) == schematic.lines) {
-        "Source changed; reopen the schematic before summarizing gaps"
+    check(lines.drop(firstLine).take(shown.size) == shown) {
+        "Source changed. Reopen the canvas session to summarize its gaps."
     }
     val start = document.getLineStartOffset(unit.first)
     val end = document.getLineEndOffset(unit.last)
     val selected = TextRange(start, end)
-    val path = schematic.file.path.removePrefix(project.basePath?.trimEnd('/')?.plus('/') ?: "")
+    val path = file.path.removePrefix(project.basePath?.trimEnd('/')?.plus('/') ?: "")
 
     val facts = linkedSetOf("Language: ${psi.language.displayName}")
     fun describe(element: PsiElement): String? {

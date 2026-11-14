@@ -1,7 +1,6 @@
 package dev.insight
 
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import com.jetbrains.python.psi.PyCallExpression
@@ -208,48 +207,6 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
         assertTrue(call.explanation.contains("Pick one"))
     }
 
-    fun `test picking a choice unfolds that candidate in the card`() {
-        myFixture.addFileToProject("many.py", (1..5).joinToString("\n\n") { "class C$it:\n    def run(self):\n        return \"picked $it\"" })
-        val result = build("""
-            def go(job):
-                return job.run()
-        """)
-        val call = result.occurrences.single()
-        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, call.scope))
-        try {
-            fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
-                listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())
-            }
-            fun visible(component: java.awt.Component) = generateSequence(component) { it.parent }.all { it.isVisible }
-            PlatformTestUtil.waitWithEventsDispatching("Choices should be listed", {
-                descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("5 declarations share this name") }
-            }, 10)
-            focusFirstBlock(editor)
-            val choice = descendants(editor.component).filterIsInstance<ActionLink>()
-                .filter { it.text.startsWith("run") && visible(it) }
-            assertEquals(5, choice.size)
-            choice[2].doClick()
-            PlatformTestUtil.waitWithEventsDispatching("The picked candidate should unfold", {
-                descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
-                    .any { visible(it) && it.editor.document.text.contains("picked 3") }
-            }, 10)
-            assertTrue(descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("Following your pick") })
-            assertTrue(descendants(editor.component).filterIsInstance<ActionLink>().any { it.text.startsWith("▸ run") })
-
-            val previous = descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
-                .single { it.editor.document.text.contains("picked 3") }
-            descendants(editor.component).filterIsInstance<ActionLink>().single { it.text == choice[1].text && visible(it) }.doClick()
-            assertTrue("Replacing a candidate must release its native editor", previous.editor.isDisposed)
-            PlatformTestUtil.waitWithEventsDispatching("The replacement candidate should unfold", {
-                descendants(editor.component).filterIsInstance<SchematicSourceEditor>()
-                    .any { visible(it) && it.editor.document.text.contains("picked 2") }
-            }, 10)
-            assertEquals(2, descendants(editor.component).filterIsInstance<SchematicSourceEditor>().size)
-        } finally {
-            com.intellij.openapi.util.Disposer.dispose(editor)
-        }
-    }
-
     fun `test stub targets navigate to their implementation`() {
         myFixture.addFileToProject("client.py", "class Client:\n    def complete(self, prompt):\n        return prompt\n")
         myFixture.addFileToProject("client.pyi", "class Client:\n    def complete(self, prompt: str) -> str: ...\n")
@@ -318,42 +275,5 @@ class PythonCallOccurrencesTest : BasePlatformTestCase() {
         assertEquals(inner.id, result.schematic(inner.id).rows.filterIsInstance<BlockRow>().single().occurrences.single().scope)
         val sites = CallSiteAnalyzer.collect(result, listOf(outer.id), listOf(call.unresolvedTarget!!)).getValue(outer.id)
         assertEquals(call.startOffset, (sites.single() as CallSite).startOffset)
-    }
-
-    fun `test unknown schematic card explains its receiver without unfolding the call as source`() {
-        val result = build("""
-            def answer(llm):
-                return llm.complete()
-        """)
-        val call = result.occurrences.single()
-        val editor = SchematicEditorProvider().createEditor(project, SchematicFile(result, call.scope))
-        try {
-            fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
-                listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())
-            }
-            fun labels() = descendants(editor.component).filterIsInstance<JLabel>().filter { label ->
-                generateSequence<java.awt.Component>(label) { it.parent }.all { it.isVisible }
-            }
-            PlatformTestUtil.waitWithEventsDispatching("Unresolved call should be visible", {
-                descendants(editor.component).filterIsInstance<JLabel>().any { it.text.orEmpty().contains("Implementation unknown") }
-            }, 10)
-            focusFirstBlock(editor)
-            val cardText = labels().single { it.text.orEmpty().contains("Implementation unknown") }
-            assertTrue(cardText.text.contains("llm.complete"))
-            assertTrue(cardText.mouseListeners.isEmpty())
-            descendants(editor.component).filterIsInstance<ActionLink>().single { it.text == "Explain link" }.doClick()
-            assertTrue(descendants(editor.component).filterIsInstance<ActionLink>()
-                .any { it.text.startsWith("Receiver llm: llm") && it.isVisible })
-            assertFalse(labels().any { it.text.orEmpty().contains("Source of llm.complete is no longer available") })
-        } finally {
-            com.intellij.openapi.util.Disposer.dispose(editor)
-        }
-    }
-
-    private fun focusFirstBlock(editor: com.intellij.openapi.fileEditor.FileEditor) {
-        val canvas = (editor.component as SchematicPanel).canvas
-        val key = canvas.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
-            .get(javax.swing.KeyStroke.getKeyStroke("TAB"))
-        canvas.actionMap.get(key).actionPerformed(java.awt.event.ActionEvent(canvas, 0, "TAB"))
     }
 }

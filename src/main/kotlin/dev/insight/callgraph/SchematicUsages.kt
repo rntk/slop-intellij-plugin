@@ -25,7 +25,7 @@ internal fun findSchematicUsages(project: Project, initial: CallGraphResult, id:
     limit: Int = 100): SchematicUsageSearch {
     require(limit > 0)
     val target = initial.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
-        ?: error("Source is no longer available. Reopen the schematic.")
+        ?: error("Source is no longer available. Reopen the canvas session.")
     val sites = linkedMapOf<Pair<String, Int>, Pair<PsiElement, RelationKind>>()
     ReferencesSearch.search(target, GlobalSearchScope.projectScope(project)).forEach { reference ->
         ProgressManager.checkCanceled()

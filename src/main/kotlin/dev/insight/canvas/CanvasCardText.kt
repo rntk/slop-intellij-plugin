@@ -117,10 +117,14 @@ val canvasHelpHtml = """
     whole file right away; they use the file and the cards opened from it as context. Click <b>Summarize</b> to
     request the file summary. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
-    <b>×</b> closes a card and the cards opened from it; <b>Go to source</b> opens the real file.<br><br>
+    <b>×</b> closes a card and the cards opened from it; <b>Go to source</b> opens the real file.
+    <b>Summarize gaps</b> in the menu writes a short summary above each stretch of code between the symbols of the
+    file or a card; <b>Clear gap summaries</b> removes them. The trail at the top leads from the file to the card you
+    are on; click a step to move there.<br><br>
     <b>Attach file</b> links documents, screenshots or other local files to the file or card. Text and pictures
     have previews and become context for chats on that chain. <b>Open file</b> opens the original in the IDE.<br><br>
-    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
+    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. With the canvas focused (click empty space),
+    arrows, Page Up/Down, Home and End scroll, + and − zoom, 0 resets the zoom, and Tab / Shift+Tab move between cards. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
     cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
     to another session of this file, or deletes this one. Reopening resolves symbols

@@ -32,6 +32,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.agent.ProjectFiles
 import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphService
+import dev.insight.callgraph.SchematicGapWorkflow
 import dev.insight.graph.CallGraphNode
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
@@ -54,14 +55,17 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Polygon
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.datatransfer.StringSelection
+import java.awt.event.ActionEvent
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.CubicCurve2D
+import javax.swing.AbstractAction
 import javax.swing.AbstractButton
 import javax.swing.JButton
 import javax.swing.JComponent
@@ -69,11 +73,13 @@ import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JScrollPane
 import javax.swing.JViewport
 import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
+import javax.swing.KeyStroke
 import javax.swing.Timer
 import javax.swing.text.JTextComponent
 import kotlin.math.pow
@@ -175,13 +181,13 @@ internal class CanvasSessionPanel(
         })
         add(JButton("−").apply {
             isFocusable = false
-            toolTipText = "Zoom out (Ctrl/⌘ + wheel)"
+            toolTipText = "Zoom out (− or Ctrl/⌘ + wheel)"
             addActionListener { zoomTo(zoom / ZOOM_STEP) }
         })
-        add(zoomLevel.apply { toolTipText = "Reset zoom" }.onLeftClick { zoomTo(1.0) })
+        add(zoomLevel.apply { toolTipText = "Reset zoom (0)" }.onLeftClick { zoomTo(1.0) })
         add(JButton("+").apply {
             isFocusable = false
-            toolTipText = "Zoom in (Ctrl/⌘ + wheel)"
+            toolTipText = "Zoom in (+ or Ctrl/⌘ + wheel)"
             addActionListener { zoomTo(zoom * ZOOM_STEP) }
         })
         add(status)
@@ -190,6 +196,29 @@ internal class CanvasSessionPanel(
             toolTipText = canvasHelpHtml
         })
     }
+
+    /** The card the reader is on, which the trail leads to; null for the root file. */
+    private var current: String? = null
+    /** The root-first ids of [current]'s chain, as last shown, so the trail can step back when a card closes. */
+    private var trail: List<String> = emptyList()
+    private val breadcrumbs = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+        name = "canvas-breadcrumbs"
+        isOpaque = false
+    }
+    private val trailBar = FloatingPanel(BorderLayout()).apply {
+        isVisible = false
+        add(JBScrollPane(breadcrumbs, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED).apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+        }, BorderLayout.CENTER)
+    }
+    /** Running gap summaries by card id, null for the root file. */
+    private val gapJobs = HashMap<String?, Job>()
+
+    /** The trail from the root file to the current card, as its crumbs read: the file name, then each card's title. */
+    internal val trailTitles: List<String> get() = listOf(file.source.name) + trail.mapNotNull { model.card(it)?.title }
 
     override val diffs: Map<String, String> get() = file.diffs
 
@@ -214,10 +243,15 @@ internal class CanvasSessionPanel(
             content.reserve(view.x.toLong() + view.width, view.y.toLong() + view.height)
             if (ready) viewSave.restart()
         }
-        // Earlier components paint on top, so the floating bar comes before the canvas.
+        // Earlier components paint on top, so the floating bars come before the canvas.
         add(controls)
+        add(trailBar)
         add(scroll)
         scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+        // Children inherit these empty traversal keys, so Tab reaches the canvas's own bindings.
+        content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
+        content.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
+        installKeys()
         // Off inside the file's and cards' source, so the shortcut falls through to the IDE's Find there.
         object : DumbAwareAction() {
             override fun actionPerformed(e: AnActionEvent) = openCardSearch()
@@ -242,6 +276,7 @@ internal class CanvasSessionPanel(
                 rootView = RootView(root).also { content.add(it) }
                 model.cards.forEach(::addView)
                 ready = true
+                refreshTrail()
                 showStatus(if (model.cards.isEmpty()) "Click an underlined name or select code to open a card, or ask about the file." else "")
                 refreshAnchors()
                 content.revalidate()
@@ -268,18 +303,26 @@ internal class CanvasSessionPanel(
                 addView(change.card)
                 showStatus("")
             }
-            is CanvasChange.CardsRemoved -> change.ids.forEach { id ->
-                views.remove(id)?.let { view ->
-                    content.remove(view)
-                    Disposer.dispose(view)
-                    if (selectionPane === view.sourcePane) hideSelectionButton()
+            is CanvasChange.CardsRemoved -> {
+                change.ids.forEach { id ->
+                    views.remove(id)?.let { view ->
+                        content.remove(view)
+                        Disposer.dispose(view)
+                        if (selectionPane === view.sourcePane) hideSelectionButton()
+                    }
+                    anchorYs.remove(id)
+                    gapJobs.remove(id)?.cancel()
                 }
-                anchorYs.remove(id)
+                // The trail steps back to the nearest card left open.
+                if (current in change.ids) current = trail.lastOrNull { it !in change.ids }
+                refreshTrail()
             }
             is CanvasChange.CardChanged -> views[change.card.id]?.let { view ->
                 val anchorsChanged = view.card.anchor != change.card.anchor || view.card.wholeFile != change.card.wholeFile
+                val titleChanged = view.card.title != change.card.title
                 view.update(change.card)
                 if (anchorsChanged) refreshAnchors()
+                if (titleChanged && change.card.id in trail) refreshTrail()
             }
             // The root view lays out the canvas itself when its size may have changed.
             is CanvasChange.RootChanged -> {
@@ -332,7 +375,7 @@ internal class CanvasSessionPanel(
             if (e is CancellationException || e is ControlFlowException) throw e
             LOG.warn("Unable to open canvas card of $name", e)
             showStatus("Could not open $name: " +
-                (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+                (e.message ?: e.javaClass.simpleName))
         }
     }
 
@@ -363,6 +406,8 @@ internal class CanvasSessionPanel(
             content.validate()
             reveal(cardId)
         }
+
+        override val graph: CanvasGraph get() = controller.graph
 
         private suspend fun revealing(open: suspend () -> CanvasCard): CanvasCard {
             withContext(Dispatchers.EDT) { checkReady() }
@@ -511,7 +556,7 @@ internal class CanvasSessionPanel(
             if (e is CancellationException || e is ControlFlowException) throw e
             LOG.warn("Unable to find usages of $name", e)
             showStatus("Could not find usages of $name: " +
-                (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+                (e.message ?: e.javaClass.simpleName))
         }
     }
 
@@ -540,7 +585,7 @@ internal class CanvasSessionPanel(
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Unable to open canvas usage $name", e)
                 showStatus("Could not open $name: " +
-                    (e.message?.replace("Reopen the schematic", "Reopen the canvas session") ?: e.javaClass.simpleName))
+                    (e.message ?: e.javaClass.simpleName))
             }
         }
 
@@ -593,6 +638,7 @@ internal class CanvasSessionPanel(
         revealed = cardId
         val view = cardId?.let(views::get) ?: return
         view.highlighted = true
+        select(cardId)
         val viewport = scroll.viewport.extentSize
         content.scrollRectToVisible(Rectangle(view.x - zoomScaled(16, zoom), view.y - zoomScaled(16, zoom),
             minOf(view.width + zoomScaled(32, zoom), viewport.width), minOf(view.height, viewport.height)))
@@ -604,9 +650,12 @@ internal class CanvasSessionPanel(
         showCardSearch(findCard, model.cards.map(::canvasCardCandidate), ::moveTo)
     }
 
-    /** Centres the canvas on card [cardId] (its top, if taller than the view) and emphasises it for a moment. */
-    private fun moveTo(cardId: String) {
-        val view = views[cardId] ?: return
+    /**
+     * Centres the canvas on card [cardId] (its top, if taller than the view) and emphasises it for a moment; null moves
+     * to the root file.
+     */
+    private fun moveTo(cardId: String?) {
+        val view: JComponent = (if (cardId == null) rootView else views[cardId]) ?: return
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
@@ -614,6 +663,141 @@ internal class CanvasSessionPanel(
         val y = if (view.height <= viewport.height - top) view.y + view.height / 2 - (viewport.height + top) / 2 else view.y - top
         scrollTo(maxOf(x, 0), maxOf(y, 0))
         reveal(cardId)
+    }
+
+    /** Makes [cardId] the card the trail leads to; null for the root file. */
+    private fun select(cardId: String?) {
+        val next = cardId?.takeIf { model.card(it) != null }
+        if (next == current && trail == next?.let { model.chain(it).map(CanvasCard::id) }.orEmpty()) return
+        current = next
+        refreshTrail()
+    }
+
+    /** Shows the trail from the root file to [current]: a crumb for each, which moves the canvas there. */
+    private fun refreshTrail() {
+        trail = current?.let { model.chain(it).map(CanvasCard::id) }.orEmpty()
+        breadcrumbs.removeAll()
+        val steps = listOf<Pair<String?, String>>(null to file.source.name) + trail.mapNotNull { id -> model.card(id)?.let { id to it.title } }
+        steps.forEachIndexed { index, (id, title) ->
+            if (index > 0) breadcrumbs.add(JLabel("›").apply { foreground = UIUtil.getContextHelpForeground() })
+            breadcrumbs.add(ActionLink(title) { moveTo(id) }.apply {
+                name = "canvas-crumb"
+                isFocusable = false
+                toolTipText = if (id == null) "Move to ${file.rootPath}" else this@CanvasSessionPanel.model.card(id)?.let { "Move to ${describe(it)}" }
+                if (index == steps.lastIndex) font = font.deriveFont(Font.BOLD)
+            })
+        }
+        trailBar.isVisible = ready
+        breadcrumbs.revalidate()
+        revalidate()
+        repaint()
+    }
+
+    override fun summarizingGaps(cardId: String?): Boolean = gapJobs[cardId]?.isActive == true
+
+    /**
+     * Summarizes, one at a time, the gaps of [cardId]'s source (the root file's for null) without a current summary;
+     * each summary is saved as it arrives. A replaced source (the card expanded or closed) ends the run.
+     */
+    override fun summarizeGaps(cardId: String?) {
+        if (disposed || summarizingGaps(cardId)) return
+        val source = controller.source(cardId) ?: return
+        val units = source.unsummarizedGaps(model.session.chatHolder(cardId)?.gapSummaries ?: return)
+        if (units.isEmpty()) {
+            showStatus("Every gap of this source is summarized.")
+            return
+        }
+        val name = cardId?.let(model::card)?.title ?: file.source.name
+        gapJobs[cardId] = scope.launch(Dispatchers.EDT) {
+            val workflow = SchematicGapWorkflow(services.maxContextChars(), services.complete())
+            var failed = 0
+            var problem: String? = null
+            try {
+                for ((index, unit) in units.withIndex()) {
+                    if (controller.source(cardId) !== source) break
+                    showStatus("Summarizing gaps of $name: ${index + 1} / ${units.size}…")
+                    try {
+                        val input = controller.gapSource(cardId, unit)
+                        val text = withContext(Dispatchers.IO) { workflow.summarize(input, unit) }?.trim()?.takeIf { it.isNotEmpty() }
+                        val hash = source.gapHash(unit.first, unit.last)
+                        if (text != null && hash != null && controller.source(cardId) === source) {
+                            model.addGapSummary(cardId, GapSummary(unit.first, unit.last, hash, text))
+                        }
+                    } catch (e: Throwable) {
+                        if (e is CancellationException || e is ControlFlowException) throw e
+                        LOG.warn("Canvas gap summary of $name failed", e)
+                        failed++
+                        problem = e.message ?: e.javaClass.simpleName
+                        // A changed file fails every remaining gap the same way.
+                        if (e is IllegalStateException && problem.startsWith("Source changed")) {
+                            failed += units.size - index - 1
+                            break
+                        }
+                    }
+                }
+                showStatus(if (failed == 0) "" else "$failed of ${units.size} gaps of $name could not be summarized: $problem")
+            } finally {
+                if (gapJobs[cardId] === coroutineContext[Job]) gapJobs.remove(cardId)
+            }
+        }
+    }
+
+    /**
+     * With the canvas focused (click empty space): arrows, Page Up/Down (with Shift, sideways), Home and End scroll;
+     * + and − zoom and 0 resets it; Tab and Shift+Tab move between cards in the order they were opened.
+     */
+    private fun installKeys() {
+        fun bind(stroke: String, action: () -> Unit) {
+            content.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
+            content.actionMap.put(stroke, object : AbstractAction() {
+                override fun actionPerformed(e: ActionEvent?) {
+                    if (ready && !disposed) action()
+                }
+            })
+        }
+        val step = { zoomScaled(KEY_SCROLL_STEP, zoom) }
+        val page = { maxOf(scroll.viewport.height - step(), step()) }
+        fun scrollBy(dx: Int, dy: Int) {
+            val at = scroll.viewport.viewPosition
+            scrollTo(maxOf(at.x + dx, 0), maxOf(at.y + dy, 0))
+        }
+        for (prefix in listOf("", "KP_")) {
+            bind("${prefix}UP") { scrollBy(0, -step()) }
+            bind("${prefix}DOWN") { scrollBy(0, step()) }
+            bind("${prefix}LEFT") { scrollBy(-step(), 0) }
+            bind("${prefix}RIGHT") { scrollBy(step(), 0) }
+        }
+        bind("PAGE_UP") { scrollBy(0, -page()) }
+        bind("PAGE_DOWN") { scrollBy(0, page()) }
+        bind("shift PAGE_UP") { scrollBy(-scroll.viewport.width, 0) }
+        bind("shift PAGE_DOWN") { scrollBy(scroll.viewport.width, 0) }
+        for (modifier in listOf("", "ctrl ", "meta ")) {
+            bind("${modifier}HOME") { scrollTo(0, 0) }
+            bind("${modifier}END") {
+                content.validate()
+                scrollTo(scroll.viewport.viewPosition.x, maxOf(0, content.preferredSize.height - scroll.viewport.height))
+            }
+        }
+        // Typed keys follow the keyboard layout, and the numeric keypad types the same characters.
+        bind("typed +") { zoomTo(zoom * ZOOM_STEP) }
+        bind("typed =") { zoomTo(zoom * ZOOM_STEP) }
+        bind("typed -") { zoomTo(zoom / ZOOM_STEP) }
+        bind("typed 0") { zoomTo(1.0) }
+        bind("TAB") { stepCard(forward = true) }
+        bind("shift TAB") { stepCard(forward = false) }
+    }
+
+    /** Moves to the card after (or before) the current one in opening order, wrapping around through the root file. */
+    internal fun stepCard(forward: Boolean) {
+        val order = listOf<String?>(null) + model.cards.map { it.id }
+        val index = order.indexOf(current).coerceAtLeast(0)
+        val next = order[Math.floorMod(index + if (forward) 1 else -1, order.size)]
+        if (next == null) {
+            current = null
+            refreshTrail()
+        }
+        moveTo(next)
+        content.requestFocusInWindow()
     }
 
     /** Folds the file and every card's summary, source and chat; again to unfold them. */
@@ -778,6 +962,9 @@ internal class CanvasSessionPanel(
                 return
             }
         }
+        // Clicking into a card makes it the one the trail leads to; the root file keeps the trail.
+        if (e.id == MouseEvent.MOUSE_PRESSED) generateSequence(e.component) { it.parent }
+            .filterIsInstance<CanvasCardView>().firstOrNull()?.let { select(it.id) }
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                 panned = false
@@ -822,6 +1009,15 @@ internal class CanvasSessionPanel(
         val size = controls.preferredSize
         val controlsWidth = minOf(size.width, maxOf(view.width - 2 * gap, 0))
         controls.setBounds(view.x + view.width - gap - controlsWidth, view.y + gap, controlsWidth, size.height)
+        // The trail sits left of the controls; too narrow for both on one row, it drops below them.
+        val trailScroll = trailBar.getComponent(0) as JScrollPane
+        val trailPreferred = breadcrumbs.preferredSize.width + JBUI.scale(16)
+        val roomForTrail = view.width - size.width - 3 * gap
+        val sameRow = roomForTrail >= JBUI.scale(MIN_TRAIL_WIDTH)
+        val trailWidth = minOf(trailPreferred, maxOf(if (sameRow) roomForTrail else view.width - 2 * gap, 0))
+        val trailHeight = breadcrumbs.preferredSize.height + JBUI.scale(8) +
+            if (trailPreferred > trailWidth) trailScroll.horizontalScrollBar.preferredSize.height else 0
+        trailBar.setBounds(view.x + gap, view.y + gap + if (sameRow) 0 else size.height + gap, trailWidth, trailHeight)
     }
 
     override fun dispose() {
@@ -900,6 +1096,7 @@ internal class CanvasSessionPanel(
             meta.isVisible = CardSection.META !in root.folded
             header.metaToggle.text = canvasFoldGlyph(meta.isVisible)
             listOf(summary, sourceSection, history).forEach { it.fold(it.section in root.folded) }
+            pane.showGapSummaries(source.shownGapSummaries(root.gapSummaries))
             val pending = summaryJob?.isActive == true
             summaryText.text = root.summary.orEmpty()
             summaryText.isVisible = root.summary != null
@@ -925,7 +1122,8 @@ internal class CanvasSessionPanel(
         /** The entries of the file's ⋯ menu (also on right-click). */
         fun menuActions(): List<CanvasCardAction> = listOf(
             CanvasCardAction("canvas-summarize", summarize.text, "Summarize this file", enabled = summarize.isEnabled) { requestSummary() },
-            CanvasCardAction("canvas-source", "Go to source", "Open ${source.path} in the editor") {
+        ) + canvasGapActions(this@CanvasSessionPanel, null, source, model.session.root.gapSummaries) + listOf(
+            CanvasCardAction("canvas-source", "Go to source", "Open ${source.path} in the editor", separated = true) {
                 navigate(source, source.path, source.firstLine)
             },
             CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this file",
@@ -1109,6 +1307,8 @@ internal class CanvasSessionPanel(
         const val CANVAS_MARGIN = 512
         const val FLOATING_GAP = 6
         const val FLOATING_ROW_SPACE = 34
+        const val MIN_TRAIL_WIDTH = 220
+        const val KEY_SCROLL_STEP = 72
         const val BASE_FONT = "insight.canvas.baseFont"
     }
 }

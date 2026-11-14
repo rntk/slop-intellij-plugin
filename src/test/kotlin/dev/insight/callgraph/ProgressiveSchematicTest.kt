@@ -201,8 +201,7 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
     fun testChatReadsNewDiscoveriesAndOnlyLoadsExplicitlyInspectedScopes() {
         val file = myFixture.configureByText("Selected.java", "class Selected { void entry() { next(); } void next() {} }")
         var result = ProjectGraphAnalyzer.buildScope(project, file, declarationsOnly = true)
-        val chat = SchematicGraph(result.graph, result.occurrences, { null },
-            snapshot = { liftCalls(result.graph) to result.occurrences },
+        val chat = ExploredGraph({ liftCalls(result.graph) to result.occurrences },
             expand = { id -> result = merge(result, ProjectGraphAnalyzer.buildScope(project, result.pointers[id]!!.element!!)) })
         val entry = result.symbol("entry").id
         assertTrue(chat.callees(entry).isEmpty())
@@ -362,7 +361,7 @@ class ProgressiveSchematicTest : LightJavaCodeInsightFixtureTestCase() {
         WriteCommandAction.runWriteCommandAction(project) { document.insertString(document.textLength, "\n// changed") }
         val failure = background { runCatching { exploration.expand(last) }.exceptionOrNull() }
         assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message!!.contains("Reopen the schematic"))
+        assertTrue(failure!!.message!!.contains("Reopen the canvas session"))
         assertSame(beforeEdit, exploration.result)
     }
 }

@@ -44,6 +44,8 @@ interface CanvasChatHolder {
     val chats: List<CanvasChat>
     val activeChatId: String
     val folded: Set<CardSection>
+    /** Summaries of the code between the source's symbols, written on request. */
+    val gapSummaries: List<GapSummary>
     val activeChat: CanvasChat get() = chats.first { it.id == activeChatId }
     val messages: List<SavedMessage> get() = activeChat.messages
     val draft: String get() = activeChat.draft
@@ -56,6 +58,7 @@ data class CanvasRootState(
     override val folded: Set<CardSection> = emptySet(),
     val summary: String? = null,
     val summaryError: String? = null,
+    override val gapSummaries: List<GapSummary> = emptyList(),
 ) : CanvasChatHolder {
     init {
         require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
@@ -91,6 +94,7 @@ data class CanvasCard(
     val wholeFile: Boolean = false,
     val openedBy: CardOpenedBy = CardOpenedBy.USER,
     val attachment: CanvasAttachment? = null,
+    override val gapSummaries: List<GapSummary> = emptyList(),
 ) : CanvasChatHolder {
     init {
         require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
@@ -254,6 +258,17 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
         val text = summary?.takeIf { it.isNotBlank() }
         if (cardId == null) updateRoot { it.copy(summary = text, summaryError = error) }
         else update(cardId) { it.copy(summary = text, summaryError = error) }
+    }
+
+    /** Adds [summary] to [cardId]'s gap summaries (the root file's for null), replacing any of overlapping lines. */
+    fun addGapSummary(cardId: String?, summary: GapSummary) {
+        if (cardId == null) updateRoot { it.copy(gapSummaries = withGapSummary(it.gapSummaries, summary)) }
+        else update(cardId) { it.copy(gapSummaries = withGapSummary(it.gapSummaries, summary)) }
+    }
+
+    /** Removes every gap summary of [cardId], or of the root file for null. */
+    fun clearGapSummaries(cardId: String?) {
+        if (cardId == null) updateRoot { it.copy(gapSummaries = emptyList()) } else update(cardId) { it.copy(gapSummaries = emptyList()) }
     }
 
     /** Folds or unfolds [section] of [cardId], or of the root file for null. */

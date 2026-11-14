@@ -3,13 +3,23 @@ package dev.insight.canvas
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import dev.insight.callgraph.ExploredGraph
+import dev.insight.callgraph.GapSource
+import dev.insight.callgraph.GapUnit
 import dev.insight.callgraph.ProgressiveSchematic
+import dev.insight.callgraph.Schematic
+import dev.insight.callgraph.schematicGapSource
+import dev.insight.enrichment.liftCalls
+import dev.insight.graph.CallGraph
 import dev.insight.graph.CallGraphNode
+import dev.insight.graph.CallGraphResult
+import dev.insight.graph.CallOccurrence
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 import kotlinx.coroutines.CancellationException
@@ -20,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * What one source pane shows: [text] from 0-based document line [firstLine] of project-relative [path], with [links]
  * as offsets into it. [file] colours and navigates it when known; [node] is the graph symbol it is the source of, and
- * [notice] a short note for the reader (external, not found, changed).
+ * [notice] a short note for the reader (external, not found, changed). [gaps] come from the schematic it was read from.
  */
 class CanvasSource(
     val text: String,
@@ -30,6 +40,8 @@ class CanvasSource(
     val file: VirtualFile?,
     val node: Int? = null,
     val notice: String? = null,
+    /** Code between the source's symbols that can be summarized on request, in document lines. */
+    val gaps: List<GapUnit> = emptyList(),
 ) {
     /** Links within the text, so a bounded snapshot never points past its end. */
     val links: List<CanvasLink> = links.filter { it.range.first >= 0 && it.range.last < text.length }
@@ -108,8 +120,7 @@ internal class CanvasSessionController(
     suspend fun loadRoot(): CanvasSource {
         val schematic = withContext(Dispatchers.Default) { exploration.schematic(rootNode, whole = true) }
             ?: error("The source of ${rootName} is no longer available. Reopen the canvas session.")
-        return CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine, model.session.rootPath,
-            schematic.file, rootNode).also { root = it }
+        return schematicSource(schematic, model.session.rootPath, rootNode).also { root = it }
     }
 
     /**
@@ -169,7 +180,7 @@ internal class CanvasSessionController(
         val schematic = withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
             ?: error("The file $path cannot be shown on the canvas; its language may not be supported.")
         val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
-        val shown = CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine, path, schematic.file, schematic.scope)
+        val shown = schematicSource(schematic, path, schematic.scope)
         return withContext(Dispatchers.EDT) {
             model.findOpen(parentId, CardKind.SYMBOL, anchor, ref)?.let { return@withContext it }
             checkNotNull(source(parentId)) { "The card to open from was closed." }
@@ -266,8 +277,7 @@ internal class CanvasSessionController(
     private suspend fun fileSource(card: CanvasCard): CanvasSource? {
         val file = findFile(card.filePath) ?: return null
         val schematic = exploration.fileSchematic(file) ?: return null
-        return CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine,
-            card.filePath, file, schematic.scope)
+        return schematicSource(schematic, card.filePath, schematic.scope)
     }
 
     /**
@@ -292,7 +302,7 @@ internal class CanvasSessionController(
                             val changed = sourceChanged(card, fresh.text)
                             withContext(Dispatchers.EDT) { model.restoreSnapshot(card.id, card.anchor, fresh.firstLine, fresh.text) }
                             CanvasSource(fresh.text, fresh.links, fresh.firstLine, fresh.path, fresh.file, fresh.node,
-                                CANVAS_SOURCE_CHANGED.takeIf { changed })
+                                CANVAS_SOURCE_CHANGED.takeIf { changed }, fresh.gaps)
                         }
                     }
                     parent == null -> saved(card, CANVAS_SYMBOL_MISSING)
@@ -328,7 +338,7 @@ internal class CanvasSessionController(
             model.restoreSnapshot(card.id, anchor, fresh.firstLine, fresh.text)
         }
         return CanvasSource(fresh.text, fresh.links, fresh.firstLine, fresh.path, fresh.file, found.id,
-            CANVAS_SOURCE_CHANGED.takeIf { changed })
+            CANVAS_SOURCE_CHANGED.takeIf { changed }, fresh.gaps)
     }
 
     private suspend fun find(ref: SymbolRef, candidates: List<CallGraphNode>): CallGraphNode? {
@@ -360,9 +370,47 @@ internal class CanvasSessionController(
         val source = if (schematic == null) {
             CanvasSource("", emptyList(), line, path, null, node.id,
                 note?.notice ?: "The source of ${node.name} is no longer available.")
-        } else CanvasSource(canvasText(schematic), canvasLinks(schematic), schematic.firstLine,
-            relative(schematic.file.path) ?: path, schematic.file, node.id)
+        } else schematicSource(schematic, relative(schematic.file.path) ?: path, node.id)
         return source to ref
+    }
+
+    private fun schematicSource(schematic: Schematic, path: String, node: Int) = CanvasSource(canvasText(schematic),
+        canvasLinks(schematic), schematic.firstLine, path, schematic.file, node, gaps = schematic.gaps)
+
+    /**
+     * What the gap summary of [unit] in [cardId]'s source (the root file's for null) is written from: the file as it is
+     * now, with the IDE's facts about the gap. Throws when the file changed since the source was read.
+     */
+    suspend fun gapSource(cardId: String?, unit: GapUnit): GapSource {
+        val source = source(cardId) ?: error("The source is not shown.")
+        val file = source.file?.takeIf { it.isValid } ?: error("The file ${source.path} is no longer available.")
+        return smartReadAction(project) { schematicGapSource(project, file, source.firstLine, source.text.split('\n'), unit) }
+    }
+
+    /** The summary of [id] shown by a card of that symbol, or the root file's for its FILE symbol. */
+    private fun summaryOf(id: Int): String? =
+        if (id == rootNode) model.session.root.summary
+        else model.cards.firstOrNull { it.summary != null && !it.wholeFile && sources[it.id]?.node == id }?.summary
+
+    @Volatile private var lifted: Pair<CallGraphResult, CallGraph>? = null
+
+    /** The graph explored so far with calls from locals lifted to their function, computed once per snapshot. */
+    private fun liftedGraph(): Pair<CallGraph, List<CallOccurrence>> {
+        val result = exploration.result
+        val graph = lifted?.takeIf { it.first === result }?.second ?: liftCalls(result.graph).also { lifted = result to it }
+        return graph to result.occurrences
+    }
+
+    private val explored = ExploredGraph(::liftedGraph, ::summaryOf, { relative(it) ?: it }) { exploration.expand(it) }
+
+    /** The explored graph as the chats' graph tools query it. */
+    val graph: CanvasGraph = object : CanvasGraph {
+        override fun findSymbols(query: String, kind: SymbolKind?, limit: Int) = explored.find(query, kind, limit)
+        override suspend fun inspect(id: Int): String = withContext(Dispatchers.Default) {
+            explored.load(id)
+            explored.inspect(id)
+        }
+        override fun callPaths(from: Int?, roots: List<Int>, target: Int, maxDepth: Int) = explored.paths(from, roots, target, maxDepth)
     }
 
     private fun saved(card: CanvasCard, notice: String) =

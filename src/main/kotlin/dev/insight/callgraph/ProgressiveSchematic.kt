@@ -39,7 +39,7 @@ internal class ProgressiveSchematic private constructor(
 
     private fun checkSources() {
         check(stamps.all { (file, stamp) -> file.isValid && fileStamp(file) == stamp }) {
-            "Source changed. Reopen the schematic to explore the updated code."
+            "Source changed. Reopen the canvas session to explore the updated code."
         }
     }
 
@@ -49,7 +49,7 @@ internal class ProgressiveSchematic private constructor(
         val next = smartReadAction(project) {
             checkSources()
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
-                ?: error("Source is no longer available. Reopen the schematic.")
+                ?: error("Source is no longer available. Reopen the canvas session.")
             val branch = ProjectGraphAnalyzer.buildScope(project, element, foldFunctions = !whole)
             val merged = mergeSchematicResults(result, branch) { snapshot, node ->
                 val target = snapshot.pointers.getOrNull(node.id)?.element

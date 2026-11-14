@@ -11,7 +11,7 @@ import javax.swing.JLabel
 import javax.swing.SwingUtilities
 
 /**
- * Like schematic callable titles, card names stay readable when the surrounding source shrinks: the font never drops
+ * Card names stay readable when the surrounding source shrinks: the font never drops
  * below a readable size. When that is wider than the card, the title shrinks back toward the zoomed size to fit, and
  * only then ends with "…"; the tooltip keeps the whole name.
  */

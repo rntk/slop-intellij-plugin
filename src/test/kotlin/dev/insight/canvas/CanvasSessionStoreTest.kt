@@ -113,6 +113,23 @@ class CanvasSessionStoreTest {
     }
 
     @Test
+    fun `gap summaries of cards and the root file round trip, and damaged ones are dropped`() {
+        val store = CanvasSessionStore(directory)
+        val model = CanvasSessionModel(session("gaps", "src/Main.kt", 10))
+        model.addGapSummary(null, GapSummary(0, 2, 11, "Imports."))
+        model.addGapSummary("a1", GapSummary(4, 4, -7, "Writes it."))
+        assertTrue(store.save(model.session))
+        assertEquals(model.session, store.load("gaps"))
+        assertTrue("Cards without gap summaries store none", !Files.readString(directory.resolve("gaps.json")).contains("\"gapSummaries\":[]"))
+
+        Files.writeString(directory.resolve("damaged.json"), """{"version":1,"session":{"id":"damaged","rootPath":"src/A.kt",
+            "root":{"chats":[{"id":"chat-1","title":"Chat 1"}],"activeChatId":"chat-1","gapSummaries":[
+              {"first":3,"last":1,"hash":1,"text":"backwards"},{"first":0,"last":0,"text":"no hash"},
+              {"first":0,"last":0,"hash":1,"text":" "},{"first":5,"last":6,"hash":2,"text":"kept"}]}}}""")
+        assertEquals(listOf(GapSummary(5, 6, 2, "kept")), store.load("damaged")!!.root.gapSummaries)
+    }
+
+    @Test
     fun `the root file's chats round trip, and older sessions start with one empty chat`() {
         val store = CanvasSessionStore(directory)
         val model = CanvasSessionModel(session("root", "src/Main.kt", 10))
