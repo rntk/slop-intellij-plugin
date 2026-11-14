@@ -76,8 +76,15 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
 
     private fun isBinding(element: PsiElement) = functionValue(element) != null
 
+    /**
+     * `export default function App() {}` is parsed as a default export holding a named function expression; it declares
+     * `App` as a declaration would.
+     */
+    private fun isDefaultExportedFunction(element: JSFunctionExpression) =
+        element.parent is ES6ExportDefaultAssignment && !element.name.isNullOrEmpty()
+
     override fun isFunction(element: PsiElement) = when (element) {
-        is JSFunctionExpression -> false
+        is JSFunctionExpression -> isDefaultExportedFunction(element)
         is JSFunction -> true
         else -> isBinding(element)
     }
@@ -127,7 +134,7 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         is ES6ImportedBinding -> element.findReferencedElements().toList()
         is ES6ImportExportSpecifier -> element.references.flatMap(::resolveTargets)
         else -> listOf(element)
-    }.filter { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
+    }.map { exported(it) ?: it }.filter { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
 
     /** Follows imports to the declaration, then maps classes to their constructor when they have one. */
     private fun callTarget(resolved: PsiElement): PsiElement? {
@@ -141,7 +148,11 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         is ES6ImportedBinding -> element.findReferencedElements().firstOrNull()
         is ES6ImportExportSpecifier -> element.references.firstNotNullOfOrNull { it.resolve() }
         else -> element
-    }?.takeIf { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
+    }?.let { exported(it) ?: it }?.takeIf { it !is ES6ImportedBinding && it !is ES6ImportExportSpecifier }
+
+    /** The function or class named by `export default function App` or `export default class App`, which imports resolve to. */
+    private fun exported(element: PsiElement): PsiElement? =
+        (element as? ES6ExportDefaultAssignment)?.namedElement?.takeIf { isFunction(it) || it is JSClass }
 
     override fun unwrapImport(element: PsiElement): PsiElement? =
         declaration(element)?.takeIf { it !== element }
@@ -149,6 +160,7 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
     override fun unwrap(element: PsiElement): PsiElement? = when (element) {
         // Implicit elements are index-level stand-ins for the declaration that provides them.
         is JSImplicitElement -> element.parent?.takeIf { it !is PsiFile }
+        is ES6ExportDefaultAssignment -> exported(element)
         // A function expression is represented by the variable, field or property that holds it.
         is JSFunctionExpression -> (element.parent as? JSVariable ?: element.parent as? JSProperty)
             ?.takeIf { isBinding(it) }

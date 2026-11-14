@@ -313,17 +313,13 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             host.cardResized()
             return
         }
-        usages.isVisible = true
-        usages.removeAll()
-        usages.add(host.zoomFont(JLabel("Finding project usages…").apply {
-            foreground = UIUtil.getContextHelpForeground()
-        }))
         val requestedSource = source
         usageSearch = host.scope.launch(Dispatchers.EDT) {
             try {
                 val found = host.controller.findUsages(target)
                 if (source !== requestedSource) return@launch
                 usages.removeAll()
+                usages.isVisible = true
                 usages.add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
                     isOpaque = false
                     add(host.zoomFont(JLabel(
@@ -366,25 +362,19 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Unable to find canvas usages", e)
                 usages.removeAll()
+                usages.isVisible = true
                 usages.add(host.zoomFont(JLabel("Unable to find usages: ${e.message ?: e.javaClass.simpleName}").apply {
                     foreground = NOTICE
                 }))
             } finally {
                 if (source === requestedSource) {
                     usageSearch = null
-                    if (!usagesLoaded) {
-                        usages.components.filterIsInstance<JLabel>().firstOrNull { it.text == "Finding project usages…" }
-                            ?.text = "Usage search cancelled."
-                    }
                     revalidate()
                     repaint()
                     host.cardResized()
                 }
             }
         }
-        revalidate()
-        repaint()
-        host.cardResized()
     }
 
     /** Sizes beyond fonts, at the current zoom. */

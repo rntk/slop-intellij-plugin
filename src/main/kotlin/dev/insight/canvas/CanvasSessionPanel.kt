@@ -603,7 +603,6 @@ internal class CanvasSessionPanel(
 
     internal fun searchLinkUsages(pane: CanvasSourcePane, link: CanvasLink, target: Int, event: MouseEvent): Job = scope.launch(Dispatchers.EDT) {
         val name = controller.node(target)?.name ?: "symbol"
-        showStatus("Finding usages of $name…")
         try {
             val found = controller.findUsages(target)
             showStatus(if (found.usages.isEmpty()) "No project usages found for $name." else "")

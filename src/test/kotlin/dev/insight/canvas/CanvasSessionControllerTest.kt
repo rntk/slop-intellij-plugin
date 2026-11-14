@@ -864,6 +864,25 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testDefaultExportedFunctionsAreDeclarationsReachedThroughImports() {
+        val app = myFixture.addFileToProject("App.jsx",
+            "const noop = () => {}\nexport default function App({ initialKey, onClose = noop }) {\n  onClose()\n  return initialKey\n}\n")
+        val user = myFixture.addFileToProject("main.jsx", "import App from './App'\nexport function main() { App({}) }\n")
+        val canvas = controller(app, CanvasSession.new("App.jsx"))
+        background { canvas.loadRoot() }
+        val card = canvas.open(null, "App")
+        val name = canvas.source(card.id)!!.links.single { it.definition }
+        assertEquals("App", card.text.substring(name.range.first, name.range.last + 1))
+        val users = background { canvas.findUsages(name.targets.single()) }
+        assertEquals("main", canvas.node(users.usages.single { it.kind == dev.insight.graph.RelationKind.CALL }.owner)!!.name.substringBefore('('))
+
+        val importer = controller(user, CanvasSession.new("main.jsx"))
+        background { importer.loadRoot() }
+        val (_, target) = importer.link(importer.source(null)!!, "App")
+        assertEquals("The import leads to the function, not the export statement", dev.insight.graph.SymbolKind.FUNCTION,
+            importer.node(target)!!.kind)
+    }
+
     fun testImportsParametersAndTypeScriptBindingsStayClickableAcrossCards() {
         myFixture.addFileToProject("types.ts", """
             export interface Config {

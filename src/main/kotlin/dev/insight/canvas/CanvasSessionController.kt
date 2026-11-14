@@ -9,6 +9,7 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import dev.insight.callgraph.ExploredGraph
 import dev.insight.callgraph.GapSource
 import dev.insight.callgraph.GapUnit
@@ -240,7 +241,9 @@ internal class CanvasSessionController(
      */
     suspend fun findUsages(target: Int, limit: Int = 100): CanvasUsageSearch {
         val targetNode = node(target) ?: error("Unknown symbol #$target.")
-        val found = withContext(Dispatchers.Default) { exploration.findUsages(target, limit) }
+        val found = withBackgroundProgress(project, "Finding usages of ${targetNode.name}") {
+            withContext(Dispatchers.Default) { exploration.findUsages(target, limit) }
+        }
         val usages = found.usages.filterNot { it.owner == target }.mapNotNull { usage ->
             val ownerNode = node(usage.owner) ?: return@mapNotNull null
             val relative = relative(usage.filePath).orEmpty()
