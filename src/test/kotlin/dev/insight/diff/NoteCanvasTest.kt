@@ -1755,15 +1755,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(listOf("file:docs/Guide.md"), trace.related.map { it.identity })
             assertEquals(4, trace.candidates)
             assertEquals("file:docs/Guide.md", canvas.summariesView.selected)
-            val status = descendants(canvas).single { it.name == "trace-status" } as JLabel
-            assertTrue(status.text, status.text.contains("cites 1 of 4 summaries"))
+            assertFalse(descendants(canvas).any { it.name in setOf("trace-status", "trace-clear", "summaries-trace-overlay") })
 
             chooseOnWord(canvas, summaryText(canvas, "file:ui/Canvas.kt"), "canvas", "search-segment")
             val (path, lines) = opened.single()
             assertEquals("ui/Canvas.kt", path)
             assertEquals(listOf(1), lines.before)
             assertTrue(lines.after.isEmpty())
-            assertTrue(status.text, status.text.contains("Canvas.kt:removed 1"))
+            assertFalse(descendants(canvas).any { it.name in setOf("trace-status", "trace-clear", "summaries-trace-overlay") })
         } finally { canvas.dispose() }
     }
 

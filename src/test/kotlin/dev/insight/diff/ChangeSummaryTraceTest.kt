@@ -26,7 +26,6 @@ import dev.insight.review.ui.selectionContext
 import dev.insight.review.ui.selectionMenu
 import dev.insight.review.ui.traceMarks
 import dev.insight.review.ui.tracePath
-import dev.insight.review.ui.traceStatus
 import dev.insight.review.ui.levelsBelow
 
 class ChangeSummaryTraceTest {
@@ -254,11 +253,10 @@ class ChangeSummaryTraceTest {
             assertEquals(listOf(two.identity, one.identity), trace.related.map { it.identity })
             assertEquals(listOf(2, 2), trace.related.map { it.levelsBelow })
             assertEquals(SummaryKind.FILE, state.tracing!!.target)
-            assertTrue(traceStatus(state.tracing!!).contains("cites 2 files"))
 
             items.getValue("to-directory").doClick()
             assertEquals(listOf(a.identity), shown.last().related.map { it.identity })
-            assertTrue(traceStatus(state.tracing!!).contains("cites 1 folder,"))
+            assertEquals(SummaryKind.DIRECTORY, state.tracing!!.target)
         }
     }
 

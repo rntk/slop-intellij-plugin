@@ -287,9 +287,7 @@ internal class SummariesCanvasCards(
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, panelActions, vocabulary, project) else null
         val diff = if (diffMode) extension?.summaryDiffView(content, summariesView, zoom, panelActions)?.also { tab.diffPanel = it } else null
-        val card = object : JPanel(SummaryOverlayLayout()) {
-            override fun isOptimizedDrawingEnabled(): Boolean = false
-        }.apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder(false) }
         currentCards[key] = card
         card.add(JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -311,10 +309,8 @@ internal class SummariesCanvasCards(
                 })
             }, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        val traceWhere = if (tab.search) "highlighted in the view; the rest are hidden in this tab." else "highlighted in the view."
         if (diff != null) {
-            installSummariesTraceOverlay(card, diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it },
-                summariesView, summariesTrace, inner, traceWhere)
+            card.add(diff.withTree(width, scaled(MAX_SUMMARIES_HEIGHT), tab.treeWidth) { tab.treeWidth = it }, BorderLayout.CENTER)
             return card
         }
         val linkTree = if (summariesView.mode == ReviewSummariesMode.TREE)
@@ -400,7 +396,7 @@ internal class SummariesCanvasCards(
         }
         val readingArea = hierarchyReading ?: if (split != null) split.withTree(bodyScroll, width, tab.treeWidth, tab.treeScrollX,
             rememberTreeWidth = { tab.treeWidth = it }, rememberTreeScrollX = { tab.treeScrollX = it }) else bodyScroll
-        installSummariesTraceOverlay(card, readingArea, summariesView, summariesTrace, inner, traceWhere)
+        card.add(readingArea, BorderLayout.CENTER)
         return card
     }
 

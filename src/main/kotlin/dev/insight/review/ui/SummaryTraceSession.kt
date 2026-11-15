@@ -161,32 +161,6 @@ internal object TraceStyle {
 }
 
 
-/** The query and result of a trace; [where] says where its matches are shown. */
-internal fun traceStatus(tracing: SummaryTracing, where: String = "highlighted below. Right-click and choose Search to jump to the best."): String {
-    val trace = tracing.trace
-    val levels = "the ${SummaryLinks.LEVELS} levels below"
-    val lines = tracing.lines
-    val file = tracing.file?.substringAfterLast('/')
-    val query = tracing.context.query
-    val target = tracing.target
-    return when {
-        trace != null && target != null -> {
-            val count = trace.related.size
-            val noun = if (target == SummaryKind.FILE) "file" else "folder"
-            "“${trace.query}” · cites $count $noun${if (count == 1) "" else "s"}, opened and highlighted; " +
-                "the chosen one is selected."
-        }
-        file != null && lines == null -> "“$query” · Right-click and choose Search to open the lines it cites in $file."
-        lines != null && lines.blocks.isEmpty() -> "“${lines.query}” · cites no lines of $file."
-        lines != null -> "“${lines.query}” · cites ${lines.label}, opened and highlighted. Right-click and choose Search to open it again."
-        trace == null -> "“$query” · Right-click and choose Search to show the summaries it cites."
-        trace.candidates == 0 -> "“${trace.query}” · There are no summaries below this one."
-        trace.related.isEmpty() -> "“${trace.query}” · cites none of the ${trace.candidates} summaries in $levels."
-        else -> "“${trace.query}” · cites ${trace.related.size} of ${trace.candidates} summaries in $levels, $where" +
-            if (trace.related.any { it.next != null }) " Click a green word to follow the citations further down." else ""
-    }
-}
-
 internal fun matchLabel(match: SummaryMatch, trace: SummaryTrace): String =
     (if (match.identity == trace.best?.identity) "● Best match for “${trace.query}”" else "● Cited by “${trace.query}”") +
         " · " + levelsBelow(match)

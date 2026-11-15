@@ -251,9 +251,7 @@ internal class TopicsCanvasCard(
                 })
         }
         header.add(search, BorderLayout.EAST)
-        val card = object : JPanel(SummaryOverlayLayout()) {
-            override fun isOptimizedDrawingEnabled(): Boolean = false
-        }.apply { background = UIUtil.getListBackground(); border = cardBorder() }
+        val card = JPanel(BorderLayout()).apply { background = UIUtil.getListBackground(); border = cardBorder() }
         card.add(header, BorderLayout.NORTH)
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
@@ -281,7 +279,7 @@ internal class TopicsCanvasCard(
             HierarchyPreviewPanel(it, bodyScroll, project, hierarchyPreviewPaths, { paths -> hierarchyPreviewPaths = paths })
                 .also { preview -> hierarchyPreview = preview }
         } ?: bodyScroll
-        installSummariesTraceOverlay(card, readingArea, view, trace, width - scaled(2 * PADDING + 4) - scaled(16), "highlighted in the view.")
+        card.add(readingArea, BorderLayout.CENTER)
         currentCard = card
         return card
     }
