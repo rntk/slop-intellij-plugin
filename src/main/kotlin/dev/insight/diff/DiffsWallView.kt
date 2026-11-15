@@ -43,6 +43,8 @@ internal class DiffsWallView(
     project: Project? = null,
     /** Opens a file of the wall on a canvas session; null leaves the block menu without that item. */
     private val openOnCanvas: ((path: String) -> Unit)? = null,
+    private val openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
+    private val reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
@@ -56,6 +58,12 @@ internal class DiffsWallView(
         val file = files.firstOrNull { it.path == block.path } ?: return
         val (side, number) = wallLineSide(line)
         val data = ContextData()
+        reviewDestinations?.invoke()?.let { data.put(ContextKeys.REVIEW_DESTINATIONS, it) }
+        openOnWall?.let { open -> data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
+            val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
+            val selected = files.filter { it.path in paths }
+            if (selected.isNotEmpty()) open(selected, context.label)
+        } }
         openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let(open) } }
         showContextPicker(project, reviewDiffPick(project, ContextOrigin.DIFFS_WALL, file, number, side, files, data), point.component, point)
     }
@@ -132,7 +140,7 @@ internal val DIFFS_WALL_LABELS = WallLabels(
 )
 
 /** Opens [file]'s native diff, at [line] with it highlighted when the line has a number on a side that has text. */
-internal fun openWallDiff(project: Project, file: ReviewFile, line: WallLine?) {
+internal fun openWallDiff(project: Project, file: ReviewFile, line: WallLine?, session: (() -> ReviewDiffSession?)? = null) {
     val (side, number) = when {
         line?.new != null -> LineSide.AFTER to line.new
         line?.old != null -> LineSide.BEFORE to line.old
@@ -140,11 +148,11 @@ internal fun openWallDiff(project: Project, file: ReviewFile, line: WallLine?) {
     }
     // Without both sides the native diff shows the patch itself, whose lines are not the file's.
     if (side == null || file.before == null || file.after == null) {
-        DiffManager.getInstance().showDiff(project, createDiffRequest(project, file))
+        DiffManager.getInstance().showDiff(project, createDiffRequest(project, file, session))
         return
     }
     val evidence = EvidenceLine(side, number, line!!.text.drop(1), line.text.firstOrNull() ?: ' ', diff = true)
-    showDiffLines(project, file, LineTrace(file.path, file.path, "", emptyList(), listOf(evidence)))
+    showDiffLines(project, file, LineTrace(file.path, file.path, "", emptyList(), listOf(evidence)), session)
 }
 
 /** The side and 1-based line of a wall row for the context picker: its new line, else its old line, else none (hunk headers, notes, padding). */

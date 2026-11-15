@@ -55,6 +55,7 @@ internal data class SummariesCanvasActions(
     val zoomControls: (CanvasTabKey) -> JComponent,
     val installWheelZoom: (CanvasTabKey, JScrollPane) -> Unit,
     val requestInstructions: (SummaryNode, Boolean, ResummaryDestination) -> String?,
+    val reviewDestinations: () -> Map<dev.insight.context.ReviewDestination, () -> Unit> = { emptyMap() },
 )
 
 /** Summary and search cards, including each tab's reading, search, trace and version-selection state. */
@@ -216,6 +217,7 @@ internal class SummariesCanvasCards(
         }
         val panelActions = ChangeSummaryActions(
             contextProject = project,
+            reviewDestinations = actions.reviewDestinations,
             contextSources = tree.nodes.mapNotNull { it.file }.distinctBy { it.path },
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
             select = { identity -> summariesView.select(identity); refreshSummaries(tab) },
@@ -577,6 +579,12 @@ internal class SummariesCanvasCards(
         tab.navigatePath = path
         tab.pendingNavigate = path
         refreshSummaries(tab)
+    }
+
+    fun showMode(mode: ReviewSummariesMode) {
+        mainSummaries.view.mode = mode
+        mainSummaries.scroll = 0
+        refreshSummaries(mainSummaries)
     }
 
     private fun summaryModes() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }

@@ -118,10 +118,13 @@ internal class DiffReviewTab(
             removeSemantic = { state.hideSemantic(); renderCanvas() },
             removeMoves = { state.hideMoves(); renderCanvas() },
         ),
-        openWallDiff = { file, line -> openWallDiff(project, file, line) },
+        openWallDiff = { file, line -> openWallDiff(project, file, line, ::diffSession) },
         showAllChanges = { openDiffsWall(state.snapshot.files, ALL_CHANGES) },
         wallChats = wallChats,
         openWallOnCanvas = openOnCanvas,
+        openOnWall = ::openDiffsWall,
+        reviewDestinations = ::reviewDestinations,
+        diffSession = ::diffSession,
     )
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
@@ -156,7 +159,7 @@ internal class DiffReviewTab(
             },
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             // The cited lines are those of the snapshot file, so its diff opens rather than the current one.
-            openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines) } },
+            openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines, ::diffSession) } },
             openWholeFile = open@{ source ->
                 val file = source as? ReviewFile ?: return@open
                 WriteIntentReadAction.run {
@@ -424,11 +427,19 @@ internal class DiffReviewTab(
      * refreshes; a subset keeps its paths, so files that leave the diff drop off the wall.
      */
     fun openDiffsWall(files: List<ReviewFile>, title: String) {
+        if (disposed) return
+        if (state.refreshing) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(project,
+                "The diff is refreshing. Retry after refresh completes.", "Open on Diffs Wall")
+            return
+        }
         val paths = files.map { it.path }.distinct()
         state.showWall(WallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
         renderCanvas()
         showCanvas { canvas.focusWall() }
     }
+
+    internal fun diffSession() = ReviewDiffSession(state.snapshot.files.toList(), ::openDiffsWall, reviewDestinations())
 
     /** What this tab's boards explain: the comparison, with the paths of its changed files. */
     private fun boardOrigin() = BoardOrigin("diff", state.snapshot.comparison.summary, state.snapshot.files.map { it.path })

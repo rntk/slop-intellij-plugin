@@ -2,6 +2,8 @@ package dev.insight.codereview
 
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
 import dev.insight.context.showContextPicker
 import com.intellij.ui.awt.RelativePoint
 
@@ -185,6 +187,11 @@ class ShowInSummaryTreeAction : DumbAwareAction() {
     }
 }
 
+/** Opens [file] on a Code wall, loading its scope if necessary. */
+internal fun openOnCodeWall(project: Project, file: VirtualFile) {
+    withCodeReviewPanel(project) { it.openOnCodeWall(file) }
+}
+
 /** Shows [file] in the current Code Review tab's summaries, in the Tree view; shared by the action and the context picker. */
 internal fun showInSummaryTree(project: Project, file: VirtualFile) {
     withCodeReviewPanel(project) { it.showInSummaryTree(file) }
@@ -330,7 +337,18 @@ internal class CodeReviewPanel(
                 override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
                 override fun actionPerformed(e: AnActionEvent) {
                     val file = selectedFile() ?: return
-                    showContextPicker(project, capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, file.text, null), tree, RelativePoint.getCenterOf(tree))
+                    val data = ContextData()
+                    tabs.selected?.let { tab ->
+                        data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
+                        data.put(ContextKeys.OPEN_ON_CODE_WALL) { context ->
+                            if (!tab.openCodeWallFile(context.path ?: file.path)) {
+                                status.text = if (tab.state.refreshing) "The code is refreshing. Retry after refresh completes."
+                                    else "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+                                status.toolTipText = status.text
+                            }
+                        }
+                    }
+                    showContextPicker(project, capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, file.text, null, data), tree, RelativePoint.getCenterOf(tree))
                 }
             },
             tabs.toChatAction("Chat about the selection in a new tab, with its summaries and source in context",

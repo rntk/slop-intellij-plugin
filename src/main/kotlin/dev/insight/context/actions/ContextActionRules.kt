@@ -50,6 +50,9 @@ internal fun canOpenOnCanvas(f: ContextFacts) = if (f.hasReviewFile) f.hasCanvas
 internal fun canShowCallGraph(f: ContextFacts) = f.onDisk && f.kind == ContextScopeKind.SYMBOL && f.context.lines != null &&
     f.context.symbol?.kind == "function"
 
+internal fun canOpenCodeWall(f: ContextFacts) = f.onDisk && !f.hasReviewFile && f.origin != ContextOrigin.CODE_WALL &&
+    f.kind in setOf(ContextScopeKind.FILE, ContextScopeKind.SYMBOL, ContextScopeKind.LINE, ContextScopeKind.SELECTION)
+
 internal fun canAddToFlowChart(f: ContextFacts) = f.onDisk && f.kind == ContextScopeKind.SYMBOL && f.context.lines != null &&
     f.context.symbol?.kind in CHART_SYMBOL_KINDS
 

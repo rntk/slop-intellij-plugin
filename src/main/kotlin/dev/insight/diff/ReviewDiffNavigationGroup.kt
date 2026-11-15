@@ -7,6 +7,10 @@ import com.intellij.diff.tools.util.DiffDataKeys
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.Key
+import dev.insight.context.CodeContext
+import dev.insight.context.ContextKey
+import dev.insight.context.ContextScopeKind
+import dev.insight.context.ReviewDestination
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 
@@ -23,6 +27,19 @@ internal class ReviewDiffNavigationGroup : ActionGroup() {
 }
 
 internal val REVIEW_DIFF_FILE = Key.create<ReviewFile>("insight.review.diff.source")
+/** Resolve the current tab state when the picker opens, even for cached or already-open diff viewers. */
+internal val REVIEW_DIFF_SESSION = Key.create<() -> ReviewDiffSession?>("insight.review.diff.session")
+
+internal val REVIEW_CONTEXT_FILES = ContextKey<List<ReviewFile>>("reviewContextFiles")
+internal val REVIEW_CONTEXT_SESSION = ContextKey<() -> ReviewDiffSession?>("reviewContextSession")
+internal class ReviewDiffSession(val files: List<ReviewFile>, val openWall: (List<ReviewFile>, String) -> Unit,
+    val destinations: Map<ReviewDestination, () -> Unit> = emptyMap()) {
+    fun openContext(file: ReviewFile, context: CodeContext) {
+        val paths = if (context.kind == ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
+        val selected = files.filter { it.path in paths }
+        if (selected.isNotEmpty()) openWall(selected, context.label)
+    }
+}
 
 /**
  * The caret of an IDE diff viewer showing a captured [file]: [side] (0 before, 1 after) and the 0-based [line] and [column] in that

@@ -4,6 +4,9 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.ui.awt.RelativePoint
 import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
+import dev.insight.context.ReviewDestination
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.showContextPicker
 import dev.insight.review.ReviewVocabulary
@@ -34,6 +37,8 @@ internal class CodeWallView(
     chats: WallChats? = null,
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
     project: Project? = null,
+    /** Destinations belonging to the tab that owns this wall. */
+    private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
 ) : Disposable {
     private var files: List<CodeFile> = emptyList()
     private var shown: WallContent? = null
@@ -45,7 +50,8 @@ internal class CodeWallView(
     /** Opens the context picker for a right-click on [block]: the source scopes at the row, or only the file for the header. */
     private fun showContext(project: Project, block: WallBlock, line: WallLine?, point: RelativePoint) {
         val file = files.firstOrNull { it.path == block.path } ?: return
-        showContextPicker(project, capturedSourcePick(project, ContextOrigin.CODE_WALL, file.path, file.absolutePath, file.text, line?.new),
+        val data = ContextData().put(ContextKeys.REVIEW_DESTINATIONS, reviewDestinations())
+        showContextPicker(project, capturedSourcePick(project, ContextOrigin.CODE_WALL, file.path, file.absolutePath, file.text, line?.new, data),
             point.component, point)
     }
 

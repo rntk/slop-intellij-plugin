@@ -14,7 +14,9 @@ import javax.swing.JComponent
 
 /** Summary headings keep their evidence snapshots when moving into the shared context hub. */
 internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: SummaryNode,
-    sources: List<ReviewSource>, openOnCanvas: ((SummaryNode) -> Unit)? = null) {
+    sources: List<ReviewSource>, openOnCanvas: ((SummaryNode) -> Unit)? = null,
+    openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
+    reviewDestinations: Map<ReviewDestination, () -> Unit> = emptyMap()) {
     if (project == null) return
     val files = sources.filter { it.path in node.files }.distinctBy { it.path }
     if (files.isEmpty()) return
@@ -22,6 +24,21 @@ internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: Su
         name = "summary-action:Context"
         addActionListener {
             val data = ContextData()
+            if (reviewDestinations.isNotEmpty()) data.put(ContextKeys.REVIEW_DESTINATIONS, reviewDestinations)
+            if (files.all { it is ReviewFile }) openOnWall?.let { open ->
+                data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
+                    val paths = if (context.kind == ContextScopeKind.CHANGE) context.files.toSet() else setOfNotNull(context.path)
+                    val selected = files.filter { it.path in paths }
+                    if (selected.isNotEmpty()) open(selected, context.label)
+                }
+            }
+            if (files.none { it is PatchSource }) openOnWall?.let { open ->
+                data.put(ContextKeys.OPEN_ON_CODE_WALL) { context ->
+                    val paths = if (context.kind == ContextScopeKind.CHANGE) context.files.toSet() else setOfNotNull(context.path)
+                    val selected = files.filter { it.path in paths }
+                    if (selected.isNotEmpty()) open(selected, context.label)
+                }
+            }
             openOnCanvas?.takeIf { files.size == 1 }?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { open(node) } }
             val scopes = if (files.size == 1) {
                 val file = files.single()

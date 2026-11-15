@@ -105,6 +105,8 @@ class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
         val after = "class C {\n\tvoid newName() {}\n}\n"
         val source = myFixture.addFileToProject("src/C.java", after)
         val file = ReviewFile("src/C.java", source.virtualFile.path, null, "modified", "", "v1", before, after)
+        val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
+        val originalToolOrder = settings.diffToolsOrder.toList()
         val embedded = DiffFileEditor(file, project)
         val switch = com.intellij.diff.impl.DiffRequestProcessor::class.java
             .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
@@ -142,6 +144,9 @@ class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
                     assertEquals(!old, event.presentation.isEnabled)
                 }
             }
-        } finally { Disposer.dispose(embedded) }
+        } finally {
+            Disposer.dispose(embedded)
+            settings.diffToolsOrder = originalToolOrder
+        }
     }
 }

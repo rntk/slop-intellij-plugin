@@ -11,6 +11,7 @@ import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.context.ReviewDestination
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.WordScope
@@ -60,11 +61,12 @@ internal class CodeCanvasCards(
     wallChats: WallChats? = null,
     /** The project the wall's syntax highlighting is looked up for. */
     project: Project? = null,
+    reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
 ) : CanvasExtension {
     var words: CodeWordsPage? = null
     var wall: CodeWallContent? = null
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project) }
+    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations) }
     private val wallPage by wallView
     /** Placing the words is slow, so the cloud is kept across rebuilds while its counts are the same. */
     private var cloud: CodeWordCloud? = null

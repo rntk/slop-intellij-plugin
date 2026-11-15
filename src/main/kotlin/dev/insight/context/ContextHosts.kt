@@ -52,6 +52,7 @@ internal fun reviewDiffPick(project: Project, origin: ContextOrigin, file: Revie
         symbolsForCapturedText(project, path, disk, text, line)
     } else emptyList()
     data.put(ContextKeys.REVIEW_FILE, file)
+    data.put(dev.insight.diff.REVIEW_CONTEXT_FILES, allFiles ?: listOf(file))
     return ContextPick(origin, diffScopes(file, line, side, symbols, allFiles), data)
 }
 

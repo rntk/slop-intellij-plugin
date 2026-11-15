@@ -712,6 +712,26 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
+    fun `test opening diffs wall during refresh explains why it cannot open`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val files = listOf(file("src/a.kt"))
+        var message: String? = null
+        val previous = com.intellij.openapi.ui.TestDialogManager.setTestDialog { text ->
+            message = text
+            com.intellij.openapi.ui.Messages.OK
+        }
+        try {
+            tab.update(ReviewSnapshot(files, emptyList()))
+            tab.state.refreshing = true
+            tab.openDiffsWall(files, "Selection")
+            assertEquals("The diff is refreshing. Retry after refresh completes.", message)
+            assertNull(tab.state.wallScope)
+        } finally {
+            com.intellij.openapi.ui.TestDialogManager.setTestDialog(previous)
+            Disposer.dispose(tab)
+        }
+    }
+
     fun `test block diff button adds native diff card to tab canvas and expires on file change`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         try {
@@ -724,15 +744,25 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
                 context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Explains A.")))
                 val showButton = descendants(tab.canvas).filterIsInstance<InplaceButton>()
                     .single { it.toolTipText == "Show diff in tab" }
+                // A card first rendered during refresh must not retain an empty destination map.
+                tab.state.refreshing = true
                 showButton.doClick()
                 assertEquals(listOf(fileA), tab.state.diffs)
                 val diffViewer = descendants(tab.canvas).filterIsInstance<DiffFileEditor>().single()
                 assertEquals(setOf("val a = 1\n", "val a = 2\n"), diffViewer.editors.map { it.document.text }.toSet())
+                val data = com.intellij.openapi.actionSystem.impl.Utils.createAsyncDataContext(diffViewer.editors.first().contentComponent)
+                val event = com.intellij.testFramework.TestActionEvent.createTestEvent(data)
+                val request = event.getData(com.intellij.diff.tools.util.DiffDataKeys.DIFF_REQUEST)!!
+                val currentSession = request.getUserData(REVIEW_DIFF_SESSION)!!
+                assertTrue(currentSession()!!.destinations.isEmpty())
 
                 // Unchanged evidence for src/a.kt keeps the diff card alive when another file changes.
-                tab.update(snapshot.copy(files = listOf(fileA, fileB.copy(fingerprint = "2"))))
+                val updatedFiles = listOf(fileA, fileB.copy(fingerprint = "2"))
+                tab.update(snapshot.copy(files = updatedFiles))
                 assertEquals(listOf(fileA), tab.state.diffs)
                 assertFalse(diffViewer.isDisposed)
+                assertFalse(currentSession()!!.destinations.isEmpty())
+                assertEquals(updatedFiles, currentSession()!!.files)
 
                 // Changed evidence for src/a.kt removes and disposes the diff card.
                 tab.update(snapshot.copy(files = listOf(fileA.copy(fingerprint = "2"), fileB.copy(fingerprint = "2"))))

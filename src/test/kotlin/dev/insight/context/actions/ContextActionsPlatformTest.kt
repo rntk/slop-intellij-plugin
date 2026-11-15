@@ -10,6 +10,7 @@ import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextRequest
 import dev.insight.context.ContextScopeKind
 import dev.insight.context.ContextData
+import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextPick
 import dev.insight.context.editorPick
 import dev.insight.context.toMarkdown
@@ -47,15 +48,44 @@ class ContextActionsPlatformTest : BasePlatformTestCase() {
             "explore.sideBySide", "explore.summaryTree", "ask.chat", "copy.markdown")))
         for (action in ContextAction.EP_NAME.extensionList) {
             assertTrue(action.id, action.title.isNotBlank() && !action.title.startsWith("!"))
-            assertTrue(action.id, action.group in listOf("Open", "Explore", "Ask", "Copy"))
+            assertTrue(action.id, action.group in listOf("Open", "Explore", "Ask", "Copy", "Review views"))
         }
     }
 
     fun testRegistryOffersTheActionsOfAFunctionSymbol() {
         val request = request(pick(), ContextScopeKind.SYMBOL, "render")
         val ids = ContextActionRegistry.getInstance().actions(request).map { it.id }
-        assertEquals(setOf("open.editor", "explore.canvas", "explore.callGraph", "explore.flowChart", "explore.sideBySide", "ask.chat", "copy.markdown"),
+        assertEquals(setOf("open.editor", "explore.canvas", "explore.codeWall", "explore.callGraph", "explore.flowChart", "explore.sideBySide", "ask.chat", "copy.markdown"),
             ids.toSet())
+    }
+
+    fun testDiffsWallRequiresHostAndReceivesTheSelectedContext() {
+        val original = request(pick(), ContextScopeKind.LINE)
+        val wall = action("explore.diffsWall")
+        assertFalse(wall.isAvailable(original))
+        var chosen: dev.insight.context.CodeContext? = null
+        val data = ContextData().put(ContextKeys.OPEN_ON_DIFFS_WALL) { context -> chosen = context }
+        val request = ContextRequest(project, original.context, original.candidates, ContextOrigin.OTHER, data, null)
+        assertTrue(wall.isAvailable(request))
+        wall.perform(request)
+        assertEquals(original.context, chosen)
+        assertFalse(wall.isAvailable(ContextRequest(project, original.context, original.candidates, ContextOrigin.DIFFS_WALL, data, null)))
+    }
+
+    fun testReviewViewsUseOnlyHostDestinations() {
+        val original = request(pick(), ContextScopeKind.LINE)
+        val registered = ContextAction.EP_NAME.extensionList.filter { it.group == "Review views" }
+        assertEquals(ReviewDestination.entries.map { "review.${it.name.lowercase()}" }.toSet(), registered.map { it.id }.toSet())
+        val actions = listOf(SessionSummaryTreeAction(), SessionTopicsAction(), SessionBoardAction())
+        actions.forEach { assertFalse(it.isAvailable(original)) }
+        val opened = mutableListOf<ReviewDestination>()
+        val destinations = listOf(ReviewDestination.TREE, ReviewDestination.TOPICS, ReviewDestination.BOARD)
+        val data = ContextData().put(ContextKeys.REVIEW_DESTINATIONS,
+            destinations.associateWith { destination -> { opened.add(destination); Unit } })
+        val request = ContextRequest(project, original.context, original.candidates, original.origin, data, null)
+        actions.forEach { assertTrue(it.isAvailable(request)); it.perform(request) }
+        assertEquals(destinations, opened)
+        assertFalse(SessionMovesAction().isAvailable(request))
     }
 
     fun testCopyPutsTheMarkdownOnTheClipboard() {

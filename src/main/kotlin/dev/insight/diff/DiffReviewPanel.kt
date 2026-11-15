@@ -204,10 +204,18 @@ internal class DiffReviewPanel(
                 override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
                 override fun actionPerformed(e: AnActionEvent) {
                     val file = selectedFile() ?: return
-                    val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, state.snapshot)
+                    val snapshot = state.snapshot
+                    val tab = tabs.selected
+                    val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, snapshot)
                         .put(ContextKeys.OPEN_ON_CANVAS) { _: CodeContext -> openOnCanvas(file) }
+                    if (tab != null) data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
+                        val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
+                        val files = snapshot.files.filter { it.path in paths }
+                        if (files.isNotEmpty()) tab.openDiffsWall(files, context.label)
+                    }
+                    if (tab != null) data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
                     val side = if (file.after != null) SourceSide.AFTER else SourceSide.BEFORE
-                    showContextPicker(project, reviewDiffPick(project, ContextOrigin.OTHER, file, null, side, state.snapshot.files, data), tree, RelativePoint.getCenterOf(tree))
+                    showContextPicker(project, reviewDiffPick(project, ContextOrigin.OTHER, file, null, side, snapshot.files, data), tree, RelativePoint.getCenterOf(tree))
                 }
             },
             object : com.intellij.openapi.actionSystem.AnAction("Open on flowchart",
@@ -447,7 +455,9 @@ internal class DiffReviewPanel(
 
     private fun showDiff(path: String) {
         val file = state.snapshot.files.firstOrNull { it.path == path } ?: return
-        DiffManager.getInstance().showDiff(project, createDiffRequest(project, file))
+        val tab = tabs.selected
+        val session = tab?.let { { it.diffSession().takeIf { captured -> captured.files.any { it.path == file.path } } } }
+        DiffManager.getInstance().showDiff(project, createDiffRequest(project, file, session))
     }
 
     override fun dispose() {

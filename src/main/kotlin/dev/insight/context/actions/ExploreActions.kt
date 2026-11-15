@@ -9,9 +9,11 @@ import dev.insight.callgraph.openCallGraph
 import dev.insight.callgraph.openFlowChart
 import dev.insight.canvas.OpenCanvasSessionAction
 import dev.insight.codereview.showInSummaryTree
+import dev.insight.codereview.openOnCodeWall
 import dev.insight.context.ContextAction
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextRequest
+import dev.insight.context.ContextOrigin
 import dev.insight.context.location
 import dev.insight.graph.SymbolKind
 import dev.insight.ui.SourceChainLocation
@@ -114,5 +116,29 @@ internal class ShowInSummaryTreeContextAction : ContextAction {
     override fun perform(request: ContextRequest) {
         val file = request.sourceFile() ?: return report(request.project, InsightBundle.message("context.action.missing.file", request.context.location()))
         showInSummaryTree(request.project, file)
+    }
+}
+
+internal class OpenDiffsWallContextAction : ContextAction {
+    override val id = "explore.diffsWall"
+    override val title get() = InsightBundle.message("context.action.diffs.wall")
+    override val group = "Explore"
+    override val order = 11
+    override fun isAvailable(request: ContextRequest) = request.origin != ContextOrigin.DIFFS_WALL &&
+        ContextKeys.OPEN_ON_DIFFS_WALL in request.data
+    override fun perform(request: ContextRequest) { request.data[ContextKeys.OPEN_ON_DIFFS_WALL]?.invoke(request.context) }
+}
+
+internal class OpenCodeWallContextAction : ContextAction {
+    override val id = "explore.codeWall"
+    override val title get() = InsightBundle.message("context.action.code.wall")
+    override val group = "Explore"
+    override val order = 12
+    override fun isAvailable(request: ContextRequest) = request.origin != ContextOrigin.CODE_WALL &&
+        (ContextKeys.OPEN_ON_CODE_WALL in request.data || canOpenCodeWall(request.facts()))
+    override fun perform(request: ContextRequest) {
+        request.data[ContextKeys.OPEN_ON_CODE_WALL]?.let { return it(request.context) }
+        val file = request.sourceFile() ?: return report(request.project, InsightBundle.message("context.action.missing.file", request.context.location()))
+        openOnCodeWall(request.project, file)
     }
 }

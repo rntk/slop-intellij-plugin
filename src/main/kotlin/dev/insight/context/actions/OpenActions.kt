@@ -10,6 +10,9 @@ import dev.insight.context.ContextRequest
 import dev.insight.context.location
 import dev.insight.diff.createDiffRequest
 import dev.insight.diff.showDiffLines
+import dev.insight.diff.REVIEW_CONTEXT_FILES
+import dev.insight.diff.ReviewDiffSession
+import dev.insight.context.ContextScopeKind
 
 /** The context's file in the editor, with its lines selected. */
 internal class OpenInEditorAction : ContextAction {
@@ -40,9 +43,17 @@ internal class OpenInIdeDiffAction : ContextAction {
 
     override fun perform(request: ContextRequest) {
         val file = request.data[ContextKeys.REVIEW_FILE] ?: return
+        val openWall = request.data[ContextKeys.OPEN_ON_DIFFS_WALL]
+        val session = openWall?.let { open ->
+            val files = request.data[REVIEW_CONTEXT_FILES] ?: listOf(file)
+            ReviewDiffSession(files, { selected, title ->
+                open(request.context.copy(kind = ContextScopeKind.CHANGE, label = title, path = null, files = selected.map { it.path }))
+            }, request.data[ContextKeys.REVIEW_DESTINATIONS].orEmpty())
+        }
         // Without both sides the diff shows the patch itself, whose lines are not the file's.
         val trace = diffLineTrace(file.path, request.context).takeIf { file.before != null && file.after != null }
-        if (trace == null) DiffManager.getInstance().showDiff(request.project, createDiffRequest(request.project, file))
-        else showDiffLines(request.project, file, trace)
+        val sessionProvider = request.data[dev.insight.diff.REVIEW_CONTEXT_SESSION] ?: session?.let { { it } }
+        if (trace == null) DiffManager.getInstance().showDiff(request.project, createDiffRequest(request.project, file, sessionProvider))
+        else showDiffLines(request.project, file, trace, sessionProvider)
     }
 }

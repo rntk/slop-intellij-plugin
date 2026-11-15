@@ -6,6 +6,8 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.psi.util.PsiModificationTracker
+import dev.insight.context.ReviewDestination
+import dev.insight.review.ReviewSummariesMode
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.agent.ChatConversation
 import dev.insight.agent.ChatMessage
@@ -103,6 +105,36 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             else -> {}
         }
     }
+    /** Destinations open this tab's whole review, independent of the picked code scope. */
+    internal fun reviewDestinations(): Map<ReviewDestination, () -> Unit> {
+        if (disposed || state.refreshing || state.snapshotFiles.isEmpty()) return emptyMap()
+        val available = views.map { it.key }.toSet()
+        val destinations = linkedMapOf<ReviewDestination, () -> Unit>()
+        fun add(destination: ReviewDestination, key: CanvasTabKey) {
+            if (key in available) destinations[destination] = { if (!disposed && !state.refreshing) openView(key) }
+        }
+        add(ReviewDestination.SUMMARIES, CanvasTabKey.Summaries)
+        val modes = mapOf(
+            ReviewDestination.OUTLINE to ReviewSummariesMode.OUTLINE,
+            ReviewDestination.HIERARCHY to ReviewSummariesMode.HIERARCHY,
+            ReviewDestination.DOCUMENT to ReviewSummariesMode.DOCUMENT,
+            ReviewDestination.EXPLORER to ReviewSummariesMode.EXPLORER,
+            ReviewDestination.SPLIT to ReviewSummariesMode.SPLIT,
+            ReviewDestination.TREE to ReviewSummariesMode.TREE,
+        ) + if (vocabulary == ReviewVocabulary.DIFF) mapOf(ReviewDestination.DIFF to ReviewSummariesMode.DIFF) else emptyMap()
+        if (CanvasTabKey.Summaries in available) modes.forEach { (destination, mode) ->
+            destinations[destination] = { if (!disposed && !state.refreshing) openSummariesMode(mode) }
+        }
+        add(ReviewDestination.TOPICS, CanvasTabKey.Topics)
+        add(ReviewDestination.GROUPING, CanvasTabKey.Grouping)
+        add(ReviewDestination.WORDS, CanvasTabKey.Words)
+        add(ReviewDestination.DIFF_OVERVIEW, CanvasTabKey.DiffOverview)
+        add(ReviewDestination.METRICS, CanvasTabKey.Semantic)
+        add(ReviewDestination.MOVES, CanvasTabKey.Moves)
+        add(ReviewDestination.BOARD, CanvasTabKey.Board)
+        return destinations
+    }
+
     /** The stats of the source tile, read from values in memory like those of the views; see [ReviewViewOption.stats]. */
     protected open fun sourceStats(): List<ReviewTileStat> = emptyList()
 
@@ -223,6 +255,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     /** Follows the chat: [before] runs first on every change, then the controls, cards and explanation are updated. */
     protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
+        canvas.reviewDestinations = ::reviewDestinations
         canvas.onPageFocused = { showView(it); openArtifact(it) }
         canvas.onPagesChanged = {
             updateArtifactFiles()
@@ -297,6 +330,12 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         state.showSummaries()
         renderCanvas()
         showCanvas { canvas.focusSummaries() }
+    }
+
+    fun openSummariesMode(mode: ReviewSummariesMode) {
+        state.showSummaries()
+        renderCanvas()
+        showCanvas { canvas.showSummariesMode(mode) }
     }
 
     /**

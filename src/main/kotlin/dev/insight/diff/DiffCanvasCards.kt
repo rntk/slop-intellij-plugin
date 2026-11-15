@@ -54,12 +54,15 @@ internal class DiffCanvasCards(
     wallChats: WallChats? = null,
     /** Opens a wall block's file on a canvas session. */
     openWallOnCanvas: ((path: String) -> Unit)? = null,
+    openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
+    reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
+    private val diffSession: (() -> ReviewDiffSession)? = null,
 ) : CanvasExtension {
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas) }
+    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations) }
     private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
@@ -126,7 +129,7 @@ internal class DiffCanvasCards(
 
     private fun diffCard(file: ReviewFile, snapshots: SnapshotCanvasCards): JPanel =
         snapshots.diffCard(file.path, file.status, { removeDiff(file.path) }) { width, zoom ->
-            diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project) }.also { it.resizeFor(width, zoom) }
+            diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project, session = diffSession) }.also { it.resizeFor(width, zoom) }
         }
 
     override fun dispose() {

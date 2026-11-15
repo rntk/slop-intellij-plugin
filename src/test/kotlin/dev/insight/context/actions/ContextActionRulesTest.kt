@@ -8,9 +8,20 @@ import dev.insight.context.ContextSymbol
 import dev.insight.review.ui.LineSide
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ContextActionRulesTest {
+    @Test
+    fun codeWallRequiresSourceAndDoesNotOfferItself() {
+        val source = facts(context(ContextScopeKind.FILE, lines = null))
+        assertTrue(canOpenCodeWall(source))
+        assertFalse(canOpenCodeWall(source.copy(origin = ContextOrigin.CODE_WALL)))
+        assertFalse(canOpenCodeWall(source.copy(hasReviewFile = true)))
+        assertFalse(canOpenCodeWall(source.copy(context = source.context.copy(side = SourceSide.BEFORE))))
+        assertFalse(canOpenCodeWall(source.copy(context = source.context.copy(kind = ContextScopeKind.CHANGE))))
+    }
     private fun context(kind: ContextScopeKind, side: SourceSide = SourceSide.CURRENT, lines: IntRange? = 3..5, symbol: String? = null,
         path: String? = "src/A.kt") =
         CodeContext(kind, kind.name, path, path?.let { "/p/$it" }, lines, side, "text",

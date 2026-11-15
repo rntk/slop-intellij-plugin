@@ -144,7 +144,8 @@ internal class CodeReviewTab(
     }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's files" else path.substringAfterLast('/') })
     private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
         chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
-        showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project)
+        showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project,
+        reviewDestinations = { reviewDestinations() })
     /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
     private var wordCount: WordCount? = null
     private var allWords: WordCount? = null
@@ -504,6 +505,14 @@ internal class CodeReviewTab(
         state.showWall(WallScope(paths.takeUnless { it == state.snapshot.files.map { file -> file.path } }, title))
         renderCanvas()
         showCanvas { canvas.focusWall() }
+    }
+
+    /** Opens a file only if it belongs to this tab's current snapshot. */
+    fun openCodeWallFile(path: String): Boolean {
+        if (disposed || state.refreshing) return false
+        val file = state.snapshot.byPath[path] ?: return false
+        openCodeWall(listOf(file), file.path.substringAfterLast('/'))
+        return true
     }
 
     /** What this tab's boards explain: the code in scope, with the paths of its files. */

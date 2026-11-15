@@ -59,7 +59,7 @@ internal fun showDirectoryDiff(project: Project, files: List<ReviewFile>) {
     if (files.isNotEmpty()) DiffManager.getInstance().showDiff(project, createDirectoryDiffChain(project, files), DiffDialogHints.DEFAULT)
 }
 
-internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffRequest {
+internal fun createDiffRequest(project: Project?, file: ReviewFile, session: (() -> ReviewDiffSession?)? = null): SimpleDiffRequest {
     val factory = DiffContentFactory.getInstance()
     val fileType = FileTypeManager.getInstance().getFileTypeByFileName(file.path.substringAfterLast('/'))
     val request = if (file.before != null && file.after != null) SimpleDiffRequest(
@@ -77,6 +77,7 @@ internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffR
     )
     request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY, true)
     request.putUserData(REVIEW_DIFF_FILE, file)
+    request.putUserData(REVIEW_DIFF_SESSION, session)
     return request
 }
 
@@ -84,8 +85,8 @@ internal fun createDiffRequest(project: Project?, file: ReviewFile): SimpleDiffR
  * Opens [file]'s diff scrolled to the first of [lines] and highlights them on their side. The viewer builds its editors after
  * the request is shown, so the highlights wait for them briefly; a unified viewer has no editor per side and only scrolls.
  */
-internal fun showDiffLines(project: Project, file: ReviewFile, lines: LineTrace) {
-    val request = createDiffRequest(project, file)
+internal fun showDiffLines(project: Project, file: ReviewFile, lines: LineTrace, session: (() -> ReviewDiffSession?)? = null) {
+    val request = createDiffRequest(project, file, session)
     val (side, first) = lines.after.minOrNull()?.let { Side.RIGHT to it } ?: lines.before.minOrNull()?.let { Side.LEFT to it } ?: return
     request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE, Pair.create(side, first - 1))
     DiffManager.getInstance().showDiff(project, request)
@@ -109,8 +110,9 @@ internal fun showDiffLines(project: Project, file: ReviewFile, lines: LineTrace)
  * Embeds the IDE's native read-only diff viewer for a snapshot file inside a canvas card, optionally opened at the
  * zero-based line [scrollTo] of one side.
  */
-internal class DiffFileEditor(val file: ReviewFile, project: Project?, scrollTo: Pair<Side, Int>? = null) : JPanel(BorderLayout()), Disposable {
-    private val request = createDiffRequest(project, file).apply { scrollTo?.let { putUserData(DiffUserDataKeys.SCROLL_TO_LINE, it) } }
+internal class DiffFileEditor(val file: ReviewFile, project: Project?, scrollTo: Pair<Side, Int>? = null,
+    session: (() -> ReviewDiffSession?)? = null) : JPanel(BorderLayout()), Disposable {
+    private val request = createDiffRequest(project, file, session).apply { scrollTo?.let { putUserData(DiffUserDataKeys.SCROLL_TO_LINE, it) } }
     internal val panel = object : DiffRequestProcessor(project) {
         override fun updateRequest(force: Boolean, scrollToChangePolicy: ScrollToPolicy?) {
             applyRequest(request, force, scrollToChangePolicy)

@@ -13,6 +13,8 @@ import com.intellij.psi.PsiFile
 import dev.insight.agent.SourceSide
 import dev.insight.diff.ReviewDiffCaret
 import dev.insight.diff.reviewDiffCaret
+import dev.insight.diff.REVIEW_DIFF_SESSION
+import dev.insight.diff.ReviewDiffSession
 import dev.insight.canvas.relativePath
 import java.awt.Point
 
@@ -46,7 +48,7 @@ internal class PickContextAction : DumbAwareAction() {
             showContextPicker(project, pick, owner, RelativePoint(owner, Point(owner.width / 2, owner.height / 2)))
             return
         }
-        val pick = if (diff != null) reviewDiffPick(project, diff) else {
+        val pick = if (diff != null) reviewDiffPick(project, diff, e.getData(DiffDataKeys.DIFF_REQUEST)?.getUserData(REVIEW_DIFF_SESSION)) else {
             val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: FileDocumentManager.getInstance().getFile(editor.document) ?: return
             val origin = if (e.getData(DiffDataKeys.DIFF_REQUEST) != null) ContextOrigin.IDE_DIFF else ContextOrigin.EDITOR
             editorPick(project, origin, editor, file, e.getData(CommonDataKeys.PSI_FILE))
@@ -54,9 +56,15 @@ internal class PickContextAction : DumbAwareAction() {
         showContextPicker(project, pick, editor.contentComponent, JBPopupFactory.getInstance().guessBestPopupLocation(editor))
     }
 
-    private fun reviewDiffPick(project: com.intellij.openapi.project.Project, caret: ReviewDiffCaret): ContextPick {
+    private fun reviewDiffPick(project: com.intellij.openapi.project.Project, caret: ReviewDiffCaret, sessionProvider: (() -> ReviewDiffSession?)?): ContextPick {
+        val session = sessionProvider?.invoke()
         val side = if (caret.side == 0) SourceSide.BEFORE else SourceSide.AFTER
-        return reviewDiffPick(project, ContextOrigin.IDE_DIFF, caret.file, caret.line?.plus(1), side, null,
-            ContextData().put(ContextKeys.EDITOR, caret.editor).put(ContextKeys.OFFSET, caret.editor.caretModel.offset))
+        val data = ContextData().put(ContextKeys.EDITOR, caret.editor).put(ContextKeys.OFFSET, caret.editor.caretModel.offset)
+        sessionProvider?.let { data.put(dev.insight.diff.REVIEW_CONTEXT_SESSION, it) }
+        session?.let { captured ->
+            if (captured.destinations.isNotEmpty()) data.put(ContextKeys.REVIEW_DESTINATIONS, captured.destinations)
+            data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context -> captured.openContext(caret.file, context) }
+        }
+        return reviewDiffPick(project, ContextOrigin.IDE_DIFF, caret.file, caret.line?.plus(1), side, session?.files, data)
     }
 }

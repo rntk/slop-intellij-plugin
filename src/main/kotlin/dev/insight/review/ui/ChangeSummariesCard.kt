@@ -71,9 +71,11 @@ internal class ChangeSummaryActions(
     val openOnWallTooltip: String = ReviewVocabulary.DIFF.openOnWallTooltip,
     val contextProject: com.intellij.openapi.project.Project? = null,
     val contextSources: List<dev.insight.review.ReviewSource> = emptyList(),
+    val reviewDestinations: () -> Map<dev.insight.context.ReviewDestination, () -> Unit> = { emptyMap() },
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
-        addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas)
+        addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas,
+            openOnWall?.let { open -> { files, _ -> open(node.copy(files = files.map { it.path })) } }, reviewDestinations())
         wallAction(node)?.let { open ->
             menu.add(JMenuItem(openOnWallLabel).apply {
                 name = "summary-action:$openOnWallLabel"

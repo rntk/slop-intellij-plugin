@@ -65,6 +65,8 @@ class ContextKey<T : Any>(val name: String) {
     override fun toString() = name
 }
 
+enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, WORDS, DIFF_OVERVIEW, METRICS, MOVES, BOARD }
+
 /** View-specific extras a host passes to actions without changing the core model. */
 class ContextData {
     private val values = HashMap<ContextKey<*>, Any>()
@@ -80,6 +82,9 @@ class ContextData {
 /** Keys hosts commonly fill; plugin views may declare their own. */
 object ContextKeys {
     val REVIEW_FILE = ContextKey<ReviewFile>("reviewFile")
+    val OPEN_ON_DIFFS_WALL = ContextKey<(CodeContext) -> Unit>("openOnDiffsWall")
+    val OPEN_ON_CODE_WALL = ContextKey<(CodeContext) -> Unit>("openOnCodeWall")
+    val REVIEW_DESTINATIONS = ContextKey<Map<ReviewDestination, () -> Unit>>("reviewDestinations")
     val REVIEW_SNAPSHOT = ContextKey<ReviewSnapshot>("reviewSnapshot")
     val VIRTUAL_FILE = ContextKey<VirtualFile>("virtualFile")
     val PSI_FILE = ContextKey<PsiFile>("psiFile")

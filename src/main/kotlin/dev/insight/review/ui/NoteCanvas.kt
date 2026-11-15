@@ -60,6 +60,7 @@ internal class NoteCanvas(
     private val showSummaryNode: (SummaryNode) -> Unit = summaryActions.showNode ?: { node -> sourceActions.showDiffCard(node.path) }
     private val openSummaryLines: (SummaryNode, LineTrace) -> Unit = summaryActions.openLines ?: { node, _ -> openSummaryNode(node) }
     internal val tabs = ReviewPages()
+    internal var reviewDestinations: () -> Map<dev.insight.context.ReviewDestination, () -> Unit> = { emptyMap() }
     internal var onPageFocused: (CanvasTabKey) -> Unit = {}
     internal var onPagesChanged: () -> Unit = {}
     private val editorPages = mutableMapOf<CanvasTabKey, JPanel>()
@@ -109,6 +110,7 @@ internal class NoteCanvas(
             focus = ::focusCard, restyleReview = ::restyleReview, refreshTopics = { refreshTopics(); refreshGrouping() },
             documentZoom = { documentZoom }, zoomControls = ::documentZoomControls, installWheelZoom = ::installDocumentWheelZoom,
             requestInstructions = { node, recursive, destination -> requestResummaryInstructions(node, recursive, destination) },
+            reviewDestinations = { reviewDestinations() },
         ), project, extension)
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
@@ -281,6 +283,11 @@ internal class NoteCanvas(
     /** Selects the summaries in the Tree view and unfolds the route to the file at [path]. */
     internal fun showSummariesInTree(path: String) {
         summariesCardBuilder.showInTree(path)
+        focusSummaries()
+    }
+
+    internal fun showSummariesMode(mode: dev.insight.review.ReviewSummariesMode) {
+        summariesCardBuilder.showMode(mode)
         focusSummaries()
     }
 
@@ -819,7 +826,8 @@ internal class NoteCanvas(
         return { identity ->
             JPopupMenu().apply {
                 val node = nodes[identity] ?: return@apply
-                addSummaryContextItem(this, project, node, content.summaries.tree.nodes.mapNotNull { it.file })
+                addSummaryContextItem(this, project, node, content.summaries.tree.nodes.mapNotNull { it.file },
+                    openOnWall = summaryActions.openOnWall, reviewDestinations = reviewDestinations())
                 val enabled = content.canRun && !summaryGenerationRunning
                 fun item(label: String, enabled: Boolean, tooltip: String, action: () -> Unit) = add(JMenuItem(label).apply {
                     name = "topic-summary-action:$label"
