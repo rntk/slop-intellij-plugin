@@ -158,7 +158,6 @@ internal class DiffReviewPanel(
         files = "Files",
         filesHint = "Double-click a changed file to view its diff; check untracked files to include them in the review.",
     ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
-        tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }

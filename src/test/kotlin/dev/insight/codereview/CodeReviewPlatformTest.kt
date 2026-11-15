@@ -244,7 +244,7 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val first = tabs.selectedInfo!!.component as CodeReviewTab
             assertEquals("Whole scope", tabs.selectedInfo!!.text)
             assertEquals("Code Review: Whole scope · Summaries", first.canvasFile.name)
-            // The hub opens first; the Scope tile opens the Start page, where the scope is chosen, and Continue returns to the hub.
+            // The hub opens first; the Scope tile opens the Start page, where the scope is chosen, and Continue closes setup for background processing.
             assertEquals("Code Review: Views", panel.hub.file.name)
             assertTrue(manager.isFileOpen(panel.hub.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
@@ -253,7 +253,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(manager.isFileOpen(panel.start.file))
             manager.closeFile(panel.hub.file)
             panel.start.continueButton.doClick()
-            assertTrue(manager.isFileOpen(panel.hub.file))
+            assertFalse(manager.isFileOpen(panel.start.file))
+            assertFalse(manager.isFileOpen(panel.hub.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
             chooseView(first, "Summaries")
             assertTrue(manager.isFileOpen(first.canvasFile))

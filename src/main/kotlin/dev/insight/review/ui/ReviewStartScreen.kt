@@ -50,7 +50,7 @@ internal class ReviewStartText(
  * A review panel's Start page in the editor area, where the code or diff to review is chosen and its files are browsed before
  * the summaries and the other views. One per panel, shared by its review tabs. The page reads as three numbered steps:
  * [controls] choose the source, [files] list what it holds and fill the rest of the page, and the last step, pinned to the
- * bottom, picks the [pipelines] to generate and [proceed]s to the hub to run them in the selected tab.
+ * bottom, picks the [pipelines] to generate and [proceed]s to run them in the selected tab in the background, then closes this page.
  */
 internal class ReviewStartScreen(
     private val project: Project,
@@ -88,7 +88,10 @@ internal class ReviewStartScreen(
         icon = AllIcons.Actions.Execute
         font = JBFont.label().asBold()
         putClientProperty(DarculaButtonUI.DEFAULT_STYLE_KEY, true)
-        addActionListener { proceed(selectedPipelines) }
+        addActionListener {
+            proceed(selectedPipelines)
+            FileEditorManager.getInstance(project).closeFile(file)
+        }
     }
     /** What the primary action does with the current choice, beside it. */
     private val continueSummary = wrappedText("", small = true)
@@ -103,13 +106,13 @@ internal class ReviewStartScreen(
     private fun updateContinue() {
         val selected = selectedPipelines
         continueButton.text = if (selected.isEmpty()) "Start review" else "Start review and generate"
-        continueButton.toolTipText = if (selected.isEmpty()) "Go on to the review views of the current source"
-            else "Go on to the review views and generate in the selected review tab, one after another: " + selected.joinToString(", ") { it.label }
+        continueButton.toolTipText = if (selected.isEmpty()) "Close setup and start the review of the current source"
+            else "Close setup and generate in the background, one after another: " + selected.joinToString(", ") { it.label }
         continueSummary.text = when {
-            pipelineBoxes.isEmpty() -> "Opens the review views of the current source."
+            pipelineBoxes.isEmpty() -> "Closes setup. Open review views from the hub when needed."
             selected.isEmpty() -> "Optional: check what to generate right away. Indented steps fill in the summaries of the step above."
             else -> "Generates " + selected.joinToString(" → ") { it.label } +
-                " in the selected review tab, one after another; finished steps are skipped."
+                " in the background; finished steps are skipped. Open results from the hub when needed."
         }
     }
 

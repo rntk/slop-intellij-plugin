@@ -275,7 +275,6 @@ internal class CodeReviewPanel(
         files = "Files in scope",
         filesHint = "Double-click a file to open it; files left out of the review are listed below the tree.",
     ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
-        tabs.openDefault(true)
         tabs.selected?.schedule(pipelines)
     }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }

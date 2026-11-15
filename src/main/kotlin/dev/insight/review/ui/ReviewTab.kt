@@ -89,7 +89,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     abstract val chatInput: JComponent
     private var reviewName = ""
     private val artifactFiles = mutableMapOf<CanvasTabKey, ReviewCanvasFile>()
-    private var knownPages = emptySet<CanvasTabKey>()
     val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
 
@@ -226,10 +225,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
         canvas.onPageFocused = { showView(it); openArtifact(it) }
         canvas.onPagesChanged = {
-            val added = canvas.pageKeys - knownPages - CanvasTabKey.Summaries
-            knownPages = canvas.pageKeys.toSet()
             updateArtifactFiles()
-            added.forEach { openArtifact(it, focus = false) }
         }
         return session.subscribe {
             before()

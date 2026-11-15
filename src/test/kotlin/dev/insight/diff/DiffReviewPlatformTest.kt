@@ -412,7 +412,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
             val firstInfo = tabs.selectedInfo!!
             val first = firstInfo.component as DiffReviewTab
-            // The hub opens first, with the tabs and their tiles; the Diff tile opens the Start page, and Continue returns to the hub.
+            // The hub opens first, with the tabs and their tiles; the Diff tile opens the Start page, and Continue closes setup for background processing.
             assertEquals("Diff Review: Views", panel.hub.file.name)
             assertTrue(manager.isFileOpen(panel.hub.file))
             assertFalse(manager.isFileOpen(panel.start.file))
@@ -423,7 +423,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue(descendants(panel.start.page as Container).filterIsInstance<JComboBox<*>>().any { it.name == "diffMode" })
             manager.closeFile(panel.hub.file)
             panel.start.continueButton.doClick()
-            assertTrue("Continue opens the hub", manager.isFileOpen(panel.hub.file))
+            assertFalse("Continue closes setup", manager.isFileOpen(panel.start.file))
+            assertFalse("Continue leaves the hub closed", manager.isFileOpen(panel.hub.file))
             assertFalse(manager.isFileOpen(first.canvasFile))
             // Without changed files the view tiles are disabled, so the canvas is opened directly.
             panel.openCanvas(true)
