@@ -31,6 +31,8 @@ class JavaCallGraphSupport : CallGraphLanguageSupport {
             } &&
             element.innerClasses.all(::isDeclarationOnly)
 
+    override fun isConstant(element: PsiElement): Boolean = element is PsiEnumConstant || (element is PsiField && element.hasModifierProperty(PsiModifier.STATIC) && element.hasModifierProperty(PsiModifier.FINAL))
+
     override fun symbolKind(element: PsiElement): SymbolKind? = when (element) {
         is PsiTypeParameter -> SymbolKind.PARAMETER
         is PsiClass -> SymbolKind.CLASS

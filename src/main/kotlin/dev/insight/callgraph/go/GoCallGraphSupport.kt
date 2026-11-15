@@ -34,6 +34,8 @@ class GoCallGraphSupport : CallGraphLanguageSupport {
         else -> false
     }
 
+    override fun isConstant(element: PsiElement): Boolean = element is GoConstDefinition
+
     override fun symbolKind(element: PsiElement): SymbolKind? = when (element) {
         is GoTypeSpec -> SymbolKind.CLASS
         is GoFieldDefinition -> SymbolKind.PROPERTY

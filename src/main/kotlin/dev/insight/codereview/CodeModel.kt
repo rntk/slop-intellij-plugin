@@ -17,6 +17,7 @@ class CodeFile(
     val chunks: List<SourceChunk> = emptyList(),
     internal val stamp: Long = -1,
     internal val length: Long = text.length.toLong(),
+    override val symbolCounts: dev.insight.review.RadarSymbols? = null,
 ) : ReviewSource {
     val lineCount: Int = if (text.isEmpty()) 0 else text.count { it == '\n' } + if (text.endsWith('\n')) 0 else 1
 

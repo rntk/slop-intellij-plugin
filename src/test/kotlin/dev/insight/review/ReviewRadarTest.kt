@@ -12,6 +12,39 @@ class ReviewRadarTest {
         "$path:$added:$removed")
 
     @Test
+    fun symbolCountsAggregateAcrossSummaryAndTopicLevels() {
+        val symbols = RadarSymbols(mapOf(RadarSymbolKind.FUNCTION to 2, RadarSymbolKind.CONSTANT to 1, RadarSymbolKind.COMMENT to 3))
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "a\n", symbolCounts = symbols),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "b\n", symbolCounts = symbols),
+            CodeFile("notes.txt", "/repo/notes.txt", "notes\n"),
+        )
+        val tree = buildSummaryTree(files)
+        val summary = summaryRadar(tree, 1)
+        assertTrue(RadarSeries.FUNCTIONS in summary.series)
+        assertTrue(RadarSeries.SOURCE !in summary.series)
+        assertEquals(4, summary.total.symbols[RadarSymbolKind.FUNCTION])
+        assertEquals(6, summary.total.symbols[RadarSymbolKind.COMMENT])
+        assertEquals(summary.total, summaryRadar(tree, summary.levels).total)
+        assertEquals(listOf(RadarSeries.SOURCE), summaryRadar(tree, 1, symbols = false).series)
+        val topics = topicOutline(ReviewTopics(files, mapOf("src/a.kt" to "Code", "src/b.kt" to "Code")))
+        assertEquals(summary.total, topicRadar(topics, 0).total)
+        assertEquals(summary.total, topicRadar(topics, topics.depth).total)
+        assertEquals("6 symbols · 6 comments", radarValueText(summary.total, summary.series))
+    }
+
+    @Test
+    fun symbolCappingKeepsTheLargestSymbolCounts() {
+        val axes = (1..5).map {
+            RadarAxis("a$it", "a$it", "a$it", emptyList(), RadarLines(source = 100 - it,
+                symbols = RadarSymbols(mapOf(RadarSymbolKind.FUNCTION to it))))
+        }
+        val result = capped(axes, 3, listOf(RadarSeries.FUNCTIONS))
+        assertEquals(listOf("a4", "a5", "Other (3)"), result.map { it.label })
+        assertEquals(15, result.sumOf { it.lines.symbols[RadarSymbolKind.FUNCTION] })
+    }
+
+    @Test
     fun countsPatchRowsButNotFileHeaders() {
         assertEquals(RadarLines(added = 3, removed = 2), radarLines(diff("a.kt", 3, 2)))
     }

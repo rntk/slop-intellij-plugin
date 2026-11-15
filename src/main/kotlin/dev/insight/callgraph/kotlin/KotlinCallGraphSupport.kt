@@ -65,6 +65,8 @@ class KotlinCallGraphSupport : CallGraphLanguageSupport {
             KtObjectLiteralExpression::class.java,
         ) != null
 
+    override fun isConstant(element: PsiElement): Boolean = element is KtProperty && element.hasModifier(org.jetbrains.kotlin.lexer.KtTokens.CONST_KEYWORD)
+
     override fun symbolKind(element: PsiElement): SymbolKind? = when {
         element is KtClassOrObject && element.name != null -> SymbolKind.CLASS
         isFunction(element) -> SymbolKind.FUNCTION

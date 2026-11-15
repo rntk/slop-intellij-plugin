@@ -147,7 +147,7 @@ internal class SummariesCanvasCards(
         val explorer = summariesView.mode == ReviewSummariesMode.EXPLORER
         val splitMode = summariesView.mode == ReviewSummariesMode.SPLIT
         val diffMode = summariesView.mode == ReviewSummariesMode.DIFF
-        val radarChart = if (summariesView.mode == ReviewSummariesMode.RADAR) summaryRadar(tree, summariesView.radarLevel) else null
+        val radarChart = if (summariesView.mode == ReviewSummariesMode.RADAR) summaryRadar(tree, summariesView.radarLevel, summariesView.radarSymbols) else null
         if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
@@ -173,6 +173,13 @@ internal class SummariesCanvasCards(
                 val summaries = content.summaries
                 if (radarChart != null) { if (radarChart.levels > 1) add(radarLevels(tab, radarChart)) }
                 else if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
+                if (radarChart != null && vocabulary == ReviewVocabulary.CODE) add(JCheckBox("Symbols", summariesView.radarSymbols).apply {
+                    name = "summaries-radar-symbols"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    toolTipText = "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines"
+                    addActionListener { summariesView.radarSymbols = isSelected; refreshSummaries(tab) }
+                })
                 if (radarChart != null) add(JCheckBox("Log scale", summariesView.radarLog).apply {
                     name = "summaries-radar-log"
                     isOpaque = false

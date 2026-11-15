@@ -154,6 +154,13 @@ internal class TopicsCanvasCard(
                     toolTipText = "Show file previews beside the hierarchy"
                     addActionListener { showHierarchyDiffs = isSelected; canvasActions.refresh() }
                 })
+                if (radar && vocabulary == ReviewVocabulary.CODE) add(JCheckBox("Symbols", view.radarSymbols).apply {
+                    name = "topics-radar-symbols"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    toolTipText = "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines"
+                    addActionListener { view.radarSymbols = isSelected; canvasActions.refresh() }
+                })
                 if (radar) add(JCheckBox("Log scale", view.radarLog).apply {
                     name = "topics-radar-log"
                     isOpaque = false
@@ -224,7 +231,7 @@ internal class TopicsCanvasCard(
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
                 })
                 else if (radar) {
-                    val chart = topicRadar(shown, view.radarLevel(outline), "Awaiting ${labels.singular}")
+                    val chart = topicRadar(shown, view.radarLevel(outline), "Awaiting ${labels.singular}", view.radarSymbols)
                     add(JLabel(radarStatus(chart)).apply {
                         name = "topics-radar-status"
                         font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()

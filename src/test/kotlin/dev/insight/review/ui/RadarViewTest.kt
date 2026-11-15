@@ -60,6 +60,37 @@ class RadarViewTest : BasePlatformTestCase() {
         }
     }
 
+    fun testSymbolSeriesAndLineSwitchInSummariesAndTopics() {
+        val symbols = dev.insight.review.RadarSymbols(mapOf(dev.insight.review.RadarSymbolKind.FUNCTION to 2,
+            dev.insight.review.RadarSymbolKind.COMMENT to 1))
+        val files = sources.mapIndexed { index, file -> CodeFile(file.path, file.absolutePath, file.text,
+            symbolCounts = symbols.takeIf { index < 3 }) }
+        for (topics in listOf(false, true)) {
+            val summaries = ReviewSummaries(buildSummaryTree(files))
+            val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(ReviewTopics(files), summaries, canRun = true))
+                else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
+            val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
+            fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
+            fun switch() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name?.endsWith("radar-symbols") == true }
+            try {
+                canvas.showNotes(state)
+                if (topics) selectTopicsMode(descendants(canvas), "Radar") else selectSummariesMode(descendants(canvas), "radar")
+                assertTrue(switch().isSelected)
+                assertTrue(dev.insight.review.RadarSeries.FUNCTIONS in radar().chart.series)
+                val status = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }.text
+                assertTrue(status, status.contains("6 symbols · 3 comments"))
+                assertTrue(status, status.contains("3 of 4 files"))
+                val panel = radar().apply { setSize(800, 700) }
+                val tooltip = panel.getToolTipText(MouseEvent(panel, MouseEvent.MOUSE_MOVED, 0, 0, 400, 120, 0, false))!!
+                assertTrue(tooltip, tooltip.contains("Functions:"))
+                switch().doClick()
+                assertEquals(listOf(dev.insight.review.RadarSeries.SOURCE), radar().chart.series)
+                switch().doClick()
+                assertTrue(dev.insight.review.RadarSeries.COMMENTS in radar().chart.series)
+            } finally { canvas.dispose() }
+        }
+    }
+
     private fun descendants(component: Component): List<Component> = listOf(component) +
         if (component is Container) component.components.flatMap(::descendants) else emptyList()
 }

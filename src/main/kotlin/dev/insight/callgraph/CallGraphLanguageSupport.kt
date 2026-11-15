@@ -43,6 +43,9 @@ interface CallGraphLanguageSupport {
 
     fun symbolKind(element: PsiElement): SymbolKind? = if (isFunction(element)) SymbolKind.FUNCTION else null
 
+    /** Explicit constant declarations, without reference resolution. */
+    fun isConstant(element: PsiElement): Boolean = false
+
     fun relationKind(element: PsiElement): RelationKind? = null
 
     /** Declaration-only constructs that gap summaries must read whole, regardless of the ordinary gap budget. */

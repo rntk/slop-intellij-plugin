@@ -6,6 +6,8 @@ interface ReviewSource {
     val absolutePath: String
     /** Complete snapshot text for a source review; null when the evidence is a diff instead. */
     val text: String? get() = null
+    /** PSI counts for this captured text, or null for an unsupported language. */
+    val symbolCounts: RadarSymbols? get() = null
     /** Equal while the evidence for this file is unchanged, so its summary or topic can be kept. */
     val fingerprint: String
     /** Short dimmed facts for a reader, such as `modified` and `renamed from x`. */

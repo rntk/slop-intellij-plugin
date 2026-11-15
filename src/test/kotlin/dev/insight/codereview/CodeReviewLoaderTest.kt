@@ -16,6 +16,17 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class CodeReviewLoaderTest : BasePlatformTestCase() {
+    fun testSnapshotCapturesAndReusesSymbolCounts() {
+        myFixture.addFileToProject("scope/a.kt", "const val LIMIT = 1\nfun work() = LIMIT\n")
+        myFixture.addFileToProject("scope/notes.txt", "some notes")
+        val first = load(scope("scope"))
+        val file = first.byPath.getValue("scope/a.kt")
+        assertEquals(1, file.symbolCounts!![dev.insight.review.RadarSymbolKind.FUNCTION])
+        assertEquals(1, file.symbolCounts!![dev.insight.review.RadarSymbolKind.CONSTANT])
+        assertNull(first.byPath.getValue("scope/notes.txt").symbolCounts)
+        assertSame(file, load(scope("scope"), first).byPath.getValue(file.path))
+    }
+
     fun `test generated review cache is pruned from scopes before it is read`() {
         myFixture.addFileToProject("scope/a.kt", "fun a() = 1")
         myFixture.addFileToProject("scope/.insight/review-cache/result.json", "{\"summary\":\"generated\"}")

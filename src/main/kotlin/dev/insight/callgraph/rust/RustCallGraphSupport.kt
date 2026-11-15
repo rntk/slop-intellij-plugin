@@ -38,6 +38,8 @@ class RustCallGraphSupport : CallGraphLanguageSupport {
     // Closures have no declaration node; their calls belong to the enclosing function.
     override fun isFunction(element: PsiElement) = element is RsFunction
 
+    override fun isConstant(element: PsiElement): Boolean = element is RsConstant && element.const != null
+
     override fun symbolKind(element: PsiElement): SymbolKind? = when (element) {
         is RsFunction -> SymbolKind.FUNCTION
         is RsStructItem, is RsEnumItem, is RsTraitItem, is RsTypeAlias -> SymbolKind.CLASS

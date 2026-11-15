@@ -52,6 +52,7 @@ internal class ChangeSummariesViewState(
     /** The radar's folder level, 1 being the root's entries; null picks the first level with a few entries. */
     var radarLevel: Int? = null
     /** Whether the radar spaces its rings logarithmically. */
+    var radarSymbols = true
     var radarLog = false
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
@@ -283,6 +284,7 @@ internal class ChangeSummariesViewState(
         it.tagsCloud = tagsCloud
         it.softWrap = softWrap
         it.radarLevel = radarLevel
+        it.radarSymbols = radarSymbols
         it.radarLog = radarLog
         it.expanded += expanded
         it.seen += seen

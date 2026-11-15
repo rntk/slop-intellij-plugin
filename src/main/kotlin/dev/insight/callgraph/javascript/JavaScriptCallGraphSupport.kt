@@ -89,6 +89,8 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         else -> isBinding(element)
     }
 
+    override fun isConstant(element: PsiElement): Boolean = element is TypeScriptEnumField || (element is JSVariable && element.isConst)
+
     override fun symbolKind(element: PsiElement): SymbolKind? = when {
         isFunction(element) -> SymbolKind.FUNCTION
         element is TypeScriptTypeParameter -> SymbolKind.PARAMETER

@@ -71,11 +71,18 @@ internal class RadarChartPanel(
 
     override fun getToolTipText(event: MouseEvent): String? {
         val axis = axisAt(event.point)?.let(axes::get) ?: return null
-        val counts = radarValueText(axis.lines, chart.series)
+        val counts = axisValueText(axis)
         val files = if (axis.files.size == 1) "1 file" else String.format(Locale.US, "%,d files", axis.files.size)
+        val symbols = if (chart.series.any { it.isSymbol }) {
+            "<br>" + RadarSeries.entries.filter { it.isSymbol }.joinToString("<br>") { "${it.label}: ${it.value(axis.lines)}" } + "<br>" + radarSymbolCoverage(axis.files)
+        } else ""
         val open = if (axis.path != null) "<br>Click to open" else ""
-        return "<html><b>${escape(axis.label)}</b><br>${escape(axis.tooltip).replace("\n", "<br>")}<br>$counts · $files$open</html>"
+        return "<html><b>${escape(axis.label)}</b><br>${escape(axis.tooltip).replace("\n", "<br>")}<br>$counts · $files$symbols$open</html>"
     }
+
+    private fun axisValueText(axis: dev.insight.review.RadarAxis): String =
+        if (chart.series.any { it.isSymbol } && axis.files.none { it.symbolCounts != null }) "Symbols unavailable"
+        else radarValueText(axis.lines, chart.series)
 
     private fun scaled(n: Int) = zoomScaled(n, zoom)
     private val center get() = Point(width / 2, height / 2)
@@ -158,7 +165,7 @@ internal class RadarChartPanel(
         for ((index, axis) in axes.withIndex()) {
             val (x, y) = point(index, 1.0 + scaled(10).toDouble() / radius)
             val cosine = cos(angle(index))
-            val lines = listOf(clip(axis.label, room, g, bold) to bold, radarValueText(axis.lines, chart.series) to plain)
+            val lines = listOf(clip(axis.label, room, g, bold) to bold, clip(axisValueText(axis), room, g, plain) to plain)
             val heights = lines.map { (_, font) -> g.getFontMetrics(font).height }
             var top = y - heights.sum() * (1 - sin(angle(index))) / 2
             for ((line, font) in lines) {
@@ -229,7 +236,14 @@ internal class RadarChartPanel(
         fun color(series: RadarSeries): Color = when (series) {
             RadarSeries.ADDED -> ADDED
             RadarSeries.REMOVED -> REMOVED
-            RadarSeries.SOURCE -> SOURCE
+            RadarSeries.SOURCE, RadarSeries.FUNCTIONS -> SOURCE
+            RadarSeries.CLASSES -> JBColor(0x9163C7, 0xB48ADD)
+            RadarSeries.PROPERTIES -> JBColor(0x2A9393, 0x55BABA)
+            RadarSeries.VARIABLES -> JBColor(0xCB8B25, 0xE5B354)
+            RadarSeries.CONSTANTS -> JBColor(0xC85992, 0xE18BB9)
+            RadarSeries.PARAMETERS -> JBColor(0x7D9636, 0xA9BE67)
+            RadarSeries.OTHER -> JBColor(0x9A6750, 0xBF9380)
+            RadarSeries.COMMENTS -> JBColor(0x76808C, 0xA0A9B5)
         }
     }
 }
@@ -239,5 +253,12 @@ internal fun radarStatus(chart: RadarChart): String {
     val files = chart.axes.sumOf { it.files.size }
     val spokes = chart.axes.sumOf { it.merged }
     return String.format(Locale.US, "%,d %s · %,d %s · %s", spokes, if (spokes == 1) "entry" else "entries",
-        files, if (files == 1) "file" else "files", radarValueText(chart.total, chart.series))
+        files, if (files == 1) "file" else "files", radarValueText(chart.total, chart.series)) +
+        if (RadarSeries.ADDED in chart.series) "" else " · " + radarSymbolCoverage(chart.axes.flatMap { it.files })
+}
+
+/** Missing PSI is reported as unavailable instead of implying a measured zero. */
+private fun radarSymbolCoverage(files: List<dev.insight.review.ReviewSource>): String {
+    val parsed = files.count { it.symbolCounts != null }
+    return "Symbols available for $parsed of ${files.size} files"
 }

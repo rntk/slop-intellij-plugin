@@ -95,6 +95,7 @@ internal class ChangeTopicsViewState(
 ) : SummaryTraceState(traceRoot = false) {
     var tagsCloud = false
     /** Whether the radar spaces its rings logarithmically, so small topics stay visible beside a huge one. */
+    var radarSymbols = true
     var radarLog = false
     var selected: String? = null
         private set

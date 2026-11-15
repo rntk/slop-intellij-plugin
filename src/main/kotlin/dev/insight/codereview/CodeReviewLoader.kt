@@ -176,8 +176,10 @@ internal class CodeReviewLoader(private val project: Project) {
         if (isMinified(text, limits.chunk)) return LoadResult.Skipped(SkipReason.MINIFIED)
         // Same text: keep the parts and update whether the snapshot matches disk metadata.
         if (unchanged != null && unchanged.text == text)
-            return LoadResult.Loaded(CodeFile(path, file.path, text, unchanged.fingerprint, unchanged.chunks, stamp, length))
-        return LoadResult.Loaded(CodeFile(path, file.path, text, chunks = chunkSource(text, limits.chunk), stamp = stamp, length = length))
+            return LoadResult.Loaded(CodeFile(path, file.path, text, unchanged.fingerprint, unchanged.chunks, stamp, length, unchanged.symbolCounts))
+        val symbols = readAction { codeSymbolCounts(project, file.name, file.fileType, text) }
+        return LoadResult.Loaded(CodeFile(path, file.path, text, chunks = chunkSource(text, limits.chunk), stamp = stamp, length = length,
+            symbolCounts = symbols))
     }
 
     companion object {

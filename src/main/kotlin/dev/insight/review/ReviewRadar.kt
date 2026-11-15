@@ -1,12 +1,21 @@
 package dev.insight.review
 
-/**
- * Line counts for the radar view: a diff counts its added and removed rows, a source review counts the lines of its text.
- * Counting is a plain pass over the evidence already in memory; parsing symbols may add more measures later.
- */
-data class RadarLines(val added: Int = 0, val removed: Int = 0, val source: Int = 0) {
+/** Disjoint declaration categories; comments count PSI blocks, not lines. */
+enum class RadarSymbolKind(val label: String) {
+    FUNCTION("Functions"), CLASS("Classes"), PROPERTY("Properties"), VARIABLE("Variables"),
+    CONSTANT("Constants"), PARAMETER("Parameters"), OTHER("Other declarations"), COMMENT("Comments"),
+}
+
+data class RadarSymbols(val counts: Map<RadarSymbolKind, Int> = emptyMap()) {
+    operator fun get(kind: RadarSymbolKind): Int = counts[kind] ?: 0
+    val declarations: Int get() = counts.filterKeys { it != RadarSymbolKind.COMMENT }.values.sum()
+    operator fun plus(other: RadarSymbols) = RadarSymbols((counts.keys + other.counts.keys).associateWith { this[it] + other[it] })
+}
+
+/** Counts captured with the evidence; rendering never reads the IDE. */
+data class RadarLines(val added: Int = 0, val removed: Int = 0, val source: Int = 0, val symbols: RadarSymbols = RadarSymbols()) {
     val changed: Int get() = added + removed
-    operator fun plus(other: RadarLines) = RadarLines(added + other.added, removed + other.removed, source + other.source)
+    operator fun plus(other: RadarLines) = RadarLines(added + other.added, removed + other.removed, source + other.source, symbols + other.symbols)
 
     companion object {
         val ZERO = RadarLines()
@@ -18,6 +27,16 @@ enum class RadarSeries(val label: String, val value: (RadarLines) -> Int) {
     ADDED("Added lines", RadarLines::added),
     REMOVED("Removed lines", RadarLines::removed),
     SOURCE("Lines", RadarLines::source),
+    FUNCTIONS("Functions", { it.symbols[RadarSymbolKind.FUNCTION] }),
+    CLASSES("Classes", { it.symbols[RadarSymbolKind.CLASS] }),
+    PROPERTIES("Properties", { it.symbols[RadarSymbolKind.PROPERTY] }),
+    VARIABLES("Variables", { it.symbols[RadarSymbolKind.VARIABLE] }),
+    CONSTANTS("Constants", { it.symbols[RadarSymbolKind.CONSTANT] }),
+    PARAMETERS("Parameters", { it.symbols[RadarSymbolKind.PARAMETER] }),
+    OTHER("Other declarations", { it.symbols[RadarSymbolKind.OTHER] }),
+    COMMENTS("Comments", { it.symbols[RadarSymbolKind.COMMENT] });
+
+    val isSymbol: Boolean get() = this != ADDED && this != REMOVED && this != SOURCE
 }
 
 /**
@@ -40,7 +59,7 @@ data class RadarChart(val axes: List<RadarAxis>, val series: List<RadarSeries>, 
     val total: RadarLines get() = axes.fold(RadarLines.ZERO) { sum, axis -> sum + axis.lines }
 }
 
-/** Patches count the `+`/`-` rows of their hunks; sources count their text's lines. */
+/** Patches count hunk rows; sources carry text lines and their captured PSI counts. */
 fun radarLines(file: ReviewSource): RadarLines {
     return when (file) {
         is PatchSource -> {
@@ -57,16 +76,22 @@ fun radarLines(file: ReviewSource): RadarLines {
             }
             RadarLines(added = added, removed = removed)
         }
-        else -> RadarLines(source = file.text?.let(::countTextLines) ?: 0)
+        else -> RadarLines(source = file.text?.let(::countTextLines) ?: 0, symbols = file.symbolCounts ?: RadarSymbols())
     }
 }
 
 private fun countTextLines(text: String): Int =
     if (text.isEmpty()) 0 else text.count { it == '\n' } + if (text.endsWith('\n')) 0 else 1
 
-/** Diffs show added and removed lines; sources show their lines. */
-fun radarSeries(files: List<ReviewSource>): List<RadarSeries> =
-    if (files.any { it is PatchSource }) listOf(RadarSeries.ADDED, RadarSeries.REMOVED) else listOf(RadarSeries.SOURCE)
+/** Parsed source categories; diffs retain added/removed line polygons. */
+fun radarSeries(files: List<ReviewSource>, symbols: Boolean = true): List<RadarSeries> = when {
+    files.any { it is PatchSource } -> listOf(RadarSeries.ADDED, RadarSeries.REMOVED)
+    symbols && files.any { it.symbolCounts != null } -> {
+        val total = RadarLines(symbols = files.mapNotNull { it.symbolCounts }.fold(RadarSymbols(), RadarSymbols::plus))
+        RadarSeries.entries.filter { it.isSymbol && it.value(total) > 0 }.ifEmpty { listOf(RadarSeries.FUNCTIONS) }
+    }
+    else -> listOf(RadarSeries.SOURCE)
+}
 
 /** At most this many spokes; the smallest entries beyond it merge into one "Other" spoke. */
 const val MAX_RADAR_AXES = 36
@@ -77,9 +102,9 @@ const val MAX_RADAR_AXES = 36
  * the radar looks through them; merged folders show as one entry, as in the hierarchy. A null [level] picks the first
  * level with at least three spokes, else the last.
  */
-fun summaryRadar(tree: ReviewSummaryTree, level: Int?): RadarChart {
+fun summaryRadar(tree: ReviewSummaryTree, level: Int?, symbols: Boolean = true): RadarChart {
     val files = tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path }
-    if (files.isEmpty()) return RadarChart(emptyList(), radarSeries(files), 0, 0)
+    if (files.isEmpty()) return RadarChart(emptyList(), radarSeries(files, symbols), 0, 0)
     fun entries(node: SummaryNode): List<SummaryNode> = tree.shownChildren(node).flatMap {
         if (it.kind == SummaryKind.GROUP) entries(it) else listOf(it)
     }
@@ -106,15 +131,15 @@ fun summaryRadar(tree: ReviewSummaryTree, level: Int?): RadarChart {
             else tree.shownLabel(node) + "/"
         RadarAxis("node:${node.identity}", label, node.location, sources, sum(sources), node.path.takeIf { leaf })
     }
-    return RadarChart(capped(axes), radarSeries(files), levels, picked)
+    return RadarChart(capped(axes, series = radarSeries(files, symbols)), radarSeries(files, symbols), levels, picked)
 }
 
 /**
  * The topic radar: [level] 0 is the broadest topics, each level one narrower, and [TopicOutline.depth] shows every file.
  * Files whose topic is shallower than the level stay as their own spokes; unclassified files share one spoke.
  */
-fun topicRadar(outline: TopicOutline, level: Int, unclassified: String = "Awaiting topic"): RadarChart {
-    val series = radarSeries(outline.files)
+fun topicRadar(outline: TopicOutline, level: Int, unclassified: String = "Awaiting topic", symbols: Boolean = true): RadarChart {
+    val series = radarSeries(outline.files, symbols)
     if (outline.files.isEmpty()) return RadarChart(emptyList(), series, 0, 0)
     val picked = level.coerceIn(0, outline.depth)
     val axes = mutableListOf<RadarAxis>()
@@ -137,15 +162,15 @@ fun topicRadar(outline: TopicOutline, level: Int, unclassified: String = "Awaiti
         if (picked == outline.depth) pending.forEach(::fileAxis)
         else axes += RadarAxis("topic:pending", unclassified, "${sources.size} files without a topic yet", sources, sum(sources))
     }
-    return RadarChart(capped(axes), series, outline.depth + 1, picked)
+    return RadarChart(capped(axes, series = series), series, outline.depth + 1, picked)
 }
 
 private fun sum(files: List<ReviewSource>) = files.fold(RadarLines.ZERO) { total, file -> total + radarLines(file) }
 
 /** Keeps the largest [MAX_RADAR_AXES] - 1 spokes in their reading order and merges the rest into "Other". */
-internal fun capped(axes: List<RadarAxis>, max: Int = MAX_RADAR_AXES): List<RadarAxis> {
+internal fun capped(axes: List<RadarAxis>, max: Int = MAX_RADAR_AXES, series: List<RadarSeries> = listOf(RadarSeries.SOURCE, RadarSeries.ADDED, RadarSeries.REMOVED)): List<RadarAxis> {
     if (axes.size <= max) return axes
-    val size: (RadarAxis) -> Int = { it.lines.changed + it.lines.source }
+    val size: (RadarAxis) -> Int = { axis -> series.sumOf { it.value(axis.lines) } }
     val kept = axes.sortedByDescending(size).take(max - 1).toSet()
     val rest = axes.filterNot(kept::contains)
     val files = rest.flatMap { it.files }
@@ -173,7 +198,8 @@ fun radarRingValue(ring: Int, rings: Int, max: Int, logarithmic: Boolean): Int {
 
 private fun Double.roundToIntSafely(): Int = kotlin.math.round(this).toInt().coerceAtLeast(0)
 
-/** The spoke's own label: "+12 −3" for a diff, "1,234 lines" for a source. */
+/** Compact labels for line or symbol counts; comments stay separate from declarations. */
 fun radarValueText(lines: RadarLines, series: List<RadarSeries>): String =
     if (RadarSeries.SOURCE in series) String.format(java.util.Locale.US, "%,d lines", lines.source)
-    else String.format(java.util.Locale.US, "+%,d −%,d", lines.added, lines.removed)
+    else if (RadarSeries.ADDED in series) String.format(java.util.Locale.US, "+%,d −%,d", lines.added, lines.removed)
+    else String.format(java.util.Locale.US, "%,d symbols · %,d comments", lines.symbols.declarations, lines.symbols[RadarSymbolKind.COMMENT])

@@ -122,7 +122,7 @@ internal data class ReviewVocabulary(
             topicsSummarizeTooltip = "Write the file summaries shown beside each file (/summaries)",
             rootName = "Whole scope",
             noFiles = "No files in scope",
-            radarLines = "lines of code",
+            radarLines = "symbols, comments or source lines",
             openLabel = "Open file",
             openTooltip = { path -> "Open $path in the editor" },
             showOnCanvas = "Show source in tab",
