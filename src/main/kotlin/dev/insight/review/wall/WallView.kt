@@ -3,6 +3,7 @@ package dev.insight.review.wall
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.util.Disposer
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
@@ -89,6 +90,8 @@ internal class WallView(
     private val highlighter: WallHighlighter? = null,
     /** Opens the file at a block's path on a canvas session; without it the block's "..." menu has no such item. */
     private val openOnCanvas: ((path: String) -> Unit)? = null,
+    /** Called with a block, the row under the pointer (null on the header, padding or summary) and the point when a block is right-clicked; without it right-click does nothing. */
+    private val onContext: ((block: WallBlock, line: WallLine?, point: RelativePoint) -> Unit)? = null,
 ) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -893,6 +896,7 @@ internal class WallView(
                 /** Where the block was grabbed at 100%, so it moves with the pointer rather than jumping to it. */
                 private var grab: Point2D.Double? = null
                 override fun mousePressed(e: MouseEvent) {
+                    if (contextMenu(e)) return
                     if (!SwingUtilities.isLeftMouseButton(e)) return
                     surface.requestFocusInWindow()
                     activate(this@BlockView)
@@ -925,9 +929,20 @@ internal class WallView(
                     surface.scrollRectToVisible(Rectangle(pointer.x, pointer.y, 1, 1))
                 }
                 override fun mouseReleased(e: MouseEvent) {
+                    if (contextMenu(e)) return
                     if (grab == null) return
                     grab = null
                     cursor = Cursor.getDefaultCursor()
+                }
+                /** Hands a popup trigger (press or release, by platform) to the host's [onContext]; true when it took the event. */
+                private fun contextMenu(e: MouseEvent): Boolean {
+                    val host = onContext
+                    if (host == null || !e.isPopupTrigger || onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point)) return false
+                    surface.requestFocusInWindow()
+                    activate(this@BlockView)
+                    host(block, lineAt(e.y), RelativePoint(e))
+                    e.consume()
+                    return true
                 }
                 override fun mouseClicked(e: MouseEvent) {
                     if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point) && !onSummaryToggle(e.point) && !onMenu(e.point)) openLine(block.path, lineAt(e.y))

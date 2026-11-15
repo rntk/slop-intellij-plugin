@@ -176,8 +176,13 @@ class ShowInSummaryTreeAction : DumbAwareAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
-        withCodeReviewPanel(project) { it.showInSummaryTree(file) }
+        showInSummaryTree(project, file)
     }
+}
+
+/** Shows [file] in the current Code Review tab's summaries, in the Tree view; shared by the action and the context picker. */
+internal fun showInSummaryTree(project: Project, file: VirtualFile) {
+    withCodeReviewPanel(project) { it.showInSummaryTree(file) }
 }
 
 /** A folder of the file tree: [path] is project-relative. */

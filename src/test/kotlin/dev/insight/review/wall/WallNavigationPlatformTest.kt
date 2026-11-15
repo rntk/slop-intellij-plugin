@@ -128,8 +128,45 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         assertEquals(diffScroll, first.bodyScroll)
     }
 
-    private fun withWall(test: (WallView, JScrollPane, JComponent) -> Unit) {
-        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {})
+    fun testRightClickHandsTheBlockAndRowToTheHost() {
+        val seen = mutableListOf<Triple<String, WallLine?, java.awt.Component?>>()
+        withWall(onContext = { block, line, point -> seen += Triple(block.path, line, point.component) }) { wall, _, surface ->
+            press(surface, "ctrl 0")
+            val block = wall.blocks[1]
+            val m = block.metrics
+            fun event(id: Int, y: Int, trigger: Boolean, button: Int = java.awt.event.MouseEvent.BUTTON3) =
+                java.awt.event.MouseEvent(block, id, 0L, 0, 20, y, 1, trigger, button)
+            val row5 = m.headerHeight + m.padding + 4 * m.lineHeight + m.lineHeight / 2
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_PRESSED, row5, true))
+            assertEquals(listOf("b.kt"), seen.map { it.first })
+            assertEquals(5, seen.single().second?.new)
+            assertSame(block, seen.single().third)
+            assertTrue("A right-click activates its block", block.active)
+            // Windows reports the trigger on release.
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_RELEASED, row5, true))
+            assertEquals(2, seen.size)
+            // The header names no row.
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_PRESSED, 2, true))
+            assertNull(seen.last().second)
+            assertEquals(3, seen.size)
+            // Left clicks and drags still belong to the block.
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_PRESSED, row5, false, java.awt.event.MouseEvent.BUTTON1))
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_RELEASED, row5, false, java.awt.event.MouseEvent.BUTTON1))
+            block.dispatchEvent(event(java.awt.event.MouseEvent.MOUSE_PRESSED, row5, false))
+            assertEquals(3, seen.size)
+            assertTrue(wall.blocks.first().let { !it.active })
+        }
+    }
+
+    fun testRightClickWithoutAHostDoesNothing() = withWall { wall, _, _ ->
+        val block = wall.blocks.first()
+        block.dispatchEvent(java.awt.event.MouseEvent(block, java.awt.event.MouseEvent.MOUSE_PRESSED, 0L, 0, 20, 60, 1, true, java.awt.event.MouseEvent.BUTTON3))
+        assertFalse(block.parent == null)
+    }
+
+    private fun withWall(onContext: ((WallBlock, WallLine?, com.intellij.ui.awt.RelativePoint) -> Unit)? = null,
+        test: (WallView, JScrollPane, JComponent) -> Unit) {
+        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {}, onContext = onContext)
         try {
             val blocks = listOf("a.kt", "b.kt").map { path ->
                 WallBlock(path, path, "", (1..300).map { WallLine.source(it, "line $it " + "x".repeat(160)) }, 0)

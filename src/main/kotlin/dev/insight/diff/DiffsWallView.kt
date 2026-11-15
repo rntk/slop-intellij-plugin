@@ -3,6 +3,13 @@ package dev.insight.diff
 import com.intellij.diff.DiffManager
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.ui.awt.RelativePoint
+import dev.insight.agent.SourceSide
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
+import dev.insight.context.ContextOrigin
+import dev.insight.context.reviewDiffPick
+import dev.insight.context.showContextPicker
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ui.EvidenceLine
 import dev.insight.review.ui.LineSide
@@ -10,6 +17,7 @@ import dev.insight.review.ui.LineTrace
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
+import dev.insight.review.wall.WallBlock
 import dev.insight.review.wall.WallContent
 import dev.insight.review.wall.WallHighlighter
 import dev.insight.review.wall.WallLabels
@@ -34,13 +42,23 @@ internal class DiffsWallView(
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
     project: Project? = null,
     /** Opens a file of the wall on a canvas session; null leaves the block menu without that item. */
-    openOnCanvas: ((path: String) -> Unit)? = null,
+    private val openOnCanvas: ((path: String) -> Unit)? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
     val view = WallView(DIFFS_WALL_LABELS, { path, line -> files.firstOrNull { it.path == path }?.let { openDiff(it, line) } },
-        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } }, openOnCanvas)
+        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } }, openOnCanvas,
+        project?.let { p -> { block, line, point -> showContext(p, block, line, point) } })
     val card: JPanel get() = view.card
+
+    /** Opens the context picker for a right-click on [block]: the diff scopes at the row, and the whole wall as one change. */
+    private fun showContext(project: Project, block: WallBlock, line: WallLine?, point: RelativePoint) {
+        val file = files.firstOrNull { it.path == block.path } ?: return
+        val (side, number) = wallLineSide(line)
+        val data = ContextData()
+        openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let(open) } }
+        showContextPicker(project, reviewDiffPick(project, ContextOrigin.DIFFS_WALL, file, number, side, files, data), point.component, point)
+    }
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: DiffsWallContent) {
@@ -127,4 +145,11 @@ internal fun openWallDiff(project: Project, file: ReviewFile, line: WallLine?) {
     }
     val evidence = EvidenceLine(side, number, line!!.text.drop(1), line.text.firstOrNull() ?: ' ', diff = true)
     showDiffLines(project, file, LineTrace(file.path, file.path, "", emptyList(), listOf(evidence)))
+}
+
+/** The side and 1-based line of a wall row for the context picker: its new line, else its old line, else none (hunk headers, notes, padding). */
+internal fun wallLineSide(line: WallLine?): Pair<SourceSide, Int?> = when {
+    line?.new != null -> SourceSide.AFTER to line.new
+    line?.old != null -> SourceSide.BEFORE to line.old
+    else -> SourceSide.AFTER to null
 }
