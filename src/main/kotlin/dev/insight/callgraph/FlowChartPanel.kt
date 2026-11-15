@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import dev.insight.context.showElementContext
+
 import com.google.gson.Gson
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -770,7 +772,9 @@ internal class FlowChartPanel(
         val board = flowCanvas.board
         val step = source?.let { flowCanvas.chart?.step(it) }
         if (source != null) {
-            if (result?.pointers?.getOrNull(source) != null) item("Open source") { navigate(source) }
+            if (result?.pointers?.getOrNull(source) != null) item("Context…") {
+                showElementContext(project, result?.pointers?.getOrNull(source)?.element, flowCanvas)
+            }
             item("Show in graph") {
                 project.publishGraphEvent { showInGraph(source) }
             }

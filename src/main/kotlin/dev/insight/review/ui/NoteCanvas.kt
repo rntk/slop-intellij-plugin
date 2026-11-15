@@ -819,6 +819,7 @@ internal class NoteCanvas(
         return { identity ->
             JPopupMenu().apply {
                 val node = nodes[identity] ?: return@apply
+                addSummaryContextItem(this, project, node, content.summaries.tree.nodes.mapNotNull { it.file })
                 val enabled = content.canRun && !summaryGenerationRunning
                 fun item(label: String, enabled: Boolean, tooltip: String, action: () -> Unit) = add(JMenuItem(label).apply {
                     name = "topic-summary-action:$label"

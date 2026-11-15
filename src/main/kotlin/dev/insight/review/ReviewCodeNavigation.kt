@@ -12,6 +12,14 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.agent.findSourceFile
+import dev.insight.agent.SourceSide
+import dev.insight.context.ContextPick
+import dev.insight.context.CodeContext
+import dev.insight.context.ContextScopeKind
+import dev.insight.context.ContextOrigin
+import dev.insight.context.capturedSourcePick
+import dev.insight.context.showContextPicker
+import com.intellij.ui.awt.RelativePoint
 import java.awt.Point
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -24,6 +32,7 @@ internal data class ReviewCodeLocation(
     val line: Int,
     val column: Int,
     val absolutePath: String? = null,
+    val side: SourceSide = SourceSide.CURRENT,
 ) {
     /** Caller holds read access. Unsaved changes count as changes too. */
     fun resolve(project: Project): Pair<VirtualFile, Int>? {
@@ -41,6 +50,26 @@ internal data class ReviewCodeLocation(
 
 internal object ReviewCodeNavigation {
     private val installed = Key.create<Boolean>("insight.review.navigation.installed")
+
+    private fun pickerAction(project: Project, target: ReviewCodeLocation?, owner: JComponent, point: Point,
+        selection: IntRange? = null): AnAction =
+        object : AnAction("Context…") {
+            override fun actionPerformed(e: AnActionEvent) {
+                val location = target ?: return
+                val source = capturedSourcePick(project, ContextOrigin.OTHER, location.path,
+                    location.absolutePath, location.text, location.line)
+                val scopes = source.candidates.map { it.copy(side = location.side) }.toMutableList()
+                selection?.let { lines ->
+                    val selectedText = location.text.lineSequence().drop(lines.first - 1).take(lines.last - lines.first + 1).joinToString("\n")
+                    scopes.add(0, CodeContext(ContextScopeKind.SELECTION, "Selection", location.path, location.absolutePath,
+                        lines, location.side, selectedText))
+                }
+                val pick = ContextPick(source.origin, scopes, source.data)
+                showContextPicker(project, pick, owner, RelativePoint(owner, point))
+            }
+            override fun update(e: AnActionEvent) { e.presentation.isEnabled = target != null }
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        }
 
     fun actions(project: Project?, location: (AnActionEvent) -> ReviewCodeLocation?): List<AnAction> =
         listOf(IdeActions.ACTION_GOTO_DECLARATION to "Go to Declaration", IdeActions.ACTION_FIND_USAGES to "Find Usages").map { (id, title) ->
@@ -77,7 +106,9 @@ internal object ReviewCodeNavigation {
             private fun popup(e: MouseEvent) {
                 if (!e.isPopupTrigger) return
                 val target = location(e.point) ?: return
-                val group = DefaultActionGroup(actions(project) { target })
+                val group = DefaultActionGroup(pickerAction(project, target, component, e.point))
+                group.addSeparator()
+                group.addAll(actions(project) { target })
                 ActionManager.getInstance().createActionPopupMenu("InsightReviewNavigation", group).component.show(component, e.x, e.y)
                 e.consume()
             }
@@ -94,6 +125,18 @@ internal object ReviewCodeNavigation {
             val target = if (point.line in 0 until editor.document.lineCount)
                 location(point.line, offset - editor.document.getLineStartOffset(point.line)) else null
             val group = DefaultActionGroup()
+            val selection = editor.selectionModel.takeIf { it.hasSelection() }?.let { selected ->
+                val first = editor.document.getLineNumber(selected.selectionStart)
+                val end = editor.document.getLineNumber(selected.selectionEnd)
+                val last = if (selected.selectionEnd > selected.selectionStart && editor.document.getLineStartOffset(end) == selected.selectionEnd)
+                    maxOf(first, end - 1) else end
+                val startLocation = location(first, 0)
+                val endLocation = location(last, 0)
+                if (startLocation != null && endLocation != null && startLocation.path == endLocation.path)
+                    startLocation.line..endLocation.line else null
+            }
+            group.add(pickerAction(project, target, editor.contentComponent, event.mouseEvent.point, selection))
+            group.addSeparator()
             group.addAll(actions(project) { target })
             group.addSeparator()
             (ActionManager.getInstance().getAction(editor.contextMenuGroupId ?: "EditorPopupMenu") as? ActionGroup)?.let(group::add)

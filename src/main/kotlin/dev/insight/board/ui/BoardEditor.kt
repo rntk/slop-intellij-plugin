@@ -40,6 +40,15 @@ import dev.insight.board.BoardSaveState
 import dev.insight.board.BoardSide
 import dev.insight.board.BoardSources
 import dev.insight.board.BoardStore
+import dev.insight.board.CodeBlock
+import dev.insight.board.CodeKind
+import dev.insight.context.CodeContext
+import dev.insight.context.ContextData
+import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextScopeKind
+import dev.insight.context.showContextPicker
+import dev.insight.agent.SourceSide
+import com.intellij.ui.awt.RelativePoint
 import dev.insight.board.boardAskDraft
 import dev.insight.board.boardChatContext
 import dev.insight.board.boardChatSystemPrompt
@@ -142,6 +151,37 @@ private class BoardEditor(private val project: Project, private val file: BoardF
     private val board = BoardPanel(model, object : BoardPanelActions {
         override fun navigate(anchor: BoardAnchor) = this@BoardEditor.navigate(anchor)
         override fun askAbout(blockId: String) = this@BoardEditor.askAbout(blockId)
+        override fun pickContext(blockId: String, anchor: BoardAnchor?, event: MouseEvent) {
+            val block = model.board.blocks.firstOrNull { it.id == blockId }
+            val owner = event.component
+            val at = RelativePoint(event)
+            scope.launch {
+                try {
+                    val code = block as? CodeBlock
+                    val resolved = if (code == null && anchor != null) sources.read(anchor) else null
+                    val range = code?.anchor ?: resolved?.anchor ?: return@launch
+                    val text = code?.text ?: resolved?.text ?: return@launch
+                    val side = if (range.side == BoardSide.BEFORE) SourceSide.BEFORE
+                        else if (sources.hasComparison) SourceSide.AFTER else SourceSide.CURRENT
+                    val patch = code?.kind == CodeKind.DIFF
+                    val contexts = mutableListOf<CodeContext>()
+                    if (!patch && anchor != null && anchor.first in range.first..range.last) {
+                        text.lineSequence().drop(anchor.first - range.first).firstOrNull()?.let { line ->
+                            contexts += CodeContext(ContextScopeKind.LINE, "Line ${anchor.first}", range.path, null,
+                                anchor.first..anchor.first, side, line)
+                        }
+                    }
+                    contexts += CodeContext(if (patch) ContextScopeKind.HUNK else ContextScopeKind.SELECTION,
+                        if (patch) "Board diff" else "Board source", range.path, null, range.first..range.last, side, text, patch)
+                    if (!disposed && !project.isDisposed) showContextPicker(project, contexts, 0, ContextOrigin.OTHER, ContextData(), owner, at)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Could not pick board context", e)
+                    notify("Could not read this context: ${e.message ?: e.javaClass.simpleName}", NotificationType.WARNING)
+                }
+            }
+        }
         override fun remove(blockId: String) {
             try {
                 model.remove(blockId)

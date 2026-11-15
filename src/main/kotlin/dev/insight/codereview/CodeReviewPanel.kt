@@ -1,5 +1,10 @@
 package dev.insight.codereview
 
+import dev.insight.context.capturedSourcePick
+import dev.insight.context.ContextOrigin
+import dev.insight.context.showContextPicker
+import com.intellij.ui.awt.RelativePoint
+
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.logger
@@ -320,6 +325,14 @@ internal class CodeReviewPanel(
         }
         tree.openFilesOnActivate("openFile") { selectedFile()?.let { openFile(it.path, null); true } ?: false }
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
+            object : DumbAwareAction("Context…") {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
+                override fun actionPerformed(e: AnActionEvent) {
+                    val file = selectedFile() ?: return
+                    showContextPicker(project, capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, file.text, null), tree, RelativePoint.getCenterOf(tree))
+                }
+            },
             tabs.toChatAction("Chat about the selection in a new tab, with its summaries and source in context",
                 enabled = { refreshJob?.isActive != true }, entries = ::selectedEntries) {
                 status.text = "The selection is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."

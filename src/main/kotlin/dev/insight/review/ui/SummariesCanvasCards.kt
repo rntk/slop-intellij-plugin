@@ -215,6 +215,8 @@ internal class SummariesCanvasCards(
             if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false), BorderLayout.EAST)
         }
         val panelActions = ChangeSummaryActions(
+            contextProject = project,
+            contextSources = tree.nodes.mapNotNull { it.file }.distinctBy { it.path },
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
             select = { identity -> summariesView.select(identity); refreshSummaries(tab) },
             openFile = open,

@@ -1,5 +1,7 @@
 package dev.insight.canvas
 
+import dev.insight.context.showFileContext
+
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
@@ -562,6 +564,12 @@ internal class CanvasSessionPanel(
         val cardView = pane.owner?.let(views::get)
         val linkTargets = link?.targets?.filter(controller::canFindUsages).orEmpty()
         JPopupMenu().apply {
+            pane.source.file?.let { file -> add(JMenuItem("Context…").apply {
+                addActionListener { showFileContext(project, file, line + 1, pane) }
+            }) }
+            if (pane.source.file == null) add(JMenuItem("Go to source").apply {
+                addActionListener { navigate(pane.source, pane.source.path, line) }
+            })
             pane.owner?.let { add(sideBySideAction(it)) }
             if (link != null && linkTargets.isNotEmpty()) {
                 add(JMenuItem("Find usages").apply {
@@ -579,10 +587,6 @@ internal class CanvasSessionPanel(
             add(JMenuItem("Copy").apply {
                 isEnabled = selected != null
                 addActionListener { pane.editor.selectionModel.selectedText?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) } }
-            })
-            add(JMenuItem("Go to source").apply {
-                toolTipText = "Open ${pane.source.path}:${line + 1} in the editor"
-                addActionListener { navigate(pane.source, pane.source.path, line) }
             })
         }.show(event.component, event.x, event.y)
     }

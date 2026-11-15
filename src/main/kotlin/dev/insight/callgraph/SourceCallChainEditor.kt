@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import dev.insight.context.showElementContext
+
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.editor.Document
@@ -246,6 +248,9 @@ internal class SourceCallChainPanel(private val project: Project, private val fi
         if (target == null) {
             item("No application graph function here", enabled = false) {}
             return@apply
+        }
+        if (file.result.pointers.getOrNull(target) != null) item("Context…") {
+            showElementContext(project, file.result.pointers.getOrNull(target)?.element, this@SourceCallChainPanel)
         }
         val name = graph.nodes[target].name
         val hasCallers = index.callers(target).isNotEmpty()

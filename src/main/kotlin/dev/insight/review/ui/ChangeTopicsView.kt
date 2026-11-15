@@ -913,7 +913,8 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
             val text = if (before) file.before else file.after
             if (column == null || line == null || text == null) null
             else ReviewCodeLocation(if (before) file.previousPath ?: file.path else file.path, text, line, column,
-                if (before && file.previousPath != null) null else file.absolutePath)
+                if (before && file.previousPath != null) null else file.absolutePath,
+                if (before) dev.insight.agent.SourceSide.BEFORE else dev.insight.agent.SourceSide.AFTER)
         }
     }
 

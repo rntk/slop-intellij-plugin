@@ -1472,6 +1472,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
     }
 
     fun testDiffCardsOpenFromBlockButtonsUseNativeDiffViewersAndReleaseWhenRemoved() {
+        val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
+        val originalToolOrder = settings.diffToolsOrder.toList()
         val fileA = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
         val fileB = ReviewFile("src/b.kt", "/project/src/b.kt", null, "added", "+added\n", "1", "", "val b = 3\n")
         val requested = mutableListOf<String>()
@@ -1494,6 +1496,11 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals(2, diffViewers.size)
             val viewerA = diffViewers.single { it.file == fileA }
             val viewerB = diffViewers.single { it.file == fileB }
+            // This assertion inspects one document per side, independent of the persisted viewer preference.
+            val switchTool = com.intellij.diff.impl.DiffRequestProcessor::class.java
+                .getDeclaredMethod("switchToDiffTool", com.intellij.diff.DiffTool::class.java).apply { isAccessible = true }
+            switchTool.invoke(viewerA.panel, com.intellij.diff.tools.simple.SimpleDiffTool.INSTANCE)
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
             assertTrue(viewerA.editors.isNotEmpty() && viewerA.editors.all { it.isViewer })
             assertEquals(setOf("val a = 1\n", "val a = 2\n"), viewerA.editors.map { it.document.text }.toSet())
 
@@ -1510,7 +1517,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertFalse(viewerB.isDisposed)
             canvas.dispose()
             assertTrue(viewerB.isDisposed)
-        } finally { canvas.dispose() }
+        } finally {
+            canvas.dispose()
+            settings.diffToolsOrder = originalToolOrder
+        }
     }
 
     fun testSymbolNotesHaveSeparateTabsAndDiagramBounds() {

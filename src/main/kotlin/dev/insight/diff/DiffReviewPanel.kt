@@ -1,5 +1,9 @@
 package dev.insight.diff
 
+import dev.insight.context.*
+import dev.insight.agent.SourceSide
+import com.intellij.ui.awt.RelativePoint
+
 import com.intellij.diff.DiffManager
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
@@ -195,14 +199,16 @@ internal class DiffReviewPanel(
         }
         tree.openFilesOnActivate("showDiff") { selectedFile()?.let { showDiff(it.path); true } ?: false }
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
-            object : com.intellij.openapi.actionSystem.AnAction("Open on canvas",
-                "Explore this file and related changed files as clickable source cards", null) {
+            object : com.intellij.openapi.actionSystem.AnAction("Context…") {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
-                override fun update(e: AnActionEvent) {
-                    e.presentation.isEnabled = !state.refreshing && openJob?.isActive != true &&
-                        tree.selectionCount == 1 && selectedFile() != null
+                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
+                override fun actionPerformed(e: AnActionEvent) {
+                    val file = selectedFile() ?: return
+                    val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, state.snapshot)
+                        .put(ContextKeys.OPEN_ON_CANVAS) { _: CodeContext -> openOnCanvas(file) }
+                    val side = if (file.after != null) SourceSide.AFTER else SourceSide.BEFORE
+                    showContextPicker(project, reviewDiffPick(project, ContextOrigin.OTHER, file, null, side, state.snapshot.files, data), tree, RelativePoint.getCenterOf(tree))
                 }
-                override fun actionPerformed(e: AnActionEvent) { openSelectionOnCanvas() }
             },
             object : com.intellij.openapi.actionSystem.AnAction("Open on flowchart",
                 "Chart the flow of this file's changes and related changed files, one step above the source", null) {
@@ -336,11 +342,6 @@ internal class DiffReviewPanel(
     /** Opens the hub, with the review tabs and their views. */
     fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
-
-    private fun openSelectionOnCanvas() {
-        if (tree.selectionCount != 1) return
-        openOnCanvas(selectedFile() ?: return)
-    }
 
     /** Opens a wall block's file, which need not be the tree's selection. */
     private fun openPathOnCanvas(path: String) {

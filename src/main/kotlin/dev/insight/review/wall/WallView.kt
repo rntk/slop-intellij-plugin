@@ -1031,7 +1031,7 @@ internal class WallView(
         /** Only a block taller than the cap has anything to compact. */
         private fun canCompact(): Boolean = isCompact || compactCap(metrics)?.let { fullHeight > it } == true
 
-        /** The block's "..." menu: the header's Compact and Summary switches, and the file on a canvas session. */
+        /** The block's "..." menu: display switches and the context picker. */
         private fun showMenu(at: Point) {
             val menu = JPopupMenu().apply { name = "${labels.id}-menu:${block.path}" }
             fun item(text: String, tooltip: String?, enabled: Boolean, action: () -> Unit) {
@@ -1048,7 +1048,11 @@ internal class WallView(
             item(if (showsSummary) "Hide summary" else SUMMARY, if (showsSummary) labels.bodyTooltip else labels.summaryTooltip, summary != null) {
                 toggleSummary(this@BlockView)
             }
-            openOnCanvas?.let { open ->
+            if (onContext != null) {
+                item("Context…", "Explore this file in other views", true) {
+                    onContext.invoke(block, null, RelativePoint(this, at))
+                }
+            } else openOnCanvas?.let { open ->
                 item("Open on canvas", "Explore this file as source cards on a canvas session", true) { open(block.path) }
             }
             menu.show(this, at.x, at.y)

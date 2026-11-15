@@ -27,6 +27,8 @@ import java.beans.PropertyChangeListener
 import javax.swing.*
 import dev.insight.agent.SourcePoint
 import dev.insight.agent.ToolInputException
+import dev.insight.review.ReviewCodeNavigation
+import dev.insight.review.ReviewCodeLocation
 
 internal data class SourcePointView(val point: SourcePoint, val text: String)
 
@@ -170,6 +172,10 @@ internal class SourcePointsEditor(private val project: Project, private val file
             val factory = EditorFactory.getInstance()
             val viewer = factory.createViewer(factory.createDocument(view.text), project) as EditorEx
             editor = viewer
+            ReviewCodeNavigation.install(viewer, project) { line, column ->
+                ReviewCodeLocation(view.point.path, view.text, line + 1, column,
+                    side = view.point.side ?: dev.insight.agent.SourceSide.CURRENT)
+            }
             viewer.highlighter = EditorHighlighterFactory.getInstance().createEditorHighlighter(project, view.point.path)
             viewer.settings.apply {
                 isLineNumbersShown = true

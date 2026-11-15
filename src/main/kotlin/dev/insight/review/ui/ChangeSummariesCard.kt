@@ -69,8 +69,11 @@ internal class ChangeSummaryActions(
     /** The wall's menu item and its tooltip: "Open on diffs wall" for a diff. */
     val openOnWallLabel: String = ReviewVocabulary.DIFF.openOnWall,
     val openOnWallTooltip: String = ReviewVocabulary.DIFF.openOnWallTooltip,
+    val contextProject: com.intellij.openapi.project.Project? = null,
+    val contextSources: List<dev.insight.review.ReviewSource> = emptyList(),
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
+        addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas)
         wallAction(node)?.let { open ->
             menu.add(JMenuItem(openOnWallLabel).apply {
                 name = "summary-action:$openOnWallLabel"
@@ -96,7 +99,7 @@ internal class ChangeSummaryActions(
     }
 
     fun installEntryMenu(component: JComponent, node: SummaryNode) {
-        if (resummarize == null && toChat == null && wallAction(node) == null) return
+        if (resummarize == null && toChat == null && wallAction(node) == null && contextProject == null) return
         installSummaryEntryMenu(component) { JPopupMenu().also { addEntryItems(it, node) } }
     }
 

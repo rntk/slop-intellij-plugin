@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import dev.insight.context.showElementContext
+
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
@@ -362,17 +364,16 @@ internal class ApplicationFlowsPanel(
         val source = drawn.sources[id]
         // Other tabs use the current graph's ids, which match only while the split's graph is still current.
         val fresh = latest === current.built
-        val function = current.built.graph.nodes[source].kind == SymbolKind.FUNCTION
         fun item(text: String, enabled: Boolean = fresh, action: () -> Unit) = JMenuItem(text).apply {
             isEnabled = enabled
             if (!enabled) toolTipText = "The code changed since this split; click Split flows to update"
             addActionListener { action() }
         }
         return JPopupMenu().apply {
-            add(item("Open source", enabled = current.built.pointers.getOrNull(source) != null) { navigate(current, source) })
+            if (current.built.pointers.getOrNull(source) != null) add(item("Context…", enabled = true) {
+                showElementContext(project, current.built.pointers.getOrNull(source)?.element, this@ApplicationFlowsPanel)
+            })
             add(item("Show in application graph") { project.publishGraphEvent { showInGraph(source) } })
-            if (function) add(item("Add to flow chart") { project.publishGraphEvent { addToChart(FlowStart(source)) } })
-            if (function) add(item("Open in canvas") { project.publishGraphEvent { openInCanvas(source) } })
         }
     }
 

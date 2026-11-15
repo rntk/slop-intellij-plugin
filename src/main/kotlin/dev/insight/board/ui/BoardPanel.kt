@@ -44,6 +44,9 @@ interface BoardPanelActions {
 
     /** The reader removes a block; the host edits the model, and the panel follows. */
     fun remove(blockId: String)
+
+    /** Opens shared context actions for captured code or an evidence anchor. */
+    fun pickContext(blockId: String, anchor: BoardAnchor?, event: MouseEvent) = Unit
 }
 
 /**
@@ -66,6 +69,7 @@ class BoardPanel(private val model: BoardModel, private val actions: BoardPanelA
         override fun ask(blockId: String) = actions.askAbout(blockId)
         override fun remove(blockId: String) = actions.remove(blockId)
         override fun select(blockId: String) = this@BoardPanel.select(blockId)
+        override fun pickContext(blockId: String, anchor: BoardAnchor?, event: MouseEvent) = actions.pickContext(blockId, anchor, event)
     }
 
     /** The scale of fonts and metrics, clamped to [MIN_ZOOM]..[MAX_ZOOM]. */

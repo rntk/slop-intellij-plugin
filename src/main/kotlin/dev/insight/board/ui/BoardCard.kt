@@ -36,6 +36,7 @@ internal interface BoardCardHost {
     fun ask(blockId: String)
     fun remove(blockId: String)
     fun select(blockId: String)
+    fun pickContext(blockId: String, anchor: BoardAnchor?, event: MouseEvent) = Unit
 }
 
 /** A card header: the title on the left, then tags (tone, "evidence"/"interpretation"), and hover actions on the right. */
@@ -118,6 +119,17 @@ internal class BoardCard(val block: Block, private val style: BoardStyle, privat
 
         override fun mousePressed(e: MouseEvent) {
             host.select(block.id)
+            popup(e)
+        }
+        override fun mouseReleased(e: MouseEvent) = popup(e)
+
+        private fun popup(e: MouseEvent) {
+            if (!e.isPopupTrigger) return
+            val anchor = (e.component as? PaintedView)?.anchorAt(e.x, e.y) ?: primaryAnchor(block)
+            if (anchor != null || block is CodeBlock) {
+                host.pickContext(block.id, anchor, e)
+                e.consume()
+            }
         }
     }
 

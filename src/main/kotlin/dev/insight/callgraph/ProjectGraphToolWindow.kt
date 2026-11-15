@@ -1,5 +1,7 @@
 package dev.insight.callgraph
 
+import dev.insight.context.showElementContext
+
 import com.intellij.codeInsight.hint.HintManager
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -789,6 +791,9 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             add(item("Side by side") {
                 openSourceCallChain(project, built, tree.sourceCallChain(source), tree.nodes[source].name)
             })
+            if (built.pointers.getOrNull(source) != null) add(item("Context…") {
+                showElementContext(project, built.pointers.getOrNull(source)?.element, canvas)
+            })
             if (onlyView) add(item("Show in full graph") { showInGraph(source) })
             else if (tree.isGroup(source)) {
                 if (source in open) add(item("Collapse") { setExpanded(open - source, source) })
@@ -798,9 +803,6 @@ internal class ProjectGraphPanel(private val project: Project) : JPanel(BorderLa
             tree.parent[source].takeIf { it >= 0 && !onlyView }?.let { parent ->
                 add(item("Collapse into ${tree.nodes[parent].name}") { setExpanded(open - parent, parent) })
             }
-            if (result?.pointers?.getOrNull(source) != null) add(item("Open source") { navigate(source) })
-            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Add to flow chart") { project.publishGraphEvent { addToChart(FlowStart(source)) } })
-            if (tree.graph.nodes.getOrNull(source)?.kind == SymbolKind.FUNCTION) add(item("Open in canvas") { project.publishGraphEvent { openInCanvas(source) } })
         }.takeIf { it.componentCount > 0 }
     }
 

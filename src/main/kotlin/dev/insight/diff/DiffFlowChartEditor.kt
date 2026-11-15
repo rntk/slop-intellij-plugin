@@ -1,5 +1,7 @@
 package dev.insight.diff
 
+import dev.insight.context.showElementContext
+
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.service
@@ -139,7 +141,9 @@ private class DiffFlowChartEditor(private val project: Project, private val file
         fun item(text: String, action: () -> Unit) = add(JMenuItem(text).apply { addActionListener { action() } })
         val board = canvas.board
         val step = id?.let { canvas.chart?.step(it) }
-        if (id != null && file.result.pointers.getOrNull(id) != null) item("Open source") { navigate(id) }
+        if (id != null && file.result.pointers.getOrNull(id) != null) item("Context…") {
+            showElementContext(project, file.result.pointers.getOrNull(id)?.element, canvas)
+        }
         if (step != null && (step.calls > 0 || step.callers > 0)) {
             addSeparator()
             if (step.calls > 0) item(if (step.node in board.openCalls) "Hide calls" else "Show calls (${step.calls})") { canvas.toggleCalls(step.node) }

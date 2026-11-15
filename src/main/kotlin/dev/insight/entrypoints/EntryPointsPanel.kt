@@ -1,5 +1,7 @@
 package dev.insight.entrypoints
 
+import dev.insight.context.showFileContext
+
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.runReadAction
@@ -90,6 +92,13 @@ internal class EntryPointsPanel(
             }, BorderLayout.NORTH)
             add(JBScrollPane(list), BorderLayout.CENTER)
             add(details, BorderLayout.SOUTH)
+            list.componentPopupMenu = javax.swing.JPopupMenu().apply {
+                add(javax.swing.JMenuItem("Context…").apply { addActionListener {
+                    val entry = list.selectedValue ?: return@addActionListener
+                    val file = runReadAction { try { ProjectFiles(project).resolve(entry.path) } catch (_: ToolInputException) { null } } ?: return@addActionListener
+                    showFileContext(project, file, entry.line, list)
+                } })
+            }
             list.addMouseListener(object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 2) open() }
             })

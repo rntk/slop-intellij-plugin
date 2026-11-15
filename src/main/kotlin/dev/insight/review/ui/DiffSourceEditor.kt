@@ -44,7 +44,7 @@ internal class DiffSourceEditor(val block: ReviewSourceBlock, project: Project?)
     internal fun locationAt(line: Int, column: Int): ReviewCodeLocation? {
         if (line !in 0 until editor.document.lineCount) return null
         return ReviewCodeLocation(block.sourcePath, block.fullText ?: return null,
-            block.range.startLine + line, column, block.absolutePath)
+            block.range.startLine + line, column, block.absolutePath, block.range.side)
     }
 
     /** Scales only the editor's text, for hosts that size the component themselves, such as the summary tree. */

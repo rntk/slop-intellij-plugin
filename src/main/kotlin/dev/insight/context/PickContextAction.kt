@@ -4,13 +4,17 @@ import com.intellij.diff.tools.util.DiffDataKeys
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.PlatformDataKeys
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.awt.RelativePoint
+import com.intellij.psi.PsiFile
 import dev.insight.agent.SourceSide
 import dev.insight.diff.ReviewDiffCaret
 import dev.insight.diff.reviewDiffCaret
+import dev.insight.canvas.relativePath
+import java.awt.Point
 
 /**
  * `Insight.PickContext`, "Context...": opens the context picker at the caret of an editor, with the selection, line, enclosing
@@ -22,14 +26,26 @@ internal class PickContextAction : DumbAwareAction() {
 
     override fun update(e: AnActionEvent) {
         val editor = e.getData(CommonDataKeys.EDITOR)
-        e.presentation.isEnabledAndVisible = e.project != null && editor != null &&
-            (e.getData(CommonDataKeys.VIRTUAL_FILE) != null || e.getData(DiffDataKeys.DIFF_REQUEST) != null)
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
+        e.presentation.isEnabledAndVisible = e.project != null &&
+            ((editor != null && (file != null || e.getData(DiffDataKeys.DIFF_REQUEST) != null)) ||
+                (file != null && !file.isDirectory && !file.fileType.isBinary))
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val diff = reviewDiffCaret(e)
-        val editor = diff?.editor ?: e.getData(CommonDataKeys.EDITOR) ?: return
+        val editor = diff?.editor ?: e.getData(CommonDataKeys.EDITOR)
+        if (editor == null) {
+            val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
+            val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+            val element = e.getData(CommonDataKeys.PSI_ELEMENT)?.takeIf { it !is PsiFile && it.containingFile?.virtualFile == file }
+            val line = element?.textRange?.startOffset?.coerceIn(0, document.textLength)?.let { document.getLineNumber(it) + 1 }
+            val pick = capturedSourcePick(project, ContextOrigin.OTHER, relativePath(project, file.path), file.path, document.text, line)
+            val owner = e.getData(PlatformDataKeys.CONTEXT_COMPONENT) ?: e.inputEvent?.component ?: return
+            showContextPicker(project, pick, owner, RelativePoint(owner, Point(owner.width / 2, owner.height / 2)))
+            return
+        }
         val pick = if (diff != null) reviewDiffPick(project, diff) else {
             val file = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: FileDocumentManager.getInstance().getFile(editor.document) ?: return
             val origin = if (e.getData(DiffDataKeys.DIFF_REQUEST) != null) ContextOrigin.IDE_DIFF else ContextOrigin.EDITOR
