@@ -45,7 +45,7 @@ When delegating tasks to subagents, optimize for speed and cost. High-reasoning 
 
 - Select faster, lightweight, and cost-effective models for subagents unless complex reasoning, planning, or architecture design is required.
 - **Recommended models for routine subagent tasks:**
-  - **Gemini:** Gemini Flash models
+  - **Gemini:** Gemini Flash, Hydrogen models
   - **Claude:** Claude Sonnet / Haiku
   - **OpenAI:** GPT mini, Luna, Terra
 

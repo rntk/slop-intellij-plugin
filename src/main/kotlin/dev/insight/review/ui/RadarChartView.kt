@@ -18,6 +18,7 @@ import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -34,7 +35,8 @@ import kotlin.math.sin
 
 /**
  * A radar of [chart]: one spoke per entry at the picked level, clockwise from the top in reading order, and one polygon per
- * series. Hovering a spoke shows its path and counts; clicking a file's spoke calls [openFile].
+ * series. Hovering a spoke shows its path and counts; clicking a file's spoke calls [openFile], and clicking a legend
+ * entry isolates or restores that series.
  */
 internal class RadarChartPanel(
     val chart: RadarChart,
@@ -42,10 +44,18 @@ internal class RadarChartPanel(
     private val zoom: Double,
     private val logarithmic: Boolean,
     private val openFile: (String) -> Unit,
+    selectedSeries: RadarSeries? = null,
+    private val selectSeries: (RadarSeries?) -> Unit = {},
 ) : JComponent() {
     private val axes = chart.axes
-    private val max = axes.maxOfOrNull { axis -> chart.series.maxOf { it.value(axis.lines) } } ?: 0
+    var selectedSeries: RadarSeries? = selectedSeries?.takeIf { it in chart.series }
+        private set
+    val shownSeries: List<RadarSeries>
+        get() = selectedSeries?.takeIf { it in chart.series }?.let(::listOf) ?: chart.series
+    private val max: Int
+        get() = axes.maxOfOrNull { axis -> shownSeries.maxOf { it.value(axis.lines) } } ?: 0
     private var hovered: Int? = null
+    private var hoveredSeries: RadarSeries? = null
 
     init {
         name = "radar-chart"
@@ -55,13 +65,33 @@ internal class RadarChartPanel(
         toolTipText = ""
         val mouse = object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
-                val axis = axisAt(e.point)
-                if (axis != hovered) { hovered = axis; repaint() }
-                cursor = if (axis?.let { axes[it].path } != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+                val series = seriesAt(e.point)
+                val axis = if (series != null) null else axisAt(e.point)
+                if (axis != hovered || series != hoveredSeries) {
+                    hovered = axis
+                    hoveredSeries = series
+                    repaint()
+                }
+                cursor = if ((series != null && chart.series.size > 1) || axis?.let { axes[it].path } != null)
+                    Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
             }
-            override fun mouseExited(e: MouseEvent) { if (hovered != null) { hovered = null; repaint() } }
+            override fun mouseExited(e: MouseEvent) {
+                if (hovered != null || hoveredSeries != null) {
+                    hovered = null
+                    hoveredSeries = null
+                    repaint()
+                }
+            }
             override fun mouseClicked(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
+                seriesAt(e.point)?.let { series ->
+                    if (chart.series.size > 1) {
+                        this@RadarChartPanel.selectedSeries = if (this@RadarChartPanel.selectedSeries == series) null else series
+                        selectSeries(this@RadarChartPanel.selectedSeries)
+                        repaint()
+                    }
+                    return
+                }
                 axisAt(e.point)?.let { axes[it].path }?.let(openFile)
             }
         }
@@ -70,6 +100,15 @@ internal class RadarChartPanel(
     }
 
     override fun getToolTipText(event: MouseEvent): String? {
+        seriesAt(event.point)?.let { series ->
+            val total = String.format(Locale.US, "%,d", series.value(chart.total))
+            val hint = when {
+                series == selectedSeries -> " · Click to show all"
+                chart.series.size > 1 -> " · Click to show only ${series.label.lowercase(Locale.US)}"
+                else -> ""
+            }
+            return "<html><b>${escape(series.label)}</b><br>$total total$hint</html>"
+        }
         val axis = axisAt(event.point)?.let(axes::get) ?: return null
         val counts = axisValueText(axis)
         val files = if (axis.files.size == 1) "1 file" else String.format(Locale.US, "%,d files", axis.files.size)
@@ -82,7 +121,7 @@ internal class RadarChartPanel(
 
     private fun axisValueText(axis: dev.insight.review.RadarAxis): String =
         if (chart.series.any { it.isSymbol } && axis.files.none { it.symbolCounts != null }) "Symbols unavailable"
-        else radarValueText(axis.lines, chart.series)
+        else radarValueText(axis.lines, chart.series, selectedSeries)
 
     private fun scaled(n: Int) = zoomScaled(n, zoom)
     private val center get() = Point(width / 2, height / 2)
@@ -105,6 +144,29 @@ internal class RadarChartPanel(
         }
     }
 
+    private fun legendBounds(): List<Pair<RadarSeries, Rectangle>> {
+        if (width <= 0) return emptyList()
+        val plain = JBFont.small().zoomed(zoom)
+        val bold = JBFont.small().asBold().zoomed(zoom)
+        val height = getFontMetrics(plain).height
+        val swatch = scaled(10)
+        val gap = scaled(6)
+        var y = scaled(4)
+        return chart.series.map { series ->
+            val font = if (series == selectedSeries) bold else plain
+            val rowWidth = swatch + gap + getFontMetrics(font).stringWidth(series.label)
+            val bounds = Rectangle(width - scaled(8) - rowWidth, y, rowWidth, height)
+            y += height + scaled(2)
+            series to bounds
+        }
+    }
+
+    private fun seriesAt(point: Point): RadarSeries? =
+        legendBounds().firstOrNull { (_, bounds) -> bounds.contains(point) }?.first
+
+    internal fun legendPoint(series: RadarSeries): Point? =
+        legendBounds().firstOrNull { it.first == series }?.second?.let { Point(it.centerX.toInt(), it.centerY.toInt()) }
+
     override fun paintComponent(graphics: Graphics) {
         val g = graphics.create() as Graphics2D
         try {
@@ -112,7 +174,7 @@ internal class RadarChartPanel(
             g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
             if (axes.isEmpty()) return
             paintGrid(g)
-            for (series in chart.series) paintSeries(g, series)
+            for (series in shownSeries) paintSeries(g, series)
             paintLabels(g)
             paintLegend(g)
         } finally { g.dispose() }
@@ -185,22 +247,33 @@ internal class RadarChartPanel(
     }
 
     private fun paintLegend(g: Graphics2D) {
-        val font = JBFont.small().zoomed(zoom)
-        val metrics = g.getFontMetrics(font)
-        g.font = font
-        var y = scaled(4)
+        val plain = JBFont.small().zoomed(zoom)
+        val bold = JBFont.small().asBold().zoomed(zoom)
         val swatch = scaled(10)
-        for (series in chart.series) {
-            val x = width - scaled(8) - swatch - scaled(6) - metrics.stringWidth(series.label)
-            g.color = color(series)
-            g.fillRoundRect(x, y + (metrics.height - swatch) / 2, swatch, swatch, scaled(3), scaled(3))
-            g.color = UIUtil.getLabelForeground()
-            g.drawString(series.label, x + swatch + scaled(6), y + metrics.ascent)
-            y += metrics.height + scaled(2)
+        val gap = scaled(6)
+        val entries = legendBounds()
+        for ((series, bounds) in entries) {
+            val selected = series == selectedSeries
+            val dimmed = selectedSeries != null && !selected
+            val font = if (selected) bold else plain
+            val metrics = g.getFontMetrics(font)
+            val baseColor = color(series)
+            g.color = if (dimmed) ColorUtil.withAlpha(baseColor, 0.35) else baseColor
+            g.fillRoundRect(bounds.x, bounds.y + (bounds.height - swatch) / 2, swatch, swatch, scaled(3), scaled(3))
+            g.font = font
+            g.color = when {
+                series == hoveredSeries && chart.series.size > 1 -> JBColor.namedColor("Focus.borderColor", JBColor.BLUE)
+                dimmed -> UIUtil.getContextHelpForeground()
+                else -> UIUtil.getLabelForeground()
+            }
+            g.drawString(series.label, bounds.x + swatch + gap, bounds.y + metrics.ascent)
         }
         if (logarithmic) {
+            g.font = plain
+            val metrics = g.getFontMetrics(plain)
             g.color = UIUtil.getContextHelpForeground()
             val text = "Log scale"
+            val y = entries.lastOrNull()?.second?.let { it.y + it.height + scaled(2) } ?: scaled(4)
             g.drawString(text, width - scaled(8) - metrics.stringWidth(text), y + metrics.ascent)
         }
     }
@@ -249,11 +322,11 @@ internal class RadarChartPanel(
 }
 
 /** The status line above a radar: its spokes, files and totals. */
-internal fun radarStatus(chart: RadarChart): String {
+internal fun radarStatus(chart: RadarChart, selected: RadarSeries? = null): String {
     val files = chart.axes.sumOf { it.files.size }
     val spokes = chart.axes.sumOf { it.merged }
     return String.format(Locale.US, "%,d %s · %,d %s · %s", spokes, if (spokes == 1) "entry" else "entries",
-        files, if (files == 1) "file" else "files", radarValueText(chart.total, chart.series)) +
+        files, if (files == 1) "file" else "files", radarValueText(chart.total, chart.series, selected)) +
         if (RadarSeries.ADDED in chart.series) "" else " · " + radarSymbolCoverage(chart.axes.flatMap { it.files })
 }
 

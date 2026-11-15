@@ -72,17 +72,43 @@ class RadarViewTest : BasePlatformTestCase() {
             val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
             fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
             fun switch() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name?.endsWith("radar-symbols") == true }
+            fun statusLabel() = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }
             try {
                 canvas.showNotes(state)
                 if (topics) selectTopicsMode(descendants(canvas), "Radar") else selectSummariesMode(descendants(canvas), "radar")
                 assertTrue(switch().isSelected)
                 assertTrue(dev.insight.review.RadarSeries.FUNCTIONS in radar().chart.series)
-                val status = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }.text
+                val status = statusLabel().text
                 assertTrue(status, status.contains("6 symbols · 3 comments"))
                 assertTrue(status, status.contains("3 of 4 files"))
                 val panel = radar().apply { setSize(800, 700) }
                 val tooltip = panel.getToolTipText(MouseEvent(panel, MouseEvent.MOUSE_MOVED, 0, 0, 400, 120, 0, false))!!
                 assertTrue(tooltip, tooltip.contains("Functions:"))
+                val commentsPoint = panel.legendPoint(dev.insight.review.RadarSeries.COMMENTS)!!
+                val legendTooltip = panel.getToolTipText(MouseEvent(panel, MouseEvent.MOUSE_MOVED, 0, 0, commentsPoint.x, commentsPoint.y, 0, false))!!
+                assertTrue(legendTooltip, legendTooltip.contains("Comments") && legendTooltip.contains("3 total"))
+                panel.mouseListeners.forEach {
+                    it.mouseClicked(MouseEvent(panel, MouseEvent.MOUSE_CLICKED, 0, 0, commentsPoint.x, commentsPoint.y, 1, false, MouseEvent.BUTTON1))
+                }
+                assertEquals(dev.insight.review.RadarSeries.COMMENTS, panel.selectedSeries)
+                assertEquals(listOf(dev.insight.review.RadarSeries.COMMENTS), panel.shownSeries)
+                assertTrue(statusLabel().text, statusLabel().text.contains("3 comments"))
+                val image = BufferedImage(800, 700, BufferedImage.TYPE_INT_ARGB)
+                image.createGraphics().also { panel.paint(it) }.dispose()
+                val functionsPoint = panel.legendPoint(dev.insight.review.RadarSeries.FUNCTIONS)!!
+                panel.mouseListeners.forEach {
+                    it.mouseClicked(MouseEvent(panel, MouseEvent.MOUSE_CLICKED, 0, 0, functionsPoint.x, functionsPoint.y, 1, false, MouseEvent.BUTTON1))
+                }
+                assertEquals(dev.insight.review.RadarSeries.FUNCTIONS, panel.selectedSeries)
+                assertEquals(listOf(dev.insight.review.RadarSeries.FUNCTIONS), panel.shownSeries)
+                assertTrue(statusLabel().text, statusLabel().text.contains("6 functions"))
+                val selectedFunctionsPoint = panel.legendPoint(dev.insight.review.RadarSeries.FUNCTIONS)!!
+                panel.mouseListeners.forEach {
+                    it.mouseClicked(MouseEvent(panel, MouseEvent.MOUSE_CLICKED, 0, 0, selectedFunctionsPoint.x, selectedFunctionsPoint.y, 1, false, MouseEvent.BUTTON1))
+                }
+                assertNull(panel.selectedSeries)
+                assertEquals(panel.chart.series, panel.shownSeries)
+                assertTrue(statusLabel().text, statusLabel().text.contains("6 symbols · 3 comments"))
                 switch().doClick()
                 assertEquals(listOf(dev.insight.review.RadarSeries.SOURCE), radar().chart.series)
                 switch().doClick()

@@ -232,11 +232,15 @@ internal class TopicsCanvasCard(
                 })
                 else if (radar) {
                     val chart = topicRadar(shown, view.radarLevel(outline), "Awaiting ${labels.singular}", view.radarSymbols)
-                    add(JLabel(radarStatus(chart)).apply {
+                    val status = JLabel(radarStatus(chart, view.radarSeries)).apply {
                         name = "topics-radar-status"
                         font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                    }
+                    add(status)
+                    add(RadarChartPanel(chart, inner, viewZoom, view.radarLog, canvasActions.openFile, view.radarSeries) { selected ->
+                        view.radarSeries = selected
+                        status.text = radarStatus(chart, selected)
                     })
-                    add(RadarChartPanel(chart, inner, viewZoom, view.radarLog, canvasActions.openFile))
                 }
                 else add(if (hierarchy) ChangeTopicHierarchyPanel(content, view, inner, viewZoom, panelActions, vocabulary)
                     else ChangeTopicsPanel(content, view, inner, viewZoom, panelActions, vocabulary, project))

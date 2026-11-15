@@ -1,6 +1,7 @@
 package dev.insight.review.ui
 
 import dev.insight.review.ContextSummaryRequest
+import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewSummaryTree
@@ -54,6 +55,7 @@ internal class ChangeSummariesViewState(
     /** Whether the radar spaces its rings logarithmically. */
     var radarSymbols = true
     var radarLog = false
+    var radarSeries: RadarSeries? = null
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
@@ -286,6 +288,7 @@ internal class ChangeSummariesViewState(
         it.radarLevel = radarLevel
         it.radarSymbols = radarSymbols
         it.radarLog = radarLog
+        it.radarSeries = radarSeries
         it.expanded += expanded
         it.seen += seen
         it.level = level

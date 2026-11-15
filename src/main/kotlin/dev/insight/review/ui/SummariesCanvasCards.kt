@@ -339,11 +339,15 @@ internal class SummariesCanvasCards(
             add(when {
                 radarChart != null -> JPanel(VerticalLayout(scaled(8))).apply {
                     isOpaque = false
-                    add(JLabel(radarStatus(radarChart)).apply {
+                    val status = JLabel(radarStatus(radarChart, summariesView.radarSeries)).apply {
                         name = "summaries-radar-status"
                         font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                    }
+                    add(status)
+                    add(RadarChartPanel(radarChart, inner, zoom, summariesView.radarLog, open, summariesView.radarSeries) { selected ->
+                        summariesView.radarSeries = selected
+                        status.text = radarStatus(radarChart, selected)
                     })
-                    add(RadarChartPanel(radarChart, inner, zoom, summariesView.radarLog, open))
                 }
                 hierarchy -> ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary)
                 document -> ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary, project)

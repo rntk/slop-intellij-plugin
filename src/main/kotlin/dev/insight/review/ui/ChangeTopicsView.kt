@@ -1,6 +1,7 @@
 package dev.insight.review.ui
 
 import dev.insight.review.PatchSource
+import dev.insight.review.RadarSeries
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.diff.DiffColors
 import com.intellij.openapi.editor.colors.EditorColorsManager
@@ -97,6 +98,7 @@ internal class ChangeTopicsViewState(
     /** Whether the radar spaces its rings logarithmically, so small topics stay visible beside a huge one. */
     var radarSymbols = true
     var radarLog = false
+    var radarSeries: RadarSeries? = null
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */

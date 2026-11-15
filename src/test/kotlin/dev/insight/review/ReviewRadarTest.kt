@@ -31,6 +31,8 @@ class ReviewRadarTest {
         assertEquals(summary.total, topicRadar(topics, 0).total)
         assertEquals(summary.total, topicRadar(topics, topics.depth).total)
         assertEquals("6 symbols · 6 comments", radarValueText(summary.total, summary.series))
+        assertEquals("6 comments", radarValueText(summary.total, summary.series, RadarSeries.COMMENTS))
+        assertEquals("4 functions", radarValueText(summary.total, summary.series, RadarSeries.FUNCTIONS))
     }
 
     @Test

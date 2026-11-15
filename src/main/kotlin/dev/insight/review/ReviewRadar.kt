@@ -198,8 +198,13 @@ fun radarRingValue(ring: Int, rings: Int, max: Int, logarithmic: Boolean): Int {
 
 private fun Double.roundToIntSafely(): Int = kotlin.math.round(this).toInt().coerceAtLeast(0)
 
-/** Compact labels for line or symbol counts; comments stay separate from declarations. */
-fun radarValueText(lines: RadarLines, series: List<RadarSeries>): String =
-    if (RadarSeries.SOURCE in series) String.format(java.util.Locale.US, "%,d lines", lines.source)
-    else if (RadarSeries.ADDED in series) String.format(java.util.Locale.US, "+%,d −%,d", lines.added, lines.removed)
-    else String.format(java.util.Locale.US, "%,d symbols · %,d comments", lines.symbols.declarations, lines.symbols[RadarSymbolKind.COMMENT])
+/** Compact labels for line or symbol counts; comments stay separate from declarations unless one series is selected. */
+fun radarValueText(lines: RadarLines, series: List<RadarSeries>, selected: RadarSeries? = null): String {
+    val single = selected?.takeIf { it in series }
+    return when {
+        single != null -> String.format(java.util.Locale.US, "%,d %s", single.value(lines), single.label.lowercase(java.util.Locale.US))
+        RadarSeries.SOURCE in series -> String.format(java.util.Locale.US, "%,d lines", lines.source)
+        RadarSeries.ADDED in series -> String.format(java.util.Locale.US, "+%,d −%,d", lines.added, lines.removed)
+        else -> String.format(java.util.Locale.US, "%,d symbols · %,d comments", lines.symbols.declarations, lines.symbols[RadarSymbolKind.COMMENT])
+    }
+}
