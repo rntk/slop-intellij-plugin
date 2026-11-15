@@ -17,6 +17,7 @@ import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewedFiles
 import dev.insight.review.SummaryNode
 import dev.insight.review.TopicOutline
+import dev.insight.review.topicRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BorderLayout
@@ -124,9 +125,11 @@ internal class TopicsCanvasCard(
         val outline = view.fullOutline(content)
         val shown = view.outline(content)
         val hierarchy = view.mode == ChangeTopicsMode.HIERARCHY
-        val document = !hierarchy
+        val radar = view.mode == ChangeTopicsMode.RADAR
+        val document = view.mode == ChangeTopicsMode.DOCUMENT
         val viewZoom = if (document) documentZoom else 1.0
         val width = if (hierarchy) cardWidth(HierarchyColumnsPanel.defaultWidth(outline.depth))
+            else if (radar) cardWidth(RadarChartPanel.DEFAULT_WIDTH)
             else ChangeTopicsPanel.defaultWidth(view.railDepth(outline), viewZoom)
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "topics-controls"
@@ -151,7 +154,15 @@ internal class TopicsCanvasCard(
                     toolTipText = "Show file previews beside the hierarchy"
                     addActionListener { showHierarchyDiffs = isSelected; canvasActions.refresh() }
                 })
-                add(JCheckBox("Tags cloud", view.tagsCloud).apply {
+                if (radar) add(JCheckBox("Log scale", view.radarLog).apply {
+                    name = "topics-radar-log"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Space the rings logarithmically, so small ${labels.plural} stay visible beside a large one"
+                    addActionListener { view.radarLog = isSelected; canvasActions.refresh() }
+                })
+                if (!radar) add(JCheckBox("Tags cloud", view.tagsCloud).apply {
                     name = "topics-tags-cloud"
                     isOpaque = false
                     font = scaledFont(JBFont.small())
@@ -160,9 +171,12 @@ internal class TopicsCanvasCard(
                     addActionListener { view.tagsCloud = isSelected; canvasActions.refresh() }
                 })
                 add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
-                    { if (it == ChangeTopicsMode.DOCUMENT) "Document" else "Hierarchy" },
-                    { if (it == ChangeTopicsMode.DOCUMENT) "Every file in ${labels.singular} order, with its summary and the ${labels.singular} rail"
-                        else "${labels.plural.replaceFirstChar { ch -> ch.titlecase() }} broad to specific, left to right, with each file's summary" }) {
+                    { when (it) { ChangeTopicsMode.DOCUMENT -> "Document"; ChangeTopicsMode.HIERARCHY -> "Hierarchy"; ChangeTopicsMode.RADAR -> "Radar" } },
+                    { when (it) {
+                        ChangeTopicsMode.DOCUMENT -> "Every file in ${labels.singular} order, with its summary and the ${labels.singular} rail"
+                        ChangeTopicsMode.HIERARCHY -> "${labels.plural.replaceFirstChar { ch -> ch.titlecase() }} broad to specific, left to right, with each file's summary"
+                        ChangeTopicsMode.RADAR -> "How many ${vocabulary.radarLines} the ${labels.plural} at the picked level hold"
+                    } }) {
                     view.mode = it; scroll = 0; canvasActions.refresh()
                 })
                 add(JButton(when {
@@ -209,6 +223,14 @@ internal class TopicsCanvasCard(
                     name = "topics-no-matches"
                     font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
                 })
+                else if (radar) {
+                    val chart = topicRadar(shown, view.radarLevel(outline), "Awaiting ${labels.singular}")
+                    add(JLabel(radarStatus(chart)).apply {
+                        name = "topics-radar-status"
+                        font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                    })
+                    add(RadarChartPanel(chart, inner, viewZoom, view.radarLog, canvasActions.openFile))
+                }
                 else add(if (hierarchy) ChangeTopicHierarchyPanel(content, view, inner, viewZoom, panelActions, vocabulary)
                     else ChangeTopicsPanel(content, view, inner, viewZoom, panelActions, vocabulary, project))
             }, BorderLayout.CENTER)
@@ -265,9 +287,10 @@ internal class TopicsCanvasCard(
         }.toTypedArray()).apply {
             name = "topic-level-selector"
             font = scaledFont(JBFont.small())
-            selectedIndex = view.effectiveLevel(outline)
+            selectedIndex = if (view.mode == ChangeTopicsMode.RADAR) view.radarLevel(outline) else view.effectiveLevel(outline)
             toolTipText = if (view.mode == ChangeTopicsMode.DOCUMENT)
                 "Show topic rail levels through the selected level; Files shows every rail level"
+            else if (view.mode == ChangeTopicsMode.RADAR) "Compare the ${labels.plural} at the selected level; Files compares every file"
             else "Show topic levels through the selected level; Files shows every topic and file"
             addActionListener { view.selectLevel(selectedIndex, outline); canvasActions.refresh() }
         }

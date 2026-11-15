@@ -112,7 +112,7 @@ class DiffsWallMenuTest : BasePlatformTestCase() {
     fun testTopicsOfBothModesOpenOnTheWall() {
         val topics = ReviewTopics(files, mapOf("src/a.kt" to "Storage > Wallet", "src/nested/b.kt" to "Storage > Wallet",
             "docs/c.kt" to "UI", "docs/d.kt" to "UI"))
-        for (mode in ChangeTopicsMode.entries) {
+        for (mode in ChangeTopicsMode.entries.filter { it != ChangeTopicsMode.RADAR }) { // The radar has no topic entries.
             val opened = mutableListOf<Pair<Set<String>, String>>()
             val canvas = topicsCanvas(mode, { files, title -> opened += files.map { it.path }.toSet() to title }, topics)
             try {

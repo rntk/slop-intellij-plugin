@@ -73,8 +73,11 @@ internal data class TopicsCard(
     val reading: ReviewSummaries by lazy { topicReadingSummaries(topicSummaries, summaries) }
 }
 
-/** The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary. */
-internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY }
+/**
+ * The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary; the
+ * radar compares how many lines the topics at the picked level hold.
+ */
+internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY, RADAR }
 
 /** What the shown outline was filtered for: the card and both trimmed queries. */
 private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, val summaryQuery: String)
@@ -91,6 +94,8 @@ internal class ChangeTopicsViewState(
     var mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
 ) : SummaryTraceState(traceRoot = false) {
     var tagsCloud = false
+    /** Whether the radar spaces its rings logarithmically, so small topics stay visible beside a huge one. */
+    var radarLog = false
     var selected: String? = null
         private set
     /** The level picked in the hierarchy's switcher; null shows every level until the reader picks one. */
@@ -173,6 +178,9 @@ internal class ChangeTopicsViewState(
     }
 
     fun effectiveLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: outline.depth
+
+    /** The radar starts at the broadest topics until a level is picked. */
+    fun radarLevel(outline: TopicOutline) = level?.coerceAtMost(outline.depth) ?: 0
 
     /** Document mode keeps every file visible and limits the rail to the picked levels. */
     fun railDepth(outline: TopicOutline) = minOf(outline.depth, effectiveLevel(outline) + 1)

@@ -53,6 +53,8 @@ internal data class ReviewVocabulary(
     val hubHint: String,
     /** The tooltip of the hub's New tab button. */
     val newTabTooltip: String,
+    /** What the radar counts: "changed lines" | "lines of code". */
+    val radarLines: String = "changed lines",
     val groupingTitle: String = "Change grouping",
     val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
         "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
@@ -120,6 +122,7 @@ internal data class ReviewVocabulary(
             topicsSummarizeTooltip = "Write the file summaries shown beside each file (/summaries)",
             rootName = "Whole scope",
             noFiles = "No files in scope",
+            radarLines = "lines of code",
             openLabel = "Open file",
             openTooltip = { path -> "Open $path in the editor" },
             showOnCanvas = "Show source in tab",
