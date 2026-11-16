@@ -94,7 +94,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     private val summaryText = host.zoomFont(wrappedText(""))
     private val summaryStatus = host.zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
-    private val summaryRetry = host.zoomFont(ActionLink("Retry") { requestSummary(force = true) })
+    private val summaryRetry = host.zoomFont(ActionLink("Summarize") { requestSummary() })
     private var summaryJob: Job? = null
     private val summary = CanvasFoldSection(host, id, CardSection.SUMMARY, "Summary", JPanel(StackLayout { scaled(2) }).apply {
         isOpaque = false
@@ -160,7 +160,6 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(chat.ask)
         update(initial)
         applyZoom()
-        requestSummary(force = false)
     }
 
     /** The entries of the card's ⋯ menu (also on right-click), for its current state. */
@@ -248,12 +247,15 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         }
         summaryStatus.foreground = if (next.summaryError != null && !pending) NOTICE else UIUtil.getContextHelpForeground()
         summaryStatus.isVisible = summaryStatus.text.isNotEmpty()
-        summaryRetry.text = if (next.summary != null) "Summarize again" else "Retry"
-        summaryRetry.parent?.isVisible = !pending && next.text.isNotBlank() && (next.summaryError != null || next.summary != null)
+        summaryRetry.text = when {
+            next.summaryError != null -> "Retry"
+            next.summary != null -> "Summarize again"
+            else -> "Summarize"
+        }
+        summaryRetry.parent?.isVisible = !pending && next.text.isNotBlank()
         revalidate()
         repaint()
         host.cardResized()
-        if (sourceChanged) requestSummary(force = false)
     }
 
     /** Offers the changed hunks within the card's source in a Diff tab, with no tab for a file not opened from a diff. */
@@ -265,12 +267,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         sourceSection.setDiff(diffPane, canvasDiffTitle(rows))
     }
 
-    /** Asks for the summary when the card has none yet, or again when [force]d; the result is saved in the model. */
-    fun requestSummary(force: Boolean) {
+    /** Asks for the summary, only on request and never when a card opens; the result is saved in the model. */
+    fun requestSummary() {
         val current = host.model.card(id) ?: return
-        if (current.kind == CardKind.ATTACHMENT && !force) return
         if (summaryJob?.isActive == true || current.text.isBlank()) return
-        if (!force && (current.summary != null || current.summaryError != null)) return
         val input = CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
         val requestedSource = source
         summaryJob = host.scope.launch(Dispatchers.EDT) {

@@ -693,7 +693,11 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             val card = panel.model.cards.single()
             val view = panel.cardViews.getValue(card.id)
             assertNotNull(view.sourcePane)
-            PlatformTestUtil.waitWithEventsDispatching("The summary should arrive", { panel.model.card(card.id)!!.summary != null }, 30)
+            Thread.sleep(300)
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            assertNull("Opening a card does not summarize it", panel.model.card(card.id)!!.summary)
+            view.requestSummary()
+            PlatformTestUtil.waitWithEventsDispatching("The requested summary should arrive", { panel.model.card(card.id)!!.summary != null }, 30)
             assertEquals("Calls the helper.", panel.model.card(card.id)!!.summary)
 
             view.send("What does entry do?")
@@ -989,6 +993,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             panel.close(helper.id)
             assertEquals(listOf("Flow.java", entry.title), panel.trailTitles)
 
+            panel.cardViews.getValue(entry.id).requestSummary()
             PlatformTestUtil.waitWithEventsDispatching("The entry card should be summarized", { panel.model.card(entry.id)!!.summary != null }, 30)
             // The chats' graph tools read the explored graph without changing the canvas.
             val graph = panel.actions.graph!!

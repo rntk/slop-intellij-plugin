@@ -114,8 +114,8 @@ val canvasHelpHtml = """
     <b>New chat</b> in the menu) starts another conversation; switch tabs to return to
     its history and draft. All tabs use the chain from the file down to the card as context, and can open cards on the
     canvas to show you the code they talk about. The file has its own chat tabs below its source, to ask about the
-    whole file right away; they use the file and the cards opened from it as context. Click <b>Summarize</b> to
-    request the file summary. Every part of the file and cards folds
+    whole file right away; they use the file and the cards opened from it as context. Summaries are never written
+    on their own: click <b>Summarize</b> in the Summary section of the file or a card to request one. Every part of the file and cards folds
     with its ▾ toggle; <b>Expand to file</b> shows the whole file in the card, keeping its chat and branches.
     <b>×</b> closes a card and the cards opened from it; <b>Go to source</b> opens the real file.
     <b>Summarize gaps</b> in the menu writes a short summary above each stretch of code between the symbols of the

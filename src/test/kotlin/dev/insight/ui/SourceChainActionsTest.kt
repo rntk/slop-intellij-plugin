@@ -57,9 +57,6 @@ class SourceChainActionsTest : FileEditorManagerTestCase() {
             val entry = open(null, "entry")
             val helper = open(entry.id, "helper")
             open(null, "helper") // A sibling chain must stay out of the new tab.
-            PlatformTestUtil.waitWithEventsDispatching("Summaries should arrive", {
-                panel.model.card(entry.id)!!.summary != null && panel.model.card(helper.id)!!.summary != null
-            }, 30)
             panel.model.setSummary(null, "File summary")
             panel.model.setSummary(entry.id, "Entry summary")
             panel.model.setSummary(helper.id, "Helper summary")
