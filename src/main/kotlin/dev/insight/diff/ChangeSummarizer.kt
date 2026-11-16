@@ -107,7 +107,7 @@ internal class DiffSummaryEvidence : SummaryEvidence {
 }
 
 /** Path hints describe the evidence, not proof that a runtime feature changed. */
-private fun diffEvidenceKind(path: String): String {
+internal fun diffEvidenceKind(path: String): String {
     val name = path.substringAfterLast('/').lowercase()
     return when {
         path.split('/').any { it.lowercase() in setOf("test", "tests", "testfixtures", "androidtest") } ||

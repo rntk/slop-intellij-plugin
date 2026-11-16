@@ -67,6 +67,8 @@ internal interface SummaryEvidence {
     fun leafSystem(tree: ReviewSummaryTree, focus: String): String
     /** Instructions for nodes written from their children's summaries: folders, groups, files with parts, topics, the root. */
     fun branchSystem(focus: String): String
+    /** Adds what code knows about a branch beyond its children's summaries, such as how they relate; nothing by default. */
+    fun describeBranch(node: SummaryNode, item: JsonObject) {}
 }
 
 internal data class SummaryEvidencePage(val evidence: JsonObject, val rows: IntRange, val changedRows: Set<Int>? = null)
@@ -346,6 +348,7 @@ class ReviewSummarizer internal constructor(
         if (node.children.isEmpty()) evidence.describe(node, this, options.patchChars)
         else {
             addProperty("files", node.files.size)
+            evidence.describeBranch(node, this)
             add("children", JsonArray().apply {
                 node.children.forEachIndexed { index, id ->
                     val child = summaries.tree[id]

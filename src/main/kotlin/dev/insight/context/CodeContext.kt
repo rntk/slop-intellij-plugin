@@ -65,7 +65,7 @@ class ContextKey<T : Any>(val name: String) {
     override fun toString() = name
 }
 
-enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, WORDS, DIFF_OVERVIEW, METRICS, MOVES, BOARD }
+enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, CHANGE_MAP, WORDS, DIFF_OVERVIEW, METRICS, MOVES, BOARD }
 
 /** View-specific extras a host passes to actions without changing the core model. */
 class ContextData {

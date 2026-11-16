@@ -127,6 +127,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         }
         add(ReviewDestination.TOPICS, CanvasTabKey.Topics)
         add(ReviewDestination.GROUPING, CanvasTabKey.Grouping)
+        add(ReviewDestination.CHANGE_MAP, CanvasTabKey.ChangeMap)
         add(ReviewDestination.WORDS, CanvasTabKey.Words)
         add(ReviewDestination.DIFF_OVERVIEW, CanvasTabKey.DiffOverview)
         add(ReviewDestination.METRICS, CanvasTabKey.Semantic)

@@ -54,4 +54,13 @@ class ReviewCommandTest {
         assertEquals(ReviewCommand.TOPICS, ReviewCommand.parse("/topics", ReviewCommand.code))
         assertEquals("Insight code review chat", reviewProgressTitle("/grouping", "code", ReviewCommand.code))
     }
+
+    @Test fun `the change map takes a focus only in diff reviews and has no bare alias`() {
+        assertEquals(ReviewCommand.CHANGE_MAP, ReviewCommand.parse(" /CHANGE-MAP "))
+        assertEquals(ReviewCommand.CHANGE_MAP, ReviewCommand.parse("/change-map error handling"))
+        assertEquals("error handling", summariesFocus("/change-map error handling"))
+        assertEquals("Generating change map", reviewProgressTitle("/change-map", "change"))
+        listOf("change-map", "/change-mapper", "/change-map\nmore").forEach { assertNull(it, ReviewCommand.parse(it)) }
+        assertNull(ReviewCommand.parse("/change-map", ReviewCommand.code))
+    }
 }
