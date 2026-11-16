@@ -93,6 +93,11 @@ internal class WallView(
     private val openOnCanvas: ((path: String) -> Unit)? = null,
     /** Called with a block, the row under the pointer (null on the header, padding or summary) and the point when a block is right-clicked; without it right-click does nothing. */
     private val onContext: ((block: WallBlock, line: WallLine?, point: RelativePoint) -> Unit)? = null,
+    /**
+     * Asks for the summary of the file at a path that has none, when its Summary switch is pressed; true when it is being written,
+     * and then arrives, or leaves [WallContent.summarizing], in a later [show]. Without it only files with a summary have the switch.
+     */
+    private val summarize: ((path: String) -> Boolean)? = null,
 ) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -147,6 +152,8 @@ internal class WallView(
     private var scope: WallScope? = null
     private var shown: List<WallBlock> = emptyList()
     private var summaries: Map<String, String> = emptyMap()
+    /** Files whose summary is being written; a block asking for one shows that until it arrives. */
+    private var summarizing: Set<String> = emptySet()
     /** Blocks showing their summary in place of their rows. */
     private val summarized = mutableSetOf<String>()
     /** The first summary row shown in each block that shows its summary. */
@@ -228,8 +235,9 @@ internal class WallView(
         allLink.isVisible = content.scope.paths != null
         if (content.scope == scope && content.blocks == shown) {
             // Only summaries arrived or changed: blocks keep their size and place, and repaint with the new text.
-            if (content.summaries != summaries) {
+            if (content.summaries != summaries || content.summarizing != summarizing) {
                 summaries = content.summaries
+                summarizing = content.summarizing
                 forgetMissingSummaries()
                 if (mode == WallMode.SKIM) {
                     // Shown summaries take room in the skim column, so new text restacks it.
@@ -266,6 +274,7 @@ internal class WallView(
         scope = content.scope
         shown = content.blocks
         summaries = content.summaries
+        summarizing = content.summarizing
         forgetMissingSummaries()
         folded.retainAll(content.blocks.map { it.path }.toSet())
         buildViews()
@@ -650,19 +659,25 @@ internal class WallView(
         surface.repaint()
     }
 
-    /** A block whose summary is gone shows its rows again. */
+    /** A block whose summary is gone, and is not being written, shows its rows again. */
     private fun forgetMissingSummaries() {
-        summarized.retainAll(summaries.keys)
+        summarized.retainAll { it in summaries || it in summarizing }
         summaryScrolls.keys.retainAll(summarized)
     }
 
-    /** Shows [view]'s summary in place of its rows, or its rows again; the block keeps its size. */
+    /** Whether the file at [path] has a summary to show, or one the wall can ask for. */
+    private fun hasSummary(path: String): Boolean = path in summaries || path in summarizing || summarize != null
+
+    /**
+     * Shows [view]'s summary in place of its rows, or its rows again; the block keeps its size. A file without a summary asks
+     * for one and shows that it is being written until it arrives.
+     */
     private fun toggleSummary(view: BlockView) {
         val path = view.block.path
         if (path in summarized) {
             summarized -= path
             summaryScrolls.remove(path)
-        } else if (path in summaries) {
+        } else if (path in summaries || path in summarizing || summarize?.invoke(path) == true) {
             summarized += path
             // The skim column shows the summary of a folded file above its rows, so it opens too.
             if (mode == WallMode.SKIM) folded -= path
@@ -954,7 +969,7 @@ internal class WallView(
             Key("next-hunk", listOf(key(KeyEvent.VK_N)), { mode == WallMode.SKIM }) { stepHunk(forward = true) },
             Key("previous-hunk", listOf(key(KeyEvent.VK_N, shift)), { mode == WallMode.SKIM }) { stepHunk(forward = false) },
             Key("fold-all", listOf(key(KeyEvent.VK_C, shift)), { mode == WallMode.SKIM }) { toggleFoldAll() },
-            Key("summary", listOf(key(KeyEvent.VK_S)), { activePath?.let { it in summaries } == true }) {
+            Key("summary", listOf(key(KeyEvent.VK_S)), { activePath?.let(::hasSummary) == true }) {
                 views.firstOrNull { it.block.path == activePath }?.let(::toggleSummary)
             },
             Key("next-block", listOf(key(KeyEvent.VK_TAB))) { step(forward = true) },
@@ -1155,12 +1170,19 @@ internal class WallView(
         private var toggle: Rectangle? = null
         /** Where the "..." menu button was last painted, or null while the header is sketched. */
         private var menuToggle: Rectangle? = null
-        /** Where the Summary switch was last painted, or null when the file has no summary. */
+        /** Where the Summary switch was last painted, or null when the file has no summary and none can be asked for. */
         internal var summaryToggle: Rectangle? = null
             private set
         private val summary: String? get() = summaries[block.path]
-        /** Whether the summary is shown in place of the rows. */
-        internal val showsSummary: Boolean get() = block.path in summarized && summary != null
+        /** Whether the file's summary is being written and has not arrived yet. */
+        private val writingSummary: Boolean get() = summary == null && block.path in summarizing
+        /** Whether the summary, or the note that it is being written, is shown in place of the rows. */
+        internal val showsSummary: Boolean get() = block.path in summarized && (summary != null || writingSummary)
+        private val summaryTooltip: String get() = when {
+            showsSummary -> labels.bodyTooltip
+            summary == null && !writingSummary -> labels.summarizeTooltip
+            else -> labels.summaryTooltip
+        }
 
         init {
             name = "${labels.id}-block:${block.path}"
@@ -1332,7 +1354,7 @@ internal class WallView(
             item(if (isCompact) "Expand" else compactText(), compactTooltip(), canCompact()) {
                 toggleCompact(this@BlockView)
             }
-            item(if (showsSummary) "Hide summary" else SUMMARY, if (showsSummary) labels.bodyTooltip else labels.summaryTooltip, summary != null) {
+            item(if (showsSummary) "Hide summary" else SUMMARY, summaryTooltip, hasSummary(block.path)) {
                 toggleSummary(this@BlockView)
             }
             // The Chat tab scrolls away with a tall skim block's top; its sticky header keeps the chat in reach.
@@ -1351,11 +1373,11 @@ internal class WallView(
 
         /** The summary wrapped to the rows this block's width holds. */
         private fun summaryRows(): List<String> =
-            wallWrap(summary.orEmpty(), (blockWidth - 2 * metrics.padding) / metrics.charWidth.coerceAtLeast(1))
+            wallWrap(summary ?: if (writingSummary) labels.summarizing else "", (blockWidth - 2 * metrics.padding) / metrics.charWidth.coerceAtLeast(1))
 
         override fun getToolTipText(event: MouseEvent): String? = when {
             onToggle(event.point) -> compactTooltip()
-            onSummaryToggle(event.point) -> if (showsSummary) labels.bodyTooltip else labels.summaryTooltip
+            onSummaryToggle(event.point) -> summaryTooltip
             onMenu(event.point) -> "More actions"
             else -> null
         }
@@ -1634,8 +1656,8 @@ internal class WallView(
                 toggle = Rectangle(x.toInt() - JBUI.scale(2), top, small.stringWidth(word) + JBUI.scale(4), headerHeight.roundToInt())
                 x += small.stringWidth(word) + small.charWidth(' ') * 2
             }
-            // Only a file with a summary has one to show.
-            if (summary != null) {
+            // A file with a summary has one to show; without one, the switch asks for it when the wall can.
+            if (hasSummary(block.path)) {
                 g2.color = if (showsSummary) link else quiet
                 g2.drawString(SUMMARY, x, baseline)
                 summaryToggle = Rectangle(x.toInt() - JBUI.scale(2), top, small.stringWidth(SUMMARY) + JBUI.scale(4), headerHeight.roundToInt())

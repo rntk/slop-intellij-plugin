@@ -63,8 +63,9 @@ class DiffsWallModelTest {
     @Test
     fun contentMakesOneBlockPerFileInOrder() {
         val files = listOf(file("b.kt", "@@ -1 +1 @@\n-a\n+b\n"), file("a.kt", ""))
-        val wall = DiffsWallContent(dev.insight.review.wall.WallScope(null, "All changes"), files, mapOf("a.kt" to "Sum")).toWall()
+        val wall = DiffsWallContent(dev.insight.review.wall.WallScope(null, "All changes"), files, mapOf("a.kt" to "Sum"), setOf("b.kt")).toWall()
         assertEquals(listOf("b.kt", "a.kt"), wall.blocks.map { it.path })
         assertEquals(mapOf("a.kt" to "Sum"), wall.summaries)
+        assertEquals(setOf("b.kt"), wall.summarizing)
     }
 }

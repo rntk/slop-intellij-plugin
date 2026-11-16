@@ -70,9 +70,14 @@ data class WallScope(val paths: List<String>?, val title: String)
 
 /**
  * What a wall shows: [scope] names it and keeps its layout; [blocks] are its files, in order; [summaries] holds the summary text
- * of the files that have one, by path.
+ * of the files that have one, by path; [summarizing] the files whose summary is being written.
  */
-internal data class WallContent(val scope: WallScope, val blocks: List<WallBlock>, val summaries: Map<String, String> = emptyMap())
+internal data class WallContent(
+    val scope: WallScope,
+    val blocks: List<WallBlock>,
+    val summaries: Map<String, String> = emptyMap(),
+    val summarizing: Set<String> = emptySet(),
+)
 
 /** A block's size or a placed block, in pixels. */
 internal data class WallRect(val x: Int, val y: Int, val width: Int, val height: Int)

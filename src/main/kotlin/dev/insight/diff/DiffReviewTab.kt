@@ -38,6 +38,7 @@ import dev.insight.review.CapturedReviewContext
 import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryKind
+import dev.insight.review.FileSummaryFill
 import dev.insight.review.GROUPING_SUMMARIES_MISSING
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
 import dev.insight.review.chatFocus
@@ -124,8 +125,24 @@ internal class DiffReviewTab(
         openWallOnCanvas = openOnCanvas,
         openOnWall = ::openDiffsWall,
         reviewDestinations = ::reviewDestinations,
+        summarizeWallFile = { path -> fileSummaries.request(path) },
         diffSession = ::diffSession,
     )
+    /** Writes summaries with the same evidence and prompts as /summaries, for the entries a run asks for. */
+    private val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
+        val context = captureContext()
+        val files = state.snapshot.files
+        val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+        val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
+        diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
+    }
+    /**
+     * The summaries the Diffs wall asks for, of files that have none: written into the review's Summaries tree, so the
+     * Summaries views and a later /summaries reuse them.
+     */
+    private val fileSummaries = FileSummaryFill(summaryLauncher, { state.summaries }, { !disposed && !state.refreshing },
+        save = { updated, ids -> state.replaceSummaries(updated, ids) }, changed = ::summariesChanged,
+        failed = { paths, message -> LOG.warn("Summarizing ${paths.joinToString()} failed: $message") })
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
         showDiff,
@@ -150,13 +167,7 @@ internal class DiffReviewTab(
             summarize = { summarize() },
             removeSummaries = { state.hideSummaries(); renderCanvas() },
             markReviewed = state::setReviewed,
-            contextSummaries = ReviewContextSummaryLauncher(project, scope) {
-                val context = captureContext()
-                val files = state.snapshot.files
-                val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
-                val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
-                diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
-            },
+            contextSummaries = summaryLauncher,
             deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
             // The cited lines are those of the snapshot file, so its diff opens rather than the current one.
             openLines = { node, lines -> (node.file as? ReviewFile)?.let { showDiffLines(project, it, lines, ::diffSession) } },
@@ -326,7 +337,7 @@ internal class DiffReviewTab(
         override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
             val turn = withContext(Dispatchers.EDT) {
                 state.snapshot.files.firstOrNull { it.path == path }?.let { file ->
-                    Triple(captureContext(), file, fileSummaries()[path]) to state.snapshot.comparison.summary
+                    Triple(captureContext(), file, fileSummaryTexts()[path]) to state.snapshot.comparison.summary
                 }
             } ?: return "$path is no longer part of this change, so there is no diff to discuss."
             val (captured, comparison) = turn
@@ -500,21 +511,21 @@ internal class DiffReviewTab(
     }
 
     /** The summary text of each changed file that has one, by path, for the Diffs wall. */
-    private fun fileSummaries(): Map<String, String> = state.summaries.let { summaries ->
+    private fun fileSummaryTexts(): Map<String, String> = state.summaries.let { summaries ->
         summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
             .mapNotNull { node -> summaries.text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
     }
 
     override fun summariesChanged() {
         super.summariesChanged()
-        diffCards.updateWallSummaries(fileSummaries())
+        diffCards.updateWallSummaries(fileSummaryTexts(), fileSummaries.pending)
     }
 
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaries()) })
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), fileSummaries.pending) })
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())

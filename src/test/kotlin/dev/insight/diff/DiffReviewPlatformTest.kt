@@ -227,17 +227,17 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             fun press(block: WallView.BlockView, at: java.awt.Point) = block.dispatchEvent(java.awt.event.MouseEvent(block,
                 java.awt.event.MouseEvent.MOUSE_PRESSED, 0L, java.awt.event.InputEvent.BUTTON1_DOWN_MASK, at.x, at.y, 1, false, java.awt.event.MouseEvent.BUTTON1))
             blocks().forEach(::paint)
-            // Without summaries there is no link.
-            assertTrue(blocks().all { it.summaryToggle == null && !it.showsSummary })
+            // Without summaries every file still has the link, which asks for its summary; none shows one yet.
+            assertTrue(blocks().all { it.summaryToggle != null && !it.showsSummary })
 
-            // The summary arrives while the wall is open; only the file that has one gets the link.
+            // The summary arrives while the wall is open; the file without one keeps the link that asks for it.
             val tree = tab.state.summaries.tree
             tab.state.summarize(tab.state.revision, tree.nodes.filter { it.kind == SummaryKind.FILE && it.path == "src/a.kt" }.associate { it.id to "Adds the new behaviour." })
             tab.update(ReviewSnapshot(files, emptyList()))
             val before = blocks().single { it.block.path == "src/a.kt" }.size
             blocks().forEach(::paint)
             val withSummary = blocks().single { it.block.path == "src/a.kt" }
-            assertNull(blocks().single { it.block.path == "src/b.kt" }.summaryToggle)
+            assertNotNull(blocks().single { it.block.path == "src/b.kt" }.summaryToggle)
             val link = withSummary.summaryToggle!!
             val at = java.awt.Point(link.centerX.toInt(), link.centerY.toInt())
 

@@ -30,7 +30,7 @@ import javax.swing.JPanel
 
 /**
  * The Diffs wall page: the shared [WallView] showing one `git diff` block per changed file. Blocks are parsed once per snapshot
- * of the wall's files, so a rebuild that only brings summaries keeps them.
+ * of the wall's files, so a rebuild that only brings summaries, or the files whose summary is being written, keeps them.
  */
 internal class DiffsWallView(
     /** Opens [ReviewFile]'s native diff, at the line when one was double-clicked. */
@@ -45,12 +45,14 @@ internal class DiffsWallView(
     private val openOnCanvas: ((path: String) -> Unit)? = null,
     private val openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     private val reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
+    /** Asks for the summary of a file that has none; see [WallView]. Null leaves only files with a summary their Summary switch. */
+    summarize: ((path: String) -> Boolean)? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
     val view = WallView(DIFFS_WALL_LABELS, { path, line -> files.firstOrNull { it.path == path }?.let { openDiff(it, line) } },
         showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } }, openOnCanvas,
-        project?.let { p -> { block, line, point -> showContext(p, block, line, point) } })
+        project?.let { p -> { block, line, point -> showContext(p, block, line, point) } }, summarize)
     val card: JPanel get() = view.card
 
     /** Opens the context picker for a right-click on [block]: the diff scopes at the row, and the whole wall as one change. */
@@ -71,7 +73,8 @@ internal class DiffsWallView(
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: DiffsWallContent) {
         val previous = shown
-        val wall = if (previous != null && content.files == files) previous.copy(scope = content.scope, summaries = content.summaries)
+        val wall = if (previous != null && content.files == files) previous.copy(scope = content.scope,
+            summaries = content.summaries, summarizing = content.summarizing)
             else content.toWall()
         files = content.files
         shown = wall
@@ -108,7 +111,7 @@ internal val DIFFS_WALL_LABELS = WallLabels(
         |Tab / Shift+Tab step through the blocks, Esc returns to the overview<br>
         |Skim above the wall, or M, reads every file whole in one column<br>
         |Compact in a block's header, or C, caps a tall block; its diff scrolls inside<br>
-        |Summary in a block's header shows the file's summary in place of its diff<br>
+        |Summary in a block's header shows the file's summary in place of its diff, writing it first when it has none<br>
         |Chat on a block's right edge unfolds a chat about that file's diff; Esc in it folds it again<br>
         |Chat about these changes, above the wall, opens a chat about every diff it shows</html>""".trimMargin(),
     showAll = "Show all changes",

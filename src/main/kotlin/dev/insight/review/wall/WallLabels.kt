@@ -38,6 +38,10 @@ internal data class WallLabels(
     val canvasChat: WallChatText,
     /** The label row's tooltip in the skim column; HTML. */
     val skimControls: String = WALL_SKIM_CONTROLS,
+    /** The Summary switch's tooltip on a file without a summary, which pressing it writes. */
+    val summarizeTooltip: String = "Write this file's summary and show it; it is saved with the review's summaries",
+    /** Shown in place of a summary while it is being written. */
+    val summarizing: String = "Summarizing this file…",
 )
 
 /** How the wall's controls name the menu modifier: `⌘` on macOS, else `Ctrl+`. */

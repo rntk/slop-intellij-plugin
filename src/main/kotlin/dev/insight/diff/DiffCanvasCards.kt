@@ -56,13 +56,16 @@ internal class DiffCanvasCards(
     openWallOnCanvas: ((path: String) -> Unit)? = null,
     openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
+    /** Asks for the summary of a wall file that has none; true when it is being written. */
+    summarizeWallFile: ((path: String) -> Boolean)? = null,
     private val diffSession: (() -> ReviewDiffSession)? = null,
 ) : CanvasExtension {
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations) }
+    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
+        summarizeWallFile) }
     private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
@@ -120,10 +123,10 @@ internal class DiffCanvasCards(
     private fun wallCard(content: DiffsWallContent): JPanel = wall.card.also { wall.show(content) }
 
     /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
-    fun updateWallSummaries(summaries: Map<String, String>) {
+    fun updateWallSummaries(summaries: Map<String, String>, summarizing: Set<String>) {
         val current = content.wall ?: return
-        if (current.summaries == summaries) return
-        content = content.copy(wall = current.copy(summaries = summaries))
+        if (current.summaries == summaries && current.summarizing == summarizing) return
+        content = content.copy(wall = current.copy(summaries = summaries, summarizing = summarizing))
         wall.show(content.wall!!)
     }
 

@@ -158,7 +158,13 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
-    fun clearSummaries() { summaries = ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
+    /** Saves what a targeted fill, such as a file's summary asked for on a wall, has written so far; ignored while the change refreshes. */
+    fun replaceSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
+        if (!refreshing) targetedEntries(summaries, updated, ids).forEach { summarize(revision, it) }
+        return summaries
+    }
+
+    fun clearSummaries() { summaries =ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
     fun showSummaries() { summariesVisible = true }
     fun hideSummaries() { summariesVisible = false }
 

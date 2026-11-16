@@ -254,6 +254,39 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(wall) }
     }
 
+    fun testSummarySwitchAsksForAMissingSummaryAndShowsItWhenItArrives() {
+        val asked = mutableListOf<String>()
+        lateinit var wall: WallView
+        val blocks = listOf("a.kt", "b.kt").map { WallBlock(it, it, "", listOf(WallLine.source(1, "line")), 0) }
+        val scope = WallScope(null, "All changes")
+        wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {}, summarize = { path ->
+            asked += path
+            // b.kt cannot be summarized now; a.kt starts and the host says so in its next content.
+            (path == "a.kt").also { if (it) wall.show(WallContent(scope, blocks, summarizing = setOf(path))) }
+        })
+        try {
+            wall.show(WallContent(scope, blocks))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            relayout(pane)
+            val surface = wall.blocks.first().parent as JComponent
+            val (a, b) = wall.blocks
+            assertTrue(a.active)
+            press(surface, "S")
+            assertEquals(listOf("a.kt"), asked)
+            assertTrue("The block shows that its summary is being written", a.showsSummary)
+
+            wall.show(WallContent(scope, blocks, mapOf("a.kt" to "Adds a.")))
+            assertTrue("The written summary takes its place", wall.blocks.first().showsSummary)
+
+            repeat(3) { if (!b.active) press(surface, "TAB") }
+            assertTrue(b.active)
+            press(surface, "S")
+            assertEquals(listOf("a.kt", "b.kt"), asked)
+            assertFalse("A file that cannot be summarized keeps its rows", b.showsSummary)
+        } finally { Disposer.dispose(wall) }
+    }
+
     private fun relayout(component: Container) {
         component.doLayout()
         component.components.filterIsInstance<Container>().forEach(::relayout)

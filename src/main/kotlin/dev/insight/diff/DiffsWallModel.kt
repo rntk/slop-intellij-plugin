@@ -7,10 +7,15 @@ import dev.insight.review.wall.WallLine
 import dev.insight.review.wall.WallScope
 
 /**
- * The wall's scope, ordered snapshot files, and optional summaries keyed by path.
+ * The wall's scope, ordered snapshot files, optional summaries keyed by path, and the paths whose summary is being written.
  */
-internal data class DiffsWallContent(val scope: WallScope, val files: List<ReviewFile>, val summaries: Map<String, String> = emptyMap()) {
-    fun toWall(): WallContent = WallContent(scope, files.map { wallBlock(it) }, summaries)
+internal data class DiffsWallContent(
+    val scope: WallScope,
+    val files: List<ReviewFile>,
+    val summaries: Map<String, String> = emptyMap(),
+    val summarizing: Set<String> = emptySet(),
+) {
+    fun toWall(): WallContent = WallContent(scope, files.map { wallBlock(it) }, summaries, summarizing)
 }
 
 private val HUNK = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@""")

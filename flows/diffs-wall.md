@@ -1,6 +1,6 @@
 # Diffs wall flow
 
-The Diffs wall lays out many changed files at once as blocks on a pannable, zoomable canvas, showing either an entire comparison or a filtered subset from summaries, topics, or moves. Readers can rearrange blocks, swap in file summaries, and jump to full IDE diffs. A skim mode instead stacks every file whole in one page-wide column, read top to bottom like `git diff`, with sticky headers, folding, and hunk-to-hunk jumps, while keeping the same summaries, context menu, and chats.
+The Diffs wall lays out many changed files at once as blocks on a pannable, zoomable canvas, showing either an entire comparison or a filtered subset from summaries, topics, or moves. Readers can rearrange blocks, swap in file summaries, and jump to full IDE diffs. A file without a summary has one written on request through the ordinary summaries pipeline, saved into the review's Summaries tree so the Summaries views and later runs reuse it. A skim mode instead stacks every file whole in one page-wide column, read top to bottom like `git diff`, with sticky headers, folding, and hunk-to-hunk jumps, while keeping the same summaries, context menu, and chats.
 
 Blocks are lexically syntax-highlighted in the background, and both individual files and the wall as a whole support scoped chats with read-only access to the change and project. The canvas and chat mechanics are shared with Code Review's Code wall.
 
