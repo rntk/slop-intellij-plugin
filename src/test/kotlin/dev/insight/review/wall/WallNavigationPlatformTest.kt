@@ -8,6 +8,7 @@ import java.awt.Point
 import java.awt.event.ActionEvent
 import javax.swing.JComponent
 import javax.swing.JScrollPane
+import javax.swing.JViewport
 import javax.swing.KeyStroke
 
 class WallNavigationPlatformTest : BasePlatformTestCase() {
@@ -182,6 +183,80 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             layout(pane)
             test(wall, pane, wall.blocks.first().parent as JComponent)
         } finally { Disposer.dispose(wall) }
+    }
+
+    fun testSkimStacksWholeFullWidthBlocksWithStickyHeadersFoldsAndJumpsBetweenHunks() {
+        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {})
+        try {
+            fun rows(prefix: String) = (1..3).flatMap { hunk ->
+                listOf(WallLine(WallLine.Kind.HUNK, "@@ -$hunk +$hunk @@")) + (1..40).map { WallLine(WallLine.Kind.ADDED, "+$prefix $hunk.$it", new = it) }
+            }
+            val all = rows("a")
+            val blocks = listOf(WallBlock("a.kt", "a.kt", "", all.take(50), all.size - 50, all.drop(50)), WallBlock("b.kt", "b.kt", "", rows("b"), 0))
+            wall.show(WallContent(WallScope(null, "All changes"), blocks, mapOf("a.kt" to "Adds a.")))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            relayout(pane)
+            val surface = wall.blocks.first().parent as JComponent
+            assertEquals(WallMode.CARDS, wall.mode)
+            assertEquals(50, wall.blocks.first().block.lines.size)
+
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.SKIM, wall.mode)
+            assertEquals(JViewport.SIMPLE_SCROLL_MODE, pane.viewport.scrollMode)
+            val (a, b) = wall.blocks
+            assertEquals("The skim column shows the rows the cards cut", all.size, a.block.lines.size)
+            assertEquals(a.x, b.x)
+            assertTrue("Blocks stack in one column", b.y > a.y + a.height)
+            assertTrue("Blocks fill the page's width", a.width > 1200)
+            assertFalse(a.isCompact)
+            assertEquals(a.fullHeight, a.logical.height)
+
+            // The header sticks to the viewport's top while its block scrolls under it.
+            pane.viewport.viewPosition = Point(0, a.y + 300)
+            relayout(pane)
+            assertTrue(a.stickyTop > 0)
+            assertEquals(0, b.stickyTop)
+
+            // N moves to the next hunk header below the sticky header, across files.
+            pane.viewport.viewPosition = Point(0, 0)
+            val tops = mutableListOf<Int>()
+            repeat(5) {
+                press(surface, "N")
+                tops += pane.viewport.viewPosition.y
+            }
+            assertEquals(tops.sorted(), tops)
+            assertEquals(5, tops.distinct().size)
+            press(surface, "shift N")
+            assertEquals(tops[3], pane.viewport.viewPosition.y)
+
+            pane.viewport.viewPosition = Point(0, 0)
+            relayout(pane)
+            press(surface, "S")
+            relayout(pane)
+            assertTrue("The summary shows above the rows, which keep their place below it", wall.blocks.first().logical.height > a.fullHeight)
+
+            press(surface, "C")
+            relayout(pane)
+            assertTrue(wall.blocks.first().isFolded)
+            assertTrue(wall.blocks.first().height < 100)
+            press(surface, "shift C")
+            assertTrue(wall.blocks.all { it.isFolded })
+            press(surface, "shift C")
+            assertTrue(wall.blocks.none { it.isFolded })
+
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.CARDS, wall.mode)
+            assertEquals(50, wall.blocks.first().block.lines.size)
+            assertEquals(JViewport.BLIT_SCROLL_MODE, pane.viewport.scrollMode)
+        } finally { Disposer.dispose(wall) }
+    }
+
+    private fun relayout(component: Container) {
+        component.doLayout()
+        component.components.filterIsInstance<Container>().forEach(::relayout)
     }
 
     private fun press(surface: JComponent, stroke: String) = surface.getActionForKeyStroke(KeyStroke.getKeyStroke(stroke))!!

@@ -36,7 +36,19 @@ internal data class WallLabels(
     val fileChat: (String) -> WallChatText,
     /** The words of the wall's own chat about every file it shows. */
     val canvasChat: WallChatText,
+    /** The label row's tooltip in the skim column; HTML. */
+    val skimControls: String = WALL_SKIM_CONTROLS,
 )
 
 /** How the wall's controls name the menu modifier: `⌘` on macOS, else `Ctrl+`. */
 internal val WALL_MENU_KEY: String = if (SystemInfo.isMac) "⌘" else "Ctrl+"
+
+/** The skim column's controls, shared by every wall. */
+internal val WALL_SKIM_CONTROLS: String = """<html>Skim: every file in one column, whole, its header sticky while it scrolls<br>
+    |Wheel, arrows, Page Up/Down, Space / Shift+Space and Home/End scroll<br>
+    |N / Shift+N jump to the next or previous hunk; Tab / Shift+Tab to the next or previous file<br>
+    |Double-click a line, or press Enter, to open the file at the top in its own view; right-click for more views<br>
+    |Fold in a header, or C, folds the file at the top to its header; Shift+C folds or unfolds them all<br>
+    |Summary in a header, or S, shows the file's summary above its rows<br>
+    |${WALL_MENU_KEY}wheel or $WALL_MENU_KEY= / $WALL_MENU_KEY− zooms the text, ${WALL_MENU_KEY}0 resets to 100%<br>
+    |M switches back to the cards</html>""".trimMargin()

@@ -32,7 +32,38 @@ internal data class WallBlock(
     val lines: List<WallLine>,
     /** Rows cut by the line cap; the client's own view of the file shows them. */
     val hiddenLines: Int,
+    /** The cut rows the client still has, which the skim column shows after [lines]; empty when it has none. */
+    val more: List<WallLine> = emptyList(),
 )
+
+/**
+ * How a wall lays its blocks out: [CARDS], a pannable masonry of movable, height-capped blocks; or [SKIM], one column of blocks
+ * as wide as the page and as tall as their whole body, with sticky headers, read top to bottom like `git diff`.
+ */
+enum class WallMode { CARDS, SKIM }
+
+/** [block] as the skim column shows it: its rows and the cut rows the client kept, with only the rest noted as hidden. */
+internal fun wallSkimBlock(block: WallBlock): WallBlock =
+    if (block.more.isEmpty()) block
+    else block.copy(lines = block.lines + block.more, hiddenLines = (block.hiddenLines - block.more.size).coerceAtLeast(0), more = emptyList())
+
+/**
+ * The width (at 100%) of the skim column's blocks in a viewport [viewportWidth] wide at [zoom]: the page less a [gap] each side and
+ * the [tab] hanging off each block's right edge, never narrower than [minWidth].
+ */
+internal fun wallSkimWidth(viewportWidth: Int, zoom: Double, gap: Int, tab: Int, minWidth: Int): Int =
+    ((viewportWidth / zoom).toInt() - 2 * gap - tab).coerceAtLeast(minWidth)
+
+/**
+ * Where a block's header paints, from its top, in the skim column: at the top of its part in view, [visibleTop], while the block
+ * scrolls under the viewport's top edge, but never into the block's last [headerHeight] pixels of its [height].
+ */
+internal fun wallStickyOffset(visibleTop: Int, height: Int, headerHeight: Int): Int =
+    visibleTop.coerceIn(0, (height - headerHeight).coerceAtLeast(0))
+
+/** The first of the ascending [tops] below [current], or the last above it when not [forward]; null past the end. */
+internal fun wallNextTop(tops: List<Int>, current: Int, forward: Boolean): Int? =
+    if (forward) tops.firstOrNull { it > current + 1 } else tops.lastOrNull { it < current - 1 }
 
 /** The files a wall shows: [paths] in their order, or every file of its review when null, under [title]. */
 data class WallScope(val paths: List<String>?, val title: String)

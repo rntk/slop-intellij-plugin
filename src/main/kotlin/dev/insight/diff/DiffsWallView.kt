@@ -106,6 +106,7 @@ internal val DIFFS_WALL_LABELS = WallLabels(
         |Arrows, Page Up/Down, Space / Shift+Space and Home/End scroll; Shift scrolls sideways<br>
         |In Tab focus mode, scrolling stays inside the active block; Esc restores canvas navigation<br>
         |Tab / Shift+Tab step through the blocks, Esc returns to the overview<br>
+        |Skim above the wall, or M, reads every file whole in one column<br>
         |Compact in a block's header, or C, caps a tall block; its diff scrolls inside<br>
         |Summary in a block's header shows the file's summary in place of its diff<br>
         |Chat on a block's right edge unfolds a chat about that file's diff; Esc in it folds it again<br>

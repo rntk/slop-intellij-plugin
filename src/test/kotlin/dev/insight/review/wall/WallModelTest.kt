@@ -13,6 +13,45 @@ class WallModelTest {
         WallBlock("a", "a", "", rows.map { WallLine(WallLine.Kind.CONTEXT, it) }, hidden)
 
     @Test
+    fun skimBlockShowsTheKeptCutRowsAndNotesOnlyTheRest() {
+        val kept = WallBlock("a", "a", "", listOf(WallLine(WallLine.Kind.CONTEXT, " a")), 3, listOf(WallLine(WallLine.Kind.ADDED, "+b")))
+        val skim = wallSkimBlock(kept)
+        assertEquals(listOf(" a", "+b"), skim.lines.map { it.text })
+        assertEquals(2, skim.hiddenLines)
+        assertTrue(skim.more.isEmpty())
+        val plain = block("x", hidden = 4)
+        assertTrue(wallSkimBlock(plain) === plain)
+    }
+
+    @Test
+    fun skimWidthFillsThePageAtTheZoomButNotBelowTheMinimum() {
+        assertEquals(1000 - 40 - 18, wallSkimWidth(1000, 1.0, 20, 18, 300))
+        assertEquals(2000 - 40 - 18, wallSkimWidth(1000, 0.5, 20, 18, 300))
+        assertEquals(300, wallSkimWidth(200, 1.0, 20, 18, 300))
+    }
+
+    @Test
+    fun stickyHeaderFollowsTheVisibleTopWithinTheBlock() {
+        assertEquals(0, wallStickyOffset(0, 500, 24))
+        assertEquals(0, wallStickyOffset(-10, 500, 24))
+        assertEquals(120, wallStickyOffset(120, 500, 24))
+        assertEquals(476, wallStickyOffset(490, 500, 24))
+        assertEquals(0, wallStickyOffset(30, 20, 24))
+    }
+
+    @Test
+    fun nextTopSkipsTheCurrentPositionEitherWay() {
+        val tops = listOf(100, 300, 700)
+        assertEquals(300, wallNextTop(tops, 100, forward = true))
+        assertEquals(100, wallNextTop(tops, 250, forward = false))
+        assertEquals(300, wallNextTop(tops, 302, forward = false))
+        // A pixel of rounding still counts as being at the top.
+        assertEquals(100, wallNextTop(tops, 301, forward = false))
+        assertNull(wallNextTop(tops, 700, forward = true))
+        assertNull(wallNextTop(tops, 100, forward = false))
+    }
+
+    @Test
     fun sourceLinesAreNumberedWithTabsExpanded() {
         val lines = wallSourceLines("fun a() {\n\treturn 1\n}\n", firstLine = 9)
         assertEquals(listOf(WallLine(WallLine.Kind.SOURCE, "fun a() {", new = 9), WallLine(WallLine.Kind.SOURCE, "    return 1", new = 10),

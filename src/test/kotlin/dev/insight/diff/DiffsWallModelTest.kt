@@ -42,7 +42,12 @@ class DiffsWallModelTest {
         assertEquals("+2 −1", block.stats)
         assertEquals(3, block.lines.size)
         assertEquals(2, block.hiddenLines)
-        assertEquals("src/A.kt", wallBlock(file("src/A.kt", patch, previousPath = "src/A.kt")).title)
+        // The skim column shows the cut rows too.
+        assertEquals(listOf("+c", " d"), block.more.map { it.text })
+        val skim = dev.insight.review.wall.wallSkimBlock(block)
+        assertEquals(5, skim.lines.size)
+        assertEquals(0, skim.hiddenLines)
+        assertEquals("src/A.kt",wallBlock(file("src/A.kt", patch, previousPath = "src/A.kt")).title)
         assertEquals(0, wallBlock(file("src/A.kt", patch)).hiddenLines)
     }
 

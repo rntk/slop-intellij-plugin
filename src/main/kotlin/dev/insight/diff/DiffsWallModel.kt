@@ -39,12 +39,13 @@ internal fun wallLines(patch: String): List<WallLine> {
 }
 
 /**
- * Displays at most [maxLines] rows, with line counts and an `old → new` title for renames.
+ * Displays at most [maxLines] rows, keeping the rest for the skim column, with line counts and an `old → new` title for renames.
  */
 internal fun wallBlock(file: ReviewFile, maxLines: Int = WALL_MAX_LINES): WallBlock {
     val all = wallLines(file.patch)
     val title = file.previousPath?.takeIf { it != file.path }?.let { "$it → ${file.path}" } ?: file.path
     val added = all.count { it.kind == WallLine.Kind.ADDED }
     val removed = all.count { it.kind == WallLine.Kind.REMOVED }
-    return WallBlock(file.path, title, "+$added −$removed", all.take(maxLines), (all.size - maxLines).coerceAtLeast(0))
+    return WallBlock(file.path, title, "+$added −$removed", all.take(maxLines), (all.size - maxLines).coerceAtLeast(0),
+        all.drop(maxLines))
 }
