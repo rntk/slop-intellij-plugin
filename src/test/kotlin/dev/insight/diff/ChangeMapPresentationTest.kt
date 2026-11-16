@@ -4,7 +4,14 @@ import dev.insight.diff.ChangeMapFixture.lone
 import dev.insight.diff.ChangeMapFixture.map
 import dev.insight.diff.ChangeMapFixture.origin
 import dev.insight.diff.ChangeMapFixture.readme
+import dev.insight.diff.atoms.AtomEdge
+import dev.insight.diff.atoms.AtomRelation
+import dev.insight.diff.atoms.AtomRole
 import dev.insight.diff.atoms.AtomStatus
+import dev.insight.diff.atoms.ChangeCluster
+import dev.insight.diff.atoms.ChangeGraph
+import dev.insight.diff.atoms.ChangeMap
+import dev.insight.diff.atoms.ClusterStep
 import dev.insight.diff.atoms.buildChangeMapTree
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.summarize
@@ -95,6 +102,57 @@ class ChangeMapPresentationTest {
         assertEquals("Loose ends.", model.detail(STANDALONE_ENTRY)!!.summary)
         assertEquals("Leaf Zed.zap.", model.detail(STANDALONE_ENTRY)!!.rows[0].summary)
         assertNull(model.rootSummary)
+    }
+
+    @Test fun `a chain is read by role and steps that follow one cause the same way fold into a fan-out`() {
+        val callers = (1..5).map { ChangeMapFixture.atom("Caller$it.call") }
+        val other = ChangeMapFixture.atom("Other.call")
+        val test = ChangeMapFixture.atom("OriginTest.checks", "src/test/OriginTest.kt", evidenceKind = "test")
+        val graph = ChangeGraph(listOf(origin) + callers + other + test,
+            callers.map { AtomEdge(origin.id, it.id, AtomRelation.SIGNATURE_USE) } +
+                AtomEdge(origin.id, other.id, AtomRelation.NEW_SYMBOL_USE) + AtomEdge(origin.id, test.id, AtomRelation.TEST_OF))
+        val cluster = ChangeCluster("c", listOf(ClusterStep(origin.id, AtomRole.ORIGIN, 0)) +
+            (callers.take(2) + other + callers.drop(2)).map { ClusterStep(it.id, AtomRole.PROPAGATION, 1) } +
+            ClusterStep(test.id, AtomRole.TEST, 1), title = "Change make")
+        val wide = ChangeMap(graph, listOf(cluster))
+        val detail = ChangeMapPresentation(ChangeMapCard(wide, emptyList(), ReviewSummaries(buildChangeMapTree(wide, emptyList())), false, true)).detail("c")!!
+
+        assertEquals(8, detail.rows.size)
+        assertEquals(listOf("Origin", "Follows", "Tests"), detail.sections.map { it.title })
+        assertEquals(listOf(true, false, true), detail.sections.map { it.open })
+        val follows = detail.sections[1]
+        assertEquals("The fan-out stands where its first member did", listOf(FanOut::class, SingleStep::class), follows.items.map { it::class })
+        val fan = follows.items[0] as FanOut
+        assertEquals("5 adapt to the changed signature of Foo.make", fan.title)
+        assertEquals(callers.map { it.name }, fan.rows.map { it.name })
+        assertEquals("+10 −10 · 5 declarations · 5 files", fan.stats)
+        assertEquals("Other.call", (follows.items[1] as SingleStep).row.name)
+        assertEquals(detail.rows.size + 3 + 1, detail.keys.size)
+        assertTrue("section:PROPAGATION" in detail.keys && fan.key in detail.keys)
+    }
+
+    @Test fun `a collapsed step shows the first sentence of its summary and the rest when expanded`() {
+        assertEquals("Adds retries to uploads.", gist("Adds retries to uploads. Keeps `x.y` intact."))
+        assertEquals("Uses v1.2 of the API", gist("Uses v1.2 of the API"))
+        assertTrue(gist("word ".repeat(100)).let { it.endsWith("…") && it.length <= 221 })
+
+        val leaf = id("atom:${origin.id}")
+        val model = presentation(ReviewSummaries(tree).summarize(mapOf(leaf to "Changes make. Callers now pass a size.")))
+        val row = model.detail("k1")!!.rows.first()
+        assertEquals("Changes make.", row.gist)
+        assertEquals("Callers now pass a size.", row.more)
+        val single = presentation(ReviewSummaries(tree).summarize(mapOf(leaf to "Changes make."))).detail("k1")!!.rows.first()
+        assertEquals("Changes make.", single.gist)
+        assertNull(single.more)
+    }
+
+    @Test fun `standalone changes are sectioned by what they are and a sole section starts open`() {
+        val detail = presentation().detail(STANDALONE_ENTRY)!!
+        assertEquals(listOf("Changes", "Docs"), detail.sections.map { it.title })
+        assertEquals(listOf(listOf("Zed.zap"), listOf("README.md")), detail.sections.map { s -> s.rows.map { it.name } })
+        val k2 = presentation().detail("k2")!!
+        assertEquals(listOf("Origin", "Follows"), k2.sections.map { it.title })
+        assertTrue(k2.sections.all { it.open && it.items.all { item -> item is SingleStep } })
     }
 
     @Test fun `an atom opens at its changed lines on the side each exists on`() {

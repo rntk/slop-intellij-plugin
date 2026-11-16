@@ -47,6 +47,9 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
     var selected: String? = null
         private set
 
+    /** Per list entry, the parts of its detail the reader expanded or collapsed, by [ChangeDetail.keys]; the rest keep their defaults. */
+    private val expanded = mutableMapOf<String, MutableMap<String, Boolean>>()
+
     fun card(content: ChangeMapCard): JPanel {
         val model = ChangeMapPresentation(content)
         val header = JPanel(BorderLayout()).apply {
@@ -107,7 +110,9 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
                 fun show(entry: String?) {
                     selected = entry
                     detail.removeAll()
-                    entry?.let(model::detail)?.let { fillDetail(detail, it) { target -> list.selectedIndex = entries.indexOfFirst { e -> e.id == target } } }
+                    entry?.let(model::detail)?.let {
+                        fillDetail(detail, it, { target -> list.selectedIndex = entries.indexOfFirst { e -> e.id == target } }) { show(entry) }
+                    }
                     detail.revalidate(); detail.repaint()
                 }
                 list.addListSelectionListener { if (!it.valueIsAdjusting) list.selectedValue?.let { entry -> if (entry.id != selected || detail.componentCount == 0) show(entry.id) } }
@@ -119,47 +124,128 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
         return panel
     }
 
-    private fun fillDetail(panel: JPanel, detail: ChangeDetail, select: (String) -> Unit) {
+    /**
+     * The selected change, read top-down: its summary, then its steps by role. Sections, fan-outs and steps expand on a
+     * click; a collapsed step shows one line and the first sentence of its summary.
+     */
+    private fun fillDetail(panel: JPanel, detail: ChangeDetail, select: (String) -> Unit, refresh: () -> Unit) {
         val width = scaled(WIDTH - LIST_WIDTH - 4 * PADDING - 16)
+        val state = expanded.getOrPut(detail.entry) { mutableMapOf() }
         panel.add(JLabel(detail.title).apply { name = "change-map-title"; font = scaledFont(JBFont.label().asBold().biggerOn(2f)) })
         panel.add(detail.summary?.let { text(it, width).apply { name = "change-map-summary" } }
             ?: note("Summaries are not written yet; run /change-map to write them.").apply { name = "change-map-summary-missing" })
-        detail.rows.forEach { panel.add(stepRow(it, width, select)) }
+        panel.add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), 0)).apply {
+            isOpaque = false
+            add(small("${detail.rows.size} steps"))
+            add(ActionLink("Expand all") { detail.keys.forEach { state[it] = true }; refresh() }.apply { name = "change-map-expand-all"; font = scaledFont(JBFont.small()) })
+            add(ActionLink("Collapse all") { detail.keys.forEach { state[it] = false }; refresh() }.apply { name = "change-map-collapse-all"; font = scaledFont(JBFont.small()) })
+        })
+        detail.sections.forEach { section -> panel.add(sectionPanel(section, state, width, select)) }
     }
 
-    private fun stepRow(row: StepRow, width: Int, select: (String) -> Unit): JComponent = JPanel(VerticalLayout(scaled(3))).apply {
-        name = "change-map-step"
-        isOpaque = false
-        border = JBUI.Borders.compound(JBUI.Borders.emptyLeft(18 * row.depth),
-            JBUI.Borders.compound(JBUI.Borders.customLineLeft(roleColor(row.role)), JBUI.Borders.empty(2, 8, 2, 0)))
-        add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
+    private fun sectionPanel(section: StepSection, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
+        val color = roleColor(section.title)
+        val head = JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
             isOpaque = false
-            add(JLabel(row.role).apply {
-                name = "change-map-role"
-                font = scaledFont(JBFont.small().asBold()); foreground = roleColor(row.role)
-                border = JBUI.Borders.compound(JBUI.Borders.customLine(roleColor(row.role), 1), JBUI.Borders.empty(0, 4))
+            add(JLabel("${section.title} (${section.rows.size})").apply { name = "change-map-section-title"; font = scaledFont(JBFont.label().asBold()); foreground = color })
+            add(small(section.stats))
+        }
+        // Depth is shown relative to the section's shallowest step, so a section does not start indented.
+        val base = section.rows.minOf { it.depth }
+        return disclosure("change-map-section", section.key, state, section.open, head) {
+            JPanel(VerticalLayout(scaled(6))).apply {
+                isOpaque = false
+                border = JBUI.Borders.compound(JBUI.Borders.customLineLeft(color), JBUI.Borders.emptyLeft(8))
+                section.items.forEach { item ->
+                    when (item) {
+                        is SingleStep -> add(stepRow(item.row, (item.row.depth - base).coerceIn(0, MAX_INDENT), state, width - scaled(16), select))
+                        is FanOut -> add(fanOut(item, state, width - scaled(16), select))
+                    }
+                }
+            }
+        }.apply { border = JBUI.Borders.emptyTop(4) }
+    }
+
+    private fun fanOut(fan: FanOut, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
+        val head = JPanel(VerticalLayout(scaled(1))).apply {
+            isOpaque = false
+            add(JLabel(fan.title).apply { name = "change-map-fan-title"; font = scaledFont(JBFont.label().asBold()) })
+            add(small(fan.stats + " · " + fan.rows.joinToString(", ") { it.name }.let { if (it.length > 140) it.take(140).substringBeforeLast(',') + ", …" else it }))
+        }
+        return disclosure("change-map-fan", fan.key, state, false, head) {
+            JPanel(VerticalLayout(scaled(6))).apply {
+                isOpaque = false
+                border = JBUI.Borders.emptyLeft(16)
+                fan.rows.forEach { add(stepRow(it, 0, state, width - scaled(16), select)) }
+            }
+        }
+    }
+
+    private fun stepRow(row: StepRow, indent: Int, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
+        val textWidth = width - scaled(18) * indent - scaled(24)
+        val head = JPanel(VerticalLayout(scaled(2))).apply {
+            isOpaque = false
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
+                isOpaque = false
+                add(JLabel(row.name).apply { name = "change-map-symbol"; font = scaledFont(JBFont.label().asBold()) })
+                add(small(row.counts))
+                add(ActionLink(row.location) { actions.openAtom(row.atom) }.apply {
+                    name = "change-map-open"; font = scaledFont(JBFont.small()); toolTipText = "Open the diff of ${row.atom.path} at this change"
+                })
             })
-            add(JLabel(row.name).apply { name = "change-map-symbol"; font = scaledFont(JBFont.label().asBold()) })
-            add(small(row.detail))
-        })
-        add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
+            row.gist?.let { add(text(it, textWidth).apply { name = "change-map-step-gist" }) }
+        }
+        return disclosure("change-map-step", row.key, state, false, head, open = { actions.openAtom(row.atom) }) {
+            JPanel(VerticalLayout(scaled(3))).apply {
+                isOpaque = false
+                border = JBUI.Borders.emptyLeft(20)
+                add(small(listOf(row.role, row.detail).joinToString(" · ")).apply { name = "change-map-role" })
+                row.relations.forEach { add(small("↳ $it").apply { name = "change-map-relation" }) }
+                row.more?.let { add(text(it, textWidth).apply { name = "change-map-step-summary" }) }
+                if (row.links.isNotEmpty()) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
+                    isOpaque = false
+                    add(small("also linked to:"))
+                    row.links.forEach { link -> add(ActionLink(link.title) { select(link.entry) }.apply { name = "change-map-link"; font = scaledFont(JBFont.small()) }) }
+                })
+            }
+        }.apply { border = JBUI.Borders.emptyLeft(18 * indent) }
+    }
+
+    /**
+     * A [head] behind a chevron whose [body] is built when first expanded. A click on the head toggles it and keeps the
+     * choice in [state] under [key]; a double click runs [open], if given. Links inside the head handle their own clicks.
+     */
+    private fun disclosure(name: String, key: String, state: MutableMap<String, Boolean>, default: Boolean, head: JComponent,
+                           open: (() -> Unit)? = null, body: () -> JComponent): JPanel {
+        val panel = JPanel(VerticalLayout(scaled(3))).apply { isOpaque = false; this.name = name }
+        val chevron = JLabel().apply { this.name = "$name-toggle"; verticalAlignment = JLabel.TOP; border = JBUI.Borders.emptyTop(2) }
+        var built: JComponent? = null
+        fun apply(expand: Boolean) {
+            chevron.icon = if (expand) AllIcons.General.ArrowDown else AllIcons.General.ArrowRight
+            if (expand && built == null) built = body().also(panel::add)
+            built?.isVisible = expand
+            panel.revalidate(); panel.repaint()
+        }
+        val line = JPanel(BorderLayout(scaled(4), 0)).apply {
             isOpaque = false
-            add(ActionLink(row.location) { actions.openAtom(row.atom) }.apply {
-                name = "change-map-open"; font = scaledFont(JBFont.small()); toolTipText = "Open the diff of ${row.atom.path} at this change"
-            })
-            add(small(row.counts))
-        })
-        row.relations.forEach { add(small("↳ $it").apply { name = "change-map-relation" }) }
-        row.summary?.let { add(text(it, width - scaled(18) * row.depth).apply { name = "change-map-step-summary" }) }
-        if (row.links.isNotEmpty()) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
-            isOpaque = false
-            add(small("also linked to:"))
-            row.links.forEach { link -> add(ActionLink(link.title) { select(link.entry) }.apply { name = "change-map-link"; font = scaledFont(JBFont.small()) }) }
-        })
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) { if (e.clickCount == 1) actions.openAtom(row.atom) }
-        })
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            add(chevron, BorderLayout.WEST)
+            add(head, BorderLayout.CENTER)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+        val toggle = object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount == 2 && open != null) { open(); return }
+                if (e.clickCount != 1) return
+                val next = !(state[key] ?: default)
+                state[key] = next
+                apply(next)
+            }
+        }
+        // Labels and panels without listeners of their own pass clicks up to the line.
+        line.addMouseListener(toggle)
+        panel.add(line)
+        apply(state[key] ?: default)
+        return panel
     }
 
     private inner class EntryRenderer : ListCellRenderer<ChangeEntry> {
@@ -180,10 +266,11 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
             }
     }
 
+    /** By a section's title. */
     private fun roleColor(role: String): Color = when (role) {
         "Origin" -> JBColor(Color(0x2E7D32), Color(0x81C784))
         "Follows" -> JBColor(Color(0x1565C0), Color(0x64B5F6))
-        "Test" -> JBColor(Color(0x8E24AA), Color(0xCE93D8))
+        "Tests" -> JBColor(Color(0x8E24AA), Color(0xCE93D8))
         "Docs" -> JBColor(Color(0x6D4C41), Color(0xBCAAA4))
         else -> JBColor.GRAY
     }
@@ -209,5 +296,7 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
         const val WIDTH = 1300
         const val LIST_WIDTH = 380
         const val HEIGHT = 720
+        /** Steps deeper than this in a section are indented no further. */
+        const val MAX_INDENT = 4
     }
 }

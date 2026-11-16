@@ -1,6 +1,8 @@
 package dev.insight.diff
 
+import dev.insight.diff.atoms.AtomEdge
 import dev.insight.diff.atoms.AtomKind
+import dev.insight.diff.atoms.AtomRelation
 import dev.insight.diff.atoms.AtomRole
 import dev.insight.diff.atoms.AtomStatus
 import dev.insight.diff.atoms.CHANGE_MAP_ROOT_IDENTITY
@@ -42,7 +44,11 @@ internal data class ChangeEntry(val id: String, val title: String, val stats: St
 /** A change [atom]'s step links to; selecting it shows that change. */
 internal data class ChangeLink(val entry: String, val title: String)
 
-/** One step of a chain as the card lists it. [relations] link it to earlier steps, [links] to other changes. */
+/**
+ * One step of a chain as the card lists it. [relations] link it to earlier steps, [links] to other changes. A collapsed
+ * step shows only its [gist], the first sentence of its [summary]; [more] is the rest, shown when it is expanded.
+ * [via] is the strongest edge from an earlier step; steps that share it follow the same cause in the same way.
+ */
 internal data class StepRow(
     val atom: ChangeAtom,
     val depth: Int,
@@ -54,9 +60,53 @@ internal data class StepRow(
     val relations: List<String>,
     val summary: String?,
     val links: List<ChangeLink>,
-)
+    val gist: String? = null,
+    val more: String? = null,
+    val via: AtomEdge? = null,
+) {
+    val key: String get() = ATOM_IDENTITY_PREFIX + atom.id
+}
 
-internal data class ChangeDetail(val entry: String, val title: String, val summary: String?, val rows: List<StepRow>)
+/** What a section lists: one step, or a fan-out of steps that follow the same cause by the same relation. */
+internal sealed interface StepItem {
+    val key: String
+    val rows: List<StepRow>
+}
+
+internal data class SingleStep(val row: StepRow) : StepItem {
+    override val key: String get() = row.key
+    override val rows: List<StepRow> get() = listOf(row)
+}
+
+/** At least [FAN_OUT_MIN] steps that follow one cause by one relation, such as every call site adapting to a changed signature. */
+internal data class FanOut(override val key: String, val title: String, val stats: String, override val rows: List<StepRow>) : StepItem
+
+/** The steps of one role in chain order; [open] is whether the section starts expanded. */
+internal data class StepSection(val key: String, val title: String, val stats: String, val items: List<StepItem>, val open: Boolean) {
+    val rows: List<StepRow> get() = items.flatMap { it.rows }
+}
+
+/** A chain or the standalone changes: every step in [rows], and the same steps grouped for reading in [sections]. */
+internal data class ChangeDetail(
+    val entry: String,
+    val title: String,
+    val summary: String?,
+    val rows: List<StepRow>,
+    val sections: List<StepSection> = emptyList(),
+) {
+    /** The key of every part that expands: sections, fan-outs and steps. */
+    val keys: List<String> get() = sections.flatMap { section ->
+        listOf(section.key) + section.items.flatMap { item -> listOfNotNull(item.key.takeIf { item is FanOut }) + item.rows.map { it.key } }
+    }
+}
+
+/** A fan-out needs this many steps; fewer read well enough one by one. */
+internal const val FAN_OUT_MIN = 3
+
+/** A section of more steps than this starts collapsed, unless it holds the origins or is the only one. */
+internal const val SECTION_OPEN_MAX = 4
+
+private const val GIST_MAX = 220
 
 /**
  * Everything the change map card decides without Swing: header, list entries, the rows of a chain, and which summary
@@ -99,23 +149,46 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
     fun detail(entry: String): ChangeDetail? {
         val map = map ?: return null
         if (entry == STANDALONE_ENTRY) {
-            val rows = map.standalone.flatMap { cluster -> map.atoms(cluster).map { row(cluster, it, AtomRole.STANDALONE, 0, emptyList()) } }
-            return ChangeDetail(entry, "Standalone changes", texts[STANDALONE_CLUSTER_IDENTITY], rows)
+            val rows = map.standalone.flatMap { cluster -> map.atoms(cluster).map { row(cluster, it, AtomRole.STANDALONE, 0, emptyList(), null) } }
+            // Unrelated changes have no chain to follow, so they are sorted by what they are: code, tests, documentation.
+            val sections = rows.groupBy { standaloneRole(it.atom) }.entries.sortedBy { STANDALONE_ORDER.indexOf(it.key) }.map { (role, members) -> section(role, members) }
+            return ChangeDetail(entry, "Standalone changes", texts[STANDALONE_CLUSTER_IDENTITY], rows, openSole(sections))
         }
         val cluster = map.cluster(entry) ?: return null
         val position = cluster.steps.withIndex().associate { it.value.atom to it.index }
         val inside = map.edgesWithin(cluster)
         val rows = cluster.steps.mapIndexedNotNull { index, step ->
             val atom = map.graph.atom(step.atom) ?: return@mapIndexedNotNull null
-            val relations = inside.filter { it.to == atom.id && (position[it.from] ?: Int.MAX_VALUE) < index }
-                .sortedBy { it.relation.strength.ordinal }
-                .mapNotNull { edge -> map.graph.atom(edge.from)?.let { "${edge.relation.label} ${it.name}" } }.distinct()
-            row(cluster, atom, step.role, step.depth, relations)
+            val earlier = inside.filter { it.to == atom.id && (position[it.from] ?: Int.MAX_VALUE) < index }.sortedBy { it.relation.strength.ordinal }
+            val relations = earlier.mapNotNull { edge -> map.graph.atom(edge.from)?.let { "${edge.relation.label} ${it.name}" } }.distinct()
+            row(cluster, atom, step.role, step.depth, relations, earlier.firstOrNull())
         }
-        return ChangeDetail(entry, map.title(cluster), texts[CLUSTER_IDENTITY_PREFIX + cluster.id], rows)
+        val roles = cluster.steps.associate { it.atom to it.role }
+        val sections = rows.groupBy { roles.getValue(it.atom.id) }.entries.sortedBy { it.key.ordinal }.map { (role, members) -> section(role, members) }
+        return ChangeDetail(entry, map.title(cluster), texts[CLUSTER_IDENTITY_PREFIX + cluster.id], rows, openSole(sections))
     }
 
-    private fun row(cluster: ChangeCluster, atom: ChangeAtom, role: AtomRole, depth: Int, relations: List<String>): StepRow {
+    /** One role's steps, with those that follow one cause by one relation folded into a [FanOut] where the first of them stood. */
+    private fun section(role: AtomRole, rows: List<StepRow>): StepSection {
+        val fans = rows.filter { it.via != null }.groupBy { it.via!!.from to it.via.relation }.values.filter { it.size >= FAN_OUT_MIN }
+        val fanOf = fans.flatMap { members -> members.map { it.atom.id to members } }.toMap()
+        val items = mutableListOf<StepItem>()
+        val placed = hashSetOf<String>()
+        for (row in rows) {
+            val members = fanOf[row.atom.id]
+            if (members == null) { items += SingleStep(row); continue }
+            if (!placed.add(members.first().atom.id)) continue
+            val via = members.first().via!!
+            val cause = map?.graph?.atom(via.from)?.name ?: "an earlier step"
+            items += FanOut("fan:${via.from}:${via.relation.name}", "${members.size} ${via.relation.plural} $cause", stats(members.map { it.atom }), members)
+        }
+        return StepSection("section:${role.name}", sectionLabel(role), stats(rows.map { it.atom }), items,
+            open = role == AtomRole.ORIGIN || rows.size <= SECTION_OPEN_MAX)
+    }
+
+    private fun openSole(sections: List<StepSection>) = sections.singleOrNull()?.let { listOf(it.copy(open = true)) } ?: sections
+
+    private fun row(cluster: ChangeCluster, atom: ChangeAtom, role: AtomRole, depth: Int, relations: List<String>, via: AtomEdge?): StepRow {
         val map = map!!
         val links = map.edgesAcross(cluster).filter { it.from == atom.id || it.to == atom.id }
             .mapNotNull { edge -> map.clusterOf(if (edge.from == atom.id) edge.to else edge.from) }
@@ -124,8 +197,12 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
             .distinct()
             // A standalone row does not link to the entry it is listed in.
             .filterNot { cluster.standalone && it.entry == STANDALONE_ENTRY }
+        val summary = texts[ATOM_IDENTITY_PREFIX + atom.id]
+        val gist = summary?.let(::gist)
+        val more = summary?.takeIf { it != gist }
+            ?.let { if (gist != null && it.startsWith(gist)) it.substring(gist.length).trim() else it }?.takeIf { it.isNotEmpty() }
         return StepRow(atom, depth, roleLabel(role), atomName(atom), atomDetail(atom), atomLocation(atom), "+${atom.added} −${atom.removed}",
-            relations, texts[ATOM_IDENTITY_PREFIX + atom.id], links)
+            relations, summary, links, gist, more, via)
     }
 
     private fun stats(atoms: List<ChangeAtom>) =
@@ -138,6 +215,49 @@ internal fun roleLabel(role: AtomRole): String = when (role) {
     AtomRole.TEST -> "Test"
     AtomRole.DOCUMENTATION -> "Docs"
     AtomRole.STANDALONE -> "Change"
+}
+
+/** How a section of [role] is headed; standalone code reads as "Changes". */
+internal fun sectionLabel(role: AtomRole): String = when (role) {
+    AtomRole.ORIGIN -> "Origin"
+    AtomRole.PROPAGATION -> "Follows"
+    AtomRole.TEST -> "Tests"
+    AtomRole.DOCUMENTATION -> "Docs"
+    AtomRole.STANDALONE -> "Changes"
+}
+
+private val STANDALONE_ORDER = listOf(AtomRole.STANDALONE, AtomRole.TEST, AtomRole.DOCUMENTATION)
+
+/** The section a standalone atom is listed in, by its path's evidence kind. */
+private fun standaloneRole(atom: ChangeAtom): AtomRole = when (atom.evidenceKind) {
+    "test" -> AtomRole.TEST
+    "documentation" -> AtomRole.DOCUMENTATION
+    else -> AtomRole.STANDALONE
+}
+
+/** The relation said of several dependents at once: "4 adapt to the changed signature of Foo.make". */
+internal val AtomRelation.plural: String get() = when (this) {
+    AtomRelation.SIGNATURE_USE -> "adapt to the changed signature of"
+    AtomRelation.NEW_SYMBOL_USE -> "use the new"
+    AtomRelation.REMOVED_SYMBOL_USE -> "drop their use of the removed"
+    AtomRelation.OVERRIDE -> "override"
+    AtomRelation.MOVE -> "receive code moved from"
+    AtomRelation.TEST_OF -> "test"
+    AtomRelation.REPEATED_EDIT -> "repeat the edit of"
+    AtomRelation.USE -> "change their use of"
+    AtomRelation.SAME_EDIT -> "make the same edit as"
+    AtomRelation.CALL -> "call"
+    AtomRelation.SAME_OWNER -> "share an owner with"
+}
+
+private val SENTENCE_END = Regex("""(?<=[.!?])\s+(?=[A-Z`"'(\[])""")
+
+/** The first sentence of a summary, cut at a word when it runs past [GIST_MAX] characters. */
+internal fun gist(summary: String): String {
+    val text = summary.trim()
+    val first = SENTENCE_END.find(text)?.let { text.substring(0, it.range.first) } ?: text
+    if (first.length <= GIST_MAX) return first
+    return first.take(GIST_MAX).substringBeforeLast(' ').trimEnd(',', ';', ':') + "…"
 }
 
 internal fun atomName(atom: ChangeAtom): String = when (atom.kind) {

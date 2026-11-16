@@ -44,10 +44,18 @@ class ChangeMapCardTest : BasePlatformTestCase() {
             assertEquals("k1", cards.changeMapSelection)
             assertEquals("Make things", label(canvas, "change-map-title"))
             assertTrue(named(canvas, "change-map-summary-missing").isNotEmpty())
-            assertEquals(listOf("Origin", "Follows", "Test"), labels(canvas, "change-map-role"))
+            // Steps start collapsed to their name and the first sentence of their summary, within sections by role.
+            assertEquals(listOf("Origin (1)", "Follows (1)", "Tests (1)"), labels(canvas, "change-map-section-title"))
             assertEquals(listOf("Foo.make", "Bar.use", "BarTest.uses"), labels(canvas, "change-map-symbol"))
+            assertEquals(listOf("Leaf Foo.make.", "Leaf Bar.use.", "Leaf BarTest.uses."), labels(canvas, "change-map-step-gist").map { it.removeHtml() })
+            assertTrue(named(canvas, "change-map-relation").isEmpty())
+            (named(canvas, "change-map-expand-all").single() as ActionLink).doClick()
+            assertEquals(listOf("Origin", "Follows", "Test"), labels(canvas, "change-map-role").map { it.substringBefore(" ·") })
             assertEquals(listOf("↳ uses the new Foo.make", "↳ tests Bar.use", "↳ changes its use of Foo.make"), labels(canvas, "change-map-relation"))
-            assertEquals(3, named(canvas, "change-map-step-summary").size)
+            assertTrue("A one-sentence summary has nothing more to show", named(canvas, "change-map-step-summary").isEmpty())
+            (named(canvas, "change-map-collapse-all").single() as ActionLink).doClick()
+            assertTrue(named(canvas, "change-map-symbol").isEmpty())
+            (named(canvas, "change-map-expand-all").single() as ActionLink).doClick()
 
             (named(canvas, "change-map-open").first() as ActionLink).doClick()
             assertEquals(listOf(ChangeMapFixture.origin), opened)
@@ -56,7 +64,7 @@ class ChangeMapCardTest : BasePlatformTestCase() {
             (named(canvas, "change-map-link").single() as ActionLink).doClick()
             assertEquals(STANDALONE_ENTRY, cards.changeMapSelection)
             assertEquals("Standalone changes", label(canvas, "change-map-title"))
-            assertEquals(listOf("Change", "Change"), labels(canvas, "change-map-role"))
+            assertEquals(listOf("Changes (1)", "Docs (1)"), labels(canvas, "change-map-section-title"))
             assertTrue(named(canvas, "change-map-relation").isEmpty())
 
             list(canvas).selectedIndex = 1
