@@ -182,8 +182,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(listOf("1 file"), tileStats(tab, "view-wall"))
             assertTrue("Words are counted only by the Words page", tileStats(tab, "view-words").isEmpty())
             assertTrue(tab.state.summariesVisible)
-            assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, tab.canvas.summariesView.mode)
-            assertTrue(descendants(tab.canvas).any { it.name == "summary-split-panels" })
+            assertEquals(dev.insight.review.ReviewSummariesMode.HIERARCHY, tab.canvas.summariesView.mode)
+            assertTrue(descendants(tab.canvas).any { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
             assertFalse(tab.session.busy)
             assertTrue(tab.session.messages.none { it.role == ChatRole.USER })
         } finally { Disposer.dispose(tab) }

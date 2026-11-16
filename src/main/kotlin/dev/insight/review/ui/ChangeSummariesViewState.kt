@@ -47,7 +47,7 @@ internal class ChangeSummariesViewState(
     val treeExpanded = hashSetOf<String>()
     val treeFolded = hashSetOf<String>()
     val treeOpenedFiles = hashSetOf<String>()
-    var mode = ReviewSummariesMode.OUTLINE
+    var mode = ReviewSummariesMode.HIERARCHY
     var tagsCloud = false
     var softWrap = false
     /** The radar's folder level, 1 being the root's entries; null picks the first level with a few entries. */

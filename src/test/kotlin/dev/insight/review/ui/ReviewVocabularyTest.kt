@@ -62,6 +62,11 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
+            assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
+            assertTrue(descendants(canvas).none { it is SourceTextView })
+            selectTopicsMode(descendants(canvas), "Document")
+            layoutTree(canvas)
             assertEquals(ChangeTopicsMode.DOCUMENT, canvas.topicsView.mode)
             val panel = descendants(canvas).filterIsInstance<ChangeTopicsPanel>().single()
             assertEquals(listOf("src/auth.kt", "src/wallet.kt", "src/pending.kt"), panel.outline.files.map { it.path })
@@ -79,11 +84,6 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
             // Without a node callback the canvas shows the file by path, as before.
             buttons.first().doClick()
             assertEquals(1, shown.size)
-            selectTopicsMode(descendants(canvas), "Hierarchy")
-            layoutTree(canvas)
-            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
-            assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicHierarchyPanel>().size)
-            assertTrue(descendants(canvas).none { it is SourceTextView })
         } finally { canvas.dispose() }
     }
 
@@ -101,7 +101,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
                     it.id to Summary.plain(if (it.label == "Wallet") "answer detail" else "answer overview")
                 })
             val content = initial.copy(topicSummaries = topicSummaries)
-            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
+            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900); topicsView.mode = ChangeTopicsMode.DOCUMENT }
             fun toggle() = descendants(canvas).filterIsInstance<javax.swing.JCheckBox>()
                 .single { it.name == "topics-tags-cloud" }
             fun assertSizes(text: String, cloud: Boolean) {
@@ -140,7 +140,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
             selectSummariesMode(descendants(canvas), "hierarchy")
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
@@ -166,7 +166,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
-            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
             selectSummariesMode(descendants(canvas), "document")
             layoutTree(canvas)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
@@ -261,7 +261,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun names() = panel().components.mapNotNull { it.name }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
+            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
             selectSummariesMode(descendants(canvas), "hierarchy")
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.

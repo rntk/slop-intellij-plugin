@@ -78,7 +78,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             // Rebuilding the review updates both open editors without moving their pages into each other.
             tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
-            assertTrue(descendants(summariesEditor.component).any { it.name == "summary-split-panels" })
+            assertTrue(descendants(summariesEditor.component).any { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
             assertTrue(descendants(topicsEditor.component).filterIsInstance<JLabel>().any { it.text.startsWith("Change topics ·") })
             tab.rename("Focused review")
             assertEquals("Diff Review: Focused review · Summaries", tab.canvasFile.name)
@@ -430,7 +430,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             panel.openCanvas(true)
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertTrue(first.state.summariesVisible)
-            assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
+            assertEquals(dev.insight.review.ReviewSummariesMode.HIERARCHY, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
             assertFalse(first.session.busy)
             assertTrue(first.session.messages.none { it.role == ChatRole.USER })
@@ -742,7 +742,8 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val context = tab.captureContext()
             runWithEvents {
                 context.addNotes(listOf(ReviewNote(listOf("src/a.kt"), "Explains A.")))
-                val showButton = descendants(tab.canvas).filterIsInstance<InplaceButton>()
+                val noteKey = tab.canvas.pageKeys.filterIsInstance<dev.insight.review.ReviewNoteKey>().single()
+                val showButton = descendants(tab.canvas.editorPage(noteKey)).filterIsInstance<InplaceButton>()
                     .single { it.toolTipText == "Show diff in tab" }
                 // A card first rendered during refresh must not retain an empty destination map.
                 tab.state.refreshing = true
@@ -1070,15 +1071,15 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue("Summaries must show the canvas editor", manager.isFileOpen(tab.canvasFile))
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
-            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
+            assertEquals(1, descendants(tab.canvas).count { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
             assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.summariesVisible)
-            assertTrue(descendants(tab.canvas).none { it.name == "summary-split-panels" })
+            assertTrue(descendants(tab.canvas).none { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertTrue(tab.state.summaries.complete)
-            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
+            assertEquals(1, descendants(tab.canvas).count { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
             assertEquals("Reopening completed summaries must not send a turn", 0, tab.session.messages.count { it.text == "/summaries" })
 
             // Stay on the EDT so the queued turn cannot contact a backend during this test.

@@ -95,7 +95,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
             assertTrue(rows().isEmpty())
             assertTrue(descendants(canvas).any { it.name == "no-matches" })
             canvas.updateSummaries(SummariesCard(changed, false, true))
-            assertEquals(listOf("summary:root", "summary:directory:src/main/kotlin/dev/insight"), rows())
+            assertEquals(listOf("summary:directory:src/main/kotlin/dev/insight"), rows())
             assertFalse(descendants(canvas).any { it.name == "no-matches" })
         } finally { canvas.dispose() }
     }

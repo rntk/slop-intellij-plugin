@@ -47,7 +47,7 @@ internal class ChangeSummaryHierarchyPanel(
         cardWidth = measureCardWidth(tree.nodes.map(::title))
         when {
             summaries.total == 0 -> showEmpty(vocabulary.noFiles)
-            !state.shows(tree.root, summaries) -> showEmpty("No summaries match the search.")
+            !state.shows(tree.root, summaries) -> showEmpty("No summaries match the search.", name = "no-matches")
             else -> finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
         }
     }

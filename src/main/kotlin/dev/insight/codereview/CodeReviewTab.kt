@@ -215,9 +215,9 @@ internal class CodeReviewTab(
 
     override fun viewOptions() = listOf(
         ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
-            "Read every source file as one document, with file paths and summaries (/summaries)") { summaryStats(state.summaries) },
+            "Read the code as summaries, from the whole scope down to each file (/summaries)") { summaryStats(state.summaries) },
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
-            "Read every source file as one document, grouped by topic, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
+            "Read the code grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,
             "Lay out the source of every file in scope as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",

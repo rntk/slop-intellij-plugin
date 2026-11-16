@@ -115,7 +115,7 @@ class CodeWallPlatformTest : BasePlatformTestCase() {
             layout(tab.canvas)
             val items = descendants(tab.canvas).filterIsInstance<JComponent>().mapNotNull { it.componentPopupMenu }.distinct()
                 .flatMap { it.components.filterIsInstance<JMenuItem>() }.filter { it.text == "Open on code wall" }
-            items.forEach { it.doClick(); if (tab.state.wallScope?.title == "src") return@forEach }
+            for (item in items) { item.doClick(); if (tab.state.wallScope?.title == "src") break }
             assertEquals("src", tab.state.wallScope?.title)
             assertEquals(files.map { it.path }, tab.state.wallScope!!.paths)
             assertEquals(files.map { it.path }, blocks(tab).map { it.block.path })

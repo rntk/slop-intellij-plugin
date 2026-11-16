@@ -298,7 +298,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
         val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>Feature")
-        val canvas = canvas().apply { setSize(1200, 700) }
+        val canvas = canvas().apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             layoutTree(canvas)
@@ -336,7 +336,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val summaries = ReviewSummaries(tree).summarize(tree.nodes.filter { it.kind == SummaryKind.FILE }
             .associate { it.id to if (it.path == files[0].path) "Persists balances" else "Renders the basket" })
-        val canvas = canvas().apply { setSize(1200, 700) }
+        val canvas = canvas().apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))
             fun field(name: String) = descendants(canvas).single { it.name == name } as com.intellij.ui.SearchTextField
@@ -377,7 +377,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         }
         val topics = ReviewTopics(files).assign(files[0].path, "Earlier>Other")
             .assign(files[1].path, "Target>Details").assign(files[2].path, "Target>Details")
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700) }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
             fun settle() {
@@ -433,7 +433,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(80), "1")
         }
         val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature")
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true; topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
             fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
@@ -531,7 +531,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(20 + index % 4 * 10), "1")
         }
         val topics = files.fold(ReviewTopics(files)) { acc, file -> acc.assign(file.path, "Product>Area ${file.path}") }
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700) }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
             fun settle() {
@@ -578,7 +578,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
                 "@@ -1 +1 @@\n" + "-old\n+new\n".repeat(40), "1")
         }
         val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature")
-        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1200, 700); animatedDocuments = true; topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), false)))
             fun settle() {
@@ -626,7 +626,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val file = ReviewFile("src/feature.kt", "/repo/src/feature.kt", null, "modified",
             "@@ -1 +1 @@\n-old\n+new\n", "1")
         val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>Feature")
-        val canvas = canvas().apply { setSize(1200, 700) }
+        val canvas = canvas().apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(listOf(file))), canRun = false)))
             fun button(name: String) = descendants(canvas).single { it.name == name } as javax.swing.JButton
@@ -660,7 +660,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val topics = ReviewTopics(files).assign(files[0].path, "Product>Feature>One")
             .assign(files[1].path, "Product>Feature>Two")
         val summaries = ReviewSummaries(buildSummaryTree(files))
-        val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ReviewSummariesMode.DOCUMENT }
+        val canvas = canvas().apply { setSize(1600, 700); summariesView.mode = ReviewSummariesMode.DOCUMENT; topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false),
                 summaries = SummariesCard(summaries, running = false, canRun = false)))
@@ -704,7 +704,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val topics = ReviewTopics(listOf(file)).assign(file.path, "Product>$label")
         val tree = buildSummaryTree(listOf(file))
         val summaries = ReviewSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == file.path }.id to longWord))
-        val canvas = canvas().apply { setSize(1200, 700) }
+        val canvas = canvas().apply { setSize(1200, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = false)))
             repeat(4) { (descendants(canvas).first { it.name == "document-zoom-out" } as javax.swing.JButton).doClick() }
@@ -791,7 +791,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val tree = buildSummaryTree(files)
         val summaries = ReviewSummaries(tree).summarize(mapOf(tree.nodes.single { it.path == "src/auth.kt" }.id to "Adds token refresh."))
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
@@ -885,7 +885,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             "@@ -1,0 +1,80 @@\n" + "+short line\n".repeat(80), "1")
         val files = listOf(file, narrow)
         val topics = files.fold(ReviewTopics(files)) { result, entry -> result.assign(entry.path, "Product>Feature") }
-        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 700) }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 700); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics,
                 ReviewSummaries(buildSummaryTree(files)), canRun = false)))
@@ -955,7 +955,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n" + "+line\n".repeat(30), "1")
         }
         val topics = files.fold(ReviewTopics(files)) { result, file -> result.assign(file.path, "Storage>User") }
-        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(buildSummaryTree(files)), canRun = false)))
             layoutTree(canvas)
@@ -1007,7 +1007,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             ReviewFile(path, "/repo/$path", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
         }
         val tree = buildSummaryTree(files)
-        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400) }
+        val canvas = NoteCanvas({}, {}).apply { setSize(1100, 400); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
@@ -1052,9 +1052,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, summaries, canRun = true)))
             layoutTree(canvas)
-            // The document stays the default; the hierarchy is a second mode of the same card.
-            assertEquals(1, descendants(canvas).filterIsInstance<ChangeTopicsPanel>().size)
-            selectTopicsMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
+            // Hierarchy is the default mode; Document is a secondary mode of the same card.
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
             assertTrue(descendants(canvas).none { it is ChangeTopicsPanel })
             // Broad topics in the first column; each file is a leaf one column right of its deepest topic.
             val storage = named("topic:0:storage")
@@ -1157,14 +1156,14 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertTrue(descendants(groupingPage).filterIsInstance<JLabel>().any {
                 it.text.startsWith("Change grouping · 2 groups · 2 of 2 files")
             })
-            val documentPanel = descendants(groupingPage).filterIsInstance<ChangeTopicsPanel>().single()
-            assertNotNull(documentPanel.components.singleOrNull { it.name == "topic:0:errors handling" })
-            selectTopicsMode(descendants(groupingPage), "Hierarchy")
-            layoutTree(canvas)
-            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.groupingView.mode)
-            assertEquals(ChangeTopicsMode.DOCUMENT, canvas.topicsView.mode)
             val hierarchyPanel = descendants(groupingPage).filterIsInstance<ChangeTopicHierarchyPanel>().single()
             assertNotNull(hierarchyPanel.components.singleOrNull { it.name == "topic:0:errors handling" })
+            selectTopicsMode(descendants(groupingPage), "Document")
+            layoutTree(canvas)
+            assertEquals(ChangeTopicsMode.DOCUMENT, canvas.groupingView.mode)
+            assertEquals(ChangeTopicsMode.HIERARCHY, canvas.topicsView.mode)
+            val documentPanel = descendants(groupingPage).filterIsInstance<ChangeTopicsPanel>().single()
+            assertNotNull(documentPanel.components.singleOrNull { it.name == "topic:0:errors handling" })
             canvas.updateGrouping(null)
             assertEquals(listOf("Topics"), (0 until canvas.tabs.tabCount).map(canvas.tabs::getTitleAt))
         } finally { canvas.dispose() }
@@ -1317,7 +1316,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         fun id(identity: String) = tree.nodes.single { it.identity == identity }.id
         val summaries = ReviewSummaries(tree).summarize(mapOf(id("file:src/auth/Auth.kt") to "Adds token refresh."))
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({ opened += it }, {}).apply { setSize(1600, 900); topicsView.mode = ChangeTopicsMode.DOCUMENT }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)

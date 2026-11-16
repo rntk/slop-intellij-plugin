@@ -69,6 +69,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
 
     private fun canvas(launcher: ContextLauncher): NoteCanvas {
         return NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher)).apply {
+            summariesView.mode = ReviewSummariesMode.SPLIT
             showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, running = false, canRun = true)))
         }
     }
@@ -160,6 +161,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
                 focus = chatFocus(node, summaries)
             }))
         try {
+            canvas.summariesView.mode = ReviewSummariesMode.SPLIT
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
             canvas.showNotes(CanvasState(emptyList(), topics = card))
             val entry = named(canvas, 0, "summary:app/a.kt") as JTextComponent
@@ -181,6 +183,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
         val saved = mutableListOf<Pair<ReviewSummaries, Set<Int>>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { summaries, ids -> saved += summaries to ids }))
         try {
+            canvas.summariesView.mode = ReviewSummariesMode.SPLIT
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
             canvas.showNotes(CanvasState(emptyList(), topics = TopicsCard(topics, ReviewSummaries(tree), canRun = true)))
             fun item(entry: String, label: String) = (named(canvas, 0, entry) as javax.swing.JComponent).componentPopupMenu
@@ -223,6 +226,7 @@ class ContextSummariesTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(contextSummaries = launcher), topicActions = TopicCanvasActions(saveTopicSummaries = { _, _ -> }))
         val topics = ReviewTopics(files, files.associate { it.path to "Storage" })
         try {
+            canvas.summariesView.mode = ReviewSummariesMode.SPLIT
             canvas.topicsView.mode = ChangeTopicsMode.HIERARCHY
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true),
                 topics = TopicsCard(topics, ReviewSummaries(tree), canRun = true)))

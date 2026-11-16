@@ -78,7 +78,7 @@ internal data class TopicsCard(
  * The document reads every file in topic order; the hierarchy reads the topics left to right with each file's summary; the
  * radar compares how many lines the topics at the picked level hold.
  */
-internal enum class ChangeTopicsMode { DOCUMENT, HIERARCHY, RADAR }
+internal enum class ChangeTopicsMode { HIERARCHY, RADAR, DOCUMENT }
 
 /** What the shown outline was filtered for: the card and both trimmed queries. */
 private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, val summaryQuery: String)
@@ -92,7 +92,7 @@ private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, v
 internal class ChangeTopicsViewState(
     /** A large outline starts at its first level, as thousands of cards are slow to build and hard to read. */
     private val foldLargeOutline: Boolean = false,
-    var mode: ChangeTopicsMode = ChangeTopicsMode.DOCUMENT,
+    var mode: ChangeTopicsMode = ChangeTopicsMode.HIERARCHY,
 ) : SummaryTraceState(traceRoot = false) {
     var tagsCloud = false
     /** Whether the radar spaces its rings logarithmically, so small topics stay visible beside a huge one. */

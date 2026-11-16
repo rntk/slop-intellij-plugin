@@ -71,8 +71,8 @@ internal abstract class HierarchyColumnsPanel(
         return (widest + chrome).coerceIn(scaled(MIN_CARD_WIDTH), scaled(MAX_CARD_WIDTH))
     }
 
-    protected fun showEmpty(message: String) {
-        val empty = text(message, scaled(320), font(JBFont.label()), help)
+    protected fun showEmpty(message: String, name: String? = null) {
+        val empty = text(message, scaled(320), font(JBFont.label()), help).apply { if (name != null) this.name = name }
         add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
         preferredSize = Dimension(scaled(320), empty.height)
     }

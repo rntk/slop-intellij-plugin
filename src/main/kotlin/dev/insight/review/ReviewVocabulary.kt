@@ -56,7 +56,7 @@ internal data class ReviewVocabulary(
     /** What the radar counts: "changed lines" | "lines of code". */
     val radarLines: String = "changed lines",
     val groupingTitle: String = "Change grouping",
-    val groupingTooltip: String = "Every changed diff in one document, ordered by shared change group and affected code. " +
+    val groupingTooltip: String = "Changed files ordered by shared change group and affected code. " +
         "File boundaries, order and alignment come from code; groups and summaries are the assistant's interpretation.",
 ) {
     companion object {
@@ -66,7 +66,7 @@ internal data class ReviewVocabulary(
             canvasHints = listOf(
                 "Select files on the left to inspect changes.",
                 "Click Summaries or type /summaries to read the change from the whole down to each file.",
-                "Click Topics or type /topics to read every diff as one document, grouped by topic, with each file's summary.",
+                "Click Topics or type /topics to read the change grouped by topic, with each file's summary.",
             ),
             summariesTitle = "Change summaries · From the whole change down to each file",
             summariesTooltip = "The tree comes from the changed paths. Each summary is the assistant's interpretation, written from the files up to the root.",
@@ -75,8 +75,8 @@ internal data class ReviewVocabulary(
             summariesFooter = "The tree comes from the changed paths; each folder is its own level and large folders split into groups. " +
                 "Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Change topics",
-            topicsTooltip = "Every changed diff in one document, ordered by topic. File boundaries, order and alignment come from code; " +
-                "topics and summaries are the assistant's interpretation.",
+            topicsTooltip = "Changed files grouped by topic, broad to specific, with each file's summary. " +
+                "File boundaries, order and alignment come from code; topics and summaries are the assistant's interpretation.",
             topicsSummarizeTooltip = "Write the file summaries shown beside each diff (/summaries)",
             rootName = "All changes",
             noFiles = "No changed files",
@@ -88,7 +88,7 @@ internal data class ReviewVocabulary(
                 val facts = file?.facts.orEmpty()
                 "${facts.firstOrNull() ?: "changed"} file" + facts.drop(1).joinToString("") { " · $it" }
             },
-            summariesMode = ReviewSummariesMode.SPLIT,
+            summariesMode = ReviewSummariesMode.HIERARCHY,
             foldLargeTopics = false,
             wallName = "Diffs wall",
             openOnWall = "Open on diffs wall",
@@ -107,8 +107,8 @@ internal data class ReviewVocabulary(
             canvasHeading = "Code review tabs",
             canvasHints = listOf(
                 "Ask about the code in scope; answers cite files and lines.",
-                "Click Summaries or type /summaries to read every source file as one document, with file paths and summaries.",
-                "Click Topics or type /topics to read every source file as one document, grouped by topic.",
+                "Click Summaries or type /summaries to read the code from the whole scope down to each file.",
+                "Click Topics or type /topics to read the code grouped by topic, with each file's summary.",
             ),
             summariesTitle = "Code summaries · From the whole scope down to each file",
             summariesTooltip = "The tree comes from the folders in scope. Each summary is the assistant's interpretation, written from the code up to the root.",
@@ -117,7 +117,7 @@ internal data class ReviewVocabulary(
             summariesFooter = "The tree comes from the folders in scope; each folder is its own level, large folders split into groups " +
                 "and large files into parts. Summaries are LLM interpretation. Click a summary to expand or collapse its children.",
             topicsTitle = "Code topics",
-            topicsTooltip = "Every source file in one document, ordered by topic, with file summaries and topic cards. " +
+            topicsTooltip = "Source files grouped by topic, broad to specific, with file summaries and topic cards. " +
                 "Topics and summaries are the assistant's interpretation of the code.",
             topicsSummarizeTooltip = "Write the file summaries shown beside each file (/summaries)",
             rootName = "Whole scope",
@@ -128,7 +128,7 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
-            summariesMode = ReviewSummariesMode.SPLIT,
+            summariesMode = ReviewSummariesMode.HIERARCHY,
             foldLargeTopics = true,
             wallName = "Code wall",
             openOnWall = "Open on code wall",
