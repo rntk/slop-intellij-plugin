@@ -5,10 +5,8 @@ import dev.insight.llm.JsonSchemas
 import dev.insight.llm.LlmTool
 
 /**
- * Tools a turn may load on demand instead of advertising every schema in every request. Each tool is registered under
- * a short [topic][register] saying what its group is for; search_tools lists the topics and finds tools by name or by
- * words from their names, descriptions and topics. Tool names are unique within a registry. Build one per workflow
- * run when its tools hold per-run state, such as a [CallAllowance].
+ * Tools a turn can load on demand. Each is registered under a [topic][register]; search_tools lists topics and matches
+ * names, descriptions and topics. Names are unique. Build one per workflow run when tools hold per-run state.
  */
 class ToolRegistry {
     private class Entry(val tool: ChatTool, val topic: String, val index: Int) {

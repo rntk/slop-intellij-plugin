@@ -1,9 +1,8 @@
 package dev.insight.agent
 
 /**
- * How a chat spends its context window. Every interactive chat takes one of the [ChatProfile]s instead of its own constants,
- * so pinned data, history and the per-turn snapshot are shares of the same window and always leave room for the system
- * policy, the question and tool rounds. All sizes are characters; the server remains the authority on tokens.
+ * Context-window shares for interactive chats, leaving room for the policy, question and tool rounds.
+ * Sizes are characters; the server remains the authority on tokens.
  */
 data class ChatBudget(
     /** The whole request, as [ChatContextWindow] measures it. */

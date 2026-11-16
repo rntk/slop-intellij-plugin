@@ -3,8 +3,7 @@ package dev.insight.ui
 import com.intellij.psi.codeStyle.NameUtil
 
 /**
- * A card a canvas offers to its card search, identified by [key]. [name] is matched first, then [context] (such as its
- * container and file name), then [text] (such as its summary and source); [detail] is shown beside the name.
+ * A searchable card identified by [key]. Search ranks [name], then [context], then [text]; [detail] is displayed.
  */
 internal data class CardCandidate<K>(val key: K, val name: String, val detail: String = "", val context: List<String> = emptyList(),
     val text: String = "")

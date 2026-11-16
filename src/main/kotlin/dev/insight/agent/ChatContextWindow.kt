@@ -112,9 +112,8 @@ internal class ChatContextWindow(
 }
 
 /**
- * Keeps the most recent complete turns within the budgets. The latest turn is kept even when it
- * alone is over [maxChars], clipped instead, so a long paste or answer does not erase the context of
- * a follow-up question. A zero budget keeps nothing. Dropped turns are passed to [onDrop], oldest first.
+ * Keeps recent turns within the budgets where possible. The latest turn is retained even if it exceeds the message limit,
+ * and clipped if it exceeds [maxChars]. A zero budget keeps nothing. Dropped turns go to [onDrop], oldest first.
  */
 internal fun recentTurns(
     turns: List<List<LlmMessage>>,

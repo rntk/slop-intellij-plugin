@@ -24,8 +24,7 @@ import kotlinx.coroutines.withContext
 class EnrichmentSnapshot(val graph: CallGraph, val input: EnrichmentInput, val enrichment: Enrichment, val report: Path)
 
 /**
- * Enriches the application graph with model judgments and keeps the latest result. Judgments are cached by content,
- * so enriching again after a rebuild only sends changed symbols.
+ * Enriches the application graph with model judgments and keeps the latest result. Matching cached judgments are reused.
  */
 @Service(Service.Level.PROJECT)
 class EnrichmentService(private val project: Project, val scope: CoroutineScope) {

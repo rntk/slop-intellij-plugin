@@ -17,9 +17,8 @@ import dev.insight.llm.LlmTool
 import dev.insight.prompts.PromptTemplates
 
 /*
- * The tools a board's chat builds and refines an explainer board with. Prose blocks hold the model's text; code, diff,
- * symbol and chain blocks hold only what [BoardSources] resolved, so the model chooses evidence but never writes it.
- * Every mutation runs inside the host's `edit` (the EDT in the IDE). PSI-free and Swing-free.
+ * Board chat tools resolve code, diff, symbol and chain evidence through [BoardSources]; the model supplies prose and
+ * annotations. Every mutation runs inside the host's `edit` (the EDT in the IDE).
  */
 
 /**

@@ -3,10 +3,8 @@ package dev.insight.entrypoints
 import java.util.TreeMap
 
 /**
- * Renders project-relative paths as an indented tree that fits a character budget. Large folders are summarized
- * (file count and extensions) rather than listed, deep folders are folded, and chains of single-folder directories
- * are joined (`src/main/kotlin/`). Root files are always listed: manifests and build files there usually name the
- * entry points. When a folder is cut, files named like entry points or manifests are kept first.
+ * Renders project-relative paths to a target character budget, folding deep folders and summarizing omitted files.
+ * Single-folder chains are joined. Root files and likely entry points or manifests take priority before final truncation.
  */
 object FileTree {
     private class Dir {
@@ -49,7 +47,6 @@ object FileTree {
     private fun render(dir: Dir, depth: Int, perDir: Int, maxDepth: Int, out: StringBuilder) {
         val indent = "  ".repeat(depth)
         for ((name, start) in dir.dirs) {
-            // Join single-folder chains so deep package paths take one line.
             var label = "$name/"
             var child = start
             while (child.files.isEmpty() && child.dirs.size == 1) {

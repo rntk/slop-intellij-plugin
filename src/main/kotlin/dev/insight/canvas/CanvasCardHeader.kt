@@ -34,7 +34,7 @@ internal fun canvasActionMenu(actions: List<CanvasCardAction>): JPopupMenu = JPo
     }
 }
 
-/** A text glyph that acts as a small button and scales with the zoom like the text around it. */
+/** A glyph button that scales with the surrounding text. */
 internal fun canvasGlyphButton(host: CanvasCardHost, glyph: String, tooltip: String, name: String, action: (JComponent) -> Unit): JLabel =
     host.zoomFont(JLabel(glyph).apply {
         this.name = name
@@ -43,9 +43,8 @@ internal fun canvasGlyphButton(host: CanvasCardHost, glyph: String, tooltip: Str
     }, UIUtil.getLabelFont().deriveFont(Font.BOLD)).let { label -> label.onLeftClick { action(label) } }
 
 /**
- * A card's header: the meta fold toggle, the [title] (with an optional [badge]) taking all the room the card has, then a
- * ⋯ menu of [actions] and, given [onClose], a × that closes the card. Commands live in the menu so the title keeps its
- * width at any zoom.
+ * Card header with a meta toggle, [title], optional [badge], action menu and optional close button.
+ * Commands live in the menu to preserve title width at any zoom.
  */
 internal class CanvasCardHeader(
     host: CanvasCardHost,

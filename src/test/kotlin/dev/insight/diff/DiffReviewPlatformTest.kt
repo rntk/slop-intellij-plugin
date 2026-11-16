@@ -1200,7 +1200,6 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         try { action(); fail("Expected a rejected tool call") } catch (_: ToolInputException) { }
     }
 
-    /** The side panel and its Start page in the editor area, where the source and its files are. */
     /** The side panel, its Start page and its hub in the editor area. */
     private fun withStart(panel: DiffReviewPanel): List<java.awt.Component> =
         descendants(panel) + descendants(panel.start.page as Container) + descendants(panel.hub.page as Container)

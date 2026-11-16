@@ -32,9 +32,8 @@ open class ChatSession(
     private val onClear: () -> Unit = {},
 ) : ChatConversation {
     /**
-     * A conversation brought back from an earlier session: [restored] messages follow the welcome notice (a saved copy of
-     * that notice is dropped), and the model sees their USER and ASSISTANT messages. Save them with `messages` from a
-     * `subscribe` listener.
+     * Restores messages after the welcome notice, dropping any saved copy of that notice. The model sees USER and ASSISTANT
+     * messages. Save them from a `subscribe` listener.
      */
     constructor(project: Project, scope: CoroutineScope, backendFactory: ChatBackendFactory, welcome: String? = null,
         onClear: () -> Unit = {}, restored: List<ChatMessage>) : this(project, scope, backendFactory, welcome, onClear) {

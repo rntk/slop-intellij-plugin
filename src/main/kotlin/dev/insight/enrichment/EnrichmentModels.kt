@@ -145,8 +145,8 @@ fun interface EnrichmentProgress {
 }
 
 /**
- * Persistent store of judgments keyed by content, so unchanged code is never sent twice. Keys are built by the
- * enrichers from [Questions.VERSION], content hashes and every other part of the request state. Thread-safe.
+ * Thread-safe store of judgments keyed by request state, including [Questions.VERSION] and content hashes.
+ * Cached judgments can be reused when their keys match.
  */
 interface EnrichmentCache {
     fun node(key: String): NodeAnnotation?

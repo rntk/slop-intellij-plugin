@@ -34,10 +34,10 @@ internal data class WordChanges(
     val addedWords: Int,
     /** Every changed line, including blank lines and lines without words. */
     val lines: ChangedLineCounts = ChangedLineCounts(),
-    /** Words removed and added equally often, counted over every word rather than only the listed ones. */
+    /** Matched removed and added occurrences, counted over every word rather than only the listed ones. */
     val matchedWords: Int = words.sumOf { minOf(it.removed, it.added) },
 ) {
-    /** Splits the changed words into those that only moved between the sides and those that really left or arrived. */
+    /** Splits occurrences into matched and net removed or added counts. */
     val balance get() = WordBalance(removedWords - matchedWords, matchedWords, addedWords - matchedWords)
 
     /**

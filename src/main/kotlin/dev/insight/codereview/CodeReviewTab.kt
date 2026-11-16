@@ -131,7 +131,6 @@ internal class CodeReviewTab(
             "Large Code Review Run", "Continue", "Cancel", Messages.getQuestionIcon()) == Messages.YES
     }
 
-    /** The Words page; counting runs in the background, so the page keeps the last count while the scope is recounted. */
     /**
      * The Code wall's chats about single files, and under [WALL_CANVAS_CHAT] its own chat about all its files, kept for the tab's
      * life so they outlast the wall's layouts and scopes.

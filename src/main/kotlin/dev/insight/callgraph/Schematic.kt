@@ -433,7 +433,7 @@ object SchematicBuilder {
         }
     }
 
-    /** The line declaring [id], trimmed,so a reader sees a constant's value or a type's shape without unfolding. */
+    /** The trimmed line declaring [id], showing its value or shape without unfolding. */
     private fun excerpt(result: CallGraphResult, id: Int): String? {
         val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid } ?: return null
         val file = element.containingFile ?: return null

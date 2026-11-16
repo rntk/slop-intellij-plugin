@@ -23,8 +23,7 @@ import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 
 /**
- * Shows a fuzzy search over a canvas's [cards] below [owner]: the typed text filters the candidate list, and a click
- * or Enter on a candidate closes the popup and calls [choose] with its key.
+ * Shows a fuzzy search over [cards] below [owner]. Clicking a result or pressing Enter selects it via [choose].
  */
 internal fun <K> showCardSearch(owner: JComponent, cards: List<CardCandidate<K>>, choose: (K) -> Unit): JBPopup {
     val search = SearchTextField(false).apply {

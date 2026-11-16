@@ -19,9 +19,8 @@ import dev.insight.canvas.relativePath
 import java.awt.Point
 
 /**
- * `Insight.PickContext`, "Context...": opens the context picker at the caret of an editor, with the selection, line, enclosing
- * symbols, changed lines and file as scopes. In a captured review diff of the IDE's diff viewer the scopes are those of the diff
- * at the caret's side and line; in any other diff viewer they are those of the editor's document.
+ * Opens the context picker at the caret, offering the selection, line, enclosing symbols, changed lines and file.
+ * Captured review diffs use scopes on the caret's diff side; other diff viewers use the editor document.
  */
 internal class PickContextAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT

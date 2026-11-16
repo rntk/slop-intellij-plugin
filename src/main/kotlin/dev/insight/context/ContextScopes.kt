@@ -3,7 +3,7 @@ package dev.insight.context
 import dev.insight.agent.SourceSide
 import dev.insight.diff.ReviewFile
 
-/** Payload and preview cap of one context; longer text is cut at a line break and marked. */
+/** Payload and preview cap of one context; longer text is cut and marked. */
 internal const val MAX_CONTEXT_CHARS = 40_000
 
 /** A declaration found around a position, without PSI: [lines] are 1-based and inclusive. */
@@ -50,7 +50,7 @@ internal fun patchHunks(patch: String): List<PatchHunk> {
 /** The hunk of [patch] that covers [line] on [side], or null when the line is unchanged context outside every hunk. */
 internal fun hunkAt(patch: String, line: Int, side: SourceSide): PatchHunk? = patchHunks(patch).firstOrNull { line in it.lines(side) }
 
-/** [text] cut to [max] characters at a line break, with a note naming how much was left out. */
+/** [text] cut to [max] characters, preferably at a line break, with an omission note. */
 internal fun capContext(text: String, max: Int = MAX_CONTEXT_CHARS): String {
     if (text.length <= max) return text
     val cut = text.lastIndexOf('\n', max - 1).takeIf { it > 0 }?.plus(1) ?: max

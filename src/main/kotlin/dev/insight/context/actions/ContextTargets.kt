@@ -41,8 +41,8 @@ internal fun selectLines(editor: Editor, lines: IntRange) {
 }
 
 /**
- * The declaration named [symbol] that starts on 1-based [line] of [file], if [accept] takes it. Takes a read action; null when the
- * file is not project content, has no PSI, or no longer holds that declaration there.
+ * Finds an enclosing declaration named [symbol] at 1-based [line] of [file] that [accept] accepts. Call under a read action.
+ * Returns null if the file is not project content, has no PSI, or no matching declaration is found.
  */
 internal fun declarationAt(project: Project, file: VirtualFile, line: Int, symbol: ContextSymbol, accept: (PsiElement) -> PsiElement?): PsiElement? {
     if (!ProjectFileIndex.getInstance(project).isInContent(file)) return null

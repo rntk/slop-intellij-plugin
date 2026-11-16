@@ -23,11 +23,9 @@ fun blockPixelWidth(width: BlockWidth, columns: Int, columnWidth: Int, gap: Int)
 }
 
 /**
- * Lays [board]'s top-level blocks into [columns] columns of [columnWidth], in block order, left to right then down:
- * a block that does not fit the remaining columns of a row starts the next row, and every row is as tall as its tallest
- * block. Group frames hold their children by the same rule within the group's inner width, under a header of
- * [BoardMetrics.groupHeader]. [measure] gives a block's height at a pixel width (views measure their components; tests
- * pass a formula). Pure and PSI-free.
+ * Lays out top-level blocks left to right in rows of [columns] columns, wrapping blocks that do not fit.
+ * Each row is as tall as its tallest block. Group children follow the same rule inside the frame, below its header.
+ * [measure] gives a block's height at a pixel width.
  */
 fun boardLayout(board: Board, columns: Int, columnWidth: Int, metrics: BoardMetrics = BoardMetrics(),
     measure: (Block, Int) -> Int): BoardLayoutResult {
@@ -54,7 +52,6 @@ private class Placed(val block: Block, val x: Int, val y: Int, val width: Int, v
 private class Flow(val items: List<Placed>, val height: Int)
 
 private class GroupGeometry(val flow: Flow) {
-    /** Header, padding, the children's rows and padding; an empty group is header plus two paddings. */
     fun height(metrics: BoardMetrics) = metrics.groupHeader + 2 * metrics.groupPadding + flow.height
 }
 

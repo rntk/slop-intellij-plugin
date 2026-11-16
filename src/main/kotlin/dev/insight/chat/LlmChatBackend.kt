@@ -19,7 +19,7 @@ import dev.insight.llm.LlmImage
 
 /**
  * Answers with an LLM that can call [tools], and load more from [registry]. Each reply runs one [ToolChatRunner] turn within
- * [budget]: the system prompt, then a digest of turns too old to keep, the recent turns whole, and the question with a fresh
+ * [budget]: the system prompt and digest, recent turns, and the question with a fresh
  * [context] snapshot. Historical tool rounds and snapshots are not retained; see [conversationHistory].
  */
 class LlmChatBackend(

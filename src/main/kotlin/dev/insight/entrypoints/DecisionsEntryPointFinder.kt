@@ -208,7 +208,7 @@ class DecisionsEntryPointFinder(
         return found
     }
 
-    /** The first code line after [annotation], skipping further annotations, comments and blank lines. */
+    /** The first code line within six lines after [annotation], or the annotation itself if none is found. */
     private fun annotated(lines: List<String>, annotation: Int): Int {
         for (next in annotation + 1..minOf(lines.lastIndex, annotation + 6)) {
             val trimmed = lines[next].trim()
@@ -440,7 +440,7 @@ class DecisionsEntryPointFinder(
             else -> null
         }
 
-        /** The declared function or method name on [line], or null if the line declares none. */
+        /** The declared function or method name on [raw], or null if it declares none. */
         private fun declarationName(raw: String): String? {
             val line = raw.replaceFirst(LEADING_ANNOTATIONS, "")
             (KEYWORD_DECLARATION.find(line) ?: VARIABLE_FUNCTION.find(line))?.groupValues?.last()

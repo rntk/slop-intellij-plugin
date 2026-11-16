@@ -132,7 +132,6 @@ internal class WallView(
     }
     private var scope: WallScope? = null
     private var shown: List<WallBlock> = emptyList()
-    /** The summary text of the files that have one, by path. */
     private var summaries: Map<String, String> = emptyMap()
     /** Blocks showing their summary in place of their rows. */
     private val summarized = mutableSetOf<String>()
@@ -165,7 +164,6 @@ internal class WallView(
     private var watched: JScrollPane? = null
     /** Each block's Chat tab, by path; empty without [chats]. */
     private var chatTabs: Map<String, ChatTab> = emptyMap()
-    /** Blocks whose chat window is unfolded. */
     private val chatOpen = linkedSetOf<String>()
     /** Each file's chat window once opened, kept with its draft while folded or off the wall. */
     private val chatPanels = mutableMapOf<String, WallChatPanel>()
@@ -182,7 +180,6 @@ internal class WallView(
     /** Bumped when the colour scheme changes, so colours worked out for the old one are dropped. */
     @Volatile private var highlightGeneration = 0
     @Volatile private var disposed = false
-    /** Works the colours out again when the reader changes the editor's colour scheme. */
     private val schemeConnection = highlighter?.let {
         ApplicationManager.getApplication()?.messageBus?.connect()?.apply {
             subscribe(EditorColorsManager.TOPIC, EditorColorsListener {
@@ -885,7 +882,6 @@ internal class WallView(
         /** Where the Summary switch was last painted, or null when the file has no summary. */
         internal var summaryToggle: Rectangle? = null
             private set
-        /** The file's summary text, if it has one. */
         private val summary: String? get() = summaries[block.path]
         /** Whether the summary is shown in place of the rows. */
         internal val showsSummary: Boolean get() = block.path in summarized && summary != null

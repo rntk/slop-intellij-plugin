@@ -34,7 +34,7 @@ internal data class ReviewVocabulary(
     val showOnCanvasIcon: Icon,
     /** What a file node's details say after its name: "modified file · renamed from x" | "420 lines · 3 parts". */
     val describeFile: (ReviewSource?) -> String,
-    /** The initial summaries view; source reviews start with the complete files as a document. */
+    /** The initial summaries view. */
     val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,

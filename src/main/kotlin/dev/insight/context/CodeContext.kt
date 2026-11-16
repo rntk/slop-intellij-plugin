@@ -92,8 +92,8 @@ object ContextKeys {
     /** The caret or click offset in [EDITOR]'s document. */
     val OFFSET = ContextKey<Int>("offset")
     /**
-     * Opens the context's file on a canvas session in the host's own way, for hosts that hold the state doing so needs, such as the
-     * Diffs wall's snapshot. Actions on review diffs offer the canvas only when a host provides it.
+     * Opens the context's file in a host-managed canvas session, using host state such as the Diffs wall snapshot.
+     * Review diff actions offer the canvas only when a host provides this.
      */
     val OPEN_ON_CANVAS = ContextKey<(CodeContext) -> Unit>("openOnCanvas")
 }

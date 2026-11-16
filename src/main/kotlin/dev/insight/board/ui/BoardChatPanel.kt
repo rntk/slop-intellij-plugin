@@ -25,8 +25,7 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
 /**
- * The board editor's chat beside the board, modeled on the wall's chat window: the transcript of [session] (tool calls
- * as short lines), an input that sends on Enter (Shift+Enter breaks the line) and Stop while a reply runs. EDT only.
+ * Board chat showing [session], including tool calls. Enter sends; Shift+Enter inserts a line break. EDT only.
  */
 internal class BoardChatPanel(private val session: ChatSession) : JPanel(BorderLayout(0, JBUI.scale(6))), Disposable {
     private val transcript = WidthTracking().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false }

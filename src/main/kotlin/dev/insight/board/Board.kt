@@ -3,11 +3,9 @@ package dev.insight.board
 import java.util.UUID
 
 /*
- * The explainer board: a read-only, auto-laid-out page of typed blocks that a model composes to explain code. The model
- * chooses what to show, how to arrange it and writes the prose; every block that cites code is resolved and rendered
- * by the host from real sources, diffs or the call graph, so the facts on the board cannot be invented. Prose blocks
- * are rendered visibly as interpretation. This file is the contract shared by the layout, codec, tools and views; it
- * is PSI-free and Swing-free.
+ * The explainer board is an auto-laid-out page composed by a model. The host resolves code evidence from sources,
+ * diffs or the call graph; model-written prose is shown as interpretation. This contract is shared by layout,
+ * serialization, tools and views.
  */
 
 /** Which text of a reviewed file an anchor reads: the before side of a comparison, or the after (current) side. */

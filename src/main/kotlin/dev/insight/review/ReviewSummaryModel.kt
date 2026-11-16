@@ -4,7 +4,7 @@ import dev.insight.agent.ToolInputException
 
 enum class SummaryKind(val id: String) { ROOT("root"), DIRECTORY("directory"), GROUP("group"), FILE("file"), CHUNK("chunk") }
 
-/** One level of the summary tree. Code builds the structure from the changed paths; only the text is the model's. */
+/** One level of the summary tree. Code builds the structure from the reviewed paths; only the text is the model's. */
 data class SummaryNode(
     val id: Int,
     val kind: SummaryKind,

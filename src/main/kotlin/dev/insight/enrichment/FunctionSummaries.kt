@@ -41,7 +41,7 @@ data class FunctionSummary(val label: String, val description: String?, val role
 
 /**
  * Side effects derived from rule tags, never from the model: [own] by the function's source, [reached] by it or any
- * in-project function it calls (transitively). A summary label may omit a write; these badges cannot.
+ * in-project function it calls (transitively). These badges are independent of the model's summary label.
  */
 data class Effects(val own: Set<String>, val reached: Set<String>) {
     companion object {

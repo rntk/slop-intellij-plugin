@@ -3,9 +3,8 @@ package dev.insight.agent
 import dev.insight.llm.LlmMessage
 
 /**
- * A conversation's earlier turns as the model sees them: the newest [turns] whole, in order, each a user message followed by
- * an assistant message, and a [digest] of the [foldedTurns] before them. The digest goes into the system prompt, so it
- * survives in-turn eviction and keeps user/assistant alternation intact.
+ * Earlier turns as the model sees them: recent [turns] as user/assistant pairs and a [digest] of the [foldedTurns].
+ * The digest is in the system prompt, preserving it through eviction and keeping roles alternating.
  */
 data class ConversationHistory(val digest: String?, val turns: List<LlmMessage>, val foldedTurns: Int) {
     companion object {
@@ -14,11 +13,9 @@ data class ConversationHistory(val digest: String?, val turns: List<LlmMessage>,
 }
 
 /**
- * Assembles the history the model sees of [earlier], the conversation before the current question. Tool events and notices
- * are not replayed; a turn that got no reply (it failed or was stopped) gets a placeholder so the roles keep alternating.
- * The newest turns are kept whole while they fit [historyChars] and [maxMessages]; the newest is clipped rather than
- * dropped. Older turns fold into a bounded digest, oldest first, that keeps the first turn fullest since it usually sets
- * the task, and names the tools each turn used so the model can re-read precisely instead of broadly.
+ * Builds history from [earlier], omitting tool events and notices. Unanswered turns get a placeholder to preserve alternation.
+ * Recent turns are retained within [historyChars] and [maxMessages] where possible; the newest is clipped rather than dropped.
+ * Older turns fold into a bounded digest that favors the first turn and names tools used for targeted re-reading.
  */
 fun conversationHistory(earlier: List<ChatMessage>, historyChars: Int, maxMessages: Int = 40): ConversationHistory {
     require(historyChars >= 0 && maxMessages >= 0) { "History budgets must not be negative" }
@@ -64,8 +61,7 @@ internal fun conversationTurns(messages: List<ChatMessage>): List<ConversationTu
 
 /**
  * The folded turns in [maxChars]: a numbered entry per turn with its question, the start of its answer and the tools it used.
- * When the entries run over, the middle ones go first, leaving the first turn and the most recent folded ones, and the texts
- * shrink before anything else is dropped.
+ * When entries run over, middle entries go first, then their texts shrink. A final cut truncates any remaining overflow.
  */
 internal fun digest(turns: List<ConversationTurn>, maxChars: Int): String {
     fun render(entries: List<IndexedValue<ConversationTurn>>, scale: Double): String = buildString {

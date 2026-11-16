@@ -31,8 +31,8 @@ fun FlowSource.regionCandidates(owner: Int): List<FlowRegionEvidence> {
 }
 
 /**
- * Regions never straddle a decision, loop, exit or change of control frames. This only groups call occurrences;
- * statements that are not represented by the call-site analyzer remain outside the model's execution claims.
+ * Regions group consecutive represented calls with the same control frames, stopping at represented exits.
+ * Statements absent from the call-site analysis remain outside the model's execution claims.
  */
 fun flowRegionCandidates(owner: Int, sites: List<SourceSite>, folded: Set<Int> = emptySet()): List<FlowRegionEvidence> {
     val result = mutableListOf<FlowRegionEvidence>()

@@ -10,7 +10,7 @@ import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import javax.swing.JPanel
 
-/** A translucent plate for controls that float over the canvas; it absorbs the pointer so the canvas below does not pan or scroll. */
+/** A translucent control panel that absorbs pointer events to prevent canvas panning or scrolling. */
 internal open class FloatingPanel(layout: LayoutManager) : JPanel(layout) {
     init {
         isOpaque = false

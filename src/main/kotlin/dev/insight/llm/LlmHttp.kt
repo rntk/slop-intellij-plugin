@@ -17,8 +17,8 @@ interface LlmClient {
      * One non-streaming completion. Retries transport failures, timeouts (408), rate limits (429),
      * server errors (5xx), and malformed or empty responses within the configured retry budget.
      * Other HTTP failures throw [LlmApiException]; unusable responses throw [LlmProtocolException];
-     * network errors propagate as IO exceptions. A [FinishReason.TRUNCATED] completion is returned as-is
-     * so callers can keep the partial text.
+     * network errors propagate as IO exceptions. A truncated completion with content is returned as-is;
+     * one without content or tool calls throws [LlmTruncatedException].
      */
     suspend fun complete(request: CompletionRequest): Completion
 }

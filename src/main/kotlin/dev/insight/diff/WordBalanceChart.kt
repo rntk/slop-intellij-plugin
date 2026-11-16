@@ -12,8 +12,7 @@ import javax.swing.JComponent
 import kotlin.math.roundToInt
 
 /**
- * Changed words by how much of them only moved. A word removed as often as it is added is [matched]; the rest of its
- * occurrences are [removed] or [added] for good. Mostly matched words suggest a refactoring that reshaped the same code.
+ * Matched and net counts of changed word occurrences. Matching counts can suggest moved code but do not establish it.
  */
 internal data class WordBalance(val removed: Int, val matched: Int, val added: Int) {
     val total get() = removed + matched + added

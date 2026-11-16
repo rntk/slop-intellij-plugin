@@ -3,7 +3,7 @@ package dev.insight.review.ui
 /** The tiles of [tab]'s views, without the source and chat tiles. */
 private fun viewTiles(tab: ReviewTab<*, *>): List<ReviewTile> = tab.tileGrid.tiles.filter { it.id != SOURCE_TILE && it.id != CHAT_TILE }
 
-/** Clicks the tile of the view named [label] in [tab] as a user would, so its open action runs; a disabled tile does nothing. */
+/** Clicks [label]'s view tile in [tab]; disabled tiles do nothing. */
 internal fun chooseView(tab: ReviewTab<*, *>, label: String) {
     tab.tileGrid.click(viewTiles(tab).single { it.title == label }.id)
 }

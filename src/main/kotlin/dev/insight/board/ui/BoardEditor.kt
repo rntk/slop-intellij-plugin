@@ -82,11 +82,7 @@ import javax.swing.JPanel
 import javax.swing.JToggleButton
 import javax.swing.SwingUtilities
 
-/*
- * The explainer board as an editor tab: the rendered board with its toolbar, and beside it the chat whose tools build
- * the board. The board and the chat's questions and answers save to the project's board store shortly after each change
- * and when the tab closes.
- */
+/* The board and chat are saved shortly after changes and when the tab closes. */
 
 private val LOG = logger<BoardEditor>()
 

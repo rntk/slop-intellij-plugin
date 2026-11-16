@@ -49,8 +49,7 @@ fun CallGraph.highlightFile(path: String?): FileGraphHighlight {
 data class Exploration<T>(val items: List<T>, val levels: List<Int>, val edges: Set<CallGraphEdge>, val truncated: Boolean)
 
 /**
- * Breadth-first exploration that is independent of PSI so it can be unit tested.
- * Items are compared with equals(); only items accepted by [expandable] (and the root) are expanded.
+ * Breadth-first exploration using equality to identify items. Only the root and items accepted by [expandable] are expanded.
  */
 suspend fun <T : Any> exploreCalls(
     root: T,

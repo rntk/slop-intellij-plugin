@@ -28,7 +28,7 @@ data class ReviewSymbol(
 }
 
 data class ReviewSymbolLinks(val label: String, val symbols: List<ReviewSymbol>, val total: Int, val incoming: Boolean = false)
-/** [calls] holds the selectors of all resolved outgoing calls, so notes on those targets can join a change flow. */
+/** [calls] holds selectors of resolved outgoing calls, up to a limit, for joining notes into a change flow. */
 data class ReviewSymbolEvidence(val symbol: ReviewSymbol, val links: List<ReviewSymbolLinks>, val calls: Set<String> = emptySet())
 
 /** A file whose declarations can be looked up: [text] is the reviewed current source, or null when there is none (deleted or binary). */

@@ -18,10 +18,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 
 /**
- * Tools over the project's content files (sources, tests, and resources; excluded directories such
- * as build output are skipped). Paths are relative to the project directory. Lookups run in
- * cancellable read actions, so they neither block the EDT nor delay edits. Presentation tools show
- * locations in the editor without modifying project files.
+ * Tools for project content files; excluded directories such as build output are skipped. Paths are project-relative.
+ * Lookups use cancellable read actions, and presentation tools open locations without modifying files.
  */
 fun projectTools(project: Project): List<ChatTool> = projectTools(project, SourcePoints(project, "Project chat"))
 

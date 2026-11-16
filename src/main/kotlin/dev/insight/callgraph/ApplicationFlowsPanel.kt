@@ -39,8 +39,7 @@ import kotlin.math.pow
 import kotlinx.coroutines.*
 
 /**
- * The Flows tab: each entrypoint is split into logical flows, and every flow is drawn as its own small graph instead
- * of a subset of the whole application graph. Flows of the same entrypoint are still drawn separately.
+ * The Flows tab draws each logical flow as a separate graph.
  */
 internal class ApplicationFlowsPanel(
     private val project: Project,

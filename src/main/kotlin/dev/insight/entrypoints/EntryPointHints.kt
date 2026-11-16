@@ -6,11 +6,9 @@ import dev.insight.graph.SymbolKind
 
 
 /**
- * Static candidates from the application graph, given to the model as leads so it reads the right files first.
- * A function nobody in the project calls is either an entry point, a framework callback, or dead code; the ones
- * named like entry points, and the ones that reach the most code, are the likely starts.
+ * An application graph candidate for the model to investigate. Uncalled functions may also be callbacks or dead code.
+ * [key] omits line numbers and counts so unrelated edits do not invalidate the answer cache.
  */
-/** [key] leaves out line numbers and counts, which shift with unrelated edits, so it can key the answer cache. */
 data class EntryPointHint(val path: String, val line: Int?, val symbol: String, val reason: String) {
     val text: String get() = "$path${line?.let { ":$it" } ?: ""} $symbol: $reason"
     val key: String get() = "$path $symbol"

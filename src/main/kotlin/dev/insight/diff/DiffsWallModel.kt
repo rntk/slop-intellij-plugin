@@ -7,11 +7,9 @@ import dev.insight.review.wall.WallLine
 import dev.insight.review.wall.WallScope
 
 /**
- * What the Diffs wall shows: [scope] names it and keeps its layout; [files] are its current snapshot files, in order; [summaries]
- * holds the summary text of the files that have one, by path.
+ * The wall's scope, ordered snapshot files, and optional summaries keyed by path.
  */
 internal data class DiffsWallContent(val scope: WallScope, val files: List<ReviewFile>, val summaries: Map<String, String> = emptyMap()) {
-    /** The wall's content: one diff block per file. */
     fun toWall(): WallContent = WallContent(scope, files.map { wallBlock(it) }, summaries)
 }
 
@@ -41,8 +39,7 @@ internal fun wallLines(patch: String): List<WallLine> {
 }
 
 /**
- * [file] as a wall block of at most [maxLines] rows, titled `old → new` for renames, with its added and removed line counts; longer
- * diffs stay readable on a crowded wall and open in full natively.
+ * Displays at most [maxLines] rows, with line counts and an `old → new` title for renames.
  */
 internal fun wallBlock(file: ReviewFile, maxLines: Int = WALL_MAX_LINES): WallBlock {
     val all = wallLines(file.patch)
