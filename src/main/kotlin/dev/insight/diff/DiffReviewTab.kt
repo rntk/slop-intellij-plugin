@@ -227,6 +227,8 @@ internal class DiffReviewTab(
             "Read the change grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
             "Read the change grouped by shared change cause and affected code (/grouping)") { topicStats(state.grouping, "group") },
+        ReviewViewOption(CanvasTabKey.Charts, "Charts",
+            "Compare how much changed in each folder or file, starting with a radar of the changed lines"),
         ReviewViewOption(CanvasTabKey.ChangeMap, "Change map",
             "Read the change as logical changes: related declarations across files, ordered from origin to tests (/change-map)") { changeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
@@ -588,7 +590,8 @@ internal class DiffReviewTab(
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
             wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), fileSummaries.pending) },
             changeMap = changeMapCard())
-        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard()))
+        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
+            charts = chartsCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()

@@ -112,6 +112,12 @@ internal class NoteCanvas(
             requestInstructions = { node, recursive, destination -> requestResummaryInstructions(node, recursive, destination) },
             reviewDestinations = { reviewDestinations() },
         ), project, extension)
+    private val charts: ChartsCard? get() = state.charts
+    /** What the Charts page's close button does: take the page off the canvas. */
+    internal var onRemoveCharts: () -> Unit = {}
+    private val chartsCardBuilder = ChartsCanvasCard(vocabulary, open, refresh = { refreshCard(CanvasTabKey.Charts) },
+        close = { onRemoveCharts() })
+    internal val chartsView get() = chartsCardBuilder.view
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
         openFileAt = openFileAt, showFileLines = showFileLines, close = sourceActions.removeFileView,
@@ -213,6 +219,7 @@ internal class NoteCanvas(
         ).toMap() +
             extension?.leadingCards().orEmpty() +
             summaryCards +
+            listOfNotNull(charts?.let { CanvasTabKey.Charts to chartsCardBuilder.card(it) }).toMap() +
             listOfNotNull(fileView?.let { CanvasTabKey.FileView to fileViewCard(it) }, flow?.let { CanvasTabKey.SymbolFlow to snapshotCards.flowCard(it) }).toMap() +
             notes.associate { it.key to snapshotCards.noteCard(it) } +
             sources.associate { it.key to snapshotCards.sourceCard(it) } +
@@ -262,6 +269,7 @@ internal class NoteCanvas(
     }
 
     internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
+    internal fun focusCharts() { focusCard(CanvasTabKey.Charts) }
     internal fun focusGrouping() { focusCard(CanvasTabKey.Grouping) }
 
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
@@ -308,6 +316,7 @@ internal class NoteCanvas(
         CanvasTabKey.Topics -> "Topics"
         CanvasTabKey.Grouping -> "Grouping"
         CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
+        CanvasTabKey.Charts -> "Charts"
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.ChangeMap -> "Change map"
@@ -898,6 +907,17 @@ internal class NoteCanvas(
         summariesCardBuilder.refreshAll()
     }
 
+    /** Follows the summary tree, which changes with the files in scope, without rebuilding the other cards. */
+    fun updateCharts(content: ChartsCard?) {
+        if ((content == null) != (charts == null) || (content != null && cards[CanvasTabKey.Charts] == null)) {
+            showNotes(state.copy(charts = content))
+            return
+        }
+        if (content == charts) return
+        state = state.copy(charts = content)
+        refreshCard(CanvasTabKey.Charts)
+    }
+
     private fun replaceSummaryCard(key: CanvasTabKey, card: JPanel) {
         replaceCard(key, card)
         pages[key]?.let { page -> tabs.indexOfComponent(page).takeIf { it >= 0 } }?.let { index ->
@@ -935,6 +955,7 @@ internal class NoteCanvas(
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)
             CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
                 summariesCardBuilder.card(key)
+            CanvasTabKey.Charts -> charts?.let(chartsCardBuilder::card)
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
             CanvasTabKey.SymbolFlow -> snapshotCards.flowCard(changeFlow(notes))
             CanvasTabKey.Explanation, CanvasTabKey.Board -> null

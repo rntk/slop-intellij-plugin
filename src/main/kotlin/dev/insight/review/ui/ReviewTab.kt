@@ -102,6 +102,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             CanvasTabKey.Summaries -> openSummaries()
             CanvasTabKey.Topics -> openTopics()
             CanvasTabKey.Grouping -> openGrouping()
+            CanvasTabKey.Charts -> openCharts()
             else -> {}
         }
     }
@@ -261,6 +262,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.onPagesChanged = {
             updateArtifactFiles()
         }
+        canvas.onRemoveCharts = {
+            state.hideCharts()
+            renderCanvas()
+        }
         return session.subscribe {
             before()
             updateControls()
@@ -351,6 +356,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         return true
     }
 
+    /** Puts the Charts page on the canvas and shows it; its charts are computed from the files in scope, not generated. */
+    fun openCharts() {
+        state.showCharts()
+        renderCanvas()
+        showCanvas { canvas.focusCharts() }
+    }
+
     fun openTopics() {
         state.showTopics()
         renderCanvas()
@@ -410,6 +422,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     protected fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
 
+    protected fun chartsCard() = if (state.chartsVisible) ChartsCard(state.summaries.tree) else null
+
     protected fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
     protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
@@ -417,6 +431,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     /** The topics and grouping cards show the file summaries too, so they follow every summary and chat update. */
     protected open fun summariesChanged() {
         canvas.updateSummaries(summariesCard())
+        canvas.updateCharts(chartsCard())
         canvas.updateTopics(topicsCard())
         canvas.updateGrouping(groupingCard())
         runScheduled()
@@ -435,6 +450,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         tileTimer.stop()
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
+        canvas.onRemoveCharts = {}
         artifactFiles.values.forEach {
             FileEditorManager.getInstance(project).closeFile(it)
             it.setValid(false)

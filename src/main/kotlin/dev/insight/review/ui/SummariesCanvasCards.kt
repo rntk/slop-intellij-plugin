@@ -1,8 +1,6 @@
 package dev.insight.review.ui
 
 import dev.insight.review.PatchSource
-import dev.insight.review.RadarChart
-import dev.insight.review.summaryRadar
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
@@ -147,13 +145,11 @@ internal class SummariesCanvasCards(
         val explorer = summariesView.mode == ReviewSummariesMode.EXPLORER
         val splitMode = summariesView.mode == ReviewSummariesMode.SPLIT
         val diffMode = summariesView.mode == ReviewSummariesMode.DIFF
-        val radarChart = if (summariesView.mode == ReviewSummariesMode.RADAR) summaryRadar(tree, summariesView.radarLevel, summariesView.radarSymbols) else null
         if (explorer) summariesView.updateExplorer(content.summaries)
         val viewZoom = if (document) documentZoom else zoom
         val branchLevels = ChangeSummariesViewState.branchLevels(tree)
         val width = when {
             hierarchy -> cardWidth(HierarchyColumnsPanel.defaultWidth(branchLevels))
-            radarChart != null -> cardWidth(RadarChartPanel.DEFAULT_WIDTH)
             document -> DocumentColumnsPanel.defaultWidth(ChangeSummaryDocumentPanel.railDepth(tree, summariesView), viewZoom)
             else -> cardWidth(SUMMARIES_WIDTH)
         }
@@ -171,23 +167,7 @@ internal class SummariesCanvasCards(
                 isOpaque = false
                 if (document) add(actions.zoomControls(key))
                 val summaries = content.summaries
-                if (radarChart != null) { if (radarChart.levels > 1) add(radarLevels(tab, radarChart)) }
-                else if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
-                if (radarChart != null && vocabulary == ReviewVocabulary.CODE) add(JCheckBox("Symbols", summariesView.radarSymbols).apply {
-                    name = "summaries-radar-symbols"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    toolTipText = "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines"
-                    addActionListener { summariesView.radarSymbols = isSelected; refreshSummaries(tab) }
-                })
-                if (radarChart != null) add(JCheckBox("Log scale", summariesView.radarLog).apply {
-                    name = "summaries-radar-log"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Space the rings logarithmically, so small folders stay visible beside a large one"
-                    addActionListener { summariesView.radarLog = isSelected; refreshSummaries(tab) }
-                })
+                if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
                 if (hierarchy) add(JCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs", tab.showHierarchyDiffs).apply {
                     name = "summaries-show-diffs"
                     isOpaque = false
@@ -204,7 +184,7 @@ internal class SummariesCanvasCards(
                     toolTipText = "Wrap summaries to the available width and expand their tree rows to match"
                     addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
                 })
-                if (radarChart == null) add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
+                add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
                     name = "summaries-tags-cloud"
                     isOpaque = false
                     font = scaledFont(JBFont.small())
@@ -337,18 +317,6 @@ internal class SummariesCanvasCards(
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(when {
-                radarChart != null -> JPanel(VerticalLayout(scaled(8))).apply {
-                    isOpaque = false
-                    val status = JLabel(radarStatus(radarChart, summariesView.radarSeries)).apply {
-                        name = "summaries-radar-status"
-                        font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                    }
-                    add(status)
-                    add(RadarChartPanel(radarChart, inner, zoom, summariesView.radarLog, open, summariesView.radarSeries) { selected ->
-                        summariesView.radarSeries = selected
-                        status.text = radarStatus(radarChart, selected)
-                    })
-                }
                 hierarchy -> ChangeSummaryHierarchyPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary)
                 document -> ChangeSummaryDocumentPanel(content, summariesView, inner, viewZoom, panelActions, vocabulary, project)
                 else -> ChangeSummariesPanel(content, summariesView, inner, zoom, panelActions, vocabulary,
@@ -625,7 +593,6 @@ internal class SummariesCanvasCards(
         ReviewSummariesMode.SPLIT -> "Split"
         ReviewSummariesMode.TREE -> "Tree"
         ReviewSummariesMode.DIFF -> "Diff"
-        ReviewSummariesMode.RADAR -> "Radar"
     }
 
     private fun summaryModeTooltip(mode: ReviewSummariesMode) = when (mode) {
@@ -636,27 +603,6 @@ internal class SummariesCanvasCards(
         ReviewSummariesMode.SPLIT -> "The file tree beside aligned summaries; hover a row to match it with its summary"
         ReviewSummariesMode.TREE -> "Follow linked summary parts from left to right; fold branches and unfold file diffs"
         ReviewSummariesMode.DIFF -> "The selected file, or every file in the selected folder, in the IDE’s native diff viewer beside a navigable file tree"
-        ReviewSummariesMode.RADAR -> "How many ${vocabulary.radarLines} the folders or files at the picked level hold"
-    }
-
-    /** The radar's folder level: 1 compares the root's entries, the last compares every file. */
-    private fun radarLevels(tab: SummariesTab, chart: RadarChart): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-        isOpaque = false
-        val selector = JComboBox((1..chart.levels).map { if (it == chart.levels) "Files" else "$it" }.toTypedArray()).apply {
-            name = "summary-radar-level-selector"
-            font = scaledFont(JBFont.small())
-            selectedIndex = chart.level - 1
-            toolTipText = "Compare the folders at this level (the root's entries are level 1); Files compares every file"
-            addActionListener {
-                tab.view.radarLevel = selectedIndex + 1
-                refreshSummaries(tab)
-            }
-        }
-        add(JLabel("Level").apply {
-            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
-            labelFor = selector
-        })
-        add(selector)
     }
 
     /** Open folders through the picked 1-based level and fold deeper folders. */

@@ -93,9 +93,9 @@ class ContextSummariesTest : BasePlatformTestCase() {
         assertEquals(2, canvas.tabs.tabCount)
     }
 
-    // Tree renders claim occurrences; its branch and diff interactions are covered by SummaryTreeViewTest. Radar has no entries.
+    // Tree renders claim occurrences; its branch and diff interactions are covered by SummaryTreeViewTest.
     fun testEntryActionsSelectScopeAndPassInstructionsInEveryLayout() {
-        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE && it != ReviewSummariesMode.RADAR }) {
+        for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }) {
             val launcher = ContextLauncher()
             val canvas = canvas(launcher)
             try {

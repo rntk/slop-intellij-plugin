@@ -27,6 +27,7 @@ internal const val CHAT_TILE = "chat"
 /** The stable id of the tile of the view on [key]'s page: "view-summaries", "view-diff-overview", … */
 internal fun viewTileId(key: CanvasTabKey): String = when (key) {
     CanvasTabKey.Summaries -> "view-summaries"
+    CanvasTabKey.Charts -> "view-charts"
     CanvasTabKey.Topics -> "view-topics"
     CanvasTabKey.Grouping -> "view-grouping"
     CanvasTabKey.Wall -> "view-wall"

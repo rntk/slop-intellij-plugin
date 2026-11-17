@@ -21,7 +21,7 @@ class RadarViewTest : BasePlatformTestCase() {
     }
     private val sources = diffs.map { CodeFile(it.path, it.absolutePath, "one\ntwo\nthree\n") }
 
-    fun testRadarShowsLineCountsByLevelInSummariesAndTopics() {
+    fun testRadarShowsLineCountsByLevelInChartsAndTopics() {
         for (vocabulary in listOf(ReviewVocabulary.DIFF, ReviewVocabulary.CODE)) {
             val files = if (vocabulary == ReviewVocabulary.DIFF) diffs else sources
             for (topics in listOf(false, true)) {
@@ -29,19 +29,19 @@ class RadarViewTest : BasePlatformTestCase() {
                 val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(ReviewTopics(files)
                     .assign("src/a.kt", "UI>Panels").assign("src/b.kt", "UI>Charts").assign("lib/c.kt", "Model>Counts")
                     .assign("docs/readme.md", "Docs>Guide"), summaries, canRun = true))
-                    else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
+                    else CanvasState(emptyList(), charts = ChartsCard(summaries.tree))
                 val opened = mutableListOf<String>()
                 val canvas = NoteCanvas({ opened += it }, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
                 fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
                 try {
                     canvas.showNotes(state)
-                    if (topics) selectTopicsMode(descendants(canvas), "Radar") else selectSummariesMode(descendants(canvas), "radar")
+                    if (topics) selectTopicsMode(descendants(canvas), "Radar")
                     val chart = radar().chart
                     assertEquals(3, chart.axes.size)
                     val status = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }
                     assertTrue(status.text, status.text.contains(if (vocabulary == ReviewVocabulary.DIFF) "+8 −4" else "12 lines"))
                     val levels = descendants(canvas).filterIsInstance<JComboBox<*>>().single {
-                        it.name == (if (topics) "topic-level-selector" else "summary-radar-level-selector")
+                        it.name == (if (topics) "topic-level-selector" else "charts-radar-level-selector")
                     }
                     levels.selectedIndex = levels.itemCount - 1
                     assertEquals(4, radar().chart.axes.size)
@@ -60,7 +60,7 @@ class RadarViewTest : BasePlatformTestCase() {
         }
     }
 
-    fun testSymbolSeriesAndLineSwitchInSummariesAndTopics() {
+    fun testSymbolSeriesAndLineSwitchInChartsAndTopics() {
         val symbols = dev.insight.review.RadarSymbols(mapOf(dev.insight.review.RadarSymbolKind.FUNCTION to 2,
             dev.insight.review.RadarSymbolKind.COMMENT to 1))
         val files = sources.mapIndexed { index, file -> CodeFile(file.path, file.absolutePath, file.text,
@@ -68,14 +68,14 @@ class RadarViewTest : BasePlatformTestCase() {
         for (topics in listOf(false, true)) {
             val summaries = ReviewSummaries(buildSummaryTree(files))
             val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(ReviewTopics(files), summaries, canRun = true))
-                else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
+                else CanvasState(emptyList(), charts = ChartsCard(summaries.tree))
             val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
             fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
             fun switch() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name?.endsWith("radar-symbols") == true }
             fun statusLabel() = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }
             try {
                 canvas.showNotes(state)
-                if (topics) selectTopicsMode(descendants(canvas), "Radar") else selectSummariesMode(descendants(canvas), "radar")
+                if (topics) selectTopicsMode(descendants(canvas), "Radar")
                 assertTrue(switch().isSelected)
                 assertTrue(dev.insight.review.RadarSeries.FUNCTIONS in radar().chart.series)
                 val status = statusLabel().text

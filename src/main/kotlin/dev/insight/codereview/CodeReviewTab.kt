@@ -234,6 +234,8 @@ internal class CodeReviewTab(
             "Read the code as summaries, from the whole scope down to each file (/summaries)") { summaryStats(state.summaries) },
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read the code grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
+        ReviewViewOption(CanvasTabKey.Charts, "Charts",
+            "Compare how much code each folder or file holds, starting with a radar of symbols, comments or source lines"),
         ReviewViewOption(CanvasTabKey.CodeMap, "Code map",
             "Read the code as flows: classes and files that use each other, from their roots to tests, with the shared code they rely on (/code-map)") { codeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,
@@ -701,7 +703,7 @@ internal class CodeReviewTab(
         codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
         codeCards.codeMap = codeMapCard()
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
-            explanation = explanations.result))
+            explanation = explanations.result, charts = chartsCard()))
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()
     }
