@@ -228,7 +228,7 @@ internal class DiffReviewTab(
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",
             "Read the change grouped by shared change cause and affected code (/grouping)") { topicStats(state.grouping, "group") },
         ReviewViewOption(CanvasTabKey.Charts, "Charts",
-            "Compare how much changed in each folder or file, starting with a radar of the changed lines"),
+            "Explore added or removed lines by directory and file, or compare changes on a radar"),
         ReviewViewOption(CanvasTabKey.ChangeMap, "Change map",
             "Read the change as logical changes: related declarations across files, ordered from origin to tests (/change-map)") { changeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,

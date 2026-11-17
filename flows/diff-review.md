@@ -1,6 +1,6 @@
 # Diff review flow
 
-Diff Review is a read-only workspace for understanding a selected code comparison. It opens as a hub in the editor area, where each review tab offers a grid of tiles: choosing the comparison and any untracked files, then exploring the change through summaries, topics, change grouping, charts, a change map of related declarations, metric views, a Diffs wall, and finally chat. The Charts view gathers charts about the change; its radar compares how much changed in each folder or file at a chosen level, and topic and grouping views have radars of their own.
+Diff Review is a read-only workspace for understanding a selected code comparison. It opens as a hub in the editor area, where each review tab offers a grid of tiles: choosing the comparison and any untracked files, then exploring the change through summaries, topics, change grouping, charts, a change map of related declarations, metric views, a Diffs wall, and finally chat. The Charts view gathers charts about the change; its directory chart supports drill-down and path breadcrumbs, with a switch between added lines in green and removed lines in red. Its radar compares how much changed in each folder or file at a chosen level, and topic and grouping views have radars of their own.
 
 Focused review tabs, wall chats, and graph-backed canvas or flowchart views connect assistant explanations and call relationships back to the underlying diff, while keeping interpretations grounded in the comparison. The tool window holds only the active tab's chat and stays hidden until it is opened.
 

@@ -35,6 +35,7 @@ class RadarViewTest : BasePlatformTestCase() {
                 fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
                 try {
                     canvas.showNotes(state)
+                    selectRadar(canvas)
                     if (topics) selectTopicsMode(descendants(canvas), "Radar")
                     val chart = radar().chart
                     assertEquals(3, chart.axes.size)
@@ -75,6 +76,7 @@ class RadarViewTest : BasePlatformTestCase() {
             fun statusLabel() = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }
             try {
                 canvas.showNotes(state)
+                selectRadar(canvas)
                 if (topics) selectTopicsMode(descendants(canvas), "Radar")
                 assertTrue(switch().isSelected)
                 assertTrue(dev.insight.review.RadarSeries.FUNCTIONS in radar().chart.series)
@@ -115,6 +117,10 @@ class RadarViewTest : BasePlatformTestCase() {
                 assertTrue(dev.insight.review.RadarSeries.COMMENTS in radar().chart.series)
             } finally { canvas.dispose() }
         }
+    }
+
+    private fun selectRadar(canvas: NoteCanvas) {
+        descendants(canvas).filterIsInstance<JComboBox<*>>().firstOrNull { it.name == "charts-type-selector" }?.selectedItem = "Radar"
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +

@@ -116,7 +116,8 @@ internal class NoteCanvas(
     /** What the Charts page's close button does: take the page off the canvas. */
     internal var onRemoveCharts: () -> Unit = {}
     private val chartsCardBuilder = ChartsCanvasCard(vocabulary, open, refresh = { refreshCard(CanvasTabKey.Charts) },
-        close = { onRemoveCharts() })
+        close = { onRemoveCharts() }, project = project, openOnCanvas = showSummaryNode,
+        openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() })
     internal val chartsView get() = chartsCardBuilder.view
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
