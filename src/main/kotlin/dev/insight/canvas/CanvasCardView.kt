@@ -12,6 +12,9 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.ui.zoomScaled
+import java.awt.AlphaComposite
+import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.FlowLayout
@@ -66,6 +69,18 @@ internal interface CanvasCardHost {
  * chat keeps its history in the model.
  */
 internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasCard) : JPanel(StackLayout { zoomScaled(4, host.zoom) }), Disposable {
+    var appearance = 1f
+
+    override fun paint(g: Graphics) {
+        val copy = g.create() as Graphics2D
+        try {
+            copy.composite = AlphaComposite.SrcOver.derive(appearance)
+            super.paint(copy)
+        } finally {
+            copy.dispose()
+        }
+    }
+
     val id = initial.id
     var card: CanvasCard = initial
         private set
@@ -409,8 +424,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Sizes beyond fonts, at the current zoom. */
     fun applyZoom() {
         val accent = if (highlighted) ACCENT else JBColor.border()
-        border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(accent, if (highlighted) scaled(2) else scaled(1)),
-            pixel(scaled(8)))
+        val line = if (highlighted) scaled(2) else scaled(1)
+        // Reserve the highlight width without thickening the normal outline.
+        border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(accent, line),
+            pixel(scaled(8) + scaled(2) - line))
         sourcePane?.applyZoom(host.zoom)
         diffPane?.applyZoom(host.zoom)
     }

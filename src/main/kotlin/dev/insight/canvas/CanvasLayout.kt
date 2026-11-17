@@ -19,7 +19,9 @@ data class CanvasLayoutOptions(val left: Int = 0, val top: Int = 0, val arrowGap
  * Places cards in columns by depth to the right of the root file's view of [rootWidth]: cards opened from the root in
  * the first column, their children in the next, and so on. A column is as wide as its widest card. Within a column,
  * cards follow their parents' order and then their anchors, each as near its anchor as the cards above allow, so arrows
- * stay short and never cross within a column. A card whose parent is missing is treated as opened from the root.
+ * stay short and never cross within a column. Targets always follow the current parent and anchor; displacement
+ * needed to avoid overlaps is recalculated each time, so shrinking content releases that space. A missing parent
+ * is treated as the root.
  */
 fun canvasLayout(items: List<CanvasLayoutItem>, rootWidth: Int, options: CanvasLayoutOptions = CanvasLayoutOptions()): Map<String, CanvasPlacement> {
     val byId = items.associateBy { it.id }
@@ -51,7 +53,7 @@ fun canvasLayout(items: List<CanvasLayoutItem>, rootWidth: Int, options: CanvasL
         fun parentTop(item: CanvasLayoutItem) = parent(item)?.let { placed[it]?.y } ?: options.top
         val sorted = column.withIndex().sortedWith(compareBy(
             { (_, item) -> parent(item)?.let(order::get) ?: -1 },
-            { (_, item) -> parentTop(item) + item.anchorY },
+            { (_, item) -> parentTop(item) + item.anchorY - options.anchorLift },
             { (index, _) -> index },
         )).map { it.value }
         var bottom: Int? = null

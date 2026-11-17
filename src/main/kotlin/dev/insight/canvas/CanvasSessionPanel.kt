@@ -139,6 +139,13 @@ internal class CanvasSessionPanel(
     private var wheelZoom: Double? = null
     private var wheelAnchor: Point? = null
     private val zoomFrame = Timer(16) { wheelZoom?.let { zoomTo(it, wheelAnchor) } }.apply { isRepeats = false }
+    private val scrollMotion = CanvasMotion()
+    private val scrollFrames: Timer = Timer(16) {
+        val now = System.nanoTime()
+        val at = scrollMotion.position("viewport", now)
+        scrollTo(at.x, at.y, animationFrame = true)
+        if (!scrollMotion.active(now)) scrollFrames.stop()
+    }
     private val viewSave = Timer(400) { saveView() }.apply { isRepeats = false }
     private val unreveal = Timer(1_500) { reveal(null) }.apply { isRepeats = false }
     private val selectionButton = JButton("Open card").apply {
@@ -259,6 +266,9 @@ internal class CanvasSessionPanel(
         add(trailBar)
         add(scroll)
         scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+        listOf(scroll.horizontalScrollBar, scroll.verticalScrollBar).forEach { bar ->
+            bar.addAdjustmentListener { if (it.valueIsAdjusting) scrollFrames.stop() }
+        }
         // Children inherit these empty traversal keys, so Tab reaches the canvas's own bindings.
         content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
         content.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, emptySet())
@@ -365,6 +375,7 @@ internal class CanvasSessionPanel(
         if (!ready) return
         when (change) {
             is CanvasChange.CardOpened -> {
+                content.entering.add(change.card.id)
                 addView(change.card)
                 showStatus("")
             }
@@ -700,6 +711,7 @@ internal class CanvasSessionPanel(
     }
 
     override fun revealLine(cardId: String, line: Int) {
+        scrollFrames.stop()
         val view = views[cardId] ?: return
         if (CardSection.SOURCE in view.card.folded) model.setFolded(cardId, CardSection.SOURCE, false)
         view.showSource()
@@ -720,9 +732,23 @@ internal class CanvasSessionPanel(
         val view = cardId?.let(views::get) ?: return
         view.highlighted = true
         select(cardId)
-        val viewport = scroll.viewport.extentSize
-        content.scrollRectToVisible(Rectangle(view.x - zoomScaled(16, zoom), view.y - zoomScaled(16, zoom),
-            minOf(view.width + zoomScaled(32, zoom), viewport.width), minOf(view.height, viewport.height)))
+        content.validate()
+        val viewport = scroll.viewport.viewRect
+        val at = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
+        val padding = zoomScaled(16, zoom)
+        val target = Rectangle(at.x - padding, at.y - padding,
+            minOf(view.width + padding * 2, viewport.width), minOf(view.height, viewport.height))
+        fun offset(start: Int, length: Int, visibleStart: Int, visibleLength: Int) = when {
+            start < visibleStart -> start
+            start + length > visibleStart + visibleLength -> start + length - visibleLength
+            else -> visibleStart
+        }.coerceAtLeast(0)
+        val destination = CanvasPlacement(offset(target.x, target.width, viewport.x, viewport.width),
+            offset(target.y, target.height, viewport.y, viewport.height))
+        val now = System.nanoTime()
+        scrollMotion.target("viewport", CanvasPlacement(viewport.x, viewport.y), now, false)
+        scrollMotion.target("viewport", destination, now, true)
+        if (isShowing) scrollFrames.start() else scrollTo(destination.x, destination.y)
         unreveal.restart()
     }
 
@@ -740,8 +766,9 @@ internal class CanvasSessionPanel(
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
-        val x = if (view.width <= viewport.width) view.x + view.width / 2 - viewport.width / 2 else view.x - zoomScaled(16, zoom)
-        val y = if (view.height <= viewport.height - top) view.y + view.height / 2 - (viewport.height + top) / 2 else view.y - top
+        val at = cardId?.let(content::destination) ?: CanvasPlacement(view.x, view.y)
+        val x = if (view.width <= viewport.width) at.x + view.width / 2 - viewport.width / 2 else at.x - zoomScaled(16, zoom)
+        val y = if (view.height <= viewport.height - top) at.y + view.height / 2 - (viewport.height + top) / 2 else at.y - top
         scrollTo(maxOf(x, 0), maxOf(y, 0))
         reveal(cardId)
     }
@@ -974,6 +1001,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun wheel(e: MouseWheelEvent) {
+        scrollFrames.stop()
         if (e.isControlDown || e.isMetaDown) {
             wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
             wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
@@ -994,6 +1022,8 @@ internal class CanvasSessionPanel(
         val previous = viewport.viewPosition
         val ratio = next / zoom
         val tracked = CanvasZoomAnchor(content, Point(previous.x + point.x, previous.y + point.y))
+        scrollFrames.stop()
+        content.resetMotion()
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
@@ -1019,7 +1049,8 @@ internal class CanvasSessionPanel(
         font = base.zoomed(zoom)
     }
 
-    private fun scrollTo(x: Number, y: Number) {
+    private fun scrollTo(x: Number, y: Number, animationFrame: Boolean = false) {
+        if (!animationFrame) scrollFrames.stop()
         val viewport = scroll.viewport
         val left = x.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.width).toLong())
         val top = y.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.height).toLong())
@@ -1029,6 +1060,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun drag(e: MouseEvent) {
+        if (e.id == MouseEvent.MOUSE_PRESSED) scrollFrames.stop()
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
         if (e.isPopupTrigger) {
             val point = SwingUtilities.convertPoint(e.component, e.point, content)
@@ -1109,6 +1141,8 @@ internal class CanvasSessionPanel(
         }
         disposed = true
         zoomFrame.stop()
+        content.stopMotion()
+        scrollFrames.stop()
         viewSave.stop()
         unreveal.stop()
         mouseEvents.dispose()
@@ -1279,6 +1313,32 @@ internal class CanvasSessionPanel(
     private inner class Canvas : JPanel(null), Scrollable {
         private val space = Dimension()
         private var extent = Dimension()
+        private var placements: Map<String, CanvasPlacement> = emptyMap()
+        private val motion = CanvasMotion()
+        val entering = HashSet<String>()
+        fun destination(id: String) = placements[id]
+        private var layoutZoom = zoom
+        private val frames = Timer(16) { animateFrame() }
+
+        fun stopMotion() { frames.stop() }
+
+        fun resetMotion() {
+            frames.stop()
+            placements = emptyMap()
+            motion.clear()
+        }
+
+        private fun animateFrame() {
+            val now = System.nanoTime()
+            for ((id, view) in views) {
+                if (id !in placements) continue
+                val at = motion.position(id, now)
+                view.setLocation(at.x, at.y)
+                view.appearance = motion.opacity(id, now)
+            }
+            repaint()
+            if (!motion.active(now)) frames.stop()
+        }
 
         init {
             background = UIUtil.getPanelBackground()
@@ -1338,14 +1398,26 @@ internal class CanvasSessionPanel(
                     anchorYs[card.id] = anchor
                     CanvasLayoutItem(card.id, card.parentId?.takeIf { it in views }, anchor, width, height)
                 }
+                val animate = isShowing && layoutZoom == zoom
+                layoutZoom = zoom
                 val placed = canvasLayout(items, root.width, CanvasLayoutOptions(left = margin, top = top,
                     arrowGap = zoomScaled(64, zoom), gap = zoomScaled(14, zoom), anchorLift = zoomScaled(12, zoom)))
+                val now = System.nanoTime()
+                motion.retain(placed.keys)
                 for (item in items) {
                     val at = placed[item.id] ?: continue
-                    views[item.id]?.setBounds(at.x, at.y, item.width, item.height)
+                    motion.target(item.id, at, now, animate && (item.id in placements || item.id in entering), zoomScaled(12, zoom))
+                    val shown = motion.position(item.id, now)
+                    views[item.id]?.let { view ->
+                        view.setBounds(shown.x, shown.y, item.width, item.height)
+                        view.appearance = motion.opacity(item.id, now)
+                    }
                     right = maxOf(right, at.x + item.width)
                     bottom = maxOf(bottom, at.y + item.height)
                 }
+                entering.clear()
+                placements = placed
+                if (motion.active(now) && !frames.isRunning) frames.start()
             }
             extent = Dimension(right, bottom)
             reserve(right.toLong(), bottom.toLong())
@@ -1363,6 +1435,7 @@ internal class CanvasSessionPanel(
                     val view = views[card.id] ?: continue
                     val parent: JComponent = card.parentId?.let(views::get) ?: root
                     val anchor = anchorYs[card.id] ?: continue
+                    g2.composite = java.awt.AlphaComposite.SrcOver.derive(view.appearance)
                     arrow(g2, Point(parent.x + parent.width, parent.y + anchor), Point(view.x, view.y + view.headerMiddle()),
                         if (card.id == revealed) ARROW_ACTIVE else ARROW)
                 }
