@@ -11,9 +11,11 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
+import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.dotLeader
 import java.awt.BorderLayout
+import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
@@ -23,6 +25,7 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JToggleButton
 
 /** A number ladder for one directory. Links retain standard keyboard navigation and accessibility. */
 internal class LineChartPanel(
@@ -33,11 +36,15 @@ internal class LineChartPanel(
     private val open: (String) -> Unit,
     val series: RadarSeries = RadarSeries.SOURCE,
     private val contextMenu: ((String) -> JPopupMenu)? = null,
+    val previewPath: String? = null,
+    private val togglePreview: (String) -> Unit = {},
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
-    private val chart = ReviewLineChart(tree, series)
+    internal val chart = ReviewLineChart(tree, series)
     private val lineLabel = series.label.lowercase(Locale.US)
     private val numberColor get() = if (series == RadarSeries.SOURCE) UIUtil.getLabelForeground() else RadarChartPanel.color(series)
     val directory = chart.directory(path)
+
+    fun previewFiles(): List<ReviewSource> = previewPath?.let(chart::files).orEmpty()
 
     init {
         name = "charts-lines"
@@ -50,10 +57,17 @@ internal class LineChartPanel(
                 chart.breadcrumbs(directory).forEachIndexed { index, entry ->
                     if (index > 0) add(JLabel(" / ").apply { font = chartFont(font); foreground = UIUtil.getContextHelpForeground() })
                     val title = if (index == 0) rootLabel + entry.path.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() else entry.label
+                    val activeCrumb = entry.path == previewPath
                     add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { navigate(entry.path) }).apply {
                         name = "charts-lines-crumb:${entry.path}"
-                        toolTipText = entry.path.ifEmpty { rootLabel }
-                        font = chartFont(font)
+                        toolTipText = entry.path.ifEmpty { rootLabel } + if (activeCrumb) " · Showing in preview" else ""
+                        font = chartFont(font).let { if (activeCrumb) it.deriveFont(it.style or Font.BOLD) else it }
+                        if (activeCrumb) {
+                            border = JBUI.Borders.compound(
+                                JBUI.Borders.customLine(JBUI.CurrentTheme.Focus.focusColor(), 1),
+                                JBUI.Borders.empty(1, 4),
+                            )
+                        }
                         componentPopupMenu = contextMenu?.invoke(entry.path)
                     })
                 }
@@ -79,8 +93,16 @@ internal class LineChartPanel(
     }
 
     private fun row(entry: ReviewLineChart.Entry) = JPanel(BorderLayout(JBUI.scale(10), 0)).apply {
-        isOpaque = false
-        border = JBUI.Borders.empty(4, 0)
+        val active = previewPath == entry.path
+        name = "charts-lines-row:${entry.path}"
+        isOpaque = active
+        if (active) background = UIUtil.getListSelectionBackground(false)
+        border = if (active) {
+            JBUI.Borders.compound(
+                JBUI.Borders.customLine(JBUI.CurrentTheme.Focus.focusColor(), 1),
+                JBUI.Borders.empty(3, 6),
+            )
+        } else JBUI.Borders.empty(4, 7)
         componentPopupMenu = contextMenu?.invoke(entry.path)
         val tooltip = "${entry.path} · ${number(entry.lines)} $lineLabel" +
             if (entry.directory) " · ${entry.files} files · Click to explore" else if (series == RadarSeries.SOURCE) " · Open file" else " · View diff"
@@ -113,13 +135,36 @@ internal class LineChartPanel(
         add(ActionLink(entry.label + if (entry.directory) "/  ›" else "") {
             if (entry.directory) navigate(entry.path) else open(entry.path)
         }.apply {
-            font = chartFont(font)
+            font = chartFont(font).let { if (active) it.deriveFont(it.style or Font.BOLD) else it }
             inheritsPopupMenu = true
             name = "charts-lines-entry:${entry.path}"
             icon = if (entry.directory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
             toolTipText = tooltip
             accessibleContext.accessibleName = "${entry.label}, ${number(entry.lines)} $lineLabel, ${if (entry.directory) "directory" else "file"}"
         }, BorderLayout.CENTER)
+        add(previewToggle(entry, active), BorderLayout.EAST)
+    }
+
+    /** A borderless icon toggle in a fixed right-hand column, so every row's control aligns. */
+    private fun previewToggle(entry: ReviewLineChart.Entry, active: Boolean): JToggleButton {
+        val kind = if (series == RadarSeries.SOURCE) "source" else "diff"
+        val label = if (active) "Hide $kind" else "Show $kind"
+        return JToggleButton(AllIcons.Actions.Preview, active).apply {
+            name = "charts-lines-toggle:${entry.path}"
+            val size = Dimension(JBUI.scale(28), JBUI.scale(24))
+            preferredSize = size; minimumSize = size; maximumSize = size
+            isBorderPainted = false
+            isFocusPainted = false
+            isContentAreaFilled = active
+            isRolloverEnabled = true
+            if (active) background = UIUtil.getListSelectionBackground(true)
+            addChangeListener { if (!isSelected) isContentAreaFilled = model.isRollover }
+            inheritsPopupMenu = true
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            toolTipText = "$label of ${entry.path}"
+            accessibleContext.accessibleName = "$label of ${entry.path}"
+            addActionListener { togglePreview(entry.path) }
+        }
     }
 
     private fun number(value: Long) = String.format(Locale.US, "%,d", value)

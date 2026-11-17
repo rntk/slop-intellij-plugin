@@ -1,8 +1,10 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.Disposable
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import dev.insight.codereview.CodeFile
+import dev.insight.diff.DiffFileEditor
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.RadarSeries
 import dev.insight.review.buildSummaryTree
@@ -13,6 +15,7 @@ import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JComponent
 import javax.swing.JMenuItem
+import javax.swing.JToggleButton
 
 class LineChartViewTest : BasePlatformTestCase() {
     fun testCodeAndDiffRowsCountsAndBreadcrumbsOfferContextPicker() {
@@ -104,6 +107,76 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals("Removed lines", selector("charts-lines-series-selector").selectedItem)
             assertColor(RadarSeries.REMOVED)
         } finally { canvas.dispose() }
+    }
+
+    fun testToggleShowsAndHidesFileAndDirectoryPreviewWithVisualHighlightAndDisposal() {
+        for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
+            val files = listOf("src/a.kt", "src/nested/b.kt", "readme.md").map { path ->
+                if (vocabulary == ReviewVocabulary.CODE) CodeFile(path, "/repo/$path", "val file = \"$path\"\n")
+                else dev.insight.diff.ReviewFile(path, "/repo/$path", null, "modified",
+                    "@@ -1 +1 @@\n-old\n+new\n", path)
+            }
+            val expectedShow = if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diff"
+            val expectedHide = if (vocabulary == ReviewVocabulary.CODE) "Hide source" else "Hide diff"
+            val canvas = NoteCanvas({}, {}, project = project, vocabulary = vocabulary).apply { setSize(1600, 900) }
+            fun all() = descendants(canvas)
+            fun previewPanel() = all().filterIsInstance<HierarchyPreviewPanel>().single()
+            fun toggle(path: String) = all().filterIsInstance<JToggleButton>().single { it.name == "charts-lines-toggle:$path" }
+            fun row(path: String) = all().filterIsInstance<JComponent>().single { it.name == "charts-lines-row:$path" }
+            fun previewPaths() = descendants(previewPanel()).mapNotNull { it.name?.takeIf { n -> n.startsWith("hierarchy-preview:") } }
+                .map { it.removePrefix("hierarchy-preview:") }
+            fun viewers() = descendants(previewPanel()).filterIsInstance<Disposable>().filter {
+                it is DiffFileEditor || it is DiffSourceEditor
+            }
+            fun isDisposed(viewer: Disposable) =
+                if (viewer is DiffFileEditor) viewer.isDisposed else (viewer as DiffSourceEditor).editor.isDisposed
+            try {
+                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(buildSummaryTree(files))))
+                assertTrue(previewPaths().isEmpty())
+                assertEquals(expectedShow, toggle("readme.md").toolTipText.orEmpty().substringBefore(" of "))
+                assertFalse(toggle("readme.md").isSelected)
+                assertFalse(row("readme.md").isOpaque)
+                assertFalse(row("src").isOpaque)
+
+                toggle("readme.md").doClick()
+                assertTrue(toggle("readme.md").isSelected)
+                assertEquals(expectedHide, toggle("readme.md").toolTipText.orEmpty().substringBefore(" of "))
+                assertTrue(row("readme.md").isOpaque)
+                assertFalse(row("src").isOpaque)
+                assertEquals(listOf("readme.md"), previewPaths())
+                val firstViewer = viewers().single()
+                assertFalse(isDisposed(firstViewer))
+
+                toggle("src").doClick()
+                assertTrue(isDisposed(firstViewer))
+                assertFalse(toggle("readme.md").isSelected)
+                assertEquals(expectedShow, toggle("readme.md").toolTipText.orEmpty().substringBefore(" of "))
+                assertFalse(row("readme.md").isOpaque)
+                assertTrue(toggle("src").isSelected)
+                assertEquals(expectedHide, toggle("src").toolTipText.orEmpty().substringBefore(" of "))
+                assertTrue(row("src").isOpaque)
+                assertEquals(listOf("src/nested/b.kt", "src/a.kt"), previewPaths())
+                val dirViewers = viewers()
+                assertEquals(2, dirViewers.size)
+
+                // Drilling into the active directory highlights its breadcrumb while retaining its preview.
+                all().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
+                val srcCrumb = all().filterIsInstance<JComponent>().single { it.name == "charts-lines-crumb:src" }
+                assertTrue(srcCrumb.font.isBold)
+                assertNotNull(srcCrumb.border)
+                assertEquals(listOf("src/nested/b.kt", "src/a.kt"), previewPaths())
+
+                all().filterIsInstance<ActionLink>().single { it.name == "charts-lines-crumb:" }.doClick()
+                val activeDirViewers = viewers()
+                assertEquals(2, activeDirViewers.size)
+                toggle("src").doClick()
+                assertTrue(activeDirViewers.all(::isDisposed))
+                assertFalse(toggle("src").isSelected)
+                assertEquals(expectedShow, toggle("src").toolTipText.orEmpty().substringBefore(" of "))
+                assertFalse(row("src").isOpaque)
+                assertTrue(previewPaths().isEmpty())
+            } finally { canvas.dispose() }
+        }
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +

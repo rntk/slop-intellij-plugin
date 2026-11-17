@@ -19,12 +19,11 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
 
-/** Keeps evidence beside the chart, with an independent reading position and one viewer per file. */
+/** Keeps evidence beside the chart or directory list, with an independent reading position and one viewer per file. */
 internal class HierarchyPreviewPanel(
-    chart: HierarchyColumnsPanel,
     left: JComponent,
     private val project: Project?,
-    initialPaths: List<String> = emptyList(),
+    private val emptyText: String = "Hover or click a topic or summary to preview its files.",
     private val remember: (List<String>) -> Unit = {},
     private val createViewer: ((ReviewSource) -> JComponent)? = null,
 ) : JPanel(BorderLayout()), Disposable {
@@ -37,21 +36,14 @@ internal class HierarchyPreviewPanel(
     private var paths: List<String>? = null
     private var disposed = false
 
-    init {
-        name = "hierarchy-with-preview"
-        val scroll = JBScrollPane(blocks).apply {
-            name = "hierarchy-preview-scroll"
-            preferredSize = Dimension(JBUI.scale(640), left.preferredSize.height)
-            verticalScrollBar.unitIncrement = JBUI.scale(16)
-        }
-        add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, scroll).apply {
-            name = "hierarchy-preview-split"
-            resizeWeight = 0.6
-            border = null
-            left.minimumSize = Dimension(JBUI.scale(240), 0)
-            scroll.minimumSize = Dimension(JBUI.scale(240), 0)
-            preferredSize = Dimension(left.preferredSize.width + JBUI.scale(640), left.preferredSize.height)
-        })
+    constructor(
+        chart: HierarchyColumnsPanel,
+        left: JComponent,
+        project: Project?,
+        initialPaths: List<String> = emptyList(),
+        remember: (List<String>) -> Unit = {},
+        createViewer: ((ReviewSource) -> JComponent)? = null,
+    ) : this(left, project, remember = remember, createViewer = createViewer) {
         for ((component, files) in chart.previewScopes) {
             val listener = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) = showFiles(files)
@@ -71,6 +63,23 @@ internal class HierarchyPreviewPanel(
         showFiles(initialPaths.mapNotNull(sources::get))
     }
 
+    init {
+        name = "hierarchy-with-preview"
+        val scroll = JBScrollPane(blocks).apply {
+            name = "hierarchy-preview-scroll"
+            preferredSize = Dimension(JBUI.scale(640), left.preferredSize.height)
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+        }
+        add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, scroll).apply {
+            name = "hierarchy-preview-split"
+            resizeWeight = 0.6
+            border = null
+            left.minimumSize = Dimension(JBUI.scale(240), 0)
+            scroll.minimumSize = Dimension(JBUI.scale(240), 0)
+            preferredSize = Dimension(left.preferredSize.width + JBUI.scale(640), left.preferredSize.height)
+        })
+    }
+
     internal fun showFiles(files: List<ReviewSource>) {
         if (disposed) return
         val unique = files.distinctBy { it.path }
@@ -80,7 +89,7 @@ internal class HierarchyPreviewPanel(
         remember(next)
         releaseEditors()
         blocks.removeAll()
-        if (unique.isEmpty()) blocks.add(JLabel("Hover or click a topic or summary to preview its files."))
+        if (unique.isEmpty()) blocks.add(JLabel(emptyText))
         for (file in unique) {
             val viewer = createViewer?.invoke(file) ?: if (file is ReviewFile) {
                 DiffFileEditor(file, project).apply { resizeFor(JBUI.scale(600), 1.0) }

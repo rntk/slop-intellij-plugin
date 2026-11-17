@@ -206,6 +206,7 @@ internal class NoteCanvas(
         topicsCardBuilder.update(topics)
         groupingCardBuilder.update(grouping)
         summariesCardBuilder.update(summaries)
+        chartsCardBuilder.update(charts)
         snapshotCards.update(sources)
         val selected = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
         val bodyScrolls = cards.mapValues { bodyScroll(it.value)?.viewport?.viewPosition?.let(::Point) }
@@ -915,6 +916,7 @@ internal class NoteCanvas(
             return
         }
         if (content == charts) return
+        chartsCardBuilder.update(content)
         state = state.copy(charts = content)
         refreshCard(CanvasTabKey.Charts)
     }
@@ -987,6 +989,7 @@ internal class NoteCanvas(
         summariesCardBuilder.dispose()
         topicsCardBuilder.dispose()
         groupingCardBuilder.dispose()
+        chartsCardBuilder.dispose()
         snapshotCards.dispose()
         extension?.dispose()
     }

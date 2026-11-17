@@ -66,4 +66,26 @@ class ReviewLineChartTest {
         assertEquals("..1,234", dotLeader("1,234", 7))
         assertEquals("12,345,678", dotLeader("12,345,678", 7))
     }
+
+    @Test fun `files and hasEntry resolve files, directories, absorbed roots, and missing paths`() {
+        val tree = buildSummaryTree(listOf(file("src/a.kt", "a"), file("src/nested/b.kt", "b"), file("README.md", "c")))
+        val chart = ReviewLineChart(tree)
+        assertTrue(chart.hasEntry(""))
+        assertTrue(chart.hasEntry("src"))
+        assertTrue(chart.hasEntry("src/nested"))
+        assertTrue(chart.hasEntry("src/a.kt"))
+        assertFalse(chart.hasEntry("missing"))
+        assertEquals(listOf("src/nested/b.kt", "src/a.kt", "README.md"), chart.files("").map { it.path })
+        assertEquals(listOf("src/nested/b.kt", "src/a.kt"), chart.files("src").map { it.path })
+        assertEquals(listOf("src/nested/b.kt"), chart.files("src/nested").map { it.path })
+        assertEquals(listOf("README.md"), chart.files("README.md").map { it.path })
+        assertTrue(chart.files("missing").isEmpty())
+
+        val absorbed = ReviewLineChart(buildSummaryTree(listOf(file("picked/src/a.kt", "a"), file("picked/src/sub/b.kt", "b"))))
+        assertTrue(absorbed.hasEntry("picked/src"))
+        assertFalse(absorbed.hasEntry("picked/src/gone"))
+        assertEquals(listOf("picked/src/sub/b.kt", "picked/src/a.kt"), absorbed.files("picked/src").map { it.path })
+        assertEquals(listOf("picked/src/sub/b.kt"), absorbed.files("picked/src/sub").map { it.path })
+        assertTrue(absorbed.files("picked/src/gone").isEmpty())
+    }
 }

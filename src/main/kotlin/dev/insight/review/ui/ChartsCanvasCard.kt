@@ -1,8 +1,10 @@
 package dev.insight.review.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -13,6 +15,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
+import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
@@ -31,6 +34,7 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
+import javax.swing.SwingUtilities
 
 /** The Charts page's content: the scope's folder and file tree, which the charts measure. */
 internal data class ChartsCard(val tree: ReviewSummaryTree)
@@ -41,6 +45,8 @@ internal class ChartsViewState {
     var radarLevel: Int? = null
     var chart: String? = null
     var linesPath: String? = null
+    var linesPreviewPath: String? = null
+    var linesScroll: Int = 0
     var linesSeries = RadarSeries.ADDED
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -61,14 +67,27 @@ internal class ChartsCanvasCard(
     private val openOnCanvas: ((SummaryNode) -> Unit)? = null,
     private val openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
     private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
-) {
+) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
+    private var preview: HierarchyPreviewPanel? = null
+    private var currentCard: JPanel? = null
+
+    fun update(content: ChartsCard?) {
+        if (content == null) {
+            preview?.let(Disposer::dispose)
+            preview = null
+            currentCard = null
+        }
+    }
 
     fun card(content: ChartsCard): JPanel {
+        preview?.let(Disposer::dispose)
+        preview = null
         val lines = view.chart != "Radar"
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "Lines of code"
+        val series = if (diff) view.linesSeries else RadarSeries.SOURCE
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -112,14 +131,30 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
+        val activePreview = if (lines) view.linesPreviewPath?.takeIf { ReviewLineChart(content.tree, series).hasEntry(it) }
+            .also { view.linesPreviewPath = it } else null
+        val lineChart = if (lines) LineChartPanel(
+            content.tree,
+            view.linesPath,
+            vocabulary.rootName,
+            { path ->
+                view.linesPath = path
+                view.linesScroll = 0
+                refresh()
+            },
+            open,
+            series,
+            contextMenu = project?.let { { path -> contextMenu(content.tree, path) } },
+            previewPath = activePreview,
+            togglePreview = { path ->
+                view.linesPreviewPath = if (view.linesPreviewPath == path) null else path
+                refresh()
+            },
+        ) else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            if (lines) add(LineChartPanel(content.tree, view.linesPath, vocabulary.rootName, { path ->
-                view.linesPath = path
-                refresh()
-            }, open, if (diff) view.linesSeries else RadarSeries.SOURCE,
-                contextMenu = project?.let { { path -> contextMenu(content.tree, path) } }))
+            if (lineChart != null) add(lineChart)
             else {
                 val status = JLabel(radarStatus(chart, view.radarSeries)).apply {
                     name = "charts-radar-status"
@@ -132,18 +167,36 @@ internal class ChartsCanvasCard(
                 })
             }
         }
+        val card = JPanel(BorderLayout()).apply {
+            background = UIUtil.getListBackground()
+            border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
+        }
+        val previewFiles = lineChart?.previewFiles().orEmpty()
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-            preferredSize = Dimension(width, minOf(body.preferredSize.height, scaled(MAX_HEIGHT)))
+            val minHeight = if (previewFiles.isNotEmpty()) scaled(MIN_PREVIEW_HEIGHT) else 0
+            preferredSize = Dimension(width, minOf(maxOf(body.preferredSize.height, minHeight), scaled(MAX_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
+            if (lines) {
+                val restore = view.linesScroll
+                verticalScrollBar.addAdjustmentListener { if (currentCard === card) view.linesScroll = it.value }
+                SwingUtilities.invokeLater {
+                    if (currentCard === card) verticalScrollBar.value = restore
+                }
+            }
         }
-        return JPanel(BorderLayout()).apply {
-            background = UIUtil.getListBackground()
-            border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
-            add(header, BorderLayout.NORTH)
-            add(bodyScroll, BorderLayout.CENTER)
-        }
+        val readingArea = if (lineChart != null) {
+            val actionLabel = if (diff) "Show diff" else "Show source"
+            HierarchyPreviewPanel(bodyScroll, project, "Click $actionLabel on a file or directory to preview its files.").also {
+                it.showFiles(previewFiles)
+                preview = it
+            }
+        } else bodyScroll
+        card.add(header, BorderLayout.NORTH)
+        card.add(readingArea, BorderLayout.CENTER)
+        currentCard = card
+        return card
     }
 
     private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu = JPopupMenu().apply {
@@ -185,8 +238,15 @@ internal class ChartsCanvasCard(
     private fun scaled(value: Int) = zoomScaled(value, zoom)
     private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)
 
+    override fun dispose() {
+        preview?.let(Disposer::dispose)
+        preview = null
+        currentCard = null
+    }
+
     private companion object {
         const val PADDING = 12
+        const val MIN_PREVIEW_HEIGHT = 560
         const val MAX_HEIGHT = 820
     }
 }
