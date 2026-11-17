@@ -7,6 +7,8 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
@@ -307,7 +309,14 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         val requestedSource = source
         summaryJob = host.scope.launch(Dispatchers.EDT) {
             try {
-                val text = withContext(Dispatchers.IO) { CanvasSummarizer(host.services.complete(), tools = host.services.summaryTools(), maxContextChars = host.services.maxContextChars()).summarize(input) }
+                val text = withBackgroundProgress(host.project, "Summarizing ${current.title}") {
+                    reportRawProgress { reporter ->
+                        withContext(Dispatchers.IO) {
+                            CanvasSummarizer(host.services.complete(), tools = host.services.summaryTools(),
+                                maxContextChars = host.services.maxContextChars()).summarize(input) { reporter.text(it) }
+                        }
+                    }
+                }
                 host.model.setSummary(id, text)
             } catch (e: CanvasSummaryException) {
                 LOG.info("Canvas card summary failed: ${e.message}", e.cause)

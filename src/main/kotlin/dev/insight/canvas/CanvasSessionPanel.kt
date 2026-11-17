@@ -24,6 +24,8 @@ import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.awt.RelativePoint
@@ -35,6 +37,7 @@ import dev.insight.agent.ProjectFiles
 import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphService
 import dev.insight.callgraph.SchematicGapWorkflow
+import dev.insight.core.withCountProgress
 import dev.insight.graph.CallGraphNode
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
@@ -821,29 +824,38 @@ internal class CanvasSessionPanel(
             var failed = 0
             var problem: String? = null
             try {
-                for ((index, unit) in units.withIndex()) {
-                    if (controller.source(cardId) !== source) break
-                    showStatus("Summarizing gaps of $name: ${index + 1} / ${units.size}…")
-                    try {
-                        val input = controller.gapSource(cardId, unit)
-                        val text = withContext(Dispatchers.IO) { workflow.summarize(input, unit) }?.trim()?.takeIf { it.isNotEmpty() }
-                        val hash = source.gapHash(unit.first, unit.last)
-                        if (text != null && hash != null && controller.source(cardId) === source) {
-                            model.addGapSummary(cardId, GapSummary(unit.first, unit.last, hash, text))
-                        }
-                    } catch (e: Throwable) {
-                        if (e is CancellationException || e is ControlFlowException) throw e
-                        LOG.warn("Canvas gap summary of $name failed", e)
-                        failed++
-                        problem = e.message ?: e.javaClass.simpleName
-                        // A changed file fails every remaining gap the same way.
-                        if (e is IllegalStateException && problem.startsWith("Source changed")) {
-                            failed += units.size - index - 1
-                            break
+                withBackgroundProgress(project, "Summarizing gaps of $name") {
+                    withCountProgress("Summarizing gaps of $name", "gaps") { onProgress ->
+                        for ((index, unit) in units.withIndex()) {
+                            if (controller.source(cardId) !== source) break
+                            onProgress(index, units.size)
+                            showStatus("Summarizing gaps of $name: ${index + 1} / ${units.size}…")
+                            try {
+                                val input = controller.gapSource(cardId, unit)
+                                val text = withContext(Dispatchers.IO) { workflow.summarize(input, unit) }?.trim()?.takeIf { it.isNotEmpty() }
+                                val hash = source.gapHash(unit.first, unit.last)
+                                if (text != null && hash != null && controller.source(cardId) === source) {
+                                    model.addGapSummary(cardId, GapSummary(unit.first, unit.last, hash, text))
+                                }
+                            } catch (e: Throwable) {
+                                if (e is CancellationException || e is ControlFlowException) throw e
+                                LOG.warn("Canvas gap summary of $name failed", e)
+                                failed++
+                                problem = e.message ?: e.javaClass.simpleName
+                                // A changed file fails every remaining gap the same way.
+                                if (e is IllegalStateException && problem.startsWith("Source changed")) {
+                                    failed += units.size - index - 1
+                                    break
+                                }
+                            }
+                            onProgress(index + 1, units.size)
                         }
                     }
                 }
                 showStatus(if (failed == 0) "" else "$failed of ${units.size} gaps of $name could not be summarized: $problem")
+            } catch (e: CancellationException) {
+                showStatus("")
+                throw e
             } finally {
                 if (gapJobs[cardId] === coroutineContext[Job]) gapJobs.remove(cardId)
             }
@@ -1269,8 +1281,13 @@ internal class CanvasSessionPanel(
                 source.text, symbolKind = "FILE", language = file.source.fileType.displayName)
             summaryJob = scope.launch(Dispatchers.EDT) {
                 try {
-                    val text = withContext(Dispatchers.IO) {
-                        CanvasSummarizer(services.complete(), tools = services.summaryTools(), maxContextChars = services.maxContextChars()).summarize(input)
+                    val text = withBackgroundProgress(project, "Summarizing ${file.source.name}") {
+                        reportRawProgress { reporter ->
+                            withContext(Dispatchers.IO) {
+                                CanvasSummarizer(services.complete(), tools = services.summaryTools(),
+                                    maxContextChars = services.maxContextChars()).summarize(input) { reporter.text(it) }
+                            }
+                        }
                     }
                     model.setSummary(null, text)
                 } catch (e: CanvasSummaryException) {
