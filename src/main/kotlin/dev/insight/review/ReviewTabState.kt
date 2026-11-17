@@ -74,6 +74,8 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         private set
     /** Whether the change map has nothing left to generate; only a diff review has one, so other reviews never run it. */
     internal open val changeMapDone: Boolean get() = true
+    /** Whether the code map has nothing left to generate; only a code review has one, so other reviews never run it. */
+    internal open val codeMapDone: Boolean get() = true
 
     /**
      * Moves to a new revision of [next]: drops the notes and source blocks of [changed] paths, keeps the summaries and

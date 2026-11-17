@@ -161,7 +161,7 @@ internal class DiffReviewPanel(
             "its merge base. Apply diff loads the files below.",
         files = "Files",
         filesHint = "Double-click a changed file to view its diff; check untracked files to include them in the review.",
-    ), sourceControls, filesPanel, ReviewPipeline.entries) { pipelines ->
+    ), sourceControls, filesPanel, ReviewPipeline.diff) { pipelines ->
         tabs.selected?.schedule(pipelines)
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }

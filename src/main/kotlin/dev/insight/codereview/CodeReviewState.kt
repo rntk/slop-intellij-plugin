@@ -1,6 +1,12 @@
 package dev.insight.codereview
 
+import dev.insight.agent.ToolInputException
+import dev.insight.codereview.map.CodeGraph
+import dev.insight.codereview.map.CodeMap
+import dev.insight.codereview.map.buildCodeMapTree
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewSummaries
+import dev.insight.review.Summary
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
@@ -21,6 +27,11 @@ internal fun codeTopicSummaryTree(topics: ReviewTopics): ReviewSummaryTree = bui
 
 private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orEmpty()
 
+internal const val CODE_CHANGED = "The files changed. Start a new request to review the current code."
+
+internal val EMPTY_CODE_MAP =CodeMap(CodeGraph(emptyList(), emptyList()), emptyList())
+internal val EMPTY_CODE_MAP_SUMMARIES = ReviewSummaries(buildCodeMapTree(EMPTY_CODE_MAP, emptyList()))
+
 /**
  * EDT-owned state of one code review tab. Every tool is checked against the same revision as its evidence. Notes and
  * source blocks belong to file contents: an edit drops those of the edited file. Summaries and topics are kept by
@@ -29,7 +40,7 @@ private fun codeChunks(source: ReviewSource) = (source as? CodeFile)?.chunks.orE
 class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) : ReviewTabState<CodeFile>(
     "code", paths, cache, ::codeSummaryTree, ::codeTopicSummaryTree, ReviewStateMessages(
         refreshing = "The code is refreshing. Retry after refresh completes.",
-        changed = "The files changed. Start a new request to review the current code.",
+        changed = CODE_CHANGED,
         notePaths = "Use 1 to 30 file paths in scope.",
         unknownFile = { "$it is not a file in this review's scope." },
     ),
@@ -55,9 +66,45 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     /** The wall's files in the current snapshot, in the scope's order; files that left the scope drop out. */
     internal val wallFiles: List<CodeFile> get() = wallScope?.paths?.let { paths -> paths.mapNotNull(snapshot.byPath::get) } ?: snapshot.files
 
+    /**
+     * Whether the code map card is on the canvas. The map needs PSI and models, so the tab builds it on /code-map and
+     * delivers it with [setCodeMap]. Map and summaries live in memory only: a new IDE session builds them again.
+     */
+    var codeMapVisible = false
+        private set
+    fun showCodeMap() { codeMapVisible = true }
+    fun hideCodeMap() { codeMapVisible = false }
+    private var codeMapRevision = -1
+    private var builtCodeMap: CodeMap? = null
+    /** Kept across revisions, so the next map keeps the summaries of its unchanged flows and units. */
+    private var mapSummaries = EMPTY_CODE_MAP_SUMMARIES
+    /** The code map of the current revision, or null until one is built for it. */
+    internal val codeMap: CodeMap? get() = builtCodeMap?.takeIf { codeMapRevision == revision }
+    /** The summaries of [codeMap]; an empty tree while there is none. */
+    val codeMapSummaries: ReviewSummaries get() = if (codeMap != null) mapSummaries else EMPTY_CODE_MAP_SUMMARIES
+    override val codeMapDone: Boolean get() = codeMap != null && mapSummaries.complete
+
+    /** Keeps [map] of the files of revision [expected]; summaries of unchanged nodes stay. */
+    internal fun setCodeMap(expected: Int, map: CodeMap) {
+        check(expected)
+        mapSummaries = mapSummaries.retainedIn(buildCodeMapTree(map, snapshot.files))
+        builtCodeMap = map
+        codeMapRevision = expected
+    }
+
+    /** Forgets the summaries before a complete map is generated again, so a regeneration writes them afresh. */
+    internal fun clearCodeMapSummaries() { mapSummaries = ReviewSummaries(mapSummaries.tree) }
+
+    internal fun summarizeCodeMap(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
+        check(expected)
+        if (codeMap == null) throw ToolInputException(CODE_CHANGED)
+        return mapSummaries.summarize(entries).also { mapSummaries = it }
+    }
+
     override fun clearNotes() {
         super.clearNotes()
         wordsVisible = false
+        codeMapVisible = false
         wallScope = null
     }
 

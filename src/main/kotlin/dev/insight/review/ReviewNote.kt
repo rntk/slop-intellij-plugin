@@ -20,6 +20,8 @@ internal sealed interface CanvasTabKey {
     data object Moves : CanvasTabKey
     /** The diff review's change map: changed declarations grouped into logical changes, each read as a chain. */
     data object ChangeMap : CanvasTabKey
+    /** The code review's code map: classes and files grouped into flows read from their roots, with the shared code they use. */
+    data object CodeMap : CanvasTabKey
     /** The review's wall of file blocks: the Diffs wall, or a code review's wall of source files. */
     data object Wall : CanvasTabKey
     data object Summaries : CanvasTabKey

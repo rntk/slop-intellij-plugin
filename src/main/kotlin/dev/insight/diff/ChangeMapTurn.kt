@@ -14,10 +14,6 @@ import dev.insight.llm.CompletionFn
 import dev.insight.review.summariesFocus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CancellationException
-import com.intellij.openapi.diagnostic.ControlFlowException
-import com.intellij.openapi.diagnostic.logger
-import dev.insight.settings.ChatSettings
 
 /**
  * The /change-map turn of a diff review tab, as an adapter around [ChangeMapWorkflow] and the change-map summarizer.
@@ -77,16 +73,5 @@ internal class ChangeMapTurn(
         if (isClosed()) throw ToolInputException("This review tab is closed")
         state.check(revision)
         action()
-    }
-}
-
-/** The configured Decisions API, or null when it cannot be set up, so the map keeps the clusters code built. Reads the password safe on IO. */
-internal suspend fun configuredDecisions(): DecisionFn? = withContext(Dispatchers.IO) {
-    try {
-        ChatSettings.getInstance().createDecisionsClient().let { client -> client::evaluate }
-    } catch (e: Exception) {
-        if (e is ControlFlowException || e is CancellationException) throw e
-        logger<ChangeMapTurn>().info("Change map judgments are off: ${e.message}")
-        null
     }
 }

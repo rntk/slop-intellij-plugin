@@ -28,6 +28,7 @@ import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
 import dev.insight.decisions.DecisionFn
 import dev.insight.diff.atoms.ChangeMap
+import dev.insight.decisions.configuredDecisions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
@@ -280,7 +281,7 @@ internal class DiffReviewTab(
             "Use /topics to read every diff as one document grouped by code topic, /grouping to group by shared change cause, or " +
             "/change-map to follow related declarations from origin to tests. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
-        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change")
+        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change", ReviewCommand.diff)
     }
 
     private fun createBackend(): ChatBackend = object : ChatBackend {
@@ -293,7 +294,7 @@ internal class DiffReviewTab(
             val question = messages.lastOrNull()?.text.orEmpty()
             val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
             val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
-            val command = ReviewCommand.parse(question)
+            val command = ReviewCommand.parse(question, ReviewCommand.diff)
             if (command == ReviewCommand.TOPICS) {
                 val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
                     diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, contextCharsForOutput = configuredContextCharsForOutput(48_000))

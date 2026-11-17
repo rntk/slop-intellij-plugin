@@ -93,6 +93,13 @@ import dev.insight.board.ProjectBoardSources
 import dev.insight.board.boardGraph
 import dev.insight.board.ui.BoardLauncher
 import dev.insight.review.ui.viewTileId
+import dev.insight.codereview.map.CodeMap
+import dev.insight.codereview.map.CodeMapActions
+import dev.insight.codereview.map.CodeMapCard
+import dev.insight.codereview.map.CodeMapTurn
+import dev.insight.codereview.map.codeMap
+import dev.insight.decisions.DecisionFn
+import dev.insight.decisions.configuredDecisions
 
 private val LOG = logger<CodeReviewTab>()
 
@@ -111,6 +118,10 @@ internal class CodeReviewTab(
     focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
+    /** Builds the code map of a snapshot (tests); null reads PSI. */
+    private val codeMapBuilder: (suspend (CodeSnapshot) -> CodeMap)? = null,
+    /** Judges code map merges (tests); null uses the configured Decisions API, or none. */
+    private val decide: DecisionFn? = null,
 ) : ReviewTab<CodeFile, CodeReviewState>(project, CodeReviewState(paths, ReviewDiskCache.forProject(project)), focus,
     ReviewVocabulary.CODE) {
     private val sourcePoints = SourcePoints(project, "Code chat")
@@ -144,7 +155,12 @@ internal class CodeReviewTab(
     private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
         chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
         showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project,
-        reviewDestinations = { reviewDestinations() })
+        reviewDestinations = { reviewDestinations() },
+        codeMapActions = CodeMapActions(
+            generate = { if (canSummarize) session.send(ReviewCommand.CODE_MAP.command) },
+            remove = { state.hideCodeMap(); renderCanvas() },
+            open = { path, line -> openFile(path, line) },
+        ))
     /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
     private var wordCount: WordCount? = null
     private var allWords: WordCount? = null
@@ -218,6 +234,8 @@ internal class CodeReviewTab(
             "Read the code as summaries, from the whole scope down to each file (/summaries)") { summaryStats(state.summaries) },
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read the code grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
+        ReviewViewOption(CanvasTabKey.CodeMap, "Code map",
+            "Read the code as flows: classes and files that use each other, from their roots to tests, with the shared code they rely on (/code-map)") { codeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,
             "Lay out the source of every file in scope as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
@@ -243,6 +261,7 @@ internal class CodeReviewTab(
             CanvasTabKey.Words -> openWords()
             CanvasTabKey.Wall -> openCodeWall(state.snapshot.files, ALL_FILES)
             CanvasTabKey.Board -> openBoards()
+            CanvasTabKey.CodeMap -> openCodeMap()
             else -> super.openView(key)
         }
     }
@@ -256,6 +275,7 @@ internal class CodeReviewTab(
             "question needs them." else
         "Ask about ${if (paths == null) "the code in scope" else "the selected files and folders"}. Type /summaries to read it " +
             "from the whole scope down to each file, or /topics to group the files by responsibility. " +
+            "Type /code-map to read it as flows from their roots to the shared code they use. " +
             "Use Explain on a summary, or /explain with a path, to learn how the code works and why.") {
         override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "code", ReviewCommand.code)
     }
@@ -283,6 +303,20 @@ internal class CodeReviewTab(
                     }
                 }
                 return topicsReply(run, empty = "There are no files in scope to classify.")
+            }
+            if (command == ReviewCommand.CODE_MAP) {
+                withContext(Dispatchers.EDT) { codeMapRunning = true; codeMapChanged() }
+                try {
+                    val decisions = if (this@CodeReviewTab.complete != null) decide else configuredDecisions()
+                    return pipeline {
+                        CodeMapTurn(state, codeMapBuilder ?: { snapshot ->
+                            withContext(Dispatchers.Default) { smartReadAction(project) { codeMap(project, snapshot.files) } }
+                        }, complete, decisions, configuredContextChars(), { requests -> confirm(requests, "code map summaries") },
+                            ::codeMapChanged, { disposed }).run(context.snapshot, question, onToolCall)
+                    }
+                } finally {
+                    withContext(NonCancellable + Dispatchers.EDT) { codeMapRunning = false; if (!disposed) codeMapChanged() }
+                }
             }
             if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES) {
                 val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
@@ -361,7 +395,7 @@ internal class CodeReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/summaries, /topics, /explain or ask about the code in scope…"
+        chat.input.emptyText.text = "/summaries, /topics, /code-map, /explain or ask about the code in scope…"
         add(tileArea(scopeLabel) { state.clearNotes(); closeFileView() }, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
@@ -450,6 +484,30 @@ internal class CodeReviewTab(
             if (state.wordsVisible) renderCanvas()
         }
     }
+
+    /** Shows the code map card; the map is built only by /code-map, from the card's button or the chat. */
+    fun openCodeMap() {
+        state.showCodeMap()
+        renderCanvas()
+        showCanvas { canvas.focusCodeMap() }
+    }
+
+    /** Whether a /code-map turn runs now, so the card says so and offers no second run. */
+    private var codeMapRunning = false
+
+    private fun codeMapCard(): CodeMapCard? = if (!state.codeMapVisible) null else
+        CodeMapCard(state.codeMap, state.codeMapSummaries, codeMapRunning, canSummarize)
+
+    /** Updates the code map card in place when it is shown, else rebuilds the canvas to add or remove it. */
+    private fun codeMapChanged() {
+        if (disposed) return
+        if (!codeCards.updateCodeMap(codeMapCard())) renderCanvas()
+        scheduleTileRefresh()
+    }
+
+    private fun codeMapStats(): List<ReviewTileStat> = state.codeMap?.let { map ->
+        listOf(countStat(map.chains.count { !it.foundation }, "flow"), countStat(map.graph.units.size, "unit")) + summaryStats(state.codeMapSummaries)
+    }.orEmpty()
 
     /** A pipeline run starts holding snapshot updates (EDT). */
     internal fun pipelineStarted() {
@@ -641,6 +699,7 @@ internal class CodeReviewTab(
         codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
             updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
         codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
+        codeCards.codeMap = codeMapCard()
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result))
         canvas.highlight(selectedPaths().toSet())
