@@ -330,7 +330,7 @@ internal class GapSummaryRenderer(val text: String) : EditorCustomElementRendere
     }
 }
 
-/** Shows [editor] as a canvas viewer: line numbers without editor chrome, and the wheel scrolling the canvas instead. */
+/** Shows [editor] without editor chrome; the wheel scrolls its code, then the canvas at the edge. */
 internal fun configureCanvasViewer(editor: EditorEx, wheel: (MouseWheelEvent) -> Unit) {
     editor.settings.apply {
         isLineNumbersShown = true
@@ -365,23 +365,46 @@ internal fun capCanvasViewerHeight(editor: EditorEx, maxHeight: Int) {
         if (maxHeight == Int.MAX_VALUE) ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER else ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
 }
 
-/** Scrolls a height-capped [editor] by the wheel [event]; false when it can't move that way, so the canvas takes it. */
-private fun scrollInside(editor: EditorEx, event: MouseWheelEvent): Boolean {
-    if (event.isControlDown || event.isMetaDown) return false
-    if (editor.scrollPane.verticalScrollBarPolicy == ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER) return false
+/** Scrolls inside the viewer, returning axes the canvas should handle. Keys retain ownership at an edge;
+ * wheel events spill back to the canvas when the viewer cannot move further.
+ */
+internal fun scrollCanvasViewer(editor: EditorEx, dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false,
+                                wheel: Boolean = false): Point {
     val model = editor.scrollingModel
     val visible = model.visibleArea
-    val max = editor.contentComponent.preferredSize.height - visible.height
-    if (max <= 0) return false
-    val target = (visible.y + (event.preciseWheelRotation * editor.lineHeight * 3).toInt()).coerceIn(0, max)
-    if (target == visible.y) return false
+    val text = editor.contentComponent.preferredSize
+    fun target(at: Int, delta: Int, size: Int, maximum: Int): Int {
+        val amount = when {
+            delta == 0 -> 0
+            edge -> if (delta < 0) -maximum else maximum
+            page -> (size - editor.lineHeight).coerceAtLeast(editor.lineHeight) * if (delta < 0) -1 else 1
+            else -> delta
+        }
+        return (at.toLong() + amount).coerceIn(0, maximum.toLong()).toInt()
+    }
+    val maxX = (text.width - visible.width).coerceAtLeast(0)
+    val maxY = if (editor.scrollPane.verticalScrollBarPolicy == ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER) 0
+        else (text.height - visible.height).coerceAtLeast(0)
+    val x = target(visible.x, dx, visible.width, maxX)
+    val y = target(visible.y, dy, visible.height, maxY)
     model.disableAnimation()
     try {
-        model.scrollVertically(target)
+        if (dx != 0 && maxX > 0) model.scrollHorizontally(x)
+        if (dy != 0 && maxY > 0) model.scrollVertically(y)
     } finally {
         model.enableAnimation()
     }
-    return true
+    return Point(if (maxX > 0 && (!wheel || x != visible.x)) 0 else dx,
+        if (maxY > 0 && (!wheel || y != visible.y)) 0 else dy)
+}
+
+/** Shift+wheel scrolls horizontally; Ctrl/Cmd+wheel stays with canvas zoom. */
+private fun scrollInside(editor: EditorEx, event: MouseWheelEvent): Boolean {
+    if (event.isControlDown || event.isMetaDown) return false
+    val delta = (event.preciseWheelRotation * editor.lineHeight * 3).toInt()
+    val remaining = scrollCanvasViewer(editor, if (event.isShiftDown) delta else 0,
+        if (event.isShiftDown) 0 else delta, wheel = true)
+    return delta != 0 && remaining.x == 0 && remaining.y == 0
 }
 
 /**

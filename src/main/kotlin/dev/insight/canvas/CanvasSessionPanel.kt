@@ -15,6 +15,7 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAwareAction
@@ -216,6 +217,9 @@ internal class CanvasSessionPanel(
 
     /** The card the reader is on, which the trail leads to; null for the root file. */
     private var current: String? = null
+    /** Reading navigation has its own target: clicking the root keeps the existing trail. */
+    private var readingCard = false
+    private var navigationCard: String? = null
     /** The root-first ids of [current]'s chain, as last shown, so the trail can step back when a card closes. */
     private var trail: List<String> = emptyList()
     private val breadcrumbs = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
@@ -766,6 +770,8 @@ internal class CanvasSessionPanel(
      */
     private fun moveTo(cardId: String?) {
         val view: JComponent = (if (cardId == null) rootView else views[cardId]) ?: return
+        readingCard = true
+        navigationCard = cardId
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
@@ -863,12 +869,31 @@ internal class CanvasSessionPanel(
     }
 
     /**
-     * With the canvas focused (click empty space): arrows, Page Up/Down (with Shift, sideways), Home and End scroll;
-     * + and − zoom and 0 resets it; Tab and Shift+Tab move between cards in the order they were opened.
+     * Arrows, pages, Space and Home/End scroll a selected card's code, or the canvas on axes that fit.
+     * Escape or empty space returns to canvas navigation; Tab moves between cards in opening order.
      */
     private fun installKeys() {
         fun bind(stroke: String, action: () -> Unit) {
-            content.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(stroke), stroke)
+            val key = KeyStroke.getKeyStroke(stroke)
+            content.getInputMap(JComponent.WHEN_FOCUSED).put(key, stroke)
+            if (key.keyCode != 0) object : DumbAwareAction() {
+                private fun acceptsFocus(): Boolean {
+                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                    return owner === content || owner != null && SwingUtilities.isDescendingFrom(owner, content) &&
+                        generateSequence(owner) { it.parent }.any { it is CanvasSourcePane || it is CanvasDiffPane }
+                }
+                override fun actionPerformed(e: AnActionEvent) {
+                    if (!ready || disposed || !acceptsFocus()) return
+                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                    if (owner !== content) {
+                        readingCard = true
+                        navigationCard = generateSequence(owner) { it.parent }.filterIsInstance<CanvasCardView>().firstOrNull()?.id
+                    }
+                    action()
+                }
+                override fun update(e: AnActionEvent) { e.presentation.isEnabled = ready && !disposed && acceptsFocus() }
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            }.registerCustomShortcutSet(CustomShortcutSet(key), content)
             content.actionMap.put(stroke, object : AbstractAction() {
                 override fun actionPerformed(e: ActionEvent?) {
                     if (ready && !disposed) action()
@@ -877,9 +902,16 @@ internal class CanvasSessionPanel(
         }
         val step = { zoomScaled(KEY_SCROLL_STEP, zoom) }
         val page = { maxOf(scroll.viewport.height - step(), step()) }
-        fun scrollBy(dx: Int, dy: Int) {
+        fun scrollBy(dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false) {
+            val editor = if (!readingCard) null else if (navigationCard == null) rootView?.navigationEditor
+                else views[navigationCard]?.navigationEditor
+            val rest = editor?.let { scrollCanvasViewer(it, dx, dy, page, edge) } ?: Point(dx, dy)
             val at = scroll.viewport.viewPosition
-            scrollTo(maxOf(at.x + dx, 0), maxOf(at.y + dy, 0))
+            val x = if (edge && rest.x > 0) maxOf(0, content.preferredSize.width - scroll.viewport.width)
+                else maxOf(at.x.toLong() + rest.x, 0)
+            val y = if (edge && rest.y > 0) maxOf(0, content.preferredSize.height - scroll.viewport.height)
+                else maxOf(at.y.toLong() + rest.y, 0)
+            scrollTo(x, y)
         }
         for (prefix in listOf("", "KP_")) {
             bind("${prefix}UP") { scrollBy(0, -step()) }
@@ -887,17 +919,21 @@ internal class CanvasSessionPanel(
             bind("${prefix}LEFT") { scrollBy(-step(), 0) }
             bind("${prefix}RIGHT") { scrollBy(step(), 0) }
         }
-        bind("PAGE_UP") { scrollBy(0, -page()) }
-        bind("PAGE_DOWN") { scrollBy(0, page()) }
-        bind("shift PAGE_UP") { scrollBy(-scroll.viewport.width, 0) }
-        bind("shift PAGE_DOWN") { scrollBy(scroll.viewport.width, 0) }
-        for (modifier in listOf("", "ctrl ", "meta ")) {
-            bind("${modifier}HOME") { scrollTo(0, 0) }
-            bind("${modifier}END") {
-                content.validate()
-                scrollTo(scroll.viewport.viewPosition.x, maxOf(0, content.preferredSize.height - scroll.viewport.height))
-            }
+        bind("shift UP") { scrollBy(-step(), 0) }
+        bind("shift DOWN") { scrollBy(step(), 0) }
+        bind("PAGE_UP") { scrollBy(0, -page(), page = true) }
+        bind("PAGE_DOWN") { scrollBy(0, page(), page = true) }
+        bind("SPACE") { scrollBy(0, page(), page = true) }
+        bind("shift SPACE") { scrollBy(0, -page(), page = true) }
+        bind("shift PAGE_UP") { scrollBy(-scroll.viewport.width, 0, page = true) }
+        bind("shift PAGE_DOWN") { scrollBy(scroll.viewport.width, 0, page = true) }
+        bind("HOME") { scrollBy(0, -Int.MAX_VALUE / 2, edge = true) }
+        bind("END") { scrollBy(0, Int.MAX_VALUE / 2, edge = true) }
+        for (modifier in listOf("ctrl ", "meta ")) {
+            bind("${modifier}HOME") { scrollBy(-Int.MAX_VALUE / 2, -Int.MAX_VALUE / 2, edge = true) }
+            bind("${modifier}END") { scrollBy(Int.MAX_VALUE / 2, Int.MAX_VALUE / 2, edge = true) }
         }
+        bind("ESCAPE") { readingCard = false; content.requestFocusInWindow() }
         // Typed keys follow the keyboard layout, and the numeric keypad types the same characters.
         bind("typed +") { zoomTo(zoom * ZOOM_STEP) }
         bind("typed =") { zoomTo(zoom * ZOOM_STEP) }
@@ -1086,6 +1122,12 @@ internal class CanvasSessionPanel(
                 canvasActionMenu(actions).show(e.component, e.x, e.y)
                 return
             }
+        }
+        if (e.id == MouseEvent.MOUSE_PRESSED && SwingUtilities.isLeftMouseButton(e)) {
+            val ancestors = generateSequence(e.component) { it.parent }.toList()
+            val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
+            readingCard = card != null || ancestors.any { it is RootView }
+            navigationCard = card?.id
         }
         // Clicking into a card makes it the one the trail leads to; the root file keeps the trail.
         if (e.id == MouseEvent.MOUSE_PRESSED) generateSequence(e.component) { it.parent }
@@ -1306,6 +1348,9 @@ internal class CanvasSessionPanel(
             rendered = null
             update(model.session.root)
         }
+
+        val navigationEditor get() = if (!sourceSection.body.isVisible) null
+            else if (sourceSection.showsDiff) diffPane?.editor else pane.editor
 
         fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible && !sourceSection.showsDiff)
             SwingUtilities.convertPoint(pane, 0, pane.anchorY(anchor.startOffset), this).y

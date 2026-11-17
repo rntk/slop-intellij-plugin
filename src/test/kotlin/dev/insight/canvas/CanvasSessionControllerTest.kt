@@ -938,6 +938,56 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             paramCardTargets.containsAll(setOf("start", "Config", "router", "Router")))
     }
 
+    fun testActiveCardKeysScrollCodeAndEscapeReturnsToCanvas() {
+        val text = "class LongFile {\n" + (1..100).joinToString("\n") {
+            "    // line $it " + "long code ".repeat(60)
+        } + "\n}"
+        val file = myFixture.configureByText("LongFile.java", text)
+        val session = CanvasSession.new("LongFile.java")
+        val services = CanvasSessionServices(null, { error("No completion requested") }) { _, _ -> error("No chat requested") }
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1200, 800)
+            PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
+            panel.controller.openSelection(null, 0, text.length)
+            val view = panel.cardViews.values.single()
+            fun layout(container: Container) {
+                container.doLayout()
+                container.components.filterIsInstance<Container>().forEach(::layout)
+            }
+            layout(panel)
+            val editor = view.sourcePane!!.editor
+            val keys = panel.canvas.getInputMap(javax.swing.JComponent.WHEN_FOCUSED)
+            fun press(stroke: String) = panel.canvas.actionMap.get(keys.get(javax.swing.KeyStroke.getKeyStroke(stroke)))
+                .actionPerformed(java.awt.event.ActionEvent(panel.canvas, 0, stroke))
+            panel.stepCard(forward = true) // selected card
+            assertEquals(view.card.title, panel.trailTitles.last())
+            press("DOWN")
+            press("RIGHT")
+            assertTrue(editor.scrollingModel.visibleArea.y > 0)
+            assertTrue(editor.scrollingModel.visibleArea.x > 0)
+            press("END")
+            val end = editor.scrollingModel.visibleArea.location
+            press("DOWN")
+            assertEquals("Keys retain the card at its edge", end, editor.scrollingModel.visibleArea.location)
+            press("HOME")
+            assertEquals(0, editor.scrollingModel.visibleArea.y)
+            press("PAGE_DOWN")
+            assertTrue(editor.scrollingModel.visibleArea.y > editor.lineHeight)
+            press("ESCAPE")
+            val before = editor.scrollingModel.visibleArea.location
+            press("DOWN")
+            assertEquals("Escape returns navigation to the canvas", before, editor.scrollingModel.visibleArea.location)
+            panel.model.setFolded(view.id, CardSection.SOURCE, true)
+            panel.stepCard(forward = false)
+            panel.stepCard(forward = true)
+            press("DOWN")
+            assertEquals("Folded code does not receive navigation", before, editor.scrollingModel.visibleArea.location)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
     fun testPanelSummarizesGapsFollowsTheTrailTakesKeysAndAnswersGraphQuestions() {
         val file = myFixture.configureByText("Flow.java", source)
         val prompts = java.util.Collections.synchronizedList(mutableListOf<String>())

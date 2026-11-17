@@ -441,6 +441,9 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         diffPane?.applyZoom(host.zoom)
     }
 
+    val navigationEditor get() = if (!sourceSection.body.isVisible) null
+        else if (sourceSection.showsDiff) diffPane?.editor else sourcePane?.editor
+
     /** The y of [anchor]'s line in this card, or the header's middle when the source is folded or shows its diff. */
     fun anchorY(anchor: CardAnchor): Int {
         val pane = sourcePane?.takeIf { sourceSection.body.isVisible && !sourceSection.showsDiff }
