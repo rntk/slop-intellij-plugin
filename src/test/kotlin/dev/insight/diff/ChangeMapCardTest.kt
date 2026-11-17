@@ -14,6 +14,7 @@ import dev.insight.review.ui.NoteCanvas
 import java.awt.Component
 import java.awt.Container
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JLabel
 
 class ChangeMapCardTest : BasePlatformTestCase() {
@@ -93,6 +94,34 @@ class ChangeMapCardTest : BasePlatformTestCase() {
                 running = false, canRun = true)))
             assertEquals("No changed declarations found.", (named(canvas, "change-map-empty").single() as JLabel).text.removeHtml())
             assertEquals(CanvasTabKey.ChangeMap, canvas.pageKeys.single())
+        } finally {
+            cards.dispose()
+            canvas.dispose()
+        }
+    }
+
+    fun testSoftWrapAndTagsCloudAreOptionsOfTheCard() {
+        val cards = DiffCanvasCards({}, project)
+        val canvas = NoteCanvas({}, {}, extension = cards)
+        try {
+            val texts = tree.nodes.filter { it.children.isEmpty() }.associate { it.id to "Leaf ${it.label} changes the shared tag. Second sentence." } +
+                (tree.nodes.single { it.identity == "cluster:k1" }.id to "Make things from the shared tag.")
+            val summaries = ReviewSummaries(tree).summarize(texts)
+            canvas.showNotes(cards, DiffCanvasContent(changeMap = ChangeMapCard(map, files, summaries, running = false, canRun = true)))
+            assertTrue((named(canvas, "change-map-soft-wrap").single() as JCheckBox).isSelected)
+            assertFalse((named(canvas, "change-map-tags-cloud").single() as JCheckBox).isSelected)
+            assertTrue(label(canvas, "change-map-summary").contains("width:"))
+            assertFalse(label(canvas, "change-map-summary").contains("font-size"))
+
+            (named(canvas, "change-map-tags-cloud").single() as JCheckBox).doClick()
+            assertTrue((named(canvas, "change-map-tags-cloud").single() as JCheckBox).isSelected)
+            assertTrue(label(canvas, "change-map-summary").contains("font-size"))
+            assertEquals("Make things from the shared tag.", label(canvas, "change-map-summary").removeHtml())
+
+            (named(canvas, "change-map-soft-wrap").single() as JCheckBox).doClick()
+            assertFalse((named(canvas, "change-map-soft-wrap").single() as JCheckBox).isSelected)
+            assertTrue(label(canvas, "change-map-summary").contains("<nobr>"))
+            assertEquals("k1", cards.changeMapSelection)
         } finally {
             cards.dispose()
             canvas.dispose()

@@ -4,6 +4,8 @@ The change map reads a comparison as logical changes rather than files. Its unit
 
 Models only judge ambiguous merges, title the chains and write summaries; they never add, drop or move atoms. The view lists the logical changes beside the selected chain, whose steps open the diff at their lines. A chain reads by disclosure: its steps are sectioned by role (origin, follows, tests, docs; standalone changes by code, tests and docs), at least three steps that follow one cause by one relation fold into a fan-out such as "5 adapt to the changed signature of X", and a collapsed step shows one line with the first sentence of its summary. Sections of more than four steps, other than the origins, start collapsed. A run continues missing summaries, and a run over a complete map builds it again.
 
+Like the summaries views, the card can soft-wrap its prose to the width of the pane and size summary words as a tags cloud by their weight among the summaries beneath.
+
 Entry points for further exploration:
 
 - [ChangeAtoms.kt](../src/main/kotlin/dev/insight/diff/atoms/ChangeAtoms.kt) — atoms, relations, clusters and the map

@@ -77,7 +77,10 @@ internal class DiffCanvasCards(
         removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
     ), project)
 
-    override fun attach(refresh: (CanvasTabKey) -> Unit) { this.refresh = refresh }
+    override fun attach(refresh: (CanvasTabKey) -> Unit) {
+        this.refresh = refresh
+        changeMapView.refresh = { refresh(CanvasTabKey.ChangeMap) }
+    }
 
     override fun update() {
         metricsCards.update(content.wordFiles, content.semantic, content.moves)

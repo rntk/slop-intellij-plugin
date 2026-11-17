@@ -166,4 +166,18 @@ class ChangeMapPresentationTest {
         assertNull(atomTrace(lone, files.single { it.path == lone.path }.copy(patch = "")))
         assertEquals("src/Foo.kt:10-19", atomLocation(origin.copy(status = AtomStatus.REMOVED)))
     }
+
+    @Test fun `word weights are given only when the tags cloud is on`() {
+        val texts = tree.nodes.filter { it.children.isEmpty() }.associate { it.id to "Leaf ${it.label} changes the shared tag." }
+        val summaries = ReviewSummaries(tree).summarize(texts + (id("cluster:k1") to "Make things from the shared tag."))
+        val card = ChangeMapCard(map, files, summaries, running = false, canRun = true)
+
+        val plain = ChangeMapPresentation(card).detail("k1")!!
+        assertTrue(plain.weights.isEmpty())
+        assertTrue(plain.rows.all { it.weights.isEmpty() })
+
+        val cloud = ChangeMapPresentation(card, tagsCloud = true).detail("k1")!!
+        assertTrue(cloud.weights.isNotEmpty())
+        assertTrue(cloud.rows.all { it.weights.isNotEmpty() })
+    }
 }

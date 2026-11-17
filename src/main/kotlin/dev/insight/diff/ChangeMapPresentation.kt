@@ -18,6 +18,7 @@ import dev.insight.review.ui.EvidenceLine
 import dev.insight.review.ui.LineMatch
 import dev.insight.review.ui.LineSide
 import dev.insight.review.ui.LineTrace
+import dev.insight.review.ui.SummaryWordWeights
 
 /** What the change map card shows: the map of the current snapshot, if built, its summaries, and whether /change-map may run now. */
 internal data class ChangeMapCard(
@@ -63,6 +64,8 @@ internal data class StepRow(
     val gist: String? = null,
     val more: String? = null,
     val via: AtomEdge? = null,
+    /** Word weights of the step's summary for the tags cloud; empty when the cloud is off. */
+    val weights: Map<String, Double> = emptyMap(),
 ) {
     val key: String get() = ATOM_IDENTITY_PREFIX + atom.id
 }
@@ -93,6 +96,8 @@ internal data class ChangeDetail(
     val summary: String?,
     val rows: List<StepRow>,
     val sections: List<StepSection> = emptyList(),
+    /** Word weights of the summary for the tags cloud; empty when the cloud is off. */
+    val weights: Map<String, Double> = emptyMap(),
 ) {
     /** The key of every part that expands: sections, fan-outs and steps. */
     val keys: List<String> get() = sections.flatMap { section ->
@@ -112,8 +117,10 @@ private const val GIST_MAX = 220
  * Everything the change map card decides without Swing: header, list entries, the rows of a chain, and which summary
  * belongs to which chain or atom, matched by the tree identities `cluster:<id>`, `atom:<id>` and the root.
  */
-internal class ChangeMapPresentation(private val card: ChangeMapCard) {
+internal class ChangeMapPresentation(private val card: ChangeMapCard, private val tagsCloud: Boolean = false) {
     private val map = card.map
+    private val nodeIds: Map<String, Int> = card.summaries.tree.nodes.associate { it.identity to it.id }
+    private val wordWeights = SummaryWordWeights(card.summaries)
     private val texts: Map<String, String> = card.summaries.tree.nodes.mapNotNull { node -> card.summaries.text(node.id)?.let { node.identity to it } }.toMap()
     private val atoms: List<ChangeAtom> get() = map?.graph?.atoms.orEmpty()
 
@@ -131,6 +138,11 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
     }
 
     val rootSummary: String? get() = map?.let { texts[CHANGE_MAP_ROOT_IDENTITY] }
+    val rootWeights: Map<String, Double> get() = weights(CHANGE_MAP_ROOT_IDENTITY)
+
+    /** TF-IDF of a summary's words among its children's, as the summaries views size them; empty unless the tags cloud is on. */
+    private fun weights(identity: String): Map<String, Double> =
+        if (tagsCloud) nodeIds[identity]?.let { wordWeights[it] }.orEmpty() else emptyMap()
 
     val progress: String? get() = map?.takeIf { card.summaries.total > 0 && !card.summaries.complete }
         ?.let { "${card.summaries.count} / ${card.summaries.total} summaries written" }
@@ -152,7 +164,8 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
             val rows = map.standalone.flatMap { cluster -> map.atoms(cluster).map { row(cluster, it, AtomRole.STANDALONE, 0, emptyList(), null) } }
             // Unrelated changes have no chain to follow, so they are sorted by what they are: code, tests, documentation.
             val sections = rows.groupBy { standaloneRole(it.atom) }.entries.sortedBy { STANDALONE_ORDER.indexOf(it.key) }.map { (role, members) -> section(role, members) }
-            return ChangeDetail(entry, "Standalone changes", texts[STANDALONE_CLUSTER_IDENTITY], rows, openSole(sections))
+            return ChangeDetail(entry, "Standalone changes", texts[STANDALONE_CLUSTER_IDENTITY], rows, openSole(sections),
+                weights(STANDALONE_CLUSTER_IDENTITY))
         }
         val cluster = map.cluster(entry) ?: return null
         val position = cluster.steps.withIndex().associate { it.value.atom to it.index }
@@ -165,7 +178,8 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
         }
         val roles = cluster.steps.associate { it.atom to it.role }
         val sections = rows.groupBy { roles.getValue(it.atom.id) }.entries.sortedBy { it.key.ordinal }.map { (role, members) -> section(role, members) }
-        return ChangeDetail(entry, map.title(cluster), texts[CLUSTER_IDENTITY_PREFIX + cluster.id], rows, openSole(sections))
+        return ChangeDetail(entry, map.title(cluster), texts[CLUSTER_IDENTITY_PREFIX + cluster.id], rows, openSole(sections),
+            weights(CLUSTER_IDENTITY_PREFIX + cluster.id))
     }
 
     /** One role's steps, with those that follow one cause by one relation folded into a [FanOut] where the first of them stood. */
@@ -202,7 +216,7 @@ internal class ChangeMapPresentation(private val card: ChangeMapCard) {
         val more = summary?.takeIf { it != gist }
             ?.let { if (gist != null && it.startsWith(gist)) it.substring(gist.length).trim() else it }?.takeIf { it.isNotEmpty() }
         return StepRow(atom, depth, roleLabel(role), atomName(atom), atomDetail(atom), atomLocation(atom), "+${atom.added} −${atom.removed}",
-            relations, summary, links, gist, more, via)
+            relations, summary, links, gist, more, via, weights(ATOM_IDENTITY_PREFIX + atom.id))
     }
 
     private fun stats(atoms: List<ChangeAtom>) =

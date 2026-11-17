@@ -12,6 +12,7 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.diff.atoms.ChangeAtom
+import dev.insight.review.ui.cloudHtml
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BorderLayout
@@ -20,16 +21,21 @@ import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Rectangle
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.DefaultListModel
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
+import javax.swing.Scrollable
 
 /** What the change map card does: send /change-map, take the card off the canvas, and open an atom's lines in its diff. */
 internal data class ChangeMapActions(
@@ -50,8 +56,23 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
     /** Per list entry, the parts of its detail the reader expanded or collapsed, by [ChangeDetail.keys]; the rest keep their defaults. */
     private val expanded = mutableMapOf<String, MutableMap<String, Boolean>>()
 
+    /** Summary prose follows the width of the detail pane; off, each paragraph stays on one line and the pane scrolls sideways. */
+    var softWrap = true
+        private set
+
+    /** Words of a summary are sized by their weight among the summaries beneath it, as in the summaries views. */
+    var tagsCloud = false
+        private set
+
+    /** Rebuilds the card after a view option changed; set when the card is attached to a canvas. */
+    var refresh: () -> Unit = {}
+
+    /** The prose of the detail shown now, so it can wrap again when the pane resizes. */
+    private val detailProse = mutableListOf<Prose>()
+    private var detailWidth = scaled(DETAIL_WIDTH)
+
     fun card(content: ChangeMapCard): JPanel {
-        val model = ChangeMapPresentation(content)
+        val model = ChangeMapPresentation(content, tagsCloud)
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -62,6 +83,12 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
+                add(option("change-map-soft-wrap", "Soft-wrap", softWrap, "Wrap summaries at the width of the pane; off, they stay on one line") {
+                    softWrap = it; refresh()
+                })
+                add(option("change-map-tags-cloud", "Tags cloud", tagsCloud, "Size summary words by their importance among the summaries beneath them") {
+                    tagsCloud = it; refresh()
+                })
                 add(JButton(model.action.label).apply {
                     name = "change-map-action"
                     font = scaledFont(JBFont.small()); cursor = Cursor.getDefaultCursor()
@@ -76,9 +103,30 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
         val top = JPanel(BorderLayout()).apply {
             isOpaque = false
             add(header, BorderLayout.NORTH)
-            model.rootSummary?.let { add(text(it, scaled(WIDTH - 2 * PADDING)).apply {
-                name = "change-map-root-summary"; border = JBUI.Borders.empty(8, PADDING, 0, PADDING)
-            }, BorderLayout.CENTER) }
+            // The root summary sits above the panes, so it always wraps, at the width it is shown at. A long one scrolls
+            // within a bounded height instead of pushing the panes down or being cut off.
+            model.rootSummary?.let { summary ->
+                val root = Prose(summary, model.rootWeights, 2 * scaled(PADDING), wrap = true, inDetail = false).apply {
+                    name = "change-map-root-summary"; border = JBUI.Borders.empty(8, PADDING, 0, PADDING)
+                }
+                root.fit(scaled(CARD_WIDTH))
+                val holder = DetailPanel(true).apply { isOpaque = false; add(root) }
+                val pane = object : JBScrollPane(holder) {
+                    override fun getPreferredSize(): Dimension =
+                        Dimension(0, minOf(holder.preferredSize.height + insets.top + insets.bottom, scaled(ROOT_SUMMARY_HEIGHT)))
+                }.apply {
+                    name = "change-map-root-scroll"
+                    border = null; isOpaque = false; viewport.isOpaque = false
+                    horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                    verticalScrollBar.unitIncrement = scaled(16)
+                    viewport.addComponentListener(object : ComponentAdapter() {
+                        override fun componentResized(e: ComponentEvent) {
+                            if (viewport.width > 0) { root.fit(viewport.width); revalidate() }
+                        }
+                    })
+                }
+                add(pane, BorderLayout.CENTER)
+            }
         }
         return JPanel(BorderLayout()).apply {
             background = UIUtil.getListBackground()
@@ -100,7 +148,12 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
             else -> {
                 val entries = model.entries
                 selected = model.selection(selected)
-                val detail = JPanel(VerticalLayout(scaled(8))).apply { isOpaque = false; name = "change-map-detail" }
+                val detail = DetailPanel(softWrap).apply {
+                    isOpaque = false; name = "change-map-detail"
+                    addComponentListener(object : ComponentAdapter() {
+                        override fun componentResized(e: ComponentEvent) { if (softWrap && width > 0) fitDetail(width) }
+                    })
+                }
                 val list = JBList(DefaultListModel<ChangeEntry>().apply { entries.forEach(::addElement) }).apply {
                     name = "change-map-list"
                     selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -118,7 +171,7 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
                 list.addListSelectionListener { if (!it.valueIsAdjusting) list.selectedValue?.let { entry -> if (entry.id != selected || detail.componentCount == 0) show(entry.id) } }
                 show(selected)
                 panel.add(scroll(list, scaled(LIST_WIDTH)), BorderLayout.WEST)
-                panel.add(scroll(detail, scaled(WIDTH - LIST_WIDTH - 3 * PADDING)), BorderLayout.CENTER)
+                panel.add(scroll(detail, scaled(PANE_WIDTH)), BorderLayout.CENTER)
             }
         }
         return panel
@@ -129,10 +182,10 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
      * click; a collapsed step shows one line and the first sentence of its summary.
      */
     private fun fillDetail(panel: JPanel, detail: ChangeDetail, select: (String) -> Unit, refresh: () -> Unit) {
-        val width = scaled(WIDTH - LIST_WIDTH - 4 * PADDING - 16)
+        detailProse.clear()
         val state = expanded.getOrPut(detail.entry) { mutableMapOf() }
         panel.add(JLabel(detail.title).apply { name = "change-map-title"; font = scaledFont(JBFont.label().asBold().biggerOn(2f)) })
-        panel.add(detail.summary?.let { text(it, width).apply { name = "change-map-summary" } }
+        panel.add(detail.summary?.let { Prose(it, detail.weights, 0).apply { name = "change-map-summary" } }
             ?: note("Summaries are not written yet; run /change-map to write them.").apply { name = "change-map-summary-missing" })
         panel.add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), 0)).apply {
             isOpaque = false
@@ -140,10 +193,10 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
             add(ActionLink("Expand all") { detail.keys.forEach { state[it] = true }; refresh() }.apply { name = "change-map-expand-all"; font = scaledFont(JBFont.small()) })
             add(ActionLink("Collapse all") { detail.keys.forEach { state[it] = false }; refresh() }.apply { name = "change-map-collapse-all"; font = scaledFont(JBFont.small()) })
         })
-        detail.sections.forEach { section -> panel.add(sectionPanel(section, state, width, select)) }
+        detail.sections.forEach { section -> panel.add(sectionPanel(section, state, 0, select)) }
     }
 
-    private fun sectionPanel(section: StepSection, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
+    private fun sectionPanel(section: StepSection, state: MutableMap<String, Boolean>, inset: Int, select: (String) -> Unit): JComponent {
         val color = roleColor(section.title)
         val head = JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
             isOpaque = false
@@ -158,15 +211,15 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
                 border = JBUI.Borders.compound(JBUI.Borders.customLineLeft(color), JBUI.Borders.emptyLeft(8))
                 section.items.forEach { item ->
                     when (item) {
-                        is SingleStep -> add(stepRow(item.row, (item.row.depth - base).coerceIn(0, MAX_INDENT), state, width - scaled(16), select))
-                        is FanOut -> add(fanOut(item, state, width - scaled(16), select))
+                        is SingleStep -> add(stepRow(item.row, (item.row.depth - base).coerceIn(0, MAX_INDENT), state, inset + scaled(16), select))
+                        is FanOut -> add(fanOut(item, state, inset + scaled(16), select))
                     }
                 }
             }
         }.apply { border = JBUI.Borders.emptyTop(4) }
     }
 
-    private fun fanOut(fan: FanOut, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
+    private fun fanOut(fan: FanOut, state: MutableMap<String, Boolean>, inset: Int, select: (String) -> Unit): JComponent {
         val head = JPanel(VerticalLayout(scaled(1))).apply {
             isOpaque = false
             add(JLabel(fan.title).apply { name = "change-map-fan-title"; font = scaledFont(JBFont.label().asBold()) })
@@ -176,13 +229,13 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
             JPanel(VerticalLayout(scaled(6))).apply {
                 isOpaque = false
                 border = JBUI.Borders.emptyLeft(16)
-                fan.rows.forEach { add(stepRow(it, 0, state, width - scaled(16), select)) }
+                fan.rows.forEach { add(stepRow(it, 0, state, inset + scaled(16), select)) }
             }
         }
     }
 
-    private fun stepRow(row: StepRow, indent: Int, state: MutableMap<String, Boolean>, width: Int, select: (String) -> Unit): JComponent {
-        val textWidth = width - scaled(18) * indent - scaled(24)
+    private fun stepRow(row: StepRow, indent: Int, state: MutableMap<String, Boolean>, inset: Int, select: (String) -> Unit): JComponent {
+        val textInset = inset + scaled(18) * indent + scaled(24)
         val head = JPanel(VerticalLayout(scaled(2))).apply {
             isOpaque = false
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
@@ -193,7 +246,7 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
                     name = "change-map-open"; font = scaledFont(JBFont.small()); toolTipText = "Open the diff of ${row.atom.path} at this change"
                 })
             })
-            row.gist?.let { add(text(it, textWidth).apply { name = "change-map-step-gist" }) }
+            row.gist?.let { add(Prose(it, row.weights, textInset).apply { name = "change-map-step-gist" }) }
         }
         return disclosure("change-map-step", row.key, state, false, head, open = { actions.openAtom(row.atom) }) {
             JPanel(VerticalLayout(scaled(3))).apply {
@@ -201,7 +254,7 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
                 border = JBUI.Borders.emptyLeft(20)
                 add(small(listOf(row.role, row.detail).joinToString(" · ")).apply { name = "change-map-role" })
                 row.relations.forEach { add(small("↳ $it").apply { name = "change-map-relation" }) }
-                row.more?.let { add(text(it, textWidth).apply { name = "change-map-step-summary" }) }
+                row.more?.let { add(Prose(it, row.weights, textInset).apply { name = "change-map-step-summary" }) }
                 if (row.links.isNotEmpty()) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
                     isOpaque = false
                     add(small("also linked to:"))
@@ -275,6 +328,51 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
         else -> JBColor.GRAY
     }
 
+    /** Wraps the detail's prose at [width], less what each paragraph is indented by. */
+    private fun fitDetail(width: Int) {
+        if (width == detailWidth) return
+        detailWidth = width
+        detailProse.forEach { it.fit(width) }
+    }
+
+    /** The detail pane: as wide as its viewport while soft-wrapping, else as wide as its longest line. */
+    private class DetailPanel(private val soft: Boolean) : JPanel(VerticalLayout(JBUI.scale(8))), Scrollable {
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) = JBUI.scale(16)
+        override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) =
+            if (orientation == javax.swing.SwingConstants.VERTICAL) visibleRect.height else visibleRect.width
+        override fun getScrollableTracksViewportWidth() = soft
+        override fun getScrollableTracksViewportHeight() = false
+    }
+
+    /**
+     * Summary prose as an HTML label. [inset] is what lies between the pane's edge and the paragraph; it wraps at the
+     * pane's width less that. With the tags cloud on, its weighted words are larger, as in the summaries views.
+     */
+    private inner class Prose(private val value: String, private val weights: Map<String, Double>, private val inset: Int,
+                              private val wrap: Boolean = softWrap, private val inDetail: Boolean = true) : JLabel() {
+        private var width = detailWidth
+
+        init {
+            font = scaledFont(JBFont.label())
+            render()
+            if (inDetail && wrap) detailProse += this
+        }
+
+        fun fit(total: Int) { if (total == width) return; width = total; render() }
+
+        /**
+         * Outside the panes the paragraph takes the width it is given and never asks for more: its width is the card's, so
+         * asking for it would keep the card as wide as it once was and could not shrink with the canvas.
+         */
+        override fun getPreferredSize(): Dimension = super.getPreferredSize().let { if (inDetail) it else Dimension(0, it.height) }
+
+        private fun render() {
+            val body = (cloudHtml(value, weights, font.size2D) ?: escape(value)).replace("\n", "<br>")
+            text = if (wrap) "<html><div style='width:${(width - inset).coerceAtLeast(scaled(80))}px'>$body</div></html>" else "<html><nobr>$body</nobr></html>"
+        }
+    }
+
     private fun scroll(view: JComponent, width: Int) = JBScrollPane(view).apply {
         border = JBUI.Borders.customLine(JBColor.border(), 1); isOpaque = false; viewport.isOpaque = false
         preferredSize = Dimension(width, scaled(HEIGHT))
@@ -282,20 +380,28 @@ internal class ChangeMapView(private val actions: ChangeMapActions) {
     }
 
     private fun small(text: String) = JLabel(text).apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() }
-    private fun note(text: String) = JLabel("<html>${escape(text)}</html>").apply { foreground = UIUtil.getContextHelpForeground() }
-    /** Summary prose wraps at [width], like the other cards' summaries. */
-    private fun text(value: String, width: Int) = JLabel("<html><div style='width:${width}px'>${escape(value)}</div></html>").apply {
-        font = scaledFont(JBFont.label())
+    private fun note(text: String) = JLabel("<html>${escape(text)}</html>").apply { font = scaledFont(JBFont.label()); foreground = UIUtil.getContextHelpForeground() }
+    private fun option(name: String, label: String, selected: Boolean, tooltip: String, change: (Boolean) -> Unit) = JCheckBox(label, selected).apply {
+        this.name = name; isOpaque = false; font = scaledFont(JBFont.small()); cursor = Cursor.getDefaultCursor(); toolTipText = tooltip
+        addActionListener { change(isSelected) }
     }
     private fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
     private fun scaled(value: Int) = zoomScaled(value, 1.0)
-    private fun scaledFont(font: java.awt.Font) = font.zoomed(1.0)
+    private fun scaledFont(font: java.awt.Font) = font.zoomed(FONT_SCALE)
 
     private companion object {
         const val PADDING = 12
-        const val WIDTH = 1300
-        const val LIST_WIDTH = 380
+        /** The detail pane's preferred width; the card is laid out at least as wide as its panes, and wider when the canvas is. */
+        const val PANE_WIDTH = 720
+        const val CARD_WIDTH = 440 + PANE_WIDTH + 3 * PADDING
+        const val LIST_WIDTH = 440
+        /** The detail pane's width before it is laid out: the card less the list and the paddings. */
+        const val DETAIL_WIDTH = PANE_WIDTH - 16
+        /** Text is drawn this much larger than the IDE's label and small fonts. */
+        const val FONT_SCALE = 1.25
         const val HEIGHT = 720
+        /** The root summary scrolls beyond this height. */
+        const val ROOT_SUMMARY_HEIGHT = 150
         /** Steps deeper than this in a section are indented no further. */
         const val MAX_INDENT = 4
     }
