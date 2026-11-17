@@ -304,6 +304,11 @@ internal class CanvasSourceSection(private val host: CanvasCardHost, private val
 
     override fun titleClicked() = if (showsDiff) select(diff = false) else super.titleClicked()
 
+    /** Shows the source tab rather than the diff. */
+    fun showSource() {
+        if (showsDiff) select(diff = false)
+    }
+
     private fun select(diff: Boolean) {
         showsDiff = diff
         showTab()

@@ -36,8 +36,6 @@ import dev.insight.agent.ToolInputException
 import dev.insight.callgraph.CallGraphService
 import dev.insight.callgraph.SchematicGapWorkflow
 import dev.insight.graph.CallGraphNode
-import dev.insight.graph.RelationKind
-import dev.insight.graph.SymbolKind
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.CanvasZoomAnchor
@@ -611,15 +609,12 @@ internal class CanvasSessionPanel(
             val found = controller.findUsages(target)
             showStatus(if (found.usages.isEmpty()) "No project usages found for $name." else "")
             if (found.usages.isEmpty()) return@launch
-            JBPopupFactory.getInstance().createPopupChooserBuilder(found.usages)
+            JBPopupFactory.getInstance().createPopupChooserBuilder(canvasUsageFiles(found.usages))
                 .setTitle("Usages of ${found.targetName}")
-                .setRenderer(SimpleListCellRenderer.create("") { usage: CanvasUsage ->
-                    val kind = if (usage.kind == RelationKind.CALL) "Call" else "Use"
-                    "$kind in ${usage.ownerName} · ${usage.path}:${usage.line}"
+                .setRenderer(SimpleListCellRenderer.create("") { file: CanvasUsageFile ->
+                    "${file.fileName} (${file.usages.size}) · ${file.detail}" + file.directory.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
                 })
-                .setItemChosenCallback { usage ->
-                    openUsageAt(pane.owner, link.range, usage.owner, usage.filePath, wholeFile = false)
-                }
+                .setItemChosenCallback { file -> openUsageFileAt(pane.owner, link.range, file, found.targetName) }
                 .createPopup()
                 .show(RelativePoint(event))
         } catch (e: Throwable) {
@@ -630,27 +625,29 @@ internal class CanvasSessionPanel(
         }
     }
 
-    override fun openUsage(cardId: String, owner: Int, filePath: String, wholeFile: Boolean) {
-        openUsageAt(cardId, controller.usageAnchor(cardId), owner, filePath, wholeFile)
+    override fun openUsageFile(cardId: String, file: CanvasUsageFile, targetName: String) {
+        openUsageFileAt(cardId, controller.usageAnchor(cardId), file, targetName)
     }
 
-    internal fun openUsageAt(parentId: String?, range: IntRange, owner: Int, filePath: String, wholeFile: Boolean): Job =
+    /**
+     * Opens the card of the whole [file] of usages of [targetName] from [range] of [parentId]'s source (null: the root
+     * file), lists the usage sites on it and scrolls it to the first.
+     */
+    internal fun openUsageFileAt(parentId: String?, range: IntRange, file: CanvasUsageFile, targetName: String): Job =
         scope.launch(Dispatchers.EDT) {
             val start = range.first
             val end = maxOf(range.first, range.last + 1)
-            val node = controller.node(owner)
-            val name = if (wholeFile || node?.kind == SymbolKind.FILE) filePath.substringAfterLast('/') else node?.name ?: "usage"
+            val name = file.fileName
             showStatus("Opening $name…")
             try {
-                val card = if (wholeFile || node?.kind == SymbolKind.FILE) {
-                    val file = controller.findFile(filePath) ?: error("Cannot find $filePath.")
-                    controller.openFile(parentId, start, end, file)
-                } else {
-                    controller.openSymbol(parentId, start, end, owner)
-                }
+                val found = controller.findFile(file.filePath) ?: error("Cannot find ${file.path}.")
+                val card = controller.openFile(parentId, start, end, found)
+                val sites = file.sites(targetName)
+                model.setUsages(card.id, sites)
                 showStatus("")
                 content.validate()
                 reveal(card.id)
+                sites.sites.firstOrNull()?.let { revealLine(card.id, it.line) }
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Unable to open canvas usage $name", e)
@@ -700,6 +697,20 @@ internal class CanvasSessionPanel(
         if (!ready) return
         content.revalidate()
         content.repaint()
+    }
+
+    override fun revealLine(cardId: String, line: Int) {
+        val view = views[cardId] ?: return
+        if (CardSection.SOURCE in view.card.folded) model.setFolded(cardId, CardSection.SOURCE, false)
+        view.showSource()
+        content.validate()
+        val pane = view.sourcePane ?: return
+        val y = pane.scrollToLine(line) ?: return showStatus("Line ${line + 1} is not in the shown text of ${view.card.title}.")
+        val at = SwingUtilities.convertPoint(pane, 0, y, content)
+        val viewport = scroll.viewport.extentSize
+        val height = zoomScaled(96, zoom).coerceAtMost(viewport.height)
+        content.scrollRectToVisible(Rectangle(view.x - zoomScaled(16, zoom), at.y - height / 2,
+            minOf(view.width + zoomScaled(32, zoom), viewport.width), height))
     }
 
     /** Emphasises card [cardId] for a moment and scrolls it into view; null clears the emphasis. */
@@ -1120,7 +1131,7 @@ internal class CanvasSessionPanel(
         var pane = CanvasSourcePane(project, null, source, sourceListener)
             private set
         private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
-        private val summaryText = zoomFont(wrappedText(""))
+        private val summaryText = zoomFont(wrappedSummaryText(""))
         private val summaryStatus = zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
         private val summarize = zoomFont(ActionLink("Summarize") { requestSummary() })
         private var summaryJob: Job? = null
@@ -1383,9 +1394,9 @@ internal class CanvasSessionPanel(
         val LOG = logger<CanvasSessionPanel>()
         val ARROW = JBColor(Color(130, 150, 200), Color(110, 130, 175))
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
-        const val CARD_WIDTH = 780
+        const val CARD_WIDTH = 858
         const val CARD_SOURCE_MAX_HEIGHT = 640
-        const val ROOT_MAX_WIDTH = 960
+        const val ROOT_MAX_WIDTH = 1056
         const val ROOT_CHAT_MIN_WIDTH = 480
         const val MIN_ZOOM = 0.05
         const val MAX_ZOOM = 3.0

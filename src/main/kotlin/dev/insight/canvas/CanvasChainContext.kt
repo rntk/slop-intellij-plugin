@@ -57,6 +57,11 @@ fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: Canvas
             val quoted = if (parent == null) root?.let { shownLine(it.text, it.firstLine, card.anchor.line) }
                 else shownLine(parent.text, parent.firstLine, card.anchor.line)
             append("Opened from: $from, line ${card.anchor.line + 1}${quoted?.let { ": `$it`" }.orEmpty()}\n")
+            card.usages?.let { usages ->
+                append("Usages of ${usages.targetName} in this file: ")
+                append(usages.sites.joinToString(", ") { "line ${it.line + 1} (${if (it.call) "call" else "use"} in ${it.owner})" })
+                append("\n")
+            }
             card.summary?.let { append("Summary (model-written): ${it.trim()}\n") }
             append(sources[index])
         }

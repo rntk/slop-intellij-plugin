@@ -16,7 +16,7 @@ data class CanvasAttachment(val mediaType: String, val size: Long, val imageBase
 enum class CardOpenedBy { USER, LLM }
 
 /** The foldable parts of a card, top to bottom. */
-enum class CardSection { META, SUMMARY, SOURCE, CHAT, INPUT }
+enum class CardSection { META, SUMMARY, USAGES, SOURCE, CHAT, INPUT }
 
 /**
  * Where a card was opened in its parent's shown source text (the root file's text for a card without a parent).
@@ -73,7 +73,8 @@ data class CanvasView(val zoom: Double = 1.0, val x: Int = 0, val y: Int = 0)
  * A card to the right of its parent: a selection or a symbol, with its own summary and chat. [text] is a snapshot of
  * the selected text or the symbol's source from 0-based document line [firstLine] of [filePath], bounded by
  * [CANVAS_CARD_TEXT_LIMIT]; [textTruncated] tells it was cut. [summaryError] is set when the latest summary failed.
- * [folded] sections are collapsed; [chats] hold independent histories and drafts.
+ * [folded] sections are collapsed; [chats] hold independent histories and drafts. [usages] lists the sites, within its
+ * file, of the usage search the card was opened from.
  */
 data class CanvasCard(
     val id: String,
@@ -95,6 +96,7 @@ data class CanvasCard(
     val openedBy: CardOpenedBy = CardOpenedBy.USER,
     val attachment: CanvasAttachment? = null,
     override val gapSummaries: List<GapSummary> = emptyList(),
+    val usages: CardUsages? = null,
 ) : CanvasChatHolder {
     init {
         require(chats.isNotEmpty() && chats.map { it.id }.distinct().size == chats.size)
@@ -258,6 +260,11 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
         val text = summary?.takeIf { it.isNotBlank() }
         if (cardId == null) updateRoot { it.copy(summary = text, summaryError = error) }
         else update(cardId) { it.copy(summary = text, summaryError = error) }
+    }
+
+    /** Lists [usages] on [cardId], replacing the list it had; null or no sites removes it. */
+    fun setUsages(cardId: String, usages: CardUsages?) {
+        update(cardId) { it.copy(usages = usages?.takeIf { found -> found.sites.isNotEmpty() }) }
     }
 
     /** Adds [summary] to [cardId]'s gap summaries (the root file's for null), replacing any of overlapping lines. */

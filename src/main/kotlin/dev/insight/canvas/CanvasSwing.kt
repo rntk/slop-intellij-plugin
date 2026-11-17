@@ -63,6 +63,13 @@ internal fun wrappedText(text: String): JTextArea = JTextArea(text).apply {
     foreground = UIUtil.getLabelForeground()
 }
 
+internal const val SUMMARY_FONT_SCALE = 1.2f
+
+/** Summary prose stays larger than the surrounding labels, including when zoomed. */
+internal fun wrappedSummaryText(text: String): JTextArea = wrappedText(text).apply {
+    font = font.deriveFont(font.size2D * SUMMARY_FONT_SCALE)
+}
+
 /** Runs [action] on a plain left click on this component, with a hand cursor. */
 internal fun <T : JComponent> T.onLeftClick(action: (MouseEvent) -> Unit): T = apply {
     cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)

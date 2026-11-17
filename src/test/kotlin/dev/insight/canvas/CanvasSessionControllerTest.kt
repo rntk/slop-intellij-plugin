@@ -768,9 +768,10 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals("void helper", saved.cards.single().text)
     }
 
-    fun testFindUsagesOnLeafCardOpensCallerAndFileCardsToContinueExploration() {
+    fun testFindUsagesJoinsSitesByFileAndTheFileCardListsThemToScrollTo() {
         val file = myFixture.configureByText("Api.java", "class Api { static void work() {} }")
-        myFixture.addFileToProject("Client.java", "class Client { void run() { Api.work(); } }")
+        myFixture.addFileToProject("Client.java", "class Client {\n    void run() {\n        Api.work();\n    }\n" +
+            (1..60).joinToString("") { "    int f$it;\n" } + "    void again() {\n        Api.work();\n    }\n}")
         val services = CanvasSessionServices(null, { { Completion("Leaf symbol.", finishReason = FinishReason.COMPLETE) } }, summaryTools = { emptyList() }) { _, _ ->
             error("No chat requested")
         }
@@ -793,29 +794,39 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             fun findUsages() = workView.menuActions().single { it.name == "canvas-find-usages" }
             assertEquals("Find usages", findUsages().label)
             findUsages().run()
-            PlatformTestUtil.waitWithEventsDispatching("Indexed caller should appear on the card", {
-                links().any { it.text.startsWith("Explore run") }
+            PlatformTestUtil.waitWithEventsDispatching("The caller's file should appear on the card", {
+                links().any { it.text.startsWith("Client.java") }
             }, 30)
             assertEquals("Hide usages", findUsages().label)
-            val branch = descendants(workView).single { it.name == "canvas-usage-branch" } as Container
-            assertTrue(links(branch).any { it.text.startsWith("Call: ") && it.text.contains("Client.java:1") })
+            val files = descendants(workView).filter { it.name == "canvas-usage-file" }
+            assertEquals("Both calls in Client.java make one item", 1, files.size)
+            assertEquals("Client.java (2)", links(files.single() as Container).single().text)
 
-            links(branch).single { it.text.startsWith("Explore run") }.doClick()
-            PlatformTestUtil.waitWithEventsDispatching("Caller symbol card should open beside the leaf card", {
-                panel.model.cards.size == 2
-            }, 30)
-            val callerCard = panel.model.cards.last()
-            assertEquals(workCard.id, callerCard.parentId)
-            assertTrue(callerCard.text.contains("Api.work();"))
-
-            links(branch).single { it.text.startsWith("Call: ") && it.text.contains("Client.java:1") }.doClick()
-            PlatformTestUtil.waitWithEventsDispatching("Caller file card should open when clicking the usage site", {
-                panel.model.cards.size == 3
+            links(files.single() as Container).single().doClick()
+            PlatformTestUtil.waitWithEventsDispatching("The file card should open with its usage sites", {
+                panel.model.cards.size == 2 && panel.model.cards.last().usages != null
             }, 30)
             val fileCard = panel.model.cards.last()
             assertEquals(workCard.id, fileCard.parentId)
             assertTrue(fileCard.wholeFile)
             assertTrue(fileCard.text.contains("class Client"))
+            assertEquals(listOf(2, 65), fileCard.usages!!.sites.map { it.line })
+            assertEquals(listOf("run", "again"), fileCard.usages!!.sites.map { it.owner.substringBefore('(') })
+
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+            val fileView = panel.cardViews.getValue(fileCard.id)
+            val sites = descendants(fileView).filter { it.name == "canvas-usage-site" }.filterIsInstance<com.intellij.ui.components.ActionLink>()
+            assertEquals(listOf("Line 3 · Call in run", "Line 66 · Call in again"), sites.map { it.text.substringBefore('(') })
+            val pane = fileView.sourcePane!!
+            assertEquals(listOf(2, 65), pane.usageSites)
+            sites.last().doClick()
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+            assertTrue("The card's source should scroll down to the picked site",
+                pane.editor.scrollingModel.visibleArea.y > 0)
+
+            links(fileView).single { it.name == "canvas-clear-usage-sites" }.doClick()
+            assertNull(panel.model.card(fileCard.id)!!.usages)
+            assertEquals(emptyList<Int>(), pane.usageSites)
         } finally {
             Disposer.dispose(panel)
         }

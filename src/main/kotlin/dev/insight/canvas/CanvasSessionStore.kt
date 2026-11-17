@@ -108,7 +108,8 @@ class CanvasSessionStore(private val directory: Path) {
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
                     card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
                     card.folded.map { it.name }.sorted(), null, null, card.wholeFile,
-                    encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment, encodeGaps(card.gapSummaries))
+                    encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment, encodeGaps(card.gapSummaries),
+                    card.usages?.let { usages -> StoredUsages(usages.targetName, usages.sites.map { StoredSite(it.line, it.call, it.owner) }) })
             }, session.view.zoom, session.view.x, session.view.y,
             session.root.let { StoredRoot(encodeChats(it.chats), it.activeChatId, it.folded.map { section -> section.name }.sorted(), it.summary, it.summaryError,
                 encodeGaps(it.gapSummaries)) })))
@@ -121,6 +122,14 @@ class CanvasSessionStore(private val directory: Path) {
         val last = gap.last?.takeIf { it >= first } ?: return@mapNotNull null
         GapSummary(first, last, gap.hash ?: return@mapNotNull null, gap.text?.takeIf { it.isNotBlank() } ?: return@mapNotNull null)
     }.sortedBy { it.first }
+
+    private fun decodeUsages(usages: StoredUsages?): CardUsages? {
+        val name = usages?.targetName?.takeIf { it.isNotBlank() } ?: return null
+        val sites = usages.sites.orEmpty().mapNotNull { site ->
+            CardUsageSite(site?.line?.takeIf { it >= 0 } ?: return@mapNotNull null, site.call ?: false, site.owner.orEmpty())
+        }
+        return CardUsages(name, sites).takeIf { sites.isNotEmpty() }
+    }
 
     private fun encodeChats(chats: List<CanvasChat>) =
         chats.map { StoredChat(it.id, it.title, it.messages.map { m -> StoredMessage(m.role.name, m.text) }, it.draft) }
@@ -148,7 +157,8 @@ class CanvasSessionStore(private val directory: Path) {
                 card.filePath.orEmpty(), card.firstLine ?: 0, card.text.orEmpty(), card.truncated ?: false, card.summary, card.summaryError,
                 card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
                 chats, card.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id, card.wholeFile ?: false,
-                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment, decodeGaps(card.gapSummaries))
+                enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment, decodeGaps(card.gapSummaries),
+                decodeUsages(card.usages))
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
@@ -182,7 +192,9 @@ class CanvasSessionStore(private val directory: Path) {
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
         val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
         val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?, val attachment: CanvasAttachment?,
-        val gapSummaries: List<StoredGap?>?)
+        val gapSummaries: List<StoredGap?>?, val usages: StoredUsages?)
+    private class StoredUsages(val targetName: String?, val sites: List<StoredSite?>?)
+    private class StoredSite(val line: Int?, val call: Boolean?, val owner: String?)
     private class StoredGap(val first: Int?, val last: Int?, val hash: Int?, val text: String?)
     private class StoredChat(val id: String?, val title: String?, val messages: List<StoredMessage?>?, val draft: String?)
     private class StoredSymbol(val filePath: String?, val name: String?, val kind: String?, val container: String?, val offset: Int?, val line: Int?)

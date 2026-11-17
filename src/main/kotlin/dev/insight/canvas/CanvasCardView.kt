@@ -11,7 +11,6 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.insight.graph.RelationKind
 import dev.insight.ui.zoomScaled
 import java.awt.BorderLayout
 import java.awt.Color
@@ -50,7 +49,10 @@ internal interface CanvasCardHost {
     fun expandToFile(cardId: String)
     fun openSideBySide(cardId: String)
     fun attachFile(cardId: String?)
-    fun openUsage(cardId: String, owner: Int, filePath: String, wholeFile: Boolean = false)
+    /** Opens the whole [file] from [cardId]'s usage list, listing its usage sites of [targetName] on that card. */
+    fun openUsageFile(cardId: String, file: CanvasUsageFile, targetName: String)
+    /** Scrolls card [cardId]'s source to 0-based document [line] and brings it into view. */
+    fun revealLine(cardId: String, line: Int)
     /** Summarizes the gaps of [cardId]'s source (the root file's for null) that have no summary yet. */
     fun summarizeGaps(cardId: String?)
     /** Whether the gaps of [cardId], or of the root file for null, are being summarized. */
@@ -92,7 +94,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(notice)
     }
 
-    private val summaryText = host.zoomFont(wrappedText(""))
+    private val summaryText = host.zoomFont(wrappedSummaryText(""))
     private val summaryStatus = host.zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
     private val summaryRetry = host.zoomFont(ActionLink("Summarize") { requestSummary() })
     private var summaryJob: Job? = null
@@ -102,6 +104,19 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(summaryStatus)
         add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summaryRetry) })
     })
+
+    private val usageSitesBody = JPanel(StackLayout { scaled(2) }).apply {
+        name = "canvas-usage-sites"
+        isOpaque = false
+    }
+    private var shownSites: CardUsages? = null
+    private val usageSites = CanvasFoldSection(host, id, CardSection.USAGES, "Usages", usageSitesBody).apply {
+        isVisible = false
+        addToHeader(host.zoomFont(ActionLink("Clear") { host.model.setUsages(id, null) }.apply {
+            name = "canvas-clear-usage-sites"
+            toolTipText = "Remove this list of usage sites from the card"
+        }))
+    }
 
     private val sourceBody = JPanel(BorderLayout()).apply {
         isOpaque = false
@@ -154,6 +169,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(header)
         add(meta)
         add(summary)
+        add(usageSites)
         add(sourceSection)
         add(usages)
         add(history)
@@ -233,7 +249,8 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         meta.isVisible = CardSection.META !in next.folded
         header.metaToggle.text = canvasFoldGlyph(CardSection.META !in next.folded)
         source?.let { shown -> sourcePane?.showGapSummaries(shown.shownGapSummaries(next.gapSummaries)) }
-        listOf(summary, sourceSection, history).forEach { it.fold(it.section in next.folded) }
+        showUsageSites(next.usages)
+        listOf(summary, usageSites, sourceSection, history).forEach { it.fold(it.section in next.folded) }
         sourcePane?.isVisible = CardSection.SOURCE !in next.folded
         sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
@@ -302,6 +319,27 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Whether a reply runs in any of the card's chats. */
     val chatBusy: Boolean get() = chat.replying
 
+    /** Lists [usages] above the source, each site scrolling the source to its line, and tints their lines. */
+    private fun showUsageSites(usages: CardUsages?) {
+        sourcePane?.showUsageSites(usages?.sites.orEmpty().map { it.line })
+        if (usages == shownSites) return
+        shownSites = usages
+        usageSitesBody.removeAll()
+        usageSites.isVisible = usages != null
+        if (usages == null) return
+        usageSites.title.text = canvasUsageSitesTitle(usages)
+        usages.sites.forEach { site ->
+            usageSitesBody.add(host.zoomFont(ActionLink(canvasUsageSiteLabel(site)) { host.revealLine(id, site.line) }.apply {
+                name = "canvas-usage-site"
+                toolTipText = "Scroll this card to line ${site.line + 1}"
+                border = JBUI.Borders.empty(1, 10, 1, 0)
+            }))
+        }
+    }
+
+    /** Shows the source rather than its diff. */
+    fun showSource() = sourceSection.showSource()
+
     /** Searches the project for references to this card's symbol, or toggles the loaded usage list. */
     fun showUsages() {
         val target = source?.node?.takeIf { canFindUsages } ?: return
@@ -324,32 +362,23 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
                     isOpaque = false
                     add(host.zoomFont(JLabel(
                         if (found.usages.isEmpty()) "No project usages found."
-                        else "Used by (${found.usages.size}${if (found.truncated) "+" else ""} sites)"
+                        else canvasUsedByTitle(found)
                     ).apply { foreground = UIUtil.getContextHelpForeground() }))
                     add(host.zoomFont(ActionLink("Hide") { showUsages() }.apply { name = "canvas-hide-usages" }))
                 })
-                found.usages.groupBy { it.owner }.forEach { (ownerId, locations) ->
-                    val first = locations.first()
-                    usages.add(JPanel(StackLayout { scaled(2) }).apply {
-                        name = "canvas-usage-branch"
+                canvasUsageFiles(found.usages).forEach { file ->
+                    usages.add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+                        name = "canvas-usage-file"
                         isOpaque = false
-                        border = BorderFactory.createCompoundBorder(
-                            pixel(scaled(2)),
-                            BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBColor.border(), 1), pixel(scaled(4))),
-                        )
-                        add(host.zoomFont(ActionLink("Explore ${first.ownerName}") {
-                            host.openUsage(id, ownerId, first.filePath, wholeFile = false)
+                        border = JBUI.Borders.empty(1, 4, 1, 0)
+                        add(host.zoomFont(ActionLink("${file.fileName} (${file.usages.size})") {
+                            host.openUsageFile(id, file, found.targetName)
                         }.apply {
-                            toolTipText = first.ownerLabel
+                            toolTipText = "Open ${file.path} with its usage sites listed on the card"
                         }))
-                        locations.forEach { usage ->
-                            val kindLabel = if (usage.kind == RelationKind.CALL) "Call" else "Use"
-                            add(host.zoomFont(ActionLink("$kindLabel: ${usage.path}:${usage.line}") {
-                                host.openUsage(id, ownerId, usage.filePath, wholeFile = true)
-                            }.apply {
-                                border = JBUI.Borders.empty(1, 10, 1, 0)
-                            }))
-                        }
+                        add(host.zoomFont(JLabel(file.detail + file.directory.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()).apply {
+                            foreground = UIUtil.getContextHelpForeground()
+                        }))
                     })
                 }
                 if (found.truncated) {

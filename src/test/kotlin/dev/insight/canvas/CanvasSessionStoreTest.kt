@@ -25,7 +25,8 @@ class CanvasSessionStoreTest {
             "src/Store.kt", 3, "fun save() {\n  write()\n}", summary = "Saves.", folded = setOf(CardSection.SOURCE, CardSection.META),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "why?"), SavedMessage(ChatRole.ASSISTANT, "Because.")), draft = "and")))
         val selection = CanvasCard("a2", "a1", CardKind.SELECTION, CardAnchor(13, 20, 4), null, "src/Store.kt", 4, "  write()",
-            textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true, openedBy = CardOpenedBy.LLM)
+            textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true, openedBy = CardOpenedBy.LLM,
+            usages = CardUsages("save", listOf(CardUsageSite(4, true, "run()"), CardUsageSite(9, false, "Store"))))
         return CanvasSession(id, root, "Main", 1, updated, listOf(symbol, selection), CanvasView(1.25, -40, 300))
     }
 
