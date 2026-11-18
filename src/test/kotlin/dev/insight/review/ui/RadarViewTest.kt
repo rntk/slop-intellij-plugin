@@ -31,7 +31,7 @@ class RadarViewTest : BasePlatformTestCase() {
                 val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(ReviewTopics(files)
                     .assign("src/a.kt", "UI>Panels").assign("src/b.kt", "UI>Charts").assign("lib/c.kt", "Model>Counts")
                     .assign("docs/readme.md", "Docs>Guide"), summaries, canRun = true))
-                    else CanvasState(emptyList(), charts = ChartsCard(summaries.tree))
+                    else CanvasState(emptyList(), charts = ChartsCard(summaries))
                 val opened = mutableListOf<String>()
                 val canvas = NoteCanvas({ opened += it }, {}, project = project, vocabulary = vocabulary).apply { setSize(1600, 900) }
                 fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
@@ -77,7 +77,7 @@ class RadarViewTest : BasePlatformTestCase() {
         for (topics in listOf(false, true)) {
             val summaries = ReviewSummaries(buildSummaryTree(files))
             val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(ReviewTopics(files), summaries, canRun = true))
-                else CanvasState(emptyList(), charts = ChartsCard(summaries.tree))
+                else CanvasState(emptyList(), charts = ChartsCard(summaries))
             val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
             fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
             fun switch() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name?.endsWith("radar-symbols") == true }

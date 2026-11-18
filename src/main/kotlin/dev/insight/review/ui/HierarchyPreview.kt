@@ -27,6 +27,7 @@ internal class HierarchyPreviewPanel(
     private val emptyText: String = "Hover or click a topic or summary to preview its files.",
     private val remember: (List<String>) -> Unit = {},
     private val createViewer: ((ReviewSource) -> JComponent)? = null,
+    detail: JComponent? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val blocks = JPanel(VerticalLayout(JBUI.scale(8))).apply {
         name = "hierarchy-preview-blocks"
@@ -66,17 +67,17 @@ internal class HierarchyPreviewPanel(
 
     init {
         name = "hierarchy-with-preview"
-        val scroll = JBScrollPane(blocks).apply {
+        val right = detail ?: JBScrollPane(blocks).apply {
             name = "hierarchy-preview-scroll"
-            preferredSize = Dimension(JBUI.scale(640), left.preferredSize.height)
             verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
-        add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, scroll).apply {
+        right.preferredSize = Dimension(JBUI.scale(640), left.preferredSize.height)
+        add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right).apply {
             name = "hierarchy-preview-split"
             resizeWeight = 0.6
             border = null
             left.minimumSize = Dimension(JBUI.scale(240), 0)
-            scroll.minimumSize = Dimension(JBUI.scale(240), 0)
+            right.minimumSize = Dimension(JBUI.scale(240), 0)
             preferredSize = Dimension(left.preferredSize.width + JBUI.scale(640), left.preferredSize.height)
         })
     }

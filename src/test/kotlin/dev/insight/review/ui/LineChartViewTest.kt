@@ -6,19 +6,26 @@ import com.intellij.ui.components.ActionLink
 import dev.insight.codereview.CodeFile
 import dev.insight.context.ContextData
 import dev.insight.context.ContextScopeKind
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.defaultScopeIndex
 import dev.insight.diff.DiffFileEditor
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewSummaries
 import dev.insight.review.RadarSeries
+import dev.insight.review.Summary
+import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.image.BufferedImage
+import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JToggleButton
+import javax.swing.text.StyleConstants
 
 class LineChartViewTest : BasePlatformTestCase() {
     fun testDirectoryPickerKeepsTheDirectoryScopeWhenOnlyOneFileIsInReview() {
@@ -50,7 +57,7 @@ class LineChartViewTest : BasePlatformTestCase() {
                 assertEquals(listOf("Context…"), menu.components.filterIsInstance<JMenuItem>().map { it.text })
             }
             try {
-                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(buildSummaryTree(files))))
+                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
                 assertContextMenu(component("charts-lines-entry:readme.md"))
                 assertContextMenu(component("charts-lines-count:readme.md"))
                 assertContextMenu(component("charts-lines-entry:src"))
@@ -72,7 +79,7 @@ class LineChartViewTest : BasePlatformTestCase() {
         fun click(name: String) = components().filterIsInstance<ActionLink>().single { it.name == name }.doClick()
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
         try {
-            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(buildSummaryTree(files))))
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
             assertEquals(listOf("charts-lines-entry:readme.md", "charts-lines-entry:src"), entries().map { it.name })
             click("charts-lines-entry:src")
             assertEquals(listOf("charts-lines-entry:src/a.kt", "charts-lines-entry:src/nested"), entries().map { it.name })
@@ -109,7 +116,7 @@ class LineChartViewTest : BasePlatformTestCase() {
             })
         }
         try {
-            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(buildSummaryTree(files))))
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
             assertEquals("4 added lines · 2 files", total().text)
             assertColor(RadarSeries.ADDED)
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
@@ -148,7 +155,7 @@ class LineChartViewTest : BasePlatformTestCase() {
             fun isDisposed(viewer: Disposable) =
                 if (viewer is DiffFileEditor) viewer.isDisposed else (viewer as DiffSourceEditor).editor.isDisposed
             try {
-                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(buildSummaryTree(files))))
+                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
                 assertTrue(previewPaths().isEmpty())
                 assertEquals(expectedShow, toggle("readme.md").toolTipText.orEmpty().substringBefore(" of "))
                 assertFalse(toggle("readme.md").isSelected)
@@ -192,6 +199,69 @@ class LineChartViewTest : BasePlatformTestCase() {
                 assertEquals(expectedShow, toggle("src").toolTipText.orEmpty().substringBefore(" of "))
                 assertFalse(row("src").isOpaque)
                 assertTrue(previewPaths().isEmpty())
+            } finally { canvas.dispose() }
+        }
+    }
+
+    fun testSummaryToggleSwitchesTheRightColumnAndShowsNewlyAvailableSummaries() {
+        for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
+            val path = "src/a.kt"
+            val files = listOf(path, "src/b.kt", "readme.md").map {
+                if (vocabulary == ReviewVocabulary.CODE) CodeFile(it, "/repo/$it", "val captured = 1")
+                else dev.insight.diff.ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1 @@\n-old\n+captured", it)
+            }
+            val tree = buildSummaryTree(files)
+            val directory = tree.nodes.single { it.path == "src" }
+            val file = tree.nodes.single { it.path == path }
+            val requested = mutableListOf<Pair<String, SummaryKind>>()
+            val actions = ContextSummaryActions({ _, _ -> true }, { target, kind -> requested += target to kind; true })
+            val canvas = NoteCanvas({}, {}, project = project, vocabulary = vocabulary,
+                summaryActions = SummaryCanvasActions(contextSummaryActions = actions))
+            fun toggle(name: String) = descendants(canvas).filterIsInstance<JToggleButton>().single { it.name == name }
+            fun summary() = descendants(canvas).filterIsInstance<WrappedSummaryText>().singleOrNull { it.name == "charts-lines-summary-text" }
+            fun generate() = descendants(canvas).filterIsInstance<JButton>().singleOrNull { it.name == "charts-lines-generate-summary" }
+            fun tagsCloud() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name == "charts-lines-tags-cloud" }
+            fun firstWordSize(): Int = summary()!!.styledDocument.let { doc ->
+                StyleConstants.getFontSize(doc.getCharacterElement(0).attributes)
+            }
+            try {
+                val empty = ChartsCard(ReviewSummaries(tree))
+                canvas.showNotes(CanvasState(emptyList(), charts = empty))
+                toggle("charts-lines-summary-toggle:src").doClick()
+                assertEquals("No summary available yet.", summary()?.text)
+                assertTrue(toggle("charts-lines-summary-toggle:src").isSelected)
+                generate()!!.doClick()
+                assertEquals(listOf("src" to SummaryKind.DIRECTORY), requested)
+                canvas.updateCharts(empty.copy(pendingEntries = setOf(directory.id)))
+                assertEquals("Summarizing…", generate()?.text)
+                assertFalse(generate()!!.isEnabled)
+
+                val directorySummaries = mapOf(directory.id to Summary.plain("Directory overview."))
+                canvas.updateCharts(ChartsCard(ReviewSummaries(tree, directorySummaries)))
+                assertEquals("Directory overview.", summary()?.text)
+                assertNull(generate())
+                toggle("charts-lines-toggle:src").doClick()
+                assertNull(summary())
+                assertTrue(toggle("charts-lines-toggle:src").isSelected)
+                assertFalse(toggle("charts-lines-summary-toggle:src").isSelected)
+                assertTrue(descendants(canvas).any { it.name == "hierarchy-preview:$path" })
+
+                descendants(canvas).filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
+                toggle("charts-lines-summary-toggle:$path").doClick()
+                generate()!!.doClick()
+                assertEquals(listOf("src" to SummaryKind.DIRECTORY, path to SummaryKind.FILE), requested)
+                canvas.updateCharts(ChartsCard(ReviewSummaries(tree, directorySummaries +
+                    (file.id to Summary.plain("Captured source overview.")))))
+                assertEquals("Captured source overview.", summary()?.text)
+                val plainSize = firstWordSize()
+                tagsCloud().doClick()
+                assertTrue(firstWordSize() > plainSize)
+                assertEquals("Captured source overview.", summary()?.text)
+                assertFalse(descendants(canvas).any { it.name == "hierarchy-preview:$path" })
+                toggle("charts-lines-summary-toggle:$path").doClick()
+                assertNull(summary())
+                toggle("charts-lines-summary-toggle:$path").doClick()
+                assertTrue(tagsCloud().isSelected)
             } finally { canvas.dispose() }
         }
     }

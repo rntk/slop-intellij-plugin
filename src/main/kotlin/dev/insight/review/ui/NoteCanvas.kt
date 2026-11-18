@@ -921,16 +921,20 @@ internal class NoteCanvas(
         summariesCardBuilder.refreshAll()
     }
 
-    /** Follows the summary tree, which changes with the files in scope, without rebuilding the other cards. */
+    /** Follows the scope and the selected summary without rebuilding the other cards. */
     fun updateCharts(content: ChartsCard?) {
         if ((content == null) != (charts == null) || (content != null && cards[CanvasTabKey.Charts] == null)) {
             showNotes(state.copy(charts = content))
             return
         }
-        if (content == charts) return
+        val previous = charts
+        if (content == previous) return
         chartsCardBuilder.update(content)
         state = state.copy(charts = content)
-        refreshCard(CanvasTabKey.Charts)
+        if (content?.tree != previous?.tree ||
+            (chartsView.chart != "Radar" && chartsView.linesPreview?.kind == LineChartPreviewKind.SUMMARY)) {
+            refreshCard(CanvasTabKey.Charts)
+        }
     }
 
     private fun replaceSummaryCard(key: CanvasTabKey, card: JPanel) {

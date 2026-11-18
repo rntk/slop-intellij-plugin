@@ -17,6 +17,7 @@ import dev.insight.context.ContextSummaryActions
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
+import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
@@ -29,6 +30,7 @@ import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
@@ -38,8 +40,14 @@ import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 
-/** The Charts page's content: the scope's folder and file tree, which the charts measure. */
-internal data class ChartsCard(val tree: ReviewSummaryTree)
+/** The scope's folder and file tree and its available summaries. */
+internal data class ChartsCard(
+    val summaries: ReviewSummaries,
+    val canGenerateSummaries: Boolean = true,
+    val pendingEntries: Set<Int> = emptySet(),
+) {
+    val tree get() = summaries.tree
+}
 
 /** Chart selection and navigation, kept while the page is rebuilt. */
 internal class ChartsViewState {
@@ -47,7 +55,8 @@ internal class ChartsViewState {
     var radarLevel: Int? = null
     var chart: String? = null
     var linesPath: String? = null
-    var linesPreviewPath: String? = null
+    var linesPreview: LineChartPreview? = null
+    var linesTagsCloud = false
     var linesScroll: Int = 0
     var linesSeries = RadarSeries.ADDED
     var radarSymbols = true
@@ -134,8 +143,8 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val activePreview = if (lines) view.linesPreviewPath?.takeIf { ReviewLineChart(content.tree, series).hasEntry(it) }
-            .also { view.linesPreviewPath = it } else null
+        val activePreview = if (lines) view.linesPreview?.takeIf { ReviewLineChart(content.tree, series).hasEntry(it.path) }
+            .also { view.linesPreview = it } else null
         val lineChart = if (lines) LineChartPanel(
             content.tree,
             view.linesPath,
@@ -148,9 +157,9 @@ internal class ChartsCanvasCard(
             open,
             series,
             contextMenu = project?.let { { path -> contextMenu(content.tree, path) } },
-            previewPath = activePreview,
-            togglePreview = { path ->
-                view.linesPreviewPath = if (view.linesPreviewPath == path) null else path
+            preview = activePreview,
+            togglePreview = { selection ->
+                view.linesPreview = if (view.linesPreview == selection) null else selection
                 refresh()
             },
         ) else null
@@ -178,10 +187,15 @@ internal class ChartsCanvasCard(
             border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
         }
         val previewFiles = lineChart?.previewFiles().orEmpty()
+        val summary = activePreview?.takeIf { it.kind == LineChartPreviewKind.SUMMARY }?.let { selection ->
+            val node = content.tree.scopeNode(selection.path, SummaryKind.FILE)
+                ?: content.tree.scopeNode(selection.path, SummaryKind.DIRECTORY)
+            node?.let { summaryPreview(it, content) }
+        }
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-            val minHeight = if (previewFiles.isNotEmpty()) scaled(MIN_PREVIEW_HEIGHT) else 0
+            val minHeight = if (previewFiles.isNotEmpty() || summary != null) scaled(MIN_PREVIEW_HEIGHT) else 0
             preferredSize = Dimension(width, minOf(maxOf(body.preferredSize.height, minHeight), scaled(MAX_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
             if (lines) {
@@ -194,8 +208,8 @@ internal class ChartsCanvasCard(
         }
         val readingArea = if (lineChart != null) {
             val actionLabel = if (diff) "Show diff" else "Show source"
-            HierarchyPreviewPanel(bodyScroll, project, "Click $actionLabel on a file or directory to preview its files.").also {
-                it.showFiles(previewFiles)
+            HierarchyPreviewPanel(bodyScroll, project, "Choose Show summary or $actionLabel on a file or directory.", detail = summary).also {
+                if (summary == null) it.showFiles(previewFiles)
                 preview = it
             }
         } else bodyScroll
@@ -203,6 +217,54 @@ internal class ChartsCanvasCard(
         card.add(readingArea, BorderLayout.CENTER)
         currentCard = card
         return card
+    }
+
+    private fun summaryPreview(node: SummaryNode, content: ChartsCard) = JPanel(BorderLayout()).apply {
+        val summary = content.summaries.text(node.id)
+        name = "charts-lines-summary:${node.path}"
+        background = UIUtil.getListBackground()
+        add(JPanel(BorderLayout(scaled(8), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(8)
+            add(JLabel(node.location).apply {
+                font = JBFont.label().asBold()
+                toolTipText = node.location
+            }, BorderLayout.CENTER)
+            if (summary != null) {
+                add(checkBox("Tags cloud", "charts-lines-tags-cloud", view.linesTagsCloud,
+                    "Size summary words by their importance in the child summaries or file source") {
+                    view.linesTagsCloud = it
+                }, BorderLayout.EAST)
+            } else if (summaryActions != null) {
+                val pending = node.id in content.pendingEntries
+                add(JButton(if (pending) "Summarizing…" else "Summarize").apply {
+                    name = "charts-lines-generate-summary"
+                    isEnabled = !pending && content.canGenerateSummaries && summaryActions.available(node.path, node.kind)
+                    toolTipText = "Generate a summary for ${node.location}"
+                    addActionListener {
+                        if (summaryActions.available(node.path, node.kind)) summaryActions.generate(node.path, node.kind)
+                    }
+                }, BorderLayout.EAST)
+            }
+        }, BorderLayout.NORTH)
+        val weights = if (summary != null && view.linesTagsCloud) SummaryWordWeights(content.summaries)[node.id] else emptyMap()
+        val text = WrappedSummaryText(summary ?: "No summary available yet.", scaled(240),
+            JBFont.label().forSummaryText(), weights, breakLongWords = true).apply {
+            name = "charts-lines-summary-text"
+            border = JBUI.Borders.empty(0, 8, 8, 8)
+            foreground = if (summary == null) UIUtil.getContextHelpForeground() else UIUtil.getLabelForeground()
+        }
+        add(JBScrollPane(text).apply {
+            border = null
+            isOpaque = false
+            viewport.isOpaque = false
+            viewport.addChangeListener {
+                val width = viewport.extentSize.width
+                if (width > 0) text.wrapAt(width)
+            }
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBar.unitIncrement = scaled(16)
+        }, BorderLayout.CENTER)
     }
 
     private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu {

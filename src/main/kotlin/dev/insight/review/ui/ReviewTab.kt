@@ -20,6 +20,7 @@ import dev.insight.review.ReviewCodeLocation
 import com.intellij.psi.util.PsiModificationTracker
 import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
+import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.agent.ChatConversation
@@ -514,15 +515,21 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun summariesCard(): SummariesCard? {
         if (!state.summariesVisible) return null
         val summaries = state.summaries
-        val pending = if (scopedSummaryFill.busy) summaries.tree.nodes.asSequence()
+        return SummariesCard(summaries, session.busy, canSummarize, pendingSummaryEntries(summaries))
+    }
+
+    private fun pendingSummaryEntries(summaries: ReviewSummaries): Set<Int> =
+        if (scopedSummaryFill.busy) summaries.tree.nodes.asSequence()
             .filter { it.kind == SummaryKind.FILE || it.kind == SummaryKind.DIRECTORY }
             .filter { summaries.text(it.id) == null && scopedSummaryFill.pending(it.path, it.kind) }
             .mapTo(hashSetOf()) { it.id }
         else emptySet()
-        return SummariesCard(summaries, session.busy, canSummarize, pending)
-    }
 
-    protected fun chartsCard() = if (state.chartsVisible) ChartsCard(state.summaries.tree) else null
+    protected fun chartsCard(): ChartsCard? {
+        if (!state.chartsVisible) return null
+        val summaries = state.summaries
+        return ChartsCard(summaries, summariesAvailable, pendingSummaryEntries(summaries))
+    }
 
     protected fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
