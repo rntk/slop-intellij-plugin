@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
+import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -274,7 +275,7 @@ internal class ChangeSummarySplitPanel(
                     actions.searchTab.takeIf { branch }, actions.follow,
                     click = { summaryClick(it.clickCount) }, entryMenu = { menu(node) })
             }
-            else JLabel(if (card.running) "summarizing…" else "no summary yet").apply {
+            else actions.fillLink(node, font(JBFont.small())) ?: JLabel(if (card.running) "summarizing…" else "no summary yet").apply {
                 font = font(JBFont.label()).let { it.deriveFont(it.style or Font.ITALIC) }
                 foreground = help
             }
@@ -289,7 +290,8 @@ internal class ChangeSummarySplitPanel(
             })
             componentPopupMenu = menu(node)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            onClick(listOf(text).filter { summary == null || !state.traced(node) }, ::summaryClick)
+            text.inheritsPopupMenu = true
+            onClick(listOf(text).filter { it !is ActionLink && (summary == null || !state.traced(node)) }, ::summaryClick)
             addHierarchyListener { if (!isShowing) read.stop() }
         }
         left.partner = right

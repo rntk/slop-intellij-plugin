@@ -8,6 +8,7 @@ internal data class ContextSummaryRequest(
     val instructions: String = "",
     val regenerate: Boolean = false,
     val label: String = query,
+    val progressTitle: String? = null,
 )
 
 /** A single entry uses existing child summaries, generating missing dependencies when necessary. */

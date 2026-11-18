@@ -37,14 +37,16 @@ private val CHART_SYMBOL_KINDS = setOf("function", "class", "property")
 private val ContextFacts.kind get() = context.kind
 
 /** Code whose lines can be found in the file on disk: not the removed side of a diff, and not a comparison of several files. */
-private val ContextFacts.onDisk get() = hasFile && kind != ContextScopeKind.CHANGE && context.side != SourceSide.BEFORE
+private val ContextFacts.onDisk get() = hasFile && kind != ContextScopeKind.CHANGE && kind != ContextScopeKind.DIRECTORY && context.side != SourceSide.BEFORE
 
 internal fun canOpenInEditor(f: ContextFacts) = f.onDisk
 
-internal fun canOpenInIdeDiff(f: ContextFacts) = f.hasReviewFile && f.origin != ContextOrigin.IDE_DIFF && f.kind != ContextScopeKind.CHANGE
+internal fun canOpenInIdeDiff(f: ContextFacts) = f.hasReviewFile && f.origin != ContextOrigin.IDE_DIFF &&
+    f.kind != ContextScopeKind.CHANGE && f.kind != ContextScopeKind.DIRECTORY
 
 /** Source scopes of a project file open its canvas session; review diff scopes need the host to do so. */
-internal fun canOpenOnCanvas(f: ContextFacts) = if (f.hasReviewFile) f.hasCanvasCallback && f.kind != ContextScopeKind.CHANGE && f.context.path != null
+internal fun canOpenOnCanvas(f: ContextFacts) = if (f.hasReviewFile) f.hasCanvasCallback && f.kind != ContextScopeKind.CHANGE &&
+    f.kind != ContextScopeKind.DIRECTORY && f.context.path != null
     else f.onDisk && f.kind in setOf(ContextScopeKind.FILE, ContextScopeKind.SYMBOL, ContextScopeKind.LINE, ContextScopeKind.SELECTION)
 
 internal fun canShowCallGraph(f: ContextFacts) = f.onDisk && f.kind == ContextScopeKind.SYMBOL && f.context.lines != null &&

@@ -1,6 +1,7 @@
 package dev.insight.review.ui
 
 import dev.insight.review.PatchSource
+import dev.insight.diff.ReviewFile
 import dev.insight.review.RadarSeries
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.diff.DiffColors
@@ -925,7 +926,8 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
             if (column == null || line == null || text == null) null
             else ReviewCodeLocation(if (before) file.previousPath ?: file.path else file.path, text, line, column,
                 if (before && file.previousPath != null) null else file.absolutePath,
-                if (before) dev.insight.agent.SourceSide.BEFORE else dev.insight.agent.SourceSide.AFTER)
+                if (before) dev.insight.agent.SourceSide.BEFORE else dev.insight.agent.SourceSide.AFTER,
+                reviewFile = file as? ReviewFile)
         }
     }
 

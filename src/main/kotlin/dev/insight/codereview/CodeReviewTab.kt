@@ -92,6 +92,7 @@ import dev.insight.board.BoardOrigin
 import dev.insight.board.ProjectBoardSources
 import dev.insight.board.boardGraph
 import dev.insight.board.ui.BoardLauncher
+import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ui.viewTileId
 import dev.insight.codereview.map.CodeMap
 import dev.insight.codereview.map.CodeMapActions
@@ -156,6 +157,7 @@ internal class CodeReviewTab(
         chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
         showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project,
         reviewDestinations = { reviewDestinations() },
+        contextSummaryActions = contextSummaryActions,
         codeMapActions = CodeMapActions(
             generate = { if (canSummarize) session.send(ReviewCommand.CODE_MAP.command) },
             remove = { state.hideCodeMap(); renderCanvas() },
@@ -171,6 +173,14 @@ internal class CodeReviewTab(
     private var wordScopesOf: List<CodeFile>? = null
     private var wordsJob: Job? = null
     private var wordsTarget: Pair<List<CodeFile>, WordScope>? = null
+
+    /** Uses the same source evidence and prompts as the review's /summaries command. */
+    protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
+        val snapshot = state.snapshot
+        val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
+            this.complete ?: ChatSettings.getInstance().createClient()::complete)
+        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot), maxContextChars = configuredContextChars())
+    }
 
     override val canvas: NoteCanvas = NoteCanvas(
         open = { path -> openFile(path, null) },
@@ -190,15 +200,11 @@ internal class CodeReviewTab(
         ),
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },
+            contextSummaryActions = contextSummaryActions,
             removeSummaries = { state.hideSummaries(); renderCanvas() },
             markReviewed = state::setReviewed,
-            contextSummaries = ReviewContextSummaryLauncher(project, scope) {
-                val snapshot = state.snapshot
-                val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
-                    this.complete ?: ChatSettings.getInstance().createClient()::complete)
-                ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot), maxContextChars = configuredContextChars())
-            },
-            deleteOriginalSummaries = { state.clearSummaries(); summariesChanged() },
+            contextSummaries = summaryLauncher,
+            deleteOriginalSummaries = ::clearOriginalSummaries,
             openNode = { node -> openFile(node.path, node.lines?.first) },
             showNode = { node: SummaryNode -> showSourceBlock(node.path, node.lines) },
             openLines = { node, lines ->
@@ -416,6 +422,7 @@ internal class CodeReviewTab(
             pendingSnapshot = null
         } else if (holding) return
         state.refreshing = true
+        scopedSummaryFill.cancel()
         updateControls()
         summariesChanged()
     }
@@ -431,7 +438,10 @@ internal class CodeReviewTab(
         val previousRevision = state.revision
         val previousNotes = state.notes.size
         state.update(snapshot)
-        if (state.revision != previousRevision) { requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear() }
+        if (state.revision != previousRevision) {
+            scopedSummaryFill.cancel()
+            requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear()
+        }
         if (state.wordsVisible) countWords()
         // The viewed file closes when it leaves the scope; an edit to it, or to code it reaches, is followed again.
         if (fileViewPath != null && fileViewPath !in state.snapshot.byPath) closeFileView()
@@ -579,7 +589,7 @@ internal class CodeReviewTab(
 
     /** Shows the board menu below the tile: a new board or a saved one of this scope, reading current project files and the call graph. */
     private fun openBoards() {
-        boards.show(tileGrid.tileComponents[viewTileId(CanvasTabKey.Board)], boardOrigin()) {
+        boards.show(tileGrid.tileComponents[viewTileId(CanvasTabKey.Board)], boardOrigin(), boardPickerContext()) {
             ProjectBoardSources(project, boardGraph(project))
         }
     }
@@ -726,10 +736,14 @@ internal class CodeReviewTab(
             findTool = "find_code_symbols")
         return object : CapturedReviewContext<CodeFile>(live, capturedRevision, { disposed }, { change ->
             when (change) {
-                ReviewContextChange.SOURCE, ReviewContextChange.SUMMARIES_STARTED -> renderCanvas()
+                ReviewContextChange.SOURCE -> renderCanvas()
+                ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
                 ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
                 ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
-                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> summariesChanged()
+                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
+                    scopedSummaryFill.cancel()
+                    summariesChanged()
+                }
                 ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED -> scheduleCanvasRefresh()
             }
         }), CodeReviewContext {
@@ -738,7 +752,9 @@ internal class CodeReviewTab(
                 if (point.side != null) throw ToolInputException("Code review has no diff sides")
                 val sourceFile = captured.byPath[point.path]
                 if (sourceFile == null) dev.insight.chat.showProjectSource(project, sourcePoints, point)
-                else sourcePoints.show(point, sourceFile.text)
+                else sourcePoints.show(point, sourceFile.text) {
+                    embeddedReviewContext(ReviewCodeLocation(sourceFile.path, sourceFile.text, point.line, 0, sourceFile.absolutePath))
+                }
             }
 
             override val snapshot: CodeSnapshot get() = captured

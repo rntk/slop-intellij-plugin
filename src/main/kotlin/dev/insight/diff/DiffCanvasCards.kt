@@ -3,6 +3,7 @@ package dev.insight.diff
 import dev.insight.review.WordScope
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ui.CanvasExtension
@@ -61,13 +62,14 @@ internal class DiffCanvasCards(
     summarizeWallFile: ((path: String) -> Boolean)? = null,
     private val diffSession: (() -> ReviewDiffSession)? = null,
     changeMapActions: ChangeMapActions = ChangeMapActions(),
+    contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
     private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
-        summarizeWallFile) }
+        summarizeWallFile, contextSummaryActions) }
     private val wall by wallView
     /** One view for the tab session, so the selected change survives rebuilds. */
     private val changeMapView = ChangeMapView(changeMapActions)

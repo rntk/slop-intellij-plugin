@@ -11,6 +11,7 @@ import dev.insight.diff.ReviewFile
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
+import dev.insight.agent.SourceSide
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Container
@@ -95,7 +96,7 @@ internal class HierarchyPreviewPanel(
                 DiffFileEditor(file, project).apply { resizeFor(JBUI.scale(600), 1.0) }
             } else {
                 val text = file.text.orEmpty()
-                DiffSourceEditor(ReviewSourceBlock(ReviewSourceRange(file.path, 1, maxOf(1, text.lines().size)),
+                DiffSourceEditor(ReviewSourceBlock(ReviewSourceRange(file.path, 1, maxOf(1, text.lines().size), SourceSide.CURRENT),
                     text, fullText = text, absolutePath = file.absolutePath), project).apply { resizeFor(JBUI.scale(600), 1.0) }
             }
             (viewer as? Disposable)?.let(editors::add)

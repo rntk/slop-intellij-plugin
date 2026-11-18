@@ -19,6 +19,7 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ContextSummaryRequest
 import dev.insight.review.ContextSummaryVersion
@@ -122,7 +123,8 @@ internal class SummariesCanvasCards(
     private fun summaryTabs() = listOf(mainSummaries) + searchTabs
     private fun summaryTab(key: CanvasTabKey) = summaryTabs().firstOrNull { it.key == key }
     private fun version(tab: SummariesTab) = summarySession.versions.firstOrNull { it.id == tab.version }
-    private fun reading(tab: SummariesTab): ReviewSummaries? = version(tab)?.summaries ?: summaries?.summaries
+    private fun reading(tab: SummariesTab): ReviewSummaries? = version(tab)?.summaries ?: summaries?.reading
+    private fun storedSummaries(tab: SummariesTab): ReviewSummaries? = version(tab)?.summaries ?: summaries?.summaries
 
     /**
      * The summary tree as a wide reading card, as an outline, as the folder hierarchy, or as a document with its folder rail;
@@ -133,12 +135,21 @@ internal class SummariesCanvasCards(
         tab.diffPanel?.let(Disposer::dispose)
         tab.diffPanel = null
         val version = version(tab)
-        val content = original.copy(summaries = reading(tab) ?: original.summaries,
-            running = version?.running ?: original.running)
+        val content = if (version == null) original.copy(summaries = original.reading) else original.copy(
+            summaries = version.summaries, running = version.running, pendingEntries = emptySet(),
+        )
         val summariesView = tab.view
         val summariesTrace = tab.trace
         val key = tab.key
         val tree = content.summaries.tree
+        val entryActions = summaryActions.contextSummaryActions?.takeIf { version == null }?.let { actions ->
+            fun isCurrent() = version(tab) == null && summaries?.summaries?.tree === tree
+            ContextSummaryActions(
+                { path, kind -> isCurrent() && actions.available(path, kind) },
+                { path, kind -> isCurrent() && actions.generate(path, kind) },
+                matchesDiff = { file -> isCurrent() && actions.matchesDiff(file) },
+            )
+        }
         summariesView.update(tree)
         val hierarchy = summariesView.mode == ReviewSummariesMode.HIERARCHY
         val document = summariesView.mode == ReviewSummariesMode.DOCUMENT
@@ -262,6 +273,8 @@ internal class SummariesCanvasCards(
             },
             resummarize = { node: SummaryNode, recursive: Boolean -> resummarize(tab, node, recursive) }.takeIf { summaryActions.contextSummaries != null },
             resummaryEnabled = content.canRun && !summaryGenerationRunning,
+            fillEntry = { node -> entryActions?.let { fillEntry(content, node, it) } },
+            contextSummaryActions = entryActions,
             review = tab.review.presentation(content.summaries, actions.toggleReviewed),
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
@@ -487,13 +500,27 @@ internal class SummariesCanvasCards(
 
     private fun resummarize(tab: SummariesTab, node: SummaryNode, recursive: Boolean) {
         if (summaryActions.contextSummaries == null || summaries?.canRun != true || summaryGenerationRunning) return
-        val current = reading(tab) ?: return
+        val current = storedSummaries(tab) ?: return
         val instructions = actions.requestInstructions(node, recursive, ResummaryDestination.VERSION) ?: return
         startContextSummaries(tab, resummaryRequest(current, node, recursive, instructions))
     }
 
+    private fun fillEntry(card: SummariesCard, node: SummaryNode, actions: ContextSummaryActions): SummaryEntryFill? {
+        val reading = card.summaries
+        if (node.isTopicBranch || node.files.isEmpty() || reading.text(node.id) != null) return null
+        val target = when (node.kind) {
+            SummaryKind.FILE, SummaryKind.DIRECTORY -> node
+            SummaryKind.ROOT -> reading.tree.scopeNode(reading.tree.rootDirectoryPrefix, SummaryKind.DIRECTORY) ?: return null
+            else -> return null
+        }
+        val pending = card.running || target.id in card.pendingEntries
+        return SummaryEntryFill(pending, !pending && actions.available(target.path, target.kind)) {
+            if (actions.available(target.path, target.kind)) actions.generate(target.path, target.kind)
+        }
+    }
+
     private fun startContextSummaries(tab: SummariesTab, explicit: ContextSummaryRequest? = null) {
-        val current = reading(tab) ?: return
+        val current = storedSummaries(tab) ?: return
         val request = explicit ?: contextSummaryRequest(tab) ?: return
         if (summaries?.canRun != true) return
         summarySession.startVersion(current, request) { version ->

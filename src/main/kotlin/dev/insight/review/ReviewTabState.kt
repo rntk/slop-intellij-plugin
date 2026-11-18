@@ -167,9 +167,13 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         return summaries.summarize(entries).also { summaries = it; persist() }
     }
 
-    /** Saves what a targeted fill, such as a file's summary asked for on a wall, has written so far; ignored while the change refreshes. */
-    fun replaceSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
-        if (!refreshing) targetedEntries(summaries, updated, ids).forEach { summarize(revision, it) }
+    /** Saves the ordinary tree entries a scoped fill has written so far, preserving summaries outside the requested scope. */
+    fun fillSummaries(updated: ReviewSummaries, ids: Set<Int>): ReviewSummaries {
+        if (!refreshing) {
+            val entries = targetedEntries(summaries, updated, ids)
+            for (batch in entries) summaries = summaries.summarize(batch, reuseSingleChildren = false)
+            if (entries.isNotEmpty()) persist()
+        }
         return summaries
     }
 

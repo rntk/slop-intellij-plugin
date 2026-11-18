@@ -27,10 +27,11 @@ import java.beans.PropertyChangeListener
 import javax.swing.*
 import dev.insight.agent.SourcePoint
 import dev.insight.agent.ToolInputException
+import dev.insight.context.ContextData
 import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewCodeLocation
 
-internal data class SourcePointView(val point: SourcePoint, val text: String)
+internal data class SourcePointView(val point: SourcePoint, val text: String, val pickerContext: (() -> ContextData)? = null)
 
 /** Validate before opening the UI, and keep a private document of the exact inspected source. */
 internal fun sourcePointView(point: SourcePoint, source: String): SourcePointView {
@@ -49,9 +50,9 @@ internal class SourcePoints(private val project: Project, title: String) : Dispo
     var disposed = false
         private set
 
-    fun show(point: SourcePoint, source: String): String {
+    fun show(point: SourcePoint, source: String, pickerContext: (() -> ContextData)? = null): String {
         if (disposed) throw ToolInputException("This conversation is closed")
-        val view = sourcePointView(point, source)
+        val view = sourcePointView(point, source).copy(pickerContext = pickerContext)
         points += view
         listeners.toList().forEach { it() }
         FileEditorManager.getInstance(project).openFile(file, false)
@@ -172,6 +173,7 @@ internal class SourcePointsEditor(private val project: Project, private val file
             val factory = EditorFactory.getInstance()
             val viewer = factory.createViewer(factory.createDocument(view.text), project) as EditorEx
             editor = viewer
+            view.pickerContext?.let { context -> ReviewCodeNavigation.useContext(viewer.contentComponent) { context() } }
             ReviewCodeNavigation.install(viewer, project) { line, column ->
                 ReviewCodeLocation(view.point.path, view.text, line + 1, column,
                     side = view.point.side ?: dev.insight.agent.SourceSide.CURRENT)

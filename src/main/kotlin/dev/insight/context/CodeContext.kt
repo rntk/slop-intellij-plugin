@@ -6,12 +6,13 @@ import com.intellij.psi.PsiFile
 import dev.insight.agent.SourceSide
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
+import dev.insight.review.SummaryKind
 
 /**
  * What a context covers, narrow to wide: [CHANGE] is a whole comparison, [FILE_DIFF] one file's diff, [HUNK] one diff hunk, and
  * [SYMBOL] an enclosing declaration, which may appear several times (a method, then its class).
  */
-enum class ContextScopeKind { CHANGE, FILE_DIFF, HUNK, SELECTION, LINE, SYMBOL, FILE }
+enum class ContextScopeKind { CHANGE, FILE_DIFF, HUNK, SELECTION, LINE, SYMBOL, FILE, DIRECTORY }
 
 /** The view the context picker was opened from. */
 enum class ContextOrigin { EDITOR, IDE_DIFF, DIFFS_WALL, CODE_WALL, OTHER }
@@ -21,7 +22,7 @@ data class ContextSymbol(val name: String, val qualifiedName: String?, val kind:
 
 /**
  * A piece of code the user picked: [text] is its source, or unified patch text when [isPatch]. [path] is project-relative and null
- * for a multi-file [ContextScopeKind.CHANGE]; [lines] are 1-based and inclusive on [side], null for a whole file or change; [files]
+ * for a multi-file [ContextScopeKind.CHANGE]; [lines] are 1-based and inclusive on [side] for line-based scopes; [files]
  * lists every path covered.
  */
 data class CodeContext(
@@ -40,6 +41,7 @@ data class CodeContext(
 
 /** `path:10-20`, `path:42` or `path`; a multi-file context names its file count. */
 fun CodeContext.location(): String {
+    if (kind == ContextScopeKind.DIRECTORY) return "${path.orEmpty().ifEmpty { "." }}/"
     val where = path ?: files.singleOrNull() ?: "${files.size} files"
     val range = lines ?: return where
     return if (range.first == range.last) "$where:${range.first}" else "$where:${range.first}-${range.last}"
@@ -67,6 +69,13 @@ class ContextKey<T : Any>(val name: String) {
 
 enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, CHANGE_MAP, WORDS, DIFF_OVERVIEW, METRICS, MOVES, BOARD }
 
+/** Starts a missing file or directory summary in the review that owns a picker. */
+internal class ContextSummaryActions(
+    val available: (String, SummaryKind) -> Boolean,
+    val generate: (String, SummaryKind) -> Boolean,
+    val matchesDiff: (ReviewFile) -> Boolean = { true },
+)
+
 /** View-specific extras a host passes to actions without changing the core model. */
 class ContextData {
     private val values = HashMap<ContextKey<*>, Any>()
@@ -81,6 +90,7 @@ class ContextData {
 
 /** Keys hosts commonly fill; plugin views may declare their own. */
 object ContextKeys {
+    internal val SUMMARY_GENERATION = ContextKey<ContextSummaryActions>("summaryGeneration")
     val REVIEW_FILE = ContextKey<ReviewFile>("reviewFile")
     val OPEN_ON_DIFFS_WALL = ContextKey<(CodeContext) -> Unit>("openOnDiffsWall")
     val OPEN_ON_CODE_WALL = ContextKey<(CodeContext) -> Unit>("openOnCodeWall")

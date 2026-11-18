@@ -7,9 +7,11 @@ import com.intellij.diff.tools.util.DiffDataKeys
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.Key
+import dev.insight.agent.SourceSide
 import dev.insight.context.CodeContext
 import dev.insight.context.ContextKey
 import dev.insight.context.ContextScopeKind
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
@@ -33,7 +35,10 @@ internal val REVIEW_DIFF_SESSION = Key.create<() -> ReviewDiffSession?>("insight
 internal val REVIEW_CONTEXT_FILES = ContextKey<List<ReviewFile>>("reviewContextFiles")
 internal val REVIEW_CONTEXT_SESSION = ContextKey<() -> ReviewDiffSession?>("reviewContextSession")
 internal class ReviewDiffSession(val files: List<ReviewFile>, val openWall: (List<ReviewFile>, String) -> Unit,
-    val destinations: Map<ReviewDestination, () -> Unit> = emptyMap()) {
+    val destinations: Map<ReviewDestination, () -> Unit> = emptyMap(), private val summaryActions: ContextSummaryActions? = null) {
+    fun summaryActionsFor(file: ReviewFile): ContextSummaryActions? =
+        summaryActions?.takeIf { files.any { it.path == file.path && it.fingerprint == file.fingerprint } }
+
     fun openContext(file: ReviewFile, context: CodeContext) {
         val paths = if (context.kind == ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
         val selected = files.filter { it.path in paths }
@@ -75,6 +80,10 @@ internal fun reviewDiffCaret(e: AnActionEvent): ReviewDiffCaret? {
 
 internal fun reviewDiffLocation(e: AnActionEvent): ReviewCodeLocation? {
     val caret = reviewDiffCaret(e) ?: return null
+    return reviewDiffLocation(caret)
+}
+
+internal fun reviewDiffLocation(caret: ReviewDiffCaret): ReviewCodeLocation? {
     val side = caret.side ?: return null
     val line = caret.line ?: return null
     val file = caret.file
@@ -83,5 +92,7 @@ internal fun reviewDiffLocation(e: AnActionEvent): ReviewCodeLocation? {
         (if (side == 0) file.before else file.after) ?: return null,
         line + 1, caret.column,
         absolutePath = if (side == 0 && file.previousPath != null) null else file.absolutePath,
+        side = if (side == 0) SourceSide.BEFORE else SourceSide.AFTER,
+        reviewFile = file,
     )
 }

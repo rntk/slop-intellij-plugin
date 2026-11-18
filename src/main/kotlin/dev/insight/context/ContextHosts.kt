@@ -17,6 +17,9 @@ import dev.insight.canvas.relativePath
 import dev.insight.diff.ReviewFile
 import java.awt.Component
 
+/** Full source behind the picker scopes, whose previews may be truncated. */
+internal val SUMMARY_SOURCE_TEXT = ContextKey<String>("summarySourceText")
+
 /** What a host hands the picker: the candidate scopes, the one to select first, and the host's extras. */
 internal class ContextPick(val origin: ContextOrigin, val candidates: List<CodeContext>, val data: ContextData) {
     val defaultIndex: Int get() = defaultScopeIndex(candidates)
@@ -61,6 +64,7 @@ internal fun reviewDiffPick(project: Project, origin: ContextOrigin, file: Revie
  */
 internal fun capturedSourcePick(project: Project, origin: ContextOrigin, path: String, absolutePath: String?, text: String,
     line: Int?, data: ContextData = ContextData()): ContextPick {
+    data.put(SUMMARY_SOURCE_TEXT, text)
     val scopes = if (line == null) sourceScopes(path, absolutePath, text, 1, null, emptyList(), null).filter { it.kind == ContextScopeKind.FILE }
     else sourceScopes(path, absolutePath, text, line, null, symbolsForCapturedText(project, path, absolutePath, text, line), null)
     findSourceFile(project, path, absolutePath)?.let { data.put(ContextKeys.VIRTUAL_FILE, it) }
@@ -87,8 +91,10 @@ internal fun editorPick(project: Project, origin: ContextOrigin, editor: Editor,
     val psiDocuments = PsiDocumentManager.getInstance(project)
     if (psi != null && psiDocuments.isUncommited(document)) psiDocuments.commitDocument(document)
     val symbols = psi?.let { enclosingSymbols(it, offset) }.orEmpty()
-    val scopes = sourceScopes(relativePath(project, file.path), file.path, document.text, line, selection, symbols, vcsHunk(project, editor, line))
+    val text = document.text
+    val scopes = sourceScopes(relativePath(project, file.path), file.path, text, line, selection, symbols, vcsHunk(project, editor, line))
     val data = ContextData().put(ContextKeys.VIRTUAL_FILE, file).put(ContextKeys.EDITOR, editor).put(ContextKeys.OFFSET, offset)
+        .put(SUMMARY_SOURCE_TEXT, text)
     psi?.let { data.put(ContextKeys.PSI_FILE, it) }
     return ContextPick(origin, scopes, data)
 }

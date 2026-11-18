@@ -169,14 +169,28 @@ class CanvasSummarySessionTest {
 
     @Test fun `launch failures release the generation slot and expose an error`() {
         val launcher = ContextSummaryLauncher { _, _, _, _ -> throw IllegalStateException("Unable to launch") }
-        val session = CanvasSummarySession(launcher, { tree }, {})
+        var topicFinishes = 0
+        val session = CanvasSummarySession(launcher, { tree }, {}, topicsFinished = { topicFinishes++ })
         session.startTopics(start, request) { _, _ -> }
         assertFalse(session.running)
+        assertEquals(1, topicFinishes)
         assertEquals("Unable to launch", session.topicStatus)
         session.startVersion(start, request) {}
         assertFalse(session.running)
         assertEquals("Unable to launch", session.versions.single().error)
         session.dispose()
+    }
+
+    @Test fun `cancelling topics releases availability before the old job reports completion`() {
+        val launcher = Launcher()
+        var topicFinishes = 0
+        val session = CanvasSummarySession(launcher, { tree }, {}, topicsFinished = { topicFinishes++ })
+        session.startTopics(start, request) { _, _ -> }
+        session.stopTopics()
+        assertEquals(1, topicFinishes)
+        launcher.done(Result.success(ReviewSummaryRun(completed, 1, null)))
+        assertEquals(1, topicFinishes)
+        assertFalse(session.topicsRunning)
     }
 
     @Test fun `source changes cancel obsolete versions and retain surviving summaries`() {

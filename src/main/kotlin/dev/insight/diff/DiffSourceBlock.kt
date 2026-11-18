@@ -19,5 +19,5 @@ internal fun resolveSourceBlock(snapshot: ReviewSnapshot, range: ReviewSourceRan
     if (text.length > 20_000) throw ToolInputException("Source block exceeds 20000 characters. Select fewer lines.")
     val sourcePath = if (range.side == SourceSide.BEFORE) file.previousPath ?: file.path else file.path
     return ReviewSourceBlock(range, text, source,
-        if (sourcePath == file.path) file.absolutePath else null, sourcePath)
+        if (sourcePath == file.path) file.absolutePath else null, sourcePath, reviewFile = file)
 }

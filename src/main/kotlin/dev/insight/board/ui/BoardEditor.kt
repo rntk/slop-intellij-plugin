@@ -99,6 +99,8 @@ class BoardFile(
     val store: BoardStore? = BoardStore.of(project),
     val saved: Boolean = false,
 ) : LightVirtualFile(tabName(model.board.title)) {
+    internal var pickerContext: (CodeContext) -> ContextData = { ContextData() }
+
     init {
         isWritable = false
     }
@@ -169,7 +171,9 @@ private class BoardEditor(private val project: Project, private val file: BoardF
                     }
                     contexts += CodeContext(if (patch) ContextScopeKind.HUNK else ContextScopeKind.SELECTION,
                         if (patch) "Board diff" else "Board source", range.path, null, range.first..range.last, side, text, patch)
-                    if (!disposed && !project.isDisposed) showContextPicker(project, contexts, 0, ContextOrigin.OTHER, ContextData(), owner, at)
+                    if (!disposed && !project.isDisposed) {
+                        showContextPicker(project, contexts, 0, ContextOrigin.OTHER, file.pickerContext(contexts.last()), owner, at)
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

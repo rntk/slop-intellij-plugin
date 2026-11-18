@@ -82,6 +82,11 @@ class OpenDiffReviewAction : DumbAwareAction() {
     }
 }
 
+/** Opens a review for the displayed comparison without changing the Start page's comparison. */
+internal fun diffSummaryReview(project: Project, file: ReviewFile): DiffReviewTab? =
+    ToolWindowManager.getInstance(project).getToolWindow("Diff Review")?.contentManager?.contents
+        ?.firstNotNullOfOrNull { (it.component as? DiffReviewPanel)?.summaryReview(file) }
+
 /** Independent from graph analysis: the review is available even before a project graph is built. */
 internal class DiffReviewPanel(
     private val project: Project,
@@ -162,7 +167,7 @@ internal class DiffReviewPanel(
         files = "Files",
         filesHint = "Double-click a changed file to view its diff; check untracked files to include them in the review.",
     ), sourceControls, filesPanel, ReviewPipeline.diff) { pipelines ->
-        tabs.selected?.schedule(pipelines)
+        tabs.selectedLive?.schedule(pipelines)
     }
     private val refreshTimer = Timer(700) { refresh() }.apply { isRepeats = false }
     /** The tool window's content: the selected review tab's chat. */
@@ -201,21 +206,39 @@ internal class DiffReviewPanel(
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
             object : com.intellij.openapi.actionSystem.AnAction("Context…") {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
-                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
+                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedEntries().isNotEmpty() }
                 override fun actionPerformed(e: AnActionEvent) {
-                    val file = selectedFile() ?: return
+                    val path = selectedEntries().singleOrNull() ?: return
+                    val file = selectedFile()
                     val snapshot = state.snapshot
-                    val tab = tabs.selected
-                    val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, snapshot)
-                        .put(ContextKeys.OPEN_ON_CANVAS) { _: CodeContext -> openOnCanvas(file) }
-                    if (tab != null) data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
-                        val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
-                        val files = snapshot.files.filter { it.path in paths }
-                        if (files.isNotEmpty()) tab.openDiffsWall(files, context.label)
+                    val folderFiles = if (file == null) snapshot.files.filter { it.path.startsWith("$path/") } else emptyList()
+                    val folderFingerprints = folderFiles.associate { it.path to it.fingerprint }
+                    fun includesSelection(tab: DiffReviewTab): Boolean {
+                        val files = tab.state.snapshot.files
+                        return if (file != null) files.any { it.path == file.path && it.fingerprint == file.fingerprint }
+                        else files.count { folderFingerprints[it.path] == it.fingerprint } == folderFiles.size
                     }
-                    if (tab != null) data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
-                    val side = if (file.after != null) SourceSide.AFTER else SourceSide.BEFORE
-                    showContextPicker(project, reviewDiffPick(project, ContextOrigin.OTHER, file, null, side, snapshot.files, data), tree, RelativePoint.getCenterOf(tree))
+                    val tab = tabs.selected?.takeIf(::includesSelection) ?: tabs.all.firstOrNull(::includesSelection)
+                    val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, snapshot)
+                    if (file != null) data.put(ContextKeys.OPEN_ON_CANVAS) { _: CodeContext -> openOnCanvas(file) }
+                    if (tab != null) {
+                        data.put(REVIEW_CONTEXT_SESSION) { tab.diffSession() }
+                        data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
+                        data.put(ContextKeys.SUMMARY_GENERATION, tab.contextSummaryActions)
+                        data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
+                            val paths = context.files.toSet()
+                            val files = snapshot.files.filter { it.path in paths }
+                            if (files.isNotEmpty()) tab.openDiffsWall(files, context.label)
+                        }
+                    }
+                    val pick = if (file != null) {
+                        val side = if (file.after != null) SourceSide.AFTER else SourceSide.BEFORE
+                        reviewDiffPick(project, ContextOrigin.OTHER, file, null, side, snapshot.files, data)
+                    } else {
+                        if (folderFiles.isEmpty()) return
+                        ContextPick(ContextOrigin.OTHER, listOf(directoryScope(path, folderFiles)), data)
+                    }
+                    showContextPicker(project, pick, tree, RelativePoint.getCenterOf(tree))
                 }
             },
             object : com.intellij.openapi.actionSystem.AnAction("Open on flowchart",
@@ -299,7 +322,7 @@ internal class DiffReviewPanel(
 
     private fun invalidateDiff(affectedPaths: Set<String>? = null) {
         state.refreshing = true
-        tabs.all.forEach { it.invalidate(stop = true, affectedPaths) }
+        tabs.live.forEach { it.invalidate(stop = true, affectedPaths) }
         refreshJob?.cancel()
         status.text = "Loading ${request.mode.title.lowercase()}…"
         updateControls()
@@ -322,7 +345,7 @@ internal class DiffReviewPanel(
                         withContext(Dispatchers.IO) { DiffReviewLoader(project).load(selected, selectedRequest) }
                     }
                     state.update(snapshot)
-                    val removed = tabs.all.sumOf { it.update(snapshot) }
+                    val removed = tabs.live.sumOf { it.update(snapshot) }
                     if (selectedRequest.mode.usesWorkingTree)
                         included.retainAll(snapshot.untracked.mapTo(hashSetOf()) { it.absolutePath })
                     renderFiles()
@@ -350,6 +373,22 @@ internal class DiffReviewPanel(
     /** Opens the hub, with the review tabs and their views. */
     fun openReview(focus: Boolean = false) { tabs.openDefault(focus) }
 
+    internal fun summaryReview(file: ReviewFile): DiffReviewTab? {
+        if (disposed) return null
+        val matching = (listOfNotNull(tabs.selected) + tabs.all).firstOrNull { tab ->
+            !tab.state.refreshing && tab.state.snapshot.files.any { it.path == file.path && it.fingerprint == file.fingerprint }
+        }
+        if (matching != null) return matching
+        val comparison = ReviewComparison(capturedLabels = file.beforeLabel to file.afterLabel)
+        val snapshot = ReviewSnapshot(listOf(file), emptyList(), comparison)
+        return tabs.addFrozen(file.path.substringAfterLast('/'), create = { focus, toChat ->
+            lateinit var review: DiffReviewTab
+            review = DiffReviewTab(project, setOf(file.path), { emptyList() }, showDiff = {
+                DiffManager.getInstance().showDiff(project, createDiffRequest(project, file, review::diffSession))
+            }, focus = focus, toChat = toChat)
+            review
+        }) { it.update(snapshot) }
+    }
 
     /** Opens a wall block's file, which need not be the tree's selection. */
     private fun openPathOnCanvas(path: String) {
@@ -455,7 +494,7 @@ internal class DiffReviewPanel(
 
     private fun showDiff(path: String) {
         val file = state.snapshot.files.firstOrNull { it.path == path } ?: return
-        val tab = tabs.selected
+        val tab = tabs.selectedLive
         val session = tab?.let { { it.diffSession().takeIf { captured -> captured.files.any { it.path == file.path } } } }
         DiffManager.getInstance().showDiff(project, createDiffRequest(project, file, session))
     }

@@ -3,17 +3,23 @@ package dev.insight.diff
 import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SourceChunk
+import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.review.SummarySegment
+import dev.insight.review.SummarySource
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.MouseEvent
 import javax.swing.JButton
+import javax.swing.JComponent
+import javax.swing.JMenuItem
 import javax.swing.text.JTextComponent
 import dev.insight.review.ui.CanvasState
 import dev.insight.review.ui.ChangeSummariesViewState
@@ -21,6 +27,8 @@ import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.SummaryMatch
+import dev.insight.review.ui.SegmentRef
+import dev.insight.review.ui.SummaryLinks
 import dev.insight.review.ui.SummaryTrace
 import dev.insight.review.ui.SummaryWord
 import dev.insight.review.ui.selectSummariesMode
@@ -69,6 +77,68 @@ class SummaryExplorerTest : BasePlatformTestCase() {
             back()
             assertEquals(listOf("summary:root"), rows())
             assertFalse((named("summary-explorer-back") as JButton).isEnabled)
+        } finally { canvas.dispose() }
+    }
+
+    fun testHierarchyFillsMissingFilesAndFoldersInTheOriginalSummary() {
+        val tree = buildSummaryTree(files)
+        val original = ReviewSummaries(tree)
+        val file = tree.nodes.single { it.path == "src/a.kt" }
+        val requested = mutableListOf<Pair<String, SummaryKind>>()
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(
+            contextSummaryActions = ContextSummaryActions({ _, _ -> true }, { path, kind -> requested += path to kind; true }),
+        )).apply { setSize(1600, 900) }
+        fun link(identity: String) = descendants(canvas).filterIsInstance<ActionLink>()
+            .single { it.name == "summarize-entry:$identity" }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
+            link("file:src/a.kt").doClick()
+            val folder = descendants(canvas).filterIsInstance<JComponent>().single { it.name == "node:directory:src" }
+            folder.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Summarize" }.doClick()
+            assertEquals(listOf("src/a.kt" to SummaryKind.FILE, "src" to SummaryKind.DIRECTORY), requested)
+
+            canvas.updateSummaries(SummariesCard(original, false, true, pendingEntries = setOf(file.id)))
+            val filling = link("file:src/a.kt")
+            assertEquals("Summarizing…", filling.text)
+            assertFalse(filling.isEnabled)
+            assertTrue(link("file:src/nested/b.kt").isEnabled)
+
+            canvas.updateSummaries(SummariesCard(original.summarize(mapOf(file.id to "Updates one file.")), false, true))
+            assertTrue(descendants(canvas).none { it.name == "summarize-entry:file:src/a.kt" })
+
+        } finally { canvas.dispose() }
+    }
+
+    fun testScopedFolderResultAppearsOnItsCollapsedRootRow() {
+        val tree = buildSummaryTree(files.filter { it.path.startsWith("src/nested/") })
+        val original = ReviewSummaries(tree)
+        val folder = tree.nodes.single { it.path == "src/nested" }
+        val requested = mutableListOf<Pair<String, SummaryKind>>()
+        val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(
+            contextSummaryActions = ContextSummaryActions({ _, _ -> true }, { path, kind -> requested += path to kind; true }),
+        )).apply { setSize(1600, 900) }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
+            val link = descendants(canvas).filterIsInstance<ActionLink>().single { it.name == "summarize-entry:root" }
+            link.doClick()
+            assertEquals(listOf("src/nested" to SummaryKind.DIRECTORY), requested)
+
+            val prose = "Two helpers validate input."
+            val childSummary = Summary(listOf(SummarySegment("Validates input.", listOf(SummarySource.Rows(1, 1)))))
+            val folderSummary = Summary(listOf(SummarySegment(prose, listOf(SummarySource.Claim(0, 0)))))
+            val stored = original.summarize(folder.children.associateWith { childSummary } + (folder.id to folderSummary),
+                reuseSingleChildren = false)
+            assertNull(stored.text(tree.root.id))
+            canvas.summariesView.toggle(tree.root.identity)
+            val card = SummariesCard(stored, false, true)
+            canvas.updateSummaries(card)
+            val root = descendants(canvas).filterIsInstance<JTextComponent>().single { it.name == "summary:root" }
+            assertEquals(prose, root.text)
+            assertTrue(descendants(canvas).none { it.name == "summarize-entry:root" })
+            assertTrue(descendants(canvas).filterIsInstance<JButton>().single { it.text == "Continue" }.isEnabled)
+
+            val links = SummaryLinks(card.reading)
+            assertTrue(SegmentRef(folder.children.first(), 0) in links.descendants(listOf(SegmentRef(tree.root.id, 0))))
         } finally { canvas.dispose() }
     }
 

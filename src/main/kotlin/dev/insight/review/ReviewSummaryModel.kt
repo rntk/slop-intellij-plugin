@@ -47,6 +47,14 @@ class ReviewSummaryTree(val nodes: List<SummaryNode>) {
     /** Nodes that need a summary; an empty diff has none, not even the root. */
     val summarizable: List<SummaryNode> get() = if (root.files.isEmpty()) emptyList() else nodes
 
+    private val scopeNodes by lazy {
+        summarizable.filter { !it.isTopicBranch && (it.kind == SummaryKind.ROOT || it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE) }
+            .associateBy { it.path to it.kind }
+    }
+
+    /** The ordinary review summary node for the exact file or directory selected by a view. */
+    internal fun scopeNode(path: String, kind: SummaryKind): SummaryNode? = scopeNodes[path to kind]
+
     /**
      * A folder whose only entry is another folder repeats that folder's summary. Views merge such a chain into one entry: the
      * last folder, labeled with the joined names. Only the display merges; the tree and its summaries keep every folder.
@@ -214,15 +222,34 @@ internal fun addChunkNodes(
 }
 
 /** The tree of one snapshot revision with the summaries written so far. Immutable: every change returns a new value. */
-class ReviewSummaries(
+class ReviewSummaries private constructor(
     val tree: ReviewSummaryTree,
-    private val texts: Map<Int, Summary> = emptyMap(),
+    private val texts: Map<Int, Summary>,
     /** Text restored from disk, rather than written in this tab. Never persisted. */
-    internal val cachedIds: Set<Int> = emptySet(),
+    internal val cachedIds: Set<Int>,
+    private val readingAliases: Map<Int, Summary>,
 ) {
-    fun summary(id: Int): Summary? = texts[id]
-    fun text(id: Int): String? = texts[id]?.text
-    internal fun generatedSummary(id: Int): Summary? = summary(id).takeUnless { id in cachedIds }
+    constructor(tree: ReviewSummaryTree, texts: Map<Int, Summary> = emptyMap(), cachedIds: Set<Int> = emptySet()) :
+        this(tree, texts, cachedIds, emptyMap())
+
+    fun summary(id: Int): Summary? = texts[id] ?: readingAliases[id]
+    fun text(id: Int): String? = summary(id)?.text
+    internal fun generatedSummary(id: Int): Summary? = texts[id].takeUnless { id in cachedIds }
+
+    /** Lets the root row read the folder it represents after that folder is filled on its own. */
+    internal fun withAbsorbedFolderSummary(): ReviewSummaries {
+        if (readingAliases.isNotEmpty() || tree.root.id in texts || tree.rootDirectoryPrefix.isEmpty()) return this
+        val folder = generateSequence(tree.root) { node ->
+            node.children.singleOrNull()?.takeIf(tree::isAbsorbed)?.let(tree::get)
+        }.firstOrNull { it.id in texts } ?: return this
+        val aliases = mutableMapOf<Int, Summary>()
+        var summary = texts.getValue(folder.id)
+        for (parent in generateSequence(folder.parent) { tree[it].parent }) {
+            summary = summary.relay()
+            aliases[parent] = summary
+        }
+        return ReviewSummaries(tree, texts, cachedIds, aliases)
+    }
     val count: Int get() = texts.size
     val total: Int get() = tree.summarizable.size
     val complete: Boolean get() = missing().isEmpty()

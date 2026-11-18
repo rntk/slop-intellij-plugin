@@ -1,5 +1,7 @@
 package dev.insight.review.ui
 
+import com.intellij.ui.components.ActionLink
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -11,7 +13,19 @@ import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
-internal data class SummariesCard(val summaries: ReviewSummaries, val running: Boolean, val canRun: Boolean)
+internal data class SummariesCard(
+    val summaries: ReviewSummaries,
+    val running: Boolean,
+    val canRun: Boolean,
+    val pendingEntries: Set<Int> = emptySet(),
+) {
+    val reading: ReviewSummaries by lazy { summaries.withAbsorbedFolderSummary() }
+}
+
+/** An action scoped to the original summaries of one review entry. */
+internal class SummaryEntryFill(val pending: Boolean, val enabled: Boolean, val run: () -> Unit) {
+    val label get() = if (pending) "Summarizing…" else "Summarize"
+}
 
 /** Summary prose is slightly larger than the surrounding labels, at every zoom level. */
 internal fun Font.forSummaryText(): Font = deriveFont(size2D * 1.15f)
@@ -28,7 +42,7 @@ internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabu
     val fileCount = "$files file${if (files == 1) "" else "s"}"
     return when {
         total == 0 -> noFiles
-        card.running && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
+        (card.running || card.pendingEntries.isNotEmpty()) && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
         summaries.complete -> "$total summaries · $fileCount"
         else -> "$count of $total summarized · $fileCount"
     }
@@ -72,10 +86,20 @@ internal class ChangeSummaryActions(
     val contextProject: com.intellij.openapi.project.Project? = null,
     val contextSources: List<dev.insight.review.ReviewSource> = emptyList(),
     val reviewDestinations: () -> Map<dev.insight.context.ReviewDestination, () -> Unit> = { emptyMap() },
+    val fillEntry: (SummaryNode) -> SummaryEntryFill? = { null },
+    val contextSummaryActions: ContextSummaryActions? = null,
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
         addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas,
-            openOnWall?.let { open -> { files, _ -> open(node.copy(files = files.map { it.path })) } }, reviewDestinations())
+            openOnWall?.let { open -> { files, _ -> open(node.copy(files = files.map { it.path })) } }, reviewDestinations(),
+            summaryActions = contextSummaryActions)
+        fillEntry(node)?.let { fill ->
+            menu.add(JMenuItem(fill.label).apply {
+                name = "summary-action:Summarize"
+                isEnabled = fill.enabled
+                addActionListener { fill.run() }
+            })
+        }
         wallAction(node)?.let { open ->
             menu.add(JMenuItem(openOnWallLabel).apply {
                 name = "summary-action:$openOnWallLabel"
@@ -101,8 +125,16 @@ internal class ChangeSummaryActions(
     }
 
     fun installEntryMenu(component: JComponent, node: SummaryNode) {
-        if (resummarize == null && toChat == null && wallAction(node) == null && contextProject == null) return
+        if (resummarize == null && toChat == null && wallAction(node) == null && contextProject == null && fillEntry(node) == null) return
         installSummaryEntryMenu(component) { JPopupMenu().also { addEntryItems(it, node) } }
+    }
+
+    fun fillLink(node: SummaryNode, font: Font): ActionLink? = fillEntry(node)?.let { fill ->
+        ActionLink(fill.label) { fill.run() }.apply {
+            name = "summarize-entry:${node.identity}"
+            this.font = font
+            isEnabled = fill.enabled
+        }
     }
 
     fun wholeFileAction(node: SummaryNode): (() -> Unit)? {

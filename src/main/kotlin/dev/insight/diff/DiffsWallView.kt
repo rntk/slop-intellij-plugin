@@ -8,6 +8,7 @@ import dev.insight.agent.SourceSide
 import dev.insight.context.ContextData
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.reviewDiffPick
 import dev.insight.context.showContextPicker
 import dev.insight.review.ReviewVocabulary
@@ -47,6 +48,7 @@ internal class DiffsWallView(
     private val reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
     /** Asks for the summary of a file that has none; see [WallView]. Null leaves only files with a summary their Summary switch. */
     summarize: ((path: String) -> Boolean)? = null,
+    private val summaryActions: ContextSummaryActions? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
     private var shown: WallContent? = null
@@ -61,6 +63,7 @@ internal class DiffsWallView(
         val (side, number) = wallLineSide(line)
         val data = ContextData()
         reviewDestinations?.invoke()?.let { data.put(ContextKeys.REVIEW_DESTINATIONS, it) }
+        summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
         openOnWall?.let { open -> data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
             val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
             val selected = files.filter { it.path in paths }

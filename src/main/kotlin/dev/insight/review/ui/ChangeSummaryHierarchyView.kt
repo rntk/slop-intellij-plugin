@@ -3,6 +3,7 @@ package dev.insight.review.ui
 import dev.insight.review.PatchSource
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.util.ui.JBFont
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
@@ -69,6 +70,7 @@ internal class ChangeSummaryHierarchyPanel(
             caption = if (node.kind == SummaryKind.CHUNK) "${node.children.size} parts" else null,
             levelLabel = "Level ${column + 1}",
             openDiff = actions.directoryAction(node),
+            summarize = actions.fillLink(node, font(JBFont.small())),
             select = { actions.select(node.identity) },
             review = actions.review?.control(node, summaryFont()),
             explain = actions.explainAction(node), explainEnabled = card.canRun)
@@ -115,6 +117,7 @@ internal class ChangeSummaryHierarchyPanel(
             icon = if (part) AllIcons.FileTypes.Text else null, details = if (part) listOf(node.path) else null,
             levelLabel = "Level ${column + 1}",
             openWholeFile = actions.wholeFileAction(node),
+            summarize = actions.fillLink(node, font(JBFont.small())),
             explain = actions.explainAction(node), explainEnabled = card.canRun,
             review = actions.review?.control(node, summaryFont()))
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
@@ -273,7 +276,8 @@ internal class ChangeSummaryDocumentPanel(
 
     override fun summaryBody(identity: String, summary: String?, missingSummary: String, width: Int): JComponent =
         (if (summary != null) summaryText(identity, summary, width)
-            else super.summaryBody(identity, null, missingSummary, width)).also { area ->
+            else nodesByIdentity[identity]?.let { actions.fillLink(it, cardFont(JBFont.small())) }
+                ?: super.summaryBody(identity, null, missingSummary, width)).also { area ->
             if (summary != null) installWordTracing(area as JTextComponent, identity, summary, state, actions.trace, actions.searchSelection,
                 actions.searchTab.takeIf { identity in branches }, actions.follow)
         }.let { actions.review?.body(identity, it) ?: it }

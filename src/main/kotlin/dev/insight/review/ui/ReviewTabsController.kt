@@ -65,10 +65,14 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         presentation.setSingleRow(true).setSupportsCompression(false).setTabLabelActionsAutoHide(false)
     }
     private val reviewTabs = mutableListOf<T>()
+    private val frozenTabs = mutableSetOf<T>()
     private var nextTab = 1
     val component: JComponent get() = tabs.component
     /** Every open tab, in the order they were added. */
     val all: List<T> get() = reviewTabs
+    /** The tabs that follow the Start page's live source. */
+    val live: List<T> get() = reviewTabs.filterNot(frozenTabs::contains)
+    val selectedLive: T? get() = selected?.takeUnless(frozenTabs::contains) ?: live.firstOrNull()
 
     init {
         Disposer.register(parent, this)
@@ -134,10 +138,12 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
      * Opens a new tab with the scope [paths] whose chat is focused on [focus], and shows its chat. The canvas stays
      * where it is, so To Chat from a summary does not replace the view it was chosen from.
      */
-    fun openChat(focus: ChatFocus, paths: Set<String>?) {
+    fun openChat(focus: ChatFocus, paths: Set<String>?) = openChat(focus, paths, null)
+
+    private fun openChat(focus: ChatFocus, paths: Set<String>?, frozen: FrozenReview<T>?) {
         if (disposed) return
         selectingFromCanvas = true
-        try { add(paths, focus) } finally { selectingFromCanvas = false }
+        try { add(paths, focus, frozen) } finally { selectingFromCanvas = false }
         activateChat()
     }
 
@@ -165,18 +171,31 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         pages.selectChat()
     }
 
-    fun add(paths: Set<String>? = null, focus: ChatFocus? = null) {
+    private class FrozenReview<T>(val name: String, val create: (ChatFocus?, (ChatFocus) -> Unit) -> T, val prepare: (T) -> Unit)
+
+    fun add(paths: Set<String>? = null) {
+        add(paths, null, null)
+    }
+
+    /** A regular closable review tab whose evidence stays independent from the panel's live source. */
+    fun addFrozen(name: String, create: (ChatFocus?, (ChatFocus) -> Unit) -> T, prepare: (T) -> Unit): T =
+        add(null, null, FrozenReview(name, create, prepare))
+
+    private fun add(paths: Set<String>?, focus: ChatFocus?, frozen: FrozenReview<T>?): T {
         val number = nextTab++
         val name = when {
             focus != null -> chatFocusTabName(focus)
+            frozen != null -> frozen.name
             number == 1 -> firstName
             paths == null -> "Review $number"
             else -> "Selection $number"
         }
-        val tab = create(paths, focus) { openChat(it, paths) }
+        val toChat: (ChatFocus) -> Unit = { openChat(it, paths, frozen) }
+        val tab = frozen?.create?.invoke(focus, toChat) ?: create(paths, focus, toChat)
         Disposer.register(parent, tab)
         reviewTabs += tab
-        prepare(tab)
+        if (frozen != null) frozenTabs += tab
+        (frozen?.prepare ?: prepare)(tab)
         val info = TabInfo(tab).setText(name).setTooltipText("$name · Double-click to rename")
         tab.rename(name)
         tab.onOpenSource = { start?.open(true) }
@@ -198,14 +217,16 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
         showSelectedChat()
         // The panel adds the first tab as it is created, when its tool window is first shown: the review starts on the hub.
         if (number == 1 && readyToOpenCanvas) openDefault()
+        return tab
     }
 
     private fun close(info: TabInfo) {
         val tab = tabOf(info) ?: return
         if (!reviewTabs.remove(tab)) return
+        frozenTabs.remove(tab)
         Disposer.dispose(tab)
         tabs.removeTab(info)
-        if (reviewTabs.isEmpty()) add()
+        if (live.isEmpty()) add()
         showSelectedChat()
     }
 
@@ -220,7 +241,7 @@ internal class ReviewTabsController<T : ReviewTab<*, *>>(
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun update(e: AnActionEvent) { e.presentation.isEnabled = enabled() && entries().isNotEmpty() }
             override fun actionPerformed(e: AnActionEvent) {
-                val tab = selected ?: return
+                val tab = selectedLive ?: return
                 tab.focusOn(entries())?.let { openChat(it, tab.state.scopePaths) } ?: outside()
             }
         }

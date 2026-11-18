@@ -10,6 +10,9 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.CanvasTabKey
+import dev.insight.context.ContextData
+import dev.insight.review.ReviewCodeLocation
+import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ExplainResult
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewNoteKey
@@ -66,7 +69,13 @@ internal class NoteCanvas(
     private val editorPages = mutableMapOf<CanvasTabKey, JPanel>()
     internal val pageKeys: Set<CanvasTabKey> get() = pages.keys
     internal val selectedKey: CanvasTabKey? get() = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
-    internal fun editorPage(key: CanvasTabKey): JPanel = editorPages.getOrPut(key) { JPanel(BorderLayout()) }
+    internal var embeddedReviewContext: (ReviewCodeLocation) -> ContextData =
+        { ContextData() }
+    internal fun editorPage(key: CanvasTabKey): JPanel = editorPages.getOrPut(key) {
+        JPanel(BorderLayout()).also { page ->
+            ReviewCodeNavigation.useContext(page) { embeddedReviewContext(it) }
+        }
+    }
     internal fun pageTitle(key: CanvasTabKey) = tabTitle(key)
     internal fun selectPage(key: CanvasTabKey) { pages[key]?.let { tabs.selectedComponent = it } }
     private val pages = mutableMapOf<CanvasTabKey, JScrollPane>()
@@ -91,6 +100,7 @@ internal class NoteCanvas(
         TopicsCardLabels(vocabulary.groupingTitle, vocabulary.groupingTooltip,
             command = "/grouping", singular = "group", plural = "groups", closeText = "Remove change grouping"),
     )
+    internal var onTopicSummariesFinished: () -> Unit = {}
     private val summarySession: CanvasSummarySession = CanvasSummarySession(summaryActions.contextSummaries,
         currentTree = { summaries?.summaries?.tree }, changed = { version ->
             summariesCardBuilder.generationChanged(version)
@@ -98,7 +108,7 @@ internal class NoteCanvas(
                 refreshTopics()
                 refreshGrouping()
             }
-        })
+        }, topicsFinished = { onTopicSummariesFinished() })
     internal val topicSummariesRunning: Boolean get() = summarySession.topicsRunning
     private val summaryGenerationRunning: Boolean get() = summarySession.running
     private val summaries: SummariesCard? get() = state.summaries
@@ -117,7 +127,8 @@ internal class NoteCanvas(
     internal var onRemoveCharts: () -> Unit = {}
     private val chartsCardBuilder = ChartsCanvasCard(vocabulary, open, refresh = { refreshCard(CanvasTabKey.Charts) },
         close = { onRemoveCharts() }, project = project, openOnCanvas = showSummaryNode,
-        openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() })
+        openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() },
+        summaryActions = summaryActions.contextSummaryActions)
     internal val chartsView get() = chartsCardBuilder.view
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
@@ -842,7 +853,8 @@ internal class NoteCanvas(
             JPopupMenu().apply {
                 val node = nodes[identity] ?: return@apply
                 addSummaryContextItem(this, project, node, content.summaries.tree.nodes.mapNotNull { it.file },
-                    openOnWall = summaryActions.openOnWall, reviewDestinations = reviewDestinations())
+                    openOnWall = summaryActions.openOnWall, reviewDestinations = reviewDestinations(),
+                    summaryActions = summaryActions.contextSummaryActions)
                 val enabled = content.canRun && !summaryGenerationRunning
                 fun item(label: String, enabled: Boolean, tooltip: String, action: () -> Unit) = add(JMenuItem(label).apply {
                     name = "topic-summary-action:$label"

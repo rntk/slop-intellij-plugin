@@ -4,7 +4,9 @@ The context picker is the shared hub that connects the plugin's views. From any 
 
 When a picker belongs to a review session, it also offers that review’s summaries and reading modes, topics, words, explainer board, and applicable diff views. These actions open the whole originating review.
 
-The code and diff review line charts offer the picker from file and directory context menus, including directory breadcrumbs, so chart scopes can move into the other review views.
+The code and diff review charts offer the picker from file and directory context menus, including line chart breadcrumbs and radar spokes.
+
+The picker can generate missing summaries for a directory or a file. A selection, symbol, line, or hunk offers a summary of its containing file or file diff. In a review, the results are saved in that review’s [Summaries tree](summaries.md). From an editor, Project View, or standalone two-sided text diff, the action opens Summaries in a matching review. If it needs a new review tab, that tab keeps the source or comparison captured for the request.
 
 Hosts turn a position into candidate scopes plus typed extras, and symbol borders come from PSI. Actions are contributed through an extension point or registered by a view, and each one decides for itself which scopes it applies to. A new view or tool joins the hub by adding a host, an action, or both.
 

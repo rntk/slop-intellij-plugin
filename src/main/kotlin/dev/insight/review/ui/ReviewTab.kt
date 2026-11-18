@@ -1,11 +1,24 @@
 package dev.insight.review.ui
 
+import com.intellij.notification.Notification
+import com.intellij.notification.NotificationAction
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import dev.insight.context.ContextData
+import dev.insight.context.boardPickerEvidence
+import dev.insight.context.embeddedPickerEvidence
+import dev.insight.review.ReviewCodeLocation
 import com.intellij.psi.util.PsiModificationTracker
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.callgraph.ExplainChartResult
@@ -14,8 +27,10 @@ import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatRole
 import dev.insight.agent.ChatTool
 import dev.insight.agent.ToolInputException
+import dev.insight.context.CodeContext
 import dev.insight.review.ChatFocus
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ExplainDialog
 import dev.insight.review.ExplainResults
 import dev.insight.review.ExplainTarget
@@ -26,6 +41,8 @@ import dev.insight.review.ReviewPipelineQueue
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewTabState
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ScopedSummaryFill
+import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.chatFocus
 import dev.insight.review.explainChartFor
@@ -85,6 +102,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     override fun canvasSelected() = onCanvasSelected()
     abstract override val canvas: NoteCanvas
     abstract val session: ChatConversation
+    protected abstract val summaryLauncher: ContextSummaryLauncher
     /** Shown by the panel's Chat page, so it is not part of the tab's controls. */
     abstract val chat: JComponent
     /** Focused when the panel's Chat page is selected. */
@@ -93,6 +111,25 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     private val artifactFiles = mutableMapOf<CanvasTabKey, ReviewCanvasFile>()
     val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
+    internal val contextSummaryActions = ContextSummaryActions(::canFillSummary, ::fillSummary) { file ->
+        state.snapshotFiles.any { it.path == file.path && it.fingerprint == file.fingerprint }
+    }
+
+    protected fun embeddedReviewContext(location: ReviewCodeLocation): ContextData =
+        embeddedPickerEvidence(location, state.snapshotFiles, if (disposed) null else summaryActionsAtCurrentRevision())
+
+    private fun summaryActionsAtCurrentRevision(): ContextSummaryActions {
+        val revision = state.revision
+        return ContextSummaryActions(
+            { path, kind -> state.revision == revision && contextSummaryActions.available(path, kind) },
+            { path, kind -> state.revision == revision && contextSummaryActions.generate(path, kind) },
+        )
+    }
+
+    /** Reads the review when each picker opens; the clip's own evidence decides whether it still belongs to the review. */
+    protected fun boardPickerContext(): (CodeContext) -> ContextData = { context ->
+        boardPickerEvidence(context, state.snapshotFiles, if (disposed) null else summaryActionsAtCurrentRevision())
+    }
 
     /** The views of this tab, in the order of their tiles; the first is the one selected initially. */
     protected abstract fun viewOptions(): List<ReviewViewOption>
@@ -258,6 +295,15 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     /** Follows the chat: [before] runs first on every change, then the controls, cards and explanation are updated. */
     protected fun followSession(before: () -> Unit = {}, updateControls: () -> Unit): Disposable {
         canvas.reviewDestinations = ::reviewDestinations
+        canvas.onTopicSummariesFinished = {
+            SwingUtilities.invokeLater {
+                if (!disposed) {
+                    scopedSummaryFill.resume()
+                    summariesChanged()
+                }
+            }
+        }
+        canvas.embeddedReviewContext = ::embeddedReviewContext
         canvas.onPageFocused = { showView(it); openArtifact(it) }
         canvas.onPagesChanged = {
             updateArtifactFiles()
@@ -268,6 +314,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         }
         return session.subscribe {
             before()
+            scopedSummaryFill.resume()
             updateControls()
             summariesChanged()
             scheduleTileRefresh()
@@ -285,10 +332,54 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
 
-    protected val canSummarize: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
+    private val summariesAvailable: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
         state.snapshotFiles.isNotEmpty()
 
+    protected val scopedSummaryFill by lazy {
+        ScopedSummaryFill(summaryLauncher, { state.summaries }, { summariesAvailable },
+            save = { updated, ids -> state.fillSummaries(updated, ids) },
+            changed = { if (!disposed) summariesChanged() },
+            failed = ::showScopedSummaryFailure)
+    }
+
+    private fun showScopedSummaryFailure(failure: ScopedSummaryFill.Failure) {
+        if (disposed || project.isDisposed) return
+        val revision = state.revision
+        val targets = failure.targets.joinToString(limit = 3) { it.label }
+        val remaining = if (failure.missingCount == 1) "1 summary still missing" else "${failure.missingCount} summaries still missing"
+        logger<ReviewTab<*, *>>().warn("Summarizing $targets failed: ${failure.reason}")
+        val content = StringUtil.escapeXmlEntities("$targets · $remaining. ${failure.reason.take(500)}")
+        val notification = NotificationGroupManager.getInstance().getNotificationGroup("Insight Review Summaries")
+            .createNotification("Summary generation incomplete", content, NotificationType.WARNING)
+        notification.addAction(object : NotificationAction("Retry") {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = state.revision == revision && summariesAvailable
+            }
+
+            override fun actionPerformed(e: AnActionEvent, notification: Notification) {
+                if (state.revision == revision && summariesAvailable) {
+                    notification.expire()
+                    failure.targets.forEach { fillSummary(it.path, it.kind) }
+                }
+            }
+        }).notify(project)
+    }
+
+    internal fun canFillSummary(path: String, kind: SummaryKind): Boolean = scopedSummaryFill.canFill(path, kind)
+
+    internal fun fillSummary(path: String, kind: SummaryKind): Boolean = scopedSummaryFill.request(path, kind)
+
+    protected val canSummarize: Boolean get() = summariesAvailable && !scopedSummaryFill.busy
+
     protected fun summarize() { if (canSummarize) session.send("/summaries") }
+
+    protected fun clearOriginalSummaries() {
+        scopedSummaryFill.cancel()
+        state.clearSummaries()
+        summariesChanged()
+    }
 
     /** The target of the /explain command an Explain link sent, until its turn takes it; see [takeExplain]. */
     private var pendingExplain: Pair<String, ExplainTarget>? = null
@@ -420,7 +511,16 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         if (!disposed) focus()
     }
 
-    protected fun summariesCard() = if (state.summariesVisible) SummariesCard(state.summaries, session.busy, canSummarize) else null
+    protected fun summariesCard(): SummariesCard? {
+        if (!state.summariesVisible) return null
+        val summaries = state.summaries
+        val pending = if (scopedSummaryFill.busy) summaries.tree.nodes.asSequence()
+            .filter { it.kind == SummaryKind.FILE || it.kind == SummaryKind.DIRECTORY }
+            .filter { summaries.text(it.id) == null && scopedSummaryFill.pending(it.path, it.kind) }
+            .mapTo(hashSetOf()) { it.id }
+        else emptySet()
+        return SummariesCard(summaries, session.busy, canSummarize, pending)
+    }
 
     protected fun chartsCard() = if (state.chartsVisible) ChartsCard(state.summaries.tree) else null
 
@@ -443,6 +543,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     override fun dispose() {
         disposed = true
+        scopedSummaryFill.cancel()
         pipelines.clear()
         onCanvasSelected = {}
         onOpenSource = {}
@@ -451,6 +552,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         canvas.onRemoveCharts = {}
+        canvas.onTopicSummariesFinished = {}
         artifactFiles.values.forEach {
             FileEditorManager.getInstance(project).closeFile(it)
             it.setValid(false)

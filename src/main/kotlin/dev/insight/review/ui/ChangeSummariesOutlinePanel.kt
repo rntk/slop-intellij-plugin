@@ -111,7 +111,7 @@ internal class ChangeSummariesPanel(
                     if (state.traced(node)) installWordTracing(area, node.identity, summary, state, actions.trace, actions.searchSelection,
                         actions.searchTab.takeIf { node.children.isNotEmpty() }, actions.follow, select = activate)
                 }
-            else text(missing, textWidth, italic(JBFont.label()), help)
+            else actions.fillLink(node, font(JBFont.small())) ?: text(missing, textWidth, italic(JBFont.label()), help)
         val content = JPanel(VerticalLayout(scaled(4))).apply {
             isOpaque = false
             add(header)
@@ -156,7 +156,7 @@ internal class ChangeSummariesPanel(
             } }
             (listOf(this, gutterPanel, content, header) + header.components.filterIsInstance<JLabel>() +
                 gutterPanel.components.filterIsInstance<JLabel>().filter { it.name == null } +
-                listOfNotNull(summaryText.takeIf { summary == null || !state.traced(node) }))
+                listOfNotNull(summaryText.takeIf { it !is ActionLink && (summary == null || !state.traced(node)) }))
                 .forEach { it.addMouseListener(click) }
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             actions.installEntryMenu(this, node)

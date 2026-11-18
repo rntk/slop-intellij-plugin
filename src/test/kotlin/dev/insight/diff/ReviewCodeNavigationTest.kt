@@ -13,11 +13,32 @@ import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
 import dev.insight.agent.SourceSide
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ui.DiffSourceEditor
+import javax.swing.JPanel
 
 class ReviewCodeNavigationTest : FileEditorManagerTestCase() {
+    fun testEmbeddedPickerInheritsReviewContextAndRetainsItsCapturedDiff() {
+        val before = "old\n"
+        val file = ReviewFile("src/new.txt", "/src/new.txt", "src/old.txt", "renamed", "@@ -1 +1 @@",
+            "v1", before, "new\n")
+        val actions = ContextSummaryActions({ _, _ -> true }, { _, _ -> true })
+        val page = JPanel()
+        val editor = JPanel().also(page::add)
+        ReviewCodeNavigation.useContext(page) { location ->
+            assertEquals("src/old.txt", location.path)
+            ContextData().put(ContextKeys.SUMMARY_GENERATION, actions)
+        }
+        val location = ReviewCodeLocation("src/old.txt", before, 1, 0, side = SourceSide.BEFORE, reviewFile = file)
+        val context = ReviewCodeNavigation.reviewContext(editor, location)
+        assertSame(actions, context[ContextKeys.SUMMARY_GENERATION])
+        assertSame(file, context[ContextKeys.REVIEW_FILE])
+    }
+
     fun testSnapshotValidationIncludesUnsavedEditsAndInvalidCoordinates() {
         val file = myFixture.addFileToProject("src/read.txt", "heading\n\ttarget()\nlast\n").virtualFile
         val document = FileDocumentManager.getInstance().getDocument(file)!!

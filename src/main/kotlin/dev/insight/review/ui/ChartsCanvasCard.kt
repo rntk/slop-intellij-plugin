@@ -13,12 +13,14 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
+import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
@@ -67,6 +69,7 @@ internal class ChartsCanvasCard(
     private val openOnCanvas: ((SummaryNode) -> Unit)? = null,
     private val openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
     private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
+    private val summaryActions: ContextSummaryActions? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -161,7 +164,10 @@ internal class ChartsCanvasCard(
                     font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 }
                 add(status)
-                add(RadarChartPanel(chart, inner, zoom, view.radarLog, open, view.radarSeries) { selected ->
+                val nodes = content.tree.nodes.filter { it.kind == SummaryKind.FILE || it.kind == SummaryKind.DIRECTORY }
+                    .associateBy { "node:${it.identity}" }
+                add(RadarChartPanel(chart, inner, zoom, view.radarLog, open, view.radarSeries,
+                    axisMenu = project?.let { { axis -> nodes[axis.identity]?.let { contextMenu(it, axis.files) } } }) { selected ->
                     view.radarSeries = selected
                     status.text = radarStatus(chart, selected)
                 })
@@ -199,10 +205,13 @@ internal class ChartsCanvasCard(
         return card
     }
 
-    private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu = JPopupMenu().apply {
+    private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu {
         val node = tree.nodes.firstOrNull { it.path == path } ?: tree.root
-        addSummaryContextItem(this, project, node, tree.nodes.mapNotNull { it.file },
-            openOnCanvas, openOnWall, reviewDestinations())
+        return contextMenu(node, tree.nodes.mapNotNull { it.file })
+    }
+
+    private fun contextMenu(node: SummaryNode, sources: List<ReviewSource>): JPopupMenu = JPopupMenu().apply {
+        addSummaryContextItem(this, project, node, sources, openOnCanvas, openOnWall, reviewDestinations(), summaryActions)
     }
 
     private fun checkBox(text: String, name: String, selected: Boolean, tooltip: String, set: (Boolean) -> Unit) =

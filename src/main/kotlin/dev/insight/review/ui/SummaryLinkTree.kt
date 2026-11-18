@@ -44,8 +44,10 @@ internal fun summaryLinkTree(summaries: ReviewSummaries, visible: (SummaryNode) 
         val rest = node.children.withIndex().filter { it.index !in cited }.flatMap { (position, id) ->
             build(tree[id], null, "$key/uncited/$position")
         }
-        if (parts.isEmpty() && rest.isEmpty() && node.kind == SummaryKind.FILE)
-            return listOf(SummaryLinkNode("$key/file", node.label, node, file = true))
+        if (node.kind == SummaryKind.FILE && (summary == null || parts.isEmpty() && rest.isEmpty()))
+            return listOf(SummaryLinkNode("$key/file", node.label, node, file = rest.isEmpty(), children = rest))
+        if (summary == null && node.kind == SummaryKind.DIRECTORY && !node.isTopicBranch)
+            return listOf(SummaryLinkNode("$key/folder", "${node.label}/", node, children = rest))
         return parts + rest
     }
     val root = tree.root
@@ -63,7 +65,8 @@ private fun SummaryLinkNode.merged(): SummaryLinkNode {
     val below = children.map { it.merged() }
     val only = below.singleOrNull() ?: return copy(children = below)
     return when {
-        only.file && only.children.isEmpty() && !file && (owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK) ->
+        // Only a part folds into its leaf: a file entry awaiting its own summary keeps its chunks' prose beneath it.
+        only.file && only.children.isEmpty() && !file && parts.isNotEmpty() && (owner.kind == SummaryKind.FILE || owner.kind == SummaryKind.CHUNK) ->
             only.copy(text = text.ifEmpty { only.text }, parts = parts + only.parts)
         text.isNotEmpty() && text == only.text -> only.copy(parts = parts + only.parts)
         else -> copy(children = below)

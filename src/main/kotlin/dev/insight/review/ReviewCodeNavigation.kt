@@ -14,13 +14,17 @@ import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.agent.findSourceFile
 import dev.insight.agent.SourceSide
 import dev.insight.context.ContextPick
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
 import dev.insight.context.CodeContext
 import dev.insight.context.ContextScopeKind
 import dev.insight.context.ContextOrigin
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.showContextPicker
+import dev.insight.diff.ReviewFile
 import com.intellij.ui.awt.RelativePoint
 import java.awt.Point
+import java.awt.Component
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
@@ -33,6 +37,7 @@ internal data class ReviewCodeLocation(
     val column: Int,
     val absolutePath: String? = null,
     val side: SourceSide = SourceSide.CURRENT,
+    val reviewFile: ReviewFile? = null,
 ) {
     /** Caller holds read access. Unsaved changes count as changes too. */
     fun resolve(project: Project): Pair<VirtualFile, Int>? {
@@ -50,6 +55,26 @@ internal data class ReviewCodeLocation(
 
 internal object ReviewCodeNavigation {
     private val installed = Key.create<Boolean>("insight.review.navigation.installed")
+    private val contextProvider = Key.create<(ReviewCodeLocation) -> ContextData>("insight.review.navigation.context")
+
+    fun useContext(component: JComponent, provider: (ReviewCodeLocation) -> ContextData) {
+        component.putClientProperty(contextProvider, provider)
+    }
+
+    fun inheritContext(component: JComponent, parent: Component) {
+        contextFor(parent)?.let { useContext(component, it) }
+    }
+
+    fun reviewContext(component: Component, location: ReviewCodeLocation): ContextData =
+        (contextFor(component)?.invoke(location) ?: ContextData()).also { data ->
+            location.reviewFile?.let { data.put(ContextKeys.REVIEW_FILE, it) }
+        }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun contextFor(component: Component): ((ReviewCodeLocation) -> ContextData)? =
+        generateSequence(component) { it.parent }.firstNotNullOfOrNull {
+            (it as? JComponent)?.getClientProperty(contextProvider) as? ((ReviewCodeLocation) -> ContextData)
+        }
 
     private fun pickerAction(project: Project, target: ReviewCodeLocation?, owner: JComponent, point: Point,
         selection: IntRange? = null): AnAction =
@@ -57,7 +82,8 @@ internal object ReviewCodeNavigation {
             override fun actionPerformed(e: AnActionEvent) {
                 val location = target ?: return
                 val source = capturedSourcePick(project, ContextOrigin.OTHER, location.path,
-                    location.absolutePath, location.text, location.line)
+                    location.absolutePath, location.text, location.line,
+                    reviewContext(owner, location))
                 val scopes = source.candidates.map { it.copy(side = location.side) }.toMutableList()
                 selection?.let { lines ->
                     val selectedText = location.text.lineSequence().drop(lines.first - 1).take(lines.last - lines.first + 1).joinToString("\n")

@@ -47,14 +47,15 @@ data class ReviewComparison(
     val request: ReviewDiffRequest = ReviewDiffRequest(),
     val baseRevision: String? = null,
     val targetRevision: String? = null,
+    private val capturedLabels: Pair<String, String>? = null,
 ) {
-    val beforeLabel: String get() = when (request.mode) {
+    val beforeLabel: String get() = capturedLabels?.first ?: when (request.mode) {
         ReviewDiffMode.LOCAL -> "HEAD / VCS base"
         ReviewDiffMode.MERGE_BASE -> "merge-base(${request.base}, ${request.target}) · ${baseRevision?.take(12)}"
         else -> "${request.base} · ${baseRevision?.take(12)}"
     }
-    val afterLabel: String get() = if (request.mode.usesWorkingTree) "Working tree" else "${request.target} · ${targetRevision?.take(12)}"
-    val summary: String get() = if (request.mode == ReviewDiffMode.LOCAL) request.mode.title else "$beforeLabel → $afterLabel"
+    val afterLabel: String get() = capturedLabels?.second ?: if (request.mode.usesWorkingTree) "Working tree" else "${request.target} · ${targetRevision?.take(12)}"
+    val summary: String get() = if (capturedLabels == null && request.mode == ReviewDiffMode.LOCAL) request.mode.title else "$beforeLabel → $afterLabel"
 }
 
 data class ReviewRepository(val path: String, val refs: List<String>) {

@@ -3,17 +3,24 @@ package dev.insight.context.actions
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.agent.SourceSide
+import dev.insight.codereview.CodeFile
+import dev.insight.context.CodeContext
 import dev.insight.context.ContextAction
 import dev.insight.context.ContextActionRegistry
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextRequest
 import dev.insight.context.ContextScopeKind
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ContextData
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextPick
 import dev.insight.context.editorPick
 import dev.insight.context.toMarkdown
+import dev.insight.context.directoryScope
+import dev.insight.diff.ReviewFile
+import dev.insight.review.SummaryKind
 import java.awt.datatransfer.DataFlavor
 
 /** The built-in context actions registered through the extension point, run through [ContextAction.perform]. */
@@ -45,7 +52,8 @@ class ContextActionsPlatformTest : BasePlatformTestCase() {
         val ids = ContextAction.EP_NAME.extensionList.map { it.id }
         assertEquals(ids.toSet().size, ids.size)
         assertTrue(ids.toString(), ids.containsAll(listOf("open.editor", "open.diff", "explore.canvas", "explore.callGraph", "explore.flowChart",
-            "explore.sideBySide", "explore.summaryTree", "ask.chat", "copy.markdown")))
+            "explore.sideBySide", "explore.summaryTree", "explore.summarizeFile", "explore.summarizeFileDiff", "explore.summarizeDirectory",
+            "ask.chat", "copy.markdown")))
         for (action in ContextAction.EP_NAME.extensionList) {
             assertTrue(action.id, action.title.isNotBlank() && !action.title.startsWith("!"))
             assertTrue(action.id, action.group in listOf("Open", "Explore", "Ask", "Copy", "Review views"))
@@ -55,8 +63,35 @@ class ContextActionsPlatformTest : BasePlatformTestCase() {
     fun testRegistryOffersTheActionsOfAFunctionSymbol() {
         val request = request(pick(), ContextScopeKind.SYMBOL, "render")
         val ids = ContextActionRegistry.getInstance().actions(request).map { it.id }
-        assertEquals(setOf("open.editor", "explore.canvas", "explore.codeWall", "explore.callGraph", "explore.flowChart", "explore.sideBySide", "ask.chat", "copy.markdown"),
+        assertEquals(setOf("open.editor", "explore.canvas", "explore.codeWall", "explore.callGraph", "explore.flowChart", "explore.sideBySide",
+            "explore.summarizeFile", "ask.chat", "copy.markdown"),
             ids.toSet())
+    }
+
+    fun testSummaryGenerationUsesTheOwningReviewAndSelectedScope() {
+        val requested = mutableListOf<Pair<String, SummaryKind>>()
+        val data = ContextData().put(ContextKeys.SUMMARY_GENERATION, ContextSummaryActions(
+            { path, kind -> (path to kind) !in requested }, { path, kind -> requested.add(path to kind) },
+        ))
+        fun summarize(context: CodeContext, expected: String) {
+            val request = ContextRequest(project, context, listOf(context), ContextOrigin.OTHER, data, null)
+            val actions = ContextActionRegistry.getInstance().actions(request).filter { it.id.startsWith("explore.summarize") }
+            assertEquals(listOf(expected), actions.map { it.id })
+            actions.single().perform(request)
+            assertFalse(actions.single().isAvailable(request))
+        }
+        val source = request(pick(), ContextScopeKind.SYMBOL, "render").context
+        summarize(source, "explore.summarizeFile")
+        val directory = directoryScope("src", listOf(CodeFile("src/Only.java", "/repo/src/Only.java", "text")))
+        summarize(directory, "explore.summarizeDirectory")
+        val renamed = ReviewFile("src/New.java", "/repo/src/New.java", "src/Old.java", "renamed", "patch", "id")
+        data.put(ContextKeys.REVIEW_FILE, renamed)
+        val before = source.copy(path = renamed.previousPath, side = SourceSide.BEFORE)
+        summarize(before, "explore.summarizeFileDiff")
+        val change = before.copy(kind = ContextScopeKind.CHANGE, path = null, files = listOf(renamed.path, source.path!!))
+        val request = ContextRequest(project, change, listOf(change), ContextOrigin.OTHER, data, null)
+        assertTrue(ContextActionRegistry.getInstance().actions(request).none { it.id.startsWith("explore.summarize") })
+        assertEquals(listOf(source.path to SummaryKind.FILE, "src" to SummaryKind.DIRECTORY, renamed.path to SummaryKind.FILE), requested)
     }
 
     fun testDiffsWallRequiresHostAndReceivesTheSelectedContext() {

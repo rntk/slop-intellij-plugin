@@ -4,6 +4,7 @@ import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.RadarAxis
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.radarRingValue
@@ -25,6 +26,7 @@ import java.awt.event.MouseEvent
 import java.awt.geom.Path2D
 import java.util.Locale
 import javax.swing.JComponent
+import javax.swing.JPopupMenu
 import javax.swing.SwingUtilities
 import kotlin.math.PI
 import kotlin.math.abs
@@ -45,6 +47,7 @@ internal class RadarChartPanel(
     private val logarithmic: Boolean,
     private val openFile: (String) -> Unit,
     selectedSeries: RadarSeries? = null,
+    private val axisMenu: ((RadarAxis) -> JPopupMenu?)? = null,
     private val selectSeries: (RadarSeries?) -> Unit = {},
 ) : JComponent() {
     private val axes = chart.axes
@@ -82,6 +85,13 @@ internal class RadarChartPanel(
                     repaint()
                 }
             }
+            override fun mousePressed(e: MouseEvent) = showAxisMenu(e)
+            override fun mouseReleased(e: MouseEvent) = showAxisMenu(e)
+
+            private fun showAxisMenu(e: MouseEvent) {
+                if (e.isPopupTrigger) contextMenuAt(e.point)?.show(this@RadarChartPanel, e.x, e.y)
+            }
+
             override fun mouseClicked(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
                 seriesAt(e.point)?.let { series ->
@@ -97,6 +107,13 @@ internal class RadarChartPanel(
         }
         addMouseListener(mouse)
         addMouseMotionListener(mouse)
+    }
+
+    internal fun contextMenuAt(point: Point): JPopupMenu? {
+        val menu = axisMenu ?: return null
+        if (seriesAt(point) != null) return null
+        val axis = axisAt(point)?.let(axes::get) ?: return null
+        return menu(axis)?.takeIf { it.componentCount > 0 }
     }
 
     override fun getToolTipText(event: MouseEvent): String? {

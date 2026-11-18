@@ -4,6 +4,8 @@ import dev.insight.context.capturedSourcePick
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextData
 import dev.insight.context.ContextKeys
+import dev.insight.context.ContextPick
+import dev.insight.context.directoryScope
 import dev.insight.context.showContextPicker
 import com.intellij.ui.awt.RelativePoint
 
@@ -47,6 +49,8 @@ import dev.insight.review.ReviewDiskCache
 import dev.insight.agent.findSourceFile
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
+import dev.insight.llm.CompletionFn
+import dev.insight.review.SummaryKind
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.util.Locale
@@ -197,6 +201,11 @@ internal fun showInSummaryTree(project: Project, file: VirtualFile) {
     withCodeReviewPanel(project) { it.showInSummaryTree(file) }
 }
 
+/** Opens a review for the captured source without updating the Start page's source. */
+internal fun codeSummaryReview(project: Project, snapshot: CodeSnapshot): CodeReviewTab? =
+    ToolWindowManager.getInstance(project).getToolWindow(CODE_REVIEW_TOOL_WINDOW)?.contentManager?.contents
+        ?.firstNotNullOfOrNull { (it.component as? CodeReviewPanel)?.summaryReview(snapshot) }
+
 /** A folder of the file tree: [path] is project-relative. */
 private data class FolderEntry(val name: String, val path: String) {
     override fun toString() = name
@@ -211,6 +220,7 @@ internal class CodeReviewPanel(
     private val project: Project,
     startupReady: Boolean = ApplicationManager.getApplication().isUnitTestMode ||
         StartupManager.getInstance(project).postStartupActivityPassed(),
+    private val complete: CompletionFn? = null,
 ) : JPanel(BorderLayout()), Disposable {
     private val coroutines = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private var pendingWall: VirtualFile? = null
@@ -287,14 +297,14 @@ internal class CodeReviewPanel(
         files = "Files in scope",
         filesHint = "Double-click a file to open it; files left out of the review are listed below the tree.",
     ), scopeControls, filesPanel, ReviewPipeline.code) { pipelines ->
-        tabs.selected?.schedule(pipelines)
+        tabs.selectedLive?.schedule(pipelines)
     }
     private val refreshTimer = Timer(REFRESH_DELAY_MS) { refresh(stopTabs = false) }.apply { isRepeats = false }
     /** The tool window's content: the selected review tab's chat. */
     private val pages = ReviewSidePages()
     private val tabs: ReviewTabsController<CodeReviewTab> = ReviewTabsController(project, this, CODE_REVIEW_TOOL_WINDOW, "Whole scope", "Insight.CodeReviewTabs", pages,
         startupReady, ::selectedPaths, hub = hub, start = start, create = { paths, focus, toChat ->
-            CodeReviewTab(project, paths, ::selectedPaths, ::openFile, focus = focus, toChat = toChat)
+            CodeReviewTab(project, paths, ::selectedPaths, ::openFile, complete = complete, focus = focus, toChat = toChat)
         }) { tab ->
         snapshot?.let { tab.update(it) }
         if (snapshot == null || refreshJob?.isActive == true) tab.invalidate(stop = false)
@@ -334,21 +344,35 @@ internal class CodeReviewPanel(
         PopupHandler.installPopupMenu(tree, DefaultActionGroup(
             object : DumbAwareAction("Context…") {
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
-                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedFile() != null }
+                override fun update(e: AnActionEvent) { e.presentation.isEnabledAndVisible = tree.selectionCount == 1 && selectedEntries().isNotEmpty() }
                 override fun actionPerformed(e: AnActionEvent) {
-                    val file = selectedFile() ?: return
+                    val path = selectedEntries().singleOrNull() ?: return
+                    val file = selectedFile()
+                    val folderFiles = if (file == null) snapshot?.files.orEmpty().filter { it.path.startsWith("$path/") } else emptyList()
                     val data = ContextData()
-                    tabs.selected?.let { tab ->
+                    fun includesSelection(tab: CodeReviewTab) = if (file != null) tab.state.snapshot.byPath[path]?.fingerprint == file.fingerprint
+                    else folderFiles.all { tab.state.snapshot.byPath[it.path]?.fingerprint == it.fingerprint }
+                    val tab = tabs.selected?.takeIf(::includesSelection) ?: tabs.all.firstOrNull(::includesSelection)
+                    if (tab != null) {
                         data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
-                        data.put(ContextKeys.OPEN_ON_CODE_WALL) { context ->
-                            if (!tab.openCodeWallFile(context.path ?: file.path)) {
-                                status.text = if (tab.state.refreshing) "The code is refreshing. Retry after refresh completes."
-                                    else "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
-                                status.toolTipText = status.text
+                        data.put(ContextKeys.SUMMARY_GENERATION, tab.contextSummaryActions)
+                        if (file != null) {
+                            data.put(ContextKeys.OPEN_ON_CODE_WALL) { context ->
+                                if (!tab.openCodeWallFile(context.path ?: file.path)) {
+                                    status.text = if (tab.state.refreshing) "The code is refreshing. Retry after refresh completes."
+                                        else "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
+                                    status.toolTipText = status.text
+                                }
                             }
                         }
                     }
-                    showContextPicker(project, capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, file.text, null, data), tree, RelativePoint.getCenterOf(tree))
+                    val pick = if (file != null) capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, file.text, null, data)
+                    else {
+                        if (folderFiles.isEmpty()) return
+                        if (tab != null) data.put(ContextKeys.OPEN_ON_CODE_WALL) { context -> tab.openCodeWall(folderFiles, context.label) }
+                        ContextPick(ContextOrigin.OTHER, listOf(directoryScope(path, folderFiles)), data)
+                    }
+                    showContextPicker(project, pick, tree, RelativePoint.getCenterOf(tree))
                 }
             },
             tabs.toChatAction("Chat about the selection in a new tab, with its summaries and source in context",
@@ -470,7 +494,7 @@ internal class CodeReviewPanel(
         refreshTimer.stop()
         val scope = scope ?: return
         refreshJob?.cancel()
-        if (stopTabs) tabs.all.forEach { it.invalidate(stop = true) }
+        if (stopTabs) tabs.live.forEach { it.invalidate(stop = true) }
         status.text = "Loading ${scope.displayName}…"
         status.toolTipText = scope.absolutePath
         val previous = snapshot
@@ -484,11 +508,11 @@ internal class CodeReviewPanel(
                     }
                     snapshot = loaded
                     if (loaded.scope.entry) watchedFiles = loaded.files.mapTo(hashSetOf(loaded.scope.absolutePath)) { it.absolutePath }
-                    val removed = tabs.all.sumOf { it.update(loaded) }
+                    val removed = tabs.live.sumOf { it.update(loaded) }
                     pendingWall?.let { target ->
                         pendingWall = null
                         val files = loaded.files.filter { it.absolutePath == target.path || (target.isDirectory && it.absolutePath.startsWith(target.path.trimEnd('/') + "/")) }
-                        tabs.selected?.openCodeWall(files, target.name)
+                        tabs.selectedLive?.openCodeWall(files, target.name)
                     }
                     renderFiles(loaded)
                     updateSkipped(loaded)
@@ -527,7 +551,7 @@ internal class CodeReviewPanel(
     /** Opens the selected file in the current tab's File view; a file outside a tab's fixed selection is reported. */
     private fun viewSelectedFile() {
         val file = selectedFile()?.takeIf { canViewSelectedFile() } ?: return
-        val tab = tabs.selected ?: return
+        val tab = tabs.selectedLive ?: return
         if (!tab.openFileView(file.path)) {
             status.text = "${file.path} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
             status.toolTipText = status.text
@@ -537,7 +561,7 @@ internal class CodeReviewPanel(
     fun openOnCodeWall(file: VirtualFile) {
         if (setScope(file)) {
             pendingWall = file
-            openCanvas(true)
+            tabs.selectedLive?.openCanvas(true)
         }
     }
 
@@ -551,6 +575,25 @@ internal class CodeReviewPanel(
         if (tabs.selected?.showInSummaryTree(file.path) == true) return
         status.text = "${file.name} is not in this tab's scope. Choose the Whole scope tab or a tab that includes it."
         status.toolTipText = status.text
+    }
+
+    internal fun summaryReview(snapshot: CodeSnapshot): CodeReviewTab? {
+        if (disposed) return null
+        val target = snapshot.scope.path
+        val kind = when {
+            snapshot.scope.entry -> SummaryKind.FILE
+            target.isEmpty() -> SummaryKind.ROOT
+            else -> SummaryKind.DIRECTORY
+        }
+        val matching = (listOfNotNull(tabs.selected) + tabs.all).firstOrNull { tab ->
+            !tab.state.refreshing && tab.state.summaries.tree.scopeNode(target, kind) != null && tab.state.snapshot.files.filter { file ->
+                if (snapshot.scope.entry) file.path == target else target.isEmpty() || file.path.startsWith("$target/")
+            } == snapshot.files
+        }
+        return matching ?: tabs.addFrozen(snapshot.scope.absolutePath.substringAfterLast('/'), create = { focus, toChat ->
+            CodeReviewTab(project, setOf(target), { emptyList() },
+                { path, line -> openFile(path, line, snapshot) }, complete = complete, focus = focus, toChat = toChat)
+        }) { it.update(snapshot) }
     }
 
     private fun selectedFile(): CodeFile? = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? CodeFile
@@ -668,8 +711,8 @@ internal class CodeReviewPanel(
         skippedToggle.icon = if (skippedScroll.isVisible) AllIcons.General.ArrowDown else AllIcons.General.ArrowRight
     }
 
-    private fun openFile(path: String, line: Int?) {
-        val known = snapshot?.byPath?.get(path)
+    private fun openFile(path: String, line: Int?, source: CodeSnapshot? = snapshot) {
+        val known = source?.byPath?.get(path)
         val file = findSourceFile(project, path, known?.absolutePath) ?: return
         val descriptor = if (line != null && line > 0) OpenFileDescriptor(project, file, line - 1, 0) else OpenFileDescriptor(project, file)
         descriptor.navigate(true)

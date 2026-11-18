@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import dev.insight.context.ContextSummaryActions
 import dev.insight.review.PatchSource
 import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ReviewSource
@@ -41,6 +42,7 @@ internal data class SummaryCanvasActions(
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */
     val chatNode: ((SummaryNode, ReviewSummaries) -> Unit)? = null,
     val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
+    val contextSummaryActions: ContextSummaryActions? = null,
 )
 
 /** Topic classification and summary updates supplied by the review hosting the canvas. */

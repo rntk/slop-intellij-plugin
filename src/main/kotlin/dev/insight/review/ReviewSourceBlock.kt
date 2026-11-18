@@ -1,6 +1,7 @@
 package dev.insight.review
 
 import dev.insight.agent.SourceSide
+import dev.insight.diff.ReviewFile
 
 /** One-based inclusive coordinates in an immutable side of the review snapshot. */
 data class ReviewSourceRange(val path: String, val startLine: Int, val endLine: Int, val side: SourceSide = SourceSide.AFTER)
@@ -11,6 +12,7 @@ data class ReviewSourceBlock(
     val fullText: String? = null,
     val absolutePath: String? = null,
     val sourcePath: String = range.path,
+    val reviewFile: ReviewFile? = null,
 ) {
     internal val key get() = ReviewNoteKey(listOf(range.path), null, range)
 }

@@ -25,6 +25,7 @@ internal fun scopeDetail(context: CodeContext, lineCount: (Int) -> String, fileC
         range != null && range.first == range.last -> "${range.first}"
         range != null -> "${range.first}-${range.last}"
         context.kind == ContextScopeKind.CHANGE -> fileCount(context.files.size)
+        context.kind == ContextScopeKind.DIRECTORY -> if (context.files.isEmpty()) "" else fileCount(context.files.size)
         else -> lineCount(textLineCount(context.text))
     }
 }

@@ -6,6 +6,7 @@ import com.intellij.ui.awt.RelativePoint
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextData
 import dev.insight.context.ContextKeys
+import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.showContextPicker
@@ -39,6 +40,7 @@ internal class CodeWallView(
     project: Project? = null,
     /** Destinations belonging to the tab that owns this wall. */
     private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
+    private val summaryActions: ContextSummaryActions? = null,
 ) : Disposable {
     private var files: List<CodeFile> = emptyList()
     private var shown: WallContent? = null
@@ -51,6 +53,7 @@ internal class CodeWallView(
     private fun showContext(project: Project, block: WallBlock, line: WallLine?, point: RelativePoint) {
         val file = files.firstOrNull { it.path == block.path } ?: return
         val data = ContextData().put(ContextKeys.REVIEW_DESTINATIONS, reviewDestinations())
+        summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
         showContextPicker(project, capturedSourcePick(project, ContextOrigin.CODE_WALL, file.path, file.absolutePath, file.text, line?.new, data),
             point.component, point)
     }

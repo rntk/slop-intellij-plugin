@@ -9,11 +9,13 @@ import dev.insight.review.ReviewVocabulary
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
+import java.awt.Point
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 
 class RadarViewTest : BasePlatformTestCase() {
     private val diffs = listOf("src/a.kt", "src/b.kt", "lib/c.kt", "docs/readme.md").map {
@@ -31,7 +33,7 @@ class RadarViewTest : BasePlatformTestCase() {
                     .assign("docs/readme.md", "Docs>Guide"), summaries, canRun = true))
                     else CanvasState(emptyList(), charts = ChartsCard(summaries.tree))
                 val opened = mutableListOf<String>()
-                val canvas = NoteCanvas({ opened += it }, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
+                val canvas = NoteCanvas({ opened += it }, {}, project = project, vocabulary = vocabulary).apply { setSize(1600, 900) }
                 fun radar() = descendants(canvas).filterIsInstance<RadarChartPanel>().single()
                 try {
                     canvas.showNotes(state)
@@ -39,6 +41,11 @@ class RadarViewTest : BasePlatformTestCase() {
                     if (topics) selectTopicsMode(descendants(canvas), "Radar")
                     val chart = radar().chart
                     assertEquals(3, chart.axes.size)
+                    val initialPanel = radar().apply { setSize(800, 700) }
+                    if (!topics) {
+                        assertNull(chart.axes.first().path)
+                        assertEquals("Context…", (initialPanel.contextMenuAt(Point(400, 120))?.getComponent(0) as? JMenuItem)?.text)
+                    }
                     val status = descendants(canvas).filterIsInstance<JLabel>().single { it.name?.endsWith("radar-status") == true }
                     assertTrue(status.text, status.text.contains(if (vocabulary == ReviewVocabulary.DIFF) "+8 −4" else "12 lines"))
                     val levels = descendants(canvas).filterIsInstance<JComboBox<*>>().single {
@@ -54,6 +61,7 @@ class RadarViewTest : BasePlatformTestCase() {
                     // The first spoke points up from the center.
                     val top = MouseEvent(panel, MouseEvent.MOUSE_CLICKED, 0, 0, 400, 120, 1, false, MouseEvent.BUTTON1)
                     assertNotNull(panel.getToolTipText(top))
+                    if (!topics) assertEquals("Context…", (panel.contextMenuAt(top.point)?.getComponent(0) as? JMenuItem)?.text)
                     panel.mouseListeners.forEach { it.mouseClicked(top) }
                     assertEquals(listOf(panel.chart.axes.first().path), opened)
                 } finally { canvas.dispose() }

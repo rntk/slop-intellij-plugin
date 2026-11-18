@@ -12,6 +12,8 @@ import com.intellij.util.ui.JBUI
 import dev.insight.diff.DiffFileEditor
 import dev.insight.diff.ReviewFile
 import dev.insight.review.ReviewSourceBlock
+import dev.insight.agent.SourceSide
+import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.SummaryKind
@@ -102,6 +104,7 @@ internal class SummaryTextDialog(
     /** The summary alone for an entry without a single file, such as a folder; otherwise the summary above its source or diff. */
     public override fun createCenterPanel(): JComponent {
         val viewer = sourceViewer(node, project) ?: return summaryScroll
+        ReviewCodeNavigation.inheritContext(viewer, parent)
         (viewer as? Disposable)?.let { Disposer.register(disposable, it) }
         // A diff viewer reports a large minimum size; without a cap it would squeeze the summary out of the splitter.
         val source = object : JPanel(BorderLayout()) {
@@ -145,6 +148,6 @@ internal fun sourceViewer(node: SummaryNode, project: Project?): JComponent? {
     val first = (node.lines?.first ?: 1).coerceIn(1, maxOf(1, lines.size))
     val last = (node.lines?.last ?: lines.size).coerceIn(first, maxOf(first, lines.size))
     val part = lines.subList(first - 1, minOf(last, lines.size)).joinToString("\n")
-    return DiffSourceEditor(ReviewSourceBlock(ReviewSourceRange(file.path, first, last), part,
+    return DiffSourceEditor(ReviewSourceBlock(ReviewSourceRange(file.path, first, last, SourceSide.CURRENT), part,
         fullText = text, absolutePath = file.absolutePath), project).apply { resizeFor(JBUI.scale(800), 1.0) }
 }

@@ -40,6 +40,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Insight Canvas Session" displayType="BALLOON" isLogByDefault="true"/>
         <notificationGroup id="Insight Board" displayType="BALLOON" isLogByDefault="true"/>
+        <notificationGroup id="Insight Review Summaries" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
         <toolWindow id="Application Graph" anchor="right" icon="/icons/insight.svg"
@@ -100,6 +101,9 @@
         <contextAction implementation="dev.insight.context.actions.AddToFlowChartContextAction"/>
         <contextAction implementation="dev.insight.context.actions.OpenSideBySideContextAction"/>
         <contextAction implementation="dev.insight.context.actions.ShowInSummaryTreeContextAction"/>
+        <contextAction implementation="dev.insight.context.actions.SummarizeFileContextAction"/>
+        <contextAction implementation="dev.insight.context.actions.SummarizeFileDiffContextAction"/>
+        <contextAction implementation="dev.insight.context.actions.SummarizeDirectoryContextAction"/>
         <contextAction implementation="dev.insight.context.actions.AskInChatAction"/>
         <contextAction implementation="dev.insight.context.actions.CopyAsMarkdownAction"/>
     </extensions>

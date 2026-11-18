@@ -66,7 +66,8 @@ internal class ReviewContextSummaryLauncher(
             val result = try {
                 // Capture the review's evidence on the EDT, before starting background work.
                 val summarizer = create()
-                Result.success(withBackgroundProgress(project, if (request.regenerate) "Resummarizing" else "Filling summaries", cancellable = true) {
+                val title = request.progressTitle ?: if (request.regenerate) "Resummarizing" else "Filling summaries"
+                Result.success(withBackgroundProgress(project, title, cancellable = true) {
                     withContext(Dispatchers.IO) {
                         withCountProgress(if (request.regenerate) "Resummarizing summaries…" else "Filling missing summaries…", "summaries") { onProgress ->
                             var current = start

@@ -2,6 +2,8 @@ package dev.insight.context
 
 import dev.insight.agent.SourceSide
 import dev.insight.diff.ReviewFile
+import dev.insight.review.PatchSource
+import dev.insight.review.ReviewSource
 
 /** Payload and preview cap of one context; longer text is cut and marked. */
 internal const val MAX_CONTEXT_CHARS = 40_000
@@ -121,6 +123,24 @@ private fun changeScope(files: List<ReviewFile>, side: SourceSide): CodeContext 
     }
     return CodeContext(ContextScopeKind.CHANGE, "Change (${files.size} files)", null, null, null, side, capContext(text), true,
         files = files.map { it.path })
+}
+
+/** A physical directory in a review, even when it contains only one file in scope. */
+internal fun directoryScope(path: String, files: List<ReviewSource>): CodeContext =
+    CodeContext(ContextScopeKind.DIRECTORY, "Directory ${path.ifEmpty { "." }}", path, null, null,
+        SourceSide.CURRENT, reviewFilesPreview(files), files.all { it is PatchSource }, files = files.map { it.path })
+
+internal fun reviewFilesPreview(files: List<ReviewSource>): String = buildString {
+    for (file in files) {
+        val text = (file as? PatchSource)?.patch ?: file.text.orEmpty()
+        append("--- ").append(file.path).append(" ---\n")
+        if (length + text.length + 2 > MAX_CONTEXT_CHARS) {
+            append(text, 0, (MAX_CONTEXT_CHARS - length).coerceIn(0, text.length))
+            append("\n… (preview truncated)\n")
+            break
+        }
+        append(text).append("\n\n")
+    }
 }
 
 /**

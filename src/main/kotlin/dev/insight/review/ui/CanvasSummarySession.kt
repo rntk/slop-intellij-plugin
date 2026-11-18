@@ -15,6 +15,7 @@ internal class CanvasSummarySession(
     private val launcher: ContextSummaryLauncher?,
     private val currentTree: () -> ReviewSummaryTree?,
     private val changed: (ContextSummaryVersion?) -> Unit,
+    private val topicsFinished: () -> Unit = {},
 ) {
     private val mutableVersions = mutableListOf<ContextSummaryVersion>()
     val versions: List<ContextSummaryVersion> get() = mutableVersions
@@ -22,6 +23,11 @@ internal class CanvasSummarySession(
     private var disposed = false
     private class TopicRun(var latest: ReviewSummaries, var job: Job? = null)
     private var topicRun: TopicRun? = null
+        set(value) {
+            val finished = field != null && value == null
+            field = value
+            if (finished && !disposed) topicsFinished()
+        }
     var topicStatus: String? = null
         private set
     /** The card whose targeted run owns [topicStatus]; null for a run started without one. */

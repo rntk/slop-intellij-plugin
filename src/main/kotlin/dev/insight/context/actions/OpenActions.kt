@@ -48,7 +48,7 @@ internal class OpenInIdeDiffAction : ContextAction {
             val files = request.data[REVIEW_CONTEXT_FILES] ?: listOf(file)
             ReviewDiffSession(files, { selected, title ->
                 open(request.context.copy(kind = ContextScopeKind.CHANGE, label = title, path = null, files = selected.map { it.path }))
-            }, request.data[ContextKeys.REVIEW_DESTINATIONS].orEmpty())
+            }, request.data[ContextKeys.REVIEW_DESTINATIONS].orEmpty(), request.data[ContextKeys.SUMMARY_GENERATION])
         }
         // Without both sides the diff shows the patch itself, whose lines are not the file's.
         val trace = diffLineTrace(file.path, request.context).takeIf { file.before != null && file.after != null }

@@ -4,6 +4,8 @@ Summaries provide a hierarchical guide to a review scope—organized by folders 
 
 Readers can regenerate entries, track reviewed status across the hierarchy, and browse cited branches in a navigable tree alongside source or diff viewers.
 
+Choose **Summarize** on a missing file or folder in its context menu or on its summary card. A folder run fills the child summaries it needs and reuses any that already exist. The results are saved with the review’s original summaries. The **Summarize** control at the top still fills the whole review.
+
 Entry points for further exploration:
 
 - [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — summary structure and citations

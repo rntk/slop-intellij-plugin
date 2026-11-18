@@ -11,6 +11,8 @@ import dev.insight.board.BoardEntry
 import dev.insight.board.BoardModel
 import dev.insight.board.BoardOrigin
 import dev.insight.board.BoardSources
+import dev.insight.context.CodeContext
+import dev.insight.context.ContextData
 import dev.insight.board.BoardStore
 import dev.insight.board.boardEntryLabel
 import dev.insight.board.boardOriginKey
@@ -62,37 +64,41 @@ internal class BoardLauncher(private val project: Project, private val scope: Co
      * boards, or without an anchor on screen, a new board opens directly. [sources] builds the board's sources; it is
      * called off the EDT.
      */
-    fun show(anchor: JComponent?, origin: BoardOrigin, sources: suspend () -> BoardSources) {
+    fun show(anchor: JComponent?, origin: BoardOrigin, pickerContext: (CodeContext) -> ContextData,
+        sources: suspend () -> BoardSources) {
         scope.launch {
             val key = boardOriginKey(origin)
             val entries = withContext(Dispatchers.IO) { store?.list(key).orEmpty() }
             remember(key, entries.size)
             if (entries.isEmpty() || anchor == null || !anchor.isShowing) {
-                open(origin, null, sources)
+                open(origin, null, pickerContext, sources)
                 return@launch
             }
-            menu(entries, origin, sources).show(anchor, 0, anchor.height)
+            menu(entries, origin, pickerContext, sources).show(anchor, 0, anchor.height)
         }
     }
 
-    private fun menu(entries: List<BoardEntry>, origin: BoardOrigin, sources: suspend () -> BoardSources) = JPopupMenu().apply {
+    private fun menu(entries: List<BoardEntry>, origin: BoardOrigin, pickerContext: (CodeContext) -> ContextData,
+        sources: suspend () -> BoardSources) = JPopupMenu().apply {
         add(JMenuItem("New board").apply {
             toolTipText = "Start an empty board and ask its chat to explain"
-            addActionListener { open(origin, null, sources) }
+            addActionListener { open(origin, null, pickerContext, sources) }
         })
         addSeparator()
         entries.take(MAX_LISTED).forEach { entry ->
             add(JMenuItem(boardEntryLabel(entry)).apply {
                 toolTipText = "Reopen this board with its chat"
-                addActionListener { open(origin, entry.id, sources) }
+                addActionListener { open(origin, entry.id, pickerContext, sources) }
             })
         }
     }
 
     /** Opens the saved board [id], or a new board of [origin] when null; a board already open is only brought forward. */
-    private fun open(origin: BoardOrigin, id: String?, sources: suspend () -> BoardSources) {
+    private fun open(origin: BoardOrigin, id: String?, pickerContext: (CodeContext) -> ContextData,
+        sources: suspend () -> BoardSources) {
         val manager = FileEditorManager.getInstance(project)
         if (id != null) manager.openFiles.filterIsInstance<BoardFile>().firstOrNull { it.model.board.id == id }?.let {
+            it.pickerContext = pickerContext
             manager.openFile(it, true)
             return
         }
@@ -110,7 +116,7 @@ internal class BoardLauncher(private val project: Project, private val scope: Co
                 }
                 val board = saved?.board ?: Board.new("Explainer: ${origin.title}".take(MAX_TITLE), origin)
                 manager.openFile(BoardFile(project, BoardModel(board), built, board.origin ?: origin, saved?.chat.orEmpty(), store,
-                    saved != null), true)
+                    saved != null).also { it.pickerContext = pickerContext }, true)
             }.onFailure { notify("Could not open the board: ${describeFailure(it)}") }
         }
     }

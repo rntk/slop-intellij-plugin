@@ -62,6 +62,30 @@ class SummaryLinkTreeTest {
         assertTrue(result.children.all { it.file })
     }
 
+    @Test fun unsummarizedChunkedFileKeepsItsChunkProse() {
+        val big = files.first()
+        val chunked = buildSummaryTree(listOf(big), chunks = { listOf(SourceChunk(0, 1..10, "h0"), SourceChunk(1, 11..20, "h1")) })
+        val file = chunked.nodes.single { it.kind == SummaryKind.FILE }
+        val first = chunked[file.children[0]]
+        val result = summaryLinkTree(ReviewSummaries(chunked, mapOf(first.id to Summary(listOf(
+            SummarySegment("Parses input", listOf(SummarySource.Rows(1, 1))))))))
+        val entry = generateSequence(result) { it.children.singleOrNull() }.first { it.owner == file }
+        assertEquals(big.path, entry.text)
+        val chunk = entry.children.single()
+        assertEquals("Parses input", chunk.text)
+        assertTrue(chunk.file && chunk.children.isEmpty())
+    }
+
+    @Test fun missingDirectoriesRemainEntriesWithTheirFiles() {
+        val nested = buildSummaryTree(listOf(files.first().copy(path = "src/a.kt"), files.last()))
+        val result = summaryLinkTree(ReviewSummaries(nested))
+        val folder = result.children.single { it.owner.kind == SummaryKind.DIRECTORY }
+        assertEquals("src/", folder.text)
+        assertEquals("src", folder.owner.path)
+        assertEquals("src/a.kt", folder.children.single().owner.path)
+        assertTrue(folder.children.single().file)
+    }
+
     @Test fun fullSummaryListsShownAncestorsAndMarksOnlyTheRoutesParts() {
         val summaries = summaries(Summary(listOf(
             SummarySegment("One theme", listOf(SummarySource.Claim(0, 0))),

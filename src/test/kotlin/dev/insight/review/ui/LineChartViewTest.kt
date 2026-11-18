@@ -4,6 +4,9 @@ import com.intellij.openapi.Disposable
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import dev.insight.codereview.CodeFile
+import dev.insight.context.ContextData
+import dev.insight.context.ContextScopeKind
+import dev.insight.context.defaultScopeIndex
 import dev.insight.diff.DiffFileEditor
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.RadarSeries
@@ -18,6 +21,20 @@ import javax.swing.JMenuItem
 import javax.swing.JToggleButton
 
 class LineChartViewTest : BasePlatformTestCase() {
+    fun testDirectoryPickerKeepsTheDirectoryScopeWhenOnlyOneFileIsInReview() {
+        val path = "src/deep/file.kt"
+        val files = listOf(CodeFile(path, "/repo/$path", "val captured = 1"), CodeFile("other.kt", "/repo/other.kt", "outside"))
+        val node = buildSummaryTree(files).nodes.single { it.path == "src/deep" }
+        val scopes = summaryPickerScopes(project, node, files.filter { it.path in node.files }, ContextData())
+
+        assertEquals(listOf(ContextScopeKind.DIRECTORY, ContextScopeKind.FILE), scopes.map { it.kind })
+        val directory = scopes[defaultScopeIndex(scopes)]
+        assertEquals("src/deep", directory.path)
+        assertEquals(listOf(path), directory.files)
+        assertTrue(directory.text.contains("val captured = 1"))
+        assertFalse(directory.text.contains("outside"))
+    }
+
     fun testCodeAndDiffRowsCountsAndBreadcrumbsOfferContextPicker() {
         for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
             val files = listOf("src/a.kt", "src/nested/b.kt", "readme.md").map { path ->

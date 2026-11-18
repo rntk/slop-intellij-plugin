@@ -13,6 +13,7 @@ import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
+import dev.insight.agent.SourceSide
 import dev.insight.ui.zoomed
 import dev.insight.ui.zoomScaled
 import java.awt.event.*
@@ -514,7 +515,7 @@ internal class ChangeSummaryTreePanel(
                         val content = if (file is ReviewFile) DiffFileEditor(file, project) else {
                             val text = file.text.orEmpty()
                             DiffSourceEditor(ReviewSourceBlock(
-                                ReviewSourceRange(file.path, 1, maxOf(1, text.lines().size)),
+                                ReviewSourceRange(file.path, 1, maxOf(1, text.lines().size), SourceSide.CURRENT),
                                 text, fullText = text, absolutePath = file.absolutePath,
                             ), project)
                         }

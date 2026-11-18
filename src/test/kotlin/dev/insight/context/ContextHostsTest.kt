@@ -1,7 +1,11 @@
 package dev.insight.context
 
+import com.intellij.diff.DiffContentFactory
+import com.intellij.diff.requests.SimpleDiffRequest
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.agent.SourceSide
+import dev.insight.context.actions.ContextSummaryGeneration
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.wallLineSide
 import dev.insight.review.wall.WallLine
@@ -48,6 +52,56 @@ class ContextHostsTest : BasePlatformTestCase() {
         assertEquals(ContextOrigin.CODE_WALL, pick.origin)
         val header = capturedSourcePick(project, ContextOrigin.CODE_WALL, "src/A.java", null, after, null)
         assertEquals(listOf(ContextScopeKind.FILE), header.candidates.map { it.kind })
+    }
+
+    fun testFileSummaryUsesFullCapturedSourceBeyondPreview() {
+        val text = "val value = 1\n".repeat(MAX_CONTEXT_CHARS / 14 + 1) + "// last source line\n"
+        val pick = capturedSourcePick(project, ContextOrigin.EDITOR, "Source.kt", null, text, null)
+        val candidate = pick.candidates.single()
+        assertTrue(candidate.text.contains("truncated"))
+        assertEquals(text, pick.data[SUMMARY_SOURCE_TEXT])
+        assertTrue(ContextSummaryGeneration.canGenerate(ContextRequest(project, candidate, pick.candidates, pick.origin, pick.data, null)))
+    }
+
+    fun testStandaloneDiffSummaryUsesBothDisplayedSides() {
+        myFixture.configureByText("A.java", after)
+        val editor = myFixture.editor
+        val factory = DiffContentFactory.getInstance()
+        val comparison = SimpleDiffRequest("A.java", factory.create(project, before), factory.create(project, editor.document),
+            "Base commit", "Other commit")
+        val pick = standaloneDiffPick(project, TestActionEvent.createTestEvent(), editor, comparison) { null }!!
+        val evidence = pick.data[EDITOR_DIFF_SUMMARY]!!
+        val captured = evidence.reviewFile()
+        assertEquals(before, captured.before)
+        assertEquals(after, captured.after)
+        assertEquals("Base commit", captured.beforeLabel)
+        assertEquals("Other commit", captured.afterLabel)
+        assertTrue(captured.patch.contains("-        int x = 1;"))
+        assertTrue(captured.patch.contains("+        int x = 2;"))
+        val scope = CodeContext(ContextScopeKind.FILE, "File", file.path, file.absolutePath, null, SourceSide.BEFORE, before)
+        val data = ContextData().put(SUMMARY_SOURCE_TEXT, before)
+        val request = ContextRequest(project, scope, listOf(scope), ContextOrigin.IDE_DIFF, data, null)
+        assertFalse(ContextSummaryGeneration.canGenerate(request))
+        data.put(EDITOR_DIFF_SUMMARY, evidence)
+        assertTrue(ContextSummaryGeneration.canGenerate(request))
+    }
+
+    fun testRenamedDiffSummaryAcceptsPreviousPath() {
+        val renamed = file.copy(previousPath = "src/Old.java")
+        val pick = reviewDiffPick(project, ContextOrigin.IDE_DIFF, renamed, 3, SourceSide.BEFORE, null)
+        val oldScope = pick.candidates.first().copy(path = renamed.previousPath)
+        assertTrue(ContextSummaryGeneration.canGenerate(ContextRequest(project, oldScope, listOf(oldScope), pick.origin, pick.data, null)))
+    }
+
+    fun testProjectDirectorySummaryRequiresDirectoryEvidence() {
+        val source = myFixture.addFileToProject("src/A.kt", "val a = 1").virtualFile
+        val scope = CodeContext(ContextScopeKind.DIRECTORY, "Directory src", "src", source.parent.path, null,
+            SourceSide.CURRENT, "A.kt", files = emptyList())
+        val data = ContextData().put(ContextKeys.VIRTUAL_FILE, source)
+        val request = ContextRequest(project, scope, listOf(scope), ContextOrigin.OTHER, data, null)
+        assertFalse(ContextSummaryGeneration.canGenerate(request))
+        data.put(ContextKeys.VIRTUAL_FILE, source.parent)
+        assertTrue(ContextSummaryGeneration.canGenerate(request))
     }
 
     fun testWallRowsMapToASideAndLine() {

@@ -12,6 +12,7 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
+import dev.insight.context.ContextSummaryActions
 import dev.insight.codereview.map.CodeMapActions
 import dev.insight.codereview.map.CodeMapCard
 import dev.insight.codereview.map.CodeMapView
@@ -66,6 +67,7 @@ internal class CodeCanvasCards(
     project: Project? = null,
     reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
     codeMapActions: CodeMapActions = CodeMapActions(),
+    contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
     var words: CodeWordsPage? = null
     /** The code map card while it is on the canvas. */
@@ -74,7 +76,7 @@ internal class CodeCanvasCards(
     private var refresh: (CanvasTabKey) -> Unit = {}
     var wall: CodeWallContent? = null
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations) }
+    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations, contextSummaryActions) }
     private val wallPage by wallView
     /** Placing the words is slow, so the cloud is kept across rebuilds while its counts are the same. */
     private var cloud: CodeWordCloud? = null

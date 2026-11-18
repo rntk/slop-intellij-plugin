@@ -5,11 +5,13 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.treeStructure.Tree
 import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatRole
+import dev.insight.context.actions.openContextSummaries
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.review.ReviewCanvasEditorProvider
@@ -95,6 +97,43 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             assertFalse(tab.session.busy)
         } finally { Disposer.dispose(tab) }
         assertTrue(manager.openFiles.none { it is ReviewCanvasFile })
+    }
+
+    fun testStandaloneFileSummaryOpensGeneratedTextInAClosableReview() {
+        myFixture.addFileToProject("live/other.kt", "fun other() = 1\n")
+        val destination = codeFile("standalone/selected.kt", "fun selected() = 2\n")
+        val snapshot = CodeSnapshot(CodeScope(destination.path, destination.absolutePath, entry = true), listOf(destination))
+        val gate = CompletableDeferred<Unit>()
+        val model = SummaryModel()
+        val panel = CodeReviewPanel(project, complete = { request -> gate.await(); model.complete(request) })
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val tab = panel.summaryReview(snapshot)!!
+            assertSame(tab, panel.summaryReview(snapshot))
+            val tabs = withStart(panel).filterIsInstance<JBTabs>().single()
+            val info = tabs.tabs.single { it.component === tab }
+            openContextSummaries(project, tab, destination.path, SummaryKind.FILE)
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+
+            panel.setScope(myFixture.findFileInTempDir("live"))
+            PlatformTestUtil.waitWithEventsDispatching("The live scope should load", { panel.listedFiles() == listOf("live/other.kt") }, 20)
+            assertEquals(listOf(destination), tab.state.snapshot.files)
+            gate.complete(Unit)
+            val editor = manager.getEditors(tab.canvasFile).single()
+            PlatformTestUtil.waitWithEventsDispatching("The selected file's summary should appear in the editor", {
+                descendants(editor.component).filterIsInstance<JButton>().any { it.text.orEmpty().contains("file ${destination.path}") }
+            }, 10)
+            assertTrue(synchronized(model.requests) { model.requests.all { request -> model.nodes(request).all { it["location"].asString == destination.path } } })
+
+            val close = info.tabLabelActions!!.getChildren(null).single()
+            close.actionPerformed(TestActionEvent.createTestEvent(close))
+            assertTrue(tab.isDisposed)
+            assertFalse(manager.isFileOpen(tab.canvasFile))
+            assertFalse(tabs.tabs.any { it.component === tab })
+        } finally {
+            gate.cancel()
+            Disposer.dispose(panel)
+        }
     }
 
     fun `test chat points stay in the code scope and omit diff and flow tools`() {

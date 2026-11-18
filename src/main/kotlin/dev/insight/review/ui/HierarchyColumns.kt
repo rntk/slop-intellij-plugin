@@ -125,6 +125,7 @@ internal abstract class HierarchyColumnsPanel(
         toggle: JComponent?, icon: Icon? = null, placeholder: Boolean = false, mark: TraceMark? = null, badge: String? = null,
         caption: String? = null, openDiff: (() -> Unit)? = null, levelLabel: String? = null,
         explain: (() -> Unit)? = null, explainEnabled: Boolean = true, review: JComponent? = null,
+        summarize: ActionLink? = null,
         select: (() -> Unit)? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
@@ -153,6 +154,7 @@ internal abstract class HierarchyColumnsPanel(
                 add(JLabel(caption ?: if (files == 1) "1 file" else "$files files").apply { font = font(JBFont.small()); foreground = help })
                 levelLabel?.let { level -> add(JLabel(level).apply { font = font(JBFont.small()); foreground = help }) }
                 openDiff?.let { open -> add(ActionLink("View diff") { open() }.apply { font = font(JBFont.small()) }) }
+                summarize?.let(::add)
                 explain?.let { add(explainLink(it, explainEnabled, font(JBFont.small()))) }
                 review?.let(::add)
                 badge?.let { add(badge(it, inner)) }
@@ -208,6 +210,7 @@ internal abstract class HierarchyColumnsPanel(
         levelLabel: String? = null, openWholeFile: (() -> Unit)? = null,
         explain: (() -> Unit)? = null, explainEnabled: Boolean = true,
         review: JComponent? = null,
+        summarize: ActionLink? = null,
     ): JComponent = JPanel(stickyHeaders.layout()).apply {
         this.name = name
         isOpaque = true
@@ -239,6 +242,7 @@ internal abstract class HierarchyColumnsPanel(
             add(detailsLabel)
             levelLabel?.let { level -> add(JLabel(level).apply { font = font(JBFont.small()); foreground = help }) }
             openWholeFile?.let { open -> add(ActionLink("Open file") { open() }.apply { font = font(JBFont.small()) }) }
+            summarize?.let(::add)
             explain?.let { add(explainLink(it, explainEnabled, font(JBFont.small()))) }
             review?.let(::add)
             badge?.let { add(badge(it, cardWidth - scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) - 4)) }
