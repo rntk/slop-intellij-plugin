@@ -2,6 +2,8 @@ package dev.insight.context
 
 import dev.insight.agent.SourceSide
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class ContextPickerModelTest {
@@ -28,6 +30,40 @@ class ContextPickerModelTest {
             actionRows(arrangeActions(listOf(c, b, a))))
     }
 
+    @Test
+    fun blankFilterKeepsEveryActionAndSelectsNothing() {
+        val a = Stub("Open in editor", "Open")
+        val matches = filterActions(listOf(a), "  ")
+        assertEquals(actionRows(arrangeActions(listOf(a))), matches.rows)
+        assertNull(matches.best)
+    }
+
+    @Test
+    fun filterMatchesWordStartsAndCaseAndKeepsTheSections() {
+        val editor = Stub("Open in editor", "Open")
+        val diff = Stub("Open IDE diff", "Open")
+        val graph = Stub("Call graph", "Explore")
+        val path = Stub("Copy path", "Copy")
+        val matches = filterActions(listOf(editor, diff, graph, path), "op dif")
+        assertEquals(listOf(PickerRow.Header("Open"), PickerRow.Item(diff)), matches.rows)
+        assertSame(diff, matches.best)
+        assertEquals(listOf(PickerRow.Header("Explore"), PickerRow.Item(graph)), filterActions(listOf(editor, graph, path), "GRAPH").rows)
+    }
+
+    @Test
+    fun aTitleMatchBeatsAGroupMatch() {
+        val copyOpen = Stub("Copy open files", "Copy")
+        val editor = Stub("Editor", "Open")
+        val matches = filterActions(listOf(editor, copyOpen), "open")
+        assertEquals(listOf(PickerRow.Header("Open"), PickerRow.Item(editor), PickerRow.Header("Copy"), PickerRow.Item(copyOpen)), matches.rows)
+        assertSame("Only the title of the copy action names it", copyOpen, matches.best)
+    }
+
+    @Test
+    fun aFilterWithoutMatchesLeavesItsOwnNote() {
+        assertEquals(listOf(PickerRow.NoMatch), filterActions(listOf(Stub("Copy path", "Copy")), "zzz").rows)
+        assertEquals(listOf(PickerRow.Empty), filterActions(emptyList(), "zzz").rows)
+    }
     @Test
     fun detailNamesTheLinesOrTheSize() {
         val lines = { n: Int -> "$n lines" }

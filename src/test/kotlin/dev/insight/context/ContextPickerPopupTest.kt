@@ -5,6 +5,7 @@ import dev.insight.agent.SourceSide
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.ActionEvent
+import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
 import javax.swing.KeyStroke
@@ -123,6 +124,37 @@ class ContextPickerPopupTest : BasePlatformTestCase() {
         val at = picker.actions.getCellBounds(index, index).let { java.awt.Point(it.x + 5, it.y + it.height / 2) }
         picker.actions.dispatchEvent(MouseEvent(picker.actions, MouseEvent.MOUSE_CLICKED, 0L, 0, at.x, at.y, 1, false, MouseEvent.BUTTON1))
         assertSame(copy, ran.single().first)
+    }
+
+    fun testTypingFiltersActionsSelectsTheBestMatchAndEnterRunsIt() {
+        val picker = picker()
+        val typed = KeyEvent(picker.actions, KeyEvent.KEY_TYPED, 0L, 0, KeyEvent.VK_UNDEFINED, 'c')
+        val passed = mutableListOf<KeyEvent>()
+        picker.typeToFilter(typed) { passed += it }
+        assertEquals("c", picker.filter.text)
+        assertTrue(typed.isConsumed)
+        val enter = KeyEvent(picker.actions, KeyEvent.KEY_TYPED, 0L, 0, KeyEvent.VK_UNDEFINED, '\n')
+        picker.typeToFilter(enter) { passed += it }
+        assertEquals("Control characters stay with the list", listOf(enter), passed)
+        picker.filter.text = "copy it"
+        assertEquals(listOf(copy), picker.listedActions)
+        assertSame(copy, picker.selectedAction)
+        picker.selectScope(0)
+        assertEquals("The filter stays for another scope", listOf(copy), picker.listedActions)
+        press(picker.filter.textEditor, "ENTER")
+        assertSame(copy, ran.single().first)
+        assertSame(candidates[0], ran.single().second.context)
+    }
+
+    fun testAFilterWithoutMatchesShowsItsNoteAndRunsNothing() {
+        val picker = picker()
+        picker.filter.text = "zzzzqq"
+        assertEquals(listOf<PickerRow>(PickerRow.NoMatch), (0 until picker.actions.model.size).map { picker.actions.model.getElementAt(it) })
+        assertNull(picker.selectedAction)
+        press(picker.filter.textEditor, "DOWN")
+        assertFalse(picker.runSelected())
+        picker.filter.text = ""
+        assertEquals(listOf("test.explore", "test.copy"), picker.fakeIds())
     }
 
     fun testNoSelectedActionRunsNothing() {
