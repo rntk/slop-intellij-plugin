@@ -30,6 +30,7 @@ import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.KeyboardFocusManager
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
@@ -58,6 +59,14 @@ internal class ChartsViewState {
     var linesPreview: LineChartPreview? = null
     var linesTagsCloud = false
     var linesScroll: Int = 0
+    /** Unfolded directories, kept across directory changes. */
+    var linesExpanded: Set<String> = emptySet()
+    /** The current row; null picks the first. */
+    var linesCursor: String? = null
+    /** The divider between the chart and its preview, once moved or laid out. */
+    var linesDivider: Int? = null
+    /** Whether the chart had keyboard focus when it was last rebuilt. */
+    var linesFocused = false
     var linesSeries = RadarSeries.ADDED
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -152,7 +161,7 @@ internal class ChartsCanvasCard(
             { path ->
                 view.linesPath = path
                 view.linesScroll = 0
-                refresh()
+                rebuildKeepingFocus()
             },
             open,
             series,
@@ -160,8 +169,12 @@ internal class ChartsCanvasCard(
             preview = activePreview,
             togglePreview = { selection ->
                 view.linesPreview = if (view.linesPreview == selection) null else selection
-                refresh()
+                rebuildKeepingFocus()
             },
+            expanded = view.linesExpanded,
+            expansionChanged = { view.linesExpanded = it },
+            cursorPath = view.linesCursor,
+            cursorChanged = { view.linesCursor = it },
         ) else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
@@ -208,7 +221,10 @@ internal class ChartsCanvasCard(
         }
         val readingArea = if (lineChart != null) {
             val actionLabel = if (diff) "Show diff" else "Show source"
-            HierarchyPreviewPanel(bodyScroll, project, "Choose Show summary or $actionLabel on a file or directory.", detail = summary).also {
+            HierarchyPreviewPanel(bodyScroll, project, "Choose Show summary or $actionLabel on a file or directory.", detail = summary,
+                dividerLocation = view.linesDivider,
+                rememberDivider = { if (currentCard === card) view.linesDivider = it },
+            ).also {
                 if (summary == null) it.showFiles(previewFiles)
                 preview = it
             }
@@ -216,7 +232,18 @@ internal class ChartsCanvasCard(
         card.add(header, BorderLayout.NORTH)
         card.add(readingArea, BorderLayout.CENTER)
         currentCard = card
+        if (lineChart != null && view.linesFocused) {
+            view.linesFocused = false
+            SwingUtilities.invokeLater { if (currentCard === card) lineChart.requestFocusInWindow() }
+        }
         return card
+    }
+
+    /** Rebuilds the card, returning keyboard focus to the chart when it had it. */
+    private fun rebuildKeepingFocus() {
+        val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+        view.linesFocused = owner != null && currentCard?.let { SwingUtilities.isDescendingFrom(owner, it) } == true
+        refresh()
     }
 
     private fun summaryPreview(node: SummaryNode, content: ChartsCard) = JPanel(BorderLayout()).apply {

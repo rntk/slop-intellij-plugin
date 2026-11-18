@@ -28,6 +28,9 @@ internal class HierarchyPreviewPanel(
     private val remember: (List<String>) -> Unit = {},
     private val createViewer: ((ReviewSource) -> JComponent)? = null,
     detail: JComponent? = null,
+    /** A divider position to restore, and where to report the reader's later moves. */
+    dividerLocation: Int? = null,
+    rememberDivider: (Int) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
     private val blocks = JPanel(VerticalLayout(JBUI.scale(8))).apply {
         name = "hierarchy-preview-blocks"
@@ -79,6 +82,11 @@ internal class HierarchyPreviewPanel(
             left.minimumSize = Dimension(JBUI.scale(240), 0)
             right.minimumSize = Dimension(JBUI.scale(240), 0)
             preferredSize = Dimension(left.preferredSize.width + JBUI.scale(640), left.preferredSize.height)
+            // A set location also keeps the first layout from resetting the divider to the preferred sizes.
+            dividerLocation?.let { this.dividerLocation = it }
+            addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) { event ->
+                if (width > 0) (event.newValue as? Int)?.takeIf { it >= 0 }?.let(rememberDivider)
+            }
         })
     }
 

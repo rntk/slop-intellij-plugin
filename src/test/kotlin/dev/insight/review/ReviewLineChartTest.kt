@@ -21,6 +21,19 @@ class ReviewLineChartTest {
         assertEquals(listOf("", "src", "src/nested"), chart.breadcrumbs(chart.directory("src/nested")).map { it.path })
     }
 
+    @Test fun `unfolded directories list their entries beneath them, one level deeper`() {
+        val chart = ReviewLineChart(buildSummaryTree(listOf(file("src/a.kt", "a\nb\n"), file("src/nested/b.kt", "c"),
+            file("README.md", ""))))
+        assertEquals(listOf("README.md" to 0, "src" to 0), chart.rows(chart.root, emptySet()).map { it.entry.path to it.depth })
+        // A nested directory stays folded until it is unfolded too; folded ancestors hide unfolded descendants.
+        assertEquals(listOf("README.md" to 0, "src" to 0, "src/nested" to 1, "src/a.kt" to 1),
+            chart.rows(chart.root, setOf("src")).map { it.entry.path to it.depth })
+        assertEquals(listOf("README.md" to 0, "src" to 0, "src/nested" to 1, "src/nested/b.kt" to 2, "src/a.kt" to 1),
+            chart.rows(chart.root, setOf("src", "src/nested")).map { it.entry.path to it.depth })
+        assertEquals(listOf("README.md", "src"), chart.rows(chart.root, setOf("src/nested")).map { it.entry.path })
+        assertEquals(listOf(false, true), chart.rows(chart.root, setOf("src", "README.md")).take(2).map { it.expanded })
+    }
+
     @Test fun `summary groups never hide siblings and common root is absorbed`() {
         val files = (1..20).map { file("picked/src/f$it.kt", "x\n") }
         val chart = ReviewLineChart(buildSummaryTree(files, maxChildren = 2))

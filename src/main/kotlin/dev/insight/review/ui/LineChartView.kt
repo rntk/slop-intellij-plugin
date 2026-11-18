@@ -15,23 +15,37 @@ import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.dotLeader
 import java.awt.BorderLayout
+import java.awt.Component
+import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
+import java.awt.event.ActionEvent
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.KeyEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.util.Locale
+import javax.swing.AbstractAction
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JToggleButton
+import javax.swing.KeyStroke
+import javax.swing.SwingUtilities
 
 internal enum class LineChartPreviewKind { SOURCE, SUMMARY }
 
 internal data class LineChartPreview(val path: String, val kind: LineChartPreviewKind)
 
-/** A number ladder for one directory. Links retain standard keyboard navigation and accessibility. */
+/**
+ * A number ladder for one directory, with foldable subdirectories. One row is current: hovering or focusing a row
+ * moves it, and the arrow keys move it, fold and unfold folders, while Enter explores or opens the current row.
+ */
 internal class LineChartPanel(
     tree: ReviewSummaryTree,
     path: String?,
@@ -42,11 +56,27 @@ internal class LineChartPanel(
     private val contextMenu: ((String) -> JPopupMenu)? = null,
     private val preview: LineChartPreview? = null,
     private val togglePreview: (LineChartPreview) -> Unit = {},
+    expanded: Set<String> = emptySet(),
+    private val expansionChanged: (Set<String>) -> Unit = {},
+    cursorPath: String? = null,
+    private val cursorChanged: (String?) -> Unit = {},
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
     internal val chart = ReviewLineChart(tree, series)
     private val lineLabel = series.label.lowercase(Locale.US)
     private val numberColor get() = if (series == RadarSeries.SOURCE) UIUtil.getLabelForeground() else RadarChartPanel.color(series)
     val directory = chart.directory(path)
+    private var expandedPaths = expanded
+    private var rows: List<ReviewLineChart.Row> = emptyList()
+    private var rowComponents: List<JComponent> = emptyList()
+    private var current = -1
+
+    /** The path of the current row, or null when the directory is empty. */
+    val cursorPath: String? get() = rows.getOrNull(current)?.entry?.path
+
+    private val list = JPanel(VerticalLayout(JBUI.scale(2))).apply {
+        name = "charts-lines-rows"
+        isOpaque = false
+    }
 
     fun previewFiles(): List<ReviewSource> = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE }
         ?.let { chart.files(it.path) }.orEmpty()
@@ -54,6 +84,8 @@ internal class LineChartPanel(
     init {
         name = "charts-lines"
         isOpaque = false
+        isFocusable = true
+        getAccessibleContext().accessibleName = "${if (series == RadarSeries.SOURCE) "Lines of code" else series.label} chart"
         add(JPanel(VerticalLayout(JBUI.scale(6))).apply {
             isOpaque = false
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
@@ -63,7 +95,7 @@ internal class LineChartPanel(
                     if (index > 0) add(JLabel(" / ").apply { font = chartFont(font); foreground = UIUtil.getContextHelpForeground() })
                     val title = if (index == 0) rootLabel + entry.path.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() else entry.label
                     val activeCrumb = entry.path == preview?.path
-                    add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { navigate(entry.path) }).apply {
+                    add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { explore(entry.path) }).apply {
                         name = "charts-lines-crumb:${entry.path}"
                         toolTipText = entry.path.ifEmpty { rootLabel } + if (activeCrumb) " · Showing in preview" else ""
                         font = chartFont(font).let { if (activeCrumb) it.deriveFont(it.style or Font.BOLD) else it }
@@ -84,20 +116,128 @@ internal class LineChartPanel(
                 toolTipText = if (series == RadarSeries.SOURCE) "Source text lines, including blank lines and comments, in the selected scope"
                     else "${series.label} in the selected diff directory"
             })
-            add(JLabel("${if (series == RadarSeries.SOURCE) "Lines of code" else series.label} · Click a directory to explore").apply {
+            add(JLabel("${if (series == RadarSeries.SOURCE) "Lines of code" else series.label} · " +
+                "Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
                 font = chartFont(JBFont.small())
                 foreground = UIUtil.getContextHelpForeground()
             })
         }, BorderLayout.NORTH)
-        add(JPanel(VerticalLayout(JBUI.scale(2))).apply {
-            isOpaque = false
-            val children = chart.children(directory)
-            if (children.isEmpty()) add(JLabel("No files in scope").apply { font = chartFont(font) })
-            for (entry in children) add(row(entry))
-        }, BorderLayout.CENTER)
+        add(list, BorderLayout.CENTER)
+        rebuildRows(cursorPath)
+        installKeys()
+        addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent) = repaintRow(current)
+            override fun focusLost(e: FocusEvent) = repaintRow(current)
+        })
+        addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) { requestFocusInWindow() }
+        })
     }
 
-    private fun row(entry: ReviewLineChart.Entry) = JPanel(BorderLayout(JBUI.scale(10), 0)).apply {
+    /** Folds or unfolds the directory at [path], keeping the current row. */
+    fun toggleExpanded(path: String) {
+        expandedPaths = if (path in expandedPaths) expandedPaths - path else expandedPaths + path
+        rebuildRows(cursorPath?.takeUnless { it.startsWith("$path/") } ?: path)
+        expansionChanged(expandedPaths)
+    }
+
+    /** Moves the current row to [index], clamped to the visible rows. */
+    fun moveCursor(index: Int, reveal: Boolean = true) {
+        if (rows.isEmpty()) return
+        val next = index.coerceIn(0, rows.lastIndex)
+        if (next == current) return
+        val previous = current
+        current = next
+        repaintRow(previous)
+        repaintRow(next)
+        if (reveal) rowComponents[next].let { it.scrollRectToVisible(java.awt.Rectangle(0, 0, it.width, it.height)) }
+        cursorChanged(cursorPath)
+    }
+
+    private fun rebuildRows(cursor: String?) {
+        rows = chart.rows(directory, expandedPaths)
+        list.removeAll()
+        if (rows.isEmpty()) list.add(JLabel("No files in scope").apply { font = chartFont(font) })
+        rowComponents = rows.mapIndexed { index, row -> row(row, index).also(list::add) }
+        current = rows.indexOfFirst { it.entry.path == cursor }.takeIf { it >= 0 } ?: if (rows.isEmpty()) -1 else 0
+        list.revalidate()
+        list.repaint()
+    }
+
+    private fun repaintRow(index: Int) { rowComponents.getOrNull(index)?.repaint() }
+
+    private fun focusedWithin(): Boolean {
+        val owner = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return false
+        return SwingUtilities.isDescendingFrom(owner, this)
+    }
+
+    /** Explores [path], keeping the child that leads back toward the shown directory current. */
+    private fun explore(path: String) {
+        val prefix = if (path.isEmpty()) "" else "$path/"
+        val back = directory.path.takeIf { it != path && it.startsWith(prefix) }
+            ?.let { prefix + it.removePrefix(prefix).substringBefore('/') }
+        cursorChanged(back)
+        navigate(path)
+    }
+
+    private fun activate(entry: ReviewLineChart.Entry) { if (entry.directory) explore(entry.path) else open(entry.path) }
+
+    private fun installKeys() {
+        fun bind(key: Int, id: String, action: () -> Unit) {
+            val stroke = KeyStroke.getKeyStroke(key, 0)
+            getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(stroke, id)
+            actionMap.put(id, object : AbstractAction() { override fun actionPerformed(e: ActionEvent) = action() })
+        }
+        bind(KeyEvent.VK_UP, "charts-lines-up") { moveCursor(current - 1) }
+        bind(KeyEvent.VK_DOWN, "charts-lines-down") { moveCursor(current + 1) }
+        bind(KeyEvent.VK_HOME, "charts-lines-first") { moveCursor(0) }
+        bind(KeyEvent.VK_END, "charts-lines-last") { moveCursor(rows.lastIndex) }
+        bind(KeyEvent.VK_PAGE_UP, "charts-lines-page-up") { moveCursor(current - PAGE_ROWS) }
+        bind(KeyEvent.VK_PAGE_DOWN, "charts-lines-page-down") { moveCursor(current + PAGE_ROWS) }
+        bind(KeyEvent.VK_RIGHT, "charts-lines-unfold") {
+            val row = rows.getOrNull(current) ?: return@bind
+            if (row.entry.directory && !row.expanded) toggleExpanded(row.entry.path)
+            else if (row.expanded) moveCursor(current + 1)
+        }
+        bind(KeyEvent.VK_LEFT, "charts-lines-fold") {
+            val row = rows.getOrNull(current) ?: return@bind
+            when {
+                row.expanded -> toggleExpanded(row.entry.path)
+                row.depth > 0 -> moveCursor(rows.parentIndex(current) { it.depth == row.depth - 1 })
+                directory.path != chart.root.path -> explore(directory.path.substringBeforeLast('/', ""))
+            }
+        }
+        bind(KeyEvent.VK_BACK_SPACE, "charts-lines-parent") {
+            if (directory.path != chart.root.path) explore(directory.path.substringBeforeLast('/', ""))
+        }
+        // Enter and Space on the panel itself; a focused link or toggle keeps its own activation keys.
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "charts-lines-activate")
+        actionMap.put("charts-lines-activate", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent) { rows.getOrNull(current)?.let { activate(it.entry) } }
+        })
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, 0), "charts-lines-preview")
+        actionMap.put("charts-lines-preview", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent) {
+                rows.getOrNull(current)?.let { togglePreview(LineChartPreview(it.entry.path, LineChartPreviewKind.SOURCE)) }
+            }
+        })
+    }
+
+    private fun List<ReviewLineChart.Row>.parentIndex(before: Int, predicate: (ReviewLineChart.Row) -> Boolean): Int =
+        (before - 1 downTo 0).firstOrNull { predicate(this[it]) } ?: before
+
+    private fun row(row: ReviewLineChart.Row, index: Int): JComponent = object : JPanel(BorderLayout(JBUI.scale(10), 0)) {
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            // The current row spans the whole line, so the reader can follow it from the number to the toggles.
+            if (index == current && !isOpaque) {
+                g.color = if (focusedWithin()) JBUI.CurrentTheme.List.Selection.background(false)
+                    else JBUI.CurrentTheme.List.Hover.background(true)
+                g.fillRect(0, 0, width, height)
+            }
+        }
+    }.apply {
+        val entry = row.entry
         val active = preview?.path == entry.path
         name = "charts-lines-row:${entry.path}"
         isOpaque = active
@@ -116,7 +256,7 @@ internal class LineChartPanel(
                 inheritsPopupMenu = true
                 name = "charts-lines-count:${entry.path}"
                 foreground = numberColor
-                preferredSize = Dimension(JBUI.scale(240), JBUI.scale(24))
+                preferredSize = Dimension(JBUI.scale(288), JBUI.scale(29))
                 toolTipText = tooltip
             }
             override fun paintComponent(g: Graphics) {
@@ -137,15 +277,20 @@ internal class LineChartPanel(
                 g.drawString(text, x + leader * cell, y)
             }
         }, BorderLayout.WEST)
-        add(ActionLink(entry.label + if (entry.directory) "/  ›" else "") {
-            if (entry.directory) navigate(entry.path) else open(entry.path)
-        }.apply {
-            font = chartFont(font).let { if (active) it.deriveFont(it.style or Font.BOLD) else it }
+        add(JPanel(BorderLayout(JBUI.scale(2), 0)).apply {
+            isOpaque = false
             inheritsPopupMenu = true
-            name = "charts-lines-entry:${entry.path}"
-            icon = if (entry.directory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
-            toolTipText = tooltip
-            accessibleContext.accessibleName = "${entry.label}, ${number(entry.lines)} $lineLabel, ${if (entry.directory) "directory" else "file"}"
+            // Nested rows indent their labels only, so every number stays in one column.
+            border = JBUI.Borders.emptyLeft(row.depth * INDENT)
+            add(foldToggle(row), BorderLayout.WEST)
+            add(ActionLink(entry.label + if (entry.directory) "/  ›" else "") { activate(entry) }.apply {
+                font = chartFont(font).let { if (active) it.deriveFont(it.style or Font.BOLD) else it }
+                inheritsPopupMenu = true
+                name = "charts-lines-entry:${entry.path}"
+                icon = if (entry.directory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
+                toolTipText = tooltip
+                accessibleContext.accessibleName = "${entry.label}, ${number(entry.lines)} $lineLabel, ${if (entry.directory) "directory" else "file"}"
+            }, BorderLayout.CENTER)
         }, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
             isOpaque = false
@@ -153,6 +298,52 @@ internal class LineChartPanel(
             add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY))
             add(previewToggle(entry.path, LineChartPreviewKind.SOURCE))
         }, BorderLayout.EAST)
+        trackCursor(this, index)
+    }
+
+    /** A chevron that folds or unfolds a directory; files keep an empty cell of the same width. */
+    private fun foldToggle(row: ReviewLineChart.Row): JComponent {
+        val size = Dimension(JBUI.scale(18), JBUI.scale(18))
+        if (!row.entry.directory) return JPanel().apply { isOpaque = false; preferredSize = size; inheritsPopupMenu = true }
+        val label = if (row.expanded) "Fold ${row.entry.path}" else "Unfold ${row.entry.path}"
+        return JLabel(if (row.expanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight).apply {
+            name = "charts-lines-fold:${row.entry.path}"
+            preferredSize = size
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            toolTipText = label
+            accessibleContext.accessibleName = label
+            inheritsPopupMenu = true
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    toggleExpanded(row.entry.path)
+                    requestChartFocus()
+                }
+            })
+        }
+    }
+
+    private fun requestChartFocus() { if (!focusedWithin()) requestFocusInWindow() }
+
+    /** Hovering, pressing, or focusing any part of a row makes it the current row. */
+    private fun trackCursor(component: Component, index: Int) {
+        val mouse = object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) = moveCursor(index, reveal = false)
+            override fun mouseMoved(e: MouseEvent) = moveCursor(index, reveal = false)
+            override fun mousePressed(e: MouseEvent) {
+                moveCursor(index, reveal = false)
+                if (e.component is JPanel) requestChartFocus()
+            }
+        }
+        fun attach(child: Component) {
+            child.addMouseListener(mouse)
+            child.addMouseMotionListener(mouse)
+            if (child.isFocusable && child !is JPanel) child.addFocusListener(object : FocusAdapter() {
+                override fun focusGained(e: FocusEvent) { moveCursor(index); repaintRow(current) }
+            })
+            if (child is Container) child.components.forEach(::attach)
+        }
+        attach(component)
     }
 
     private fun previewToggle(path: String, mode: LineChartPreviewKind): JToggleButton {
@@ -187,9 +378,16 @@ internal class LineChartPanel(
 
     private fun number(value: Long) = String.format(Locale.US, "%,d", value)
 
-    private fun chartFont(font: Font): Font = font.deriveFont(font.size2D * 1.1f)
+    private fun chartFont(font: Font): Font = font.deriveFont(font.size2D * FONT_SCALE)
 
     /** Keep the number column 20% larger than the chart's labels. */
     private fun numberFont(): Font = EditorColorsManager.getInstance().globalScheme.getFont(EditorFontType.PLAIN)
         .deriveFont(chartFont(JBFont.label()).size2D * 1.2f)
+
+    private companion object {
+        /** The chart's labels are 32% larger than the IDE's (a 10% base, then 20% more). */
+        const val FONT_SCALE = 1.32f
+        const val PAGE_ROWS = 10
+        val INDENT get() = JBUI.scale(20)
+    }
 }

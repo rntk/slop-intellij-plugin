@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
@@ -264,6 +265,67 @@ class LineChartViewTest : BasePlatformTestCase() {
                 assertTrue(tagsCloud().isSelected)
             } finally { canvas.dispose() }
         }
+    }
+
+    fun testFoldingCursorKeyboardAndDividerSurviveRebuilds() {
+        val files = listOf("src/a.kt", "src/nested/b.kt", "readme.md").map { CodeFile(it, "/repo/$it", if (it == "src/nested/b.kt") "one" else "one\ntwo\n") }
+        val opened = mutableListOf<String>()
+        val canvas = NoteCanvas({ opened += it }, {}, project = project, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
+        fun all() = descendants(canvas)
+        fun panel() = all().filterIsInstance<LineChartPanel>().single()
+        fun rows() = all().mapNotNull { it.name?.takeIf { n -> n.startsWith("charts-lines-row:") }?.removePrefix("charts-lines-row:") }
+        fun key(id: String) = panel().let { it.actionMap.get(id).actionPerformed(java.awt.event.ActionEvent(it, 0, id)) }
+        fun fold(path: String) = all().filterIsInstance<JLabel>().single { it.name == "charts-lines-fold:$path" }
+        fun split() = all().filterIsInstance<javax.swing.JSplitPane>().single { it.name == "hierarchy-preview-split" }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            assertEquals(listOf("readme.md", "src"), rows())
+            assertEquals("readme.md", panel().cursorPath)
+            assertTrue(all().none { it.name == "charts-lines-fold:readme.md" })
+
+            // Clicking the chevron unfolds in place; the number column keeps its width for nested rows.
+            fold("src").mouseListeners.forEach { it.mouseClicked(java.awt.event.MouseEvent(fold("src"), 0, 0, 0, 1, 1, 1, false,
+                java.awt.event.MouseEvent.BUTTON1)) }
+            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+            assertEquals(setOf("src"), canvas.chartsView.linesExpanded)
+            assertSame(AllIcons.General.ChevronDown, fold("src").icon)
+
+            key("charts-lines-down")
+            assertEquals("src", panel().cursorPath)
+            key("charts-lines-unfold")
+            assertEquals("src/nested", panel().cursorPath)
+            key("charts-lines-unfold")
+            assertEquals(listOf("readme.md", "src", "src/nested", "src/nested/b.kt", "src/a.kt"), rows())
+            key("charts-lines-down")
+            assertEquals("src/nested/b.kt", panel().cursorPath)
+            key("charts-lines-activate")
+            assertEquals(listOf("src/nested/b.kt"), opened)
+            key("charts-lines-fold")
+            assertEquals("src/nested", panel().cursorPath)
+            key("charts-lines-fold")
+            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+
+            // A moved divider, the cursor, and the folds survive a rebuild such as toggling a preview.
+            split().apply { setSize(1400, 600); dividerLocation = 333 }
+            assertEquals(333, canvas.chartsView.linesDivider)
+            key("charts-lines-preview")
+            assertEquals(LineChartPreview("src/nested", LineChartPreviewKind.SOURCE), canvas.chartsView.linesPreview)
+            assertEquals(333, split().dividerLocation)
+            assertEquals("src/nested", panel().cursorPath)
+            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+
+            // Enter explores a directory; going back up keeps the directory just left current.
+            key("charts-lines-activate")
+            assertEquals("src/nested", panel().directory.path)
+            assertEquals(listOf("src/nested/b.kt"), rows())
+            key("charts-lines-parent")
+            assertEquals("src", panel().directory.path)
+            assertEquals("src/nested", panel().cursorPath)
+            key("charts-lines-fold")
+            assertEquals("", panel().directory.path)
+            assertEquals("src", panel().cursorPath)
+            assertEquals(333, split().dividerLocation)
+        } finally { canvas.dispose() }
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +

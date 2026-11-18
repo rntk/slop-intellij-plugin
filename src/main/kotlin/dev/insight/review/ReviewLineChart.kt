@@ -61,6 +61,23 @@ internal class ReviewLineChart(tree: ReviewSummaryTree, series: RadarSeries = Ra
         it.path != directory.path && it.path.substringBeforeLast('/', "") == directory.path
     }.sortedWith(compareBy<Entry> { it.lines }.thenBy { it.label }.thenBy { it.path })
 
+    /** One visible line: an entry and how deep it sits below the shown directory. */
+    data class Row(val entry: Entry, val depth: Int, val expanded: Boolean)
+
+    /** The shown directory's entries, with the entries of each [expanded] subdirectory listed beneath it. */
+    fun rows(directory: Entry, expanded: Set<String>): List<Row> {
+        val rows = mutableListOf<Row>()
+        fun add(parent: Entry, depth: Int) {
+            for (child in children(parent)) {
+                val open = child.directory && child.path in expanded
+                rows += Row(child, depth, open)
+                if (open) add(child, depth + 1)
+            }
+        }
+        add(directory, 0)
+        return rows
+    }
+
     fun breadcrumbs(directory: Entry): List<Entry> {
         val ancestors = mutableListOf<Entry>()
         var current = directory
