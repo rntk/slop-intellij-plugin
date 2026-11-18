@@ -34,7 +34,7 @@ internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: Su
                     if (selected.isNotEmpty()) open(selected, context.label)
                 }
             }
-            if (files.none { it is PatchSource }) openOnWall?.let { open ->
+            if (files.none { it is PatchSource || it is ReviewFile }) openOnWall?.let { open ->
                 data.put(ContextKeys.OPEN_ON_CODE_WALL) { context ->
                     val paths = context.files.toSet()
                     val selected = files.filter { it.path in paths }

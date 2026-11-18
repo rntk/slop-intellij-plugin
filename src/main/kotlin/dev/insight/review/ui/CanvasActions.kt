@@ -37,6 +37,8 @@ internal data class SummaryCanvasActions(
     val openDirectoryDiff: ((List<PatchSource>) -> Unit)? = null,
     /** Lay out several files, titled by the directory, group or topic they belong to, on the review's wall; null hides the menu item. */
     val openOnWall: ((files: List<ReviewSource>, title: String) -> Unit)? = null,
+    /** Open a summary node's file on a canvas session of the review; null leaves a project file to open its own session. */
+    val openOnCanvas: ((SummaryNode) -> Unit)? = null,
     /** Ask the review chat to explain an entry; null hides Explain. */
     val explainNode: ((SummaryNode) -> Unit)? = null,
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */

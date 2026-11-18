@@ -197,6 +197,7 @@ internal class DiffReviewTab(
             },
             openDirectoryDiff = { files -> openDirectoryDiff(files.filterIsInstance<ReviewFile>()) },
             openOnWall = { files, title -> openDiffsWall(files.filterIsInstance<ReviewFile>(), title) },
+            openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path) } },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
         ),

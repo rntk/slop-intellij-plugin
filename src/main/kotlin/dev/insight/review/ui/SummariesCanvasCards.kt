@@ -262,7 +262,7 @@ internal class SummariesCanvasCards(
                 }
                 inspect
             },
-            openOnCanvas = project?.let { project ->
+            openOnCanvas = summaryActions.openOnCanvas ?: project?.let { project ->
                 val open: (SummaryNode) -> Unit = { node ->
                     val path = node.file?.absolutePath?.replace('\\', '/')
                     val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByPath(it) }
