@@ -78,6 +78,14 @@ internal class ReviewStartScreen(
     }
     /** The checked pipelines, in run order. */
     val selectedPipelines: Set<ReviewPipeline> get() = pipelineBoxes.filterValues { it.isSelected }.keys
+    internal val toggleAllButton = JButton().apply {
+        name = "review-start-toggle-all"
+        addActionListener {
+            val select = pipelineBoxes.values.any { !it.isSelected }
+            pipelineBoxes.values.forEach { it.isSelected = select }
+            pipelinesChanged()
+        }
+    }
     /** The page's primary action: a default-styled button, so it stands out from the source step's Apply or Load. */
     internal val continueButton = object : JButton() {
         override fun getPreferredSize(): Dimension = super.getPreferredSize().let { size ->
@@ -96,14 +104,21 @@ internal class ReviewStartScreen(
     /** What the primary action does with the current choice, beside it. */
     private val continueSummary = wrappedText("", small = true)
 
-    init { updateContinue() }
+    init { updatePipelineControls() }
 
     private fun pipelinesChanged() {
+        updatePipelineControls()
         preferences.setValue(pipelinesKey, ReviewPipeline.format(selectedPipelines), "")
-        updateContinue()
     }
 
-    private fun updateContinue() {
+    private fun updatePipelineControls() {
+        pipelineBoxes.forEach { (pipeline, box) ->
+            val parent = pipeline.follows ?: return@forEach
+            box.isEnabled = pipelineBoxes[parent]?.isSelected == true
+            if (!box.isEnabled) box.isSelected = false
+            box.toolTipText = if (box.isEnabled) pipeline.tooltip else "Check ${parent.label} to enable this option"
+        }
+        toggleAllButton.text = if (pipelineBoxes.values.all { it.isSelected }) "Uncheck all" else "Check all"
         val selected = selectedPipelines
         continueButton.text = if (selected.isEmpty()) "Start review" else "Start review and generate"
         continueButton.toolTipText = if (selected.isEmpty()) "Close setup and start the review of the current source"
@@ -152,7 +167,8 @@ internal class ReviewStartScreen(
             // Centered against the checkboxes beside it.
             add(JPanel(GridBagLayout()).apply { isOpaque = false; add(continueButton) }, BorderLayout.EAST)
         }
-        return StartSection(3, if (columns == null) "Start the review" else "Generate and start", continueSummary, content)
+        return StartSection(3, if (columns == null) "Start the review" else "Generate and start", continueSummary, content,
+            headerAction = columns?.let { toggleAllButton })
     }
 
     /** The page shown in the editor; internal for tests. */
@@ -223,7 +239,13 @@ private fun wrappedText(text: String, small: Boolean) = JTextArea(text).apply {
  * A numbered step of the Start page: a rounded card in the hub tiles' colors, with the step's badge, title and hint above
  * its [content]. The plain panels inside are made transparent so the card shows through.
  */
-private class StartSection(step: Int, title: String, hint: JComponent?, content: JComponent) : JPanel(BorderLayout(0, JBUI.scale(8))) {
+private class StartSection(
+    step: Int,
+    title: String,
+    hint: JComponent?,
+    content: JComponent,
+    headerAction: JComponent? = null,
+) : JPanel(BorderLayout(0, JBUI.scale(8))) {
     init {
         isOpaque = false
         border = JBUI.Borders.empty(10, 14, 12, 14)
@@ -235,6 +257,9 @@ private class StartSection(step: Int, title: String, hint: JComponent?, content:
                 add(JLabel(title).apply { font = JBFont.label().asBold().biggerOn(1f) })
                 hint?.let(::add)
             }, BorderLayout.CENTER)
+            headerAction?.let {
+                add(JPanel(BorderLayout()).apply { isOpaque = false; add(it, BorderLayout.NORTH) }, BorderLayout.EAST)
+            }
         }, BorderLayout.NORTH)
         add(content.also(::clearPanelBackgrounds), BorderLayout.CENTER)
     }
