@@ -78,7 +78,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             // Rebuilding the review updates both open editors without moving their pages into each other.
             tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
-            assertTrue(descendants(summariesEditor.component).any { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
+            assertTrue(descendants(summariesEditor.component).any { it is ChangeSummariesPanel })
             assertTrue(descendants(topicsEditor.component).filterIsInstance<JLabel>().any { it.text.startsWith("Change topics ·") })
             tab.rename("Focused review")
             assertEquals("Diff Review: Focused review · Summaries", tab.canvasFile.name)
@@ -103,7 +103,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
         try {
-            assertEquals(listOf("Diff", "Summaries", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board",
+            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board",
                 "Open chat"), tab.tileGrid.tiles.map { it.title })
             assertFalse("No files, nothing to open", viewsEnabled(tab))
             assertTrue("The source and chat tiles stay enabled", tab.tileGrid.isTileEnabled("source") && tab.tileGrid.isTileEnabled("chat"))
@@ -132,6 +132,22 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             chooseView(tab, "Summaries")
             assertTrue(tab.state.summariesVisible)
             assertEquals(dev.insight.review.CanvasTabKey.Summaries, tab.canvas.selectedKey)
+
+            chooseView(tab, "Hierarchy")
+            assertEquals(dev.insight.review.CanvasTabKey.Hierarchy, tab.canvas.selectedKey)
+            val hierarchy = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Hierarchy") }
+            assertTrue(descendants(manager.getEditors(hierarchy).single().component)
+                .any { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
+
+            tab.reviewDestinations().getValue(dev.insight.context.ReviewDestination.DOCUMENT)()
+            assertEquals("Document", shownView(tab))
+            assertEquals(dev.insight.review.CanvasTabKey.Document, tab.canvas.selectedKey)
+            val document = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Document") }
+            assertTrue(descendants(manager.getEditors(document).single().component)
+                .any { it is dev.insight.review.ui.ChangeSummaryDocumentPanel })
+            assertTrue(manager.isFileOpen(hierarchy))
+            assertTrue(manager.isFileOpen(tab.canvasFile))
+            assertFalse(tab.session.busy)
 
             // Focusing a page from the canvas selects its tile without running its open action.
             tab.canvas.focusWords()
@@ -430,7 +446,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             panel.openCanvas(true)
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertTrue(first.state.summariesVisible)
-            assertEquals(dev.insight.review.ReviewSummariesMode.HIERARCHY, first.canvas.summariesView.mode)
+            assertEquals(dev.insight.review.ReviewSummariesMode.OUTLINE, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
             assertFalse(first.session.busy)
             assertTrue(first.session.messages.none { it.role == ChatRole.USER })
@@ -974,7 +990,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(hub, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.tileGrid })
             assertTrue(descendants(first).none { it is JComboBox<*> })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })
@@ -1071,15 +1087,15 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue("Summaries must show the canvas editor", manager.isFileOpen(tab.canvasFile))
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
-            assertEquals(1, descendants(tab.canvas).count { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
+            assertEquals(1, descendants(tab.canvas).count { it is ChangeSummariesPanel })
             assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.summariesVisible)
-            assertTrue(descendants(tab.canvas).none { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
+            assertTrue(descendants(tab.canvas).none { it is ChangeSummariesPanel })
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertTrue(tab.state.summaries.complete)
-            assertEquals(1, descendants(tab.canvas).count { it is dev.insight.review.ui.ChangeSummaryHierarchyPanel })
+            assertEquals(1, descendants(tab.canvas).count { it is ChangeSummariesPanel })
             assertEquals("Reopening completed summaries must not send a turn", 0, tab.session.messages.count { it.text == "/summaries" })
 
             // Stay on the EDT so the queued turn cannot contact a backend during this test.

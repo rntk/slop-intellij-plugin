@@ -137,7 +137,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     /** Opens the page of [key]; summaries, topics and grouping are generated only from their page's buttons or a [schedule]. */
     protected open fun openView(key: CanvasTabKey) {
         when (key) {
-            CanvasTabKey.Summaries -> openSummaries()
+            is CanvasTabKey.SummaryPage -> openSummaryPage(key)
             CanvasTabKey.Topics -> openTopics()
             CanvasTabKey.Grouping -> openGrouping()
             CanvasTabKey.Charts -> openCharts()
@@ -153,10 +153,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             if (key in available) destinations[destination] = { if (!disposed && !state.refreshing) openView(key) }
         }
         add(ReviewDestination.SUMMARIES, CanvasTabKey.Summaries)
+        add(ReviewDestination.HIERARCHY, CanvasTabKey.Hierarchy)
+        add(ReviewDestination.DOCUMENT, CanvasTabKey.Document)
         val modes = mapOf(
             ReviewDestination.OUTLINE to ReviewSummariesMode.OUTLINE,
-            ReviewDestination.HIERARCHY to ReviewSummariesMode.HIERARCHY,
-            ReviewDestination.DOCUMENT to ReviewSummariesMode.DOCUMENT,
             ReviewDestination.EXPLORER to ReviewSummariesMode.EXPLORER,
             ReviewDestination.SPLIT to ReviewSummariesMode.SPLIT,
             ReviewDestination.TREE to ReviewSummariesMode.TREE,
@@ -424,13 +424,20 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     }
 
     /** Puts the summaries card on the canvas and shows it; the summaries are generated from the card or a [schedule]. */
-    fun openSummaries() {
-        state.showSummaries()
+    fun openSummaries() = openSummaryPage(CanvasTabKey.Summaries)
+
+    private fun openSummaryPage(key: CanvasTabKey.SummaryPage) {
+        state.showSummaries(key)
         renderCanvas()
-        showCanvas { canvas.focusSummaries() }
+        showCanvas { canvas.focusSummaries(key) }
     }
 
-    fun openSummariesMode(mode: ReviewSummariesMode) {
+    protected fun closeSummaryPage(key: CanvasTabKey.SummaryPage) {
+        state.hideSummaries(key)
+        renderCanvas()
+    }
+
+    private fun openSummariesMode(mode: ReviewSummariesMode) {
         state.showSummaries()
         renderCanvas()
         showCanvas { canvas.showSummariesMode(mode) }
@@ -513,9 +520,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     }
 
     protected fun summariesCard(): SummariesCard? {
-        if (!state.summariesVisible) return null
+        val pages = state.visibleSummaryPages
+        if (pages.isEmpty()) return null
         val summaries = state.summaries
-        return SummariesCard(summaries, session.busy, canSummarize, pendingSummaryEntries(summaries))
+        return SummariesCard(summaries, session.busy, canSummarize, pendingSummaryEntries(summaries), pages)
     }
 
     private fun pendingSummaryEntries(summaries: ReviewSummaries): Set<Int> =

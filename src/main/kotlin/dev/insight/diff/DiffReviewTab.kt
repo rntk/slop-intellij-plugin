@@ -171,7 +171,7 @@ internal class DiffReviewTab(
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,
-            removeSummaries = { state.hideSummaries(); renderCanvas() },
+            removeSummaries = ::closeSummaryPage,
             markReviewed = state::setReviewed,
             contextSummaries = summaryLauncher,
             deleteOriginalSummaries = ::clearOriginalSummaries,
@@ -223,6 +223,10 @@ internal class DiffReviewTab(
     override fun viewOptions() = listOf(
         ReviewViewOption(CanvasTabKey.Summaries, "Summaries",
             "Read the change as summaries, from the whole change down to each file (/summaries)") { summaryStats(state.summaries) },
+        ReviewViewOption(CanvasTabKey.Hierarchy, "Hierarchy",
+            "Browse folders from broad to specific, with each file's summary"),
+        ReviewViewOption(CanvasTabKey.Document, "Document",
+            "Read each file in folder order alongside its summary and folder cards"),
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read the change grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Grouping, "Grouping",

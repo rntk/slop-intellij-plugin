@@ -29,7 +29,7 @@ class HierarchyPreviewTest : BasePlatformTestCase() {
                 val summaries = ReviewSummaries(buildSummaryTree(files))
                 val state = if (topics) CanvasState(emptyList(), topics = TopicsCard(
                     ReviewTopics(files).assign(files.first().path, "Product>Storage"), summaries, canRun = true))
-                    else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true))
+                    else CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true, pages = setOf(dev.insight.review.CanvasTabKey.Hierarchy)))
                 val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
                 val checkboxName = if (topics) "topics-show-diffs" else "summaries-show-diffs"
                 fun checkbox() = descendants(canvas).filterIsInstance<JCheckBox>().single { it.name == checkboxName }
@@ -37,7 +37,6 @@ class HierarchyPreviewTest : BasePlatformTestCase() {
                 try {
                     canvas.showNotes(state)
                     if (topics) selectTopicsMode(descendants(canvas), "Hierarchy")
-                    else selectSummariesMode(descendants(canvas), "hierarchy")
                     assertFalse(checkbox().isSelected)
                     assertTrue(previews().isEmpty())
                     checkbox().doClick()

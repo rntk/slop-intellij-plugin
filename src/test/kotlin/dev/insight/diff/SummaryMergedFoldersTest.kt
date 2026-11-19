@@ -3,6 +3,7 @@ package dev.insight.diff
 import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
@@ -85,6 +86,7 @@ class SummaryMergedFoldersTest : BasePlatformTestCase() {
         val changed = initial.summarize(mapOf(ancestor.id to "Zebrafish migration."), reuseSingleChildren = false)
         val canvas = NoteCanvas({}, {}).apply {
             setSize(1600, 900)
+            summariesView.mode = ReviewSummariesMode.HIERARCHY
             summariesView.update(tree)
             summariesView.selectLevel(0, tree)
             summariesView.fuzzy = "zebrafish"

@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import dev.insight.canvas.SymbolSummaryCache
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.PatchSource
 import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ReviewSource
@@ -35,7 +36,7 @@ internal class SymbolSummaryActions(
 /** Summary generation, tracing, review and entry actions supplied by the review hosting the canvas. */
 internal data class SummaryCanvasActions(
     val summarize: () -> Unit = {},
-    val removeSummaries: () -> Unit = {},
+    val removeSummaries: (CanvasTabKey.SummaryPage) -> Unit = {},
     /** Open a summary node at its source; null opens its file by path. */
     val openNode: ((SummaryNode) -> Unit)? = null,
     /** Put a summary node on the canvas; null shows its file by path. */

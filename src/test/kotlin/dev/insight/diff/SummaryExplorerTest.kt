@@ -4,6 +4,7 @@ import dev.insight.review.summarize
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewVocabulary
@@ -88,22 +89,23 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(
             contextSummaryActions = ContextSummaryActions({ _, _ -> true }, { path, kind -> requested += path to kind; true }),
         )).apply { setSize(1600, 900) }
+        val hierarchy = SummariesCard(original, false, true, pages = setOf(CanvasTabKey.Hierarchy))
         fun link(identity: String) = descendants(canvas).filterIsInstance<ActionLink>()
             .single { it.name == "summarize-entry:$identity" }
         try {
-            canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
+            canvas.showNotes(CanvasState(emptyList(), summaries = hierarchy))
             link("file:src/a.kt").doClick()
             val folder = descendants(canvas).filterIsInstance<JComponent>().single { it.name == "node:directory:src" }
             folder.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Summarize" }.doClick()
             assertEquals(listOf("src/a.kt" to SummaryKind.FILE, "src" to SummaryKind.DIRECTORY), requested)
 
-            canvas.updateSummaries(SummariesCard(original, false, true, pendingEntries = setOf(file.id)))
+            canvas.updateSummaries(hierarchy.copy(pendingEntries = setOf(file.id)))
             val filling = link("file:src/a.kt")
             assertEquals("Summarizing…", filling.text)
             assertFalse(filling.isEnabled)
             assertTrue(link("file:src/nested/b.kt").isEnabled)
 
-            canvas.updateSummaries(SummariesCard(original.summarize(mapOf(file.id to "Updates one file.")), false, true))
+            canvas.updateSummaries(hierarchy.copy(summaries = original.summarize(mapOf(file.id to "Updates one file."))))
             assertTrue(descendants(canvas).none { it.name == "summarize-entry:file:src/a.kt" })
 
         } finally { canvas.dispose() }
@@ -116,7 +118,7 @@ class SummaryExplorerTest : BasePlatformTestCase() {
         val requested = mutableListOf<Pair<String, SummaryKind>>()
         val canvas = NoteCanvas({}, {}, summaryActions = SummaryCanvasActions(
             contextSummaryActions = ContextSummaryActions({ _, _ -> true }, { path, kind -> requested += path to kind; true }),
-        )).apply { setSize(1600, 900) }
+        )).apply { setSize(1600, 900); summariesView.mode = ReviewSummariesMode.HIERARCHY }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(original, false, true)))
             val link = descendants(canvas).filterIsInstance<ActionLink>().single { it.name == "summarize-entry:root" }

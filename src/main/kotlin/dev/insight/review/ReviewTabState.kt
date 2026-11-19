@@ -57,9 +57,9 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     /** The summary tree of this revision; summaries of unchanged subtrees survive snapshot changes. */
     var summaries = ReviewSummaries(summaryTree(emptyList()))
         private set
-    /** Whether the summaries card is on the canvas; hiding it keeps the summaries. */
-    var summariesVisible = false
-        private set
+    private val summaryPages = linkedSetOf<CanvasTabKey.SummaryPage>()
+    internal val visibleSummaryPages: Set<CanvasTabKey.SummaryPage> get() = summaryPages.toSet()
+    val summariesVisible: Boolean get() = CanvasTabKey.Summaries in summaryPages
     /** Whether the Charts page is on the canvas; it reads the summary tree, so it needs no summaries. */
     var chartsVisible = false
         private set
@@ -151,14 +151,14 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
 
     /** Empties the canvas; summaries and topics are kept for when their cards are shown again. */
     open fun clearNotes() {
-        cards.clear(); sourceCards.clear(); summariesVisible = false; chartsVisible = false; topicsVisible = false; groupingVisible = false
+        cards.clear(); sourceCards.clear(); summaryPages.clear(); chartsVisible = false; topicsVisible = false; groupingVisible = false
     }
 
     /** Starts /summaries: an incomplete tree is continued, a complete one is written again. */
     fun startSummaries(expected: Int): ReviewSummaries {
         check(expected)
         if (summaries.complete) clearSummaries()
-        summariesVisible = true
+        if (summaryPages.isEmpty()) showSummaries()
         return summaries
     }
 
@@ -178,8 +178,8 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     }
 
     fun clearSummaries() { summaries =ReviewSummaries(summaries.tree); disk.forget(ReviewDiskCache.SUMMARIES); persist() }
-    fun showSummaries() { summariesVisible = true }
-    fun hideSummaries() { summariesVisible = false }
+    internal fun showSummaries(page: CanvasTabKey.SummaryPage = CanvasTabKey.Summaries) { summaryPages.add(page) }
+    internal fun hideSummaries(page: CanvasTabKey.SummaryPage) { summaryPages.remove(page) }
     fun showCharts() { chartsVisible = true }
     fun hideCharts() { chartsVisible = false }
 

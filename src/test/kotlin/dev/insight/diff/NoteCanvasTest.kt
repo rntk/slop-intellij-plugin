@@ -1011,7 +1011,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             canvas.summariesView.selectLevel(ChangeSummariesViewState.branchLevels(tree), tree)
-            selectSummariesMode(descendants(canvas), "hierarchy")
+            canvas.showSummariesMode(ReviewSummariesMode.HIERARCHY)
             layoutTree(canvas)
             val hierarchy = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
             val scroll = javax.swing.SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane::class.java, hierarchy) as javax.swing.JScrollPane
@@ -1192,9 +1192,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            // The hierarchy is a second mode of the same card.
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummariesPanel>().size)
-            selectSummariesMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
+            canvas.showSummariesMode(ReviewSummariesMode.HIERARCHY); layoutTree(canvas)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel })
             assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
 
@@ -1284,7 +1283,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = false)))
             for (mode in ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF && it != ReviewSummariesMode.TREE }.filter { it != ReviewSummariesMode.EXPLORER }) {
-                selectSummariesMode(descendants(canvas), mode.name)
+                canvas.showSummariesMode(mode)
                 assertTrue(descendants(canvas).none { it.name in setOf("summary-fold", "summary-unfold") })
                 selector().selectedItem = 4
                 layoutTree(canvas)
@@ -1320,7 +1319,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = true)))
             layoutTree(canvas)
-            selectSummariesMode(descendants(canvas), "Document"); layoutTree(canvas)
+            canvas.showSummariesMode(ReviewSummariesMode.DOCUMENT); layoutTree(canvas)
             assertEquals(ReviewSummariesMode.DOCUMENT, canvas.summariesView.mode)
             assertTrue(descendants(canvas).none { it is ChangeSummariesPanel || it is ChangeSummaryHierarchyPanel })
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryDocumentPanel>().single()
@@ -1374,7 +1373,7 @@ class NoteCanvasTest : BasePlatformTestCase() {
             assertEquals("directory:src", canvas.summariesView.selected)
             descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().first { it.text == "Auth.kt" }.doClick()
             assertEquals(listOf("src/auth/Auth.kt"), opened)
-            selectSummariesMode(descendants(canvas), "Hierarchy"); layoutTree(canvas)
+            canvas.showSummariesMode(ReviewSummariesMode.HIERARCHY); layoutTree(canvas)
             assertEquals("directory:src", canvas.summariesView.selected)
             assertEquals(1, descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().size)
         } finally { canvas.dispose() }

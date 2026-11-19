@@ -24,7 +24,10 @@ internal sealed interface CanvasTabKey {
     data object CodeMap : CanvasTabKey
     /** The review's wall of file blocks: the Diffs wall, or a code review's wall of source files. */
     data object Wall : CanvasTabKey
-    data object Summaries : CanvasTabKey
+    sealed interface SummaryPage : CanvasTabKey
+    data object Summaries : SummaryPage
+    data object Hierarchy : SummaryPage
+    data object Document : SummaryPage
     /** Charts that compare how much the folders and files of the review hold, starting with the radar. */
     data object Charts : CanvasTabKey
     data object FileView : CanvasTabKey

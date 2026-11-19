@@ -34,8 +34,6 @@ internal data class ReviewVocabulary(
     val showOnCanvasIcon: Icon,
     /** What a file node's details say after its name: "modified file · renamed from x" | "420 lines · 3 parts". */
     val describeFile: (ReviewSource?) -> String,
-    /** The initial summaries view. */
-    val summariesMode: ReviewSummariesMode,
     /** Start a large topic outline folded to its first level. */
     val foldLargeTopics: Boolean,
     /** The wall's name, as its view option, tab and label row call it: "Diffs wall" | "Code wall". */
@@ -88,7 +86,6 @@ internal data class ReviewVocabulary(
                 val facts = file?.facts.orEmpty()
                 "${facts.firstOrNull() ?: "changed"} file" + facts.drop(1).joinToString("") { " · $it" }
             },
-            summariesMode = ReviewSummariesMode.HIERARCHY,
             foldLargeTopics = false,
             wallName = "Diffs wall",
             openOnWall = "Open on diffs wall",
@@ -128,7 +125,6 @@ internal data class ReviewVocabulary(
             showOnCanvas = "Show source in tab",
             showOnCanvasIcon = AllIcons.Actions.Preview,
             describeFile = { file -> file?.facts?.joinToString(" · ")?.takeIf { it.isNotEmpty() } ?: "file" },
-            summariesMode = ReviewSummariesMode.HIERARCHY,
             foldLargeTopics = true,
             wallName = "Code wall",
             openOnWall = "Open on code wall",

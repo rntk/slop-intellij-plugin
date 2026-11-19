@@ -140,8 +140,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(openNode = { opened += it })).apply { setSize(1600, 900) }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
-            selectSummariesMode(descendants(canvas), "hierarchy")
+            canvas.showSummariesMode(ReviewSummariesMode.HIERARCHY)
             layoutTree(canvas)
             val panel = descendants(canvas).filterIsInstance<ChangeSummaryHierarchyPanel>().single()
             val card = panel.components.single { it.name == "file:lib/c.kt" } as Container
@@ -166,8 +165,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, running = false, canRun = false)))
             layoutTree(canvas)
-            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
-            selectSummariesMode(descendants(canvas), "document")
+            canvas.showSummariesMode(ReviewSummariesMode.DOCUMENT)
             layoutTree(canvas)
             assertEquals(files.map { it.path }.toSet(), panel().files.map { it.path }.toSet())
             assertEquals(3, descendants(panel()).filterIsInstance<SourceTextView>().size)
@@ -261,8 +259,7 @@ class ReviewVocabularyTest : BasePlatformTestCase() {
         fun names() = panel().components.mapNotNull { it.name }
         try {
             canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(ReviewSummaries(tree), running = false, canRun = true)))
-            assertEquals(ReviewSummariesMode.HIERARCHY, canvas.summariesView.mode)
-            selectSummariesMode(descendants(canvas), "hierarchy")
+            canvas.showSummariesMode(ReviewSummariesMode.HIERARCHY)
             layoutTree(canvas)
             // The chunked file is a branch card, folded until the reader opens it; the small file stays a leaf.
             assertTrue("node:file:src/Big.kt" in names())

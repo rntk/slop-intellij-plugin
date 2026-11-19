@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.ui.components.ActionLink
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -18,6 +19,7 @@ internal data class SummariesCard(
     val running: Boolean,
     val canRun: Boolean,
     val pendingEntries: Set<Int> = emptySet(),
+    val pages: Set<CanvasTabKey.SummaryPage> = setOf(CanvasTabKey.Summaries),
 ) {
     val reading: ReviewSummaries by lazy { summaries.withAbsorbedFolderSummary() }
 }

@@ -71,7 +71,7 @@ internal class SummariesCanvasCards(
     /** Supplies the Diff mode; without one it shows the outline. */
     private val extension: CanvasExtension? = null,
 ) : Disposable {
-    val summariesView = ChangeSummariesViewState().also { it.mode = vocabulary.summariesMode }
+    val summariesView = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.OUTLINE }
     private var summaries: SummariesCard? = null
     private val currentCards = mutableMapOf<CanvasTabKey, JPanel>()
     private val zoom = 1.0
@@ -118,9 +118,16 @@ internal class SummariesCanvasCards(
     }
 
     private val mainSummaries = SummariesTab(CanvasTabKey.Summaries, summariesView)
+    private val hierarchySummaries = SummariesTab(CanvasTabKey.Hierarchy, ChangeSummariesViewState().apply {
+        mode = ReviewSummariesMode.HIERARCHY
+    })
+    private val documentSummaries = SummariesTab(CanvasTabKey.Document, ChangeSummariesViewState().apply {
+        mode = ReviewSummariesMode.DOCUMENT
+    })
+    private val fixedTabs = listOf(mainSummaries, hierarchySummaries, documentSummaries)
     private val searchTabs = mutableListOf<SummariesTab>()
     private var searchTabCount = 0
-    private fun summaryTabs() = listOf(mainSummaries) + searchTabs
+    private fun summaryTabs() = fixedTabs.filter { it.key in summaries?.pages.orEmpty() } + searchTabs
     private fun summaryTab(key: CanvasTabKey) = summaryTabs().firstOrNull { it.key == key }
     private fun version(tab: SummariesTab) = summarySession.versions.firstOrNull { it.id == tab.version }
     private fun reading(tab: SummariesTab): ReviewSummaries? = version(tab)?.summaries ?: summaries?.reading
@@ -169,7 +176,11 @@ internal class SummariesCanvasCards(
             name = "summaries-controls"
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(vocabulary.summariesTitle + if (tab.search) " · Search" else "").apply {
+            add(JLabel(when (key) {
+                CanvasTabKey.Hierarchy, CanvasTabKey.Document -> title(key)
+                is CanvasTabKey.SummarySearch -> vocabulary.summariesTitle + " · Search"
+                else -> vocabulary.summariesTitle
+            }).apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = vocabulary.summariesTooltip
                 installReviewStatus(this, project, summariesStatus(content, vocabulary.noFiles))
@@ -203,7 +214,10 @@ internal class SummariesCanvasCards(
                     toolTipText = "Size summary words by their importance in the child summaries or file source"
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
-                add(viewSelector("summaries-mode", summaryModes(), summariesView.mode, scaled(4), scaledFont(JBFont.small()), ::summaryModeLabel, ::summaryModeTooltip) {
+                if (key == CanvasTabKey.Summaries || tab.search) add(viewSelector(
+                    "summaries-mode", summaryModes(tab), summariesView.mode, scaled(4), scaledFont(JBFont.small()),
+                    ::summaryModeLabel, ::summaryModeTooltip,
+                ) {
                     summariesView.mode = it; tab.scroll = 0; refreshSummaries(tab)
                 })
                 add(JButton(when {
@@ -219,10 +233,15 @@ internal class SummariesCanvasCards(
                         else vocabulary.summarizeTooltip
                     addActionListener { summaryActions.summarize() }
                 })
-                add(if (tab.search) InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { closeSearchTab(tab) }
-                        .apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() }
-                    else InplaceButton(IconButton("Remove change summaries", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { summaryActions.removeSummaries() }
-                        .apply { cursor = Cursor.getDefaultCursor() })
+                if (key is CanvasTabKey.SummaryPage) {
+                    add(InplaceButton(IconButton("Close ${title(key)}", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                        summaryActions.removeSummaries(key)
+                    }.apply { cursor = Cursor.getDefaultCursor() })
+                } else {
+                    add(InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                        closeSearchTab(tab)
+                    }.apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() })
+                }
             }, BorderLayout.WEST)
             if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false), BorderLayout.EAST)
         }
@@ -610,7 +629,10 @@ internal class SummariesCanvasCards(
         refreshSummaries(mainSummaries)
     }
 
-    private fun summaryModes() = ReviewSummariesMode.entries.filter { it != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF }
+    private fun summaryModes(tab: SummariesTab) = ReviewSummariesMode.entries.filter { mode ->
+        (tab.search || (mode != ReviewSummariesMode.HIERARCHY && mode != ReviewSummariesMode.DOCUMENT)) &&
+            (mode != ReviewSummariesMode.DIFF || vocabulary == ReviewVocabulary.DIFF)
+    }
 
     private fun summaryModeLabel(mode: ReviewSummariesMode) = when (mode) {
         ReviewSummariesMode.OUTLINE -> "Outline"
@@ -654,11 +676,14 @@ internal class SummariesCanvasCards(
     }
 
     fun update(content: SummariesCard?) {
+        val previousTabs = summaryTabs()
         summaries = content
+        if (content == null) searchTabs.clear()
+        (previousTabs - summaryTabs().toSet()).forEach {
+            disposeTab(it)
+            currentCards.remove(it.key)
+        }
         if (content == null) {
-            summaryTabs().forEach { disposeTab(it) }
-            searchTabs.clear()
-            currentCards.clear()
             summarySession.stopVersions()
         } else {
             summarySession.retain(content.summaries.tree)
@@ -689,10 +714,14 @@ internal class SummariesCanvasCards(
         }
     }
 
-    fun title(key: CanvasTabKey): String = if (key == CanvasTabKey.Summaries) "Summaries"
-        else summaryTab(key)?.let(::searchPath)?.lastOrNull()?.let {
+    fun title(key: CanvasTabKey): String = when (key) {
+        CanvasTabKey.Summaries -> "Summaries"
+        CanvasTabKey.Hierarchy -> "Hierarchy"
+        CanvasTabKey.Document -> "Document"
+        else -> summaryTab(key)?.let(::searchPath)?.lastOrNull()?.let {
             "Search · " + if (it.length > 32) it.take(31) + "…" else it
         } ?: "Search"
+    }
 
     fun tooltip(key: CanvasTabKey): String? = summaryTab(key)?.takeIf { it.search }?.let { tab ->
         (listOf("Summaries") + searchPath(tab).map { "“$it”" }).joinToString(" › ")

@@ -300,8 +300,8 @@ internal class NoteCanvas(
 
     internal fun focusFileView() { focusCard(CanvasTabKey.FileView) }
 
-    internal fun focusSummaries() {
-        focusCard(CanvasTabKey.Summaries)
+    internal fun focusSummaries(key: CanvasTabKey.SummaryPage = CanvasTabKey.Summaries) {
+        focusCard(key)
     }
 
     /** Selects the summaries in the Tree view and unfolds the route to the file at [path]. */
@@ -329,7 +329,7 @@ internal class NoteCanvas(
     private fun tabTitle(key: CanvasTabKey): String = extension?.title(key) ?: when (key) {
         CanvasTabKey.Topics -> "Topics"
         CanvasTabKey.Grouping -> "Grouping"
-        CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
+        is CanvasTabKey.SummaryPage, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
         CanvasTabKey.Charts -> "Charts"
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
@@ -912,7 +912,7 @@ internal class NoteCanvas(
 
     /** Follows every summary and chat update without rebuilding the other cards while the cards stay on the canvas. */
     fun updateSummaries(content: SummariesCard?) {
-        if ((content == null) != (summaries == null) || cards[CanvasTabKey.Summaries] == null) {
+        if (content?.pages != summaries?.pages) {
             showNotes(state.copy(summaries = content))
             return
         }
@@ -973,7 +973,7 @@ internal class NoteCanvas(
                 extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)
-            CanvasTabKey.Summaries, is CanvasTabKey.SummarySearch ->
+            is CanvasTabKey.SummaryPage, is CanvasTabKey.SummarySearch ->
                 summariesCardBuilder.card(key)
             CanvasTabKey.Charts -> charts?.let(chartsCardBuilder::card)
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
