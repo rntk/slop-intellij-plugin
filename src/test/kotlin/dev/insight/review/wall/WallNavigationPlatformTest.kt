@@ -1,11 +1,16 @@
 package dev.insight.review.wall
 
 import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.diff.DIFFS_WALL_LABELS
 import java.awt.Container
+import java.awt.Dimension
 import java.awt.Point
 import java.awt.event.ActionEvent
+import java.awt.event.InputEvent
+import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
 import javax.swing.JComponent
 import javax.swing.JScrollPane
 import javax.swing.JViewport
@@ -76,6 +81,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         assertTrue(wall.blocks[1].bodyScroll.y > 0)
         assertEquals("Navigation belongs to the new card", Point(), first.bodyScroll)
         press(surface, "ESCAPE")
+        assertTrue(wall.blocks[1].active)
         val before = wall.blocks[1].bodyScroll
         // Supply scrollable page space explicitly; this headless fixture has no window to validate it.
         pane.viewport.viewSize = java.awt.Dimension(pane.viewport.width + 200, pane.viewport.height + 200)
@@ -85,20 +91,110 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         assertTrue("Escape restores canvas scrolling", pane.viewport.viewPosition.y > 0)
     }
 
-    fun testFocusedExpandedCardPansCanvasOnUnscrollableAxis() = withWall { wall, pane, surface ->
+    fun testHorizontalOnlyCardRoutesVerticalNavigationToCanvas() = withWall { wall, pane, surface ->
         val first = wall.blocks.first()
         press(surface, "TAB")
         press(surface, "C")
         assertFalse(first.isCompact)
-        pane.viewport.viewSize = java.awt.Dimension(pane.viewport.width + 200, pane.viewport.height + 200)
-        pane.viewport.viewPosition = Point()
+        makeCanvasScrollable(pane)
         press(surface, "DOWN")
-        assertTrue(pane.viewport.viewPosition.y > 0)
+        val afterKey = pane.viewport.viewPosition
+        assertTrue(afterKey.y > 0)
+        wheel(first)
+        assertTrue(pane.viewport.viewPosition.y > afterKey.y)
         assertEquals(0, first.bodyScroll.y)
+
         val canvas = pane.viewport.viewPosition
         press(surface, "RIGHT")
-        assertTrue(first.bodyScroll.x > 0)
+        val afterRight = first.bodyScroll.x
+        assertTrue(afterRight > 0)
+        wheel(surface, modifiers = InputEvent.SHIFT_DOWN_MASK)
+        assertTrue(first.bodyScroll.x > afterRight)
         assertEquals(canvas, pane.viewport.viewPosition)
+
+        press(surface, "ctrl END")
+        val end = first.bodyScroll
+        val canvasEnd = pane.viewport.viewPosition
+        assertTrue(canvasEnd.y > canvas.y)
+        assertEquals(canvas.x, canvasEnd.x)
+        wheel(first, modifiers = InputEvent.SHIFT_DOWN_MASK)
+        press(surface, "RIGHT")
+        assertEquals(end, first.bodyScroll)
+        assertEquals(canvasEnd, pane.viewport.viewPosition)
+    }
+
+    fun testVerticalOnlyCardRoutesHorizontalNavigationToCanvas() = withWall(wideRows = false) { wall, pane, surface ->
+        val first = wall.blocks.first()
+        press(surface, "TAB")
+        makeCanvasScrollable(pane)
+        press(surface, "RIGHT")
+        val afterKey = pane.viewport.viewPosition
+        assertTrue(afterKey.x > 0)
+        wheel(first, modifiers = InputEvent.SHIFT_DOWN_MASK)
+        assertTrue(pane.viewport.viewPosition.x > afterKey.x)
+        assertEquals(0, first.bodyScroll.x)
+
+        val canvas = pane.viewport.viewPosition
+        press(surface, "END")
+        val end = first.bodyScroll
+        assertTrue(end.y > 0)
+        wheel(first)
+        press(surface, "DOWN")
+        assertEquals(end, first.bodyScroll)
+        assertEquals(canvas, pane.viewport.viewPosition)
+    }
+
+    fun testWheelFollowsTabFocusAndSecondEscapeClearsCurrentCard() = withWall { wall, pane, surface ->
+        val (first, second) = wall.blocks
+        press(surface, "TAB")
+        val canvas = pane.viewport.viewPosition
+        wheel(second)
+        assertTrue(first.bodyScroll.y > 0)
+        wheel(surface, modifiers = InputEvent.SHIFT_DOWN_MASK)
+        assertTrue(first.bodyScroll.x > 0)
+        assertEquals(Point(), second.bodyScroll)
+        press(surface, "END")
+        val bottom = first.bodyScroll
+        wheel(first)
+        assertEquals(bottom, first.bodyScroll)
+        assertEquals(canvas, pane.viewport.viewPosition)
+
+        press(surface, "ESCAPE")
+        assertTrue(first.active)
+        pane.viewport.viewSize = Dimension(pane.viewport.width + 200, pane.viewport.height + 200)
+        pane.verticalScrollBar.isVisible = true
+        pane.viewport.viewPosition = Point()
+        wheel(first)
+        assertEquals(bottom, first.bodyScroll)
+        assertTrue(pane.viewport.viewPosition.y > 0)
+
+        press(surface, "ESCAPE")
+        assertFalse(wall.blocks.any { it.active })
+        assertFalse(surface.actionMap.get("open").isEnabled)
+        pane.viewport.viewPosition = Point()
+        wheel(second)
+        assertTrue(pane.viewport.viewPosition.y > 0)
+        press(surface, "HOME")
+        assertEquals(Point(), pane.viewport.viewPosition)
+        assertEquals(Point(), second.bodyScroll)
+        assertEquals(bottom, first.bodyScroll)
+
+        press(surface, "TAB")
+        assertTrue(first.active)
+        wheel(second, rotation = -1)
+        assertTrue(first.bodyScroll.y < bottom.y)
+    }
+
+    private fun makeCanvasScrollable(pane: JScrollPane) {
+        pane.viewport.viewSize = Dimension(pane.viewport.width + 200, pane.viewport.height + 200)
+        pane.verticalScrollBar.isVisible = true
+        pane.horizontalScrollBar.isVisible = true
+        pane.viewport.viewPosition = Point()
+    }
+
+    private fun wheel(target: JComponent, rotation: Int = 1, modifiers: Int = 0) {
+        target.dispatchEvent(MouseWheelEvent(target, MouseEvent.MOUSE_WHEEL, 0L, modifiers, 10, 10, 0, false,
+            MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, rotation))
     }
 
     fun testFocusedSummaryNavigationUsesSummaryRowsAndPreservesDiffScroll() = withWall { wall, pane, surface ->
@@ -127,6 +223,54 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         assertEquals(canvas, pane.viewport.viewPosition)
         toggle()
         assertEquals(diffScroll, first.bodyScroll)
+    }
+
+    fun testClickFocusZoomsToTheSameViewAsTab() = withWall { wall, pane, surface ->
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        val (first, second) = wall.blocks
+        val canvas = pane.viewport.viewPosition
+        val cardSize = second.preferredSize
+        clickCard(second)
+        assertTrue(second.active)
+        press(surface, "DOWN")
+        assertTrue(second.bodyScroll.y > 0)
+        assertEquals(Point(), first.bodyScroll)
+        PlatformTestUtil.waitWithEventsDispatching("Click should zoom to the card", { second.preferredSize.width > cardSize.width }, 5)
+        val clickSize = second.preferredSize
+        val clickPosition = pane.viewport.viewPosition
+
+        press(surface, "ESCAPE")
+        assertTrue(second.active)
+        assertEquals(cardSize, second.preferredSize)
+        assertEquals(canvas, pane.viewport.viewPosition)
+        press(surface, "ESCAPE")
+        assertFalse(wall.blocks.any { it.active })
+        press(surface, "shift TAB")
+        assertTrue(second.active)
+        assertEquals(clickSize, second.preferredSize)
+        assertEquals(clickPosition, pane.viewport.viewPosition)
+    }
+
+    fun testDoubleClickOpensTheRowBeforeClickZoom() {
+        val opened = mutableListOf<Pair<String, WallLine?>>()
+        withWall(openLine = { path, line -> opened += path to line }) { wall, pane, _ ->
+            val card = wall.blocks[1]
+            val size = card.preferredSize
+            val position = pane.viewport.viewPosition
+            val line = card.lineAt(60)
+            assertNotNull(line)
+            clickCard(card)
+            clickCard(card, count = 2)
+            assertEquals(listOf(card.block.path to line), opened)
+            assertEquals(size, card.preferredSize)
+            assertEquals(position, pane.viewport.viewPosition)
+        }
+    }
+
+    private fun clickCard(target: JComponent, count: Int = 1) {
+        for (id in listOf(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED)) {
+            target.dispatchEvent(MouseEvent(target, id, 0L, 0, 20, 60, count, false, MouseEvent.BUTTON1))
+        }
     }
 
     fun testRightClickHandsTheBlockAndRowToTheHost() {
@@ -166,11 +310,14 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
     }
 
     private fun withWall(onContext: ((WallBlock, WallLine?, com.intellij.ui.awt.RelativePoint) -> Unit)? = null,
+        openLine: (String, WallLine?) -> Unit = { _, _ -> },
+        wideRows: Boolean = true,
         test: (WallView, JScrollPane, JComponent) -> Unit) {
-        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {}, onContext = onContext)
+        val wall = WallView(DIFFS_WALL_LABELS, openLine, {}, onContext = onContext)
         try {
+            val suffix = if (wideRows) " " + "x".repeat(160) else ""
             val blocks = listOf("a.kt", "b.kt").map { path ->
-                WallBlock(path, path, "", (1..300).map { WallLine.source(it, "line $it " + "x".repeat(160)) }, 0)
+                WallBlock(path, path, "", (1..300).map { WallLine.source(it, "line $it$suffix") }, 0)
             }
             wall.show(WallContent(WallScope(null, "All files"), blocks,
                 mapOf("a.kt" to (1..500).joinToString("\n") { "Summary line $it" })))

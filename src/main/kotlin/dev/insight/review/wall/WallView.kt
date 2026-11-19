@@ -41,6 +41,7 @@ import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.Toolkit
 import java.awt.event.ActionEvent
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -98,6 +99,8 @@ internal class WallView(
      * and then arrives, or leaves [WallContent.summarizing], in a later [show]. Without it only files with a summary have the switch.
      */
     private val summarize: ((path: String) -> Boolean)? = null,
+    /** Multiplier for the shared card width at 100% zoom. */
+    private val cardWidthScale: Double = 1.0,
 ) : Disposable {
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -183,10 +186,13 @@ internal class WallView(
     /** Set once the reader zooms, so a later pack keeps their zoom. */
     private var zoomTouched = false
     private var activePath: String? = null
+    private val activeBlock: BlockView? get() = views.firstOrNull { it.active }
+    private val focusedBlock: BlockView? get() = if (overview != null) activeBlock else null
     /** The first Tab focuses the initially active block before navigation advances. */
     private var firstStep = true
-    /** The zoom and view position from before Tab navigation zoomed in, restored by Escape. */
+    /** The zoom and view position from before card focus, restored by Escape. */
     private var overview: Pair<Double, Point>? = null
+    private var clickZoom: Timer? = null
     private var animation: Timer? = null
     private var watched: JScrollPane? = null
     /** Each block's Chat tab, by path; empty without [chats]. */
@@ -248,7 +254,9 @@ internal class WallView(
             }
             return
         }
-        if (content.scope != scope) {
+        val scopeChanged = content.scope != scope
+        val wasEmpty = shown.isEmpty()
+        if (scopeChanged) {
             stopAnimation()
             positions.clear()
             compact.clear()
@@ -278,10 +286,11 @@ internal class WallView(
         forgetMissingSummaries()
         folded.retainAll(content.blocks.map { it.path }.toSet())
         buildViews()
-        if (views.none { it.block.path == activePath }) {
+        if (scopeChanged || wasEmpty || (activePath != null && activeBlock == null)) {
             activePath = null
             views.firstOrNull()?.let(::activate)
             firstStep = true
+            if (activePath == null) overview = null
         }
         // Files that join an arranged scope go below the others rather than reshuffling them.
         if (arranged && mode == WallMode.CARDS) views.filter { it.block.path !in positions }.forEach { joined ->
@@ -301,7 +310,8 @@ internal class WallView(
     private fun buildViews() {
         val metrics = metrics()
         val blocks = if (mode == WallMode.SKIM) shown.map(::wallSkimBlock) else shown
-        val width = wallBlockWidth(blocks, metrics)
+        val baseWidth = wallBlockWidth(blocks, metrics)
+        val width = if (mode == WallMode.CARDS) (baseWidth * cardWidthScale).roundToInt() else baseWidth
         surface.removeAll()
         views = blocks.map { BlockView(it, width, metrics) }
         views.forEach(surface::add)
@@ -525,9 +535,12 @@ internal class WallView(
     private val gap: Int get() = JBUI.scale(24)
 
     /** Each block's place and size at 100%, in file order. */
-    private fun rects(): List<WallRect> = views.map { view ->
+    private fun rects(): List<WallRect> = views.map(::rect)
+
+    private fun rect(view: BlockView): WallRect {
         val at = positions[view.block.path] ?: Point(0, 0)
-        WallRect(at.x, at.y, view.logical.width, view.logical.height)
+        val size = view.logical
+        return WallRect(at.x, at.y, size.width, size.height)
     }
 
     /**
@@ -821,7 +834,7 @@ internal class WallView(
     }
 
     private fun activate(view: BlockView) {
-        val previous = views.firstOrNull { it.block.path == activePath }
+        val previous = activeBlock
         activePath = view.block.path
         surface.setComponentZOrder(view, 0)
         // Skim chat windows lie over their blocks and must stay in front of them.
@@ -842,28 +855,59 @@ internal class WallView(
             animate(zoom, Point(at.x, skimTop(views[next])))
             return
         }
-        val rects = rects()
         val current = views.indexOfFirst { it.block.path == activePath }.takeIf { it >= 0 }
         val next = (if (firstStep) current else null)
-            ?: wallNextBlock(wallReadingOrder(rects, gap), current, forward) ?: return
-        activate(views[next])
+            ?: wallNextBlock(wallReadingOrder(rects(), gap), current, forward) ?: return
+        val view = views[next]
+        activate(view)
         val viewport = viewport() ?: return
-        firstStep = false
-        if (overview == null) overview = zoom to viewport.viewPosition
-        val margin = gap
-        val capped = views[next].block.path in compact
-        val target = wallFocusZoom(rects[next].width, viewport.width, zoom, margin,
-            blockHeight = rects[next].height.takeIf { capped }, viewportHeight = viewport.height)
-        val offset = surfaceOffset(viewport)
-        zoomTouched = true
-        animate(target, wallFocusPosition(rects[next], target, offset.x, offset.y, viewport.width, viewport.height, margin))
+        beginCardFocus(viewport)
+        zoomToCard(view, viewport)
     }
 
-    /** Returns to the zoom and scroll from before Tab navigation, keeping the active block. */
-    private fun backToOverview() {
-        val (value, position) = overview ?: return
-        overview = null
-        animate(value, position)
+    private fun zoomToCard(view: BlockView, viewport: JViewport) {
+        val rect = rect(view)
+        val margin = gap
+        val capped = view.block.path in compact
+        val target = wallFocusZoom(rect.width, viewport.width, zoom, margin,
+            blockHeight = rect.height.takeIf { capped }, viewportHeight = viewport.height)
+        val offset = surfaceOffset(viewport)
+        zoomTouched = true
+        animate(target, wallFocusPosition(rect, target, offset.x, offset.y, viewport.width, viewport.height, margin))
+    }
+
+    private fun beginCardFocus(viewport: JViewport) {
+        firstStep = false
+        if (overview == null) overview = zoom to viewport.viewPosition
+    }
+
+    /** Waits before moving the card so a second click can still open the row under the pointer. */
+    private fun focusOnClick(path: String) {
+        stopAnimation()
+        beginCardFocus(viewport() ?: return)
+        val delay = (Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int) ?: 500
+        clickZoom = Timer(delay) {
+            clickZoom = null
+            val view = focusedBlock?.takeIf { it.block.path == path } ?: return@Timer
+            viewport()?.let { zoomToCard(view, it) }
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    /** Leaves card focus on the first Escape and clears the current card on the next. */
+    private fun escapeCards() {
+        val previous = overview
+        if (previous != null) {
+            overview = null
+            animate(previous.first, previous.second)
+        } else {
+            val active = activeBlock
+            activePath = null
+            firstStep = true
+            active?.repaint()
+        }
     }
 
     /** Eases the zoom and scroll to [target] and [position] over a moment; at once when not on screen. */
@@ -887,6 +931,8 @@ internal class WallView(
     }
 
     private fun stopAnimation() {
+        clickZoom?.stop()
+        clickZoom = null
         animation?.stop()
         animation = null
     }
@@ -911,9 +957,9 @@ internal class WallView(
         applyScrollMode()
     }
 
-    /** In Tab focus mode each scrollable body axis owns navigation, including at its scroll limits. */
+    /** Each scrollable axis belongs to the focused body, including at its limits. */
     private fun navigate(dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false) {
-        val focused = views.firstOrNull { it.block.path == activePath }?.takeIf { overview != null }
+        val focused = focusedBlock
         if (focused == null) {
             scrollBy(dx, dy)
             return
@@ -927,10 +973,12 @@ internal class WallView(
                 else -> (value / zoom).roundToInt()
             }
         }
-        val bodyX = dx.takeIf { focused.canScrollHorizontally } ?: 0
-        val bodyY = dy.takeIf { focused.canScrollVertically } ?: 0
-        focused.scrollContent(delta(bodyX, focused.logical.width), delta(bodyY, focused.logical.height - focused.metrics.headerHeight))
-        scrollBy(dx - bodyX, dy - bodyY)
+        val bodyX = if (focused.canScrollHorizontally) dx else 0
+        val bodyY = if (focused.canScrollVertically) dy else 0
+        if (bodyX != 0 || bodyY != 0) {
+            focused.scrollContent(delta(bodyX, focused.logical.width), delta(bodyY, focused.logical.height - focused.metrics.headerHeight))
+        }
+        if (bodyX != dx || bodyY != dy) scrollBy(dx - bodyX, dy - bodyY)
     }
 
     /** Where a mode left the wall: its zoom, whether the reader set it or moved blocks, the blocks' places and the page's scroll. */
@@ -974,7 +1022,9 @@ internal class WallView(
             },
             Key("next-block", listOf(key(KeyEvent.VK_TAB))) { step(forward = true) },
             Key("previous-block", listOf(key(KeyEvent.VK_TAB, shift))) { step(forward = false) },
-            Key("overview", listOf(key(KeyEvent.VK_ESCAPE)), { overview != null }) { backToOverview() },
+            Key("overview", listOf(key(KeyEvent.VK_ESCAPE)), { mode == WallMode.CARDS && (overview != null || activePath != null) }) {
+                escapeCards()
+            },
             Key("open", listOf(key(KeyEvent.VK_ENTER)), { activePath != null }) {
                 views.firstOrNull { it.block.path == activePath }?.let { openLine(it.block.path, null) }
             },
@@ -1021,13 +1071,21 @@ internal class WallView(
                 override fun mousePressed(e: MouseEvent) { requestFocusInWindow() }
             })
             addMouseWheelListener { e ->
+                e.consume()
                 if (e.isControlDown || e.isMetaDown) {
-                    e.consume()
                     val viewport = viewport()
                     zoomTo(wallZoomBy(zoom, WHEEL_ZOOM.pow(-e.preciseWheelRotation)), viewport?.let { SwingUtilities.convertPoint(this, e.point, it) })
                 } else {
-                    // Listening for the wheel takes it from the page; plain scrolling goes back to it.
-                    scrollPane()?.let { it.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, it)) }
+                    val focused = focusedBlock?.takeIf {
+                        if (e.isShiftDown) it.canScrollHorizontally else it.canScrollVertically
+                    }
+                    if (focused != null) {
+                        val delta = (e.preciseWheelRotation * WHEEL_ROWS * focused.metrics.lineHeight).roundToInt()
+                        if (e.isShiftDown) focused.scrollContent(delta, 0) else focused.scrollContent(0, delta)
+                    } else {
+                        stopAnimation()
+                        scrollPane()?.let { it.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, it)) }
+                    }
                 }
             }
             addFocusListener(object : FocusListener {
@@ -1036,7 +1094,9 @@ internal class WallView(
             })
             addHierarchyListener { e ->
                 watch(scrollPane())
-                if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L && isShowing) SwingUtilities.invokeLater { focusWhenOpened() }
+                if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
+                    if (isShowing) SwingUtilities.invokeLater { focusWhenOpened() } else stopAnimation()
+                }
             }
             keys().forEach { key ->
                 val action = object : AbstractAction(key.name) {
@@ -1190,6 +1250,7 @@ internal class WallView(
                 /** Where the block was grabbed at 100%, so it moves with the pointer rather than jumping to it. */
                 private var grab: Point2D.Double? = null
                 override fun mousePressed(e: MouseEvent) {
+                    if (!skim) stopAnimation()
                     if (contextMenu(e)) return
                     if (!SwingUtilities.isLeftMouseButton(e)) return
                     surface.requestFocusInWindow()
@@ -1241,7 +1302,13 @@ internal class WallView(
                     return true
                 }
                 override fun mouseClicked(e: MouseEvent) {
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2 && !onToggle(e.point) && !onSummaryToggle(e.point) && !onMenu(e.point)) openLine(block.path, lineAt(e.y))
+                    if (!SwingUtilities.isLeftMouseButton(e) || onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point)) return
+                    if (e.clickCount == 2) {
+                        if (!skim) stopAnimation()
+                        openLine(block.path, lineAt(e.y))
+                    } else if (e.clickCount == 1 && !skim) {
+                        focusOnClick(block.path)
+                    }
                 }
                 override fun mouseMoved(e: MouseEvent) {
                     cursor = if (onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
@@ -1252,24 +1319,9 @@ internal class WallView(
             val pan = Pan(this) { SwingUtilities.isMiddleMouseButton(it) }
             addMouseListener(pan)
             addMouseMotionListener(pan)
-            // A compact body takes the wheel while it has more to show; the canvas gets the rest, and Ctrl/Cmd for zoom.
             addMouseWheelListener { e ->
-                if (replacesBody && !e.isControlDown && !e.isMetaDown && !e.isShiftDown) {
-                    val rows = summaryRows()
-                    val visible = wallBodyRows(logical.height, metrics)
-                    val first = summaryScrolls[block.path] ?: 0
-                    val moved = wallSummaryScroll(first, (e.preciseWheelRotation * WHEEL_ROWS).roundToInt(), rows.size, visible)
-                    if (moved != first) {
-                        e.consume()
-                        summaryScrolls[block.path] = moved
-                        repaint()
-                        return@addMouseWheelListener
-                    }
-                    surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
-                    return@addMouseWheelListener
-                }
-                // Shift is how Swing delivers horizontal (touchpad) scrolling: the body takes it until its edge, then the canvas.
-                if (e.isShiftDown && !e.isControlDown && !e.isMetaDown && canScrollHorizontally) {
+                // Skim blocks fit the page, so Shift+wheel can reveal a row wider than the column.
+                if (skim && e.isShiftDown && !e.isControlDown && !e.isMetaDown && maxHorizontalScroll > 0) {
                     val first = horizontalScrolls[block.path] ?: 0
                     val moved = (first + (e.preciseWheelRotation * WHEEL_ROWS * metrics.lineHeight).roundToInt())
                         .coerceIn(0, maxHorizontalScroll)
@@ -1279,17 +1331,9 @@ internal class WallView(
                         repaint()
                         return@addMouseWheelListener
                     }
-                    surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
-                    return@addMouseWheelListener
                 }
-                val cap = cap
-                val moved = if (cap == null || e.isControlDown || e.isMetaDown || e.isShiftDown) null
-                else wallBodyScroll(offset, (e.preciseWheelRotation * WHEEL_ROWS * metrics.lineHeight).roundToInt(), fullHeight, cap)
-                if (moved != null && moved != offset) {
-                    e.consume()
-                    scrolls[block.path] = moved
-                    repaint()
-                } else surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
+                e.consume()
+                surface.dispatchEvent(SwingUtilities.convertMouseEvent(this, e, surface))
             }
             autoscrolls = true
             ToolTipManager.sharedInstance().registerComponent(this)
@@ -1311,13 +1355,12 @@ internal class WallView(
             repaint()
         }
 
-        val canScrollHorizontally: Boolean get() = !replacesBody && maxHorizontalScroll > 0
-        val canScrollVertically: Boolean get() = if (replacesBody)
-            summaryRows().size > wallBodyRows(logical.height, metrics) else cap != null
-
         /** The characters of the block's longest row, its gutter included. */
         private val longest: Int = (block.lines.maxOfOrNull { it.text.length } ?: 0) + gutter
         private val maxHorizontalScroll: Int get() = (longest * metrics.charWidth + 2 * metrics.padding - blockWidth).coerceAtLeast(0)
+        val canScrollHorizontally: Boolean get() = !replacesBody && maxHorizontalScroll > 0
+        val canScrollVertically: Boolean get() = if (replacesBody)
+            summaryRows().size > wallBodyRows(logical.height, metrics) else cap != null
 
         private fun onToggle(point: Point) = toggle?.contains(point) == true
 

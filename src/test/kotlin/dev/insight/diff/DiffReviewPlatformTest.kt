@@ -292,21 +292,24 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("zoom-in", surface.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).get(javax.swing.KeyStroke.getKeyStroke("ctrl EQUALS")))
             assertEquals("100%", zoom())
 
-            // A diff far taller than the viewport opens compact, capped below it, and its body scrolls under the wheel.
+            // A diff far taller than the viewport opens compact, capped below it.
             val a = blocks().single { it.block.path == "src/a.kt" }
             assertTrue("The first block starts active before Tab is pressed", a.active)
             assertTrue(a.isCompact)
             assertTrue(a.preferredSize.height < pane.height)
+
+            // Tab focuses the card so its body scrolls under the wheel.
+            press("TAB")
+            assertTrue(a.active)
+            assertEquals("150%", zoom())
+            surface.doLayout()
             val y = a.preferredSize.height / 2
             val before = a.lineAt(y)!!
             a.dispatchEvent(java.awt.event.MouseWheelEvent(a, java.awt.event.MouseEvent.MOUSE_WHEEL, 0L, 0, 10, y, 0, false,
                 java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 2))
             assertTrue(a.lineAt(y)!!.new!! > before.new!!)
 
-            // Tab activates blocks in reading order and zooms in to read them; Escape returns to the overview.
-            press("TAB")
-            assertTrue(a.active)
-            assertEquals("150%", zoom())
+            // Tab steps in reading order and Escape returns to the overview.
             press("TAB")
             val b = blocks().single { it.block.path == "src/b.kt" }
             assertTrue(b.active && !a.active)
