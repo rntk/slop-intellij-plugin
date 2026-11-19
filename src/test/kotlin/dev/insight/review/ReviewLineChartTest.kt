@@ -11,11 +11,11 @@ class ReviewLineChartTest {
         val tree = buildSummaryTree(listOf(file("src/a.kt", "a\nb\n"), file("src/nested/b.kt", "c"),
             file("README.md", "")), maxChildren = 2, chunks = { listOf(SourceChunk(0, 1..1, "part")) })
         val chart = ReviewLineChart(tree)
-        assertEquals(3L, chart.root.lines)
+        assertEquals(3L, chart.root.value)
         assertEquals(3, chart.root.files)
         assertEquals(listOf("README.md", "src"), chart.children(chart.root).map { it.path })
         val src = chart.directory("src")
-        assertEquals(3L, src.lines)
+        assertEquals(3L, src.value)
         assertEquals(2, src.files)
         assertEquals(listOf("src/nested", "src/a.kt"), chart.children(src).map { it.path })
         assertEquals(listOf("", "src", "src/nested"), chart.breadcrumbs(chart.directory("src/nested")).map { it.path })
@@ -39,18 +39,34 @@ class ReviewLineChartTest {
         val chart = ReviewLineChart(buildSummaryTree(files, maxChildren = 2))
         assertEquals("picked/src", chart.root.path)
         assertEquals(20, chart.children(chart.root).size)
-        assertEquals(20L, chart.root.lines)
+        assertEquals(20L, chart.root.value)
         assertEquals(listOf(chart.root), chart.breadcrumbs(chart.root))
         assertEquals(chart.root, chart.directory("picked/src/gone"))
         assertEquals(chart.root, chart.directory("elsewhere"))
     }
 
+    @Test fun `size uses UTF-8 bytes and items count each file including empty ones`() {
+        val tree = buildSummaryTree(
+            listOf(file("src/a.kt", "é\n"), file("src/nested/b.kt", "😀"), file("README.md", "")),
+            maxChildren = 2,
+            chunks = { listOf(SourceChunk(0, 1..1, "part")) },
+        )
+        val size = ReviewLineChart(tree, LineChartMetric.SIZE)
+        val items = ReviewLineChart(tree, LineChartMetric.ITEMS)
+        assertEquals(7L, size.root.value)
+        assertEquals(3L, items.root.value)
+        assertEquals(listOf("src/a.kt" to 3L, "src/nested" to 4L),
+            size.children(size.directory("src")).map { it.path to it.value })
+        assertEquals(listOf("README.md" to 1L, "src" to 2L),
+            items.children(items.root).map { it.path to it.value })
+    }
+
     @Test fun `removed directory falls back to surviving parent and empty scope is safe`() {
         val chart = ReviewLineChart(buildSummaryTree(listOf(file("src/a.kt", "x"), file("b.kt", "y\nz"))))
         assertEquals("src", chart.directory("src/removed/deeper").path)
-        assertEquals(3L, chart.root.lines)
+        assertEquals(3L, chart.root.value)
         val empty = ReviewLineChart(buildSummaryTree(emptyList()))
-        assertEquals(0L, empty.root.lines)
+        assertEquals(0L, empty.root.value)
         assertTrue(empty.children(empty.root).isEmpty())
     }
 
@@ -62,15 +78,15 @@ class ReviewLineChartTest {
             patch("src/a.kt", "-old\n+new\n+extra\n context"),
             patch("src/nested/b.kt", "-one\n-two\n+three"),
             patch("readme.md", "+hello")))
-        val added = ReviewLineChart(tree, RadarSeries.ADDED)
-        val removed = ReviewLineChart(tree, RadarSeries.REMOVED)
-        assertEquals(4L, added.root.lines)
-        assertEquals(3L, removed.root.lines)
-        assertEquals(3L, added.directory("src").lines)
-        assertEquals(3L, removed.directory("src").lines)
+        val added = ReviewLineChart(tree, LineChartMetric.ADDED)
+        val removed = ReviewLineChart(tree, LineChartMetric.REMOVED)
+        assertEquals(4L, added.root.value)
+        assertEquals(3L, removed.root.value)
+        assertEquals(3L, added.directory("src").value)
+        assertEquals(3L, removed.directory("src").value)
         assertEquals(listOf("src/nested", "src/a.kt"), added.children(added.directory("src")).map { it.path })
         assertEquals(listOf("src/a.kt", "src/nested"), removed.children(removed.directory("src")).map { it.path })
-        assertEquals(0L, removed.children(removed.root).single { it.path == "readme.md" }.lines)
+        assertEquals(0L, removed.children(removed.root).single { it.path == "readme.md" }.value)
     }
 
     @Test

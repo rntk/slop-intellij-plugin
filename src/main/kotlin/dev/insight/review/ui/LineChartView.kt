@@ -9,10 +9,9 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.insight.review.RadarSeries
+import dev.insight.review.LineChartMetric
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSource
-import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.dotLeader
 import java.awt.BorderLayout
 import java.awt.Component
@@ -47,12 +46,11 @@ internal data class LineChartPreview(val path: String, val kind: LineChartPrevie
  * moves it, and the arrow keys move it, fold and unfold folders, while Enter explores or opens the current row.
  */
 internal class LineChartPanel(
-    tree: ReviewSummaryTree,
+    private val chart: ReviewLineChart,
     path: String?,
     rootLabel: String,
     private val navigate: (String) -> Unit,
     private val open: (String) -> Unit,
-    val series: RadarSeries = RadarSeries.SOURCE,
     private val contextMenu: ((String) -> JPopupMenu)? = null,
     private val preview: LineChartPreview? = null,
     private val togglePreview: (LineChartPreview) -> Unit = {},
@@ -61,9 +59,8 @@ internal class LineChartPanel(
     cursorPath: String? = null,
     private val cursorChanged: (String?) -> Unit = {},
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
-    internal val chart = ReviewLineChart(tree, series)
-    private val lineLabel = series.label.lowercase(Locale.US)
-    private val numberColor get() = if (series == RadarSeries.SOURCE) UIUtil.getLabelForeground() else RadarChartPanel.color(series)
+    private val metric = chart.metric
+    private val numberColor get() = metric.diffSeries?.let { RadarChartPanel.color(it) } ?: UIUtil.getLabelForeground()
     val directory = chart.directory(path)
     private var expandedPaths = expanded
     private var rows: List<ReviewLineChart.Row> = emptyList()
@@ -85,7 +82,7 @@ internal class LineChartPanel(
         name = "charts-lines"
         isOpaque = false
         isFocusable = true
-        getAccessibleContext().accessibleName = "${if (series == RadarSeries.SOURCE) "Lines of code" else series.label} chart"
+        getAccessibleContext().accessibleName = "${metric.label} chart"
         add(JPanel(VerticalLayout(JBUI.scale(6))).apply {
             isOpaque = false
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
@@ -109,15 +106,13 @@ internal class LineChartPanel(
                     })
                 }
             })
-            add(JLabel("${number(directory.lines)} $lineLabel · ${number(directory.files.toLong())} files").apply {
+            add(JLabel(valueText(directory.value) + if (metric == LineChartMetric.ITEMS) "" else " · " + fileCount(directory)).apply {
                 name = "charts-lines-total"
                 font = chartFont(JBFont.small())
                 foreground = numberColor
-                toolTipText = if (series == RadarSeries.SOURCE) "Source text lines, including blank lines and comments, in the selected scope"
-                    else "${series.label} in the selected diff directory"
+                toolTipText = metric.description
             })
-            add(JLabel("${if (series == RadarSeries.SOURCE) "Lines of code" else series.label} · " +
-                "Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
+            add(JLabel("Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
                 font = chartFont(JBFont.small())
                 foreground = UIUtil.getContextHelpForeground()
             })
@@ -249,8 +244,12 @@ internal class LineChartPanel(
             )
         } else JBUI.Borders.empty(4, 7)
         componentPopupMenu = contextMenu?.invoke(entry.path)
-        val tooltip = "${entry.path} · ${number(entry.lines)} $lineLabel" +
-            if (entry.directory) " · ${entry.files} files · Click to explore" else if (series == RadarSeries.SOURCE) " · Open file" else " · View diff"
+        val tooltip = "${entry.path} · ${valueText(entry.value)}" + when {
+            entry.directory && metric != LineChartMetric.ITEMS -> " · ${fileCount(entry)} · Click to explore"
+            entry.directory -> " · Click to explore"
+            metric.diffSeries == null -> " · Open file"
+            else -> " · View diff"
+        }
         add(object : JComponent() {
             init {
                 inheritsPopupMenu = true
@@ -265,7 +264,7 @@ internal class LineChartPanel(
                 g.font = numberFont()
                 val metrics = g.fontMetrics
                 val cell = metrics.charWidth('0').coerceAtLeast(1)
-                val text = number(entry.lines)
+                val text = number(entry.value)
                 val line = dotLeader(text, width / cell)
                 val leader = line.length - text.length
                 val x = width - line.length * cell
@@ -289,7 +288,7 @@ internal class LineChartPanel(
                 name = "charts-lines-entry:${entry.path}"
                 icon = if (entry.directory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
                 toolTipText = tooltip
-                accessibleContext.accessibleName = "${entry.label}, ${number(entry.lines)} $lineLabel, ${if (entry.directory) "directory" else "file"}"
+                accessibleContext.accessibleName = "${entry.label}, ${valueText(entry.value)}, ${if (entry.directory) "directory" else "file"}"
             }, BorderLayout.CENTER)
         }, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
@@ -350,7 +349,7 @@ internal class LineChartPanel(
         val selection = LineChartPreview(path, mode)
         val active = preview == selection
         val summary = mode == LineChartPreviewKind.SUMMARY
-        val kind = if (summary) "summary" else if (series == RadarSeries.SOURCE) "source" else "diff"
+        val kind = if (summary) "summary" else if (metric.diffSeries == null) "source" else "diff"
         val label = if (active) "Hide $kind" else "Show $kind"
         return JToggleButton().apply {
             if (summary) {
@@ -377,6 +376,10 @@ internal class LineChartPanel(
     }
 
     private fun number(value: Long) = String.format(Locale.US, "%,d", value)
+
+    private fun valueText(value: Long) = "${number(value)} ${metric.unit}${if (value == 1L) "" else "s"}"
+
+    private fun fileCount(entry: ReviewLineChart.Entry) = "${number(entry.files.toLong())} ${if (entry.files == 1) "file" else "files"}"
 
     private fun chartFont(font: Font): Font = font.deriveFont(font.size2D * FONT_SCALE)
 

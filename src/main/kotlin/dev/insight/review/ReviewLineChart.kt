@@ -3,14 +3,34 @@ package dev.insight.review
 /** Right-aligns [text] in a monospace row of [columns] cells, filling the leading cells with dots. */
 internal fun dotLeader(text: String, columns: Int): String = text.padStart(columns, '.')
 
-/** Physical folders and files only: summary groups and file chunks never become chart entries. */
-internal class ReviewLineChart(tree: ReviewSummaryTree, series: RadarSeries = RadarSeries.SOURCE) {
-    data class Entry(val path: String, val label: String, val directory: Boolean, val lines: Long, val files: Int)
+internal enum class LineChartMetric(
+    val label: String,
+    val unit: String,
+    val description: String,
+    val diffSeries: RadarSeries? = null,
+) {
+    LINES("Lines of code", "line", "Source text lines, including blank lines and comments"),
+    SIZE("Size", "byte", "UTF-8 bytes in the captured source text"),
+    ITEMS("Items", "item", "Files in the selected scope"),
+    ADDED("Added lines", "added line", "Added lines in the selected diff directory", RadarSeries.ADDED),
+    REMOVED("Removed lines", "removed line", "Removed lines in the selected diff directory", RadarSeries.REMOVED);
 
-    private val sources: List<ReviewSource> = tree.nodes
-        .filter { it.kind == SummaryKind.FILE }
-        .distinctBy { it.path }
-        .mapNotNull { it.file }
+    fun value(file: ReviewSource): Long = when (this) {
+        LINES -> radarLines(file).source.toLong()
+        SIZE -> file.text?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: 0L
+        ITEMS -> 1L
+        ADDED -> radarLines(file).added.toLong()
+        REMOVED -> radarLines(file).removed.toLong()
+    }
+}
+
+/** Physical folders and files only: summary groups and file chunks never become chart entries. */
+internal class ReviewLineChart(tree: ReviewSummaryTree, val metric: LineChartMetric = LineChartMetric.LINES) {
+    data class Entry(val path: String, val label: String, val directory: Boolean, val value: Long, val files: Int)
+
+    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE }.distinctBy { it.path }
+
+    private val sources: List<ReviewSource> = fileNodes.mapNotNull { it.file }
 
     private val entries = tree.nodes.filter { it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE }
         .associate { node ->
@@ -22,17 +42,17 @@ internal class ReviewLineChart(tree: ReviewSummaryTree, series: RadarSeries = Ra
 
     init {
         // Count each captured file once, regardless of summary groups or chunks beneath it.
-        for (node in tree.nodes.filter { it.kind == SummaryKind.FILE }.distinctBy { it.path }) {
-            val lines = node.file?.let(::radarLines)?.let(series.value)?.toLong() ?: 0L
-            entries[node.path]?.let { entries[node.path] = it.copy(lines = lines) }
+        for (node in fileNodes) {
+            val value = node.file?.let(metric::value) ?: 0L
+            entries[node.path]?.let { entries[node.path] = it.copy(value = value) }
             var parent = node.path.substringBeforeLast('/', "")
             while (parent.isNotEmpty()) {
-                entries[parent]?.let { entries[parent] = it.copy(lines = it.lines + lines, files = it.files + 1) }
+                entries[parent]?.let { entries[parent] = it.copy(value = it.value + value, files = it.files + 1) }
                 parent = parent.substringBeforeLast('/', "")
             }
         }
         root = entries[rootPath] ?: Entry("", tree.root.label, true,
-            entries.values.filterNot { it.directory }.sumOf { it.lines }, entries.values.count { !it.directory })
+            entries.values.filterNot { it.directory }.sumOf { it.value }, fileNodes.size)
     }
 
     fun hasEntry(path: String): Boolean = path == root.path || path in entries
@@ -59,7 +79,7 @@ internal class ReviewLineChart(tree: ReviewSummaryTree, series: RadarSeries = Ra
 
     fun children(directory: Entry): List<Entry> = entries.values.filter {
         it.path != directory.path && it.path.substringBeforeLast('/', "") == directory.path
-    }.sortedWith(compareBy<Entry> { it.lines }.thenBy { it.label }.thenBy { it.path })
+    }.sortedWith(compareBy<Entry> { it.value }.thenBy { it.label }.thenBy { it.path })
 
     /** One visible line: an entry and how deep it sits below the shown directory. */
     data class Row(val entry: Entry, val depth: Int, val expanded: Boolean)

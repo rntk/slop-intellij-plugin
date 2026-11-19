@@ -8,12 +8,14 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.LineChartMetric
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
@@ -67,7 +69,7 @@ internal class ChartsViewState {
     var linesDivider: Int? = null
     /** Whether the chart had keyboard focus when it was last rebuilt. */
     var linesFocused = false
-    var linesSeries = RadarSeries.ADDED
+    var lineMetric: LineChartMetric? = null
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
     var radarLog = false
@@ -107,8 +109,10 @@ internal class ChartsCanvasCard(
         preview = null
         val lines = view.chart != "Radar"
         val diff = vocabulary == ReviewVocabulary.DIFF
-        val linesTitle = if (diff) "Changed lines" else "Lines of code"
-        val series = if (diff) view.linesSeries else RadarSeries.SOURCE
+        val linesTitle = if (diff) "Changed lines" else "File metrics"
+        val metrics = if (diff) listOf(LineChartMetric.ADDED, LineChartMetric.REMOVED)
+            else listOf(LineChartMetric.LINES, LineChartMetric.SIZE, LineChartMetric.ITEMS)
+        val metric = view.lineMetric ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -118,7 +122,7 @@ internal class ChartsCanvasCard(
             add(JLabel("Charts").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = if (diff) "Explore added or removed lines by directory, or compare changes on the radar"
-                    else "Compare folder and file sizes; explore source lines or the radar"
+                    else "Explore source lines, byte sizes, and file counts by directory, or compare code structure on the radar"
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -127,16 +131,6 @@ internal class ChartsCanvasCard(
                     font = scaledFont(JBFont.small())
                     selectedItem = if (lines) linesTitle else "Radar"
                     addActionListener { view.chart = selectedItem as String; refresh() }
-                })
-                if (lines && diff) add(JComboBox(arrayOf(RadarSeries.ADDED.label, RadarSeries.REMOVED.label)).apply {
-                    name = "charts-lines-series-selector"
-                    font = scaledFont(JBFont.small())
-                    selectedItem = view.linesSeries.label
-                    toolTipText = "Count added or removed lines in the selected diff"
-                    addActionListener {
-                        view.linesSeries = if (selectedIndex == 0) RadarSeries.ADDED else RadarSeries.REMOVED
-                        refresh()
-                    }
                 })
                 if (!lines && chart.levels > 1) add(radarLevels(chart))
                 if (!lines && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
@@ -152,10 +146,12 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val activePreview = if (lines) view.linesPreview?.takeIf { ReviewLineChart(content.tree, series).hasEntry(it.path) }
-            .also { view.linesPreview = it } else null
-        val lineChart = if (lines) LineChartPanel(
-            content.tree,
+        val hierarchy = if (lines) ReviewLineChart(content.tree, metric) else null
+        val activePreview = hierarchy?.let { chart ->
+            view.linesPreview?.takeIf { chart.hasEntry(it.path) }.also { view.linesPreview = it }
+        }
+        val lineChart = if (hierarchy != null) LineChartPanel(
+            hierarchy,
             view.linesPath,
             vocabulary.rootName,
             { path ->
@@ -164,7 +160,6 @@ internal class ChartsCanvasCard(
                 rebuildKeepingFocus()
             },
             open,
-            series,
             contextMenu = project?.let { { path -> contextMenu(content.tree, path) } },
             preview = activePreview,
             togglePreview = { selection ->
@@ -230,7 +225,7 @@ internal class ChartsCanvasCard(
             }
         } else bodyScroll
         card.add(header, BorderLayout.NORTH)
-        card.add(readingArea, BorderLayout.CENTER)
+        card.add(if (lines) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
         currentCard = card
         if (lineChart != null && view.linesFocused) {
             view.linesFocused = false
@@ -238,6 +233,30 @@ internal class ChartsCanvasCard(
         }
         return card
     }
+
+    private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent) =
+        JBTabbedPane().apply {
+            name = "charts-lines-metric-tabs"
+            accessibleContext.accessibleName = "Chart metric"
+            font = scaledFont(JBFont.small())
+            metrics.forEachIndexed { index, metric ->
+                addTab(metric.label, null, if (metric == selected) content else JPanel(), metric.description)
+                metric.diffSeries?.let { series ->
+                    (getTabComponentAt(index) as JLabel).foreground = RadarChartPanel.color(series)
+                }
+            }
+            selectedIndex = metrics.indexOf(selected)
+            addChangeListener {
+                val restoreFocus = isFocusOwner
+                view.lineMetric = metrics[selectedIndex]
+                refresh()
+                if (restoreFocus) {
+                    val card = currentCard
+                    val tabs = (card?.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
+                    SwingUtilities.invokeLater { if (currentCard === card) tabs?.requestFocusInWindow() }
+                }
+            }
+        }
 
     /** Rebuilds the card, returning keyboard focus to the chart when it had it. */
     private fun rebuildKeepingFocus() {

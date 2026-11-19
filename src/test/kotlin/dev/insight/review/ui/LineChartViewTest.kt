@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBTabbedPane
 import dev.insight.codereview.CodeFile
 import dev.insight.context.ContextData
 import dev.insight.context.ContextScopeKind
@@ -90,7 +91,7 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals(listOf("src/nested/b.kt"), opened)
             selector().selectedItem = "Radar"
             assertEquals(1, components().filterIsInstance<RadarChartPanel>().size)
-            selector().selectedItem = "Lines of code"
+            selector().selectedItem = "File metrics"
             assertEquals("src/nested", components().filterIsInstance<LineChartPanel>().single().directory.path)
             click("charts-lines-crumb:src")
             val panel = components().filterIsInstance<LineChartPanel>().single().apply { setSize(900, 400); doLayout() }
@@ -98,6 +99,32 @@ class LineChartViewTest : BasePlatformTestCase() {
             image.createGraphics().also { panel.paint(it) }.dispose()
             click("charts-lines-crumb:")
             assertEquals(2, entries().size)
+        } finally { canvas.dispose() }
+    }
+
+    fun testCodeMetricTabsShowLineByteAndFileCounts() {
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "é\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "😀"),
+            CodeFile("readme.md", "/repo/readme.md", ""),
+        )
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE)
+        fun components() = descendants(canvas)
+        fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
+        fun total() = components().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }.text
+        val path = "src/a.kt"
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            assertEquals(listOf("Lines of code", "Size", "Items"), (0 until tabs().tabCount).map { tabs().getTitleAt(it) })
+            components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
+            components().filterIsInstance<JToggleButton>().single { it.name == "charts-lines-toggle:$path" }.doClick()
+            assertEquals("2 lines · 2 files", total())
+            tabs().selectedIndex = 1
+            assertEquals("7 bytes · 2 files", total())
+            tabs().selectedIndex = 2
+            assertEquals("2 items", total())
+            assertEquals("src", components().filterIsInstance<LineChartPanel>().single().directory.path)
+            assertEquals(LineChartPreview(path, LineChartPreviewKind.SOURCE), canvas.chartsView.linesPreview)
         } finally { canvas.dispose() }
     }
 
@@ -109,6 +136,7 @@ class LineChartViewTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({ opened += it }, {}, vocabulary = ReviewVocabulary.DIFF)
         fun components() = descendants(canvas)
         fun selector(name: String) = components().filterIsInstance<JComboBox<*>>().single { it.name == name }
+        fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
         fun total() = components().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }
         fun assertColor(series: RadarSeries) {
             assertEquals(RadarChartPanel.color(series), total().foreground)
@@ -118,18 +146,21 @@ class LineChartViewTest : BasePlatformTestCase() {
         }
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            assertEquals(listOf("Added lines", "Removed lines"), (0 until tabs().tabCount).map { tabs().getTitleAt(it) })
+            assertEquals(RadarChartPanel.color(RadarSeries.ADDED), tabs().getTabComponentAt(0).foreground)
+            assertEquals(RadarChartPanel.color(RadarSeries.REMOVED), tabs().getTabComponentAt(1).foreground)
             assertEquals("4 added lines · 2 files", total().text)
             assertColor(RadarSeries.ADDED)
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
-            selector("charts-lines-series-selector").selectedItem = "Removed lines"
-            assertEquals("1 removed lines · 1 files", total().text)
+            tabs().selectedIndex = 1
+            assertEquals("1 removed line · 1 file", total().text)
             assertColor(RadarSeries.REMOVED)
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src/a.kt" }.doClick()
             assertEquals(listOf("src/a.kt"), opened)
             selector("charts-type-selector").selectedItem = "Radar"
             selector("charts-type-selector").selectedItem = "Changed lines"
             assertEquals("src", components().filterIsInstance<LineChartPanel>().single().directory.path)
-            assertEquals("Removed lines", selector("charts-lines-series-selector").selectedItem)
+            assertEquals(1, tabs().selectedIndex)
             assertColor(RadarSeries.REMOVED)
         } finally { canvas.dispose() }
     }

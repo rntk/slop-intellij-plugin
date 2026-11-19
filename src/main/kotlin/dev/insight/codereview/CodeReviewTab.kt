@@ -241,7 +241,7 @@ internal class CodeReviewTab(
         ReviewViewOption(CanvasTabKey.Topics, "Topics",
             "Read the code grouped by topic, broad to specific, with each file's summary (/topics)") { topicStats(state.topics, "topic") },
         ReviewViewOption(CanvasTabKey.Charts, "Charts",
-            "Explore lines of code by directory and file, or compare symbols, comments and source lines on a radar"),
+            "Explore source lines, byte sizes and file counts by directory, or compare code structure on a radar"),
         ReviewViewOption(CanvasTabKey.CodeMap, "Code map",
             "Read the code as flows: classes and files that use each other, from their roots to tests, with the shared code they rely on (/code-map)") { codeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.CODE.wallName,

@@ -20,6 +20,7 @@ import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.SummaryKind
 import dev.insight.review.summarize
+import dev.insight.review.ui.LineChartPanel
 import dev.insight.review.ui.chooseView
 import dev.insight.review.ui.tileStats
 import dev.insight.review.ui.viewLabels
@@ -28,6 +29,7 @@ import java.awt.Container
 import javax.swing.JLabel
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.JButton
+import javax.swing.JComboBox
 import javax.swing.JRootPane
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreePath
@@ -203,6 +205,25 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             Disposer.dispose(tab)
             assertFalse(manager.isFileOpen(tab.canvasFile))
             assertFalse(ReviewCanvasEditorProvider().accept(project, tab.canvasFile))
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun testOpeningChartsPrefersKeyboardFocusOnTheCurrentRow() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val manager = FileEditorManager.getInstance(project)
+        try {
+            val file = codeFile("a.kt", "val a = 1\n")
+            tab.update(codeSnapshot(file))
+            tab.openCharts()
+            val charts = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Charts") }
+            val editor = manager.getEditors(charts).single()
+            val lineChart = descendants(editor.component).filterIsInstance<LineChartPanel>().single()
+            assertEquals(file.path, lineChart.cursorPath)
+            assertSame(lineChart, editor.preferredFocusedComponent)
+
+            descendants(editor.component).filterIsInstance<JComboBox<*>>()
+                .single { it.name == "charts-type-selector" }.selectedItem = "Radar"
+            assertSame(charts.review.canvas, editor.preferredFocusedComponent)
         } finally { Disposer.dispose(tab) }
     }
 

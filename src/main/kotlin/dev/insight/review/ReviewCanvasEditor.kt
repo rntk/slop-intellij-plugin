@@ -11,6 +11,7 @@ import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ui.LineChartPanel
 import dev.insight.review.wall.WallView
 import java.awt.BorderLayout
 import java.awt.Component
@@ -79,11 +80,12 @@ internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserData
     override fun getComponent(): JComponent = panel
     override fun getPreferredFocusedComponent(): JComponent {
         val canvas = file.review.canvas
-        val wall = UIUtil.findComponentOfType(canvas, WallView.Surface::class.java) ?: return canvas
         // The IDE can ask before the editor is showing; only visibility within its canvas matters here.
-        val visible = generateSequence<Component>(wall) { it.parent }
+        fun visibleWithinCanvas(component: JComponent): Boolean = generateSequence<Component>(component) { it.parent }
             .takeWhile { it !== canvas }.all { it.isVisible }
-        return if (visible) wall else canvas
+        return UIUtil.findComponentOfType(canvas, LineChartPanel::class.java)?.takeIf(::visibleWithinCanvas)
+            ?: UIUtil.findComponentOfType(canvas, WallView.Surface::class.java)?.takeIf(::visibleWithinCanvas)
+            ?: canvas
     }
     override fun getName() = file.review.canvasTitle
     override fun getFile(): VirtualFile = file
