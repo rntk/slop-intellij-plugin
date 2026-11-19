@@ -10,6 +10,7 @@ import dev.insight.review.SUMMARY_JSON_SHAPE
 import dev.insight.review.SUMMARY_SEGMENT_GUIDANCE
 import dev.insight.review.SUMMARY_WRITING_GUIDANCE
 import dev.insight.review.numberedRows
+import dev.insight.review.Summary
 import dev.insight.review.SummaryEvidence
 import dev.insight.review.SummaryNode
 import dev.insight.review.summaryFocusLine
@@ -46,6 +47,9 @@ internal class CodeSummaryEvidence(
         return node.lines ?: 1..file.lineCount
     }
 
+    override fun localSummary(node: SummaryNode): Summary? =
+        if ((node.file as? CodeFile)?.lineCount == 0) Summary.plain("This file is empty.") else null
+
     override fun describe(node: SummaryNode, item: JsonObject, limit: Int) {
         val file = node.file as? CodeFile ?: return
         item.addProperty("path", file.path)
@@ -61,7 +65,7 @@ internal class CodeSummaryEvidence(
             if (index >= 0) item.addProperty("part", "${index + 1} of ${file.chunks.size}")
         }
         val code = if (node.lines == null) file.text.removeSuffix("\n") else file.lines(lines)
-        item.addProperty("code", numberedRows(code.take(limit), lines.first))
+        item.addProperty("code", if (lines.isEmpty()) "" else numberedRows(code.take(limit), lines.first))
         // Parts are smaller than the limit; only a single overlong line can be cut.
         if (code.length > limit) {
             item.addProperty("code_cut_at", limit)

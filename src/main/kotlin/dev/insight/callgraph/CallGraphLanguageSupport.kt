@@ -5,6 +5,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 
 /**
  * Language-specific knowledge for the call graph. Implementations are registered from optional
@@ -42,6 +43,9 @@ interface CallGraphLanguageSupport {
     fun supportsLanguage(language: com.intellij.lang.Language): Boolean = true
 
     fun symbolKind(element: PsiElement): SymbolKind? = if (isFunction(element)) SymbolKind.FUNCTION else null
+
+    /** Syntactic [SymbolTrait]s of [element], such as an interface or a test function; no reference resolution. */
+    fun symbolTraits(element: PsiElement): Set<SymbolTrait> = emptySet()
 
     /** Explicit constant declarations, without reference resolution. */
     fun isConstant(element: PsiElement): Boolean = false

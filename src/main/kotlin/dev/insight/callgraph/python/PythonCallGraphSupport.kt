@@ -19,6 +19,7 @@ import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 
 /**
  * Loaded only when the Python plugin is present (see META-INF/call-graph-python.xml).
@@ -80,6 +81,32 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
         is PyTypeAliasStatement -> SymbolKind.SYMBOL
         is PyTargetExpression -> targetKind(element)
         else -> null
+    }
+
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is PyClass -> {
+            val bases = element.superClassExpressions.map { it.text.substringAfterLast('.') }
+            setOfNotNull(
+                SymbolTrait.ENUM.takeIf { bases.any { it.endsWith("Enum") || it == "Flag" || it == "IntFlag" } },
+                SymbolTrait.INTERFACE.takeIf { bases.any { it == "Protocol" || it == "ABC" || it.startsWith("Protocol[") } },
+                SymbolTrait.STRUCT.takeIf {
+                    element.decoratorList?.decorators.orEmpty().any { it.name in STRUCT_DECORATORS } ||
+                        bases.any { it == "NamedTuple" || it == "TypedDict" || it == "BaseModel" }
+                },
+            )
+        }
+        is PyFunction -> {
+            val name = element.name.orEmpty()
+            val method = element.containingClass != null
+            setOfNotNull(
+                SymbolTrait.CONSTRUCTOR.takeIf { method && name == "__init__" },
+                SymbolTrait.ASYNC.takeIf { element.isAsync },
+                SymbolTrait.TEST.takeIf { name.startsWith("test") },
+            )
+        }
+        is PyLambdaExpression -> setOf(SymbolTrait.LAMBDA)
+        is PyTypeAliasStatement -> setOf(SymbolTrait.TYPE_ALIAS)
+        else -> emptySet()
     }
 
     override fun relationKind(element: PsiElement): RelationKind? = when {
@@ -192,3 +219,5 @@ class PythonCallGraphSupport : CallGraphLanguageSupport {
         const val MAX_BY_NAME = 3
     }
 }
+
+private val STRUCT_DECORATORS = setOf("dataclass", "attrs", "define", "frozen", "attr.s")

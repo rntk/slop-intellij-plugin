@@ -27,6 +27,7 @@ import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 
 /**
  * Loaded only when the JavaScript plugin is present (see META-INF/call-graph-javascript.xml).
@@ -110,6 +111,25 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         it.explicitAccessType != null || it.findModifierElement(JSAttributeList.ModifierType.READONLY) != null
     } == true
 
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is TypeScriptInterface -> setOf(SymbolTrait.INTERFACE)
+        is TypeScriptEnum -> setOf(SymbolTrait.ENUM)
+        is TypeScriptTypeAlias -> setOf(SymbolTrait.TYPE_ALIAS)
+        is JSFunction -> setOfNotNull(
+            SymbolTrait.CONSTRUCTOR.takeIf { element.isConstructor },
+            SymbolTrait.ASYNC.takeIf { element.isAsync },
+            SymbolTrait.LAMBDA.takeIf { element is JSFunctionExpression && !isDefaultExportedFunction(element) },
+        )
+        // Test runners declare tests as calls: it("…", …) and test("…", …), including .only and .each forms.
+        is JSCallExpression -> {
+            val callee = element.methodExpression as? JSReferenceExpression
+            val root = generateSequence(callee) { it.qualifier as? JSReferenceExpression }.lastOrNull()
+            if (root?.qualifier == null && root?.referenceName in TEST_CALLS && element.arguments.size >= 2)
+                setOf(SymbolTrait.TEST) else emptySet()
+        }
+        else -> emptySet()
+    }
+
     override fun relationKind(element: PsiElement): RelationKind? = when (element) {
         is ES6ImportDeclaration, is TypeScriptImportStatement -> RelationKind.IMPORT
         is ES6ExportDeclaration -> if (element.isReExport) RelationKind.IMPORT else null
@@ -169,3 +189,5 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
         else -> null
     }
 }
+
+private val TEST_CALLS = setOf("it", "test")

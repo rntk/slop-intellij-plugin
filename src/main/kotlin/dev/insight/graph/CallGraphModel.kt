@@ -6,6 +6,12 @@ enum class CallDirection(val label: String) {
 }
 
 enum class SymbolKind { DIRECTORY, FILE, CLASS, FUNCTION, PROPERTY, PARAMETER, VARIABLE, SYMBOL }
+
+/**
+ * Finer, partly language-specific facts about a PSI element, recognized syntactically. Most refine a [SymbolKind] (an
+ * interface is also a class); lambdas, goroutine launches and JavaScript test calls stand on their own.
+ */
+enum class SymbolTrait { INTERFACE, ENUM, STRUCT, OBJECT, TYPE_ALIAS, IMPL, CONSTRUCTOR, TEST, ASYNC, LAMBDA }
 enum class RelationKind { CALL, CONTAINS, IMPORT, INHERITS, REFERENCE }
 
 /** [level] is 0 for the root, negative for callers and positive for callees. */

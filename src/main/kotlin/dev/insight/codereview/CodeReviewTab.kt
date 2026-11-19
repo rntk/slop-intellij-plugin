@@ -197,6 +197,7 @@ internal class CodeReviewTab(
             openFileAt = { path, line -> openFile(path, line) },
             showFileLines = { path, lines -> showSourceBlock(path, lines) },
             removeFileView = { closeFileView() },
+            outlines = CodeOutlines(project, this),
         ),
         summaryActions = SummaryCanvasActions(
             summarize = { summarize() },

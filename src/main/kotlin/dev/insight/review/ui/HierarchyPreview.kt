@@ -120,6 +120,34 @@ internal class HierarchyPreviewPanel(
         blocks.repaint()
     }
 
+    /** Shows only [lines] (1-based, inclusive) of [file], titled by [title], such as one declaration. */
+    internal fun showLines(file: ReviewSource, lines: IntRange, title: String) {
+        if (disposed) return
+        val key = listOf("${file.path}:${lines.first}-${lines.last}")
+        if (paths == key) return
+        paths = key
+        remember(listOf(file.path))
+        releaseEditors()
+        blocks.removeAll()
+        val text = file.text.orEmpty()
+        val all = text.lines()
+        val first = lines.first.coerceIn(1, maxOf(1, all.size))
+        val last = lines.last.coerceIn(first, maxOf(first, all.size))
+        val shown = all.subList(first - 1, minOf(last, all.size)).joinToString("\n")
+        val viewer = DiffSourceEditor(ReviewSourceBlock(ReviewSourceRange(file.path, first, last, SourceSide.CURRENT), shown,
+            fullText = text, absolutePath = file.absolutePath), project).apply { resizeFor(JBUI.scale(600), 1.0) }
+        editors += viewer
+        blocks.add(JPanel(BorderLayout()).apply {
+            name = "hierarchy-preview:${file.path}:$first"
+            border = JBUI.Borders.customLine(com.intellij.ui.JBColor.border())
+            add(JLabel("$title · ${file.path}:$first–$last").apply { border = JBUI.Borders.empty(6); toolTipText = file.path },
+                BorderLayout.NORTH)
+            add(viewer, BorderLayout.CENTER)
+        })
+        blocks.revalidate()
+        blocks.repaint()
+    }
+
     private fun releaseEditors() { editors.forEach(Disposer::dispose); editors.clear() }
     override fun dispose() { disposed = true; releaseEditors() }
 }

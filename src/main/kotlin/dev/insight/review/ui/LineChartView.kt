@@ -10,6 +10,8 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.LineChartMetric
+import dev.insight.review.OutlineDeclaration
+import dev.insight.review.RadarSymbolKind
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSource
 import dev.insight.review.dotLeader
@@ -28,7 +30,10 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.util.Locale
+import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.ui.AnimatedIcon
 import javax.swing.AbstractAction
+import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -42,7 +47,8 @@ internal enum class LineChartPreviewKind { SOURCE, SUMMARY }
 internal data class LineChartPreview(val path: String, val kind: LineChartPreviewKind)
 
 /**
- * A number ladder for one directory, with foldable subdirectories. One row is current: hovering or focusing a row
+ * A number ladder for one directory, with foldable subdirectories, and parsed files that unfold into their declarations.
+ * One row is current: hovering or focusing a row
  * moves it, and the arrow keys move it, fold and unfold folders, while Enter explores or opens the current row.
  */
 internal class LineChartPanel(
@@ -58,13 +64,20 @@ internal class LineChartPanel(
     private val expansionChanged: (Set<String>) -> Unit = {},
     cursorPath: String? = null,
     private val cursorChanged: (String?) -> Unit = {},
+    /** Opens a declaration's file at its first line. */
+    private val openAt: (String, Int) -> Unit = { path, _ -> open(path) },
+    /** Parses a file's outline in the background, then calls back; null keeps files as leaves. */
+    private val loadOutline: ((ReviewSource, () -> Unit) -> Unit)? = null,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
     private val metric = chart.metric
+    private val outlineHint = loadOutline != null && metric.outlines
     private val numberColor get() = metric.diffSeries?.let { RadarChartPanel.color(it) } ?: UIUtil.getLabelForeground()
     val directory = chart.directory(path)
     private var expandedPaths = expanded
     private var rows: List<ReviewLineChart.Row> = emptyList()
     private var rowComponents: List<JComponent> = emptyList()
+    /** Files whose outline this panel asked for, so each is parsed once. */
+    private val requested = mutableSetOf<String>()
     private var current = -1
 
     /** The path of the current row, or null when the directory is empty. */
@@ -75,7 +88,11 @@ internal class LineChartPanel(
         isOpaque = false
     }
 
-    fun previewFiles(): List<ReviewSource> = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE }
+    /** The declaration whose lines the preview shows, with its file. */
+    fun previewDeclaration(): Pair<ReviewSource, OutlineDeclaration>? = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE }
+        ?.let { chart.declaration(it.path) }?.let { entry -> chart.source(entry.filePath)?.let { it to entry.declaration!! } }
+
+    fun previewFiles(): List<ReviewSource> = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE && chart.declaration(it.path) == null }
         ?.let { chart.files(it.path) }.orEmpty()
 
     init {
@@ -102,7 +119,7 @@ internal class LineChartPanel(
                                 JBUI.Borders.empty(1, 4),
                             )
                         }
-                        componentPopupMenu = contextMenu?.invoke(entry.path)
+                        componentPopupMenu = contextMenu?.invoke(entry.filePath)
                     })
                 }
             })
@@ -112,7 +129,8 @@ internal class LineChartPanel(
                 foreground = numberColor
                 toolTipText = metric.description
             })
-            add(JLabel("Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
+            add(JLabel(if (outlineHint) "Click a directory to explore or unfold a file for its declarations · ↑↓ move, ←→ fold, Enter opens"
+                else "Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
                 font = chartFont(JBFont.small())
                 foreground = UIUtil.getContextHelpForeground()
             })
@@ -129,10 +147,10 @@ internal class LineChartPanel(
         })
     }
 
-    /** Folds or unfolds the directory at [path], keeping the current row. */
+    /** Folds or unfolds the directory, file or declaration at [path], keeping the current row. */
     fun toggleExpanded(path: String) {
         expandedPaths = if (path in expandedPaths) expandedPaths - path else expandedPaths + path
-        rebuildRows(cursorPath?.takeUnless { it.startsWith("$path/") } ?: path)
+        rebuildRows(cursorPath?.takeUnless { ReviewLineChart.isBeneath(it, path) } ?: path)
         expansionChanged(expandedPaths)
     }
 
@@ -152,11 +170,26 @@ internal class LineChartPanel(
     private fun rebuildRows(cursor: String?) {
         rows = chart.rows(directory, expandedPaths)
         list.removeAll()
-        if (rows.isEmpty()) list.add(JLabel("No files in scope").apply { font = chartFont(font) })
+        if (rows.isEmpty()) list.add(JLabel(if (metric.hidesEmpty) "No ${metric.plural} here" else "No files in scope").apply { font = chartFont(font) })
         rowComponents = rows.mapIndexed { index, row -> row(row, index).also(list::add) }
         current = rows.indexOfFirst { it.entry.path == cursor }.takeIf { it >= 0 } ?: if (rows.isEmpty()) -1 else 0
         list.revalidate()
         list.repaint()
+        requestOutlines()
+    }
+
+    /** Parses the unfolded files still shown as "Parsing…", then lists their declarations in place. */
+    private fun requestOutlines() {
+        val load = loadOutline ?: return
+        for (row in rows) {
+            if (row.entry.kind != ReviewLineChart.Kind.PLACEHOLDER || !requested.add(row.entry.filePath)) continue
+            val source = chart.source(row.entry.filePath) ?: continue
+            load(source) {
+                // The current placeholder hands the cursor back to its file.
+                val cursor = rows.getOrNull(current)?.entry?.let { if (it.kind == ReviewLineChart.Kind.PLACEHOLDER) it.filePath else it.path }
+                rebuildRows(cursor)
+            }
+        }
     }
 
     private fun repaintRow(index: Int) { rowComponents.getOrNull(index)?.repaint() }
@@ -175,7 +208,12 @@ internal class LineChartPanel(
         navigate(path)
     }
 
-    private fun activate(entry: ReviewLineChart.Entry) { if (entry.directory) explore(entry.path) else open(entry.path) }
+    private fun activate(entry: ReviewLineChart.Entry) = when (entry.kind) {
+        ReviewLineChart.Kind.DIRECTORY -> explore(entry.path)
+        ReviewLineChart.Kind.FILE -> open(entry.path)
+        ReviewLineChart.Kind.DECLARATION -> openAt(entry.filePath, entry.declaration!!.lines.first)
+        ReviewLineChart.Kind.PLACEHOLDER -> Unit
+    }
 
     private fun installKeys() {
         fun bind(key: Int, id: String, action: () -> Unit) {
@@ -191,7 +229,7 @@ internal class LineChartPanel(
         bind(KeyEvent.VK_PAGE_DOWN, "charts-lines-page-down") { moveCursor(current + PAGE_ROWS) }
         bind(KeyEvent.VK_RIGHT, "charts-lines-unfold") {
             val row = rows.getOrNull(current) ?: return@bind
-            if (row.entry.directory && !row.expanded) toggleExpanded(row.entry.path)
+            if (row.entry.expandable && !row.expanded) toggleExpanded(row.entry.path)
             else if (row.expanded) moveCursor(current + 1)
         }
         bind(KeyEvent.VK_LEFT, "charts-lines-fold") {
@@ -243,8 +281,12 @@ internal class LineChartPanel(
                 JBUI.Borders.empty(3, 6),
             )
         } else JBUI.Borders.empty(4, 7)
-        componentPopupMenu = contextMenu?.invoke(entry.path)
-        val tooltip = "${entry.path} · ${valueText(entry.value)}" + when {
+        componentPopupMenu = contextMenu?.invoke(entry.filePath)
+        val placeholder = entry.kind == ReviewLineChart.Kind.PLACEHOLDER
+        val declaration = entry.declaration
+        val where = declaration?.let { "${entry.filePath}:${it.lines.first}" } ?: entry.path
+        val tooltip = if (placeholder) "Parsing ${entry.filePath}" else "$where · ${valueText(entry.value)}" + when {
+            declaration != null -> " · ${declaration.kind.unit}, lines ${declaration.lines.first}–${declaration.lines.last} · Open at its line"
             entry.directory && metric != LineChartMetric.ITEMS -> " · ${fileCount(entry)} · Click to explore"
             entry.directory -> " · Click to explore"
             metric.diffSeries == null -> " · Open file"
@@ -260,6 +302,7 @@ internal class LineChartPanel(
             }
             override fun paintComponent(g: Graphics) {
                 super.paintComponent(g)
+                if (placeholder) return
                 // A shared monospace grid anchored at the right edge keeps digits, separators, and dots aligned across rows.
                 g.font = numberFont()
                 val metrics = g.fontMetrics
@@ -282,28 +325,55 @@ internal class LineChartPanel(
             // Nested rows indent their labels only, so every number stays in one column.
             border = JBUI.Borders.emptyLeft(row.depth * INDENT)
             add(foldToggle(row), BorderLayout.WEST)
-            add(ActionLink(entry.label + if (entry.directory) "/  ›" else "") { activate(entry) }.apply {
+            val label: JComponent = if (placeholder) JLabel(entry.label, AnimatedIcon.Default.INSTANCE, JLabel.LEADING).apply {
+                foreground = UIUtil.getContextHelpForeground()
+            } else ActionLink(entry.label + if (entry.directory) "/  ›" else "") { activate(entry) }.apply {
+                icon = when (entry.kind) {
+                    ReviewLineChart.Kind.DIRECTORY -> AllIcons.Nodes.Folder
+                    ReviewLineChart.Kind.DECLARATION -> declarationIcon(declaration!!.kind)
+                    else -> FileTypeManager.getInstance().getFileTypeByFileName(entry.label).icon ?: AllIcons.FileTypes.Any_type
+                }
+                val kind = declaration?.kind?.unit ?: if (entry.directory) "directory" else "file"
+                accessibleContext.accessibleName = "${entry.label}, ${valueText(entry.value)}, $kind"
+            }
+            label.apply {
                 font = chartFont(font).let { if (active) it.deriveFont(it.style or Font.BOLD) else it }
                 inheritsPopupMenu = true
                 name = "charts-lines-entry:${entry.path}"
-                icon = if (entry.directory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
                 toolTipText = tooltip
-                accessibleContext.accessibleName = "${entry.label}, ${valueText(entry.value)}, ${if (entry.directory) "directory" else "file"}"
-            }, BorderLayout.CENTER)
+            }
+            add(label, BorderLayout.CENTER)
         }, BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
             isOpaque = false
             inheritsPopupMenu = true
-            add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY))
-            add(previewToggle(entry.path, LineChartPreviewKind.SOURCE))
+            // Summaries cover files and directories; a declaration previews its own lines.
+            if (!placeholder && declaration == null) add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY))
+            if (!placeholder) add(previewToggle(entry.path, LineChartPreviewKind.SOURCE))
         }, BorderLayout.EAST)
         trackCursor(this, index)
     }
 
-    /** A chevron that folds or unfolds a directory; files keep an empty cell of the same width. */
+    private fun declarationIcon(kind: RadarSymbolKind): Icon = when (kind) {
+        RadarSymbolKind.CLASS -> AllIcons.Nodes.Class
+        RadarSymbolKind.INTERFACE -> AllIcons.Nodes.Interface
+        RadarSymbolKind.ENUM -> AllIcons.Nodes.Enum
+        RadarSymbolKind.STRUCT -> AllIcons.Nodes.Record
+        RadarSymbolKind.OBJECT -> AllIcons.Nodes.Static
+        RadarSymbolKind.TYPE_ALIAS -> AllIcons.Nodes.Type
+        RadarSymbolKind.CONSTRUCTOR, RadarSymbolKind.FUNCTION, RadarSymbolKind.ASYNC -> AllIcons.Nodes.Method
+        RadarSymbolKind.TEST -> AllIcons.Nodes.Test
+        RadarSymbolKind.LAMBDA -> AllIcons.Nodes.Lambda
+        RadarSymbolKind.PROPERTY -> AllIcons.Nodes.Property
+        RadarSymbolKind.CONSTANT -> AllIcons.Nodes.Constant
+        RadarSymbolKind.VARIABLE, RadarSymbolKind.PARAMETER -> AllIcons.Nodes.Variable
+        else -> AllIcons.Nodes.Tag
+    }
+
+    /** A chevron that folds or unfolds an entry with children; other entries keep an empty cell of the same width. */
     private fun foldToggle(row: ReviewLineChart.Row): JComponent {
         val size = Dimension(JBUI.scale(18), JBUI.scale(18))
-        if (!row.entry.directory) return JPanel().apply { isOpaque = false; preferredSize = size; inheritsPopupMenu = true }
+        if (!row.entry.expandable) return JPanel().apply { isOpaque = false; preferredSize = size; inheritsPopupMenu = true }
         val label = if (row.expanded) "Fold ${row.entry.path}" else "Unfold ${row.entry.path}"
         return JLabel(if (row.expanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight).apply {
             name = "charts-lines-fold:${row.entry.path}"
@@ -377,7 +447,7 @@ internal class LineChartPanel(
 
     private fun number(value: Long) = String.format(Locale.US, "%,d", value)
 
-    private fun valueText(value: Long) = "${number(value)} ${metric.unit}${if (value == 1L) "" else "s"}"
+    private fun valueText(value: Long) = "${number(value)} ${metric.unitText(value)}"
 
     private fun fileCount(entry: ReviewLineChart.Entry) = "${number(entry.files.toLong())} ${if (entry.files == 1) "file" else "files"}"
 

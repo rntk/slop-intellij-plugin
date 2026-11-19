@@ -11,6 +11,7 @@ import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.CallOperation
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 import org.jetbrains.kotlin.asJava.elements.KtLightElement
 import org.jetbrains.kotlin.asJava.toLightMethods
 import org.jetbrains.kotlin.psi.*
@@ -76,6 +77,24 @@ class KotlinCallGraphSupport : CallGraphLanguageSupport {
         element is KtDestructuringDeclarationEntry -> SymbolKind.VARIABLE
         element is KtTypeAlias -> SymbolKind.SYMBOL
         else -> null
+    }
+
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is KtClass -> setOfNotNull(
+            SymbolTrait.INTERFACE.takeIf { element.isInterface() },
+            SymbolTrait.ENUM.takeIf { element.isEnum() },
+            SymbolTrait.STRUCT.takeIf { element.isData() || element.isValue() || element.isInline() },
+        )
+        is KtObjectDeclaration -> if (element.isObjectLiteral()) emptySet() else setOf(SymbolTrait.OBJECT)
+        is KtConstructor<*> -> setOf(SymbolTrait.CONSTRUCTOR)
+        is KtNamedFunction -> setOfNotNull(
+            SymbolTrait.ASYNC.takeIf { element.hasModifier(org.jetbrains.kotlin.lexer.KtTokens.SUSPEND_KEYWORD) },
+            SymbolTrait.TEST.takeIf { element.annotationEntries.any { it.shortName?.asString()?.endsWith("Test") == true } },
+            SymbolTrait.LAMBDA.takeIf { element.name == null },
+        )
+        is KtLambdaExpression -> setOf(SymbolTrait.LAMBDA)
+        is KtTypeAlias -> setOf(SymbolTrait.TYPE_ALIAS)
+        else -> emptySet()
     }
 
     override fun relationKind(element: PsiElement): RelationKind? = when (element) {

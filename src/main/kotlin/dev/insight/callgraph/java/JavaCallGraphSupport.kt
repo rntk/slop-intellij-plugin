@@ -14,6 +14,7 @@ import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.CallOperation
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 
 /** Loaded only when the Java plugin is present (see META-INF/call-graph-java.xml). */
 class JavaCallGraphSupport : CallGraphLanguageSupport {
@@ -41,6 +42,23 @@ class JavaCallGraphSupport : CallGraphLanguageSupport {
         is PsiParameter -> SymbolKind.PARAMETER
         is PsiVariable -> SymbolKind.VARIABLE
         else -> null
+    }
+
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is PsiTypeParameter, is PsiAnonymousClass -> emptySet()
+        is PsiClass -> setOfNotNull(
+            SymbolTrait.INTERFACE.takeIf { element.isInterface && !element.isAnnotationType },
+            SymbolTrait.ENUM.takeIf { element.isEnum },
+            SymbolTrait.STRUCT.takeIf { element.isRecord },
+        )
+        is PsiMethod -> setOfNotNull(
+            SymbolTrait.CONSTRUCTOR.takeIf { element.isConstructor },
+            SymbolTrait.TEST.takeIf {
+                element.modifierList.annotations.any { it.nameReferenceElement?.referenceName?.endsWith("Test") == true }
+            },
+        )
+        is PsiLambdaExpression -> setOf(SymbolTrait.LAMBDA)
+        else -> emptySet()
     }
 
     override fun relationKind(element: PsiElement): RelationKind? = when (element) {

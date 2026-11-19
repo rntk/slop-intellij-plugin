@@ -1,14 +1,43 @@
 package dev.insight.review
 
-/** Disjoint declaration categories; comments count PSI blocks, not lines. */
-enum class RadarSymbolKind(val label: String) {
-    FUNCTION("Functions"), CLASS("Classes"), PROPERTY("Properties"), VARIABLE("Variables"),
-    CONSTANT("Constants"), PARAMETER("Parameters"), OTHER("Other declarations"), COMMENT("Comments"),
+/**
+ * PSI categories. The [isBase] kinds are disjoint declarations (comments count PSI blocks, not lines); the others are
+ * finer lenses that overlap them (an interface is also a class, a test also a function) or stand alone (imports, lambdas).
+ */
+enum class RadarSymbolKind(val label: String, val unit: String, val plural: String, val description: String) {
+    FUNCTION("Functions", "function", "functions", "Functions and methods, including constructors and property accessors"),
+    CLASS("Classes", "class", "classes", "Classes, interfaces, enums, objects, structs and other named types"),
+    PROPERTY("Properties", "property", "properties", "Properties and fields"),
+    VARIABLE("Variables", "variable", "variables", "Local and top-level variables"),
+    CONSTANT("Constants", "constant", "constants", "Explicit constants, such as const, static final and enum constants"),
+    PARAMETER("Parameters", "parameter", "parameters", "Function and type parameters"),
+    OTHER("Other declarations", "declaration", "declarations", "Other declarations, such as type aliases, impl blocks and modules"),
+    COMMENT("Comments", "comment", "comments", "Comment blocks, including documentation comments"),
+    INTERFACE("Interfaces", "interface", "interfaces", "Interfaces, traits and protocols"),
+    ENUM("Enums", "enum", "enums", "Enum types"),
+    STRUCT("Data types", "data type", "data types", "Structs, records, data and value classes, dataclasses"),
+    OBJECT("Objects", "object", "objects", "Kotlin object and companion object declarations"),
+    TYPE_ALIAS("Type aliases", "type alias", "type aliases", "Type alias declarations"),
+    IMPL("Impl blocks", "impl block", "impl blocks", "Rust impl blocks"),
+    CONSTRUCTOR("Constructors", "constructor", "constructors",
+        "Constructors and initializers; Go NewX functions and Rust associated new functions by convention"),
+    TEST("Tests", "test", "tests", "Test functions and test calls, recognized by annotations, attributes, names or it/test calls"),
+    ASYNC("Async", "async site", "async sites", "Async and suspend functions, and goroutine launches"),
+    LAMBDA("Lambdas", "lambda", "lambdas", "Lambdas, closures, arrow functions and function literals"),
+    IMPORT("Imports", "import", "imports", "Import statements and import specs");
+
+    val isBase: Boolean get() = ordinal <= COMMENT.ordinal
+
+    companion object {
+        /** The order of the Charts lenses: types, then callables, then values, then the rest. */
+        val LENSES = listOf(CLASS, INTERFACE, ENUM, STRUCT, OBJECT, TYPE_ALIAS, IMPL, FUNCTION, CONSTRUCTOR, TEST, ASYNC, LAMBDA,
+            PROPERTY, CONSTANT, VARIABLE, PARAMETER, OTHER, IMPORT, COMMENT)
+    }
 }
 
 data class RadarSymbols(val counts: Map<RadarSymbolKind, Int> = emptyMap()) {
     operator fun get(kind: RadarSymbolKind): Int = counts[kind] ?: 0
-    val declarations: Int get() = counts.filterKeys { it != RadarSymbolKind.COMMENT }.values.sum()
+    val declarations: Int get() = counts.filterKeys { it.isBase && it != RadarSymbolKind.COMMENT }.values.sum()
     operator fun plus(other: RadarSymbols) = RadarSymbols((counts.keys + other.counts.keys).associateWith { this[it] + other[it] })
 }
 

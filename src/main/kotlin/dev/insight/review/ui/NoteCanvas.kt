@@ -128,7 +128,8 @@ internal class NoteCanvas(
     private val chartsCardBuilder = ChartsCanvasCard(vocabulary, open, refresh = { refreshCard(CanvasTabKey.Charts) },
         close = { onRemoveCharts() }, project = project, openOnCanvas = summaryActions.openOnCanvas,
         openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() },
-        summaryActions = summaryActions.contextSummaryActions)
+        summaryActions = summaryActions.contextSummaryActions, openAt = { path, line -> openFileAt(path, line) },
+        outlines = sourceActions.outlines)
     internal val chartsView get() = chartsCardBuilder.view
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(

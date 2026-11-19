@@ -10,6 +10,7 @@ import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 
 /**
  * Loaded only when the Go plugin is present (see META-INF/call-graph-go.xml).
@@ -44,6 +45,28 @@ class GoCallGraphSupport : CallGraphLanguageSupport {
         else -> if (isFunction(element)) SymbolKind.FUNCTION else null
     }
 
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is GoTypeSpec -> when {
+            element.isTypeAlias -> setOf(SymbolTrait.TYPE_ALIAS)
+            element.specType.type is GoInterfaceType -> setOf(SymbolTrait.INTERFACE)
+            element.specType.type is GoStructType -> setOf(SymbolTrait.STRUCT)
+            else -> emptySet()
+        }
+        is GoFunctionDeclaration -> {
+            val name = element.name.orEmpty()
+            setOfNotNull(
+                // Go has no constructors; NewX functions are the convention.
+                SymbolTrait.CONSTRUCTOR.takeIf { name.length > 3 && name.startsWith("New") && name[3].isUpperCase() },
+                SymbolTrait.TEST.takeIf {
+                    element.containingFile.name.endsWith("_test.go") && TEST_PREFIXES.any(name::startsWith)
+                },
+            )
+        }
+        is GoFunctionLit -> setOf(SymbolTrait.LAMBDA)
+        is GoGoStatement -> setOf(SymbolTrait.ASYNC)
+        else -> emptySet()
+    }
+
     override fun relationKind(element: PsiElement): RelationKind? = when {
         element is GoImportDeclaration || element is GoImportSpec -> RelationKind.IMPORT
         // Embedded struct fields and embedded interfaces (method specs without a name) promote the outer type's methods.
@@ -69,3 +92,5 @@ class GoCallGraphSupport : CallGraphLanguageSupport {
         return CallResolution(callee, callee.references.flatMap(::resolveTargets).filter { isFunction(it) || it is GoTypeSpec })
     }
 }
+
+private val TEST_PREFIXES = listOf("Test", "Benchmark", "Fuzz", "Example")

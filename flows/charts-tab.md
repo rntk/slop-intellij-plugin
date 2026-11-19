@@ -4,8 +4,10 @@ The Charts tab is a shared way to explore the file and directory structure of a 
 
 The hierarchy has metric tabs for source lines, captured source size in bytes, and file counts in Code Review. Diff Review uses green Added lines and red Removed lines tabs. Changing the metric keeps the current directory and open preview.
 
+In Code Review, the tabs also act as semantic lenses over the code: classes, functions, constants, tests, imports and other kinds recognized syntactically through PSI by each supported language. A lens counts only its kind and hides entries without it; only the kinds present in the scope get a tab. Parsed files also unfold into their declarations and members, which can be previewed or opened at their line. Counts are captured with the review; declarations are parsed on demand when a file is unfolded.
 Entry points for further exploration:
 
 - [Code review flow](code-review.md) and [Diff review flow](diff-review.md) — how each review reaches Charts
 - [ChartsCanvasCard.kt](../src/main/kotlin/dev/insight/review/ui/ChartsCanvasCard.kt) — shared Charts page
+- [CodeSymbolCounts.kt](../src/main/kotlin/dev/insight/codereview/CodeSymbolCounts.kt) — the PSI walk behind lenses and file outlines; languages add their kinds through the call graph language support
 - [ReviewSummaryModel.kt](../src/main/kotlin/dev/insight/review/ReviewSummaryModel.kt) — shared summary structure used by the charts

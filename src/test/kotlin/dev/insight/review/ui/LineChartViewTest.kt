@@ -147,8 +147,8 @@ class LineChartViewTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
             assertEquals(listOf("Added lines", "Removed lines"), (0 until tabs().tabCount).map { tabs().getTitleAt(it) })
-            assertEquals(RadarChartPanel.color(RadarSeries.ADDED), tabs().getTabComponentAt(0).foreground)
-            assertEquals(RadarChartPanel.color(RadarSeries.REMOVED), tabs().getTabComponentAt(1).foreground)
+            assertEquals(RadarChartPanel.color(RadarSeries.ADDED), tabs().getForegroundAt(0))
+            assertEquals(RadarChartPanel.color(RadarSeries.REMOVED), tabs().getForegroundAt(1))
             assertEquals("4 added lines · 2 files", total().text)
             assertColor(RadarSeries.ADDED)
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
@@ -356,6 +356,65 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals("", panel().directory.path)
             assertEquals("src", panel().cursorPath)
             assertEquals(333, split().dividerLocation)
+        } finally { canvas.dispose() }
+    }
+
+    fun testLensTabsAndFilesUnfoldIntoDeclarationsThatPreviewAndOpenAtTheirLine() {
+        val text = "class Worker {\n    const val LIMIT = 1\n    fun run() {\n        work()\n    }\n}\n"
+        val run = dev.insight.review.OutlineDeclaration(dev.insight.review.RadarSymbolKind.FUNCTION, "run", 3..5, 30,
+            dev.insight.review.RadarSymbols(mapOf(dev.insight.review.RadarSymbolKind.FUNCTION to 1)))
+        val worker = dev.insight.review.OutlineDeclaration(dev.insight.review.RadarSymbolKind.CLASS, "Worker", 1..6, 70,
+            dev.insight.review.RadarSymbols(mapOf(dev.insight.review.RadarSymbolKind.CLASS to 1, dev.insight.review.RadarSymbolKind.FUNCTION to 1)),
+            listOf(run))
+        val counts = dev.insight.review.RadarSymbols(mapOf(dev.insight.review.RadarSymbolKind.CLASS to 1,
+            dev.insight.review.RadarSymbolKind.FUNCTION to 1, dev.insight.review.RadarSymbolKind.COMMENT to 0))
+        val files = listOf(CodeFile("a.kt", "/repo/a.kt", text, symbolCounts = counts), CodeFile("notes.md", "/repo/notes.md", "x"))
+        var pending: (() -> Unit)? = null
+        val outlines = object : dev.insight.review.SourceOutlines {
+            var ready = false
+            override fun cached(file: dev.insight.review.ReviewSource) =
+                if (ready && file.path == "a.kt") dev.insight.review.SourceOutline(listOf(worker)) else null
+            override fun load(file: dev.insight.review.ReviewSource, done: () -> Unit) { pending = { ready = true; done() } }
+        }
+        val openedAt = mutableListOf<Pair<String, Int?>>()
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
+            sourceActions = SourceCanvasActions(openFileAt = { path, line -> openedAt += path to line }, outlines = outlines))
+        fun all() = descendants(canvas)
+        fun panel() = all().filterIsInstance<LineChartPanel>().single()
+        fun rows() = all().mapNotNull { it.name?.takeIf { n -> n.startsWith("charts-lines-row:") }?.removePrefix("charts-lines-row:") }
+        fun key(id: String) = panel().let { it.actionMap.get(id).actionPerformed(java.awt.event.ActionEvent(it, 0, id)) }
+        fun tabs() = all().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            assertEquals(listOf("Lines of code", "Size", "Items", "Classes", "Functions"),
+                (0 until tabs().tabCount).map { tabs().getTitleAt(it) })
+            (0 until tabs().tabCount).forEach { assertNull(tabs().getTabComponentAt(it)) }
+            assertEquals(listOf("notes.md", "a.kt"), rows())
+            assertTrue(all().none { it.name == "charts-lines-fold:notes.md" })
+
+            key("charts-lines-down")
+            key("charts-lines-unfold")
+            assertEquals(listOf("notes.md", "a.kt", "a.kt#…"), rows())
+            pending!!.invoke()
+            assertEquals(listOf("notes.md", "a.kt", "a.kt#0"), rows())
+            assertEquals("a.kt", panel().cursorPath)
+            key("charts-lines-unfold")
+            key("charts-lines-unfold")
+            assertEquals(listOf("notes.md", "a.kt", "a.kt#0", "a.kt#0/0"), rows())
+            key("charts-lines-down")
+            assertEquals("a.kt#0/0", panel().cursorPath)
+            assertTrue(all().none { it.name == "charts-lines-summary-toggle:a.kt#0/0" })
+
+            // The preview shows only the declaration's lines; Enter opens the file at its first line.
+            key("charts-lines-preview")
+            assertEquals(listOf("hierarchy-preview:a.kt:3"), all().mapNotNull { it.name?.takeIf { n -> n.startsWith("hierarchy-preview:") } })
+            key("charts-lines-activate")
+            assertEquals(listOf("a.kt" to 3), openedAt)
+
+            // A lens keeps the unfolded declarations and hides files without its kind.
+            tabs().selectedIndex = 3
+            assertEquals("1 class · 2 files", all().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }.text)
+            assertEquals(listOf("a.kt", "a.kt#0"), rows())
         } finally { canvas.dispose() }
     }
 

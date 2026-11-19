@@ -11,10 +11,13 @@ import dev.insight.callgraph.CallResolution
 import dev.insight.callgraph.resolveTargets
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.graph.SymbolTrait
 import kotlinx.coroutines.CancellationException
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.expandedMembers
 import org.rust.lang.core.psi.ext.functions
+import org.rust.lang.core.psi.ext.isAsync
+import org.rust.lang.core.psi.ext.isTest
 
 /** Loaded only with the JetBrains Rust plugin (META-INF/call-graph-rust.xml). */
 class RustCallGraphSupport : CallGraphLanguageSupport {
@@ -51,6 +54,22 @@ class RustCallGraphSupport : CallGraphLanguageSupport {
         is RsPatBinding -> if (PsiTreeUtil.getParentOfType(element, RsValueParameter::class.java) != null)
             SymbolKind.PARAMETER else SymbolKind.VARIABLE
         else -> null
+    }
+
+    override fun symbolTraits(element: PsiElement): Set<SymbolTrait> = when (element) {
+        is RsTraitItem -> setOf(SymbolTrait.INTERFACE)
+        is RsEnumItem -> setOf(SymbolTrait.ENUM)
+        is RsStructItem -> setOf(SymbolTrait.STRUCT)
+        is RsTypeAlias -> setOf(SymbolTrait.TYPE_ALIAS)
+        is RsImplItem -> setOf(SymbolTrait.IMPL)
+        is RsFunction -> setOfNotNull(
+            // Rust has no constructors; an associated `new` is the convention.
+            SymbolTrait.CONSTRUCTOR.takeIf { element.name == "new" && element.parent is RsMembers },
+            SymbolTrait.ASYNC.takeIf { element.isAsync },
+            SymbolTrait.TEST.takeIf { element.isTest },
+        )
+        is RsLambdaExpr -> setOf(SymbolTrait.LAMBDA)
+        else -> emptySet()
     }
 
     override fun relationKind(element: PsiElement): RelationKind? = when (element) {

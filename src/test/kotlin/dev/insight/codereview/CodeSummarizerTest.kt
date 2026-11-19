@@ -11,8 +11,11 @@ import dev.insight.review.SUMMARY_JSON_SHAPE
 import dev.insight.review.summarize
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummarizer
+import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.review.SummarySource
+import dev.insight.review.fillSummaryRequest
 import dev.insight.review.summariesReply
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -27,6 +30,33 @@ class CodeSummarizerTest {
         codeFile("docs/README.md", "# Steps\nComputes steps.\n"),
     )
     private val snapshot = codeSnapshot(*(small + big).toTypedArray())
+
+    @Test fun `an empty source file does not block a directory with existing file summaries`() = runBlocking {
+        val empty = codeFile("rsstag/providers/__init__.py", "")
+        val provider = codeFile("rsstag/providers/rss.py", "def read(): pass\n")
+        val snapshot = codeSnapshot(empty, provider)
+        val tree = codeSummaryTree(snapshot.files)
+        val directory = tree.scopeNode("rsstag/providers", SummaryKind.DIRECTORY)!!
+        val emptyId = tree.scopeNode(empty.path, SummaryKind.FILE)!!.id
+        val providerId = tree.scopeNode(provider.path, SummaryKind.FILE)!!.id
+        var saved = ReviewSummaries(tree).summarize(mapOf(providerId to Summary.plain("Reads RSS feeds.")))
+        val request = fillSummaryRequest(saved, directory)
+        val model = SummaryModel()
+        val run = ReviewSummarizer(model::complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot))
+            .run(saved, "", save = { entries ->
+                saved.summarize(entries, reuseSingleChildren = false).also { saved = it }
+            }, nodeIds = request.nodeIds)
+
+        assertEquals(1, run.requests)
+        val item = model.nodes(model.requests.single()).single()
+        assertEquals(directory.location, item["location"].asString)
+        val emptyClaims = item["children"].asJsonArray.first().asJsonObject["claims"].asJsonArray
+        assertEquals("C1.S1", emptyClaims.single().asJsonObject["cite"].asString)
+        assertEquals(Summary.plain("This file is empty."), run.summaries.summary(emptyId))
+        assertEquals("Reads RSS feeds.", run.summaries.text(providerId))
+        assertEquals(listOf(SummarySource.Claim(0, 0)), run.summaries.summary(directory.id)!!.segments.single().sources)
+        assertTrue(request.nodeIds.all { run.summaries.summary(it) != null })
+    }
 
     @Test fun `truncated singleton tool summaries stop at the attempt budget`() = runBlocking {
         val snapshot = codeSnapshot(CodeFile("src/data.txt", "/p/data.txt", "x".repeat(13_000)))

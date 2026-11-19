@@ -23,6 +23,7 @@ import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
+import dev.insight.review.SourceOutlines
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.summaryRadar
@@ -90,6 +91,10 @@ internal class ChartsCanvasCard(
     private val openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
     private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
     private val summaryActions: ContextSummaryActions? = null,
+    /** Opens a file at a 1-based line; null opens the file. */
+    private val openAt: ((String, Int) -> Unit)? = null,
+    /** Parses files into declarations when unfolded; null keeps files as leaves. */
+    private val outlines: SourceOutlines? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -111,8 +116,9 @@ internal class ChartsCanvasCard(
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
         val metrics = if (diff) listOf(LineChartMetric.ADDED, LineChartMetric.REMOVED)
-            else listOf(LineChartMetric.LINES, LineChartMetric.SIZE, LineChartMetric.ITEMS)
-        val metric = view.lineMetric ?: metrics.first()
+            else listOf(LineChartMetric.LINES, LineChartMetric.SIZE, LineChartMetric.ITEMS) + LineChartMetric.lenses(
+                content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path })
+        val metric = view.lineMetric?.takeIf { it in metrics } ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -122,7 +128,7 @@ internal class ChartsCanvasCard(
             add(JLabel("Charts").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 toolTipText = if (diff) "Explore added or removed lines by directory, or compare changes on the radar"
-                    else "Explore source lines, byte sizes, and file counts by directory, or compare code structure on the radar"
+                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, or compare code structure on the radar"
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
@@ -146,7 +152,7 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val hierarchy = if (lines) ReviewLineChart(content.tree, metric) else null
+        val hierarchy = if (lines) ReviewLineChart(content.tree, metric, outlines) else null
         val activePreview = hierarchy?.let { chart ->
             view.linesPreview?.takeIf { chart.hasEntry(it.path) }.also { view.linesPreview = it }
         }
@@ -170,6 +176,8 @@ internal class ChartsCanvasCard(
             expansionChanged = { view.linesExpanded = it },
             cursorPath = view.linesCursor,
             cursorChanged = { view.linesCursor = it },
+            openAt = openAt ?: { path, _ -> open(path) },
+            loadOutline = outlines?.let { provider -> { file, done -> provider.load(file, done) } },
         ) else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
@@ -194,7 +202,7 @@ internal class ChartsCanvasCard(
             background = UIUtil.getListBackground()
             border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
         }
-        val previewFiles = lineChart?.previewFiles().orEmpty()
+        val previewFiles = lineChart?.previewFiles().orEmpty() + listOfNotNull(lineChart?.previewDeclaration()?.first)
         val summary = activePreview?.takeIf { it.kind == LineChartPreviewKind.SUMMARY }?.let { selection ->
             val node = content.tree.scopeNode(selection.path, SummaryKind.FILE)
                 ?: content.tree.scopeNode(selection.path, SummaryKind.DIRECTORY)
@@ -220,7 +228,9 @@ internal class ChartsCanvasCard(
                 dividerLocation = view.linesDivider,
                 rememberDivider = { if (currentCard === card) view.linesDivider = it },
             ).also {
-                if (summary == null) it.showFiles(previewFiles)
+                val declaration = lineChart.previewDeclaration()
+                if (summary == null && declaration != null) it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
+                else if (summary == null) it.showFiles(previewFiles)
                 preview = it
             }
         } else bodyScroll
@@ -237,12 +247,16 @@ internal class ChartsCanvasCard(
     private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent) =
         JBTabbedPane().apply {
             name = "charts-lines-metric-tabs"
+            // Lenses vary with the languages in scope; scrolling keeps one row of tabs and the selection in place.
+            tabLayoutPolicy = javax.swing.JTabbedPane.SCROLL_TAB_LAYOUT
             accessibleContext.accessibleName = "Chart metric"
             font = scaledFont(JBFont.small())
             metrics.forEachIndexed { index, metric ->
                 addTab(metric.label, null, if (metric == selected) content else JPanel(), metric.description)
+                // Darcula's scrolling layout can leave JBTabbedPane's custom labels unpainted.
+                setTabComponentAt(index, null)
                 metric.diffSeries?.let { series ->
-                    (getTabComponentAt(index) as JLabel).foreground = RadarChartPanel.color(series)
+                    setForegroundAt(index, RadarChartPanel.color(series))
                 }
             }
             selectedIndex = metrics.indexOf(selected)

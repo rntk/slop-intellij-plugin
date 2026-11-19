@@ -19,6 +19,8 @@ internal data class SourceCanvasActions(
     /** Put file lines on the canvas; null falls back to showing the file by path. */
     val showFileLines: ((String, IntRange) -> Unit)? = null,
     val removeFileView: () -> Unit = {},
+    /** Parses files into declarations for the Charts hierarchy; null keeps files as leaves. */
+    val outlines: dev.insight.review.SourceOutlines? = null,
 )
 
 /** Summary generation, tracing, review and entry actions supplied by the review hosting the canvas. */

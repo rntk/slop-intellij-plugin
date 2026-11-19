@@ -52,6 +52,8 @@ internal interface SummaryEvidence {
     fun size(node: SummaryNode): Int
     /** The numbers of a leaf's evidence lines that its summary may cite, as [describe] numbers them; empty when it has none. */
     fun rows(node: SummaryNode): IntRange
+    /** A summary established by the leaf's metadata alone, such as a source file with zero lines. */
+    fun localSummary(node: SummaryNode): Summary? = null
     /** Changed patch rows, or null for source evidence where every row describes current code. */
     fun changedRows(node: SummaryNode): Set<Int>? = null
     /** Evidence provenance, retained when children are condensed. */
@@ -144,23 +146,26 @@ class ReviewSummarizer internal constructor(
         while (true) {
             val ready = current.ready().filter { (nodeIds == null || it in nodeIds) && (tries[it] ?: 0) < options.attempts }.sorted()
             if (ready.isEmpty()) break
-            val reusable = if (!reuseSingleChildren) emptyMap() else ready.mapNotNull { id ->
-                val children = current.tree[id].children.map { current.summary(it)!! }
-                val first = children.firstOrNull() ?: return@mapNotNull null
+            val local = ready.mapNotNull { id ->
+                val node = current.tree[id]
+                if (node.children.isEmpty()) return@mapNotNull evidence.localSummary(node)?.let { id to it }
+                if (!reuseSingleChildren) return@mapNotNull null
+                val children = node.children.map { current.summary(it)!! }
+                val first = children.first()
                 // Identical prose with identical segment boundaries can cite every child without another rewrite.
                 if (children.all { child -> child.segments.map { it.text } == first.segments.map { it.text } && child.claims == first.claims })
                     id to first.relay(children.size) else null
             }.toMap()
-            val (reused, asked) = ready.map { current.tree[it] }.partition { it.id in reusable }
-            if (reused.isNotEmpty()) {
+            if (local.isNotEmpty()) {
                 mutex.withLock {
-                    reusable.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
+                    local.entries.chunked(ReviewSummaries.MAX_PER_CALL).forEach { batch ->
                         current = save(batch.associate { it.key to it.value })
                     }
                     progress()
                 }
                 continue
             }
+            val asked = ready.map { current.tree[it] }
             asked.forEach { tries.merge(it.id, 1, Int::plus) }
             val (leaves, branches) = asked.partition { it.children.isEmpty() }
             val (topics, otherBranches) = branches.partition { it.isTopicBranch }

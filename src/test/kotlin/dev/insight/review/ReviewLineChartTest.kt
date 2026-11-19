@@ -117,4 +117,85 @@ class ReviewLineChartTest {
         assertEquals(listOf("picked/src/sub/b.kt"), absorbed.files("picked/src/sub").map { it.path })
         assertTrue(absorbed.files("picked/src/gone").isEmpty())
     }
+
+    private class FakeOutlines(val outlines: Map<String, SourceOutline>) : SourceOutlines {
+        val loaded = mutableListOf<String>()
+        var ready = false
+        override fun cached(file: ReviewSource) = outlines[file.path]?.takeIf { ready }
+        override fun load(file: ReviewSource, done: () -> Unit) { loaded += file.path; ready = true; done() }
+    }
+
+    private fun symbols(vararg counts: Pair<RadarSymbolKind, Int>) = RadarSymbols(counts.toMap())
+
+    private val method = OutlineDeclaration(RadarSymbolKind.FUNCTION, "run", 3..7, 40, symbols(RadarSymbolKind.FUNCTION to 1))
+    private val field = OutlineDeclaration(RadarSymbolKind.CONSTANT, "LIMIT", 2..2, 10, symbols(RadarSymbolKind.CONSTANT to 1))
+    private val type = OutlineDeclaration(RadarSymbolKind.CLASS, "Worker", 1..8, 60,
+        symbols(RadarSymbolKind.CLASS to 1, RadarSymbolKind.FUNCTION to 1, RadarSymbolKind.CONSTANT to 1), listOf(field, method))
+
+    private fun parsed(path: String, text: String, counts: RadarSymbols) = CodeFile(path, "/repo/$path", text, symbolCounts = counts)
+
+    @Test fun `lenses are offered for the kinds in scope, in lens order`() {
+        val files = listOf(parsed("a.kt", "x", symbols(RadarSymbolKind.FUNCTION to 2, RadarSymbolKind.TEST to 1, RadarSymbolKind.CLASS to 1)),
+            file("notes.txt", "y"))
+        assertEquals(listOf("Classes", "Functions", "Tests"), LineChartMetric.lenses(files).map { it.label })
+        assertEquals(LineChartMetric.lens(RadarSymbolKind.TEST), LineChartMetric.lenses(files).last())
+        assertEquals("1 class", "1 ${LineChartMetric.lens(RadarSymbolKind.CLASS).unitText(1)}")
+        assertEquals("properties", LineChartMetric.lens(RadarSymbolKind.PROPERTY).unitText(2))
+    }
+
+    @Test fun `a lens counts captured symbols and hides entries without them`() {
+        val tree = buildSummaryTree(listOf(
+            parsed("src/a.kt", "a", symbols(RadarSymbolKind.FUNCTION to 3)),
+            parsed("src/b.kt", "b", symbols(RadarSymbolKind.CLASS to 1)),
+            file("docs/readme.md", "c")))
+        val chart = ReviewLineChart(tree, LineChartMetric.lens(RadarSymbolKind.FUNCTION))
+        assertEquals(3L, chart.root.value)
+        assertEquals(listOf("src"), chart.children(chart.root).map { it.path })
+        assertEquals(listOf("src/a.kt" to 3L), chart.children(chart.directory("src")).map { it.path to it.value })
+    }
+
+    @Test fun `parsed files unfold into declarations and their members`() {
+        val source = parsed("src/a.kt", "1\n2\n3\n4\n5\n6\n7\n8\n", symbols(RadarSymbolKind.CLASS to 1, RadarSymbolKind.FUNCTION to 1))
+        val outlines = FakeOutlines(mapOf("src/a.kt" to SourceOutline(listOf(type))))
+        val tree = buildSummaryTree(listOf(source, file("src/plain.txt", "x")))
+        val chart = ReviewLineChart(tree, LineChartMetric.LINES, outlines)
+        val src = chart.directory("src")
+        assertEquals(listOf(true, false), chart.children(src).sortedBy { it.path }.map { it.expandable })
+
+        // Unfolding before the outline is parsed shows a placeholder for the file.
+        val pending = chart.rows(src, setOf("src/a.kt"))
+        assertEquals(ReviewLineChart.Kind.PLACEHOLDER, pending.single { it.depth == 1 }.entry.kind)
+        assertEquals("src/a.kt", pending.single { it.depth == 1 }.entry.filePath)
+
+        outlines.ready = true
+        val rows = chart.rows(src, setOf("src/a.kt", "src/a.kt#0"))
+        assertEquals(listOf("src/plain.txt" to 0, "src/a.kt" to 0, "src/a.kt#0" to 1, "src/a.kt#0/0" to 2, "src/a.kt#0/1" to 2),
+            rows.map { it.entry.path to it.depth })
+        val worker = rows.single { it.entry.path == "src/a.kt#0" }.entry
+        assertEquals(8L, worker.value)
+        assertTrue(worker.expandable)
+        assertEquals(listOf(1L, 5L), rows.filter { it.depth == 2 }.map { it.entry.value })
+        assertEquals("run", chart.declaration("src/a.kt#0/1")?.label)
+        assertNull(chart.declaration("src/a.kt#3"))
+        assertTrue(chart.hasEntry("src/a.kt#0/1"))
+        assertEquals(listOf("src/a.kt"), chart.files("src/a.kt#0/1").map { it.path })
+
+        // A lens hides members without what it counts; sizes use declaration bytes.
+        val functions = ReviewLineChart(tree, LineChartMetric.lens(RadarSymbolKind.FUNCTION), outlines)
+        assertEquals(listOf("run"), functions.rows(functions.directory("src"), setOf("src/a.kt", "src/a.kt#0"))
+            .filter { it.depth == 2 }.map { it.entry.label })
+        val size = ReviewLineChart(tree, LineChartMetric.SIZE, outlines)
+        assertEquals(60L, size.declaration("src/a.kt#0")?.value)
+        // File counts and diff rows have no per-declaration value, so files stay leaves.
+        val items = ReviewLineChart(tree, LineChartMetric.ITEMS, outlines)
+        assertFalse(items.children(items.directory("src")).any { it.expandable })
+    }
+
+    @Test fun `isBeneath covers directories, outlines and members`() {
+        assertTrue(ReviewLineChart.isBeneath("src/a.kt", "src"))
+        assertTrue(ReviewLineChart.isBeneath("src/a.kt#0", "src/a.kt"))
+        assertTrue(ReviewLineChart.isBeneath("src/a.kt#0/1", "src/a.kt#0"))
+        assertFalse(ReviewLineChart.isBeneath("src/a.kt#10", "src/a.kt#1"))
+        assertFalse(ReviewLineChart.isBeneath("src2/a.kt", "src"))
+    }
 }
