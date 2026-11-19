@@ -741,7 +741,9 @@ internal class CanvasSessionPanel(
     }
 
     override fun close(cardId: String) {
+        val card = model.card(cardId) ?: return
         model.remove(cardId)
+        moveTo(card.parentId, focus = false)
     }
 
     override fun cardResized() {
@@ -876,21 +878,23 @@ internal class CanvasSessionPanel(
     }
 
     /**
-     * Centres the canvas on card [cardId] (its top, if taller than the view) and emphasises it for a moment; null moves
-     * to the root file.
+     * Centres the canvas on card [cardId] (its top, if taller than the view); null moves to the root file.
+     * With [focus], also focuses the card and emphasises it for a moment.
      */
-    private fun moveTo(cardId: String?) {
+    private fun moveTo(cardId: String?, focus: Boolean = true) {
         val view: JComponent = (if (cardId == null) rootView else views[cardId]) ?: return
-        setCardFocus(true, cardId)
+        if (focus) setCardFocus(true, cardId)
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
         val at = cardId?.let(content::destination) ?: CanvasPlacement(view.x, view.y)
         val x = if (view.width <= viewport.width) at.x + view.width / 2 - viewport.width / 2 else at.x - zoomScaled(16, zoom)
         val y = if (view.height <= viewport.height - top) at.y + view.height / 2 - (viewport.height + top) / 2 else at.y - top
-        if (cardId != null) reveal(cardId, glide = false) else clearReveal()
+        if (focus) {
+            if (cardId != null) reveal(cardId, glide = false) else clearReveal()
+        }
         glideTo(x, y)
-        if (!typing()) content.requestFocusInWindow()
+        if (focus && !typing()) content.requestFocusInWindow()
     }
 
     /** Makes [cardId] the card the trail leads to; null for the root file. */

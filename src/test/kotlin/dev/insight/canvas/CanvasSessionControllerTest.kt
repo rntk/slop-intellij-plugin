@@ -723,9 +723,19 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             Thread.sleep(300)
             PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
             assertNull("Opening a card does not summarize it", panel.model.card(card.id)!!.summary)
+            val summaryBody = view.components.filterIsInstance<CanvasFoldSection>().single { it.section == CardSection.SUMMARY }.body
+            val summaryStatus = summaryBody.components.filterIsInstance<JLabel>().single()
             view.requestSummary()
+            assertEquals("Summarizing…", summaryStatus.text)
+            assertTrue(summaryStatus.isVisible)
             PlatformTestUtil.waitWithEventsDispatching("The requested summary should arrive", { panel.model.card(card.id)!!.summary != null }, 30)
             assertEquals("Calls the helper.", panel.model.card(card.id)!!.summary)
+            assertFalse("The summary status should clear when the result arrives", summaryStatus.isVisible)
+
+            view.requestSummary()
+            assertTrue("Regenerating should show progress even with an existing summary", summaryStatus.isVisible)
+            PlatformTestUtil.waitWithEventsDispatching("Recreating the same summary should clear the status",
+                { !summaryStatus.isVisible }, 30)
 
             view.send("What does entry do?")
             PlatformTestUtil.waitWithEventsDispatching("The chat should answer",

@@ -280,6 +280,25 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testClosingCardMovesCanvasToParentAndThenRoot() = withLongPanel { panel, cards, viewport ->
+        val parent = cards.first()
+        val child = panel.controller.openSelection(parent.id, 0, parent.card.text.length)!!
+        val childView = panel.cardViews.getValue(child.id)
+        val root = panel.canvas.components.single { it.name == "canvas-root" }
+        repeat(2) { relayout(panel) }
+        viewport.viewPosition = childView.location
+        assertFalse(viewport.viewRect.contains(parent.location))
+
+        panel.close(child.id)
+
+        assertTrue("Closing the child should bring the parent into view", viewport.viewRect.contains(parent.location))
+        assertFalse(viewport.viewRect.contains(root.location))
+
+        panel.close(parent.id)
+
+        assertTrue("Closing a card opened from the root should bring the root into view", viewport.viewRect.contains(root.location))
+    }
+
     private fun withLongPanel(test: (CanvasSessionPanel, List<CanvasCardView>, JViewport) -> Unit) {
         val text = "class LongFile {\n" + (1..100).joinToString("\n") {
             "    // line $it " + "long code ".repeat(60)

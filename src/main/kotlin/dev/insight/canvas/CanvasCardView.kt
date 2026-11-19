@@ -126,6 +126,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     private val summaryStatus = host.zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
     private val summaryRetry = host.zoomFont(ActionLink("Summarize") { requestSummary() })
     private var summaryJob: Job? = null
+    private var renderedSummaryPending = false
     private val summary = CanvasFoldSection(host, id, CardSection.SUMMARY, "Summary", JPanel(StackLayout { scaled(2) }).apply {
         isOpaque = false
         add(summaryText)
@@ -237,7 +238,8 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Shows [next], the card's state in the model. */
     fun update(next: CanvasCard) {
         // The input already shows a typed draft; keystrokes need no card refresh or canvas layout.
-        val draftOnly = rendered && card.activeChatId == next.activeChatId &&
+        val draftOnly = rendered && renderedSummaryPending == (summaryJob?.isActive == true) &&
+            card.activeChatId == next.activeChatId &&
             card.copy(chats = next.chats) == next && card.chats.size == next.chats.size &&
             card.chats.zip(next.chats).all { (a, b) -> a.copy(draft = b.draft) == b }
         card = next
@@ -283,6 +285,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         sourcePane?.isVisible = CardSection.SOURCE !in next.folded
         sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
+        renderedSummaryPending = pending
         summaryText.text = next.summary.orEmpty()
         summaryText.isVisible = next.summary != null
         summaryStatus.text = when {
