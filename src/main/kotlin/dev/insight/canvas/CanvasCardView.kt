@@ -63,6 +63,8 @@ internal interface CanvasCardHost {
     /** Whether the gaps of [cardId], or of the root file for null, are being summarized. */
     fun summarizingGaps(cardId: String?): Boolean
     fun navigate(source: CanvasSource?, path: String, line: Int)
+    /** Moves keyboard focus back to the canvas surface. */
+    fun focusCanvas()
 }
 
 /**
@@ -92,11 +94,20 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** The card's source viewer; null when it has no source text. */
     var sourcePane: CanvasSourcePane? = source?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
         private set
+    /** Whether this card currently owns keyboard and wheel navigation. */
+    var focused = false
+        set(value) {
+            if (field == value) return
+            field = value
+            updateBorder()
+            repaint()
+        }
     /** Whether the card is drawn emphasised, after it was revealed. */
     var highlighted = false
         set(value) {
+            if (field == value) return
             field = value
-            applyZoom()
+            updateBorder()
             repaint()
         }
 
@@ -191,6 +202,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(usages)
         add(history)
         add(chat.ask)
+        addMouseWheelListener(host.sourceListener::wheel)
         update(initial)
         applyZoom()
     }
@@ -441,13 +453,22 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     /** Sizes beyond fonts, at the current zoom. */
     fun applyZoom() {
-        val accent = if (highlighted) ACCENT else JBColor.border()
-        val line = if (highlighted) scaled(2) else scaled(1)
+        updateBorder()
+        sourcePane?.applyZoom(host.zoom)
+        diffPane?.applyZoom(host.zoom)
+    }
+
+    private fun updateBorder() {
+        val emphasized = focused || highlighted
+        val accent = when {
+            focused -> JBUI.CurrentTheme.Focus.focusColor()
+            highlighted -> ACCENT
+            else -> JBColor.border()
+        }
+        val line = if (emphasized) scaled(2) else scaled(1)
         // Reserve the highlight width without thickening the normal outline.
         border = BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(accent, line),
             pixel(scaled(8) + scaled(2) - line))
-        sourcePane?.applyZoom(host.zoom)
-        diffPane?.applyZoom(host.zoom)
     }
 
     val navigationEditor get() = if (!sourceSection.body.isVisible) null

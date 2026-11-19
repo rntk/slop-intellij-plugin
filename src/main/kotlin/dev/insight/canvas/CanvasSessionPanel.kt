@@ -16,7 +16,9 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonShortcuts
 import com.intellij.openapi.actionSystem.CustomShortcutSet
+import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -44,6 +46,7 @@ import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.CanvasZoomAnchor
 import dev.insight.ui.layoutZoomContent
+import dev.insight.ui.pixelBorder
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.openSourceChain
@@ -71,6 +74,7 @@ import java.awt.event.MouseWheelEvent
 import java.awt.geom.CubicCurve2D
 import javax.swing.AbstractAction
 import javax.swing.AbstractButton
+import javax.swing.BorderFactory
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -160,7 +164,7 @@ internal class CanvasSessionPanel(
         if (t >= 1) zoomFrames.stop()
     }
     private val viewSave = Timer(400) { saveView() }.apply { isRepeats = false }
-    private val unreveal = Timer(1_500) { reveal(null) }.apply { isRepeats = false }
+    private val unreveal = Timer(1_500) { clearReveal() }.apply { isRepeats = false }
     private val selectionButton = JButton("Open card").apply {
         isVisible = false
         isFocusable = false
@@ -226,9 +230,11 @@ internal class CanvasSessionPanel(
 
     /** The card the reader is on, which the trail leads to; null for the root file. */
     private var current: String? = null
-    /** Reading navigation has its own target: clicking the root keeps the existing trail. */
-    private var readingCard = false
-    private var navigationCard: String? = null
+    /** Whether a card (or the root file when [focusedId] is null) owns keyboard and wheel navigation. */
+    private var cardFocused = false
+    private var focusedId: String? = null
+    internal val hasFocusedCard: Boolean get() = cardFocused
+    internal val focusedCard: String? get() = if (cardFocused) focusedId else null
     /** The root-first ids of [current]'s chain, as last shown, so the trail can step back when a card closes. */
     private var trail: List<String> = emptyList()
     private val breadcrumbs = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
@@ -380,6 +386,7 @@ internal class CanvasSessionPanel(
         }
         model.cards.forEach { card -> views[card.id]?.update(card) ?: addView(card) }
         rootView?.update(model.session.root)
+        if (cardFocused && focusedId != null && focusedId !in views) setCardFocus(false)
         if (current != null && model.card(current!!) == null) current = trail.lastOrNull { model.card(it) != null }
         refreshTrail()
         refreshAnchors()
@@ -406,6 +413,7 @@ internal class CanvasSessionPanel(
                     anchorYs.remove(id)
                     gapJobs.remove(id)?.cancel()
                 }
+                if (cardFocused && focusedId in change.ids) setCardFocus(false)
                 // The trail steps back to the nearest card left open.
                 if (current in change.ids) current = trail.lastOrNull { it !in change.ids }
                 refreshTrail()
@@ -742,9 +750,62 @@ internal class CanvasSessionPanel(
         content.repaint()
     }
 
+    private fun setCardFocus(focused: Boolean, cardId: String? = null) {
+        val nextFocused = focused && (cardId == null || cardId in views)
+        val nextId = if (nextFocused) cardId else null
+        if (nextFocused == cardFocused && nextId == focusedId) return
+        val prevFocused = cardFocused
+        val prevId = focusedId
+        cardFocused = nextFocused
+        focusedId = nextId
+        if (prevFocused) {
+            if (prevId == null) rootView?.focused = false else views[prevId]?.focused = false
+        }
+        if (nextFocused) {
+            if (nextId == null) rootView?.focused = true else views[nextId]?.focused = true
+        }
+        content.repaint()
+    }
+
+    private fun clearReveal() {
+        unreveal.stop()
+        revealed?.let { views[it]?.highlighted = false }
+        if (revealed != null) {
+            revealed = null
+            content.repaint()
+        }
+    }
+
+    private fun exitCardFocus(focusCanvas: Boolean = true, clearSelection: Boolean = false) {
+        setCardFocus(false)
+        clearReveal()
+        if (clearSelection) {
+            selectionPane?.clearSelection()
+            hideSelectionButton()
+        }
+        if (focusCanvas) content.requestFocusInWindow()
+    }
+
+    override fun focusCanvas() {
+        content.requestFocusInWindow()
+    }
+
+    private fun focusedNavigationEditor(): EditorEx? =
+        if (!cardFocused) null
+        else if (focusedId == null) rootView?.navigationEditor
+        else views[focusedId]?.navigationEditor
+
+    private fun typing(): Boolean {
+        val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+        return owner is JTextComponent && owner.isEditable && SwingUtilities.isDescendingFrom(owner, content)
+    }
+
     override fun revealLine(cardId: String, line: Int) {
         scrollFrames.stop()
         val view = views[cardId] ?: return
+        setCardFocus(true, cardId)
+        select(cardId)
+        if (!typing()) content.requestFocusInWindow()
         if (CardSection.SOURCE in view.card.folded) model.setFolded(cardId, CardSection.SOURCE, false)
         view.showSource()
         content.validate()
@@ -761,18 +822,26 @@ internal class CanvasSessionPanel(
     }
 
     /** Emphasises card [cardId] for a moment and scrolls it into view; null clears the emphasis. */
-    private fun reveal(cardId: String?) {
+    private fun reveal(cardId: String?, glide: Boolean = true) {
+        if (cardId == null) {
+            clearReveal()
+            return
+        }
         revealed?.let { views[it]?.highlighted = false }
         revealed = cardId
-        val view = cardId?.let(views::get) ?: return
+        val view = views[cardId] ?: return
         view.highlighted = true
         select(cardId)
-        content.validate()
-        val viewport = scroll.viewport.viewRect
-        val at = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
-        val padding = zoomScaled(16, zoom)
-        glideTo(Rectangle(at.x - padding, at.y - padding,
-            minOf(view.width + padding * 2, viewport.width), minOf(view.height, viewport.height)), viewport)
+        setCardFocus(true, cardId)
+        if (!typing()) content.requestFocusInWindow()
+        if (glide) {
+            content.validate()
+            val viewport = scroll.viewport.viewRect
+            val at = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
+            val padding = zoomScaled(16, zoom)
+            glideTo(Rectangle(at.x - padding, at.y - padding,
+                minOf(view.width + padding * 2, viewport.width), minOf(view.height, viewport.height)), viewport)
+        }
         unreveal.restart()
     }
 
@@ -812,16 +881,16 @@ internal class CanvasSessionPanel(
      */
     private fun moveTo(cardId: String?) {
         val view: JComponent = (if (cardId == null) rootView else views[cardId]) ?: return
-        readingCard = true
-        navigationCard = cardId
+        setCardFocus(true, cardId)
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
         val at = cardId?.let(content::destination) ?: CanvasPlacement(view.x, view.y)
         val x = if (view.width <= viewport.width) at.x + view.width / 2 - viewport.width / 2 else at.x - zoomScaled(16, zoom)
         val y = if (view.height <= viewport.height - top) at.y + view.height / 2 - (viewport.height + top) / 2 else at.y - top
-        reveal(cardId)
+        if (cardId != null) reveal(cardId, glide = false) else clearReveal()
         glideTo(x, y)
+        if (!typing()) content.requestFocusInWindow()
     }
 
     /** Makes [cardId] the card the trail leads to; null for the root file. */
@@ -911,84 +980,95 @@ internal class CanvasSessionPanel(
     }
 
     /**
-     * Arrows, pages, Space and Home/End scroll a selected card's code, or the canvas on axes that fit.
+     * Arrows, pages, Space and Home/End scroll a focused card's code on its scrollable axes, and the canvas otherwise.
      * Escape or empty space returns to canvas navigation; Tab moves between cards in opening order.
      */
     private fun installKeys() {
-        fun bind(stroke: String, action: () -> Unit) {
-            val key = KeyStroke.getKeyStroke(stroke)
-            content.getInputMap(JComponent.WHEN_FOCUSED).put(key, stroke)
-            if (key.keyCode != 0) object : DumbAwareAction() {
-                private fun acceptsFocus(): Boolean {
-                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-                    return owner === content || owner != null && SwingUtilities.isDescendingFrom(owner, content) &&
-                        generateSequence(owner) { it.parent }.any { it is CanvasSourcePane || it is CanvasDiffPane }
-                }
-                override fun actionPerformed(e: AnActionEvent) {
-                    if (!ready || disposed || !acceptsFocus()) return
-                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-                    if (owner !== content) {
-                        readingCard = true
-                        navigationCard = generateSequence(owner) { it.parent }.filterIsInstance<CanvasCardView>().firstOrNull()?.id
+        fun acceptsFocus(): Boolean {
+            val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            return owner != null && (owner === content || SwingUtilities.isDescendingFrom(owner, content)) && !typing()
+        }
+        fun ownerCard(): Pair<Boolean, String?>? {
+            val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return null
+            if (owner is JTextComponent && owner.isEditable) return null
+            val ancestors = generateSequence(owner) { it.parent }.toList()
+            if (ancestors.none { it is CanvasSourcePane || it is CanvasDiffPane }) return null
+            return true to ancestors.filterIsInstance<CanvasCardView>().firstOrNull()?.id
+        }
+        fun focusInViewer(): Boolean = ownerCard() != null
+        fun bind(name: String, strokes: List<String>, enabled: () -> Boolean = { true }, action: () -> Unit) {
+            val keyStrokes = strokes.map { requireNotNull(KeyStroke.getKeyStroke(it)) { "Invalid keystroke: $it" } }
+            keyStrokes.forEach { content.getInputMap(JComponent.WHEN_FOCUSED).put(it, name) }
+            val shortcuts = keyStrokes.filter { it.keyCode != 0 }.map { KeyboardShortcut(it, null) }
+            if (shortcuts.isNotEmpty()) {
+                object : DumbAwareAction() {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        if (ready && !disposed && acceptsFocus() && enabled()) action()
                     }
-                    action()
-                }
-                override fun update(e: AnActionEvent) { e.presentation.isEnabled = ready && !disposed && acceptsFocus() }
-                override fun getActionUpdateThread() = ActionUpdateThread.EDT
-            }.registerCustomShortcutSet(CustomShortcutSet(key), content)
-            content.actionMap.put(stroke, object : AbstractAction() {
+                    override fun update(e: AnActionEvent) {
+                        e.presentation.isEnabled = ready && !disposed && acceptsFocus() && enabled()
+                    }
+                    override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                }.registerCustomShortcutSet(CustomShortcutSet(*shortcuts.toTypedArray()), content)
+            }
+            content.actionMap.put(name, object : AbstractAction(name) {
                 override fun actionPerformed(e: ActionEvent?) {
-                    if (ready && !disposed) action()
+                    if (ready && !disposed && enabled()) action()
                 }
+                override fun isEnabled() = ready && !disposed && enabled()
             })
         }
         val step = { zoomScaled(KEY_SCROLL_STEP, zoom) }
-        val page = { maxOf(scroll.viewport.height - step(), step()) }
+        fun page(vertical: Boolean) = maxOf((if (vertical) scroll.viewport.height else scroll.viewport.width) - step(), step())
         fun scrollBy(dx: Int, dy: Int, page: Boolean = false, edge: Boolean = false) {
-            val editor = if (!readingCard) null else if (navigationCard == null) rootView?.navigationEditor
-                else views[navigationCard]?.navigationEditor
-            val rest = editor?.let { scrollCanvasViewer(it, dx, dy, page, edge) } ?: Point(dx, dy)
+            if (!cardFocused) ownerCard()?.let { (_, id) -> setCardFocus(true, id) }
+            val rest = focusedNavigationEditor()?.let { scrollCanvasViewer(it, dx, dy, page, edge) } ?: Point(dx, dy)
+            if (rest.x == 0 && rest.y == 0) return
+            stopGlides()
             val at = scroll.viewport.viewPosition
-            val x = if (edge && rest.x > 0) maxOf(0, content.preferredSize.width - scroll.viewport.width)
-                else maxOf(at.x.toLong() + rest.x, 0)
-            val y = if (edge && rest.y > 0) maxOf(0, content.preferredSize.height - scroll.viewport.height)
-                else maxOf(at.y.toLong() + rest.y, 0)
+            val maxX = maxOf(0, content.preferredSize.width - scroll.viewport.width)
+            val maxY = maxOf(0, content.preferredSize.height - scroll.viewport.height)
+            val x = when {
+                rest.x == 0 -> at.x
+                edge -> if (rest.x > 0) maxX else 0
+                else -> (at.x.toLong() + rest.x).coerceIn(0, maxX.toLong()).toInt()
+            }
+            val y = when {
+                rest.y == 0 -> at.y
+                edge -> if (rest.y > 0) maxY else 0
+                else -> (at.y.toLong() + rest.y).coerceIn(0, maxY.toLong()).toInt()
+            }
             scrollTo(x, y)
         }
-        for (prefix in listOf("", "KP_")) {
-            bind("${prefix}UP") { scrollBy(0, -step()) }
-            bind("${prefix}DOWN") { scrollBy(0, step()) }
-            bind("${prefix}LEFT") { scrollBy(-step(), 0) }
-            bind("${prefix}RIGHT") { scrollBy(step(), 0) }
+        bind("up", listOf("UP", "KP_UP")) { scrollBy(0, -step()) }
+        bind("down", listOf("DOWN", "KP_DOWN")) { scrollBy(0, step()) }
+        bind("left", listOf("LEFT", "KP_LEFT", "shift LEFT", "shift KP_LEFT", "shift UP", "shift KP_UP")) { scrollBy(-step(), 0) }
+        bind("right", listOf("RIGHT", "KP_RIGHT", "shift RIGHT", "shift KP_RIGHT", "shift DOWN", "shift KP_DOWN")) { scrollBy(step(), 0) }
+        bind("page-up", listOf("PAGE_UP", "shift SPACE")) { scrollBy(0, -page(true), page = true) }
+        bind("page-down", listOf("PAGE_DOWN", "SPACE")) { scrollBy(0, page(true), page = true) }
+        bind("page-left", listOf("shift PAGE_UP")) { scrollBy(-page(false), 0, page = true) }
+        bind("page-right", listOf("shift PAGE_DOWN")) { scrollBy(page(false), 0, page = true) }
+        bind("top", listOf("HOME")) { scrollBy(0, -Int.MAX_VALUE / 2, edge = true) }
+        bind("bottom", listOf("END")) { scrollBy(0, Int.MAX_VALUE / 2, edge = true) }
+        bind("start", listOf("ctrl HOME", "meta HOME")) { scrollBy(-Int.MAX_VALUE / 2, -Int.MAX_VALUE / 2, edge = true) }
+        bind("end", listOf("ctrl END", "meta END")) { scrollBy(Int.MAX_VALUE / 2, Int.MAX_VALUE / 2, edge = true) }
+        bind("escape", listOf("ESCAPE"), { cardFocused || revealed != null || selectionPane != null || focusInViewer() }) {
+            exitCardFocus(focusCanvas = true, clearSelection = true)
         }
-        bind("shift UP") { scrollBy(-step(), 0) }
-        bind("shift DOWN") { scrollBy(step(), 0) }
-        bind("PAGE_UP") { scrollBy(0, -page(), page = true) }
-        bind("PAGE_DOWN") { scrollBy(0, page(), page = true) }
-        bind("SPACE") { scrollBy(0, page(), page = true) }
-        bind("shift SPACE") { scrollBy(0, -page(), page = true) }
-        bind("shift PAGE_UP") { scrollBy(-scroll.viewport.width, 0, page = true) }
-        bind("shift PAGE_DOWN") { scrollBy(scroll.viewport.width, 0, page = true) }
-        bind("HOME") { scrollBy(0, -Int.MAX_VALUE / 2, edge = true) }
-        bind("END") { scrollBy(0, Int.MAX_VALUE / 2, edge = true) }
-        for (modifier in listOf("ctrl ", "meta ")) {
-            bind("${modifier}HOME") { scrollBy(-Int.MAX_VALUE / 2, -Int.MAX_VALUE / 2, edge = true) }
-            bind("${modifier}END") { scrollBy(Int.MAX_VALUE / 2, Int.MAX_VALUE / 2, edge = true) }
-        }
-        bind("ESCAPE") { readingCard = false; content.requestFocusInWindow() }
         // Typed keys follow the keyboard layout, and the numeric keypad types the same characters.
-        bind("typed +") { zoomStep(ZOOM_STEP) }
-        bind("typed =") { zoomStep(ZOOM_STEP) }
-        bind("typed -") { zoomStep(1 / ZOOM_STEP) }
-        bind("typed 0") { glideZoom(1.0) }
-        bind("TAB") { stepCard(forward = true) }
-        bind("shift TAB") { stepCard(forward = false) }
+        bind("zoom-in", listOf("typed +", "typed =", "ctrl EQUALS", "meta EQUALS", "ctrl shift EQUALS", "meta shift EQUALS",
+            "ctrl PLUS", "meta PLUS", "ctrl ADD", "meta ADD")) { zoomStep(ZOOM_STEP) }
+        bind("zoom-out", listOf("typed -", "ctrl MINUS", "meta MINUS", "ctrl SUBTRACT", "meta SUBTRACT")) { zoomStep(1 / ZOOM_STEP) }
+        bind("zoom-reset", listOf("typed 0", "ctrl 0", "meta 0", "ctrl NUMPAD0", "meta NUMPAD0")) { glideZoom(1.0) }
+        bind("next-card", listOf("TAB")) { stepCard(forward = true) }
+        bind("previous-card", listOf("shift TAB")) { stepCard(forward = false) }
     }
 
     /** Moves to the card after (or before) the current one in opening order, wrapping around through the root file. */
     internal fun stepCard(forward: Boolean) {
         val order = listOf<String?>(null) + model.cards.map { it.id }
-        val index = order.indexOf(current).coerceAtLeast(0)
+        val anchor = if (cardFocused) focusedId else current
+        val index = order.indexOf(anchor).coerceAtLeast(0)
         val next = order[Math.floorMod(index + if (forward) 1 else -1, order.size)]
         if (next == null) {
             current = null
@@ -1091,13 +1171,23 @@ internal class CanvasSessionPanel(
     }
 
     private fun wheel(e: MouseWheelEvent) {
-        stopGlides()
+        e.consume()
         if (e.isControlDown || e.isMetaDown) {
+            stopGlides()
             wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
             wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
             if (!zoomFrame.isRunning) zoomFrame.start()
-            e.consume()
-        } else scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
+            return
+        }
+        val editor = focusedNavigationEditor()
+        val horizontal = e.isShiftDown
+        if (editor != null && canScrollCanvasViewer(editor, horizontal)) {
+            val delta = canvasWheelDelta(e.preciseWheelRotation, editor.lineHeight, WHEEL_ROWS)
+            if (delta != 0) scrollCanvasViewer(editor, if (horizontal) delta else 0, if (horizontal) 0 else delta)
+            return
+        }
+        stopGlides()
+        scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
     }
 
     /** Zooms to [requested], keeping the content under [anchor] (viewport coordinates; the middle by default) in place. */
@@ -1123,8 +1213,7 @@ internal class CanvasSessionPanel(
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
-        rootView?.pane?.applyZoom(zoom)
-        rootView?.diffPane?.applyZoom(zoom)
+        rootView?.applyZoom()
         content.revalidate()
         scroll.validate()
         layoutZoomContent(content)
@@ -1133,8 +1222,13 @@ internal class CanvasSessionPanel(
         content.repaint()
     }
 
-    /** Glides the zoom by [factor] from where an ongoing zoom glide is heading, so repeated steps add up. */
-    private fun zoomStep(factor: Double) = glideZoom((if (zoomFrames.isRunning) zoomTarget else zoom) * factor)
+    /** Glides the zoom by [factor] from where an ongoing zoom glide is heading, snapping to 100% when a step crosses it. */
+    private fun zoomStep(factor: Double) {
+        val base = if (zoomFrames.isRunning) zoomTarget else zoom
+        val next = (base * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+        val snapped = if (base != 1.0 && minOf(base, next) < 1.0 && maxOf(base, next) > 1.0) 1.0 else next
+        glideZoom(snapped)
+    }
 
     /** Eases the zoom to [requested] around the middle of the view, as [glideTo] does for scrolling; at once off screen. */
     private fun glideZoom(requested: Double) {
@@ -1177,33 +1271,36 @@ internal class CanvasSessionPanel(
     private fun drag(e: MouseEvent) {
         if (e.id == MouseEvent.MOUSE_PRESSED) stopGlides()
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
+        val target = if (e.component === content) SwingUtilities.getDeepestComponentAt(content, e.x, e.y) ?: content else e.component
+        val ancestors = generateSequence(target) { it.parent }.toList()
+        val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
+        val root = ancestors.filterIsInstance<RootView>().firstOrNull()
         if (e.isPopupTrigger) {
             val point = SwingUtilities.convertPoint(e.component, e.point, content)
             val underPointer = SwingUtilities.getDeepestComponentAt(content, point.x, point.y) ?: e.component
-            val ancestors = generateSequence(underPointer) { it.parent }.toList()
-            val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
-            val root = ancestors.filterIsInstance<RootView>().firstOrNull()
-            val actions = card?.menuActions() ?: root?.menuActions()
-            if (actions != null && ancestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
+            val popupAncestors = generateSequence(underPointer) { it.parent }.toList()
+            val popupCard = popupAncestors.filterIsInstance<CanvasCardView>().firstOrNull()
+            val popupRoot = popupAncestors.filterIsInstance<RootView>().firstOrNull()
+            val actions = popupCard?.menuActions() ?: popupRoot?.menuActions()
+            if (actions != null && popupAncestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
                 endDrag()
+                if (popupCard != null || popupRoot != null) setCardFocus(true, popupCard?.id)
+                popupCard?.let { select(it.id) }
                 canvasActionMenu(actions).show(e.component, e.x, e.y)
                 return
             }
         }
+        if (e.id == MouseEvent.MOUSE_PRESSED && target === selectionButton) return
         if (e.id == MouseEvent.MOUSE_PRESSED && SwingUtilities.isLeftMouseButton(e)) {
-            val ancestors = generateSequence(e.component) { it.parent }.toList()
-            val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
-            readingCard = card != null || ancestors.any { it is RootView }
-            navigationCard = card?.id
+            if (card != null || root != null) setCardFocus(true, card?.id) else exitCardFocus(focusCanvas = false)
         }
         // Clicking into a card makes it the one the trail leads to; the root file keeps the trail.
-        if (e.id == MouseEvent.MOUSE_PRESSED) generateSequence(e.component) { it.parent }
-            .filterIsInstance<CanvasCardView>().firstOrNull()?.let { select(it.id) }
+        if (e.id == MouseEvent.MOUSE_PRESSED) card?.let { select(it.id) }
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                 panned = false
                 // Source text, chat text and buttons keep their own selection and clicks.
-                if (SwingUtilities.isLeftMouseButton(e) && generateSequence(e.component) { it.parent }
+                if (SwingUtilities.isLeftMouseButton(e) && ancestors
                         .any { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent || it is AbstractButton || it is ActionLink }) return
                 dragStart = e.locationOnScreen
                 dragView = scroll.viewport.viewPosition
@@ -1283,6 +1380,14 @@ internal class CanvasSessionPanel(
      * beside the source when opened from a diff.
      */
     private inner class RootView(private var source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
+        /** Whether the root file currently owns keyboard and wheel navigation. */
+        var focused = false
+            set(value) {
+                if (field == value) return
+                field = value
+                updateBorder()
+                repaint()
+            }
         var pane = CanvasSourcePane(project, null, source, sourceListener)
             private set
         private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
@@ -1332,13 +1437,32 @@ internal class CanvasSessionPanel(
         init {
             isOpaque = false
             name = "canvas-root"
+            updateBorder()
             add(header)
             add(meta)
             add(summary)
             add(sourceSection)
             add(history)
             add(chat.ask)
+            addMouseWheelListener(::wheel)
             update(model.session.root)
+        }
+
+        fun applyZoom() {
+            updateBorder()
+            pane.applyZoom(zoom)
+            diffPane?.applyZoom(zoom)
+        }
+
+        private fun updateBorder() {
+            val line = zoomScaled(2, zoom)
+            val pad = zoomScaled(6, zoom)
+            border = if (focused) {
+                BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBUI.CurrentTheme.Focus.focusColor(), line),
+                    pixelBorder(pad, pad, pad, pad))
+            } else {
+                pixelBorder(line + pad, line + pad, line + pad, line + pad)
+            }
         }
 
         /** Shows [root], the root file's chats and folding in the model. */
@@ -1425,9 +1549,10 @@ internal class CanvasSessionPanel(
 
         override fun getPreferredSize(): Dimension {
             val stacked = super.getPreferredSize()
+            val horizontalInsets = insets.left + insets.right
             // Wide enough to chat in, even beside a short, narrow file.
             return Dimension(maxOf(pane.preferredSize.width, diffPane?.preferredSize?.width ?: 0, components.first().preferredSize.width,
-                zoomScaled(ROOT_CHAT_MIN_WIDTH, zoom)), stacked.height)
+                zoomScaled(ROOT_CHAT_MIN_WIDTH, zoom)) + horizontalInsets, stacked.height)
         }
 
         override fun dispose() {
@@ -1566,7 +1691,7 @@ internal class CanvasSessionPanel(
                     val anchor = anchorYs[card.id] ?: continue
                     g2.composite = java.awt.AlphaComposite.SrcOver.derive(view.appearance)
                     arrow(g2, Point(parent.x + parent.width, parent.y + anchor), Point(view.x, view.y + view.headerMiddle()),
-                        if (card.id == revealed) ARROW_ACTIVE else ARROW)
+                        if (card.id == revealed || (cardFocused && card.id == focusedId)) ARROW_ACTIVE else ARROW)
                 }
             } finally {
                 g2.dispose()
@@ -1610,6 +1735,7 @@ internal class CanvasSessionPanel(
         const val FLOATING_ROW_SPACE = 34
         const val MIN_TRAIL_WIDTH = 220
         const val KEY_SCROLL_STEP = 72
+        const val WHEEL_ROWS = 3
         /** How long the view takes to glide to a card, line or zoom: long enough to follow, short enough not to wait. */
         const val VIEW_GLIDE_NANOS = 320_000_000L
         const val BASE_FONT = "insight.canvas.baseFont"

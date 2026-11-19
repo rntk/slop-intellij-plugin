@@ -102,8 +102,12 @@ internal class CanvasChatView(
         section.addToHeader(canvasGlyphButton(host, "+", "New chat", "canvas-new-chat") { host.model.addChat(cardId) })
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "canvas-send")
         input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("shift ENTER"), "insert-break")
+        input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ESCAPE"), "canvas-leave-input")
         input.actionMap.put("canvas-send", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) = submit()
+        })
+        input.actionMap.put("canvas-leave-input", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) = host.focusCanvas()
         })
         input.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent) = changed()

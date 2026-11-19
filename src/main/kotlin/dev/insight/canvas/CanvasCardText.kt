@@ -123,8 +123,10 @@ val canvasHelpHtml = """
     are on; click a step to move there.<br><br>
     <b>Attach file</b> links documents, screenshots or other local files to the file or card. Text and pictures
     have previews and become context for chats on that chain. <b>Open file</b> opens the original in the IDE.<br><br>
-    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. With the canvas focused (click empty space),
-    arrows, Page Up/Down, Home and End scroll, + and − zoom, 0 resets the zoom, and Tab / Shift+Tab move between cards. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
+    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. Click a card or press Tab / Shift+Tab to focus it;
+    the wheel and scroll keys (arrows, Page Up/Down, Space / Shift+Space, Home/End; Shift sideways) scroll the focused card
+    on axes that scroll and the canvas on other axes. Esc or clicking empty space restores canvas navigation; Esc in a chat
+    input returns focus to the canvas. + / − (or Ctrl/⌘ + = / −) zoom, and 0 (or Ctrl/⌘ + 0) resets the zoom. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
     cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
     to another session of this file, or deletes this one. After the code changes, <b>Refresh</b> reads it again in

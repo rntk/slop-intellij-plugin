@@ -13,25 +13,25 @@ class ReviewLineChartTest {
         val chart = ReviewLineChart(tree)
         assertEquals(3L, chart.root.value)
         assertEquals(3, chart.root.files)
-        assertEquals(listOf("README.md", "src"), chart.children(chart.root).map { it.path })
+        assertEquals(listOf("src", "README.md"), chart.children(chart.root).map { it.path })
         val src = chart.directory("src")
         assertEquals(3L, src.value)
         assertEquals(2, src.files)
-        assertEquals(listOf("src/nested", "src/a.kt"), chart.children(src).map { it.path })
+        assertEquals(listOf("src/a.kt", "src/nested"), chart.children(src).map { it.path })
         assertEquals(listOf("", "src", "src/nested"), chart.breadcrumbs(chart.directory("src/nested")).map { it.path })
     }
 
     @Test fun `unfolded directories list their entries beneath them, one level deeper`() {
         val chart = ReviewLineChart(buildSummaryTree(listOf(file("src/a.kt", "a\nb\n"), file("src/nested/b.kt", "c"),
             file("README.md", ""))))
-        assertEquals(listOf("README.md" to 0, "src" to 0), chart.rows(chart.root, emptySet()).map { it.entry.path to it.depth })
+        assertEquals(listOf("src" to 0, "README.md" to 0), chart.rows(chart.root, emptySet()).map { it.entry.path to it.depth })
         // A nested directory stays folded until it is unfolded too; folded ancestors hide unfolded descendants.
-        assertEquals(listOf("README.md" to 0, "src" to 0, "src/nested" to 1, "src/a.kt" to 1),
+        assertEquals(listOf("src" to 0, "src/a.kt" to 1, "src/nested" to 1, "README.md" to 0),
             chart.rows(chart.root, setOf("src")).map { it.entry.path to it.depth })
-        assertEquals(listOf("README.md" to 0, "src" to 0, "src/nested" to 1, "src/nested/b.kt" to 2, "src/a.kt" to 1),
+        assertEquals(listOf("src" to 0, "src/a.kt" to 1, "src/nested" to 1, "src/nested/b.kt" to 2, "README.md" to 0),
             chart.rows(chart.root, setOf("src", "src/nested")).map { it.entry.path to it.depth })
-        assertEquals(listOf("README.md", "src"), chart.rows(chart.root, setOf("src/nested")).map { it.entry.path })
-        assertEquals(listOf(false, true), chart.rows(chart.root, setOf("src", "README.md")).take(2).map { it.expanded })
+        assertEquals(listOf("src", "README.md"), chart.rows(chart.root, setOf("src/nested")).map { it.entry.path })
+        assertEquals(listOf(true, false), chart.rows(chart.root, setOf("src", "README.md")).take(2).map { it.expanded })
     }
 
     @Test fun `summary groups never hide siblings and common root is absorbed`() {
@@ -55,9 +55,9 @@ class ReviewLineChartTest {
         val items = ReviewLineChart(tree, LineChartMetric.ITEMS)
         assertEquals(7L, size.root.value)
         assertEquals(3L, items.root.value)
-        assertEquals(listOf("src/a.kt" to 3L, "src/nested" to 4L),
+        assertEquals(listOf("src/nested" to 4L, "src/a.kt" to 3L),
             size.children(size.directory("src")).map { it.path to it.value })
-        assertEquals(listOf("README.md" to 1L, "src" to 2L),
+        assertEquals(listOf("src" to 2L, "README.md" to 1L),
             items.children(items.root).map { it.path to it.value })
     }
 
@@ -84,8 +84,8 @@ class ReviewLineChartTest {
         assertEquals(3L, removed.root.value)
         assertEquals(3L, added.directory("src").value)
         assertEquals(3L, removed.directory("src").value)
-        assertEquals(listOf("src/nested", "src/a.kt"), added.children(added.directory("src")).map { it.path })
-        assertEquals(listOf("src/a.kt", "src/nested"), removed.children(removed.directory("src")).map { it.path })
+        assertEquals(listOf("src/a.kt", "src/nested"), added.children(added.directory("src")).map { it.path })
+        assertEquals(listOf("src/nested", "src/a.kt"), removed.children(removed.directory("src")).map { it.path })
         assertEquals(0L, removed.children(removed.root).single { it.path == "readme.md" }.value)
     }
 
@@ -169,12 +169,12 @@ class ReviewLineChartTest {
 
         outlines.ready = true
         val rows = chart.rows(src, setOf("src/a.kt", "src/a.kt#0"))
-        assertEquals(listOf("src/plain.txt" to 0, "src/a.kt" to 0, "src/a.kt#0" to 1, "src/a.kt#0/0" to 2, "src/a.kt#0/1" to 2),
+        assertEquals(listOf("src/a.kt" to 0, "src/a.kt#0" to 1, "src/a.kt#0/1" to 2, "src/a.kt#0/0" to 2, "src/plain.txt" to 0),
             rows.map { it.entry.path to it.depth })
         val worker = rows.single { it.entry.path == "src/a.kt#0" }.entry
         assertEquals(8L, worker.value)
         assertTrue(worker.expandable)
-        assertEquals(listOf(1L, 5L), rows.filter { it.depth == 2 }.map { it.entry.value })
+        assertEquals(listOf(5L, 1L), rows.filter { it.depth == 2 }.map { it.entry.value })
         assertEquals("run", chart.declaration("src/a.kt#0/1")?.label)
         assertNull(chart.declaration("src/a.kt#3"))
         assertTrue(chart.hasEntry("src/a.kt#0/1"))

@@ -178,7 +178,7 @@ internal class ReviewLineChart(
         }
         Kind.PLACEHOLDER -> emptyList()
     }.filter { it.kind == Kind.PLACEHOLDER || it.value > 0 || !metric.hidesEmpty }
-        .sortedWith(compareBy<Entry> { it.value }.thenBy { it.label }.thenBy { it.path })
+        .sortedWith(compareByDescending<Entry> { it.value }.thenBy { it.label }.thenBy { it.path })
 
     private fun declarationEntry(path: String, file: String, declaration: OutlineDeclaration): Entry =
         Entry(path, declaration.name, Kind.DECLARATION, metric.value(declaration), 0, file, declaration,

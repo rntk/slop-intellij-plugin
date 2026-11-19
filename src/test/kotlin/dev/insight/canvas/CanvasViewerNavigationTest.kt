@@ -43,26 +43,59 @@ class CanvasViewerNavigationTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(editor.scrollingModel.visibleArea.y > editor.lineHeight)
     }
 
-    fun testWheelScrollsEachAxisAndForwardsAtEdgesAndForZoom() = viewer { pane ->
+    fun testWheelAlwaysForwardsWithoutScrollingOnHover() = viewer { pane ->
         val editor = pane.editor
         fun wheel(modifiers: Int) {
             val event = MouseWheelEvent(editor.contentComponent, MouseWheelEvent.MOUSE_WHEEL, 0,
                 modifiers, 10, 10, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1)
             editor.contentComponent.mouseWheelListeners.forEach { it.mouseWheelMoved(event) }
+            assertTrue(event.isConsumed)
         }
-        wheel(InputEvent.SHIFT_DOWN_MASK)
-        assertTrue(editor.scrollingModel.visibleArea.x > 0)
-        assertEquals(0, editor.scrollingModel.visibleArea.y)
-        wheel(0)
-        assertTrue(editor.scrollingModel.visibleArea.y > 0)
-        assertEquals(0, forwarded)
-        scrollCanvasViewer(editor, 1, 1, edge = true)
         wheel(0)
         wheel(InputEvent.SHIFT_DOWN_MASK)
-        assertEquals(2, forwarded)
         wheel(InputEvent.CTRL_DOWN_MASK)
         wheel(InputEvent.META_DOWN_MASK)
         assertEquals(4, forwarded)
+        assertEquals(Point(0, 0), editor.scrollingModel.visibleArea.location)
+    }
+
+    fun testCanScrollCanvasViewerReportsAxes() {
+        val narrow = CanvasDiffPane(project, "Short.java", (1..100).map {
+            CanvasDiffRow(CanvasDiffRow.Kind.CONTEXT, "line $it", it, it)
+        }) {}
+        try {
+            narrow.maxHeight = 180
+            narrow.setSize(300, 200)
+            fun layout(container: Container) {
+                container.doLayout()
+                container.components.filterIsInstance<Container>().forEach(::layout)
+            }
+            layout(narrow)
+            assertFalse(canScrollCanvasViewer(narrow.editor, horizontal = true))
+            assertTrue(canScrollCanvasViewer(narrow.editor, horizontal = false))
+
+            narrow.maxHeight = Int.MAX_VALUE
+            assertFalse(canScrollCanvasViewer(narrow.editor, horizontal = true))
+            assertFalse(canScrollCanvasViewer(narrow.editor, horizontal = false))
+        } finally {
+            Disposer.dispose(narrow)
+        }
+
+        viewer { wide ->
+            assertTrue(canScrollCanvasViewer(wide.editor, horizontal = true))
+            assertTrue(canScrollCanvasViewer(wide.editor, horizontal = false))
+            wide.maxHeight = Int.MAX_VALUE
+            assertTrue(canScrollCanvasViewer(wide.editor, horizontal = true))
+            assertFalse(canScrollCanvasViewer(wide.editor, horizontal = false))
+        }
+    }
+
+    fun testCanvasWheelDeltaHandlesZeroWholeAndSmallFractionalTurns() {
+        assertEquals(0, canvasWheelDelta(0.0, 20))
+        assertEquals(60, canvasWheelDelta(1.0, 20))
+        assertEquals(-60, canvasWheelDelta(-1.0, 20))
+        assertEquals(1, canvasWheelDelta(0.005, 20))
+        assertEquals(-1, canvasWheelDelta(-0.005, 20))
     }
 
     fun testUnboundedVerticalAxisBelongsToCanvas() = viewer { pane ->
