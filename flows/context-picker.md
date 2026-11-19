@@ -4,7 +4,7 @@ The context picker is the shared hub that connects the plugin's views. From any 
 
 When a picker belongs to a review session, it also offers that review’s summaries and reading modes, topics, words, explainer board, and applicable diff views. These actions open the whole originating review.
 
-The code and diff review charts offer the picker from file and directory context menus, including line chart breadcrumbs and radar spokes.
+The code and diff review charts offer the picker from file and directory context menus, including line chart breadcrumbs and radar spokes. In Code Review, opening the picker from a declaration row selects that declaration's captured source range. The whole file is also available.
 
 The picker can generate missing summaries for a directory or a file. A selection, symbol, line, or hunk offers a summary of its containing file or file diff. In a review, the results are saved in that review’s [Summaries tree](summaries.md). From an editor, Project View, or standalone two-sided text diff, the action opens Summaries in a matching review. If it needs a new review tab, that tab keeps the source or comparison captured for the request.
 

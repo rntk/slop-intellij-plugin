@@ -22,6 +22,7 @@ import dev.insight.canvas.summarySource
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.LineChartMetric
+import dev.insight.review.OutlineDeclaration
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
@@ -183,7 +184,7 @@ internal class ChartsCanvasCard(
                 rebuildKeepingFocus()
             },
             open,
-            contextMenu = project?.let { { path -> contextMenu(content.tree, path) } },
+            contextMenu = project?.let { { entry -> contextMenu(content.tree, entry) } },
             preview = activePreview,
             togglePreview = { selection ->
                 view.linesPreview = if (view.linesPreview == selection) null else selection
@@ -422,13 +423,13 @@ internal class ChartsCanvasCard(
         }
     }
 
-    private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu {
-        val node = tree.nodes.firstOrNull { it.path == path } ?: tree.root
-        return contextMenu(node, tree.nodes.mapNotNull { it.file })
+    private fun contextMenu(tree: ReviewSummaryTree, entry: ReviewLineChart.Entry): JPopupMenu {
+        val node = tree.nodes.firstOrNull { it.path == entry.filePath } ?: tree.root
+        return contextMenu(node, tree.nodes.mapNotNull { it.file }, entry.declaration)
     }
 
-    private fun contextMenu(node: SummaryNode, sources: List<ReviewSource>): JPopupMenu = JPopupMenu().apply {
-        addSummaryContextItem(this, project, node, sources, openOnCanvas, openOnWall, reviewDestinations(), summaryActions)
+    private fun contextMenu(node: SummaryNode, sources: List<ReviewSource>, declaration: OutlineDeclaration? = null): JPopupMenu = JPopupMenu().apply {
+        addSummaryContextItem(this, project, node, sources, openOnCanvas, openOnWall, reviewDestinations(), summaryActions, declaration)
     }
 
     private fun checkBox(text: String, name: String, selected: Boolean, tooltip: String, set: (Boolean) -> Unit) =

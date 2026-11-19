@@ -64,6 +64,27 @@ class LineChartViewTest : BasePlatformTestCase() {
         assertFalse(directory.text.contains("outside"))
     }
 
+    fun testDeclarationPickerSelectsTheExactCapturedSymbolAndOffersTheFile() {
+        val text = "fun first() = 1; fun second() {\n    println(2)\n}"
+        val psi = myFixture.configureByText("PickerSymbols.kt", "fun liveVersion() = 0")
+        val file = CodeFile(psi.name, psi.virtualFile.path, text)
+        val structure = ReadAction.compute<SourceStructure, Throwable> {
+            checkNotNull(codeStructure(project, file.path, psi.fileType, text))
+        }
+        val node = buildSummaryTree(listOf(file)).nodes.single { it.kind == SummaryKind.FILE }
+        val declaration = structure.outline.declarations.single { it.name == "second" }
+        val scopes = summaryPickerScopes(project, node, listOf(file), ContextData(), declaration)
+
+        assertEquals(listOf(ContextScopeKind.SYMBOL, ContextScopeKind.FILE), scopes.map { it.kind })
+        val symbol = scopes[defaultScopeIndex(scopes)]
+        assertEquals(file.path, symbol.path)
+        assertEquals(1..3, symbol.lines)
+        assertEquals("second", symbol.symbol?.name)
+        assertEquals("function", symbol.symbol?.kind)
+        assertEquals("fun second() {\n    println(2)\n}", symbol.text)
+        assertEquals(text, scopes.last().text)
+    }
+
     fun testCodeAndDiffRowsCountsAndBreadcrumbsOfferContextPicker() {
         for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
             val files = listOf("src/a.kt", "src/nested/b.kt", "readme.md").map { path ->
@@ -424,6 +445,8 @@ class LineChartViewTest : BasePlatformTestCase() {
             key("charts-lines-down")
             assertEquals("a.kt#0/0", panel().cursorPath)
             assertTrue(all().none { it.name == "charts-lines-summary-toggle:a.kt#0/0" })
+            val link = all().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:a.kt#0/0" }
+            assertEquals("Context…", link.componentPopupMenu.components.filterIsInstance<JMenuItem>().single().text)
 
             // The preview shows only the declaration's lines; Enter opens the file at its first line.
             key("charts-lines-preview")

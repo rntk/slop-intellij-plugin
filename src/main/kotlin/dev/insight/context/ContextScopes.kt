@@ -74,6 +74,14 @@ private fun rangeLabel(range: IntRange) = if (range.first == range.last) "${rang
 
 private fun symbolLabel(symbol: ContextSymbol) = "${symbol.kind.replaceFirstChar { it.uppercase() }} ${symbol.name}"
 
+/** A known declaration in captured source. Offsets distinguish declarations that share a line. */
+internal fun sourceSymbolScope(path: String, absolutePath: String?, text: String, span: SymbolSpan, offsets: IntRange?): CodeContext {
+    val source = offsets?.takeIf { !it.isEmpty() && it.first >= 0 && it.last < text.length }?.let { text.substring(it) }
+        ?: slice(text, span.lines)
+    return CodeContext(ContextScopeKind.SYMBOL, symbolLabel(span.symbol), path, absolutePath, span.lines, SourceSide.CURRENT,
+        capContext(source), symbol = span.symbol)
+}
+
 /**
  * Candidate scopes at [line] (null for none) on [side] of a diff [file], narrow to wide: the line, the enclosing [symbols]
  * (innermost first; their source lines on that side), the hunk containing the line, the file's diff, the whole file on that side,

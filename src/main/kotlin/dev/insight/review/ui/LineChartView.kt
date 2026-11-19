@@ -57,7 +57,7 @@ internal class LineChartPanel(
     rootLabel: String,
     private val navigate: (String) -> Unit,
     private val open: (String) -> Unit,
-    private val contextMenu: ((String) -> JPopupMenu)? = null,
+    private val contextMenu: ((ReviewLineChart.Entry) -> JPopupMenu)? = null,
     private val preview: LineChartPreview? = null,
     private val togglePreview: (LineChartPreview) -> Unit = {},
     expanded: Set<String> = emptySet(),
@@ -120,7 +120,7 @@ internal class LineChartPanel(
                                 JBUI.Borders.empty(1, 4),
                             )
                         }
-                        componentPopupMenu = contextMenu?.invoke(entry.filePath)
+                        componentPopupMenu = contextMenu?.invoke(entry)
                     })
                 }
             })
@@ -282,7 +282,7 @@ internal class LineChartPanel(
                 JBUI.Borders.empty(3, 6),
             )
         } else JBUI.Borders.empty(4, 7)
-        componentPopupMenu = contextMenu?.invoke(entry.filePath)
+        componentPopupMenu = contextMenu?.invoke(entry)
         val placeholder = entry.kind == ReviewLineChart.Kind.PLACEHOLDER
         val declaration = entry.declaration
         val where = declaration?.let { "${entry.filePath}:${it.lines.first}" } ?: entry.path

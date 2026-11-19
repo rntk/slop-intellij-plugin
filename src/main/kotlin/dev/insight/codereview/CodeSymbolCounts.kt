@@ -53,13 +53,14 @@ internal fun codeStructure(project: Project, name: String, type: FileType, text:
                 top.add(RadarSymbolKind.IMPORT, maxOf(1, nested.size))
                 return
             }
-            val base = baseKind(support, element)
+            val symbolKind = support.symbolKind(element)
+            val base = baseKind(support, element, symbolKind)
             val traits = support.symbolTraits(element).map { RadarSymbolKind.valueOf(it.name) }
             val frame = if (outline && base != null && isOutlined(base, top)) {
                 val constructor = RadarSymbolKind.CONSTRUCTOR in traits
                 Frame(element, TRAIT_PRIORITY.firstOrNull { it in traits } ?: base,
                     inFunction = top.inFunction || (base == RadarSymbolKind.FUNCTION && !constructor),
-                    keepsMembers = constructor).also(stack::addLast)
+                    keepsMembers = constructor, symbolKind = symbolKind).also(stack::addLast)
             } else top
             base?.let(frame::add)
             traits.forEach(frame::add)
@@ -76,7 +77,7 @@ internal fun codeStructure(project: Project, name: String, type: FileType, text:
     return SourceStructure(root.symbols(), SourceOutline(root.children.toList()))
 }
 
-private fun baseKind(support: CallGraphLanguageSupport, element: PsiElement): RadarSymbolKind? = when (support.symbolKind(element)) {
+private fun baseKind(support: CallGraphLanguageSupport, element: PsiElement, kind: SymbolKind?): RadarSymbolKind? = when (kind) {
     SymbolKind.FUNCTION -> RadarSymbolKind.FUNCTION
     SymbolKind.CLASS -> RadarSymbolKind.CLASS
     SymbolKind.PROPERTY -> RadarSymbolKind.PROPERTY
@@ -100,7 +101,8 @@ private fun isOutlined(kind: RadarSymbolKind, parent: Frame): Boolean = when (ki
 private val TRAIT_PRIORITY = listOf(RadarSymbolKind.CONSTRUCTOR, RadarSymbolKind.TEST, RadarSymbolKind.INTERFACE, RadarSymbolKind.ENUM,
     RadarSymbolKind.STRUCT, RadarSymbolKind.OBJECT, RadarSymbolKind.TYPE_ALIAS, RadarSymbolKind.IMPL)
 
-private class Frame(val element: PsiElement?, val kind: RadarSymbolKind?, val inFunction: Boolean, val keepsMembers: Boolean) {
+private class Frame(val element: PsiElement?, val kind: RadarSymbolKind?, val inFunction: Boolean, val keepsMembers: Boolean,
+    val symbolKind: SymbolKind? = null) {
     val counts = IntArray(RadarSymbolKind.entries.size)
     val children = mutableListOf<OutlineDeclaration>()
 
@@ -120,7 +122,7 @@ private class Frame(val element: PsiElement?, val kind: RadarSymbolKind?, val in
             source.startOffset - lines.start(first), (element as? PsiNamedElement)?.name)
         children += OutlineDeclaration(child.kind!!, label(element), lines.line(range.startOffset)..lines.line(maxOf(range.startOffset,
             range.endOffset - 1)), utf8Length(lines.text, range.startOffset, range.endOffset), child.symbols(), child.children.toList(),
-            summarySpan)
+            summarySpan, range.startOffset until range.endOffset, child.symbolKind)
     }
 }
 

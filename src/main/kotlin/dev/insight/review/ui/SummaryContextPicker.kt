@@ -5,6 +5,7 @@ import com.intellij.ui.awt.RelativePoint
 import dev.insight.agent.SourceSide
 import dev.insight.context.*
 import dev.insight.diff.ReviewFile
+import dev.insight.review.OutlineDeclaration
 import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSource
 import dev.insight.review.SummaryKind
@@ -17,7 +18,8 @@ import javax.swing.JComponent
 internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: SummaryNode,
     sources: List<ReviewSource>, openOnCanvas: ((SummaryNode) -> Unit)? = null,
     openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
-    reviewDestinations: Map<ReviewDestination, () -> Unit> = emptyMap(), summaryActions: ContextSummaryActions? = null) {
+    reviewDestinations: Map<ReviewDestination, () -> Unit> = emptyMap(), summaryActions: ContextSummaryActions? = null,
+    declaration: OutlineDeclaration? = null) {
     if (project == null) return
     val files = sources.filter { it.path in node.files }.distinctBy { it.path }
     if (files.isEmpty()) return
@@ -42,14 +44,15 @@ internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: Su
                 }
             }
             openOnCanvas?.takeIf { files.size == 1 }?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { open(node) } }
-            val scopes = summaryPickerScopes(project, node, files, data)
+            val scopes = summaryPickerScopes(project, node, files, data, declaration)
             val owner = menu.invoker as? JComponent ?: return@addActionListener
             showContextPicker(project, ContextPick(ContextOrigin.OTHER, scopes, data), owner, RelativePoint.getSouthWestOf(owner))
         }
     })
 }
 
-internal fun summaryPickerScopes(project: Project, node: SummaryNode, files: List<ReviewSource>, data: ContextData): List<CodeContext> {
+internal fun summaryPickerScopes(project: Project, node: SummaryNode, files: List<ReviewSource>, data: ContextData,
+    declaration: OutlineDeclaration? = null): List<CodeContext> {
     val directory = !node.isTopicBranch && node.kind in setOf(SummaryKind.ROOT, SummaryKind.DIRECTORY)
     val file = files.singleOrNull()
     if (file == null) return listOf(if (directory) directoryScope(node.path, files) else CodeContext(
@@ -64,9 +67,17 @@ internal fun summaryPickerScopes(project: Project, node: SummaryNode, files: Lis
         else -> file.text?.let { text ->
             val source = capturedSourcePick(project, ContextOrigin.OTHER, file.path, file.absolutePath, text, node.lines?.first, data)
             val lines = node.lines
-            if (lines == null) source.candidates else listOf(CodeContext(ContextScopeKind.SELECTION, "Summary source",
-                file.path, file.absolutePath, lines, SourceSide.CURRENT,
-                capContext(text.lineSequence().drop(lines.first - 1).take(lines.last - lines.first + 1).joinToString("\n")))) + source.candidates
+            when {
+                declaration != null -> {
+                    val symbol = ContextSymbol(declaration.name, null, declaration.symbolKind?.name?.lowercase() ?: declaration.kind.unit)
+                    listOf(sourceSymbolScope(file.path, file.absolutePath, text, SymbolSpan(symbol, declaration.lines), declaration.offsets)) +
+                        source.candidates
+                }
+                lines != null -> listOf(CodeContext(ContextScopeKind.SELECTION, "Summary source",
+                    file.path, file.absolutePath, lines, SourceSide.CURRENT,
+                    capContext(text.lineSequence().drop(lines.first - 1).take(lines.last - lines.first + 1).joinToString("\n")))) + source.candidates
+                else -> source.candidates
+            }
         }.orEmpty()
     }
     return if (directory) listOf(directoryScope(node.path, files)) + candidates else candidates
