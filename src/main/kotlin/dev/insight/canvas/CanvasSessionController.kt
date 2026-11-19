@@ -10,6 +10,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
+import dev.insight.callgraph.DeclarationSpan
 import dev.insight.callgraph.ExploredGraph
 import dev.insight.callgraph.GapSource
 import dev.insight.callgraph.GapUnit
@@ -43,6 +44,7 @@ class CanvasSource(
     val notice: String? = null,
     /** Code between the source's symbols that can be summarized on request, in document lines. */
     val gaps: List<GapUnit> = emptyList(),
+    val summarySpan: DeclarationSpan? = null,
 ) {
     /** Links within the text, so a bounded snapshot never points past its end. */
     val links: List<CanvasLink> = links.filter { it.range.first >= 0 && it.range.last < text.length }
@@ -365,7 +367,7 @@ internal class CanvasSessionController(
             model.restoreSnapshot(card.id, anchor, fresh.firstLine, fresh.text)
         }
         return CanvasSource(fresh.text, fresh.links, fresh.firstLine, fresh.path, fresh.file, found.id,
-            CANVAS_SOURCE_CHANGED.takeIf { changed }, fresh.gaps)
+            CANVAS_SOURCE_CHANGED.takeIf { changed }, fresh.gaps, fresh.summarySpan)
     }
 
     private suspend fun find(ref: SymbolRef, candidates: List<CallGraphNode>): CallGraphNode? {
@@ -402,7 +404,8 @@ internal class CanvasSessionController(
     }
 
     private fun schematicSource(schematic: Schematic, path: String, node: Int) = CanvasSource(canvasText(schematic),
-        canvasLinks(schematic), schematic.firstLine, path, schematic.file, node, gaps = schematic.gaps)
+        canvasLinks(schematic), schematic.firstLine, path, schematic.file, node, gaps = schematic.gaps,
+        summarySpan = schematic.summarySpan)
 
     /**
      * What the gap summary of [unit] in [cardId]'s source (the root file's for null) is written from: the file as it is

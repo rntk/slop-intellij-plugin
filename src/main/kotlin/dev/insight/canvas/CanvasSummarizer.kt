@@ -91,7 +91,9 @@ class CanvasSummaryException(message: String, cause: Throwable? = null) : Except
 const val CANVAS_SUMMARY_TEXT_LIMIT = 16_000
 
 /** The system and user messages asking for [input]'s summary. */
-fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> {
+fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> = canvasSummaryMessages(input, sourceOnly = false)
+
+internal fun canvasSummaryMessages(input: CanvasSummaryInput, sourceOnly: Boolean): List<LlmMessage> {
     val (text, truncated) = boundCardText(input.text, CANVAS_SUMMARY_TEXT_LIMIT)
     val numbered = text.split('\n').withIndex().joinToString("\n") { (index, line) -> "${input.firstLine + index + 1}: $line" }
     val what = when (input.kind) {
@@ -100,10 +102,11 @@ fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> {
             "and how it fits the surrounding code."
         CardKind.SYMBOL -> "Explain what this ${input.symbolKind?.lowercase() ?: "symbol"} does: its purpose, inputs, effects and result."
     }
-    val system = "Summarize this code for a developer. $what Be very brief, usually 1-3 sentences, without a title, " +
-        "headings or lists; inline code names are fine. When the message shows how the developer reached the code, " +
+    val context = if (sourceOnly) "" else "When the message shows how the developer reached the code, " +
         "describe the code in general, then add what it does for that caller if that clarifies its role. " +
-        "Use read_file and search_text when more context is needed. Base the summary on the source; mention uncertainty " +
+        "Use read_file and search_text when more context is needed. "
+    val system = "Summarize this code for a developer. $what Be very brief, usually 1-3 sentences, without a title, " +
+        "headings or lists; inline code names are fine. ${context}Base the summary on the source; mention uncertainty " +
         "rather than inventing behavior. $CODE_AS_DATA"
     val user = buildString {
         append("Kind: ${if (input.kind == CardKind.SELECTION) "selection" else input.symbolKind?.lowercase() ?: "symbol"}\n")
@@ -113,25 +116,40 @@ fun canvasSummaryMessages(input: CanvasSummaryInput): List<LlmMessage> {
         input.language?.let { append("Language: $it\n") }
         if (input.chain.isNotBlank()) append("\nHow the developer reached this code (one path to it; it may have other callers):\n${input.chain}\n")
         append("\nCode:\n$numbered\n")
-        if (truncated) append("[The code continues beyond line ${input.firstLine + text.count { it == '\n' } + 1}; use read_file to read more.]\n")
+        if (truncated) {
+            val next = if (sourceOnly) "." else "; use read_file to read more."
+            append("[The code continues beyond line ${input.firstLine + text.count { it == '\n' } + 1}$next]\n")
+        }
     }
     return listOf(LlmMessage.system(system), LlmMessage.user(user))
 }
 
 /** Writes card summaries with an injected completion port; no IDE or UI dependencies. */
-class CanvasSummarizer(private val complete: CompletionFn, private val maxTokens: Int? = 600, private val tools: List<ChatTool> = emptyList(), private val maxContextChars: Int = 64_000) {
+class CanvasSummarizer(
+    private val complete: CompletionFn,
+    private val maxTokens: Int? = 600,
+    private val tools: List<ChatTool> = emptyList(),
+    private val maxContextChars: Int = 64_000,
+) {
     /**
      * The summary of [input], trimmed. [onProgress] reports what is being summarized. Cancellation propagates; any other
      * failure, an empty answer or a cut-off one becomes a [CanvasSummaryException].
      */
-    suspend fun summarize(input: CanvasSummaryInput, onProgress: (String) -> Unit = {}): String {
+    suspend fun summarize(input: CanvasSummaryInput, onProgress: (String) -> Unit = {}): String =
+        summarize(input, sourceOnly = false, onProgress)
+
+    internal suspend fun summarizeDeclaration(input: CanvasSummaryInput, onProgress: (String) -> Unit): String =
+        summarize(input, sourceOnly = true, onProgress)
+
+    private suspend fun summarize(input: CanvasSummaryInput, sourceOnly: Boolean, onProgress: (String) -> Unit): String {
         if (input.text.isBlank()) throw CanvasSummaryException("There is no code to summarize.")
         onProgress("Summarizing ${input.name ?: "selection"}…")
         val completion = try {
-            if (tools.isEmpty()) complete(CompletionRequest(canvasSummaryMessages(input), temperature = 0.2, maxTokens = maxTokens))
+            val messages = canvasSummaryMessages(input, sourceOnly)
+            if (tools.isEmpty()) complete(CompletionRequest(messages, temperature = 0.2, maxTokens = maxTokens))
             else {
                 val result = ToolChatRunner({ complete(it.copy(temperature = 0.2, maxTokens = maxTokens)) }, tools, maxToolRounds = 8, maxContextChars = maxContextChars)
-                    .run(canvasSummaryMessages(input)) { onProgress("Reading context: ${it.name}…") }
+                    .run(messages) { onProgress("Reading context: ${it.name}…") }
                 Completion(result.reply, finishReason = result.finishReason)
             }
         } catch (e: CancellationException) {

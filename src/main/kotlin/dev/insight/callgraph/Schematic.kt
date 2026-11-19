@@ -79,7 +79,7 @@ data class SchematicMention(val target: Int, val line: Int, val columns: IntRang
  */
 class Schematic(val scope: Int, val file: VirtualFile, val firstLine: Int, val lines: List<String>, val rows: List<SchematicRow>,
     val excerpts: Map<Int, String> = emptyMap(), val gaps: List<GapUnit> = emptyList(),
-    val mentions: List<SchematicMention> = emptyList()) {
+    val mentions: List<SchematicMention> = emptyList(), val summarySpan: DeclarationSpan? = null) {
     fun text(line: Int): String = lines[line - firstLine]
     /** Declared and called symbols; referenced types and properties are only linked, never summarized from here. */
     val targets: List<Int> get() = rows.filterIsInstance<BlockRow>().flatMap { it.targets }.distinct()
@@ -305,7 +305,13 @@ object SchematicBuilder {
         val rows = schematicRows(first, last, declarations, sites, references)
         val gaps = schematicGapUnits(element, document, rows)
         val mentions = if (whole) mentions(result, document, element, scope, lineStart, lineEnd) else emptyList()
-        return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps, mentions)
+        val range = element.textRange
+        val summarySpan = if (whole && result.graph.nodes[scope].kind != SymbolKind.FILE) {
+            val start = range.startOffset - lineStart
+            DeclarationSpan(start until (minOf(range.endOffset, lineEnd) - lineStart), first, start,
+                (declaration as? PsiNamedElement)?.name)
+        } else null
+        return Schematic(scope, virtualFile, first, text, splitAtUnits(rows, gaps), excerpts, gaps, mentions, summarySpan)
     }
 
     /** Symbols whose mentions are links: what a type or a property is can be read from its declaration. */

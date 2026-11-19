@@ -4,7 +4,7 @@ A canvas session is a visual walk through the code graph starting from a file or
 
 Focused cards support keyboard navigation and scrolling through their code; readers can return to canvas navigation to move around the session.
 
-Each card carries its own conversations grounded in the chain from the root, along with read-only project and call-graph tools and canvas actions to open related cards or whole call chains. Sessions—including cards, layouts, summaries, and chats—persist in the project so explorations can be resumed later. The graph behind a session is valid only for the code it read; when that code changes, the session is refreshed in place, which resolves every card again against the current code.
+Each card carries its own conversations grounded in the chain from the root, along with read-only project and call-graph tools and canvas actions to open related cards or whole call chains. A declaration card can request a summary of its source and reuse one generated in the [Charts tab](charts-tab.md). Sessions—including cards, layouts, summaries, and chats—persist in the project so explorations can be resumed later. The graph behind a session is valid only for the code it read; when that code changes, the session is refreshed in place, which resolves every card again against the current code.
 
 Entry points for further exploration:
 

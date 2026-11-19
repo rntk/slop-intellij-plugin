@@ -5,6 +5,7 @@ import dev.insight.settings.configuredChatBudget
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.smartReadAction
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -15,6 +16,7 @@ import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.chat.ChatPanel
 import dev.insight.chat.ChatSession
+import dev.insight.canvas.SymbolSummaryCache
 import dev.insight.settings.configuredContextChars
 import dev.insight.settings.configuredContextCharsForOutput
 import dev.insight.settings.ChatSettings
@@ -82,6 +84,7 @@ import dev.insight.review.ui.topicStats
 import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
+import dev.insight.review.ui.SymbolSummaryActions
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.openHighlightedLines
 import dev.insight.review.ui.readPsiThen
@@ -200,6 +203,9 @@ internal class CodeReviewTab(
             outlines = CodeOutlines(project, this),
         ),
         summaryActions = SummaryCanvasActions(
+            symbolSummaries = SymbolSummaryActions(scope, project.service<SymbolSummaryCache>()) {
+                complete ?: ChatSettings.getInstance().createClient()::complete
+            },
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,
             removeSummaries = { state.hideSummaries(); renderCanvas() },

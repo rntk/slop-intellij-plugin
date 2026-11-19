@@ -307,13 +307,22 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         if (summaryJob?.isActive == true || current.text.isBlank()) return
         val input = CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
         val requestedSource = source
+        val symbolSummaries = host.services.symbolSummaries
+        val declaration = requestedSource?.takeIf { current.kind == CardKind.SYMBOL && !current.wholeFile }?.let {
+            it.summarySpan?.summarySource(it.path, it.text)
+        }
         summaryJob = host.scope.launch(Dispatchers.EDT) {
             try {
                 val text = withBackgroundProgress(host.project, "Summarizing ${current.title}") {
                     reportRawProgress { reporter ->
                         withContext(Dispatchers.IO) {
-                            CanvasSummarizer(host.services.complete(), tools = host.services.summaryTools(),
-                                maxContextChars = host.services.maxContextChars()).summarize(input) { reporter.text(it) }
+                            if (declaration != null && symbolSummaries != null) {
+                                symbolSummaries.summarize(declaration, host.services.complete,
+                                    refresh = current.summary != null || current.summaryError != null) { reporter.text(it) }
+                            } else {
+                                CanvasSummarizer(host.services.complete(), tools = host.services.summaryTools(),
+                                    maxContextChars = host.services.maxContextChars()).summarize(input) { reporter.text(it) }
+                            }
                         }
                     }
                 }

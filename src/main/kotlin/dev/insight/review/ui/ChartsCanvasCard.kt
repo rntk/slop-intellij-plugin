@@ -2,6 +2,8 @@ package dev.insight.review.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
@@ -13,6 +15,10 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.canvas.CanvasSummaryException
+import dev.insight.canvas.SymbolSummarySource
+import dev.insight.canvas.relativePath
+import dev.insight.canvas.summarySource
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.LineChartMetric
@@ -43,6 +49,11 @@ import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The scope's folder and file tree and its available summaries. */
 internal data class ChartsCard(
@@ -95,23 +106,29 @@ internal class ChartsCanvasCard(
     private val openAt: ((String, Int) -> Unit)? = null,
     /** Parses files into declarations when unfolded; null keeps files as leaves. */
     private val outlines: SourceOutlines? = null,
+    private val symbolSummaries: SymbolSummaryActions? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
     private var preview: HierarchyPreviewPanel? = null
     private var currentCard: JPanel? = null
+    private var activeSymbolKey: String? = null
+    private val pendingSymbols = mutableSetOf<String>()
+    private val symbolErrors = mutableMapOf<String, String>()
 
     fun update(content: ChartsCard?) {
         if (content == null) {
             preview?.let(Disposer::dispose)
             preview = null
             currentCard = null
+            activeSymbolKey = null
         }
     }
 
     fun card(content: ChartsCard): JPanel {
         preview?.let(Disposer::dispose)
         preview = null
+        activeSymbolKey = null
         val lines = view.chart != "Radar"
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
@@ -178,6 +195,7 @@ internal class ChartsCanvasCard(
             cursorChanged = { view.linesCursor = it },
             openAt = openAt ?: { path, _ -> open(path) },
             loadOutline = outlines?.let { provider -> { file, done -> provider.load(file, done) } },
+            canSummarizeDeclaration = { symbolSummaries != null && it.summarySpan != null },
         ) else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
@@ -202,11 +220,22 @@ internal class ChartsCanvasCard(
             background = UIUtil.getListBackground()
             border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
         }
-        val previewFiles = lineChart?.previewFiles().orEmpty() + listOfNotNull(lineChart?.previewDeclaration()?.first)
+        val declaration = lineChart?.previewDeclaration()
+        val previewFiles = lineChart?.previewFiles().orEmpty() +
+            listOfNotNull(declaration?.first?.takeIf { activePreview?.kind == LineChartPreviewKind.SOURCE })
         val summary = activePreview?.takeIf { it.kind == LineChartPreviewKind.SUMMARY }?.let { selection ->
-            val node = content.tree.scopeNode(selection.path, SummaryKind.FILE)
-                ?: content.tree.scopeNode(selection.path, SummaryKind.DIRECTORY)
-            node?.let { summaryPreview(it, content) }
+            if (declaration != null) {
+                val (file, symbol) = declaration
+                val path = project?.let { relativePath(it, file.absolutePath) } ?: file.path
+                val source = file.text?.let { symbol.summarySpan?.summarySource(path, it) }
+                if (source != null && symbolSummaries != null) {
+                    symbolSummaryPreview(source, "${symbol.name} · ${file.path}:${symbol.lines.first}", symbolSummaries)
+                } else null
+            } else {
+                val node = content.tree.scopeNode(selection.path, SummaryKind.FILE)
+                    ?: content.tree.scopeNode(selection.path, SummaryKind.DIRECTORY)
+                node?.let { summaryPreview(it, content) }
+            }
         }
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
@@ -224,12 +253,15 @@ internal class ChartsCanvasCard(
         }
         val readingArea = if (lineChart != null) {
             val actionLabel = if (diff) "Show diff" else "Show source"
-            HierarchyPreviewPanel(bodyScroll, project, "Choose Show summary or $actionLabel on a file or directory.", detail = summary,
+            val hint = if (symbolSummaries == null) "Choose Show summary or $actionLabel on a file or directory."
+                else "Choose Show summary or $actionLabel on a file, directory, or declaration."
+            HierarchyPreviewPanel(bodyScroll, project, hint, detail = summary,
                 dividerLocation = view.linesDivider,
                 rememberDivider = { if (currentCard === card) view.linesDivider = it },
             ).also {
-                val declaration = lineChart.previewDeclaration()
-                if (summary == null && declaration != null) it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
+                if (activePreview?.kind == LineChartPreviewKind.SOURCE && declaration != null) {
+                    it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
+                }
                 else if (summary == null) it.showFiles(previewFiles)
                 preview = it
             }
@@ -308,13 +340,76 @@ internal class ChartsCanvasCard(
             }
         }, BorderLayout.NORTH)
         val weights = if (summary != null && view.linesTagsCloud) SummaryWordWeights(content.summaries)[node.id] else emptyMap()
-        val text = WrappedSummaryText(summary ?: "No summary available yet.", scaled(240),
+        add(summaryBody(summary, "No summary available yet.", weights), BorderLayout.CENTER)
+    }
+
+    private fun symbolSummaryPreview(source: SymbolSummarySource, location: String, actions: SymbolSummaryActions): JPanel {
+        val key = source.key
+        activeSymbolKey = key
+        val error = symbolErrors[key]
+        if (error == null && !actions.cache.checked(key)) runSymbolTask(source, actions, generate = false)
+        val summary = actions.cache.peek(key)
+        val pending = key in pendingSymbols
+        return JPanel(BorderLayout()).apply {
+            name = "charts-lines-symbol-summary"
+            background = UIUtil.getListBackground()
+            add(JPanel(BorderLayout(scaled(8), 0)).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(8)
+                add(JLabel(location).apply {
+                    font = JBFont.label().asBold()
+                    toolTipText = location
+                }, BorderLayout.CENTER)
+                if (summary == null) add(JButton(if (error == null) "Summarize" else "Retry").apply {
+                    name = "charts-lines-generate-symbol-summary"
+                    isEnabled = !pending
+                    addActionListener {
+                        runSymbolTask(source, actions, generate = true)
+                        rebuildKeepingFocus()
+                    }
+                }, BorderLayout.EAST)
+            }, BorderLayout.NORTH)
+            val status = when {
+                pending && actions.cache.checked(key) -> "Summarizing…"
+                pending -> "Loading summary…"
+                error != null -> error
+                else -> "No summary available yet."
+            }
+            add(summaryBody(summary, status), BorderLayout.CENTER)
+        }
+    }
+
+    private fun runSymbolTask(source: SymbolSummarySource, actions: SymbolSummaryActions, generate: Boolean) {
+        val key = source.key
+        if (!actions.scope.isActive || !pendingSymbols.add(key)) return
+        if (generate) symbolErrors.remove(key)
+        actions.scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    if (generate) actions.cache.summarize(source, actions.complete)
+                    else actions.cache.read(key)
+                }
+            } catch (e: CanvasSummaryException) {
+                symbolErrors[key] = e.message ?: "The summary failed."
+            } catch (e: Exception) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                logger<ChartsCanvasCard>().warn("Could not load or summarize ${source.path}", e)
+                symbolErrors[key] = "The summary failed. See the IDE log."
+            } finally {
+                pendingSymbols.remove(key)
+                if (isActive && activeSymbolKey == key && currentCard != null) rebuildKeepingFocus()
+            }
+        }
+    }
+
+    private fun summaryBody(summary: String?, status: String, weights: Map<String, Double> = emptyMap()): JComponent {
+        val text = WrappedSummaryText(summary ?: status, scaled(240),
             JBFont.label().forSummaryText(), weights, breakLongWords = true).apply {
             name = "charts-lines-summary-text"
             border = JBUI.Borders.empty(0, 8, 8, 8)
             foreground = if (summary == null) UIUtil.getContextHelpForeground() else UIUtil.getLabelForeground()
         }
-        add(JBScrollPane(text).apply {
+        return JBScrollPane(text).apply {
             border = null
             isOpaque = false
             viewport.isOpaque = false
@@ -324,7 +419,7 @@ internal class ChartsCanvasCard(
             }
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBar.unitIncrement = scaled(16)
-        }, BorderLayout.CENTER)
+        }
     }
 
     private fun contextMenu(tree: ReviewSummaryTree, path: String): JPopupMenu {
@@ -373,6 +468,7 @@ internal class ChartsCanvasCard(
         preview?.let(Disposer::dispose)
         preview = null
         currentCard = null
+        activeSymbolKey = null
     }
 
     private companion object {

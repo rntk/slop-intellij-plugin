@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import dev.insight.canvas.SymbolSummaryCache
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.PatchSource
 import dev.insight.review.ContextSummaryLauncher
@@ -8,6 +9,8 @@ import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSymbol
 import dev.insight.review.SummaryNode
+import dev.insight.llm.CompletionFn
+import kotlinx.coroutines.CoroutineScope
 
 /** Source and file navigation supplied by the review hosting the canvas. */
 internal data class SourceCanvasActions(
@@ -21,6 +24,12 @@ internal data class SourceCanvasActions(
     val removeFileView: () -> Unit = {},
     /** Parses files into declarations for the Charts hierarchy; null keeps files as leaves. */
     val outlines: dev.insight.review.SourceOutlines? = null,
+)
+
+internal class SymbolSummaryActions(
+    val scope: CoroutineScope,
+    val cache: SymbolSummaryCache,
+    val complete: () -> CompletionFn,
 )
 
 /** Summary generation, tracing, review and entry actions supplied by the review hosting the canvas. */
@@ -47,6 +56,7 @@ internal data class SummaryCanvasActions(
     val chatNode: ((SummaryNode, ReviewSummaries) -> Unit)? = null,
     val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
     val contextSummaryActions: ContextSummaryActions? = null,
+    val symbolSummaries: SymbolSummaryActions? = null,
 )
 
 /** Topic classification and summary updates supplied by the review hosting the canvas. */

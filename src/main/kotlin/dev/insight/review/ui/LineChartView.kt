@@ -68,6 +68,7 @@ internal class LineChartPanel(
     private val openAt: (String, Int) -> Unit = { path, _ -> open(path) },
     /** Parses a file's outline in the background, then calls back; null keeps files as leaves. */
     private val loadOutline: ((ReviewSource, () -> Unit) -> Unit)? = null,
+    private val canSummarizeDeclaration: (OutlineDeclaration) -> Boolean = { false },
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
     private val metric = chart.metric
     private val outlineHint = loadOutline != null && metric.outlines
@@ -88,9 +89,9 @@ internal class LineChartPanel(
         isOpaque = false
     }
 
-    /** The declaration whose lines the preview shows, with its file. */
-    fun previewDeclaration(): Pair<ReviewSource, OutlineDeclaration>? = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE }
-        ?.let { chart.declaration(it.path) }?.let { entry -> chart.source(entry.filePath)?.let { it to entry.declaration!! } }
+    /** The previewed declaration, with its captured file. */
+    fun previewDeclaration(): Pair<ReviewSource, OutlineDeclaration>? =
+        preview?.let { chart.declaration(it.path) }?.let { entry -> chart.source(entry.filePath)?.let { it to entry.declaration!! } }
 
     fun previewFiles(): List<ReviewSource> = preview?.takeIf { it.kind == LineChartPreviewKind.SOURCE && chart.declaration(it.path) == null }
         ?.let { chart.files(it.path) }.orEmpty()
@@ -347,9 +348,11 @@ internal class LineChartPanel(
         add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
             isOpaque = false
             inheritsPopupMenu = true
-            // Summaries cover files and directories; a declaration previews its own lines.
-            if (!placeholder && declaration == null) add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY))
-            if (!placeholder) add(previewToggle(entry.path, LineChartPreviewKind.SOURCE))
+            val location = declaration?.let { "${it.name} (${entry.filePath}:${it.lines.first})" } ?: entry.path
+            if (!placeholder && (declaration == null || canSummarizeDeclaration(declaration))) {
+                add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY, location))
+            }
+            if (!placeholder) add(previewToggle(entry.path, LineChartPreviewKind.SOURCE, location))
         }, BorderLayout.EAST)
         trackCursor(this, index)
     }
@@ -415,7 +418,7 @@ internal class LineChartPanel(
         attach(component)
     }
 
-    private fun previewToggle(path: String, mode: LineChartPreviewKind): JToggleButton {
+    private fun previewToggle(path: String, mode: LineChartPreviewKind, location: String): JToggleButton {
         val selection = LineChartPreview(path, mode)
         val active = preview == selection
         val summary = mode == LineChartPreviewKind.SUMMARY
@@ -439,8 +442,8 @@ internal class LineChartPanel(
             addChangeListener { if (!isSelected) isContentAreaFilled = model.isRollover }
             inheritsPopupMenu = true
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            toolTipText = "$label of $path"
-            accessibleContext.accessibleName = "$label of $path"
+            toolTipText = "$label of $location"
+            accessibleContext.accessibleName = "$label of $location"
             addActionListener { togglePreview(selection) }
         }
     }

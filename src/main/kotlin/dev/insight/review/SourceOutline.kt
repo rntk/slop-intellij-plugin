@@ -1,5 +1,7 @@
 package dev.insight.review
 
+import dev.insight.callgraph.DeclarationSpan
+
 /**
  * One declaration of a parsed file. [kind] is the most specific [RadarSymbolKind] (an interface rather than a class);
  * [symbols] counts every lens inside it, itself included, so a class's functions include its methods.
@@ -13,6 +15,7 @@ data class OutlineDeclaration(
     val bytes: Int,
     val symbols: RadarSymbols,
     val children: List<OutlineDeclaration> = emptyList(),
+    val summarySpan: DeclarationSpan? = null,
 )
 
 /** The declarations of a parsed file: types, callables, and the properties and variables outside function bodies. */

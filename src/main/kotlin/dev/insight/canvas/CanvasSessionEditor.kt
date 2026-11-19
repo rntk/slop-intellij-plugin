@@ -54,6 +54,7 @@ internal class CanvasSessionServices(
     val complete: () -> CompletionFn,
     val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
     val maxContextChars: () -> Int = { 64_000 },
+    val symbolSummaries: SymbolSummaryCache? = null,
     val chatBackend: (CanvasActions, String?) -> ChatBackend,
 ) {
     companion object {
@@ -62,6 +63,7 @@ internal class CanvasSessionServices(
             { ChatSettings.getInstance().createClient()::complete },
             { projectContextTools(project) },
             { configuredContextChars() },
+            project.service<SymbolSummaryCache>(),
         ) { actions, cardId ->
             val canvas = canvasToolRegistry(actions, cardId)
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,

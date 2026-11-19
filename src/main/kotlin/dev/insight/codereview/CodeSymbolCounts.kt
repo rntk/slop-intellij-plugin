@@ -11,6 +11,8 @@ import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
+import dev.insight.callgraph.DeclarationSpan
+import dev.insight.callgraph.explorationSource
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 import dev.insight.review.OutlineDeclaration
@@ -112,8 +114,13 @@ private class Frame(val element: PsiElement?, val kind: RadarSymbolKind?, val in
         for (i in counts.indices) counts[i] += child.counts[i]
         val element = child.element!!
         val range = element.textRange
+        val source = explorationSource(element).textRange
+        val first = lines.line(source.startOffset) - 1
+        val summarySpan = DeclarationSpan(source.startOffset until source.endOffset, first,
+            source.startOffset - lines.start(first), (element as? PsiNamedElement)?.name)
         children += OutlineDeclaration(child.kind!!, label(element), lines.line(range.startOffset)..lines.line(maxOf(range.startOffset,
-            range.endOffset - 1)), utf8Length(lines.text, range.startOffset, range.endOffset), child.symbols(), child.children.toList())
+            range.endOffset - 1)), utf8Length(lines.text, range.startOffset, range.endOffset), child.symbols(), child.children.toList(),
+            summarySpan)
     }
 }
 
@@ -149,6 +156,8 @@ private class LineIndex(val text: String) {
         add(0)
         text.forEachIndexed { index, c -> if (c == '\n') add(index + 1) }
     }.toIntArray()
+
+    fun start(index: Int): Int = starts[index]
 
     fun line(offset: Int): Int {
         val found = starts.binarySearch(offset.coerceIn(0, text.length))

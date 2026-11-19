@@ -2,15 +2,29 @@ package dev.insight.review.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.components.service
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBTabbedPane
+import dev.insight.callgraph.ProgressiveSchematic
+import dev.insight.canvas.SymbolSummaryCache
+import dev.insight.canvas.relativePath
+import dev.insight.canvas.summarySource
 import dev.insight.codereview.CodeFile
+import dev.insight.codereview.codeStructure
 import dev.insight.context.ContextData
 import dev.insight.context.ContextScopeKind
 import dev.insight.context.ContextSummaryActions
 import dev.insight.context.defaultScopeIndex
 import dev.insight.diff.DiffFileEditor
+import dev.insight.llm.Completion
+import dev.insight.llm.CompletionRequest
+import dev.insight.review.ReviewSource
+import dev.insight.review.SourceOutlines
+import dev.insight.review.SourceStructure
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.RadarSeries
@@ -28,6 +42,12 @@ import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JToggleButton
 import javax.swing.text.StyleConstants
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 
 class LineChartViewTest : BasePlatformTestCase() {
     fun testDirectoryPickerKeepsTheDirectoryScopeWhenOnlyOneFileIsInReview() {
@@ -416,6 +436,69 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals("1 class · 2 files", all().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }.text)
             assertEquals(listOf("a.kt", "a.kt#0"), rows())
         } finally { canvas.dispose() }
+    }
+
+    fun testSymbolSummariesAreSharedWithCanvasAndUseExactCapturedSource() {
+        val text = "fun first() = 1; fun second() = 2"
+        val psi = myFixture.configureByText("ChartSymbols.kt", text)
+        val virtualFile = psi.virtualFile
+        val path = virtualFile.name
+        val canvasPath = relativePath(project, virtualFile.path)
+        val structure = ReadAction.compute<SourceStructure, Throwable> {
+            checkNotNull(codeStructure(project, path, psi.fileType, text))
+        }
+        val file = CodeFile(path, virtualFile.path, text, symbolCounts = structure.symbols)
+        val cache = project.service<SymbolSummaryCache>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        val requests = mutableListOf<CompletionRequest>()
+        val outlines = object : SourceOutlines {
+            override fun cached(file: ReviewSource) = structure.outline
+            override fun load(file: ReviewSource, done: () -> Unit) = done()
+        }
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
+            sourceActions = SourceCanvasActions(outlines = outlines),
+            summaryActions = SummaryCanvasActions(symbolSummaries = SymbolSummaryActions(scope, cache) {
+                { request -> requests += request; Completion("Returns two.") }
+            }))
+        fun summary() = descendants(canvas).filterIsInstance<WrappedSummaryText>().singleOrNull {
+            it.name == "charts-lines-summary-text"
+        }?.text
+        fun toggle(index: Int) = descendants(canvas).filterIsInstance<JToggleButton>()
+            .single { it.name == "charts-lines-summary-toggle:$path#$index" }.doClick()
+        val canvasSources = scope.async(Dispatchers.IO) {
+            val exploration = checkNotNull(ProgressiveSchematic.open(project, virtualFile))
+            exploration.fileDeclarations(virtualFile)
+            exploration.result.graph.nodes.filter { it.name.substringBefore('(') in setOf("first", "second") }
+                .associate { node ->
+                    val schematic = checkNotNull(exploration.schematic(node.id, whole = true))
+                    val source = checkNotNull(schematic.summarySpan?.summarySource(canvasPath, schematic.lines.joinToString("\n")))
+                    node.name.substringBefore('(') to source
+                }.also {
+                    cache.summarize(it.getValue("first"), { { Completion("Returns one.") } })
+                }
+        }
+        try {
+            PlatformTestUtil.waitWithEventsDispatching("Load canvas declarations", { canvasSources.isCompleted }, 30)
+            val sources = runBlocking { canvasSources.await() }
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file))))))
+            descendants(canvas).filterIsInstance<LineChartPanel>().single().toggleExpanded(path)
+
+            toggle(0)
+            assertEquals("Returns one.", summary())
+            toggle(1)
+            PlatformTestUtil.waitWithEventsDispatching("Load symbol summary from cache", { summary() == "No summary available yet." }, 30)
+            descendants(canvas).filterIsInstance<JButton>().single { it.name == "charts-lines-generate-symbol-summary" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Generate chart symbol summary", { summary() == "Returns two." }, 30)
+            val prompt = requests.single().messages.last().content
+            assertTrue(prompt, prompt.contains("1: fun second() = 2"))
+            assertFalse(prompt, prompt.contains("first()"))
+            assertEquals("Returns two.", cache.peek(sources.getValue("second").key))
+            assertNull(cache.peek(sources.getValue("second").copy(text = "fun second() = 3").key))
+            assertTrue(descendants(canvas).any { it.name == "charts-lines-summary-toggle:$path" })
+        } finally {
+            scope.cancel()
+            canvas.dispose()
+        }
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +
