@@ -173,14 +173,42 @@ internal class CanvasSourcePane(
         pickedHighlighter?.let { editor.markupModel.removeHighlighter(it) }
         pickedHighlighter = editor.markupModel.addRangeHighlighter(range.first, range.last, HighlighterLayer.SELECTION - 1,
             TextAttributes().apply { backgroundColor = PICKED_BACKGROUND }, HighlighterTargetArea.LINES_IN_RANGE)
+        centerOn(range.first)
+        return anchorY(range.first)
+    }
+
+    /**
+     * Scrolls the pane at once so the line holding [offset] is in the middle, waiting until the pane has a size if it
+     * has none yet; then calls [scrolled].
+     */
+    fun centerOnceSized(offset: Int, scrolled: () -> Unit) {
+        val viewport = editor.scrollPane.viewport
+        if (viewport.height > 0) {
+            centerOn(offset)
+            return scrolled()
+        }
+        viewport.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) {
+                if (viewport.height <= 0 || editor.isDisposed) return
+                viewport.removeComponentListener(this)
+                centerOn(offset)
+                scrolled()
+            }
+        })
+    }
+
+    /** The start offset of 0-based document [line] in the shown text, or null when it is not shown. */
+    fun lineStart(line: Int): Int? = lineRange(line)?.first
+
+    /** Scrolls the pane at once so the line holding [offset] is in the middle. */
+    fun centerOn(offset: Int) {
         val scrolling = editor.scrollingModel
         scrolling.disableAnimation()
         try {
-            scrolling.scrollTo(editor.offsetToLogicalPosition(range.first), ScrollType.CENTER)
+            scrolling.scrollTo(editor.offsetToLogicalPosition(offset.coerceIn(0, editor.document.textLength)), ScrollType.CENTER)
         } finally {
             scrolling.enableAnimation()
         }
-        return anchorY(range.first)
     }
 
     /** The start and end offsets of 0-based document [line] in the shown text, or null when it is not shown. */
@@ -230,6 +258,19 @@ internal class CanvasSourcePane(
     fun anchorY(offset: Int): Int {
         val clamped = offset.coerceIn(0, editor.document.textLength)
         return textOrigin().y + editor.offsetToXY(clamped).y + editor.lineHeight / 2
+    }
+
+    /**
+     * Like [anchorY], but kept within the part of the text the pane shows, so a card opened from a line scrolled out
+     * of view hangs at the pane's edge rather than far beyond its owner.
+     */
+    fun shownAnchorY(offset: Int): Int {
+        val y = anchorY(offset)
+        val viewport = editor.scrollPane.viewport
+        if (viewport.height <= 0) return y
+        val top = SwingUtilities.convertPoint(viewport, 0, 0, this).y
+        val half = editor.lineHeight / 2
+        return y.coerceIn(top + half, maxOf(top + half, top + viewport.height - half))
     }
 
     /** The bottom-right of the selection's last character, in this pane's coordinates. */

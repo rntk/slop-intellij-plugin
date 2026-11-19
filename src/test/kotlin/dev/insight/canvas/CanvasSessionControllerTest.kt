@@ -399,6 +399,33 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue(canvasChainContext(canvas.model.session, entry.id).contains("use read_file"))
     }
 
+    fun testRestoredChildHangsBesideItsLineInALongCard() {
+        val file = myFixture.configureByText("Flow.java", source)
+        val long = (1..400).joinToString("") { "line $it of the file\n" }
+        val anchor = long.indexOf("line 300 ")
+        val parent = CanvasCard("long", null, CardKind.SELECTION, CardAnchor(0, 5, 0), null, "Flow.java", 0, long)
+        val child = CanvasCard("child", "long", CardKind.SELECTION, CardAnchor(anchor, anchor + 4, 299), null, "Flow.java", 0, "child\n")
+        val session = CanvasSession.new("Flow.java").copy(cards = listOf(parent, child))
+        val services = CanvasSessionServices(null, { error("No summary requested") },
+            summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
+        val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
+        try {
+            panel.setSize(1400, 900)
+            PlatformTestUtil.waitWithEventsDispatching("The session should load", { panel.ready }, 30)
+            fun layOut(component: Container) { component.doLayout(); component.components.forEach { (it as? Container)?.let(::layOut) } }
+            repeat(3) { PlatformTestUtil.dispatchAllEventsInIdeEventQueue(); layOut(panel.canvas) }
+            val long = panel.cardViews.getValue("long")
+            val shown = panel.cardViews.getValue("child")
+            val editor = long.sourcePane!!.editor
+            assertTrue("The long card's code reopens scrolled to the child's line",
+                editor.scrollingModel.visibleArea.contains(0, editor.offsetToXY(anchor).y))
+            assertTrue("The child sits beside its parent, not far below it (${shown.y} vs ${long.y}+${long.height})",
+                shown.y < long.y + long.height)
+        } finally {
+            Disposer.dispose(panel)
+        }
+    }
+
     fun testRestoresSmallZoomAndCanZoomBackIn() {
         val file = myFixture.configureByText("Flow.java", source)
         val card = CanvasCard("selection", null, CardKind.SELECTION, CardAnchor(0, source.length, 0),

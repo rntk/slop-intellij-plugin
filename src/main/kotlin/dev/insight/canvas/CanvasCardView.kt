@@ -457,7 +457,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     fun anchorY(anchor: CardAnchor): Int {
         val pane = sourcePane?.takeIf { sourceSection.body.isVisible && !sourceSection.showsDiff }
             ?: return headerMiddle()
-        val y = pane.anchorY(anchor.startOffset)
+        val y = pane.shownAnchorY(anchor.startOffset)
         return javax.swing.SwingUtilities.convertPoint(pane, 0, y, this).y
     }
 

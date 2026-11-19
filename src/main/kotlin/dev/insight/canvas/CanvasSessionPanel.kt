@@ -143,12 +143,21 @@ internal class CanvasSessionPanel(
     private var wheelZoom: Double? = null
     private var wheelAnchor: Point? = null
     private val zoomFrame = Timer(16) { wheelZoom?.let { zoomTo(it, wheelAnchor) } }.apply { isRepeats = false }
-    private val scrollMotion = CanvasMotion()
+    private val scrollMotion = CanvasMotion(VIEW_GLIDE_NANOS)
     private val scrollFrames: Timer = Timer(16) {
         val now = System.nanoTime()
         val at = scrollMotion.position("viewport", now)
         scrollTo(at.x, at.y, animationFrame = true)
         if (!scrollMotion.active(now)) scrollFrames.stop()
+    }
+    private var zoomFrom = 1.0
+    private var zoomTarget = 1.0
+    private var zoomStarted = 0L
+    private val zoomFrames: Timer = Timer(16) {
+        val t = ((System.nanoTime() - zoomStarted).toDouble() / VIEW_GLIDE_NANOS).coerceIn(0.0, 1.0)
+        val eased = 1 - (1 - t).pow(3)
+        zoomLevelTo(if (t >= 1) zoomTarget else zoomFrom + (zoomTarget - zoomFrom) * eased, null)
+        if (t >= 1) zoomFrames.stop()
     }
     private val viewSave = Timer(400) { saveView() }.apply { isRepeats = false }
     private val unreveal = Timer(1_500) { reveal(null) }.apply { isRepeats = false }
@@ -200,13 +209,13 @@ internal class CanvasSessionPanel(
         add(JButton("−").apply {
             isFocusable = false
             toolTipText = "Zoom out (− or Ctrl/⌘ + wheel)"
-            addActionListener { zoomTo(zoom / ZOOM_STEP) }
+            addActionListener { zoomStep(1 / ZOOM_STEP) }
         })
-        add(zoomLevel.apply { toolTipText = "Reset zoom (0)" }.onLeftClick { zoomTo(1.0) })
+        add(zoomLevel.apply { toolTipText = "Reset zoom (0)" }.onLeftClick { glideZoom(1.0) })
         add(JButton("+").apply {
             isFocusable = false
             toolTipText = "Zoom in (+ or Ctrl/⌘ + wheel)"
-            addActionListener { zoomTo(zoom * ZOOM_STEP) }
+            addActionListener { zoomStep(ZOOM_STEP) }
         })
         add(status)
         add(JLabel("?").apply {
@@ -274,7 +283,7 @@ internal class CanvasSessionPanel(
         add(scroll)
         scroll.viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
         listOf(scroll.horizontalScrollBar, scroll.verticalScrollBar).forEach { bar ->
-            bar.addAdjustmentListener { if (it.valueIsAdjusting) scrollFrames.stop() }
+            bar.addAdjustmentListener { if (it.valueIsAdjusting) stopGlides() }
         }
         // Children inherit these empty traversal keys, so Tab reaches the canvas's own bindings.
         content.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, emptySet())
@@ -307,6 +316,7 @@ internal class CanvasSessionPanel(
                 refreshTrail()
                 showStatus(if (model.cards.isEmpty()) "Click an underlined name or select code to open a card, or ask about the file." else "")
                 refreshAnchors()
+                restoreCardScrolls()
                 content.revalidate()
                 content.repaint()
                 restoreView(model.session.view)
@@ -424,6 +434,21 @@ internal class CanvasSessionPanel(
         val view = CanvasCardView(this, card)
         views[card.id] = view
         content.add(view)
+    }
+
+    /**
+     * Scrolls each restored card's code back to where the chain left it: the line its first child card was opened from,
+     * or else its first usage site. Cards hang from those lines, and a card's code otherwise reopens at its top.
+     */
+    private fun restoreCardScrolls() {
+        content.validate()
+        for (view in views.values) {
+            val pane = view.sourcePane ?: continue
+            val offset = model.children(view.id).minOfOrNull { it.anchor.startOffset }
+                ?: view.card.usages?.sites?.firstOrNull()?.let { pane.lineStart(it.line) } ?: continue
+            // The cards hanging from this one follow the line, so lay them out again once it has moved.
+            pane.centerOnceSized(offset) { if (!disposed) content.revalidate() }
+        }
     }
 
     private fun refreshAnchors() {
@@ -725,11 +750,14 @@ internal class CanvasSessionPanel(
         content.validate()
         val pane = view.sourcePane ?: return
         val y = pane.scrollToLine(line) ?: return showStatus("Line ${line + 1} is not in the shown text of ${view.card.title}.")
-        val at = SwingUtilities.convertPoint(pane, 0, y, content)
-        val viewport = scroll.viewport.extentSize
+        // A card opened just now may still be gliding into place, so aim at where it settles.
+        val inCard = SwingUtilities.convertPoint(pane, 0, y, view)
+        val card = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
+        val viewport = scroll.viewport.viewRect
         val height = zoomScaled(96, zoom).coerceAtMost(viewport.height)
-        content.scrollRectToVisible(Rectangle(view.x - zoomScaled(16, zoom), at.y - height / 2,
-            minOf(view.width + zoomScaled(32, zoom), viewport.width), height))
+        val padding = zoomScaled(16, zoom)
+        glideTo(Rectangle(card.x - padding, card.y + inCard.y - height / 2,
+            minOf(view.width + padding * 2, viewport.width), height), viewport)
     }
 
     /** Emphasises card [cardId] for a moment and scrolls it into view; null clears the emphasis. */
@@ -743,20 +771,34 @@ internal class CanvasSessionPanel(
         val viewport = scroll.viewport.viewRect
         val at = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
         val padding = zoomScaled(16, zoom)
-        val target = Rectangle(at.x - padding, at.y - padding,
-            minOf(view.width + padding * 2, viewport.width), minOf(view.height, viewport.height))
+        glideTo(Rectangle(at.x - padding, at.y - padding,
+            minOf(view.width + padding * 2, viewport.width), minOf(view.height, viewport.height)), viewport)
+        unreveal.restart()
+    }
+
+    /** Glides the view the least distance that brings [target] (canvas coordinates) into [viewport]. */
+    private fun glideTo(target: Rectangle, viewport: Rectangle) {
         fun offset(start: Int, length: Int, visibleStart: Int, visibleLength: Int) = when {
             start < visibleStart -> start
             start + length > visibleStart + visibleLength -> start + length - visibleLength
             else -> visibleStart
-        }.coerceAtLeast(0)
-        val destination = CanvasPlacement(offset(target.x, target.width, viewport.x, viewport.width),
+        }
+        glideTo(offset(target.x, target.width, viewport.x, viewport.width),
             offset(target.y, target.height, viewport.y, viewport.height))
+    }
+
+    /**
+     * Eases the view's top left to ([x], [y]) so the reader can follow where the canvas went, as the Diffs wall does
+     * between files; at once when not on screen. A new destination mid-way continues from where the view is.
+     */
+    private fun glideTo(x: Int, y: Int) {
+        val destination = CanvasPlacement(maxOf(x, 0), maxOf(y, 0))
+        if (!isShowing) return scrollTo(destination.x, destination.y)
+        val at = scroll.viewport.viewPosition
         val now = System.nanoTime()
-        scrollMotion.target("viewport", CanvasPlacement(viewport.x, viewport.y), now, false)
+        scrollMotion.target("viewport", CanvasPlacement(at.x, at.y), now, false)
         scrollMotion.target("viewport", destination, now, true)
-        if (isShowing) scrollFrames.start() else scrollTo(destination.x, destination.y)
-        unreveal.restart()
+        scrollFrames.start()
     }
 
     private fun openCardSearch() {
@@ -778,8 +820,8 @@ internal class CanvasSessionPanel(
         val at = cardId?.let(content::destination) ?: CanvasPlacement(view.x, view.y)
         val x = if (view.width <= viewport.width) at.x + view.width / 2 - viewport.width / 2 else at.x - zoomScaled(16, zoom)
         val y = if (view.height <= viewport.height - top) at.y + view.height / 2 - (viewport.height + top) / 2 else at.y - top
-        scrollTo(maxOf(x, 0), maxOf(y, 0))
         reveal(cardId)
+        glideTo(x, y)
     }
 
     /** Makes [cardId] the card the trail leads to; null for the root file. */
@@ -935,10 +977,10 @@ internal class CanvasSessionPanel(
         }
         bind("ESCAPE") { readingCard = false; content.requestFocusInWindow() }
         // Typed keys follow the keyboard layout, and the numeric keypad types the same characters.
-        bind("typed +") { zoomTo(zoom * ZOOM_STEP) }
-        bind("typed =") { zoomTo(zoom * ZOOM_STEP) }
-        bind("typed -") { zoomTo(zoom / ZOOM_STEP) }
-        bind("typed 0") { zoomTo(1.0) }
+        bind("typed +") { zoomStep(ZOOM_STEP) }
+        bind("typed =") { zoomStep(ZOOM_STEP) }
+        bind("typed -") { zoomStep(1 / ZOOM_STEP) }
+        bind("typed 0") { glideZoom(1.0) }
         bind("TAB") { stepCard(forward = true) }
         bind("shift TAB") { stepCard(forward = false) }
     }
@@ -1049,7 +1091,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun wheel(e: MouseWheelEvent) {
-        scrollFrames.stop()
+        stopGlides()
         if (e.isControlDown || e.isMetaDown) {
             wheelZoom = ((wheelZoom ?: zoom) * WHEEL_ZOOM_STEP.pow(-e.preciseWheelRotation)).coerceIn(MIN_ZOOM, MAX_ZOOM)
             wheelAnchor = SwingUtilities.convertPoint(e.component, e.point, scroll.viewport)
@@ -1060,6 +1102,12 @@ internal class CanvasSessionPanel(
 
     /** Zooms to [requested], keeping the content under [anchor] (viewport coordinates; the middle by default) in place. */
     internal fun zoomTo(requested: Double, anchor: Point? = null) {
+        zoomFrames.stop()
+        zoomLevelTo(requested, anchor)
+    }
+
+    /** One step of [zoomTo] that leaves a zoom glide running, so the glide's frames can use it. */
+    private fun zoomLevelTo(requested: Double, anchor: Point?) {
         zoomFrame.stop()
         wheelZoom = null
         wheelAnchor = null
@@ -1085,6 +1133,25 @@ internal class CanvasSessionPanel(
         content.repaint()
     }
 
+    /** Glides the zoom by [factor] from where an ongoing zoom glide is heading, so repeated steps add up. */
+    private fun zoomStep(factor: Double) = glideZoom((if (zoomFrames.isRunning) zoomTarget else zoom) * factor)
+
+    /** Eases the zoom to [requested] around the middle of the view, as [glideTo] does for scrolling; at once off screen. */
+    private fun glideZoom(requested: Double) {
+        val next = requested.coerceIn(MIN_ZOOM, MAX_ZOOM)
+        if (!isShowing) return zoomTo(next)
+        zoomFrom = zoom
+        zoomTarget = next
+        zoomStarted = System.nanoTime()
+        zoomFrames.start()
+    }
+
+    /** Stops the view's scroll and zoom glides, as the reader takes over with the mouse or scroll bars. */
+    private fun stopGlides() {
+        scrollFrames.stop()
+        zoomFrames.stop()
+    }
+
     private fun applyZoom(component: Component) {
         if (component is CanvasSourcePane || component is CanvasDiffPane) return
         if (component is JComponent) (component.getClientProperty(BASE_FONT) as? Font)?.let { component.font = it.zoomed(zoom) }
@@ -1108,7 +1175,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun drag(e: MouseEvent) {
-        if (e.id == MouseEvent.MOUSE_PRESSED) scrollFrames.stop()
+        if (e.id == MouseEvent.MOUSE_PRESSED) stopGlides()
         if (!SwingUtilities.isDescendingFrom(e.component, content)) return
         if (e.isPopupTrigger) {
             val point = SwingUtilities.convertPoint(e.component, e.point, content)
@@ -1196,7 +1263,7 @@ internal class CanvasSessionPanel(
         disposed = true
         zoomFrame.stop()
         content.stopMotion()
-        scrollFrames.stop()
+        stopGlides()
         viewSave.stop()
         unreveal.stop()
         mouseEvents.dispose()
@@ -1353,7 +1420,7 @@ internal class CanvasSessionPanel(
             else if (sourceSection.showsDiff) diffPane?.editor else pane.editor
 
         fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible && !sourceSection.showsDiff)
-            SwingUtilities.convertPoint(pane, 0, pane.anchorY(anchor.startOffset), this).y
+            SwingUtilities.convertPoint(pane, 0, pane.shownAnchorY(anchor.startOffset), this).y
         else components.first().let { it.y + it.height / 2 }
 
         override fun getPreferredSize(): Dimension {
@@ -1543,6 +1610,8 @@ internal class CanvasSessionPanel(
         const val FLOATING_ROW_SPACE = 34
         const val MIN_TRAIL_WIDTH = 220
         const val KEY_SCROLL_STEP = 72
+        /** How long the view takes to glide to a card, line or zoom: long enough to follow, short enough not to wait. */
+        const val VIEW_GLIDE_NANOS = 320_000_000L
         const val BASE_FONT = "insight.canvas.baseFont"
     }
 }
