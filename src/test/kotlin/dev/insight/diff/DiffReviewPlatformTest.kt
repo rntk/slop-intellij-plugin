@@ -44,7 +44,6 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import kotlinx.coroutines.*
-import dev.insight.review.ui.ChangeSummariesPanel
 import dev.insight.review.ui.DiffSourceEditor
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ReviewSidePages
@@ -78,7 +77,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             // Rebuilding the review updates both open editors without moving their pages into each other.
             tab.update(ReviewSnapshot(listOf(file("native-tabs.kt")), emptyList()))
-            assertTrue(descendants(summariesEditor.component).any { it is ChangeSummariesPanel })
+            assertTrue(descendants(summariesEditor.component).any { it.name == "summary-split-panels" })
             assertTrue(descendants(topicsEditor.component).filterIsInstance<JLabel>().any { it.text.startsWith("Change topics ·") })
             tab.rename("Focused review")
             assertEquals("Diff Review: Focused review · Summaries", tab.canvasFile.name)
@@ -449,7 +448,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             panel.openCanvas(true)
             assertTrue(manager.isFileOpen(first.canvasFile))
             assertTrue(first.state.summariesVisible)
-            assertEquals(dev.insight.review.ReviewSummariesMode.OUTLINE, first.canvas.summariesView.mode)
+            assertEquals(dev.insight.review.ReviewSummariesMode.SPLIT, first.canvas.summariesView.mode)
             assertEquals(ReviewDiffMode.LOCAL, first.state.snapshot.comparison.request.mode)
             assertFalse(first.session.busy)
             assertTrue(first.session.messages.none { it.role == ChatRole.USER })
@@ -1078,7 +1077,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             val snapshot = ReviewSnapshot(listOf(file("src/app/a.kt"), file("src/app/b.kt"), file("docs/guide.md")), emptyList())
             (DiffReviewPanel::class.java.getDeclaredField("state").apply { isAccessible = true }.get(panel) as DiffReviewState).update(snapshot)
             tab.update(snapshot)
-            assertTrue(withStart(panel).filterIsInstance<ChangeSummariesPanel>().isEmpty())
+            assertTrue(withStart(panel).none { it.name == "summary-split-panels" })
 
             val nodes = tab.state.summaries.tree.nodes
             assertEquals(listOf("./", "docs/", "docs/guide.md", "src/", "src/app/", "src/app/a.kt", "src/app/b.kt"), nodes.map { it.location })
@@ -1090,15 +1089,15 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertTrue("Summaries must show the canvas editor", manager.isFileOpen(tab.canvasFile))
             assertTrue(tab.state.summariesVisible)
             assertFalse(tab.session.busy)
-            assertEquals(1, descendants(tab.canvas).count { it is ChangeSummariesPanel })
+            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
             assertTrue(descendants(tab.canvas).filterIsInstance<JButton>().single { it.text == "Regenerate" }.isEnabled)
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.summariesVisible)
-            assertTrue(descendants(tab.canvas).none { it is ChangeSummariesPanel })
+            assertTrue(descendants(tab.canvas).none { it.name == "summary-split-panels" })
             open.doClick()
             assertTrue(tab.state.summariesVisible)
             assertTrue(tab.state.summaries.complete)
-            assertEquals(1, descendants(tab.canvas).count { it is ChangeSummariesPanel })
+            assertEquals(1, descendants(tab.canvas).count { it.name == "summary-split-panels" })
             assertEquals("Reopening completed summaries must not send a turn", 0, tab.session.messages.count { it.text == "/summaries" })
 
             // Stay on the EDT so the queued turn cannot contact a backend during this test.

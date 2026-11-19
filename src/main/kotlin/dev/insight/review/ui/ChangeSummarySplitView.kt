@@ -197,7 +197,7 @@ internal class ChangeSummarySplitPanel(
         val clickDelay = (Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int) ?: 500
         val activateLater = Timer(clickDelay) { activate() }.apply { isRepeats = false }
         val left = SplitRow("summary-tree:${node.identity}", selected, mark).apply {
-            border = pixelBorder(scaled(4), scaled(4) + depth * scaled(INDENT), scaled(4), scaled(6))
+            border = pixelBorder(scaled(ROW_PAD_Y), scaled(4) + depth * scaled(INDENT), scaled(ROW_PAD_Y), scaled(6))
             toolTipText = "${node.location} · Level ${tree.shownDepth(node.id) + 1}" + (match?.let { " · " + matchLabel(it, trace!!) } ?: "")
             add(JLabel(if (!branch) "" else if (open) "▾" else "▸").apply {
                 font = font(JBFont.label())
@@ -281,7 +281,7 @@ internal class ChangeSummarySplitPanel(
             }
         val right = SplitRow("summary:${node.identity}", selected, mark).apply {
             layout = GridBagLayout()
-            border = pixelBorder(scaled(4), scaled(8), scaled(4), scaled(12))
+            border = pixelBorder(scaled(ROW_PAD_Y), scaled(8), scaled(ROW_PAD_Y), scaled(12))
             add(text, GridBagConstraints().apply {
                 anchor = GridBagConstraints.NORTHWEST
                 weightx = 1.0
@@ -306,7 +306,7 @@ internal class ChangeSummarySplitPanel(
 
     private fun message(text: String, name: String = "no-matches") {
         val left = SplitRow(name, false, null).apply {
-            border = pixelBorder(scaled(4), scaled(4), scaled(4), scaled(6))
+            border = pixelBorder(scaled(ROW_PAD_Y), scaled(4), scaled(ROW_PAD_Y), scaled(6))
             add(JLabel(text).apply { font = font(JBFont.label()).let { it.deriveFont(it.style or Font.ITALIC) }; foreground = help })
         }
         pairs += left to SplitRow("$name:summary", false, null)
@@ -387,19 +387,21 @@ internal class ChangeSummarySplitPanel(
 
         override fun getPreferredSize(): Dimension {
             val insets = insets
+            val gaps = (pairs.size - 1).coerceAtLeast(0) * scaled(ROW_GAP)
             return Dimension((rows.maxOfOrNull { it.preferredSize.width } ?: 0) + insets.left + insets.right,
-                pairs.sumOf { (left, right) -> maxOf(left.preferredSize.height, right.preferredSize.height) } + insets.top + insets.bottom)
+                pairs.sumOf { (left, right) -> maxOf(left.preferredSize.height, right.preferredSize.height) } + gaps + insets.top + insets.bottom)
         }
 
         override fun doLayout() {
             val insets = insets
+            val gap = scaled(ROW_GAP)
             var y = insets.top
             val width = maxOf(width - insets.left - insets.right, 0)
             for ((index, row) in rows.withIndex()) {
                 val (left, right) = pairs[index]
                 val height = maxOf(left.preferredSize.height, right.preferredSize.height)
                 row.setBounds(insets.left, y, width, height)
-                y += height
+                y += height + gap
             }
         }
 
@@ -414,6 +416,8 @@ internal class ChangeSummarySplitPanel(
     companion object {
         const val INDENT = 16
         const val TOGGLE = 14
+        const val ROW_PAD_Y = 6
+        const val ROW_GAP = 6
 
         private fun descendants(root: Container): List<Component> =
             listOf<Component>(root) + root.components.flatMap { if (it is Container) descendants(it) else listOf(it) }

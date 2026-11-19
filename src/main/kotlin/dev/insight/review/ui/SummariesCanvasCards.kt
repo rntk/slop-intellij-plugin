@@ -71,7 +71,7 @@ internal class SummariesCanvasCards(
     /** Supplies the Diff mode; without one it shows the outline. */
     private val extension: CanvasExtension? = null,
 ) : Disposable {
-    val summariesView = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.OUTLINE }
+    val summariesView = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.SPLIT }
     private var summaries: SummariesCard? = null
     private val currentCards = mutableMapOf<CanvasTabKey, JPanel>()
     private val zoom = 1.0

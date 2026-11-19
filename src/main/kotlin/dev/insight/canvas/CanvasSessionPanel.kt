@@ -1721,10 +1721,10 @@ internal class CanvasSessionPanel(
         val LOG = logger<CanvasSessionPanel>()
         val ARROW = JBColor(Color(130, 150, 200), Color(110, 130, 175))
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
-        const val CARD_WIDTH = 858
+        const val CARD_WIDTH = 1030
         const val CARD_SOURCE_MAX_HEIGHT = 640
-        const val ROOT_MAX_WIDTH = 1056
-        const val ROOT_CHAT_MIN_WIDTH = 480
+        const val ROOT_MAX_WIDTH = 1267
+        const val ROOT_CHAT_MIN_WIDTH = 576
         const val MIN_ZOOM = 0.05
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2

@@ -15,6 +15,7 @@ import java.awt.Container
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import javax.swing.JCheckBox
+import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JScrollPane
@@ -34,6 +35,7 @@ import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.SummaryTextDialog
 import dev.insight.review.ui.WrappedSummaryText
 import dev.insight.review.ui.selectionMenu
+import dev.insight.ui.zoomScaled
 
 class SummarySplitViewTest : BasePlatformTestCase() {
     private fun file(path: String) = ReviewFile(path, "/repo/$path", null, "modified", "-old\n+new\n", "1")
@@ -515,6 +517,62 @@ class SummarySplitViewTest : BasePlatformTestCase() {
             show()
             assertEquals("a folded folder shows its summary", "Summary of directory:src/nested.", text("directory:src/nested"))
         } finally { canvas.dispose() }
+    }
+
+    fun testSplitIsDefaultAndFirstInSummariesModeSelector() {
+        val tree = buildSummaryTree(files)
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary of ${it.identity}." })
+        for (vocabulary in listOf(ReviewVocabulary.DIFF, ReviewVocabulary.CODE)) {
+            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary).apply { setSize(1600, 900) }
+            try {
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+                layoutTree(canvas)
+                assertEquals(ReviewSummariesMode.SPLIT, canvas.summariesView.mode)
+                assertTrue(descendants(canvas).any { it.name == "summary-split-panels" })
+                val selector = descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "summaries-mode" }
+                assertEquals(ReviewSummariesMode.SPLIT, selector.getItemAt(0))
+                assertEquals(0, selector.selectedIndex)
+                assertEquals(ReviewSummariesMode.SPLIT, selector.selectedItem)
+            } finally { canvas.dispose() }
+        }
+    }
+
+    fun testSplitRowsKeepConfiguredVerticalGapBetweenRows() {
+        val tree = buildSummaryTree(files)
+        val long = "A summary that wraps across multiple lines when soft wrap is enabled. ".repeat(6)
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to if (it.path == "src/a.kt") long else "Summary of ${it.identity}." })
+        for (wrap in listOf(false, true)) {
+            val canvas = NoteCanvas({}, {}).apply {
+                setSize(1600, 900)
+                summariesView.mode = ReviewSummariesMode.SPLIT
+                summariesView.softWrap = wrap
+            }
+            fun named(name: String) = descendants(canvas).single { it.name == name } as JComponent
+            try {
+                canvas.showNotes(CanvasState(emptyList(), summaries = SummariesCard(summaries, false, true)))
+                repeat(4) { layoutTree(canvas) }
+                val expectedGap = zoomScaled(ChangeSummarySplitPanel.ROW_GAP, 1.0)
+                val treeColumn = named("summary-split-tree")
+                val summaryColumn = named("summary-split-summaries")
+                val treeRows = treeColumn.components.toList()
+                val summaryRows = summaryColumn.components.toList()
+                assertTrue(treeRows.size > 1)
+                assertEquals(treeRows.size, summaryRows.size)
+                for (rows in listOf(treeRows, summaryRows)) {
+                    for ((prev, next) in rows.zipWithNext()) {
+                        assertEquals("wrap=$wrap gap between ${prev.name} and ${next.name}", expectedGap, next.y - (prev.y + prev.height))
+                    }
+                }
+                val lastTree = treeRows.last()
+                val lastSummary = summaryRows.last()
+                assertEquals("wrap=$wrap column preferred heights", treeColumn.preferredSize.height, summaryColumn.preferredSize.height)
+                assertEquals("wrap=$wrap last row bottoms match", lastTree.y + lastTree.height, lastSummary.y + lastSummary.height)
+                assertEquals("wrap=$wrap tree bottom vs preferred",
+                    lastTree.y + lastTree.height + treeColumn.insets.bottom, treeColumn.preferredSize.height)
+                assertEquals("wrap=$wrap summary bottom vs preferred",
+                    lastSummary.y + lastSummary.height + summaryColumn.insets.bottom, summaryColumn.preferredSize.height)
+            } finally { canvas.dispose() }
+        }
     }
 
     private fun layoutTree(component: Container) {
