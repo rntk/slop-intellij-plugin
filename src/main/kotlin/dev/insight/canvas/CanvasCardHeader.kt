@@ -48,7 +48,7 @@ internal fun canvasGlyphButton(host: CanvasCardHost, glyph: String, tooltip: Str
  */
 internal class CanvasCardHeader(
     host: CanvasCardHost,
-    cardId: String?,
+    cardId: String,
     title: CanvasTitleLabel,
     badge: JComponent?,
     private val actions: () -> List<CanvasCardAction>,

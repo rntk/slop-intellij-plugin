@@ -45,12 +45,12 @@ import kotlin.math.roundToInt
 
 /**
  * A native read-only viewer of one [source]: the plain text with the file's highlighting and its real line numbers,
- * links underlined, and native selection and copying. [owner] is the card the source belongs to, or null for the root
- * file. The canvas owns vertical scrolling unless the source is taller than [maxHeight]; a line wider than [maxWidth] scrolls sideways within the pane.
+ * links underlined, and native selection and copying. [owner] is the card the source belongs to.
+ * The canvas owns vertical scrolling unless the source is taller than [maxHeight]; a line wider than [maxWidth] scrolls sideways within the pane.
  */
 internal class CanvasSourcePane(
     project: Project,
-    val owner: String?,
+    val owner: String,
     val source: CanvasSource,
     private val listener: Listener,
 ) : JPanel(BorderLayout()), Disposable {

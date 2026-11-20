@@ -40,16 +40,16 @@ class CanvasGapsTest {
     @Test
     fun `the model adds and clears gap summaries of cards and the root file`() {
         val model = CanvasSessionModel(CanvasSession.new("src/A.kt", now = 0), clock = { 0 }, ids = { "c1" })
-        val card = model.open(null, CardKind.SYMBOL, CardAnchor(0, 1, 0), "src/A.kt", 0, "fun f() {}", SymbolRef("src/A.kt", "f", "FUNCTION"))
+        val card = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 1, 0), "src/A.kt", 0, "fun f() {}", SymbolRef("src/A.kt", "f", "FUNCTION"))
         val changes = mutableListOf<CanvasChange>()
         model.subscribe { changes += it }
-        model.addGapSummary(null, GapSummary(0, 0, 1, "root"))
+        model.addGapSummary(CANVAS_ROOT, GapSummary(0, 0, 1, "root"))
         model.addGapSummary(card.id, GapSummary(0, 0, 2, "card"))
         assertEquals(listOf("root"), model.session.root.gapSummaries.map { it.text })
         assertEquals(listOf("card"), model.card(card.id)!!.gapSummaries.map { it.text })
         model.clearGapSummaries(card.id)
         assertEquals(emptyList<GapSummary>(), model.card(card.id)!!.gapSummaries)
-        assertEquals(listOf(CanvasChange.RootChanged::class, CanvasChange.CardChanged::class, CanvasChange.CardChanged::class),
+        assertEquals(listOf(CanvasChange.CardChanged::class, CanvasChange.CardChanged::class, CanvasChange.CardChanged::class),
             changes.map { it::class })
     }
 }

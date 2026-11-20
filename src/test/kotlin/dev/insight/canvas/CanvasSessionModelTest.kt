@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -20,11 +21,11 @@ class CanvasSessionModelTest {
         val model = model()
         val changes = mutableListOf<CanvasChange>()
         model.subscribe { changes += it }
-        val first = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
-        val again = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
-        val other = model.open(null, CardKind.SELECTION, CardAnchor(5, 9, 2), "src/Main.kt", 2, "save()")
+        val first = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
+        val again = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
+        val other = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(5, 9, 2), "src/Main.kt", 2, "save()")
         assertSame(first, again)
-        assertEquals(listOf("c0", "c1"), model.cards.map { it.id })
+        assertEquals(listOf(CANVAS_ROOT, "c0", "c1"), model.cards.map { it.id })
         assertEquals(listOf(CanvasChange.CardOpened(first), CanvasChange.CardOpened(other)), changes)
         assertEquals(1L, model.session.created)
         assertTrue(model.session.updated >= 100)
@@ -33,8 +34,8 @@ class CanvasSessionModelTest {
     @Test
     fun `opening attribution belongs to each card and survives revisiting in either direction`() {
         val model = model()
-        val manual = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
-        val revisitedByLlm = model.open(null, CardKind.SYMBOL, manual.anchor, manual.filePath, manual.firstLine,
+        val manual = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save)
+        val revisitedByLlm = model.open(CANVAS_ROOT, CardKind.SYMBOL, manual.anchor, manual.filePath, manual.firstLine,
             manual.text, save, openedBy = CardOpenedBy.LLM)
         assertSame(manual, revisitedByLlm)
         assertEquals(CardOpenedBy.USER, revisitedByLlm.openedBy)
@@ -47,13 +48,13 @@ class CanvasSessionModelTest {
 
         val manualChild = model.open(llm.id, CardKind.SELECTION, CardAnchor(0, 1, 3), "src/Store.kt", 3, "f")
         assertEquals(CardOpenedBy.USER, manualChild.openedBy)
-        assertEquals(3, model.cards.size)
+        assertEquals(4, model.cards.size)
     }
 
     @Test
     fun `summary chat restore and expand preserve opening attribution`() {
         val model = model()
-        val card = model.open(null, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save,
+        val card = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(5, 9, 2), "src/Store.kt", 3, "fun save() {}", save,
             openedBy = CardOpenedBy.LLM)
         val child = model.open(card.id, CardKind.SELECTION, CardAnchor(0, 3, 3), card.filePath, 3, "fun",
             openedBy = CardOpenedBy.LLM)
@@ -70,21 +71,22 @@ class CanvasSessionModelTest {
     @Test
     fun `removing a card removes its subtree and chains run root first`() {
         val model = model()
-        val a = model.open(null, CardKind.SYMBOL, CardAnchor(0, 4, 0), "src/Store.kt", 3, "a", save)
+        val a = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 4, 0), "src/Store.kt", 3, "a", save)
         val b = model.open(a.id, CardKind.SELECTION, CardAnchor(0, 1, 3), "src/Store.kt", 3, "a")
         val c = model.open(b.id, CardKind.SYMBOL, CardAnchor(0, 1, 3), "src/Store.kt", 3, "a", save.copy(name = "load"))
-        val d = model.open(null, CardKind.SELECTION, CardAnchor(1, 2, 0), "src/Main.kt", 0, "b")
-        assertEquals(listOf(a, b, c), model.chain(c.id))
-        assertEquals(listOf(a, d), model.children(null))
+        val d = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(1, 2, 0), "src/Main.kt", 0, "b")
+        assertEquals(listOf(model.session.root, a, b, c), model.chain(c.id))
+        assertEquals(listOf(a, d), model.children(CANVAS_ROOT))
         assertEquals(setOf(b.id, c.id), model.remove(b.id))
-        assertEquals(listOf(a.id, d.id), model.cards.map { it.id })
+        assertEquals(listOf(CANVAS_ROOT, a.id, d.id), model.cards.map { it.id })
+        assertTrue("The root card stays", model.remove(CANVAS_ROOT).isEmpty())
         assertTrue(model.remove("missing").isEmpty())
     }
 
     @Test
     fun `card state changes notify only when something changed`() {
         val model = model()
-        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 1, 0), "src/Main.kt", 0, "x")
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), "src/Main.kt", 0, "x")
         var changes = 0
         val subscription = model.subscribe { changes++ }
         model.setSummary(card.id, "  Saves it.  ")
@@ -113,7 +115,7 @@ class CanvasSessionModelTest {
         assertEquals("aaaa\nbbbb", text)
         assertTrue(cut)
         assertFalse(boundCardText("short").second)
-        val card = CanvasCard("c", null, CardKind.SELECTION, CardAnchor(0, 1, 0), null, "a.kt", 9, "x\ny\nz")
+        val card = CanvasCard("c", CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), null, "a.kt", 9, "x\ny\nz")
         assertEquals(11, card.lastLine)
         assertEquals("a.kt:10-12", card.location)
     }
@@ -121,7 +123,7 @@ class CanvasSessionModelTest {
     @Test
     fun `chat tabs keep independent histories and drafts and choose an adjacent tab on close`() {
         val model = model()
-        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
         val first = card.activeChatId
         model.setDraft(card.id, "first draft")
         val second = model.addChat(card.id)!!
@@ -145,32 +147,32 @@ class CanvasSessionModelTest {
     }
 
     @Test
-    fun `the root file has its own chat tabs, drafts and folding, apart from the cards`() {
+    fun `the root card has its own chat tabs, drafts and folding, apart from the cards`() {
         val model = model()
-        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), "a", 0, "x")
         val changes = mutableListOf<CanvasChange>()
         model.subscribe { changes += it }
         val first = model.session.root.activeChatId
-        model.setDraft(null, "about the file")
-        val second = model.addChat(null)!!
+        model.setDraft(CANVAS_ROOT, "about the file")
+        val second = model.addChat(CANVAS_ROOT)!!
         assertEquals("Chat 2", second.title)
         val reply = listOf(SavedMessage(ChatRole.ASSISTANT, "background reply"))
-        model.setMessages(null, reply, first)
+        model.setMessages(CANVAS_ROOT, reply, first)
         assertTrue(model.session.root.messages.isEmpty())
-        model.selectChat(null, first)
+        model.selectChat(CANVAS_ROOT, first)
         assertEquals(reply, model.session.root.messages)
         assertEquals("about the file", model.session.root.draft)
-        assertEquals(true, model.toggleFolded(null, CardSection.CHAT))
-        model.removeChat(null, first)
-        model.removeChat(null, second.id)
+        assertEquals(true, model.toggleFolded(CANVAS_ROOT, CardSection.CHAT))
+        model.removeChat(CANVAS_ROOT, first)
+        model.removeChat(CANVAS_ROOT, second.id)
         assertEquals(listOf(second), model.session.root.chats)
         assertEquals(setOf(CardSection.CHAT), model.session.root.folded)
 
         assertEquals(listOf(CanvasChat()), model.card(card.id)!!.chats)
-        assertTrue(changes.all { it is CanvasChange.RootChanged })
-        assertEquals(model.session.root, (changes.last() as CanvasChange.RootChanged).root)
+        assertTrue(changes.all { it is CanvasChange.CardChanged && it.card.id == CANVAS_ROOT })
+        assertEquals(model.session.root, (changes.last() as CanvasChange.CardChanged).card)
         val count = changes.size
-        model.selectChat(null, "missing")
+        model.selectChat(CANVAS_ROOT, "missing")
         assertEquals("An unchanged root notifies nobody", count, changes.size)
     }
 
@@ -180,5 +182,48 @@ class CanvasSessionModelTest {
             ChatMessage(ChatRole.TOOL, "read_file(path=a)"), ChatMessage(ChatRole.ASSISTANT, "A")))
         assertEquals(listOf(SavedMessage(ChatRole.NOTICE, "Welcome"), SavedMessage(ChatRole.USER, "Q"), SavedMessage(ChatRole.ASSISTANT, "A")), saved)
         assertEquals(ChatMessage(ChatRole.USER, "Q"), saved.toChatMessages()[1])
+    }
+
+    @Test
+    fun `every session starts with its one root card, which heads every chain and cannot be closed`() {
+        val model = model()
+        val root = model.session.root
+        assertEquals(CardKind.ROOT, root.kind)
+        assertEquals(CANVAS_ROOT, root.id)
+        assertEquals("Main.kt", root.title)
+        assertEquals("src/Main.kt", root.location)
+        assertEquals("file", model.session.rootKind)
+        assertEquals("directory", CanvasSession.new("src", directory = true).rootKind)
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), "src/Main.kt", 0, "x")
+        assertEquals(listOf(root, card), model.chain(card.id))
+        assertEquals(listOf(root), model.chain(CANVAS_ROOT))
+        assertTrue(model.remove(CANVAS_ROOT).isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            model.open(CANVAS_ROOT, CardKind.ROOT, CardAnchor(0, 0, 0), "src/Main.kt", 0, "")
+        }
+        assertThrows(IllegalArgumentException::class.java) { CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(card)) }
+        assertThrows(IllegalArgumentException::class.java) { CanvasSession("s", "src/Main.kt", "Main", 0, 0, emptyList()) }
+    }
+
+    @Test
+    fun `resizing sets each dimension within bounds and resetting makes the card automatic`() {
+        val model = model()
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), "src/Main.kt", 0, "x")
+        val changes = mutableListOf<CanvasChange>()
+        model.subscribe { changes += it }
+        model.resize(card.id, CardSize(width = 500))
+        assertEquals(CardSize(width = 500), model.card(card.id)!!.size)
+        model.resize(card.id, CardSize(width = 500))
+        assertEquals(1, changes.size)
+        model.resize(card.id, CardSize(10, 100_000))
+        assertEquals(CardSize(CARD_MIN_WIDTH, CARD_MAX_HEIGHT), model.card(card.id)!!.size)
+        model.resize(CANVAS_ROOT, CardSize(height = 400))
+        assertEquals(CardSize(height = 400), model.session.root.size)
+        model.resize(card.id, CardSize())
+        assertNull(model.card(card.id)!!.size)
+        model.resize(CANVAS_ROOT, null)
+        assertNull(model.session.root.size)
+        assertEquals(listOf(card.id, card.id, CANVAS_ROOT, card.id, CANVAS_ROOT),
+            changes.map { (it as CanvasChange.CardChanged).card.id })
     }
 }

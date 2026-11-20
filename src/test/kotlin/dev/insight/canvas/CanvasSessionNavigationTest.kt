@@ -136,17 +136,18 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
     }
 
     fun testHorizontalOnlyAndVerticalOnlyCardsRouteOtherAxisToCanvas() {
-        withLongPanel { panel, _, viewport ->
+        // Few enough lines to fit under the height cap, each too wide for the root card.
+        val wideText = "class WideFile {\n" + (1..20).joinToString("\n") { "    // line $it " + "long code ".repeat(60) } + "\n}"
+        withPanel(wideText, cardCount = 0) { panel, _, viewport ->
             val root = panel.canvas.components.single { it.name == "canvas-root" } as JComponent
-            val rootEditor = root.components.filterIsInstance<CanvasSourceSection>().single()
-                .let { (it.body as Container).components.single() as CanvasSourcePane }.editor
+            val rootEditor = panel.rootSourcePane!!.editor
             assertTrue(canScrollCanvasViewer(rootEditor, horizontal = true))
             assertFalse(canScrollCanvasViewer(rootEditor, horizontal = false))
 
             // Focus the root card (Shift+Tab from unfocused or Tab through cards).
             clickAt(panel.canvas, Point(root.x + 20, root.y + 8))
             assertTrue(panel.hasFocusedCard)
-            assertNull(panel.focusedCard)
+            assertEquals(CANVAS_ROOT, panel.focusedCard)
 
             viewport.viewPosition = Point(0, 0)
             press(panel, "DOWN")
@@ -246,7 +247,7 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
             // Clicking the root file focuses root while preserving the existing trail.
             clickAt(panel.canvas, Point(root.x + 20, root.y + 8))
             assertTrue(panel.hasFocusedCard)
-            assertNull(panel.focusedCard)
+            assertEquals(CANVAS_ROOT, panel.focusedCard)
             assertEquals(second.card.title, panel.trailTitles.last())
             assertTrue(panel.canvas.actionMap.get("escape").isEnabled)
 
@@ -256,8 +257,8 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
             assertFalse(panel.canvas.actionMap.get("escape").isEnabled)
 
             // Opening a symbol card focuses it; closing the focused card exits focus cleanly.
-            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "entry")
-            val job = panel.openSymbol(null, link, target)
+            val (link, target) = panel.controller.link(panel.controller.source(CANVAS_ROOT)!!, "entry")
+            val job = panel.openSymbol(CANVAS_ROOT, link, target)
             PlatformTestUtil.waitWithEventsDispatching("Symbol card should open", { job.isCompleted }, 30)
             val entry = panel.model.cards.last()
             assertTrue(panel.hasFocusedCard)
@@ -337,6 +338,15 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
         assertFalse("Alt + drag selects no text", editor.selectionModel.hasSelection())
     }
 
+    fun testTallRootFileScrollsInsideItsCappedCard() = withLongPanel { panel, _, _ ->
+        val pane = panel.rootSourcePane!!
+        val text = pane.editor.contentComponent.preferredSize.height
+        assertTrue("The root file must be taller than the cap", text > pane.maxHeight)
+        val bar = pane.editor.scrollPane.horizontalScrollBar.preferredSize.height
+        assertTrue("The root viewer stays within its cap", pane.height <= pane.maxHeight + bar)
+        assertTrue("The root viewer scrolls vertically", canScrollCanvasViewer(pane.editor, horizontal = false))
+    }
+
     private fun withLongPanel(test:(CanvasSessionPanel, List<CanvasCardView>, JViewport) -> Unit) {
         val text = "class LongFile {\n" + (1..100).joinToString("\n") {
             "    // line $it " + "long code ".repeat(60)
@@ -354,7 +364,7 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
             val cards = (1..cardCount).map { index ->
                 val start = if (index == 1) 0 else text.indexOf('\n') + 1
-                val card = panel.controller.openSelection(null, start, text.length)!!
+                val card = panel.controller.openSelection(CANVAS_ROOT, start, text.length)!!
                 panel.cardViews.getValue(card.id)
             }
             repeat(2) { relayout(panel) }

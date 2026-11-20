@@ -135,8 +135,18 @@ private fun changeScope(files: List<ReviewFile>, side: SourceSide): CodeContext 
 
 /** A physical directory in a review, even when it contains only one file in scope. */
 internal fun directoryScope(path: String, files: List<ReviewSource>): CodeContext =
-    CodeContext(ContextScopeKind.DIRECTORY, "Directory ${path.ifEmpty { "." }}", path, null, null,
+    CodeContext(ContextScopeKind.DIRECTORY, "Directory ${path.ifEmpty { "." }}", path, directoryAbsolutePath(path, files), null,
         SourceSide.CURRENT, reviewFilesPreview(files), files.all { it is PatchSource }, files = files.map { it.path })
+
+private fun directoryAbsolutePath(path: String, files: List<ReviewSource>): String? {
+    val prefix = path.takeIf { it.isNotEmpty() }?.plus("/").orEmpty()
+    val matches = files.filter { it.path.startsWith(prefix) }
+    if (matches.isEmpty()) return null
+    return matches.map { file ->
+        val suffix = "/" + file.path.removePrefix(prefix)
+        file.absolutePath.takeIf { it.endsWith(suffix) }?.removeSuffix(suffix)?.ifEmpty { "/" }
+    }.distinct().singleOrNull()
+}
 
 internal fun reviewFilesPreview(files: List<ReviewSource>): String = buildString {
     for (file in files) {

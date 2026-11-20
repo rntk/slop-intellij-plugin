@@ -10,7 +10,7 @@ class CanvasRestoreTest {
     private val links = listOf(CanvasLink(4..6, listOf(1)), CanvasLink(16..19, listOf(2)), CanvasLink(28..31, listOf(3)),
         CanvasLink(40..43, listOf(2)))
 
-    private fun card(kind: CardKind, start: Int, end: Int, text: String) = CanvasCard("c", null, kind, CardAnchor(start, end, 0),
+    private fun card(kind: CardKind, start: Int, end: Int, text: String) = CanvasCard("c", CANVAS_ROOT, kind, CardAnchor(start, end, 0),
         if (kind == CardKind.SYMBOL) SymbolRef("A.kt", "save", "FUNCTION") else null, "A.kt", 0, text)
 
     @Test
@@ -45,7 +45,7 @@ class CanvasRestoreTest {
     @Test
     fun `restoring a snapshot refreshes the card but keeps its chat`() {
         val model = CanvasSessionModel(CanvasSession.new("A.kt", now = 1), clock = { 2 }, ids = { "c1" })
-        val opened = model.open(null, CardKind.SYMBOL, CardAnchor(0, 3, 0), "A.kt", 0, "old", SymbolRef("A.kt", "save", "FUNCTION"))
+        val opened = model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 3, 0), "A.kt", 0, "old", SymbolRef("A.kt", "save", "FUNCTION"))
         model.setMessages(opened.id, listOf(SavedMessage(dev.insight.agent.ChatRole.USER, "hi")))
         val changes = mutableListOf<CanvasChange>()
         model.subscribe { changes += it }

@@ -26,14 +26,14 @@ import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
 /**
- * The chat tabs of card [cardId], or of the root file for null: each tab's transcript, draft and running reply, and
+ * The chat tabs of card [cardId]: each tab's transcript, draft and running reply, and
  * the input. The transcript fills [section], whose header gains a + for a new tab and whose title counts the messages;
  * the section shows only once there is a conversation, so a fresh card offers just the [ask] input. Tabs show only
  * when there are several. Histories and drafts are kept in the model; replies keep running when the tab changes.
  */
 internal class CanvasChatView(
     private val host: CanvasCardHost,
-    private val cardId: String?,
+    private val cardId: String,
     initial: CanvasChatHolder,
     private val welcome: () -> String,
     placeholder: String,
@@ -238,8 +238,8 @@ internal class CanvasChatView(
     }
 }
 
-/** A titled part of card [cardId], or of the root file for null, that folds with its toggle or title as saved in the model. */
-internal open class CanvasFoldSection(private val host: CanvasCardHost, private val cardId: String?, val section: CardSection,
+/** A titled part of card [cardId] that folds with its toggle or title as saved in the model. */
+internal open class CanvasFoldSection(private val host: CanvasCardHost, private val cardId: String, val section: CardSection,
     title: String, val body: JComponent) : JPanel(StackLayout { zoomScaled(4, host.zoom) }) {
     private val toggle = canvasFoldToggle(host, cardId, section)
     val title: JLabel = host.zoomFont(JLabel(title).apply { foreground = UIUtil.getContextHelpForeground() },
@@ -273,11 +273,11 @@ internal open class CanvasFoldSection(private val host: CanvasCardHost, private 
 }
 
 /**
- * The [CardSection.SOURCE] part of card [cardId], or of the root file for null, showing [source]. Given a diff, its title
+ * The [CardSection.SOURCE] part of card [cardId], showing [source]. Given a diff, its title
  * becomes a tab beside a Diff tab and the section shows one of them at a time, so the card grows by only one. Clicking
  * the shown tab folds the section; clicking the other shows it, unfolded. The source is shown first.
  */
-internal class CanvasSourceSection(private val host: CanvasCardHost, private val cardId: String?, title: String,
+internal class CanvasSourceSection(private val host: CanvasCardHost, private val cardId: String, title: String,
     private var source: JComponent) : CanvasFoldSection(host, cardId, CardSection.SOURCE, title,
         JPanel(BorderLayout()).apply { isOpaque = false }) {
     val diffTab: JLabel = host.zoomFont(JLabel().apply { isVisible = false }, UIUtil.getLabelFont().deriveFont(Font.BOLD))
@@ -345,8 +345,8 @@ internal class CanvasSourceSection(private val host: CanvasCardHost, private val
     }
 }
 
-/** The ▾ toggle that folds [section] of card [cardId], or of the root file for null. */
-internal fun canvasFoldToggle(host: CanvasCardHost, cardId: String?, section: CardSection): JLabel =
+/** The ▾ toggle that folds [section] of card [cardId]. */
+internal fun canvasFoldToggle(host: CanvasCardHost, cardId: String, section: CardSection): JLabel =
     host.zoomFont(JLabel(canvasFoldGlyph(true)).apply {
         toolTipText = "Fold or unfold"
         name = "canvas-fold-${section.name.lowercase()}"

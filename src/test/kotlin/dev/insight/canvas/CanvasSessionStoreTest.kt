@@ -21,13 +21,13 @@ class CanvasSessionStoreTest {
     private val directory: Path get() = folder.root.toPath().resolve("canvas-sessions")
 
     private fun session(id: String, root: String, updated: Long): CanvasSession {
-        val symbol = CanvasCard("a1", null, CardKind.SYMBOL, CardAnchor(3, 7, 1), SymbolRef("src/Store.kt", "save", "FUNCTION", "Store", 40, 3),
+        val symbol = CanvasCard("a1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(3, 7, 1), SymbolRef("src/Store.kt", "save", "FUNCTION", "Store", 40, 3),
             "src/Store.kt", 3, "fun save() {\n  write()\n}", summary = "Saves.", folded = setOf(CardSection.SOURCE, CardSection.META),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "why?"), SavedMessage(ChatRole.ASSISTANT, "Because.")), draft = "and")))
         val selection = CanvasCard("a2", "a1", CardKind.SELECTION, CardAnchor(13, 20, 4), null, "src/Store.kt", 4, "  write()",
             textTruncated = true, summaryError = "The summary failed: timeout", wholeFile = true, openedBy = CardOpenedBy.LLM,
             usages = CardUsages("save", listOf(CardUsageSite(4, true, "run()"), CardUsageSite(9, false, "Store"))))
-        return CanvasSession(id, root, "Main", 1, updated, listOf(symbol, selection), CanvasView(1.25, -40, 300))
+        return CanvasSession(id, root, "Main", 1, updated, listOf(canvasRootCard(root), symbol, selection), CanvasView(1.25, -40, 300))
     }
 
     @Test
@@ -77,9 +77,9 @@ class CanvasSessionStoreTest {
         val session = CanvasSessionStore(directory).load("lean")!!
         assertEquals("A.kt", session.title)
         assertEquals(CanvasView(), session.view)
-        val card = session.cards.single()
+        val card = session.cards.drop(1).single()
         assertEquals(CardOpenedBy.USER, card.openedBy)
-        assertEquals(CanvasCard("c1", null, CardKind.SELECTION, CardAnchor(0, 0, 0), null, "", 0, "x", folded = setOf(CardSection.SOURCE),
+        assertEquals("Cards opened from the root had no parent before the root was a card", CanvasCard("c1", CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 0, 0), null, "", 0, "x", folded = setOf(CardSection.SOURCE),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.USER, "q"))))), card)
     }
 
@@ -93,7 +93,7 @@ class CanvasSessionStoreTest {
             ]}}
         """.trimIndent())
         val session = CanvasSessionStore(directory).load("origin")!!
-        assertEquals(listOf(CardOpenedBy.USER, CardOpenedBy.LLM), session.cards.map { it.openedBy })
+        assertEquals(listOf(CardOpenedBy.USER, CardOpenedBy.LLM), session.cards.drop(1).map { it.openedBy })
     }
 
     @Test
@@ -101,23 +101,23 @@ class CanvasSessionStoreTest {
         val store = CanvasSessionStore(directory)
         val initial = session("tabs", "src/Main.kt", 10)
         val model = CanvasSessionModel(initial)
-        val card = initial.cards.first()
+        val card = initial.card("a1")!!
         val chat = model.addChat(card.id)!!
         model.setDraft(card.id, "separate draft")
         model.setMessages(card.id, listOf(SavedMessage(ChatRole.USER, "another topic")))
         assertTrue(store.save(model.session))
         val loaded = store.load("tabs")!!
         assertEquals(model.session, loaded)
-        assertEquals(chat.id, loaded.cards.first().activeChatId)
-        assertEquals("and", loaded.cards.first().chats.first().draft)
-        assertEquals("separate draft", loaded.cards.first().draft)
+        assertEquals(chat.id, loaded.card("a1")!!.activeChatId)
+        assertEquals("and", loaded.card("a1")!!.chats.first().draft)
+        assertEquals("separate draft", loaded.card("a1")!!.draft)
     }
 
     @Test
     fun `gap summaries of cards and the root file round trip, and damaged ones are dropped`() {
         val store = CanvasSessionStore(directory)
         val model = CanvasSessionModel(session("gaps", "src/Main.kt", 10))
-        model.addGapSummary(null, GapSummary(0, 2, 11, "Imports."))
+        model.addGapSummary(CANVAS_ROOT, GapSummary(0, 2, 11, "Imports."))
         model.addGapSummary("a1", GapSummary(4, 4, -7, "Writes it."))
         assertTrue(store.save(model.session))
         assertEquals(model.session, store.load("gaps"))
@@ -134,10 +134,10 @@ class CanvasSessionStoreTest {
     fun `the root file's chats round trip, and older sessions start with one empty chat`() {
         val store = CanvasSessionStore(directory)
         val model = CanvasSessionModel(session("root", "src/Main.kt", 10))
-        model.setMessages(null, listOf(SavedMessage(ChatRole.USER, "what is this file?")))
-        val chat = model.addChat(null)!!
-        model.setDraft(null, "and then")
-        model.setFolded(null, CardSection.INPUT, true)
+        model.setMessages(CANVAS_ROOT, listOf(SavedMessage(ChatRole.USER, "what is this file?")))
+        val chat = model.addChat(CANVAS_ROOT)!!
+        model.setDraft(CANVAS_ROOT, "and then")
+        model.setFolded(CANVAS_ROOT, CardSection.INPUT, true)
         assertTrue(store.save(model.session))
         val loaded = store.load("root")!!
         assertEquals(model.session, loaded)
@@ -145,9 +145,54 @@ class CanvasSessionStoreTest {
         assertEquals("what is this file?", loaded.root.chats.first().messages.single().text)
 
         Files.writeString(directory.resolve("older.json"), """{"version":1,"session":{"id":"older","rootPath":"src/A.kt"}}""")
-        assertEquals(CanvasRootState(), store.load("older")!!.root)
+        assertEquals(canvasRootCard("src/A.kt"), store.load("older")!!.root)
     }
 
+    @Test
+    fun `sessions saved with a separate root state migrate into a root card and save in the unified form`() {
+        Files.createDirectories(directory)
+        Files.writeString(directory.resolve("legacy.json"), """
+            {"version":1,"session":{"id":"legacy","rootPath":"src","title":"src","created":1,"updated":2,"directoryInitialized":true,
+              "root":{"chats":[{"id":"chat-1","title":"Chat 1","messages":[{"role":"USER","text":"what is here?"}]},{"id":"c9","title":"Chat 2"}],
+                "activeChatId":"c9","folded":["SUMMARY"],"summary":"The sources.","gapSummaries":[{"first":0,"last":1,"hash":3,"text":"Lists."}]},
+              "cards":[
+                {"id":"seed","kind":"SYMBOL","symbol":{"filePath":"src/A.kt","name":"A.kt","kind":"FILE"},"filePath":"src/A.kt","text":"class A",
+                  "wholeFile":true,"openedBy":"DIRECTORY"},
+                {"id":"pick","kind":"SELECTION","start":2,"end":5,"line":1,"filePath":"src/A.kt","text":"A"},
+                {"id":"deep","parentId":"seed","kind":"SELECTION","filePath":"src/A.kt","text":"class"}
+              ]}}
+        """.trimIndent())
+        val store = CanvasSessionStore(directory)
+        val session = store.load("legacy")!!
+        val root = session.root
+        assertEquals(CardKind.ROOT, root.kind)
+        assertEquals("directory", session.rootKind)
+        assertEquals(listOf("chat-1", "c9"), root.chats.map { it.id })
+        assertEquals("c9", root.activeChatId)
+        assertEquals("what is here?", root.chats.first().messages.single().text)
+        assertEquals(setOf(CardSection.SUMMARY), root.folded)
+        assertEquals("The sources.", root.summary)
+        assertEquals(listOf(GapSummary(0, 1, 3, "Lists.")), root.gapSummaries)
+        assertEquals(listOf(CANVAS_ROOT, "seed", "pick", "deep"), session.cards.map { it.id })
+        assertEquals(listOf(null, CANVAS_ROOT, CANVAS_ROOT, "seed"), session.cards.map { it.parentId })
+        assertTrue("A directory's starting file stays a seed", session.card("seed")!!.isDirectorySeed)
+        assertEquals(listOf(CanvasSessionEntry("legacy", "src", "src", 2, 3)), store.list())
+
+        assertTrue(store.save(session))
+        val saved = Files.readString(directory.resolve("legacy.json"))
+        assertTrue(saved, saved.startsWith("{\"version\":2,"))
+        assertFalse("The root state lives in the root card", saved.contains("\"root\":"))
+        assertEquals(session, store.load("legacy"))
+    }
+
+    @Test
+    fun `the root card keeps no snapshot of the root file`() {
+        val store = CanvasSessionStore(directory)
+        val session = session("bare", "src/Main.kt", 10).let { it.copy(cards = listOf(it.root.copy(text = "fun main() {}")) + it.cards.drop(1)) }
+        assertTrue(store.save(session))
+        assertFalse(Files.readString(directory.resolve("bare.json")).contains("fun main() {}"))
+        assertEquals("", store.load("bare")!!.root.text)
+    }
     @Test
     fun `autosave writes only the latest requested state, once`() = runBlocking {
         val store = CanvasSessionStore(directory)
@@ -169,5 +214,25 @@ class CanvasSessionStoreTest {
         } finally {
             scope.cancel()
         }
+    }
+
+    @Test
+    fun `card sizes round trip, each dimension optional, and older cards have none`() {
+        val store = CanvasSessionStore(directory)
+        val base = session("sized", "src/Main.kt", 10)
+        val sized = base.copy(cards = listOf(base.root.copy(size = CardSize(width = 700))) +
+            base.cards[1].copy(size = CardSize(640, 900)) + base.cards[2].copy(size = CardSize(height = 300)))
+        assertTrue(store.save(sized))
+        val loaded = store.load("sized")!!
+        assertEquals(sized, loaded)
+        assertEquals(listOf(CardSize(width = 700), CardSize(640, 900), CardSize(height = 300)), loaded.cards.map { it.size })
+        Files.writeString(directory.resolve("lean.json"), """
+            {"version":2,"session":{"id":"lean","rootPath":"src/A.kt","cards":[
+              {"id":"root","kind":"ROOT","filePath":"src/A.kt"},
+              {"id":"a","parentId":"root","kind":"SELECTION","filePath":"src/A.kt","text":"x"},
+              {"id":"b","parentId":"root","kind":"SELECTION","filePath":"src/A.kt","text":"y","width":10,"height":99999}]}}
+        """.trimIndent())
+        val lean = store.load("lean")!!
+        assertEquals(listOf(null, null, CardSize(CARD_MIN_WIDTH, CARD_MAX_HEIGHT)), lean.cards.map { it.size })
     }
 }

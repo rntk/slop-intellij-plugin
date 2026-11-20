@@ -47,17 +47,17 @@ class SourceChainActionsTest : FileEditorManagerTestCase() {
         val manager = FileEditorManager.getInstance(project)
         try {
             PlatformTestUtil.waitWithEventsDispatching("Canvas should load", { panel.ready }, 30)
-            fun open(parentId: String?, name: String): CanvasCard {
+            fun open(parentId: String, name: String): CanvasCard {
                 val link = panel.controller.source(parentId)!!.links.first { link ->
                     link.targets.any { panel.controller.node(it)?.name?.substringBefore('(') == name }
                 }
                 val target = link.targets.first { panel.controller.node(it)?.name?.substringBefore('(') == name }
                 return background { panel.controller.openSymbol(parentId, link.range.first, link.range.last + 1, target) }
             }
-            val entry = open(null, "entry")
+            val entry = open(CANVAS_ROOT, "entry")
             val helper = open(entry.id, "helper")
-            open(null, "helper") // A sibling chain must stay out of the new tab.
-            panel.model.setSummary(null, "File summary")
+            open(CANVAS_ROOT, "helper") // A sibling chain must stay out of the new tab.
+            panel.model.setSummary(CANVAS_ROOT, "File summary")
             panel.model.setSummary(entry.id, "Entry summary")
             panel.model.setSummary(helper.id, "Helper summary")
             panel.cardViews.getValue(helper.id).menuActions().single { it.label == "Side by side" }.run()

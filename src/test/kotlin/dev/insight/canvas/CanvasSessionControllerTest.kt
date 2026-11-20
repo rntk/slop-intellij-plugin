@@ -68,16 +68,58 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         error("No link to $name among ${source.links.map { it.targets.map { id -> node(id)?.name } }}")
     }
 
-    private fun CanvasSessionController.open(parentId: String?, name: String): CanvasCard {
+    private fun CanvasSessionController.open(parentId: String, name: String): CanvasCard {
         val (link, target) = link(source(parentId)!!, name)
         return background { openSymbol(parentId, link.range.first, link.range.last + 1, target) }
+    }
+
+    fun testDirectoryCanvasLinksRelatedFilesAndKeepsStandaloneFilesOnRestore() {
+        val a = myFixture.addFileToProject("scope/A.java", "class A { void run() { B.help(); } }")
+        myFixture.addFileToProject("scope/B.java", "class B { static void help() {} }")
+        myFixture.addFileToProject("scope/nested/Isolated.java", "class Isolated {}")
+        myFixture.addFileToProject("scope/notes.txt", "Notes for the directory")
+        myFixture.addFileToProject("Outside.java", "class Outside { void run() { B.help(); } }")
+        val directory = a.virtualFile.parent
+        val opened = background { openCanvasSessionFile(project, directory, store = null) }!!
+        val services = CanvasSessionServices(null, { error("No summary requested") }) { _, _ -> error("No chat requested") }
+        val panel = CanvasSessionPanel(project, opened, opened.session, services) {}
+        val saved = try {
+            PlatformTestUtil.waitWithEventsDispatching("The directory should open", { panel.ready }, 30)
+            val cards = panel.model.cards.drop(1).associateBy { it.title }
+            assertEquals(setOf("A.java", "B.java", "Isolated.java", "notes.txt"), cards.keys)
+            assertEquals(cards.getValue("A.java").id, cards.getValue("B.java").parentId)
+            assertEquals(CANVAS_ROOT, cards.getValue("Isolated.java").parentId)
+            assertEquals(CANVAS_ROOT, cards.getValue("notes.txt").parentId)
+            assertEquals("Notes for the directory", panel.controller.source(cards.getValue("notes.txt").id)?.text)
+            assertEquals(cards.size + 1, panel.cardViews.size)
+            panel.model.session
+        } finally {
+            Disposer.dispose(panel)
+        }
+        val storePath = Files.createTempDirectory("directory-canvas")
+        try {
+            val store = CanvasSessionStore(storePath)
+            assertTrue(store.save(saved))
+            val restored = store.load(saved.id)!!
+            assertTrue(restored.directoryInitialized)
+            assertEquals(saved.cards, restored.cards)
+            val reopened = CanvasSessionPanel(project, opened, restored, services) {}
+            try {
+                PlatformTestUtil.waitWithEventsDispatching("The saved directory should open", { reopened.ready }, 30)
+                assertEquals(saved.cards.map { it.id }, reopened.cardViews.keys.toList())
+            } finally {
+                Disposer.dispose(reopened)
+            }
+        } finally {
+            storePath.toFile().deleteRecursively()
+        }
     }
 
     fun testExternalDocumentationAttachesWithoutLanguageSupportAndRestoresItsSnapshot() {
         val sourceFile = myFixture.configureByText("Flow.java", source)
         val canvas = controller(sourceFile, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val method = canvas.open(null, "entry")
+        val method = canvas.open(CANVAS_ROOT, "entry")
         val path = Files.createTempFile("canvas-documentation-", ".md")
         try {
             Files.writeString(path, "# Documentation\nThis method starts the workflow.")
@@ -104,8 +146,8 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val bytes = java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(bitmap, "png", it) }.toByteArray()
         val image = java.util.Base64.getEncoder().encodeToString(bytes)
         val model = CanvasSessionModel(CanvasSession.new("Flow.java"))
-        val picture = model.attach(null, "/missing/screenshot.png", "", CanvasAttachment("image/png", bytes.size.toLong(), image))
-        val text = model.attach(null, document.virtualFile.path, document.text, CanvasAttachment("text/markdown", document.textLength.toLong()))
+        val picture = model.attach(CANVAS_ROOT, "/missing/screenshot.png", "", CanvasAttachment("image/png", bytes.size.toLong(), image))
+        val text = model.attach(CANVAS_ROOT, document.virtualFile.path, document.text, CanvasAttachment("text/markdown", document.textLength.toLong()))
         val services = CanvasSessionServices(null, { error("Attachments should not request code summaries") }) { _, _ ->
             error("No chat requested")
         }
@@ -134,21 +176,21 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(source, root.text)
         assertEquals(0, root.firstLine)
 
-        val entry = canvas.open(null, "entry")
+        val entry = canvas.open(CANVAS_ROOT, "entry")
         assertEquals(CardKind.SYMBOL, entry.kind)
         assertEquals("entry", entry.symbol!!.name.substringBefore('('))
         assertEquals(1, entry.anchor.line)
         assertEquals(1, entry.firstLine)
         assertTrue(entry.text, entry.text.contains("helper();"))
-        assertEquals("Opening the same link again shows the open card", entry.id, canvas.open(null, "entry").id)
-        assertEquals(1, canvas.model.cards.size)
+        assertEquals("Opening the same link again shows the open card", entry.id, canvas.open(CANVAS_ROOT, "entry").id)
+        assertEquals(2, canvas.model.cards.size)
 
         val entrySource = canvas.source(entry.id)!!
         assertEquals(entry.text, entrySource.text)
         val helper = canvas.open(entry.id, "helper")
         assertEquals(entry.id, helper.parentId)
         assertTrue(helper.text.contains("int x = 1;"))
-        assertEquals(listOf(entry.id, helper.id), canvas.model.chain(helper.id).map { it.id })
+        assertEquals(listOf(CANVAS_ROOT, entry.id, helper.id), canvas.model.chain(helper.id).map { it.id })
 
         val start = entrySource.text.indexOf("helper();")
         val selection = canvas.openSelection(entry.id, start, start + "helper();".length)!!
@@ -157,7 +199,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals(2, selection.anchor.line)
         assertEquals(2, selection.firstLine)
         assertTrue("The selection keeps the call's link", canvas.source(selection.id)!!.links.isNotEmpty())
-        assertNull("Blank selections open nothing", canvas.openSelection(null, 0, 0))
+        assertNull("Blank selections open nothing", canvas.openSelection(CANVAS_ROOT, 0, 0))
 
         // Reopening resolves each symbol again from a fresh graph.
         val restored = controller(file, canvas.model.session)
@@ -196,7 +238,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", source)
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val entry = canvas.open(null, "entry")
+        val entry = canvas.open(CANVAS_ROOT, "entry")
         val helper = canvas.open(entry.id, "helper")
         val start = canvas.source(entry.id)!!.text.indexOf("helper();")
         val selection = canvas.openSelection(entry.id, start, start + "helper();".length)!!
@@ -216,7 +258,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals("What else?", expanded.draft)
         assertNull(expanded.summary)
         assertFalse(CardSection.SOURCE in expanded.folded)
-        assertEquals("The original link still finds this card", entry.id, canvas.open(null, "entry").id)
+        assertEquals("The original link still finds this card", entry.id, canvas.open(CANVAS_ROOT, "entry").id)
         assertEquals("The child moves to the same call in the full file", source.indexOf("helper();"),
             canvas.model.card(helper.id)!!.anchor.startOffset)
         assertEquals("The same call still finds its existing child", helper.id, canvas.open(entry.id, "helper").id)
@@ -237,7 +279,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", source)
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val entry = canvas.open(null, "entry")
+        val entry = canvas.open(CANVAS_ROOT, "entry")
         val messages = listOf(SavedMessage(ChatRole.USER, "Why?"), SavedMessage(ChatRole.ASSISTANT, "It delegates."))
         canvas.model.setMessages(entry.id, messages)
         val (link, target) = canvas.link(canvas.source(entry.id)!!, "helper")
@@ -252,11 +294,11 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
 
         val root = background { canvas.refresh() }
         assertTrue(root.text.contains("int y = 2;"))
-        assertSame(root, canvas.source(null))
+        assertSame(root, canvas.source(CANVAS_ROOT))
         val entryNow = canvas.source(entry.id)!!
         assertEquals(CANVAS_SOURCE_CHANGED, entryNow.notice)
         assertTrue(entryNow.text.contains("int y = 2;"))
-        assertEquals(entry.id, canvas.model.cards.single().id)
+        assertEquals(entry.id, canvas.model.cards.drop(1).single().id)
         assertEquals(messages, canvas.model.card(entry.id)!!.messages)
         assertTrue("The snapshot follows the current code", canvas.model.card(entry.id)!!.text.contains("int y = 2;"))
         val helper = canvas.open(entry.id, "helper")
@@ -277,10 +319,10 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
-            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "entry")
-            val job = panel.openSymbol(null, link, target)
+            val (link, target) = panel.controller.link(panel.controller.source(CANVAS_ROOT)!!, "entry")
+            val job = panel.openSymbol(CANVAS_ROOT, link, target)
             PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
-            val card = panel.model.cards.single()
+            val card = panel.model.cards.drop(1).single()
             val messages = listOf(SavedMessage(ChatRole.USER, "Why?"), SavedMessage(ChatRole.ASSISTANT, "It delegates."))
             panel.model.setMessages(card.id, messages)
             val view = panel.cardViews.getValue(card.id)
@@ -300,14 +342,14 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertSame("The card view and its chat stay", view, panel.cardViews.getValue(card.id))
             assertEquals(messages, view.card.messages)
             assertTrue(view.sourcePane!!.source.text.contains("int y = 2;"))
-            val rootPane = (rootSource.body as Container).components.single() as CanvasSourcePane
+            val rootPane = panel.rootSourcePane!!
             assertTrue(rootPane.source.text.contains("int y = 2;"))
             assertFalse("The patch no longer numbers the edited file", rootSource.diffTab.isVisible)
 
             val (helperLink, helper) = panel.controller.link(panel.controller.source(card.id)!!, "helper")
             val next = panel.openSymbol(card.id, helperLink, helper)
             PlatformTestUtil.waitWithEventsDispatching("A card should open from the refreshed code", { next.isCompleted }, 30)
-            assertEquals(2, panel.model.cards.size)
+            assertEquals(3, panel.model.cards.size)
         } finally {
             Disposer.dispose(panel)
         }
@@ -323,7 +365,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", "class Flow { void entry() { Other.target(); } }")
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val target = canvas.open(null, "target")
+        val target = canvas.open(CANVAS_ROOT, "target")
         assertFalse(canvas.source(target.id)!!.text.contains("sibling"))
         background { canvas.expandToFile(target.id) }
         assertEquals(other.text, canvas.source(target.id)!!.text)
@@ -342,7 +384,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", source)
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val entry = canvas.open(null, "entry")
+        val entry = canvas.open(CANVAS_ROOT, "entry")
         assertFalse("Nothing on the canvas links to it yet", canvas.source(entry.id)!!.links.flatMap { it.targets }
             .any { canvas.node(it)?.name?.startsWith("unused") == true })
 
@@ -374,7 +416,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
         val start = source.indexOf("helper();")
-        val selection = canvas.openSelection(null, start, start + "helper();".length)!!
+        val selection = canvas.openSelection(CANVAS_ROOT, start, start + "helper();".length)!!
         val child = canvas.open(selection.id, "helper")
         background { canvas.expandToFile(selection.id) }
         assertEquals(source, canvas.source(selection.id)!!.text)
@@ -388,7 +430,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", large)
         val canvas = controller(file, CanvasSession.new("Flow.java"))
         background { canvas.loadRoot() }
-        val entry = canvas.open(null, "entry")
+        val entry = canvas.open(CANVAS_ROOT, "entry")
         background { canvas.expandToFile(entry.id) }
         val expanded = canvas.model.card(entry.id)!!
         assertTrue(expanded.textTruncated)
@@ -403,9 +445,9 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("Flow.java", source)
         val long = (1..400).joinToString("") { "line $it of the file\n" }
         val anchor = long.indexOf("line 300 ")
-        val parent = CanvasCard("long", null, CardKind.SELECTION, CardAnchor(0, 5, 0), null, "Flow.java", 0, long)
+        val parent = CanvasCard("long", CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 5, 0), null, "Flow.java", 0, long)
         val child = CanvasCard("child", "long", CardKind.SELECTION, CardAnchor(anchor, anchor + 4, 299), null, "Flow.java", 0, "child\n")
-        val session = CanvasSession.new("Flow.java").copy(cards = listOf(parent, child))
+        val session = CanvasSession.new("Flow.java").let { it.copy(cards = it.cards + parent + child) }
         val services = CanvasSessionServices(null, { error("No summary requested") },
             summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
         val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
@@ -428,11 +470,11 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
 
     fun testRestoresSmallZoomAndCanZoomBackIn() {
         val file = myFixture.configureByText("Flow.java", source)
-        val card = CanvasCard("selection", null, CardKind.SELECTION, CardAnchor(0, source.length, 0),
+        val card = CanvasCard("selection", CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, source.length, 0),
             null, "Flow.java", 0, source, summary = "A saved summary with wrapping text. ".repeat(50),
             chats = listOf(CanvasChat(messages = listOf(SavedMessage(ChatRole.ASSISTANT,
                 "A saved answer with wrapping text. ".repeat(50))))))
-        val session = CanvasSession.new("Flow.java").copy(view = CanvasView(0.05, 300, 200), cards = listOf(card))
+        val session = CanvasSession.new("Flow.java").let { it.copy(view = CanvasView(0.05, 300, 200), cards = it.cards + card) }
         val services = CanvasSessionServices(null, { error("No summary requested") },
             summaryTools = { emptyList() }) { _, _ -> error("No chat requested") }
         val panel = CanvasSessionPanel(project, sessionFile(file, session), session, services) {}
@@ -443,8 +485,8 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             val viewport = panel.canvas.parent as javax.swing.JViewport
             PlatformTestUtil.waitWithEventsDispatching("The saved scroll position should be restored",
                 { viewport.viewPosition == java.awt.Point(300, 200) }, 30)
-            assertEquals(card.summary, panel.model.cards.single().summary)
-            assertEquals(card.messages, panel.model.cards.single().messages)
+            assertEquals(card.summary, panel.model.cards.drop(1).single().summary)
+            assertEquals(card.messages, panel.model.cards.drop(1).single().messages)
             panel.zoomTo(1.0)
             assertEquals(1.0, panel.zoom, 0.001)
         } finally {
@@ -466,13 +508,13 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
-            val root = panel.controller.source(null)!!
+            val root = panel.controller.source(CANVAS_ROOT)!!
             val (_, target) = panel.controller.link(root, "entry")
             val link = root.links.filter { target in it.targets }
                 .minWith(compareBy({ it.range.first }, { it.range.last - it.range.first }))
-            val job = panel.openSymbol(null, link, target)
+            val job = panel.openSymbol(CANVAS_ROOT, link, target)
             PlatformTestUtil.waitWithEventsDispatching("The reader's card should open", { job.isCompleted }, 30)
-            val entry = panel.model.cards.single()
+            val entry = panel.model.cards.drop(1).single()
             assertEquals(CardOpenedBy.USER, entry.openedBy)
             val tools = canvasTools(panel.actions, entry.id, maxOpened = 10)
             fun call(name: String, arguments: JsonObject = JsonObject()) = background {
@@ -499,7 +541,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
 
             call("open_symbol", args("card" to "root", "name" to "entry"))
             call("show_card", args("card" to entry.id))
-            assertEquals("Revealing existing cards opens no new cards", 2, panel.model.cards.size)
+            assertEquals("Revealing existing cards opens no new cards", 3, panel.model.cards.size)
             assertEquals(CardOpenedBy.USER, panel.model.card(entry.id)!!.openedBy)
             assertFalse(badge(entry.id).isVisible)
             val helperAgain = background { panel.controller.openSymbol(entry.id, helper.anchor.startOffset,
@@ -548,15 +590,15 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             }
             fun sections(opened: CanvasSessionPanel): List<CanvasFoldSection> =
                 (opened.canvas.components.single { it.name == "canvas-root" } as Container)
-                    .components.filterIsInstance<CanvasFoldSection>()
+                    .components.filterIsInstance<CanvasFoldSection>().filter { it.section != CardSection.USAGES }
             val opened = open(CanvasSession.new("Flow.java"))
             assertEquals(0, calls.get())
             assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT),
                 sections(opened).map { it.section })
             for (section in sections(opened)) {
-                opened.model.toggleFolded(null, section.section)
+                opened.model.toggleFolded(CANVAS_ROOT, section.section)
                 assertFalse(section.body.isVisible)
-                opened.model.toggleFolded(null, section.section)
+                opened.model.toggleFolded(CANVAS_ROOT, section.section)
                 assertTrue(section.body.isVisible)
             }
             assertEquals(0, calls.get())
@@ -570,8 +612,8 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
                 { opened.model.session.root.summary != null }, 30)
             assertEquals(1, calls.get())
             assertEquals("The Flow file.", opened.model.session.root.summary)
-            opened.model.setFolded(null, CardSection.SOURCE, true)
-            opened.model.setFolded(null, CardSection.CHAT, true)
+            opened.model.setFolded(CANVAS_ROOT, CardSection.SOURCE, true)
+            opened.model.setFolded(CANVAS_ROOT, CardSection.CHAT, true)
             val saved = opened.model.session
             assertTrue(store.save(saved))
             Disposer.dispose(opened)
@@ -600,7 +642,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
             val rootSections = (panel.canvas.components.single { it.name == "canvas-root" } as Container)
-                .components.filterIsInstance<CanvasFoldSection>()
+                .components.filterIsInstance<CanvasFoldSection>().filter { it.section != CardSection.USAGES }
             assertEquals(listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT),
                 rootSections.map { it.section })
             val tabs = rootSections.single { it.section == CardSection.SOURCE } as CanvasSourceSection
@@ -611,17 +653,17 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals("Diff · +1 −1", tabs.diffTab.text)
             assertTrue(tabs.diffTab.isVisible)
             assertFalse("The source shows first", tabs.showsDiff)
-            assertTrue(body.components.single() is CanvasSourcePane)
+            assertSame(panel.rootSourcePane, (body.components.single() as Container).components.single())
             click(tabs.diffTab)
             assertTrue("One tab shows at a time", body.components.single() is CanvasDiffPane)
             click(tabs.diffTab)
             assertFalse("The shown tab folds the section", body.isVisible)
             click(tabs.title)
-            assertTrue("The other tab shows, unfolded", body.isVisible && body.components.single() is CanvasSourcePane)
+            assertTrue("The other tab shows, unfolded", body.isVisible && body.components.single() !is CanvasDiffPane)
 
             fun open(name: String): CanvasCardView {
-                val (link, target) = panel.controller.link(panel.controller.source(null)!!, name)
-                val job = panel.openSymbol(null, link, target)
+                val (link, target) = panel.controller.link(panel.controller.source(CANVAS_ROOT)!!, name)
+                val job = panel.openSymbol(CANVAS_ROOT, link, target)
                 PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
                 return panel.cardViews.getValue(panel.model.cards.last().id)
             }
@@ -657,28 +699,28 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
             val chat = panel.rootChat!!
-            assertTrue(panel.model.cards.isEmpty())
+            assertEquals(1, panel.model.cards.size)
             chat.send("What does this file do?")
             PlatformTestUtil.waitWithEventsDispatching("The root chat should answer",
                 { panel.model.session.root.messages.any { it.role == ChatRole.ASSISTANT } }, 30)
-            assertEquals(listOf<Pair<String?, String>>(null to "What does this file do?"), asked.toList())
+            assertEquals(listOf<Pair<String?, String>>(CANVAS_ROOT to "What does this file do?"), asked.toList())
             assertEquals(listOf(ChatRole.NOTICE, ChatRole.USER, ChatRole.ASSISTANT), panel.model.session.root.messages.map { it.role })
             assertEquals("Ask about the file Flow.java.", panel.model.session.root.messages.first().text.substringBefore(" I read"))
 
             val first = panel.model.session.root.activeChatId
             chat.input.text = "Root draft"
-            val second = panel.model.addChat(null)!!
+            val second = panel.model.addChat(CANVAS_ROOT)!!
             assertEquals("", chat.input.text)
-            panel.model.selectChat(null, first)
+            panel.model.selectChat(CANVAS_ROOT, first)
             assertEquals("Root draft", chat.input.text)
             assertEquals(listOf(first, second.id), panel.model.session.root.chats.map { it.id })
 
-            val tools = canvasTools(panel.actions, null, maxOpened = 10)
+            val tools = canvasTools(panel.actions, CANVAS_ROOT, maxOpened = 10)
             background { tools.first { it.definition.name == "open_symbol" }.call(JsonObject().apply { addProperty("name", "entry") }) }
-            val opened = panel.model.cards.single()
-            assertNull(opened.parentId)
+            val opened = panel.model.cards.drop(1).single()
+            assertEquals(CANVAS_ROOT, opened.parentId)
             assertEquals(CardOpenedBy.LLM, opened.openedBy)
-            panel.model.toggleFolded(null, CardSection.CHAT)
+            panel.model.toggleFolded(CANVAS_ROOT, CardSection.CHAT)
             panel.canvas.doLayout()
             assertTrue("The card still sits right of the root file", panel.cardViews.getValue(opened.id).x > 0)
             assertTrue(store.save(panel.model.session))
@@ -714,10 +756,10 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
-            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "entry")
-            val job = panel.openSymbol(null, link, target)
+            val (link, target) = panel.controller.link(panel.controller.source(CANVAS_ROOT)!!, "entry")
+            val job = panel.openSymbol(CANVAS_ROOT, link, target)
             PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
-            val card = panel.model.cards.single()
+            val card = panel.model.cards.drop(1).single()
             val view = panel.cardViews.getValue(card.id)
             assertNotNull(view.sourcePane)
             Thread.sleep(300)
@@ -790,19 +832,19 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             panel.canvas.doLayout()
             assertTrue("The card sits right of the root file", view.x > 0 && view.width > 0)
 
-            val start = panel.controller.source(null)!!.text.indexOf("void helper")
-            panel.controller.openSelection(null, start, start + 11)
-            assertEquals(2, panel.cardViews.size)
+            val start = panel.controller.source(CANVAS_ROOT)!!.text.indexOf("void helper")
+            panel.controller.openSelection(CANVAS_ROOT, start, start + 11)
+            assertEquals(3, panel.cardViews.size)
             panel.close(card.id)
-            assertEquals(1, panel.cardViews.size)
+            assertEquals(2, panel.cardViews.size)
         } finally {
             Disposer.dispose(panel)
         }
         assertNull(switched)
         val saved = store.load(session.id)!!
-        assertEquals(1, saved.cards.size)
-        assertEquals(CardKind.SELECTION, saved.cards.single().kind)
-        assertEquals("void helper", saved.cards.single().text)
+        assertEquals(2, saved.cards.size)
+        assertEquals(CardKind.SELECTION, saved.cards.last().kind)
+        assertEquals("void helper", saved.cards.last().text)
     }
 
     fun testFindUsagesJoinsSitesByFileAndTheFileCardListsThemToScrollTo() {
@@ -817,10 +859,10 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should load", { panel.ready }, 30)
-            val (link, target) = panel.controller.link(panel.controller.source(null)!!, "work")
-            val openWork = panel.openSymbol(null, link, target)
+            val (link, target) = panel.controller.link(panel.controller.source(CANVAS_ROOT)!!, "work")
+            val openWork = panel.openSymbol(CANVAS_ROOT, link, target)
             PlatformTestUtil.waitWithEventsDispatching("The work card should open", { openWork.isCompleted }, 30)
-            val workCard = panel.model.cards.single()
+            val workCard = panel.model.cards.drop(1).single()
             val workView = panel.cardViews.getValue(workCard.id)
 
             fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
@@ -841,7 +883,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
 
             links(files.single() as Container).single().doClick()
             PlatformTestUtil.waitWithEventsDispatching("The file card should open with its usage sites", {
-                panel.model.cards.size == 2 && panel.model.cards.last().usages != null
+                panel.model.cards.size == 3 && panel.model.cards.last().usages != null
             }, 30)
             val fileCard = panel.model.cards.last()
             assertEquals(workCard.id, fileCard.parentId)
@@ -875,7 +917,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val canvas = controller(file, CanvasSession.new("Api.java"))
         background { canvas.loadRoot() }
         assertTrue("The root file links nested declarations down, not to their callers",
-            canvas.source(null)!!.links.none { it.definition })
+            canvas.source(CANVAS_ROOT)!!.links.none { it.definition })
 
         fun definition(card: CanvasCard): CanvasLink {
             val source = canvas.source(card.id)!!
@@ -883,7 +925,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(listOf(source.node), link.targets)
             return link
         }
-        val work = canvas.open(null, "work")
+        val work = canvas.open(CANVAS_ROOT, "work")
         val workName = definition(work)
         assertEquals("work", work.text.substring(workName.range.first, workName.range.last + 1))
         val callers = background { canvas.findUsages(workName.targets.single()) }
@@ -896,7 +938,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertEquals("The caller's call leads back down to the declaration", workName.targets,
             canvas.link(canvas.source(caller.id)!!, "work").second.let(::listOf))
 
-        val shape = canvas.open(null, "Shape")
+        val shape = canvas.open(CANVAS_ROOT, "Shape")
         val users = background { canvas.findUsages(definition(shape).targets.single()) }
         assertEquals("A type with no body still leads to its users", setOf("Api", "shape"),
             users.usages.map { canvas.node(it.owner)!!.name.substringBefore('(') }.toSet())
@@ -905,11 +947,11 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val kotlinCanvas = controller(kotlin, CanvasSession.new("Port.kt"))
         background { kotlinCanvas.loadRoot() }
         for (name in listOf("Port", "Svc", "go")) {
-            val (declared, target) = kotlinCanvas.source(null)!!.links.firstNotNullOf { link ->
+            val (declared, target) = kotlinCanvas.source(CANVAS_ROOT)!!.links.firstNotNullOf { link ->
                 link.targets.firstOrNull { id -> kotlinCanvas.node(id)!!.let { it.name.substringBefore('(') == name &&
                     (name == "go" || it.kind == dev.insight.graph.SymbolKind.CLASS) } }?.let { link to it }
             }
-            val card = background { kotlinCanvas.openSymbol(null, declared.range.first, declared.range.last + 1, target) }
+            val card = background { kotlinCanvas.openSymbol(CANVAS_ROOT, declared.range.first, declared.range.last + 1, target) }
             val link = kotlinCanvas.source(card.id)!!.links.singleOrNull { it.definition }
             assertNotNull("The $name card should link its own name to its callers: ${card.text}", link)
             assertEquals(name, card.text.substring(link!!.range.first, link.range.last + 1))
@@ -922,7 +964,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         val user = myFixture.addFileToProject("main.jsx", "import App from './App'\nexport function main() { App({}) }\n")
         val canvas = controller(app, CanvasSession.new("App.jsx"))
         background { canvas.loadRoot() }
-        val card = canvas.open(null, "App")
+        val card = canvas.open(CANVAS_ROOT, "App")
         val name = canvas.source(card.id)!!.links.single { it.definition }
         assertEquals("App", card.text.substring(name.range.first, name.range.last + 1))
         val users = background { canvas.findUsages(name.targets.single()) }
@@ -930,7 +972,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
 
         val importer = controller(user, CanvasSession.new("main.jsx"))
         background { importer.loadRoot() }
-        val (_, target) = importer.link(importer.source(null)!!, "App")
+        val (_, target) = importer.link(importer.source(CANVAS_ROOT)!!, "App")
         assertEquals("The import leads to the function, not the export statement", dev.insight.graph.SymbolKind.FUNCTION,
             importer.node(target)!!.kind)
     }
@@ -961,7 +1003,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue("Imports in the root file should link to their target declarations and file: $importedNames",
             importedNames.containsAll(setOf("Config", "Router", "types.ts")))
 
-        val startCard = canvas.open(null, "start")
+        val startCard = canvas.open(CANVAS_ROOT, "start")
         val paramLink = canvas.source(startCard.id)!!.links.first {
             startCard.text.substring(it.range.first, it.range.last + 1) == "config" &&
                 it.targets.any { id -> canvas.node(id)?.kind == dev.insight.graph.SymbolKind.PARAMETER }
@@ -986,8 +1028,8 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
         try {
             panel.setSize(1200, 800)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
-            panel.controller.openSelection(null, 0, text.length)
-            val view = panel.cardViews.values.single()
+            panel.controller.openSelection(CANVAS_ROOT, 0, text.length)
+            val view = panel.cardViews.values.last()
             fun layout(container: Container) {
                 container.doLayout()
                 container.components.filterIsInstance<Container>().forEach(::layout)
@@ -1038,13 +1080,13 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             panel.setSize(1400, 900)
             PlatformTestUtil.waitWithEventsDispatching("The root file should be shown", { panel.ready }, 30)
             assertEquals(listOf("Flow.java"), panel.trailTitles)
-            fun open(parentId: String?, name: String): CanvasCard {
+            fun open(parentId: String, name: String): CanvasCard {
                 val (link, target) = panel.controller.link(panel.controller.source(parentId)!!, name)
                 val job = panel.openSymbol(parentId, link, target)
                 PlatformTestUtil.waitWithEventsDispatching("The card should open", { job.isCompleted }, 30)
                 return panel.model.cards.last()
             }
-            val entry = open(null, "entry")
+            val entry = open(CANVAS_ROOT, "entry")
             val helper = open(entry.id, "helper")
             assertEquals("Opening a card leads the trail to it", listOf("Flow.java", entry.title, helper.title), panel.trailTitles)
 
@@ -1102,7 +1144,7 @@ class CanvasSessionControllerTest : LightJavaCodeInsightFixtureTestCase() {
             assertTrue(inspected, inspected.contains("Calls (1):\n  #$helperId function helper"))
             assertTrue(inspected, inspected.contains("Summary (model-written): Sets x to one."))
             assertEquals("Chain 1: #$entryId entry() → #$helperId helper()", graph.callPaths(entryId, emptyList(), helperId, 8))
-            assertEquals(1, panel.model.cards.size)
+            assertEquals(2, panel.model.cards.size)
         } finally {
             Disposer.dispose(panel)
         }

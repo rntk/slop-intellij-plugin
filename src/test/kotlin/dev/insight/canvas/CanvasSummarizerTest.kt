@@ -39,7 +39,7 @@ class CanvasSummarizerTest {
         assertEquals(1, requests.size)
         assertEquals(listOf("Summarizing selection…"), progress)
 
-        val card = CanvasCard("a", null, CardKind.SYMBOL, CardAnchor(0, 1, 0), SymbolRef("src/App.kt", "run", "FUNCTION", "App"), "src/App.kt", 9, "fun run() {}")
+        val card = CanvasCard("a", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 1, 0), SymbolRef("src/App.kt", "run", "FUNCTION", "App"), "src/App.kt", 9, "fun run() {}")
         val derived = CanvasSummaryInput.of(card, "src/Main.kt", listOf(card))
         assertEquals("1. src/Main.kt, the file the developer opened\n2. this function, opened from a reference at src/Main.kt:1", derived.chain)
         assertEquals("FUNCTION", derived.symbolKind)
@@ -47,7 +47,7 @@ class CanvasSummarizerTest {
 
     @Test
     fun `the reading path quotes each reference and is left out for a card opened at its own declaration`() {
-        val run = CanvasCard("a", null, CardKind.SYMBOL, CardAnchor(0, 3, 4), SymbolRef("src/App.kt", "run", "FUNCTION", "App"),
+        val run = CanvasCard("a", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 3, 4), SymbolRef("src/App.kt", "run", "FUNCTION", "App"),
             "src/App.kt", 9, "fun run() {\n    store.save()\n}")
         val save = CanvasCard("b", "a", CardKind.SYMBOL, CardAnchor(16, 20, 10), SymbolRef("src/Store.kt", "save", "FUNCTION", "Store"),
             "src/Store.kt", 2, "fun save() {\n    persist()\n}")

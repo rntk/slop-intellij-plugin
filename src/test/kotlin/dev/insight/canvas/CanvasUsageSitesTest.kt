@@ -42,7 +42,7 @@ class CanvasUsageSitesTest {
     @Test
     fun `a card keeps its usage sites until cleared`() {
         val model = CanvasSessionModel(CanvasSession.new("src/Api.kt"), ids = { "c1" })
-        val card = model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Api.kt", 0, "fun")
+        val card = model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Api.kt", 0, "fun")
         val sites = CardUsages("work", listOf(CardUsageSite(2, true, "run()")))
         model.setUsages(card.id, sites)
         assertEquals(sites, model.card(card.id)!!.usages)
@@ -52,7 +52,7 @@ class CanvasUsageSitesTest {
 
     @Test
     fun `the chat context names the usage sites listed on a card`() {
-        val card = CanvasCard("c1", null, CardKind.SYMBOL, CardAnchor(0, 0, 0), SymbolRef("src/Client.kt", "Client.kt", "FILE"),
+        val card = CanvasCard("c1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 0, 0), SymbolRef("src/Client.kt", "Client.kt", "FILE"),
             "src/Client.kt", 0, "class Client", wholeFile = true,
             usages = CardUsages("work", listOf(CardUsageSite(2, true, "run()"), CardUsageSite(9, false, "Client"))))
         val context = canvasChainContext("src/Api.kt", listOf(card))

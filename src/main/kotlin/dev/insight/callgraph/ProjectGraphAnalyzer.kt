@@ -140,6 +140,10 @@ object ProjectGraphAnalyzer {
 
     fun build(project: Project, progress: (String) -> Unit = {}): CallGraphResult = buildFiles(project, null, progress = progress)
 
+    /** Resolves all bodies in the selected files, keeping boundary declarations for references. Read action only. */
+    internal fun buildFileSet(project: Project, files: List<PsiFile>): CallGraphResult =
+        buildFiles(project, files, foldFunctions = false) { ProgressManager.checkCanceled() }
+
     /**
      * A file-local snapshot; target bodies are never resolved, and neither are functions folded inside [scope] unless
      * [foldFunctions] is false. Read action only.

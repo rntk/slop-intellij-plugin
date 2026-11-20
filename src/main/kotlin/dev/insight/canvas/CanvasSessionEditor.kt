@@ -47,7 +47,7 @@ import javax.swing.JPanel
 /**
  * The ports a canvas session talks to: where sessions are saved ([store], null when the project has none), the model
  * that writes summaries ([complete], created per summary) and each chat's backend, created per reply for a card, or
- * for the root file when the card id is null, with the canvas [CanvasActions] its tools use. Tests pass fakes.
+ * for the root card too, with the canvas [CanvasActions] its tools use. Tests pass fakes.
  */
 internal class CanvasSessionServices(
     val store: CanvasSessionStore?,
@@ -55,7 +55,7 @@ internal class CanvasSessionServices(
     val summaryTools: () -> List<dev.insight.agent.ChatTool> = { emptyList() },
     val maxContextChars: () -> Int = { 64_000 },
     val symbolSummaries: SymbolSummaryCache? = null,
-    val chatBackend: (CanvasActions, String?) -> ChatBackend,
+    val chatBackend: (CanvasActions, String) -> ChatBackend,
 ) {
     companion object {
         fun forProject(project: Project) = CanvasSessionServices(
@@ -69,9 +69,9 @@ internal class CanvasSessionServices(
             LlmChatBackend(ChatSettings.getInstance().createClient()::complete,
                 projectContextTools(project) + canvas.select(*CANVAS_CHAT_TOOLS.toTypedArray()), canvasChatPrompt,
                 configuredChatBudget(ChatProfile.FOCUSED),
-                context = { canvasChainContext(actions.session, cardId, actions.source(null)) },
+                context = { canvasChainContext(actions.session, cardId, actions.source(CANVAS_ROOT)) },
                 images = { canvasContextImages(actions.session, cardId) },
-                contextLabel = if (cardId == null) "Canvas file" else "Canvas chain",
+                contextLabel = if (cardId == CANVAS_ROOT) "Canvas file" else "Canvas chain",
                 registry = canvas)
         }
     }
@@ -85,7 +85,7 @@ internal class CanvasSessionFile(
     val source: VirtualFile,
     val rootPath: String,
     val exploration: ProgressiveSchematic,
-    val root: Int,
+    val root: Int?,
     session: CanvasSession,
     val diffs: Map<String, String> = emptyMap(),
 ) : LightVirtualFile("Canvas: ${source.name}") {
@@ -140,8 +140,9 @@ class OpenCanvasSessionAction : AnAction() {
                     log.warn("Canvas session source is unavailable or unsupported: ${file.path}")
                     showNotice("This file cannot be shown. Check that its language plugin is enabled and the file is included in project content.")
                 } else {
-                    manager.openFile(opened, true)
-                    log.info("Opened canvas session ${opened.session.id} for ${file.path}")
+                    val existing = manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file }
+                    manager.openFile(existing ?: opened, true)
+                    log.info("Opened canvas session ${(existing ?: opened).session.id} for ${file.path}")
                 }
             } catch (e: CancellationException) {
                 log.info("Canvas session cancelled for ${file.path}", e)
@@ -172,8 +173,10 @@ internal suspend fun openCanvasSessionFile(project: Project, file: VirtualFile,
     val (exploration, root) = openExploration(project, file) ?: return null
     val rootPath = relativePath(project, file.path)
     val session = saved ?: withContext(Dispatchers.IO) {
-        store?.list(rootPath)?.firstNotNullOfOrNull { store.load(it.id) }
-    } ?: CanvasSession.new(rootPath)
+        store?.list(rootPath)?.firstNotNullOfOrNull { entry ->
+            store.load(entry.id)?.takeIf { it.directoryInitialized == file.isDirectory }
+        }
+    } ?: CanvasSession.new(rootPath, file.name, directory = file.isDirectory)
     return CanvasSessionFile(file, rootPath, exploration, root, session, diffs)
 }
 

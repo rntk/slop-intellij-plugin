@@ -5,14 +5,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanvasSourceChainTest {
-    private val entry = CanvasCard("entry", null, CardKind.SYMBOL, CardAnchor(10, 15, 4),
+    private val entry = CanvasCard("entry", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(10, 15, 4),
         SymbolRef("App.kt", "run", "FUNCTION", line = 9), "App.kt", 9, "fun run() {\n    save()\n}")
     private val selection = CanvasCard("selection", entry.id, CardKind.SELECTION, CardAnchor(12, 18, 10),
         null, "App.kt", 10, "    save()")
     private val save = CanvasCard("save", selection.id, CardKind.SYMBOL, CardAnchor(4, 8, 10),
         SymbolRef("Store.kt", "save", "FUNCTION", line = 20), "Store.kt", 20, "fun save() {\n    persist()\n}")
     private val unrelated = entry.copy(id = "other", filePath = "Other.kt")
-    private val session = CanvasSession.new("Main.kt").copy(cards = listOf(entry, selection, save, unrelated))
+    private val session = CanvasSession.new("Main.kt").let { it.copy(cards = it.cards + listOf(entry, selection, save, unrelated)) }
 
     @Test fun `only the selected chain opens root first at each outgoing anchor and the leaf source range`() {
         val chain = canvasSourceChain(session, save.id)
@@ -42,7 +42,7 @@ class CanvasSourceChainTest {
     }
 
     @Test fun `generated summaries belong to each visit even when cards show the same file`() {
-        val summarized = session.copy(root = session.root.copy(summary = "Starts the app."), cards = listOf(
+        val summarized = session.copy(cards = listOf(session.root.copy(summary = "Starts the app."),
             entry.copy(summary = "Runs the flow."), selection, save.copy(summary = "Saves the result."),
             unrelated.copy(summary = "A different branch.")))
         assertEquals(listOf("Starts the app.", "Runs the flow.", null, "Saves the result."),

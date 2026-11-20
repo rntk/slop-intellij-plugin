@@ -6,38 +6,38 @@ package dev.insight.canvas
  */
 data class CanvasContextBudget(val current: Int = 12_000, val ancestor: Int = 1_500, val total: Int = 24_000)
 
-/** The handle tools use for the root file, which is not a card. */
-const val CANVAS_ROOT = "root"
-
 /** The handle tools use for the card the chat belongs to. */
 const val CANVAS_CURRENT = "current"
 
 /**
- * The chat context of [cardId] in [session]: its chain from the root file down to the card, or for null the root
- * file's own chat context. [root] is the root file's shown source, quoted where the first card was opened from it.
+ * The chat context of [cardId] in [session]: its chain from the root file down to the card, or for the root card the
+ * root file's own chat context. [root] is the root file's shown source, quoted where the first card was opened from it.
  */
-fun canvasChainContext(session: CanvasSession, cardId: String?, root: CanvasSource? = null,
+fun canvasChainContext(session: CanvasSession, cardId: String, root: CanvasSource? = null,
     budget: CanvasContextBudget = CanvasContextBudget()): String {
-    if (cardId == null) {
-        val opened = session.children(null)
-        return canvasRootContext(session.rootPath, root, budget, opened, elsewhere = session.cards.size - opened.size) + canvasAttachmentContext(session, cardId)
+    if (cardId == session.root.id) {
+        val opened = session.children(cardId)
+        return canvasRootContext(session.rootPath, root, budget, opened, elsewhere = session.cards.size - 1 - opened.size,
+            rootKind = session.rootKind) + canvasAttachmentContext(session, cardId)
     }
     val chain = session.chain(cardId)
     val onChain = chain.map { it.id }.toSet()
     val opened = session.children(cardId)
-    return canvasChainContext(session.rootPath, chain, budget, root,
-        opened = opened, elsewhere = session.cards.count { it.id !in onChain && it.parentId != cardId }) + canvasAttachmentContext(session, cardId)
+    // The root heads every chain and is named on its own, without repeating its source.
+    return canvasChainContext(session.rootPath, chain.filter { it.kind != CardKind.ROOT }, budget, root,
+        opened = opened, elsewhere = session.cards.count { it.id !in onChain && it.parentId != cardId },
+        rootKind = session.rootKind) + canvasAttachmentContext(session, cardId)
 }
 
 /**
- * What a card's chat knows of the canvas, and nothing more: the root file, then each card of [chain] (root-first,
+ * What a card's chat knows of the canvas, and nothing more: the root file, then each card of [chain] (below the root,
  * ending with the card the chat belongs to) with its id, kind, name, place, the line it was opened from, its summary
  * and numbered source. The current card's source is kept first; ancestors nearest the current card are kept before
  * those nearer the root. [opened] are the cards opened from the current card; [elsewhere] counts the cards on other
  * chains, which are left out so unrelated exploration does not crowd the context.
  */
 fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: CanvasContextBudget = CanvasContextBudget(),
-    root: CanvasSource? = null, opened: List<CanvasCard> = emptyList(), elsewhere: Int = 0): String {
+    root: CanvasSource? = null, opened: List<CanvasCard> = emptyList(), elsewhere: Int = 0, rootKind: String = "file"): String {
     var left = budget.total
     val sources = arrayOfNulls<String>(chain.size)
     for (index in chain.indices.reversed()) {
@@ -46,17 +46,19 @@ fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: Canvas
         sources[index] = numberedSource(card, limit).also { left -= it.length }
     }
     return buildString {
-        append("Root file: $rootPath (card \"$CANVAS_ROOT\"; its source is not repeated here)\n")
-        append("Chain from the root file down to the current card; each card was opened from the source of the one above it.\n")
+        append("Root $rootKind: $rootPath (card \"$CANVAS_ROOT\"; its source is not repeated here)\n")
+        if (rootKind == "directory") append("Chain of cards leading to the current card.\n")
+        else append("Chain from the root file down to the current card; each card was opened from the source of the one above it.\n")
         chain.forEachIndexed { index, card ->
             append("\n")
             append(if (index == chain.lastIndex) "Current card" else "Step ${index + 1}")
             append(" [card ${card.id}]: ${describe(card)}\n")
             val parent = chain.getOrNull(index - 1)
-            val from = if (parent == null) "the root file" else "card ${parent.id}"
+            val from = if (parent == null) "the root $rootKind" else "card ${parent.id}"
             val quoted = if (parent == null) root?.let { shownLine(it.text, it.firstLine, card.anchor.line) }
                 else shownLine(parent.text, parent.firstLine, card.anchor.line)
-            append("Opened from: $from, line ${card.anchor.line + 1}${quoted?.let { ": `$it`" }.orEmpty()}\n")
+            if (card.isDirectorySeed) append("Starting file in the directory.\n")
+            else append("Opened from: $from, line ${card.anchor.line + 1}${quoted?.let { ": `$it`" }.orEmpty()}\n")
             card.usages?.let { usages ->
                 append("Usages of ${usages.targetName} in this file: ")
                 append(usages.sites.joinToString(", ") { "line ${it.line + 1} (${if (it.call) "call" else "use"} in ${it.owner})" })
@@ -82,15 +84,21 @@ fun canvasChainContext(rootPath: String, chain: List<CanvasCard>, budget: Canvas
  * the cards [opened] from it, and how many cards lie further down ([elsewhere]), which canvas_overview lists.
  */
 fun canvasRootContext(rootPath: String, root: CanvasSource?, budget: CanvasContextBudget = CanvasContextBudget(),
-    opened: List<CanvasCard> = emptyList(), elsewhere: Int = 0): String = buildString {
-    append("Root file: $rootPath (card \"$CANVAS_ROOT\")\n")
-    append("This chat belongs to the root file itself, so \"$CANVAS_CURRENT\" names the root file; there is no chain above it.\n\n")
-    append("Current card [$CANVAS_ROOT]: file ${rootPath.substringAfterLast('/')} at $rootPath\n")
-    append(if (root == null || root.text.isEmpty()) "[File source: not shown yet; use read_file path $rootPath]\n"
-        else numberedText("File source", root.text, root.firstLine, rootPath, minOf(budget.current, budget.total)))
+    opened: List<CanvasCard> = emptyList(), elsewhere: Int = 0, rootKind: String = "file"): String = buildString {
+    append("Root $rootKind: $rootPath (card \"$CANVAS_ROOT\")\n")
+    append("This chat belongs to the root $rootKind itself, so \"$CANVAS_CURRENT\" names the root $rootKind; there is no chain above it.\n\n")
+    append("Current card [$CANVAS_ROOT]: $rootKind ${rootPath.substringAfterLast('/')} at $rootPath\n")
+    val caption = if (rootKind == "directory") "Files in the directory" else "File source"
+    append(when {
+        root != null && root.text.isNotEmpty() -> numberedText(caption, root.text, root.firstLine, rootPath, minOf(budget.current, budget.total))
+        rootKind == "directory" -> "[No files listed]\n"
+        else -> "[File source: not shown yet; use read_file path $rootPath]\n"
+    })
     if (opened.isNotEmpty()) {
-        append("\nCards opened from the root file: ")
-        append(opened.joinToString("; ") { "${it.title} [card ${it.id}] from line ${it.anchor.line + 1}" })
+        append("\nCards opened from the root $rootKind: ")
+        append(opened.joinToString("; ") {
+            "${it.title} [card ${it.id}]" + if (it.isDirectorySeed) "" else " from line ${it.anchor.line + 1}"
+        })
         append("\n")
     }
     if (elsewhere > 0) {
@@ -102,7 +110,7 @@ fun canvasRootContext(rootPath: String, root: CanvasSource?, budget: CanvasConte
 /** `symbol function save in Store at path:10-20`, or `selection at path:3-5`. */
 internal fun describe(card: CanvasCard): String {
     val symbol = card.symbol
-    val what = if (card.kind == CardKind.ATTACHMENT) "attachment ${card.title}" else if (card.wholeFile) "file ${card.title}" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
+    val what = if (card.kind == CardKind.ROOT) "${card.rootKind} ${card.title}" else if (card.kind == CardKind.ATTACHMENT) "attachment ${card.title}" else if (card.wholeFile) "file ${card.title}" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
         else "${symbol.kind.lowercase().ifEmpty { "symbol" }} ${symbol.name}" + symbol.container.takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
     return "$what at ${if (card.filePath.isEmpty()) "no source (outside the project)" else card.location}"
 }
@@ -197,7 +205,7 @@ val canvasChatPrompt = """
 """.trimIndent()
 
 /** The first notice of a card's chat, naming what it is about. */
-fun canvasWelcome(card: CanvasCard): String = when {
+fun canvasWelcome(card: CanvasCard): String = if (card.kind == CardKind.ROOT) canvasRootWelcome(card.filePath, card.rootKind) else when {
     card.kind == CardKind.ATTACHMENT -> "Ask about the attached file ${card.filePath}."
     card.wholeFile -> "Ask about the file ${card.filePath}."
     card.kind == CardKind.SELECTION || card.symbol == null -> "Ask about the selected code at ${card.location}."
@@ -205,12 +213,13 @@ fun canvasWelcome(card: CanvasCard): String = when {
 } + CANVAS_WELCOME_TOOLS
 
 /** The first notice of the root file's chat. */
-fun canvasRootWelcome(rootPath: String): String = "Ask about the file $rootPath.$CANVAS_WELCOME_TOOLS"
+fun canvasRootWelcome(rootPath: String, rootKind: String = "file"): String = "Ask about the $rootKind $rootPath.$CANVAS_WELCOME_TOOLS"
 
 internal const val CANVAS_WELCOME_TOOLS = " I read the project to answer and can open cards on the canvas to show you code."
 
 /** The empty input's short prompt for [card]'s chat; the welcome notice says the rest. */
 fun canvasAskPlaceholder(card: CanvasCard): String = when {
+    card.kind == CardKind.ROOT -> canvasRootAskPlaceholder(card.filePath)
     card.kind == CardKind.ATTACHMENT -> "Ask about this attachment…"
     card.wholeFile -> "Ask about ${card.filePath.substringAfterLast('/')}…"
     card.kind == CardKind.SELECTION || card.symbol == null -> "Ask about this selection…"

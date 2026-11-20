@@ -43,6 +43,10 @@ internal class ProgressiveSchematic private constructor(
         }
     }
 
+    suspend fun ensureSourcesCurrent() = mutex.withLock {
+        smartReadAction(project) { checkSources() }
+    }
+
     /** Resolves the scope [id]; [whole] also resolves the functions folded inside it, as a reader of all its lines needs. */
     suspend fun expand(id: Int, whole: Boolean = false) = mutex.withLock {
         if (id in openedWhole || !whole && id in opened) return@withLock
@@ -107,6 +111,21 @@ internal class ProgressiveSchematic private constructor(
     companion object {
         /** Attaches indexed outward exploration to an existing graph. Read action only. */
         fun fromResult(project: Project, result: CallGraphResult) = ProgressiveSchematic(project, result, fileStamps(result))
+
+        fun empty(project: Project) = ProgressiveSchematic(project,
+            CallGraphResult(CallGraph(emptyList(), emptySet(), false, projectGraph = true), emptyList()), emptyMap())
+
+        /** Prepares one shared graph for files opened together. */
+        suspend fun openFiles(project: Project, files: List<VirtualFile>): ProgressiveSchematic = smartReadAction(project) {
+            val manager = PsiManager.getInstance(project)
+            val psiFiles = files.filter { it.isValid && !it.fileType.isBinary }.mapNotNull(manager::findFile)
+            val result = ProjectGraphAnalyzer.buildFileSet(project, psiFiles)
+            val paths = files.mapTo(hashSetOf()) { it.path }
+            fromResult(project, result).apply {
+                openedWhole += result.graph.nodes.filter { it.kind == dev.insight.graph.SymbolKind.FILE && it.filePath in paths }
+                    .map { it.id }
+            }
+        }
 
         suspend fun open(project: Project, file: VirtualFile): ProgressiveSchematic? = smartReadAction(project) {
             val psi = PsiManager.getInstance(project).findFile(file) ?: return@smartReadAction null

@@ -53,15 +53,15 @@ internal interface CanvasCardHost {
     fun close(cardId: String)
     fun expandToFile(cardId: String)
     fun openSideBySide(cardId: String)
-    fun attachFile(cardId: String?)
+    fun attachFile(cardId: String)
     /** Opens the whole [file] from [cardId]'s usage list, listing its usage sites of [targetName] on that card. */
     fun openUsageFile(cardId: String, file: CanvasUsageFile, targetName: String)
     /** Scrolls card [cardId]'s source to 0-based document [line] and brings it into view. */
     fun revealLine(cardId: String, line: Int)
-    /** Summarizes the gaps of [cardId]'s source (the root file's for null) that have no summary yet. */
-    fun summarizeGaps(cardId: String?)
-    /** Whether the gaps of [cardId], or of the root file for null, are being summarized. */
-    fun summarizingGaps(cardId: String?): Boolean
+    /** Summarizes the gaps of [cardId]'s source that have no summary yet. */
+    fun summarizeGaps(cardId: String)
+    /** Whether the gaps of [cardId] are being summarized. */
+    fun summarizingGaps(cardId: String): Boolean
     fun navigate(source: CanvasSource?, path: String, line: Int)
     /** Moves keyboard focus back to the canvas surface. */
     fun focusCanvas()
@@ -73,19 +73,50 @@ internal val CANVAS_CARD_BORDER = JBColor(Color(0xA4, 0xAA, 0xB6), Color(0x6A, 0
 /** The canvas behind the cards, a shade apart from the panel background the cards are drawn on. */
 internal val CANVAS_BACKGROUND = JBColor(Color(0xE9, 0xEB, 0xEF), Color(0x1A, 0x1B, 0x1E))
 
+/** A card's width at zoom 1: the default of the cards opened on the canvas. */
+internal const val CARD_WIDTH = 1030
+/** The tallest a card's source or diff grows at zoom 1 before it scrolls within the card. */
+internal const val CARD_SOURCE_MAX_HEIGHT = 640
+/** The root card's widest and narrowest width at zoom 1, its source following the file's longest lines between them. */
+internal const val ROOT_MAX_WIDTH = 1267
+internal const val ROOT_CHAT_MIN_WIDTH = 576
+
+/** How wide a card is laid out on the canvas, at zoom 1. */
+internal sealed interface CanvasCardWidth {
+    /** Always [width]. */
+    data class Fixed(val width: Int) : CanvasCardWidth
+    /** As wide as its source and header want, at least [min] (room to chat) and with source lines cut to [max]. */
+    data class Content(val min: Int, val max: Int) : CanvasCardWidth
+
+    companion object {
+        /** The root card follows its file's width; other cards share one width, so columns line up. */
+        fun of(card: CanvasCard): CanvasCardWidth =
+            if (card.kind == CardKind.ROOT) Content(ROOT_CHAT_MIN_WIDTH, ROOT_MAX_WIDTH) else Fixed(CARD_WIDTH)
+    }
+}
+
 /**
  * One card on the canvas: a header with the card's kind, name and place, then its summary, source (with a Diff tab for
  * a file opened from a diff), chat history and chat input, each folded with its toggle as saved in the card. The card's
- * chat keeps its history in the model.
+ * chat keeps its history in the model. The [CardKind.ROOT] card shows the root file (or lists a directory's files) and
+ * cannot be closed.
  */
 internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasCard) : JPanel(StackLayout { zoomScaled(4, host.zoom) }), Disposable {
     var appearance = 1f
+    private val isRoot = initial.kind == CardKind.ROOT
+    /** How [layOut] sizes the card. */
+    val widthPolicy: CanvasCardWidth = CanvasCardWidth.of(initial)
+    /** Resizes the card by its right and bottom edges. */
+    val resize = CanvasCardResize(this, host)
+    /** Whether the reader is dragging one of the card's edges. */
+    val resizing: Boolean get() = resize.active
 
     override fun paint(g: Graphics) {
         val copy = g.create() as Graphics2D
         try {
             copy.composite = AlphaComposite.SrcOver.derive(appearance)
             super.paint(copy)
+            paintCanvasResizeGrip(copy, width, height, host.zoom)
         } finally {
             copy.dispose()
         }
@@ -157,6 +188,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         isOpaque = false
         add(sourcePane
         ?: host.zoomFont(JLabel(when (initial.kind) {
+            CardKind.ROOT -> if (initial.isDirectoryRoot) "No project files." else "No source to show."
             CardKind.SYMBOL -> "No source to show."
             CardKind.ATTACHMENT -> "Use Open file to view this attachment in the IDE."
             CardKind.SELECTION -> "No text."
@@ -168,7 +200,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     var diffPane: CanvasDiffPane? = null
         private set
     private val sourceSection = CanvasSourceSection(host, id, canvasSourceTitle(initial), sourceBody)
-    private val titleLabel = host.zoomFont(CanvasTitleLabel(card.title, kindIcon(card)),
+    private val titleLabel = host.zoomFont(CanvasTitleLabel(card.title, icon(card)),
         UIUtil.getLabelFont().deriveFont(Font.BOLD))
     private val openedByLabel = host.zoomFont(JLabel("LLM").apply {
         name = "canvas-opened-by-llm"
@@ -189,18 +221,18 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         get() = card.kind != CardKind.ATTACHMENT && !card.wholeFile && source?.file != null && !source?.text.isNullOrEmpty() &&
             card.symbol?.kind != "FILE"
     internal val header = CanvasCardHeader(host, id, titleLabel, openedByLabel, ::menuActions,
-        "Close this card and the cards opened from it") { host.close(id) }
+        "Close this card and the cards opened from it", if (isRoot) null else ({ host.close(id) }))
 
     // The history section is created first, so the chat view can name it as messages arrive.
     private val historyBody = JPanel(BorderLayout()).apply { isOpaque = false }
     private val history = CanvasFoldSection(host, id, CardSection.CHAT, "Chat", historyBody)
-    private val chat = CanvasChatView(host, id, initial, { canvasWelcome(card) }, canvasAskPlaceholder(initial), history)
+    internal val chat = CanvasChatView(host, id, initial, { canvasWelcome(card) }, canvasAskPlaceholder(initial), history)
     val input get() = chat.input
 
     init {
         isOpaque = true
         background = UIUtil.getPanelBackground()
-        name = "canvas-card-$id"
+        name = if (isRoot) "canvas-root" else "canvas-card-$id"
         add(header)
         add(meta)
         add(summary)
@@ -210,30 +242,44 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         add(history)
         add(chat.ask)
         addMouseWheelListener(host.sourceListener::wheel)
+        // Before the card joins the canvas, which observes the gestures of components that listen to the mouse.
+        resize.install()
         update(initial)
         applyZoom()
     }
 
     /** The entries of the card's ⋯ menu (also on right-click), for its current state. */
     fun menuActions(): List<CanvasCardAction> = buildList {
+        val what = if (isRoot) card.rootKind else "card"
+        if (isRoot) add(CanvasCardAction("canvas-summarize", summaryRetry.text, "Summarize this $what",
+            enabled = summaryJob?.isActive != true && summarizedText().isNotBlank()) { requestSummary() })
         if (canFindUsages) add(CanvasCardAction("canvas-find-usages", usagesLabel(), "Find project callers and references to this symbol",
             enabled = usageSearch?.isActive != true) { showUsages() })
         if (canExpand) add(CanvasCardAction("canvas-expand", "Expand to file", "Show the whole file here, with links and this card's chat") {
             host.expandToFile(id)
         })
         addAll(canvasGapActions(host, id, source, card.gapSummaries))
-        add(CanvasCardAction("canvas-side-by-side", "Side by side", "Open the chain from the root file to this card in a new tab") {
+        // The root heads every chain, so it has no chain of its own to open beside it.
+        if (!isRoot) add(CanvasCardAction("canvas-side-by-side", "Side by side", "Open the chain from the root file to this card in a new tab") {
             host.openSideBySide(id)
         })
-        add(CanvasCardAction("canvas-source", if (card.kind == CardKind.ATTACHMENT) "Open file" else "Go to source",
-            "Open ${card.location} in the editor", enabled = card.filePath.isNotEmpty()) { host.navigate(source, card.filePath, card.firstLine) })
-        add(CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this card",
+        // A directory's listing is not a file to go to.
+        if (!card.isDirectoryRoot) add(CanvasCardAction("canvas-source", if (card.kind == CardKind.ATTACHMENT) "Open file" else "Go to source",
+            "Open ${card.location} in the editor", enabled = card.filePath.isNotEmpty(), separated = isRoot) {
+            host.navigate(source, card.filePath, card.firstLine)
+        })
+        add(CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this $what",
             separated = true) { host.attachFile(id) })
-        add(CanvasCardAction("canvas-new-chat", "New chat", "Start another conversation about this card") { host.model.addChat(id) })
-        add(CanvasCardAction("canvas-close-card", "Close card", "Close this card and the cards opened from it", separated = true) {
+        add(CanvasCardAction("canvas-new-chat", "New chat", "Start another conversation about this $what") { host.model.addChat(id) })
+        if (card.size != null) add(CanvasCardAction("canvas-reset-size", "Reset size",
+            "Return this $what to its automatic width and height") { host.model.resize(id, null) })
+        if (!isRoot) add(CanvasCardAction("canvas-close-card", "Close card", "Close this card and the cards opened from it", separated = true) {
             host.close(id)
         })
     }
+
+    /** The text a summary is written from: the card's snapshot, or the root file's source, which is not saved. */
+    private fun summarizedText(): String = if (isRoot) source?.text.orEmpty() else card.text
 
     private fun usagesLabel() = when {
         usagesLoaded -> if (usages.isVisible) "Hide usages" else "Show usages"
@@ -244,7 +290,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Shows [next], the card's state in the model. */
     fun update(next: CanvasCard) {
         // The input already shows a typed draft; keystrokes need no card refresh or canvas layout.
-        val draftOnly = rendered && renderedSummaryPending == (summaryJob?.isActive == true) &&
+        val draftOnly = rendered && host.controller.source(id) === source && renderedSummaryPending == (summaryJob?.isActive == true) &&
             card.activeChatId == next.activeChatId &&
             card.copy(chats = next.chats) == next && card.chats.size == next.chats.size &&
             card.chats.zip(next.chats).all { (a, b) -> a.copy(draft = b.draft) == b }
@@ -278,7 +324,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         rendered = true
         titleLabel.text = next.title
         openedByLabel.isVisible = next.openedBy == CardOpenedBy.LLM
-        titleLabel.icon = if (next.wholeFile) AllIcons.FileTypes.Any_type else kindIcon(next)
+        titleLabel.icon = icon(next)
         titleLabel.toolTipText = "${canvasKindLabel(next)} ${next.title}"
         val shown = if (next.wholeFile && fresh != null) next.copy(text = fresh.text, textTruncated = false) else next
         metaLabel.text = "${canvasKindLabel(next)} · ${canvasCardMeta(shown)}"
@@ -297,7 +343,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         summaryStatus.text = when {
             pending -> "Summarizing…"
             next.summaryError != null -> next.summaryError
-            next.summary == null && next.text.isBlank() -> "No source to summarize."
+            next.summary == null && summarizedText().isBlank() -> "No source to summarize."
             else -> ""
         }
         summaryStatus.foreground = if (next.summaryError != null && !pending) NOTICE else UIUtil.getContextHelpForeground()
@@ -307,7 +353,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             next.summary != null -> "Summarize again"
             else -> "Summarize"
         }
-        summaryRetry.parent?.isVisible = !pending && next.text.isNotBlank()
+        summaryRetry.parent?.isVisible = !pending && summarizedText().isNotBlank()
         revalidate()
         repaint()
         host.cardResized()
@@ -325,8 +371,11 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** Asks for the summary, only on request and never when a card opens; the result is saved in the model. */
     fun requestSummary() {
         val current = host.model.card(id) ?: return
-        if (summaryJob?.isActive == true || current.text.isBlank()) return
-        val input = CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
+        val summarized = if (isRoot) summarizedText() else current.text
+        if (summaryJob?.isActive == true || summarized.isBlank()) return
+        val input = if (isRoot) CanvasSummaryInput(CardKind.SYMBOL, current.title, current.filePath, source?.firstLine ?: 0, summarized,
+            symbolKind = current.rootKind.uppercase(), language = host.controller.rootFile.fileType.displayName)
+        else CanvasSummaryInput.of(current, host.model.session.rootPath, host.model.chain(id), language())
         val requestedSource = source
         val symbolSummaries = host.services.symbolSummaries
         val declaration = requestedSource?.takeIf { current.kind == CardKind.SYMBOL && !current.wholeFile }?.let {
@@ -460,6 +509,68 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         }
     }
 
+    /** The size the card is shown at: the one being dragged to while resizing, else the saved one. */
+    val shownSize: CardSize? get() = if (resizing) resize.live else card.size
+
+    /**
+     * Sizes the card for the canvas at the current zoom, as [widthPolicy] says unless the reader resized it, its source
+     * and diff scrolling within the card beyond their bounds; the canvas then only places it. A resized height is shared
+     * out as [canvasViewerMaxHeight] says.
+     */
+    fun layOut() {
+        val size = shownSize
+        val maxHeight = scaled(CARD_SOURCE_MAX_HEIGHT)
+        val userWidth = size?.width?.let { scaled(it.coerceIn(CARD_MIN_WIDTH, CARD_MAX_WIDTH)) }
+        val width = if (userWidth != null) userWidth.also { width -> bound(width - 2 * scaled(9), maxHeight) }
+        else when (val policy = widthPolicy) {
+            is CanvasCardWidth.Fixed -> scaled(policy.width).also { width -> bound(width - 2 * scaled(9), maxHeight) }
+            is CanvasCardWidth.Content -> {
+                bound(scaled(policy.max), maxHeight)
+                // Measured twice: the second time at its own width, after a zoom changed it.
+                setSize(contentWidth(policy).coerceAtLeast(1), maxOf(height, 1))
+                contentWidth(policy)
+            }
+        }
+        setSize(width, maxOf(height, 1))
+        setSize(width, preferredSize.height)
+        size?.height?.let { fitHeight(scaled(it.coerceIn(CARD_MIN_HEIGHT, CARD_MAX_HEIGHT)), maxHeight) }
+        validate()
+    }
+
+    /**
+     * Gives the shown viewer what [target] leaves after the card's other sections, measured at [autoMax]; measured
+     * again once, since a shorter viewer may gain or lose a scroll bar.
+     */
+    private fun fitHeight(target: Int, autoMax: Int) {
+        val viewer = shownViewer() ?: return
+        repeat(2) {
+            val chrome = height - viewer.preferredSize.height
+            val viewerMax = canvasViewerMaxHeight(target, chrome, scaled(CARD_VIEWER_MIN_HEIGHT), autoMax)
+            sourcePane?.maxHeight = viewerMax
+            diffPane?.maxHeight = viewerMax
+            setSize(width, preferredSize.height)
+        }
+    }
+
+    /** The source or diff viewer the card shows, or null when it shows neither (folded, an image, no text). */
+    private fun shownViewer(): JComponent? {
+        if (!sourceSection.body.isVisible) return null
+        val viewer: JComponent = (if (sourceSection.showsDiff) diffPane else sourcePane) ?: return null
+        return viewer.takeIf { it.isVisible && javax.swing.SwingUtilities.isDescendingFrom(it, this) }
+    }
+
+    private fun bound(width: Int, height: Int) {
+        sourcePane?.maxWidth = width
+        diffPane?.maxWidth = width
+        sourcePane?.maxHeight = height
+        diffPane?.maxHeight = height
+    }
+
+    /** As wide as the source, its diff or the header want, and wide enough to chat in, even beside a short, narrow file. */
+    private fun contentWidth(policy: CanvasCardWidth.Content): Int =
+        maxOf(sourcePane?.preferredSize?.width ?: 0, diffPane?.preferredSize?.width ?: 0, header.preferredSize.width,
+            scaled(policy.min)) + insets.left + insets.right
+
     /** Sizes beyond fonts, at the current zoom. */
     fun applyZoom() {
         updateBorder()
@@ -504,6 +615,13 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     private fun scaled(value: Int) = zoomScaled(value, host.zoom)
 
+    /** The root shows its file's own icon; other files a plain file icon, and symbols their kind's. */
+    private fun icon(card: CanvasCard): Icon = when {
+        card.kind == CardKind.ROOT -> host.controller.rootFile.fileType.icon ?: AllIcons.FileTypes.Any_type
+        card.wholeFile -> AllIcons.FileTypes.Any_type
+        else -> kindIcon(card)
+    }
+
     private companion object {
         val LOG = logger<CanvasCardView>()
         val NOTICE = JBColor(Color(160, 95, 20), Color(214, 165, 90))
@@ -525,10 +643,10 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 }
 
 /**
- * The gap entries of the ⋯ menu of card [cardId] (the root file's for null) showing [source]: summarize the gaps with no
+ * The gap entries of the ⋯ menu of card [cardId] showing [source]: summarize the gaps with no
  * summary among [summaries], and clear those shown. None for a source without gaps.
  */
-internal fun canvasGapActions(host: CanvasCardHost, cardId: String?, source: CanvasSource?, summaries: List<GapSummary>): List<CanvasCardAction> {
+internal fun canvasGapActions(host: CanvasCardHost, cardId: String, source: CanvasSource?, summaries: List<GapSummary>): List<CanvasCardAction> {
     if (source == null || source.gaps.isEmpty()) return emptyList()
     val running = host.summarizingGaps(cardId)
     val pending = source.unsummarizedGaps(summaries).size

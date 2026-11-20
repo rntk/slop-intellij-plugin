@@ -8,43 +8,24 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiManager
 import dev.insight.callgraph.ProgressiveSchematic
+import dev.insight.canvas.CANVAS_ROOT
 import dev.insight.canvas.CanvasSession
 import dev.insight.canvas.CanvasSessionController
 import dev.insight.canvas.CanvasSessionFile
 import dev.insight.canvas.CanvasSessionModel
 import dev.insight.canvas.openCanvasSessionFile
 import dev.insight.canvas.relativePath
-import dev.insight.graph.RelationKind
+import dev.insight.canvas.ConnectedFile
+import dev.insight.canvas.FileConnection
+import dev.insight.canvas.fileConnectionAnchor
+import dev.insight.canvas.fileConnectionForest
+import dev.insight.canvas.fileConnections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** A resolved cross-file relation, with declaration offsets on both sides for incoming as well as outgoing arrows. */
-internal data class DiffFileConnection(val from: String, val to: String, val fromOffset: Int, val toOffset: Int)
-internal data class RelatedDiffFile(val path: String, val parent: String, val offset: Int)
-
-/** Walk both directions, once per changed file. Each card is attached to the file that led to it. */
-internal fun relatedDiffFiles(root: String, connections: List<DiffFileConnection>): List<RelatedDiffFile> {
-    val neighbours = linkedMapOf<String, MutableList<Pair<String, Int>>>()
-    connections.forEach {
-        if (it.from != it.to) {
-            neighbours.getOrPut(it.from) { mutableListOf() } += it.to to it.fromOffset
-            neighbours.getOrPut(it.to) { mutableListOf() } += it.from to it.toOffset
-        }
-    }
-    val seen = hashSetOf(root)
-    val queue = ArrayDeque<String>().apply { add(root) }
-    return buildList {
-        while (queue.isNotEmpty()) {
-            val parent = queue.removeFirst()
-            neighbours[parent].orEmpty().sortedBy { it.first }.forEach { (path, offset) ->
-                if (seen.add(path)) {
-                    add(RelatedDiffFile(path, parent, offset))
-                    queue.add(path)
-                }
-            }
-        }
-    }
-}
+/** Walk both directions, opening only the changed files connected to the selected one. */
+internal fun relatedDiffFiles(root: String, connections: List<FileConnection>): List<ConnectedFile> =
+    fileConnectionForest(listOf(root), connections).drop(1)
 
 internal data class DiffCanvasSession(val file: CanvasSessionFile, val unavailable: List<String>)
 
@@ -61,7 +42,7 @@ internal suspend fun matchingDiffSources(project: Project, snapshot: ReviewSnaps
     }
 
 /** Changed files resolved whole in an exploration ([supported], by review path), and the relations between them. */
-internal data class DiffFileRelations(val supported: Map<String, VirtualFile>, val connections: List<DiffFileConnection>)
+internal data class DiffFileRelations(val supported: Map<String, VirtualFile>, val connections: List<FileConnection>)
 
 /**
  * Resolves every [eligible] changed file whole in [exploration] and collects the calls, references and inheritance
@@ -81,17 +62,7 @@ internal suspend fun relateDiffFiles(project: Project, snapshot: ReviewSnapshot,
                 "${review.path} changed while preparing the $view. Refresh the diff and retry."
             }
         }
-        val result = exploration.result
-        result.graph.edges.mapNotNull { edge ->
-            if (edge.kind !in setOf(RelationKind.CALL, RelationKind.REFERENCE, RelationKind.INHERITS)) return@mapNotNull null
-            val from = result.graph.nodes[edge.caller]
-            val to = result.graph.nodes[edge.callee]
-            if (from.unresolved || to.unresolved) return@mapNotNull null
-            val fromPath = byAbsolute[from.filePath] ?: return@mapNotNull null
-            val toPath = byAbsolute[to.filePath] ?: return@mapNotNull null
-            DiffFileConnection(fromPath, toPath, result.pointers.getOrNull(from.id)?.element?.textOffset ?: 0,
-                result.pointers.getOrNull(to.id)?.element?.textOffset ?: 0)
-        }.distinct()
+        fileConnections(exploration.result, byAbsolute)
     }
     return DiffFileRelations(supported, connections)
 }
@@ -120,14 +91,11 @@ internal suspend fun prepareDiffCanvasSession(project: Project, snapshot: Review
         controller.loadRoot()
         val cards = mutableMapOf<String, String>()
         for (related in relatedDiffFiles(path, connections)) {
-            val parent = cards[related.parent]
+            val parent = cards[related.parent] ?: CANVAS_ROOT
             val shown = checkNotNull(controller.source(parent))
-            // Prefer the actual reference site; incoming relations anchor at the referenced declaration.
-            val targetPath = supported.getValue(related.path).path
-            val link = shown.links.firstOrNull { link -> link.targets.any { controller.node(it)?.filePath == targetPath } }
-            val start = link?.range?.first ?: related.offset
-            val end = link?.range?.last?.plus(1) ?: start
-            val card = controller.openFile(parent, start, end, supported.getValue(related.path))
+            val target = supported.getValue(related.path)
+            val anchor = fileConnectionAnchor(shown, target.path, related.offset, controller::node)
+            val card = controller.openFile(parent, anchor.startOffset, anchor.endOffset, target)
             cards[related.path] = card.id
         }
         // Check source stamps again before handing this graph to the editor.

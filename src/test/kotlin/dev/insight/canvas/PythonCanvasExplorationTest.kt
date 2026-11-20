@@ -22,10 +22,10 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
         val file = myFixture.configureByText("entry.py", "def main():\n    pass\n")
         val opened = background { openCanvasSessionFile(project, file.virtualFile, store = null) }!!
         val path = relativePath(project, other.virtualFile.path)
-        val saved = CanvasCard("method", null, CardKind.SYMBOL, CardAnchor(0, 3, 0),
+        val saved = CanvasCard("method", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 3, 0),
             SymbolRef(path, "selected(self)", "FUNCTION"), path, 1, "old snapshot",
             summary = "Saved summary")
-        val session = CanvasSession.new("entry.py").copy(cards = listOf(saved))
+        val session = CanvasSession.new("entry.py").let { it.copy(cards = it.cards + saved) }
         val controller = CanvasSessionController(project, file.virtualFile, opened.exploration, opened.root,
             CanvasSessionModel(session))
         Disposer.register(testRootDisposable, controller)
@@ -33,7 +33,7 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
         val restored = controller.source(saved.id)!!
         assertNotNull("The saved method should resolve to live source", restored.node)
         assertTrue(restored.text, restored.text.contains("return used_call()"))
-        assertEquals(saved.summary, controller.model.cards.single().summary)
+        assertEquals(saved.summary, controller.model.cards.drop(1).single().summary)
         val names = opened.exploration.result.graph.nodes.map { it.name.substringBefore('(') }
         assertTrue(names.toString(), "used_call" in names)
         assertFalse("Restoring one card must not resolve unrelated bodies: $names", "unopened_call" in names)
@@ -60,14 +60,14 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
     }
 
     private fun CanvasSessionController.open(parent: CanvasCard?, text: String, name: String = text): CanvasCard {
-        val source = source(parent?.id)!!
+        val source = source(parent?.id ?: CANVAS_ROOT)!!
         val at = source.text.indexOf(text)
         assertTrue("Missing '$text' in ${source.text}", at >= 0)
         val link = linkAt(source.links, at + text.length - 1)
         assertNotNull("No link at '$text' in ${source.text}", link)
         val target = link!!.targets.singleOrNull { node(it)?.name?.substringBefore('(') == name }
         assertNotNull("No target '$name' at '$text': ${link.targets.map { node(it)?.name }}", target)
-        return background { openSymbol(parent?.id, link.range.first, link.range.last + 1, target!!) }
+        return background { openSymbol(parent?.id ?: CANVAS_ROOT, link.range.first, link.range.last + 1, target!!) }
     }
 
     fun testAttributeAssignmentCardKeepsConstructorAndConfigurationClickable() {
@@ -110,7 +110,7 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
         assertEquals("self.config = config", config.text.trim())
         val parameter = canvas.open(config, "= config", "config")
         assertTrue(parameter.text, parameter.text.contains("def __init__(self, config)"))
-        assertEquals(listOf(run.id, routes.id, config.id, parameter.id), canvas.model.chain(parameter.id).map { it.id })
+        assertEquals(listOf(CANVAS_ROOT, run.id, routes.id, config.id, parameter.id), canvas.model.chain(parameter.id).map { it.id })
 
         val initFromParameter = canvas.open(parameter, "__init__")
         assertTrue("The enclosing method on the parameter's line should be clickable",
@@ -119,7 +119,7 @@ class PythonCanvasExplorationTest : BasePlatformTestCase() {
         assertTrue("Finding usages of the parameter should find its uses in __init__",
             usages.usages.any { it.ownerName.startsWith("__init__") })
 
-        val rootSource = canvas.source(null)!!
+        val rootSource = canvas.source(CANVAS_ROOT)!!
         val importTarget = linkAt(rootSource.links, rootSource.text.indexOf("App"))
         assertNotNull("Imported class in the import statement should be clickable", importTarget)
         val importModule = linkAt(rootSource.links, rootSource.text.indexOf("service"))

@@ -42,7 +42,7 @@ class CanvasToolsTest {
     private inner class FakeCanvas : CanvasActions {
         val model = CanvasSessionModel(CanvasSession.new("src/Main.kt", now = 0), clock = { 0 },
             ids = generateSequence(1) { it + 1 }.map { "c$it" }.iterator()::next)
-        val sources = mutableMapOf<String?, CanvasSource>(null to CanvasSource(rootText, listOf(
+        val sources = mutableMapOf<String, CanvasSource>(CANVAS_ROOT to CanvasSource(rootText, listOf(
             CanvasLink(at(rootText, "App", 2), listOf(1), reference = true),
             CanvasLink(at(rootText, "run", 3), listOf(2)),
             CanvasLink(at(rootText, "log", 4), listOf(3, 4)),
@@ -50,7 +50,7 @@ class CanvasToolsTest {
         val shown = mutableListOf<String>()
 
         override val session get() = model.session
-        override fun source(cardId: String?) = sources[cardId]
+        override fun source(cardId: String) = sources[cardId]
         override fun target(id: Int) = targets[id]
         override suspend fun declarations(path: String, name: String) =
             targets.values.filter { it.path == path && it.name.substringBefore('(') == name }
@@ -64,7 +64,7 @@ class CanvasToolsTest {
             return CanvasUsageSearch(target, info.name, usages, false)
         }
 
-        override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int): CanvasCard {
+        override suspend fun openSymbol(parentId: String, start: Int, end: Int, target: Int): CanvasCard {
             val parent = sources.getValue(parentId)
             val info = targets.getValue(target)
             val (line, text) = texts.getValue(target)
@@ -79,7 +79,7 @@ class CanvasToolsTest {
             }
         }
 
-        override suspend fun openSelection(parentId: String?, start: Int, end: Int): CanvasCard {
+        override suspend fun openSelection(parentId: String, start: Int, end: Int): CanvasCard {
             val parent = sources.getValue(parentId)
             val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
             return model.open(parentId, CardKind.SELECTION, anchor, parent.path, anchor.line, parent.text.substring(start, end)).also {
@@ -87,7 +87,7 @@ class CanvasToolsTest {
             }
         }
 
-        override suspend fun openFile(parentId: String?, start: Int, end: Int, path: String): CanvasCard {
+        override suspend fun openFile(parentId: String, start: Int, end: Int, path: String): CanvasCard {
             if (path != "src/Log.kt") throw ToolInputException("No project file or directory at '$path'.")
             val parent = sources.getValue(parentId)
             val text = "fun log(s: String) {}\nfun log(i: Int) {}"
@@ -110,13 +110,13 @@ class CanvasToolsTest {
     @Test
     fun `open_symbol clicks a name in the root file and reopening it shows the open card`() {
         val canvas = FakeCanvas()
-        val first = canvas.model.open(null, CardKind.SYMBOL, CardAnchor(0, 3, 0), "src/Main.kt", 0, rootText, SymbolRef("src/Main.kt", "main", "FUNCTION"))
-        canvas.sources[first.id] = canvas.sources.getValue(null)
+        val first = canvas.model.open(CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 3, 0), "src/Main.kt", 0, rootText, SymbolRef("src/Main.kt", "main", "FUNCTION"))
+        canvas.sources[first.id] = canvas.sources.getValue(CANVAS_ROOT)
         val tools = canvasTools(canvas, first.id)
 
         val opened = tools.call("open_symbol", """{"card":"root","name":"run"}""")
         val card = canvas.model.cards.last()
-        assertEquals(null, card.parentId)
+        assertEquals(CANVAS_ROOT, card.parentId)
         assertEquals(2, card.anchor.line)
         assertEquals("""
             Opened card ${card.id} on the canvas: function run() at src/App.kt:2, from the root file line 3.
@@ -133,13 +133,13 @@ class CanvasToolsTest {
     @Test
     fun `the root file's chat takes the root file as its current card`() {
         val canvas = FakeCanvas()
-        val tools = canvasTools(canvas, null)
+        val tools = canvasTools(canvas, CANVAS_ROOT)
         assertTrue(tools.call("read_card").startsWith("Root file src/Main.kt\n"))
         tools.call("open_symbol", """{"name":"run"}""")
-        val card = canvas.model.cards.single()
-        assertNull(card.parentId)
+        val card = canvas.model.cards.drop(1).single()
+        assertEquals(CANVAS_ROOT, card.parentId)
         tools.call("open_declaration", """{"path":"src/Store.kt","name":"save"}""")
-        assertEquals("Cards it opens attach to the root file", listOf(null, null), canvas.model.cards.map { it.parentId })
+        assertEquals("Cards it opens attach to the root file", listOf(CANVAS_ROOT, CANVAS_ROOT), canvas.model.cards.drop(1).map { it.parentId })
         val overview = tools.call("canvas_overview")
         assertTrue(overview, overview.startsWith("Root file: src/Main.kt [root] (current card)\n"))
         assertFalse(overview, overview.contains("on the current chain"))
@@ -148,8 +148,8 @@ class CanvasToolsTest {
     @Test
     fun `a name leading to several declarations asks for a target, and list_symbols numbers them`() {
         val canvas = FakeCanvas()
-        val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
-        canvas.sources[main.id] = canvas.sources.getValue(null)
+        val main = canvas.model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
+        canvas.sources[main.id] = canvas.sources.getValue(CANVAS_ROOT)
         val tools = canvasTools(canvas, main.id)
         val error = tools.fails("open_symbol", """{"name":"log"}""")
         assertTrue(error, error.contains("1) log(String)") && error.contains("2) log(Int)"))
@@ -171,8 +171,8 @@ class CanvasToolsTest {
     @Test
     fun `open_selection opens whole lines without their indentation`() {
         val canvas = FakeCanvas()
-        val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
-        canvas.sources[main.id] = canvas.sources.getValue(null)
+        val main = canvas.model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
+        canvas.sources[main.id] = canvas.sources.getValue(CANVAS_ROOT)
         val tools = canvasTools(canvas, main.id)
         tools.call("open_selection", """{"start_line":2,"end_line":3}""")
         val selection = canvas.model.cards.last()
@@ -185,8 +185,8 @@ class CanvasToolsTest {
     @Test
     fun `open_declaration and open_file reach outside the chain, attached to the current card`() {
         val canvas = FakeCanvas()
-        runBlocking { canvas.openSymbol(null, at(rootText, "run", 3).first, at(rootText, "run", 3).last + 1, 2) }
-        val run = canvas.model.cards.single()
+        runBlocking { canvas.openSymbol(CANVAS_ROOT, at(rootText, "run", 3).first, at(rootText, "run", 3).last + 1, 2) }
+        val run = canvas.model.cards.drop(1).single()
         val tools = canvasTools(canvas, run.id)
 
         val opened = tools.call("open_declaration", """{"path":"src/Store.kt","name":"save"}""")
@@ -197,7 +197,7 @@ class CanvasToolsTest {
         assertTrue(tools.fails("open_declaration", """{"path":"src/Log.kt","name":"log"}""").contains("more than once"))
         tools.call("open_declaration", """{"path":"src/Log.kt","name":"log","line":2,"from_card":"root","from_line":4}""")
         val log = canvas.model.cards.last()
-        assertEquals(null, log.parentId)
+        assertEquals(CANVAS_ROOT, log.parentId)
         assertEquals(3, log.anchor.line)
         assertEquals(1, log.firstLine)
         assertTrue(tools.fails("open_declaration", """{"path":"src/Log.kt","name":"nothing"}""").contains("search_text"))
@@ -212,21 +212,21 @@ class CanvasToolsTest {
     @Test
     fun `opening tools share a per-reply allowance while reading tools do not count`() {
         val canvas = FakeCanvas()
-        val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
-        canvas.sources[main.id] = canvas.sources.getValue(null)
+        val main = canvas.model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
+        canvas.sources[main.id] = canvas.sources.getValue(CANVAS_ROOT)
         val tools = canvasTools(canvas, main.id, maxOpened = 1)
         tools.call("open_symbol", """{"name":"run"}""")
         tools.call("canvas_overview")
         tools.call("show_card", """{"card":"current"}""")
         assertTrue(tools.fails("open_symbol", """{"name":"App"}""").contains("opened 1 cards"))
         canvasTools(canvas, main.id, maxOpened = 1).call("open_symbol", """{"name":"App"}""")
-        assertEquals("A fresh reply gets a fresh allowance", 3, canvas.model.cards.size)
+        assertEquals("A fresh reply gets a fresh allowance", 4, canvas.model.cards.size)
     }
 
     @Test
     fun `a card's chat starts with the walking tools and finds the others with search_tools`() {
         val canvas = FakeCanvas()
-        val main = canvas.model.open(null, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
+        val main = canvas.model.open(CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 3, 0), "src/Main.kt", 0, "fun")
         val registry = canvasToolRegistry(canvas, main.id)
         assertEquals(canvasTools(canvas, main.id).map { it.definition.name }, registry.tools.map { it.definition.name })
         val tools = ToolSet(registry.select(*CANVAS_CHAT_TOOLS.toTypedArray()), registry)
@@ -241,7 +241,7 @@ class CanvasToolsTest {
 
         val usagesLoaded = runBlocking { tools[SEARCH_TOOLS]!!.call(args("""{"query":"find_usages"}""")) }
         assertTrue(usagesLoaded, usagesLoaded.startsWith("Loaded 1 tool;"))
-        val saveCard = runBlocking { canvas.openSymbol(null, 0, 3, 5) }
+        val saveCard = runBlocking { canvas.openSymbol(CANVAS_ROOT, 0, 3, 5) }
         val saveTools = canvasTools(canvas, saveCard.id)
         assertEquals("""
             Usages of save() (1 sites):
@@ -252,9 +252,9 @@ class CanvasToolsTest {
     @Test
     fun `canvas_overview shows every chain and marks the current one, and read_card reads any card`() {
         val canvas = FakeCanvas()
-        val run = runBlocking { canvas.openSymbol(null, at(rootText, "run", 3).first, at(rootText, "run", 3).last + 1, 2) }
+        val run = runBlocking { canvas.openSymbol(CANVAS_ROOT, at(rootText, "run", 3).first, at(rootText, "run", 3).last + 1, 2) }
         canvas.model.setSummary(run.id, "Runs the app.")
-        val other = runBlocking { canvas.openSymbol(null, at(rootText, "App", 2).first, at(rootText, "App", 2).last + 1, 1) }
+        val other = runBlocking { canvas.openSymbol(CANVAS_ROOT, at(rootText, "App", 2).first, at(rootText, "App", 2).last + 1, 1) }
         val tools = canvasTools(canvas, run.id)
         assertEquals("""
             Root file: src/Main.kt [root]
@@ -274,43 +274,43 @@ class CanvasToolsTest {
         assertTrue(tools.call("read_card", """{"card":"root"}""").contains("4:     log(\"done\")"))
         assertTrue(tools.fails("show_card", """{"card":"root"}""").contains("always shown"))
         assertFalse(canvas.shown.contains("root"))
-        assertNull(canvas.model.card("root"))
+        assertEquals(listOf(CANVAS_ROOT, run.id, other.id), canvas.model.cards.map { it.id })
     }
 
     @Test
     fun `show_call_chain opens each symbol from the previous card and stops where the chain leaves the code`() {
         val canvas = FakeCanvas()
-        val tools = canvasTools(canvas, null)
+        val tools = canvasTools(canvas, CANVAS_ROOT)
         // Local models sometimes quote ids or keep the # of the context.
         val shown = tools.call("show_call_chain", """{"symbol_ids":["2","#5"]}""")
-        val (run, save) = canvas.model.cards
-        assertEquals(null, run.parentId)
+        val (_, run, save) = canvas.model.cards
+        assertEquals(CANVAS_ROOT, run.parentId)
         assertEquals(run.id, save.parentId)
         assertEquals("save()", save.symbol?.name)
         assertTrue(shown, shown.startsWith("Shown on the canvas: run() [card ${run.id}] → save() [card ${save.id}].\nOpened card ${save.id}"))
         assertEquals(save.id, canvas.shown.last())
 
         // Open cards are shown again without using the reply's allowance.
-        val again = canvasTools(canvas, null, maxOpened = 0).call("show_call_chain", """{"symbol_ids":[2,5]}""")
+        val again = canvasTools(canvas, CANVAS_ROOT, maxOpened = 0).call("show_call_chain", """{"symbol_ids":[2,5]}""")
         assertTrue(again, again.contains("Card ${save.id} was already open"))
-        assertEquals(2, canvas.model.cards.size)
+        assertEquals(3, canvas.model.cards.size)
 
         val stopped = tools.call("show_call_chain", """{"symbol_ids":[2,3]}""")
         assertTrue(stopped, stopped.contains("Stopped at step 2: #3 log(String) is not linked from #2's card. It links to: #5 save()."))
         assertTrue(tools.fails("show_call_chain", """{"symbol_ids":[5]}""").contains("Nothing was shown: #5 save() is not linked from the root file"))
         for (bad in listOf("""{"symbol_ids":[]}""", """{"symbol_ids":["x"]}""", """{"symbol_ids":[-1]}""")) tools.fails("show_call_chain", bad)
-        assertEquals(2, canvas.model.cards.size)
+        assertEquals(3, canvas.model.cards.size)
 
         val fresh = FakeCanvas()
-        val limited = canvasTools(fresh, null, maxOpened = 1).call("show_call_chain", """{"symbol_ids":[2,5]}""")
+        val limited = canvasTools(fresh, CANVAS_ROOT, maxOpened = 1).call("show_call_chain", """{"symbol_ids":[2,5]}""")
         assertTrue(limited, limited.contains("Stopped at step 2: this reply has opened 1 cards"))
-        assertEquals(1, fresh.model.cards.size)
+        assertEquals(2, fresh.model.cards.size)
     }
 
     @Test
     fun `graph tools come with an explored graph and call paths start from the card's links`() {
         val canvas = FakeCanvas()
-        assertTrue(canvasTools(canvas, null).none { it.definition.name in setOf("find_symbols", "inspect_symbol", "call_path") })
+        assertTrue(canvasTools(canvas, CANVAS_ROOT).none { it.definition.name in setOf("find_symbols", "inspect_symbol", "call_path") })
         val asked = mutableListOf<String>()
         canvas.graph = object : CanvasGraph {
             override fun findSymbols(query: String, kind: dev.insight.graph.SymbolKind?, limit: Int) = "find $query $kind $limit".also { asked += it }
@@ -318,7 +318,7 @@ class CanvasToolsTest {
             override fun callPaths(from: Int?, roots: List<Int>, target: Int, maxDepth: Int) =
                 "paths $from $roots $target $maxDepth".also { asked += it }
         }
-        val tools = canvasTools(canvas, null)
+        val tools = canvasTools(canvas, CANVAS_ROOT)
         assertEquals("find save FUNCTION 30", tools.call("find_symbols", """{"query":"save","kind":"function"}"""))
         assertEquals("inspect 5", tools.call("inspect_symbol", """{"id":"#5"}"""))
         assertEquals("paths null [1, 2, 3, 4] 5 8", tools.call("call_path", """{"to":5}"""))
@@ -326,15 +326,15 @@ class CanvasToolsTest {
         assertTrue(tools.fails("find_symbols", """{"query":"x","kind":"module"}""").contains("kind must be"))
         assertTrue(tools.fails("inspect_symbol", """{"id":"save"}""").contains("symbol id"))
         assertEquals(4, asked.size)
-        assertTrue("Reading the graph changes nothing on the canvas", canvas.model.cards.isEmpty())
+        assertTrue("Reading the graph changes nothing on the canvas", canvas.model.cards.size == 1)
     }
 
     @Test
     fun `read_card lists the gap summaries that still match the source`() {
         val canvas = FakeCanvas()
-        canvas.model.addGapSummary(null, GapSummary(1, 1, canvas.sources.getValue(null).gapHash(1, 1)!!, "Creates the app."))
-        canvas.model.addGapSummary(null, GapSummary(3, 3, 42, "Stale."))
-        val read = canvasTools(canvas, null).call("read_card", """{"card":"root"}""")
+        canvas.model.addGapSummary(CANVAS_ROOT, GapSummary(1, 1, canvas.sources.getValue(CANVAS_ROOT).gapHash(1, 1)!!, "Creates the app."))
+        canvas.model.addGapSummary(CANVAS_ROOT, GapSummary(3, 3, 42, "Stale."))
+        val read = canvasTools(canvas, CANVAS_ROOT).call("read_card", """{"card":"root"}""")
         assertTrue(read, read.contains("Gap summaries (model-written):\n- lines 2-2: Creates the app.\nSource"))
         assertFalse(read.contains("Stale."))
     }

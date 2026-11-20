@@ -7,6 +7,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory
+import dev.insight.canvas.CANVAS_ROOT
 import dev.insight.canvas.CanvasSessionController
 import dev.insight.canvas.CanvasSessionModel
 import kotlinx.coroutines.CoroutineScope
@@ -47,12 +48,12 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
         assertEquals(emptyList<String>(), prepared.unavailable)
         assertEquals(files.map { it.absolutePath }.toSet(), prepared.file.diffs.keys)
         val opened = prepared.file
-        val cards = opened.session.cards
+        val cards = opened.session.cards.drop(1)
         assertEquals(setOf("Caller.java", "Leaf.java", "Child.java"), cards.map { it.filePath.substringAfterLast('/') }.toSet())
         assertTrue(cards.all { it.wholeFile })
         val caller = cards.single { it.filePath.endsWith("Caller.java") }
         val leaf = cards.single { it.filePath.endsWith("Leaf.java") }
-        assertNull(caller.parentId)
+        assertEquals(CANVAS_ROOT, caller.parentId)
         assertEquals(caller.id, leaf.parentId)
 
         val controller = CanvasSessionController(project, opened.source, opened.exploration, opened.root, CanvasSessionModel(opened.session))
@@ -74,7 +75,7 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
         val other = file("Other.java", "class Other { void go() { Bridge.go(); } }")
         val imported = file("Imported.java", "import p.Root; class Imported {}")
         val prepared = background { prepareDiffCanvasSession(project, ReviewSnapshot(listOf(root, other, imported), emptyList()), root.path) }
-        assertTrue(prepared.file.session.cards.isEmpty())
+        assertEquals(listOf(CANVAS_ROOT), prepared.file.session.cards.map { it.id })
     }
 
     fun testStaleDeletedAndUnsupportedFilesAreReportedAndCannotContributeRelations() {
@@ -93,7 +94,7 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
         assertEquals(setOf(stale.path, unsupported.path, deleted.path), prepared.unavailable.toSet())
         // Stale and deleted sources would number another text; the unsupported file's patch shows only if it is opened.
         assertEquals(setOf(root.absolutePath, unsupported.absolutePath), prepared.file.diffs.keys)
-        assertTrue(prepared.file.session.cards.isEmpty())
+        assertEquals(listOf(CANVAS_ROOT), prepared.file.session.cards.map { it.id })
         for (path in listOf(stale.path, deleted.path)) {
             try {
                 background { prepareDiffCanvasSession(project, snapshot, path) }

@@ -8,6 +8,9 @@ import kotlin.math.roundToInt
 /** [n] scaled pixels at [zoom], never below one so borders and gaps stay visible. */
 internal fun zoomScaled(n: Int, zoom: Double) = (JBUI.scale(n) * zoom).roundToInt().coerceAtLeast(1)
 
+/** [pixels] at [zoom] in unscaled units, the inverse of [zoomScaled]. */
+internal fun zoomUnscaled(pixels: Int, zoom: Double) = (pixels / (JBUI.scale(1f) * zoom)).roundToInt()
+
 /** This font at [zoom] times its size. */
 internal fun Font.zoomed(zoom: Double): Font = deriveFont((size2D * zoom).toFloat())
 

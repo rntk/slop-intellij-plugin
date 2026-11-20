@@ -29,7 +29,6 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.platform.ide.progress.withBackgroundProgress
-import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.awt.RelativePoint
@@ -47,7 +46,6 @@ import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.CanvasZoomAnchor
 import dev.insight.ui.layoutZoomContent
-import dev.insight.ui.pixelBorder
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import dev.insight.ui.openSourceChain
@@ -76,7 +74,6 @@ import java.awt.event.MouseWheelEvent
 import java.awt.geom.CubicCurve2D
 import javax.swing.AbstractAction
 import javax.swing.AbstractButton
-import javax.swing.BorderFactory
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -132,11 +129,16 @@ internal class CanvasSessionPanel(
     /** True once the root file is shown and a saved session's cards are restored. */
     internal var ready = false
         private set
-    private var rootView: RootView? = null
+    private val directory = file.source.isDirectory
+    private val rootKind = if (directory) "directory" else "file"
+    /** Every card's view, the root card's first, once the root file is shown. */
     private val views = LinkedHashMap<String, CanvasCardView>()
     internal val cardViews: Map<String, CanvasCardView> get() = views
+    private val rootView: CanvasCardView? get() = views[CANVAS_ROOT]
     /** The root file's chat, once the root file is shown. */
     internal val rootChat: CanvasChatView? get() = rootView?.chat
+    /** The root file's source viewer, once the root file is shown. */
+    internal val rootSourcePane: CanvasSourcePane? get() = rootView?.sourcePane
     /** Each card's anchor, in its parent's y, as last laid out; arrows start there. */
     private val anchorYs = HashMap<String, Int>()
     private var message: JComponent? = null
@@ -237,15 +239,15 @@ internal class CanvasSessionPanel(
         })
     }
 
-    /** The card the reader is on, which the trail leads to; null for the root file. */
-    private var current: String? = null
-    /** Whether a card (or the root file when [focusedId] is null) owns keyboard and wheel navigation. */
+    /** The card the reader is on, which the trail leads to. */
+    private var current: String = CANVAS_ROOT
+    /** Whether card [focusedId] owns keyboard and wheel navigation. */
     private var cardFocused = false
     private var focusedId: String? = null
     internal val hasFocusedCard: Boolean get() = cardFocused
     internal val focusedCard: String? get() = if (cardFocused) focusedId else null
     /** The root-first ids of [current]'s chain, as last shown, so the trail can step back when a card closes. */
-    private var trail: List<String> = emptyList()
+    private var trail: List<String> = listOf(CANVAS_ROOT)
     private val breadcrumbs = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
         name = "canvas-breadcrumbs"
         isOpaque = false
@@ -259,11 +261,11 @@ internal class CanvasSessionPanel(
             viewport.isOpaque = false
         }, BorderLayout.CENTER)
     }
-    /** Running gap summaries by card id, null for the root file. */
-    private val gapJobs = HashMap<String?, Job>()
+    /** Running gap summaries by card id. */
+    private val gapJobs = HashMap<String, Job>()
 
     /** The trail from the root file to the current card, as its crumbs read: the file name, then each card's title. */
-    internal val trailTitles: List<String> get() = listOf(file.source.name) + trail.mapNotNull { model.card(it)?.title }
+    internal val trailTitles: List<String> get() = trail.mapNotNull { model.card(it)?.title }
 
     override val diffs: Map<String, String> get() = file.currentDiffs
 
@@ -321,15 +323,22 @@ internal class CanvasSessionPanel(
         scope.launch(Dispatchers.EDT) {
             try {
                 val root = controller.loadRoot()
-                if (model.cards.isNotEmpty()) controller.restore { index, count ->
+                if (directory && !model.session.directoryInitialized) {
+                    showMessage("Finding connections in ${file.source.name}…")
+                    controller.initializeDirectory { index, count -> showMessage("Opening file $index of $count…") }
+                    if (persist) autosave?.request(model.session)
+                } else if (model.cards.size > 1) controller.restore { index, count ->
                     showMessage("Restoring card $index of $count…")
                 }
                 showMessage(null)
-                rootView = RootView(root).also { content.add(it) }
                 model.cards.forEach(::addView)
                 ready = true
                 refreshTrail()
-                showStatus(if (model.cards.isEmpty()) "Click an underlined name or select code to open a card, or ask about the file." else "")
+                showStatus(when {
+                    model.cards.size > 1 -> ""
+                    directory -> if (root.text.isEmpty()) "This directory has no project files." else ""
+                    else -> "Click an underlined name or select code to open a card, or ask about the file."
+                })
                 refreshAnchors()
                 restoreCardScrolls()
                 content.revalidate()
@@ -354,7 +363,7 @@ internal class CanvasSessionPanel(
      */
     internal fun refresh(): Job? {
         if (disposed || !ready) return null
-        if (rootView?.chat?.replying == true || views.values.any { it.chatBusy }) {
+        if (views.values.any { it.chatBusy }) {
             showStatus("Wait for the chat replies to finish, or stop them, then refresh.")
             return null
         }
@@ -367,8 +376,8 @@ internal class CanvasSessionPanel(
             showStatus("Reading ${file.source.name} again…")
             var problem: String? = null
             try {
-                val root = controller.refresh { index, count -> showStatus("Refreshing card $index of $count…") }
-                rootView?.show(root)
+                // The views pick up the fresh sources, the root file's included, as they resync.
+                controller.refresh { index, count -> showStatus("Refreshing card $index of $count…") }
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Unable to refresh canvas session of ${file.rootPath}", e)
@@ -394,9 +403,8 @@ internal class CanvasSessionPanel(
             anchorYs.remove(id)
         }
         model.cards.forEach { card -> views[card.id]?.update(card) ?: addView(card) }
-        rootView?.update(model.session.root)
-        if (cardFocused && focusedId != null && focusedId !in views) setCardFocus(false)
-        if (current != null && model.card(current!!) == null) current = trail.lastOrNull { model.card(it) != null }
+        if (cardFocused && focusedId !in views) setCardFocus(false)
+        if (model.card(current) == null) current = trail.lastOrNull { model.card(it) != null } ?: CANVAS_ROOT
         refreshTrail()
         refreshAnchors()
         content.revalidate()
@@ -424,7 +432,7 @@ internal class CanvasSessionPanel(
                 }
                 if (cardFocused && focusedId in change.ids) setCardFocus(false)
                 // The trail steps back to the nearest card left open.
-                if (current in change.ids) current = trail.lastOrNull { it !in change.ids }
+                if (current in change.ids) current = trail.lastOrNull { it !in change.ids } ?: CANVAS_ROOT
                 refreshTrail()
             }
             is CanvasChange.CardChanged -> views[change.card.id]?.let { view ->
@@ -433,11 +441,6 @@ internal class CanvasSessionPanel(
                 view.update(change.card)
                 if (anchorsChanged) refreshAnchors()
                 if (titleChanged && change.card.id in trail) refreshTrail()
-            }
-            // The root view lays out the canvas itself when its size may have changed.
-            is CanvasChange.RootChanged -> {
-                rootView?.update(change.root)
-                return
             }
             else -> return
         }
@@ -459,7 +462,9 @@ internal class CanvasSessionPanel(
      */
     private fun restoreCardScrolls() {
         content.validate()
+        // The root file reopens at its top, as when it is first opened.
         for (view in views.values) {
+            if (view.id == CANVAS_ROOT) continue
             val pane = view.sourcePane ?: continue
             val offset = model.children(view.id).minOfOrNull { it.anchor.startOffset }
                 ?: view.card.usages?.sites?.firstOrNull()?.let { pane.lineStart(it.line) } ?: continue
@@ -469,8 +474,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun refreshAnchors() {
-        rootView?.pane?.highlightAnchors(model.children(null).map { it.anchor })
-        views.values.forEach { view -> view.sourcePane?.highlightAnchors(model.children(view.id).map { it.anchor }) }
+        views.values.forEach { view -> view.sourcePane?.highlightAnchors(model.children(view.id).filterNot { it.isDirectorySeed }.map { it.anchor }) }
     }
 
     /** Follows [link]: a use opens the card of what it names; a symbol's own declared name lists its callers and users. */
@@ -489,8 +493,8 @@ internal class CanvasSessionPanel(
         }
     }
 
-    /** Opens the card of [target] from [link] in [parentId]'s source (null: the root file), then shows it. */
-    internal fun openSymbol(parentId: String?, link: CanvasLink, target: Int): Job = scope.launch(Dispatchers.EDT) {
+    /** Opens the card of [target] from [link] in [parentId]'s source, then shows it. */
+    internal fun openSymbol(parentId: String, link: CanvasLink, target: Int): Job = scope.launch(Dispatchers.EDT) {
         val name = controller.node(target)?.name ?: "symbol"
         showStatus("Opening $name…")
         try {
@@ -509,7 +513,7 @@ internal class CanvasSessionPanel(
     /** The cards' chats act on the canvas like the reader: each card they open or show is revealed. */
     override val actions: CanvasActions = object : CanvasActions {
         override val session: CanvasSession get() = model.session
-        override fun source(cardId: String?): CanvasSource? = controller.source(cardId)
+        override fun source(cardId: String): CanvasSource? = controller.source(cardId)
         override fun target(id: Int): CanvasTarget? = controller.target(id)
 
         override suspend fun declarations(path: String, name: String): List<CanvasTarget> =
@@ -517,15 +521,15 @@ internal class CanvasSessionPanel(
 
         override suspend fun findUsages(target: Int): CanvasUsageSearch = controller.findUsages(target)
 
-        override suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int) =
+        override suspend fun openSymbol(parentId: String, start: Int, end: Int, target: Int) =
             revealing { controller.openSymbol(parentId, start, end, target, CardOpenedBy.LLM) }
 
-        override suspend fun openSelection(parentId: String?, start: Int, end: Int) = revealing {
+        override suspend fun openSelection(parentId: String, start: Int, end: Int) = revealing {
             withContext(Dispatchers.EDT) { controller.openSelection(parentId, start, end, CardOpenedBy.LLM) }
                 ?: throw ToolInputException("The selected text is blank.")
         }
 
-        override suspend fun openFile(parentId: String?, start: Int, end: Int, path: String) =
+        override suspend fun openFile(parentId: String, start: Int, end: Int, path: String) =
             revealing { controller.openFile(parentId, start, end, projectFile(path), CardOpenedBy.LLM) }
 
         override suspend fun show(cardId: String) = withContext(Dispatchers.EDT) {
@@ -559,7 +563,7 @@ internal class CanvasSessionPanel(
     override fun openSideBySide(cardId: String) {
         val chain = model.session.chain(cardId)
         val locations = canvasSourceChain(model.session, cardId).mapIndexed { index, location ->
-            val source = controller.source(chain.getOrNull(index - 1)?.id)
+            val source = chain.getOrNull(index)?.let { controller.source(it.id) }
             location.copy(file = source?.file?.takeIf { it.isValid } ?: controller.findFile(location.path))
         }
         openSourceChain(project, locations, model.card(cardId)?.title ?: model.session.title)
@@ -625,10 +629,10 @@ internal class CanvasSessionPanel(
             pane.source.file?.let { file -> add(JMenuItem("Context…").apply {
                 addActionListener { showFileContext(project, file, line + 1, pane) }
             }) }
-            if (pane.source.file == null) add(JMenuItem("Go to source").apply {
+            if (pane.source.file == null && model.card(pane.owner)?.isDirectoryRoot != true) add(JMenuItem("Go to source").apply {
                 addActionListener { navigate(pane.source, pane.source.path, line) }
             })
-            pane.owner?.let { add(sideBySideAction(it)) }
+            if (pane.owner != CANVAS_ROOT) add(sideBySideAction(pane.owner))
             if (link != null && linkTargets.isNotEmpty()) {
                 add(JMenuItem("Find usages").apply {
                     addActionListener { findLinkUsages(pane, link, event) }
@@ -690,10 +694,10 @@ internal class CanvasSessionPanel(
     }
 
     /**
-     * Opens the card of the whole [file] of usages of [targetName] from [range] of [parentId]'s source (null: the root
-     * file), lists the usage sites on it and scrolls it to the first.
+     * Opens the card of the whole [file] of usages of [targetName] from [range] of [parentId]'s source, lists the usage
+     * sites on it and scrolls it to the first.
      */
-    internal fun openUsageFileAt(parentId: String?, range: IntRange, file: CanvasUsageFile, targetName: String): Job =
+    internal fun openUsageFileAt(parentId: String, range: IntRange, file: CanvasUsageFile, targetName: String): Job =
         scope.launch(Dispatchers.EDT) {
             val start = range.first
             val end = maxOf(range.first, range.last + 1)
@@ -726,9 +730,9 @@ internal class CanvasSessionPanel(
         else OpenFileDescriptor(project, target, maxOf(line, 0), 0).navigate(true)
     }
 
-    override fun attachFile(cardId: String?) {
+    override fun attachFile(cardId: String) {
         val descriptor = FileChooserDescriptor(true, false, true, true, false, true).apply {
-            title = "Attach Files to ${cardId?.let(model::card)?.title ?: file.source.name}"
+            title = "Attach Files to ${model.card(cardId)?.title ?: file.source.name}"
             description = "Link documents, screenshots or other files to this card"
         }
         FileChooser.chooseFiles(descriptor, project, null) { files ->
@@ -751,8 +755,9 @@ internal class CanvasSessionPanel(
 
     override fun close(cardId: String) {
         val card = model.card(cardId) ?: return
+        val parent = card.parentId ?: return
         model.remove(cardId)
-        moveTo(card.parentId, focus = false)
+        moveTo(parent, focus = false)
     }
 
     override fun cardResized() {
@@ -762,19 +767,13 @@ internal class CanvasSessionPanel(
     }
 
     private fun setCardFocus(focused: Boolean, cardId: String? = null) {
-        val nextFocused = focused && (cardId == null || cardId in views)
+        val nextFocused = focused && cardId != null && cardId in views
         val nextId = if (nextFocused) cardId else null
         if (nextFocused == cardFocused && nextId == focusedId) return
-        val prevFocused = cardFocused
-        val prevId = focusedId
+        focusedId?.let { views[it]?.focused = false }
         cardFocused = nextFocused
         focusedId = nextId
-        if (prevFocused) {
-            if (prevId == null) rootView?.focused = false else views[prevId]?.focused = false
-        }
-        if (nextFocused) {
-            if (nextId == null) rootView?.focused = true else views[nextId]?.focused = true
-        }
+        nextId?.let { views[it]?.focused = true }
         content.repaint()
     }
 
@@ -802,9 +801,7 @@ internal class CanvasSessionPanel(
     }
 
     private fun focusedNavigationEditor(): EditorEx? =
-        if (!cardFocused) null
-        else if (focusedId == null) rootView?.navigationEditor
-        else views[focusedId]?.navigationEditor
+        if (!cardFocused) null else focusedId?.let(views::get)?.navigationEditor
 
     private fun typing(): Boolean {
         val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
@@ -886,48 +883,48 @@ internal class CanvasSessionPanel(
 
     private fun openCardSearch() {
         if (!ready || disposed) return
-        showCardSearch(findCard, model.cards.map(::canvasCardCandidate), ::moveTo)
+        showCardSearch(findCard, model.cards.filter { it.kind != CardKind.ROOT }.map(::canvasCardCandidate), ::moveTo)
     }
 
     /**
-     * Centres the canvas on card [cardId] (its top, if taller than the view); null moves to the root file.
-     * With [focus], also focuses the card and emphasises it for a moment.
+     * Centres the canvas on card [cardId] (its top, if taller than the view). With [focus], also focuses the card and
+     * emphasises it for a moment; the root card, always in its place, is focused without emphasis.
      */
-    private fun moveTo(cardId: String?, focus: Boolean = true) {
-        val view: JComponent = (if (cardId == null) rootView else views[cardId]) ?: return
+    private fun moveTo(cardId: String, focus: Boolean = true) {
+        val view = views[cardId] ?: return
         if (focus) setCardFocus(true, cardId)
         content.validate()
         val viewport = scroll.viewport.extentSize
         val top = JBUI.scale(FLOATING_ROW_SPACE) + zoomScaled(16, zoom)
-        val at = cardId?.let(content::destination) ?: CanvasPlacement(view.x, view.y)
+        val at = content.destination(cardId) ?: CanvasPlacement(view.x, view.y)
         val x = if (view.width <= viewport.width) at.x + view.width / 2 - viewport.width / 2 else at.x - zoomScaled(16, zoom)
         val y = if (view.height <= viewport.height - top) at.y + view.height / 2 - (viewport.height + top) / 2 else at.y - top
         if (focus) {
-            if (cardId != null) reveal(cardId, glide = false) else clearReveal()
+            if (cardId != CANVAS_ROOT) reveal(cardId, glide = false) else clearReveal()
         }
         glideTo(x, y)
         if (focus && !typing()) content.requestFocusInWindow()
     }
 
-    /** Makes [cardId] the card the trail leads to; null for the root file. */
-    private fun select(cardId: String?) {
-        val next = cardId?.takeIf { model.card(it) != null }
-        if (next == current && trail == next?.let { model.chain(it).map(CanvasCard::id) }.orEmpty()) return
+    /** Makes [cardId] the card the trail leads to. */
+    private fun select(cardId: String) {
+        val next = cardId.takeIf { model.card(it) != null } ?: CANVAS_ROOT
+        if (next == current && trail == model.chain(next).map(CanvasCard::id)) return
         current = next
         refreshTrail()
     }
 
     /** Shows the trail from the root file to [current]: a crumb for each, which moves the canvas there. */
     private fun refreshTrail() {
-        trail = current?.let { model.chain(it).map(CanvasCard::id) }.orEmpty()
+        trail = model.chain(current).map(CanvasCard::id).ifEmpty { listOf(CANVAS_ROOT) }
         breadcrumbs.removeAll()
-        val steps = listOf<Pair<String?, String>>(null to file.source.name) + trail.mapNotNull { id -> model.card(id)?.let { id to it.title } }
+        val steps = trail.mapNotNull { id -> model.card(id)?.let { id to it.title } }
         steps.forEachIndexed { index, (id, title) ->
             if (index > 0) breadcrumbs.add(JLabel("›").apply { foreground = UIUtil.getContextHelpForeground() })
             breadcrumbs.add(ActionLink(title) { moveTo(id) }.apply {
                 name = "canvas-crumb"
                 isFocusable = false
-                toolTipText = if (id == null) "Move to ${file.rootPath}" else this@CanvasSessionPanel.model.card(id)?.let { "Move to ${describe(it)}" }
+                toolTipText = if (id == CANVAS_ROOT) "Move to ${file.rootPath}" else this@CanvasSessionPanel.model.card(id)?.let { "Move to ${describe(it)}" }
                 if (index == steps.lastIndex) font = font.deriveFont(Font.BOLD)
             })
         }
@@ -937,21 +934,21 @@ internal class CanvasSessionPanel(
         repaint()
     }
 
-    override fun summarizingGaps(cardId: String?): Boolean = gapJobs[cardId]?.isActive == true
+    override fun summarizingGaps(cardId: String): Boolean = gapJobs[cardId]?.isActive == true
 
     /**
-     * Summarizes, one at a time, the gaps of [cardId]'s source (the root file's for null) without a current summary;
+     * Summarizes, one at a time, the gaps of [cardId]'s source without a current summary;
      * each summary is saved as it arrives. A replaced source (the card expanded or closed) ends the run.
      */
-    override fun summarizeGaps(cardId: String?) {
+    override fun summarizeGaps(cardId: String) {
         if (disposed || summarizingGaps(cardId)) return
         val source = controller.source(cardId) ?: return
-        val units = source.unsummarizedGaps(model.session.chatHolder(cardId)?.gapSummaries ?: return)
+        val units = source.unsummarizedGaps(model.card(cardId)?.gapSummaries ?: return)
         if (units.isEmpty()) {
             showStatus("Every gap of this source is summarized.")
             return
         }
-        val name = cardId?.let(model::card)?.title ?: file.source.name
+        val name = model.card(cardId)?.title ?: file.source.name
         gapJobs[cardId] = scope.launch(Dispatchers.EDT) {
             val workflow = SchematicGapWorkflow(services.maxContextChars(), services.complete())
             var failed = 0
@@ -1083,12 +1080,12 @@ internal class CanvasSessionPanel(
 
     /** Moves to the card after (or before) the current one in opening order, wrapping around through the root file. */
     internal fun stepCard(forward: Boolean) {
-        val order = listOf<String?>(null) + model.cards.map { it.id }
+        val order = model.cards.map { it.id }
         val anchor = if (cardFocused) focusedId else current
         val index = order.indexOf(anchor).coerceAtLeast(0)
         val next = order[Math.floorMod(index + if (forward) 1 else -1, order.size)]
-        if (next == null) {
-            current = null
+        if (next == CANVAS_ROOT) {
+            current = CANVAS_ROOT
             refreshTrail()
         }
         moveTo(next)
@@ -1098,10 +1095,8 @@ internal class CanvasSessionPanel(
     /** Folds the file and every card's summary, source and chat; again to unfold them. */
     private fun foldAll() {
         val sections = listOf(CardSection.SUMMARY, CardSection.SOURCE, CardSection.CHAT)
-        val rootSections = sections
-        val fold = !(model.cards.all { it.folded.containsAll(sections) } && model.session.root.folded.containsAll(rootSections))
+        val fold = !model.cards.all { it.folded.containsAll(sections) }
         model.cards.map { it.id }.forEach { id -> sections.forEach { model.setFolded(id, it, fold) } }
-        rootSections.forEach { model.setFolded(null, it, fold) }
     }
 
     private fun showSessions(button: JComponent) {
@@ -1109,7 +1104,9 @@ internal class CanvasSessionPanel(
         scope.launch(Dispatchers.EDT) {
             val entries = store?.let { withContext(Dispatchers.IO) { it.list(file.rootPath) } }.orEmpty()
             JPopupMenu().apply {
-                add(JMenuItem("New session for this file").apply { addActionListener { onSwitch(CanvasSession.new(file.rootPath)) } })
+                add(JMenuItem("New session for this $rootKind").apply {
+                    addActionListener { onSwitch(CanvasSession.new(file.rootPath, file.source.name, directory = directory)) }
+                })
                 val others = entries.filter { it.id != model.session.id }
                 if (others.isNotEmpty()) {
                     addSeparator()
@@ -1135,7 +1132,8 @@ internal class CanvasSessionPanel(
     private fun deleteCurrent() {
         val store = services.store ?: return
         val session = model.session
-        val cards = if (session.cards.size == 1) "1 card" else "${session.cards.size} cards"
+        val opened = session.cards.count { it.kind != CardKind.ROOT }
+        val cards = if (opened == 1) "1 card" else "$opened cards"
         val answer = Messages.showYesNoDialog(project, "Delete the canvas session \"${session.title}\" with $cards? Its summaries and chats are lost.",
             "Delete Canvas Session", Messages.getQuestionIcon())
         if (answer != Messages.YES) return
@@ -1154,7 +1152,7 @@ internal class CanvasSessionPanel(
                 store.delete(session.id)
                 store.list(file.rootPath).firstNotNullOfOrNull { store.load(it.id) }
             }
-            onSwitch(next ?: CanvasSession.new(file.rootPath))
+            onSwitch(next ?: CanvasSession.new(file.rootPath, file.source.name, directory = directory))
         }
     }
 
@@ -1251,7 +1249,6 @@ internal class CanvasSessionPanel(
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
-        rootView?.applyZoom()
         content.revalidate()
         scroll.validate()
         layoutZoomContent(content)
@@ -1328,31 +1325,31 @@ internal class CanvasSessionPanel(
         val target = if (e.component === content) SwingUtilities.getDeepestComponentAt(content, e.x, e.y) ?: content else e.component
         val ancestors = generateSequence(target) { it.parent }.toList()
         val card = ancestors.filterIsInstance<CanvasCardView>().firstOrNull()
-        val root = ancestors.filterIsInstance<RootView>().firstOrNull()
         if (e.isPopupTrigger) {
             val point = SwingUtilities.convertPoint(e.component, e.point, content)
             val underPointer = SwingUtilities.getDeepestComponentAt(content, point.x, point.y) ?: e.component
             val popupAncestors = generateSequence(underPointer) { it.parent }.toList()
             val popupCard = popupAncestors.filterIsInstance<CanvasCardView>().firstOrNull()
-            val popupRoot = popupAncestors.filterIsInstance<RootView>().firstOrNull()
-            val actions = popupCard?.menuActions() ?: popupRoot?.menuActions()
+            val actions = popupCard?.menuActions()
             if (actions != null && popupAncestors.none { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent }) {
                 endDrag()
-                if (popupCard != null || popupRoot != null) setCardFocus(true, popupCard?.id)
-                popupCard?.let { select(it.id) }
+                setCardFocus(true, popupCard.id)
+                if (popupCard.id != CANVAS_ROOT) select(popupCard.id)
                 canvasActionMenu(actions).show(e.component, e.x, e.y)
                 return
             }
         }
         if (e.id == MouseEvent.MOUSE_PRESSED && target === selectionButton) return
         if (e.id == MouseEvent.MOUSE_PRESSED && SwingUtilities.isLeftMouseButton(e)) {
-            if (card != null || root != null) setCardFocus(true, card?.id) else exitCardFocus(focusCanvas = false)
+            if (card != null) setCardFocus(true, card.id) else exitCardFocus(focusCanvas = false)
         }
         // Clicking into a card makes it the one the trail leads to; the root file keeps the trail.
-        if (e.id == MouseEvent.MOUSE_PRESSED) card?.let { select(it.id) }
+        if (e.id == MouseEvent.MOUSE_PRESSED) card?.takeIf { it.id != CANVAS_ROOT }?.let { select(it.id) }
         when (e.id) {
             MouseEvent.MOUSE_PRESSED -> if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                 panned = false
+                // A press on a card's edge resizes the card; it focuses the card above but starts no pan.
+                if (card?.resize?.claims(e) == true) return
                 // Source text, chat text and buttons keep their own selection and clicks.
                 if (SwingUtilities.isLeftMouseButton(e) && ancestors
                         .any { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent || it is AbstractButton || it is ActionLink }) return
@@ -1479,199 +1476,9 @@ internal class CanvasSessionPanel(
         subscription.dispose()
         views.values.forEach(Disposer::dispose)
         views.clear()
-        rootView?.let(Disposer::dispose)
-        rootView = null
         if (persist) autosave?.flush()
         scope.cancel()
         Disposer.dispose(controller)
-    }
-
-    /**
-     * The initial file folds like a card, with an explicitly requested summary and chat below its source, and a Diff tab
-     * beside the source when opened from a diff.
-     */
-    private inner class RootView(private var source: CanvasSource) : JPanel(StackLayout { zoomScaled(4, zoom) }), Disposable {
-        /** Whether the root file currently owns keyboard and wheel navigation. */
-        var focused = false
-            set(value) {
-                if (field == value) return
-                field = value
-                updateBorder()
-                repaint()
-            }
-        var pane = CanvasSourcePane(project, null, source, sourceListener)
-            private set
-        private val meta = zoomFont(JLabel("File · ${source.path}").apply { foreground = UIUtil.getContextHelpForeground() })
-        private val summaryText = zoomFont(wrappedSummaryText(""))
-        private val summaryStatus = zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
-        private val summarize = zoomFont(ActionLink("Summarize") { requestSummary() })
-        private var summaryJob: Job? = null
-        private val summary = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.SUMMARY, "Summary",
-            JPanel(StackLayout { zoomScaled(2, zoom) }).apply {
-                isOpaque = false
-                add(summaryText)
-                add(summaryStatus)
-                add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false; add(summarize) })
-            })
-        private var diffRows = canvasSourceDiff(diffs, source, wholeFile = true)
-        /** The file's changed hunks; null, with no Diff tab, when it was not opened from a diff. */
-        var diffPane = diffPane()
-            private set
-        private val sourceSection = CanvasSourceSection(this@CanvasSessionPanel, null, sourceTitle(), pane)
-            .apply { setDiff(diffPane, canvasDiffTitle(diffRows)) }
-
-        private fun diffPane() = diffRows.takeIf { it.isNotEmpty() }?.let { CanvasDiffPane(project, source.path, it, sourceListener::wheel) }
-        private fun sourceTitle() = "File source · ${if (source.text.isEmpty()) 0 else source.text.count { it == '\n' } + 1} lines"
-
-        /** Shows [fresh], the file read again, in place of the current source; the chats and summary stay. */
-        fun show(fresh: CanvasSource) {
-            Disposer.dispose(pane)
-            diffPane?.let(Disposer::dispose)
-            source = fresh
-            pane = CanvasSourcePane(project, null, fresh, sourceListener).also { it.applyZoom(zoom) }
-            diffRows = canvasSourceDiff(diffs, fresh, wholeFile = true)
-            diffPane = diffPane()?.also { it.applyZoom(zoom) }
-            sourceSection.setSource(pane, diffPane, canvasDiffTitle(diffRows))
-            sourceSection.title.text = sourceTitle()
-            rendered = null
-            update(model.session.root)
-        }
-        private val history = CanvasFoldSection(this@CanvasSessionPanel, null, CardSection.CHAT, "Chat",
-            JPanel(BorderLayout()).apply { isOpaque = false })
-        val chat = CanvasChatView(this@CanvasSessionPanel, null, model.session.root, { canvasRootWelcome(model.session.rootPath) },
-            canvasRootAskPlaceholder(model.session.rootPath), history)
-        internal val header = CanvasCardHeader(this@CanvasSessionPanel, null,
-            zoomFont(CanvasTitleLabel(file.source.name, file.source.fileType.icon), UIUtil.getLabelFont().deriveFont(Font.BOLD)),
-            null, ::menuActions)
-        private var rendered: CanvasRootState? = null
-
-        init {
-            isOpaque = false
-            name = "canvas-root"
-            updateBorder()
-            add(header)
-            add(meta)
-            add(summary)
-            add(sourceSection)
-            add(history)
-            add(chat.ask)
-            addMouseWheelListener(::wheel)
-            update(model.session.root)
-        }
-
-        fun applyZoom() {
-            updateBorder()
-            pane.applyZoom(zoom)
-            diffPane?.applyZoom(zoom)
-        }
-
-        private fun updateBorder() {
-            val line = zoomScaled(2, zoom)
-            val pad = zoomScaled(6, zoom)
-            // The resting outline is thinner; the padding keeps the content in place when focus thickens it.
-            val shown = if (focused) line else zoomScaled(1, zoom)
-            val inner = line + pad - shown
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(if (focused) JBUI.CurrentTheme.Focus.focusColor() else CANVAS_CARD_BORDER, shown),
-                pixelBorder(inner, inner, inner, inner))
-        }
-
-        /** Shows [root], the root file's chats and folding in the model. */
-        fun update(root: CanvasRootState) {
-            val chatChanged = chat.update(root)
-            val previous = rendered
-            rendered = root
-            if (previous != null && !chatChanged && previous.copy(chats = root.chats) == root) return
-            meta.isVisible = CardSection.META !in root.folded
-            header.metaToggle.text = canvasFoldGlyph(meta.isVisible)
-            listOf(summary, sourceSection, history).forEach { it.fold(it.section in root.folded) }
-            pane.showGapSummaries(source.shownGapSummaries(root.gapSummaries))
-            val pending = summaryJob?.isActive == true
-            summaryText.text = root.summary.orEmpty()
-            summaryText.isVisible = root.summary != null
-            summaryStatus.text = when {
-                pending -> "Summarizing…"
-                root.summaryError != null -> root.summaryError
-                source.text.isBlank() -> "No source to summarize."
-                else -> ""
-            }
-            summaryStatus.isVisible = summaryStatus.text.isNotEmpty()
-            summarize.text = when {
-                root.summaryError != null -> "Retry"
-                root.summary != null -> "Summarize again"
-                else -> "Summarize"
-            }
-            summarize.isEnabled = !pending && source.text.isNotBlank()
-            revalidate()
-            repaint()
-            cardResized()
-        }
-
-
-        /** The entries of the file's ⋯ menu (also on right-click). */
-        fun menuActions(): List<CanvasCardAction> = listOf(
-            CanvasCardAction("canvas-summarize", summarize.text, "Summarize this file", enabled = summarize.isEnabled) { requestSummary() },
-        ) + canvasGapActions(this@CanvasSessionPanel, null, source, model.session.root.gapSummaries) + listOf(
-            CanvasCardAction("canvas-source", "Go to source", "Open ${source.path} in the editor", separated = true) {
-                navigate(source, source.path, source.firstLine)
-            },
-            CanvasCardAction("canvas-attach-file", "Attach file…", "Attach documentation, screenshots or other files to this file",
-                separated = true) { attachFile(null) },
-            CanvasCardAction("canvas-new-chat", "New chat", "Start another conversation about this file") { model.addChat(null) },
-        )
-        private fun requestSummary() {
-            if (summaryJob?.isActive == true || source.text.isBlank()) return
-            val input = CanvasSummaryInput(CardKind.SYMBOL, file.source.name, source.path, source.firstLine,
-                source.text, symbolKind = "FILE", language = file.source.fileType.displayName)
-            summaryJob = scope.launch(Dispatchers.EDT) {
-                try {
-                    val text = withBackgroundProgress(project, "Summarizing ${file.source.name}") {
-                        reportRawProgress { reporter ->
-                            withContext(Dispatchers.IO) {
-                                CanvasSummarizer(services.complete(), tools = services.summaryTools(),
-                                    maxContextChars = services.maxContextChars()).summarize(input) { reporter.text(it) }
-                            }
-                        }
-                    }
-                    model.setSummary(null, text)
-                } catch (e: CanvasSummaryException) {
-                    LOG.info("Canvas file summary failed: ${e.message}", e.cause)
-                    model.setSummary(null, null, e.message)
-                } catch (e: Throwable) {
-                    if (e is CancellationException || e is ControlFlowException) throw e
-                    LOG.warn("Canvas file summary failed", e)
-                    model.setSummary(null, null, "The summary failed: ${e.message ?: e.javaClass.simpleName}. See the IDE log.")
-                } finally {
-                    summaryJob = null
-                    rendered = null
-                    if (!disposed) update(model.session.root)
-                }
-            }
-            rendered = null
-            update(model.session.root)
-        }
-
-        val navigationEditor get() = if (!sourceSection.body.isVisible) null
-            else if (sourceSection.showsDiff) diffPane?.editor else pane.editor
-
-        fun anchorY(anchor: CardAnchor): Int = if (sourceSection.body.isVisible && !sourceSection.showsDiff)
-            SwingUtilities.convertPoint(pane, 0, pane.shownAnchorY(anchor.startOffset), this).y
-        else components.first().let { it.y + it.height / 2 }
-
-        override fun getPreferredSize(): Dimension {
-            val stacked = super.getPreferredSize()
-            val horizontalInsets = insets.left + insets.right
-            // Wide enough to chat in, even beside a short, narrow file.
-            return Dimension(maxOf(pane.preferredSize.width, diffPane?.preferredSize?.width ?: 0, components.first().preferredSize.width,
-                zoomScaled(ROOT_CHAT_MIN_WIDTH, zoom)) + horizontalInsets, stacked.height)
-        }
-
-        override fun dispose() {
-            summaryJob?.cancel()
-            Disposer.dispose(chat)
-            Disposer.dispose(pane)
-            diffPane?.let(Disposer::dispose)
-        }
     }
 
     /** The scrollable canvas: lays out the root file and the cards, and draws the arrows between them. */
@@ -1763,29 +1570,18 @@ internal class CanvasSessionPanel(
             }
             val root = rootView
             if (root != null) {
-                root.pane.maxWidth = zoomScaled(ROOT_MAX_WIDTH, zoom)
-                root.diffPane?.maxWidth = zoomScaled(ROOT_MAX_WIDTH, zoom)
-                // Measured twice: the second time at its own width, after a zoom changed it.
-                root.setSize(root.preferredSize.width.coerceAtLeast(1), maxOf(root.height, 1))
-                val size = root.preferredSize
-                root.setBounds(origin.x + margin, origin.y + top, size.width, size.height)
-                root.validate()
+                // The root stays in its place; the cards opened from it follow in columns to its right.
+                root.layOut()
+                root.setLocation(origin.x + margin, origin.y + top)
                 right = maxOf(right, root.x + root.width)
                 bottom = maxOf(bottom, root.y + root.height)
-                val width = zoomScaled(CARD_WIDTH, zoom)
                 val items = model.cards.mapNotNull { card ->
+                    val parentId = card.parentId ?: return@mapNotNull null
                     val view = views[card.id] ?: return@mapNotNull null
-                    view.sourcePane?.maxWidth = width - 2 * zoomScaled(9, zoom)
-                    view.diffPane?.maxWidth = width - 2 * zoomScaled(9, zoom)
-                    view.sourcePane?.maxHeight = zoomScaled(CARD_SOURCE_MAX_HEIGHT, zoom)
-                    view.diffPane?.maxHeight = zoomScaled(CARD_SOURCE_MAX_HEIGHT, zoom)
-                    view.setSize(width, maxOf(view.height, 1))
-                    val height = view.preferredSize.height
-                    view.setSize(width, height)
-                    view.validate()
-                    val anchor = card.parentId?.let { parent -> views[parent]?.anchorY(card.anchor) } ?: root.anchorY(card.anchor)
+                    view.layOut()
+                    val anchor = (views[parentId] ?: root).anchorY(card.anchor)
                     anchorYs[card.id] = anchor
-                    CanvasLayoutItem(card.id, card.parentId?.takeIf { it in views }, anchor, width, height)
+                    CanvasLayoutItem(card.id, parentId.takeIf { it in views && it != CANVAS_ROOT }, anchor, view.width, view.height)
                 }
                 val animate = isShowing && layoutZoom == zoom
                 layoutZoom = zoom
@@ -1795,7 +1591,9 @@ internal class CanvasSessionPanel(
                 motion.retain(placed.keys)
                 for (item in items) {
                     val at = placed[item.id] ?: continue
-                    motion.target(item.id, at, now, animate && (item.id in placements || item.id in entering), zoomScaled(12, zoom))
+                    // A card being resized follows the pointer at once; the cards it moves may glide.
+                    val glide = animate && views[item.id]?.resizing != true && (item.id in placements || item.id in entering)
+                    motion.target(item.id, at, now, glide, zoomScaled(12, zoom))
                     val shown = motion.position(item.id, now)
                     views[item.id]?.let { view ->
                         view.setBounds(shown.x + origin.x, shown.y + origin.y, item.width, item.height)
@@ -1821,6 +1619,7 @@ internal class CanvasSessionPanel(
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.stroke = BasicStroke(zoomScaled(2, zoom).toFloat() * 0.75f)
                 for (card in model.cards) {
+                    if (card.parentId == null || card.isDirectorySeed) continue
                     val view = views[card.id] ?: continue
                     val parent: JComponent = card.parentId?.let(views::get) ?: root
                     val anchor = anchorYs[card.id] ?: continue
@@ -1856,10 +1655,6 @@ internal class CanvasSessionPanel(
         val LOG = logger<CanvasSessionPanel>()
         val ARROW = JBColor(Color(130, 150, 200), Color(110, 130, 175))
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))
-        const val CARD_WIDTH = 1030
-        const val CARD_SOURCE_MAX_HEIGHT = 640
-        const val ROOT_MAX_WIDTH = 1267
-        const val ROOT_CHAT_MIN_WIDTH = 576
         const val MIN_ZOOM = 0.05
         const val MAX_ZOOM = 3.0
         const val ZOOM_STEP = 1.2

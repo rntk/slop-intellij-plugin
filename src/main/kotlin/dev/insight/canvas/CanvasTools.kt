@@ -31,19 +31,19 @@ data class CanvasTarget(val id: Int, val name: String, val label: String, val pa
  */
 interface CanvasActions {
     val session: CanvasSession
-    /** The source shown for [cardId], or the root file's for null; null when nothing is shown. */
-    fun source(cardId: String?): CanvasSource?
+    /** The source shown for [cardId] (the root file's for [CANVAS_ROOT]); null when nothing is shown. */
+    fun source(cardId: String): CanvasSource?
     fun target(id: Int): CanvasTarget?
     /** The symbols named [name] (without parameters) declared in project file [path], after reading that file. */
     suspend fun declarations(path: String, name: String): List<CanvasTarget>
     /** Searches project files for callers and references to graph symbol [target]. */
     suspend fun findUsages(target: Int): CanvasUsageSearch =
         CanvasUsageSearch(target, target(target)?.name ?: "#$target", emptyList(), false)
-    /** Opens [target]'s card from [start] until [end] of [parentId]'s source (null: the root file). */
-    suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int): CanvasCard
-    suspend fun openSelection(parentId: String?, start: Int, end: Int): CanvasCard
+    /** Opens [target]'s card from [start] until [end] of [parentId]'s source. */
+    suspend fun openSymbol(parentId: String, start: Int, end: Int, target: Int): CanvasCard
+    suspend fun openSelection(parentId: String, start: Int, end: Int): CanvasCard
     /** Opens a card showing the whole project file [path], anchored at [start] until [end] of [parentId]'s source. */
-    suspend fun openFile(parentId: String?, start: Int, end: Int, path: String): CanvasCard
+    suspend fun openFile(parentId: String, start: Int, end: Int, path: String): CanvasCard
     /** Scrolls to [cardId] and highlights it. */
     suspend fun show(cardId: String)
     /** The call graph explored so far, for the graph tools; null leaves them out. */
@@ -67,14 +67,14 @@ interface CanvasGraph {
 const val CANVAS_OPEN_LIMIT = 6
 
 /**
- * The tools of [cardId]'s chat (null: the root file's): reading the canvas beyond the context, and opening and
+ * The tools of [cardId]'s chat (the root card's included): reading the canvas beyond the context, and opening and
  * showing cards. Opening tools share an allowance of [maxOpened] cards per reply; create the tools once per reply.
  */
-fun canvasTools(actions: CanvasActions, cardId: String?, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> =
+fun canvasTools(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): List<ChatTool> =
     canvasToolRegistry(actions, cardId, maxOpened).tools
 
 /** [canvasTools] by topic, for a chat that starts with [CANVAS_CHAT_TOOLS] and loads the rest when it needs them. */
-fun canvasToolRegistry(actions: CanvasActions, cardId: String?, maxOpened: Int = CANVAS_OPEN_LIMIT): ToolRegistry {
+fun canvasToolRegistry(actions: CanvasActions, cardId: String, maxOpened: Int = CANVAS_OPEN_LIMIT): ToolRegistry {
     val canvas = CanvasToolContext(actions, cardId)
     val opened = CallAllowance(maxOpened, "This reply has opened $maxOpened cards, the most one reply may open. " +
         "Answer with the cards already shown.")
@@ -98,27 +98,27 @@ fun canvasToolRegistry(actions: CanvasActions, cardId: String?, maxOpened: Int =
 val CANVAS_CHAT_TOOLS = listOf("read_card", "list_symbols", "open_symbol")
 
 /** Resolves card handles and lines for the tools of one card's chat. */
-private class CanvasToolContext(val actions: CanvasActions, val cardId: String?) {
-    /** The card [handle] names: null for the root file, else an open card's id. */
-    fun card(handle: String?): String? {
+private class CanvasToolContext(val actions: CanvasActions, val cardId: String) {
+    /** The card [handle] names: [CANVAS_ROOT] for the root file, else an open card's id. */
+    fun card(handle: String?): String {
         val clean = handle?.trim()?.removePrefix("[")?.removeSuffix("]")?.removePrefix("card ")?.trim()
         return when {
             clean.isNullOrEmpty() || clean.equals(CANVAS_CURRENT, ignoreCase = true) ->
-                cardId?.also { if (actions.session.card(it) == null) throw ToolInputException("The current card was closed.") }
-            clean.equals(CANVAS_ROOT, ignoreCase = true) -> null
+                cardId.also { if (actions.session.card(it) == null) throw ToolInputException("The current card was closed.") }
+            clean.equals(CANVAS_ROOT, ignoreCase = true) -> CANVAS_ROOT
             actions.session.card(clean) != null -> clean
             else -> throw ToolInputException("No card '$handle' is open. Use \"$CANVAS_CURRENT\", \"$CANVAS_ROOT\" or an id from canvas_overview.")
         }
     }
 
     /** The source shown for [id], with text to open from. */
-    fun shown(id: String?): Shown {
+    fun shown(id: String): Shown {
         val source = actions.source(id) ?: throw ToolInputException("${name(id)} is not shown yet; try again shortly.")
         if (source.text.isEmpty()) throw ToolInputException("${name(id)} has no source: ${source.notice ?: "nothing to open from"}")
         return Shown(source)
     }
 
-    fun name(id: String?): String = if (id == null) "The root file" else "Card $id"
+    fun name(id: String): String = if (id == CANVAS_ROOT) "The root file" else "Card $id"
 
     /** Where a card opened from [parent] points at: [line] when given, else the first use of [word], else the first line. */
     fun anchor(parent: Shown, line: Int?, word: String?): IntRange {
@@ -133,7 +133,7 @@ private class CanvasToolContext(val actions: CanvasActions, val cardId: String?)
     fun report(card: CanvasCard, wasOpen: Boolean): String = buildString {
         append(if (wasOpen) "Card ${card.id} was already open; it is shown again: " else "Opened card ${card.id} on the canvas: ")
         append(describe(card))
-        val parent = card.parentId?.let { "card $it" } ?: "the root file"
+        val parent = card.parentId?.takeIf { it != CANVAS_ROOT }?.let { "card $it" } ?: "the root file"
         append(", from $parent line ${card.anchor.line + 1}.\n")
         card.summary?.let { append("Summary (model-written): ${it.trim()}\n") }
         val source = actions.source(card.id)
@@ -143,7 +143,7 @@ private class CanvasToolContext(val actions: CanvasActions, val cardId: String?)
         else append(numberedText(label(card), text, source?.firstLine ?: card.firstLine, card.filePath, REPORT_SOURCE_CHARS))
     }.trimEnd()
 
-    fun label(card: CanvasCard) = if (card.kind == CardKind.ATTACHMENT) "Attachment text" else if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
+    fun label(card: CanvasCard) = if (card.isDirectoryRoot) "Files" else if (card.kind == CardKind.ATTACHMENT) "Attachment text" else if (card.wholeFile) "File source" else if (card.kind == CardKind.SELECTION) "Selected text" else "Source"
 
     /** Runs [open] and reports the card it returns, telling whether it was open before. */
     suspend fun opening(open: suspend () -> CanvasCard): String {
@@ -200,20 +200,21 @@ private class CanvasOverviewTool(private val canvas: CanvasToolContext) : Canvas
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val session = canvas.actions.session
-        val chain = canvas.cardId?.let(session::chain).orEmpty().map { it.id }.toSet()
+        val chain = session.chain(canvas.cardId).map { it.id }.toSet()
         return buildString {
-            append("Root file: ${session.rootPath} [$CANVAS_ROOT]${if (canvas.cardId == null) " (current card)" else ""}\n")
-            if (session.cards.isEmpty()) append("No cards are open.\n")
-            fun branch(parentId: String?, depth: Int) {
+            append("Root ${session.rootKind}: ${session.rootPath} [$CANVAS_ROOT]${if (canvas.cardId == CANVAS_ROOT) " (current card)" else ""}\n")
+            if (session.cards.size == 1) append("No cards are open.\n")
+            fun branch(parentId: String, depth: Int) {
                 for (card in session.children(parentId)) {
-                    append("  ".repeat(depth)).append("- ${card.title} [card ${card.id}]: ${describe(card)}, from line ${card.anchor.line + 1}")
+                    append("  ".repeat(depth)).append("- ${card.title} [card ${card.id}]: ${describe(card)}")
+                    if (!card.isDirectorySeed) append(", from line ${card.anchor.line + 1}")
                     if (card.id == canvas.cardId) append(" (current card)") else if (card.id in chain) append(" (on the current chain)")
                     append("\n")
                     card.summary?.let { append("  ".repeat(depth + 1)).append("Summary: ${clip(it.trim(), 200)}\n") }
                     branch(card.id, depth + 1)
                 }
             }
-            branch(null, 0)
+            branch(CANVAS_ROOT, 0)
         }.trimEnd()
     }
 }
@@ -231,20 +232,28 @@ private class ReadCardTool(private val canvas: CanvasToolContext) : CanvasTool(
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val id = canvas.card(arguments.optionalStringArg("card"))
-        val card = id?.let { canvas.actions.session.card(it) }
+        val card = canvas.actions.session.card(id)?.takeIf { it.kind != CardKind.ROOT }
         val source = canvas.actions.source(id)
+        val session = canvas.actions.session
         return buildString {
-            if (card == null) append("Root file ${canvas.actions.session.rootPath}\n")
+            if (card == null) append("Root ${session.rootKind} ${session.rootPath}\n")
             else {
                 append("Card ${card.id}: ${describe(card)}\n")
-                card.attachment?.let { append("Attachment: ${it.mediaType}, ${it.size} bytes; linked to ${card.parentId ?: CANVAS_ROOT}.\n") }
-                append("Opened from: ${card.parentId?.let { "card $it" } ?: "the root file"}, line ${card.anchor.line + 1}\n")
+                card.attachment?.let {
+                    append("Attachment: ${it.mediaType}, ${it.size} bytes")
+                    if (!card.isDirectorySeed) append("; linked to ${card.parentId}")
+                    append(".\n")
+                }
+                if (!card.isDirectorySeed) {
+                    val from = card.parentId?.takeIf { it != CANVAS_ROOT }?.let { "card $it" } ?: "the root ${session.rootKind}"
+                    append("Opened from: $from, line ${card.anchor.line + 1}\n")
+                }
                 card.summary?.let { append("Summary (model-written): ${it.trim()}\n") }
                 val children = canvas.actions.session.children(card.id)
                 if (children.isNotEmpty()) append("Cards opened from it: ${children.joinToString("; ") { "${it.title} [card ${it.id}] from line ${it.anchor.line + 1}" }}\n")
             }
             source?.notice?.let { append("Notice: $it\n") }
-            val gaps = source?.shownGapSummaries((card ?: canvas.actions.session.root).gapSummaries).orEmpty()
+            val gaps = source?.shownGapSummaries((card ?: session.root).gapSummaries).orEmpty()
             if (gaps.isNotEmpty()) append("Gap summaries (model-written):\n" +
                 gaps.joinToString("\n") { "- lines ${it.first + 1}-${it.last + 1}: ${clip(it.text.trim(), 400)}" } + "\n")
             val text = source?.text ?: card?.text.orEmpty()
@@ -257,7 +266,8 @@ private class ReadCardTool(private val canvas: CanvasToolContext) : CanvasTool(
             val from = ((arguments.lenientInt("start_line") ?: (firstLine + 1)) - firstLine - 1).coerceIn(0, lines.lastIndex)
             val to = ((arguments.lenientInt("end_line") ?: (firstLine + lines.size)) - firstLine - 1).coerceIn(from, lines.lastIndex)
             val path = card?.filePath ?: source?.path ?: canvas.actions.session.rootPath
-            append(numberedText(card?.let(canvas::label) ?: "Source", lines.subList(from, to + 1).joinToString("\n"),
+            val caption = card?.let(canvas::label) ?: if (session.root.isDirectoryRoot) "Files" else "Source"
+            append(numberedText(caption, lines.subList(from, to + 1).joinToString("\n"),
                 firstLine + from, path, READ_SOURCE_CHARS, truncated = to < lines.lastIndex))
         }.trimEnd()
     }
@@ -322,7 +332,7 @@ private class FindUsagesTool(private val canvas: CanvasToolContext) : CanvasTool
         val targetId = if (name == null) {
             val source = canvas.actions.source(id) ?: throw ToolInputException("${canvas.name(id)} is not shown yet; try again shortly.")
             val node = source.node
-            if (node == null || id == null || canvas.actions.session.card(id)?.wholeFile == true) {
+            if (node == null || canvas.actions.session.card(id)?.wholeFile != false) {
                 throw ToolInputException("${canvas.name(id)} does not represent a single symbol; pass name to find usages of a symbol in its source.")
             }
             node
@@ -366,7 +376,7 @@ private class ShowCardTool(private val canvas: CanvasToolContext) : CanvasTool(
     JsonSchemas.obj("card" to cardParameter, required = listOf("card"), additionalProperties = false),
 ) {
     override suspend fun call(arguments: JsonObject): String {
-        val id = canvas.card(arguments.stringArg("card")) ?: throw ToolInputException("The root file is always shown; name a card.")
+        val id = canvas.card(arguments.stringArg("card")).takeIf { it != CANVAS_ROOT } ?: throw ToolInputException("The root file is always shown; name a card.")
         canvas.actions.show(id)
         val card = canvas.actions.session.card(id) ?: throw ToolInputException("Card $id was closed.")
         return "Showing card ${card.id}: ${describe(card)}."

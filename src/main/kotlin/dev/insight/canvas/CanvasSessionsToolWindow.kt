@@ -195,8 +195,8 @@ internal class CanvasSessionsPanel(private val project: Project) : JPanel(Border
                     absolute?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }
                 }
                 status.text = when {
-                    source == null || source.isDirectory -> "Source file is no longer available: ${session.rootPath}"
-                    !showSavedCanvasSession(project, source, session) -> "This file cannot be shown. Check its language plugin."
+                    source == null || source.isDirectory != session.directoryInitialized -> "Session source is no longer available: ${session.rootPath}"
+                    !showSavedCanvasSession(project, source, session) -> "This session could not be opened."
                     else -> "Opened ${session.title}"
                 }
             } catch (e: Throwable) {

@@ -67,25 +67,27 @@ private fun java.io.Reader.readTextBounded(limit: Int): String {
 }
 
 /** Attachment cards relevant to this chat: its chain, plus attachments linked to any step of that chain. */
-internal fun canvasContextAttachments(session: CanvasSession, cardId: String?): List<CanvasCard> {
-    val chain = cardId?.let(session::chain).orEmpty()
-    val parents = chain.mapTo(mutableSetOf<String?>(null)) { it.id }
+internal fun canvasContextAttachments(session: CanvasSession, cardId: String): List<CanvasCard> {
+    val chain = session.chain(cardId)
+    val parents = chain.mapTo(mutableSetOf(session.root.id)) { it.id }
     return (chain.filter { it.kind == CardKind.ATTACHMENT } +
-        session.cards.filter { it.kind == CardKind.ATTACHMENT && it.parentId in parents }).distinctBy { it.id }
+        session.cards.filter { it.kind == CardKind.ATTACHMENT && !it.isDirectorySeed && it.parentId in parents }).distinctBy { it.id }
 }
 
 /** Only snapshots explicitly attached to the current chain are sent; other branches stay out of the request. */
-internal fun canvasContextImages(session: CanvasSession, cardId: String?): List<LlmImage> =
+internal fun canvasContextImages(session: CanvasSession, cardId: String): List<LlmImage> =
     canvasContextAttachments(session, cardId).sortedBy { if (it.id == cardId) 0 else 1 }.mapNotNull { card ->
         card.attachment?.imageBase64?.let { LlmImage("image/png", it) }
     }.take(4)
 
-internal fun canvasAttachmentContext(session: CanvasSession, cardId: String?): String = buildString {
+internal fun canvasAttachmentContext(session: CanvasSession, cardId: String): String = buildString {
     var remaining = 16_000
     val images = canvasContextAttachments(session, cardId).sortedBy { if (it.id == cardId) 0 else 1 }
         .filter { it.attachment?.imageBase64 != null }.take(4).map { it.id }
     for (card in canvasContextAttachments(session, cardId)) {
-        append("\nAttachment [card ${card.id}] linked to ${card.parentId ?: CANVAS_ROOT}: ${card.filePath}\n")
+        append("\nAttachment [card ${card.id}]")
+        if (!card.isDirectorySeed) append(" linked to ${card.parentId}")
+        append(": ${card.filePath}\n")
         card.attachment?.let { append("Type: ${it.mediaType}; size: ${it.size} bytes.\n") }
         when {
             card.attachment?.imageBase64 != null -> {

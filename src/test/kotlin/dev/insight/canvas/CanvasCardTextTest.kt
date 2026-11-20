@@ -12,7 +12,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 class CanvasCardTextTest {
-    private val symbol = CanvasCard("c1", null, CardKind.SYMBOL, CardAnchor(0, 4, 2), SymbolRef("src/Store.kt", "save(Int)", "FUNCTION", "Store"),
+    private val symbol = CanvasCard("c1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 4, 2), SymbolRef("src/Store.kt", "save(Int)", "FUNCTION", "Store"),
         "src/Store.kt", 9, "fun save(x: Int) {\n  write(x)\n}")
     private val selection = CanvasCard("c2", "c1", CardKind.SELECTION, CardAnchor(5, 10, 10), null, "src/Store.kt", 10, "write(x)")
 

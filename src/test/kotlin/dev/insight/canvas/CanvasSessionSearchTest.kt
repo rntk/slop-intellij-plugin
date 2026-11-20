@@ -39,14 +39,14 @@ class CanvasSessionSearchTest {
 
 class CanvasCardSearchTest {
     private fun symbol(id: String, name: String, path: String, container: String = "", summary: String? = null) =
-        CanvasCard(id, null, CardKind.SYMBOL, CardAnchor(0, 1, 0), SymbolRef(path, name, "FUNCTION", container), path, 0,
+        CanvasCard(id, CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 1, 0), SymbolRef(path, name, "FUNCTION", container), path, 0,
             "fun $name() {}", summary = summary)
 
     private val cards = listOf(
         symbol("load", "loadRoot", "src/CanvasSessionController.kt", "CanvasSessionController"),
         symbol("show", "showCanvasSessions", "src/Sessions.kt", summary = "Lists saved sessions in the side panel."),
         symbol("reveal", "reveal", "src/CanvasSessionPanel.kt", "CanvasSessionPanel"),
-        CanvasCard("sel", null, CardKind.SELECTION, CardAnchor(0, 1, 0), null, "src/Main.kt", 3, "\n  val answer = 42\n}"),
+        CanvasCard("sel", CANVAS_ROOT, CardKind.SELECTION, CardAnchor(0, 1, 0), null, "src/Main.kt", 3, "\n  val answer = 42\n}"),
     )
 
     @Test fun `empty search lists every card in opening order`() {

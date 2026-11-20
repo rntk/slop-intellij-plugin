@@ -50,7 +50,7 @@ class ContextActionRulesTest {
             ContextScopeKind.HUNK to listOf("editor", "chain"),
             ContextScopeKind.FILE_DIFF to listOf("editor", "chain"),
             ContextScopeKind.CHANGE to emptyList(),
-            ContextScopeKind.DIRECTORY to emptyList(),
+            ContextScopeKind.DIRECTORY to listOf("canvas"),
             ContextScopeKind.FILE to listOf("editor", "canvas", "chain", "tree"),
         )
         for (kind in all - ContextScopeKind.SYMBOL) {

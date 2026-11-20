@@ -31,14 +31,16 @@ const val CANVAS_SELECTION_CHANGED = "The code around this selection changed sin
 
 /** `Function`, `Class`, … for a symbol card, `Selection` otherwise. */
 fun canvasKindLabel(card: CanvasCard): String = when {
+    card.kind == CardKind.ROOT -> card.rootKind.replaceFirstChar { it.titlecase(Locale.ROOT) }
     card.kind == CardKind.ATTACHMENT -> "Attachment"
     card.wholeFile -> "File"
     card.kind == CardKind.SELECTION || card.symbol == null -> "Selection"
     else -> card.symbol.kind.lowercase().replaceFirstChar { it.titlecase(Locale.ROOT) }.ifEmpty { "Symbol" }
 }
 
-/** The card's second header line: `function in Store · src/Store.kt:10-20`, or `external` without a place. */
+/** The card's second header line: `function in Store · src/Store.kt:10-20`, or `external` without a place; the root's path. */
 fun canvasCardMeta(card: CanvasCard): String {
+    if (card.kind == CardKind.ROOT) return card.filePath
     val symbol = card.symbol
     val what = if (card.kind == CardKind.ATTACHMENT) "attachment" else if (card.wholeFile) "file" else if (card.kind == CardKind.SELECTION || symbol == null) "selection"
         else symbol.kind.lowercase().ifEmpty { "symbol" } + symbol.container.takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
@@ -48,6 +50,7 @@ fun canvasCardMeta(card: CanvasCard): String {
 
 /** The header of a card's source section: `Source · 12 lines`, `Selected text · 3 lines`, with `(cut)` when truncated. */
 fun canvasSourceTitle(card: CanvasCard): String {
+    if (card.isDirectoryRoot) return "Files"
     if (card.kind == CardKind.ATTACHMENT && card.attachment?.imageBase64 != null) return "Picture"
     if (card.kind == CardKind.ATTACHMENT && card.text.isEmpty()) return "Attached file"
     val lines = if (card.text.isEmpty()) 0 else card.text.count { it == '\n' } + 1

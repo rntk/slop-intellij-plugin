@@ -76,25 +76,23 @@ data class CanvasUsageSearch(
 /**
  * The IDE side of one canvas session, without any Swing: builds the root file's source and each card's, opens cards
  * in [model] from links and selections, and resolves a saved session's symbols again. [exploration] is the graph of
- * [rootFile], whose FILE symbol is [rootNode]; [reopen] reads both again for [refresh]. Model mutations happen on the
+ * [rootFile], whose FILE symbol is [rootNode] when the root is a file. [reopen] reads it again for [refresh]. Model mutations happen on the
  * EDT; graph work runs in the background.
  */
 internal class CanvasSessionController(
     private val project: Project,
     val rootFile: VirtualFile,
     exploration: ProgressiveSchematic,
-    rootNode: Int,
+    rootNode: Int?,
     val model: CanvasSessionModel,
-    private val reopen: suspend () -> Pair<ProgressiveSchematic, Int>? = { openExploration(project, rootFile) },
+    private val reopen: suspend () -> Pair<ProgressiveSchematic, Int?>? = { openExploration(project, rootFile) },
 ) : Disposable {
     // Replaced together by refresh: symbol ids belong to one exploration.
     @Volatile private var exploration: ProgressiveSchematic = exploration
-    @Volatile private var rootNode: Int = rootNode
+    @Volatile private var rootNode: Int? = rootNode
     private val sources = ConcurrentHashMap<String, CanvasSource>()
     /** The source of the card being opened; the model's listener takes it once the card has an id. */
     private var opening: CanvasSource? = null
-    @Volatile var root: CanvasSource? = null
-        private set
 
     // Subscribed first, so views listening to the model find each new card's source.
     private val subscription = model.subscribe { change ->
@@ -107,10 +105,17 @@ internal class CanvasSessionController(
 
     fun node(id: Int): CallGraphNode? = exploration.result.graph.nodes.getOrNull(id)
 
-    val rootName: String get() = node(rootNode)?.name ?: rootFile.name
+    private fun directoryRoot(files: List<VirtualFile>) = CanvasSource(
+        files.joinToString("\n") { it.path.removePrefix(rootFile.path.trimEnd('/') + "/") },
+        emptyList(), 0, model.session.rootPath, null)
 
-    /** The source shown for [cardId], or the root file's for null; null while it is not built. */
-    fun source(cardId: String?): CanvasSource? = if (cardId == null) root else sources[cardId]
+    val rootName: String get() = rootNode?.let(::node)?.name ?: rootFile.name
+
+    /** The source shown for [cardId]; null while it is not built. The root card's is read from [rootFile], never saved. */
+    fun source(cardId: String): CanvasSource? = sources[cardId]
+
+    /** The root file's source, once [loadRoot] built it. */
+    val root: CanvasSource? get() = sources[CANVAS_ROOT]
 
     /** The project-relative form of an absolute [path]; other paths stay as they are. */
     fun relative(path: String?): String? = path?.let { relativePath(project, it) }
@@ -126,9 +131,11 @@ internal class CanvasSessionController(
 
     /** Builds the root file's source; throws with a short message when it cannot be read. */
     suspend fun loadRoot(): CanvasSource {
-        val schematic = withContext(Dispatchers.Default) { exploration.schematic(rootNode, whole = true) }
+        if (rootFile.isDirectory) return directoryRoot(directoryCanvasFiles(project, rootFile)).also { sources[CANVAS_ROOT] = it }
+        val id = checkNotNull(rootNode)
+        val schematic = withContext(Dispatchers.Default) { exploration.schematic(id, whole = true) }
             ?: error("The source of ${rootName} is no longer available. Reopen the canvas session.")
-        return schematicSource(schematic, model.session.rootPath, rootNode).also { root = it }
+        return schematicSource(schematic, model.session.rootPath, id).also { sources[CANVAS_ROOT] = it }
     }
 
     /**
@@ -139,22 +146,38 @@ internal class CanvasSessionController(
     suspend fun refresh(onProgress: (Int, Int) -> Unit = { _, _ -> }): CanvasSource {
         val (next, nextRoot) = withContext(Dispatchers.Default) { reopen() }
             ?: error("The source of $rootName is no longer available.")
-        val schematic = withContext(Dispatchers.Default) { next.schematic(nextRoot, whole = true) }
-            ?: error("The source of $rootName is no longer available.")
+        val fresh = if (rootFile.isDirectory) directoryRoot(directoryCanvasFiles(project, rootFile)) else {
+            val id = checkNotNull(nextRoot)
+            val schematic = withContext(Dispatchers.Default) { next.schematic(id, whole = true) }
+                ?: error("The source of $rootName is no longer available.")
+            schematicSource(schematic, model.session.rootPath, id)
+        }
         exploration = next
         rootNode = nextRoot
         lifted = null
         sources.clear()
-        val fresh = schematicSource(schematic, model.session.rootPath, nextRoot).also { root = it }
+        sources[CANVAS_ROOT] = fresh
         restore(onProgress)
         return fresh
     }
 
+    /** Seed the directory in one model update, so interruption cannot save a partial set of cards. */
+    suspend fun initializeDirectory(onProgress: (Int, Int) -> Unit) {
+        val files = directoryCanvasFiles(project, rootFile)
+        val prepared = buildDirectoryCards(project, files, onProgress)
+        withContext(Dispatchers.EDT) {
+            exploration = prepared.exploration
+            lifted = null
+            sources.putAll(prepared.sources)
+            model.initializeDirectory(prepared.cards)
+        }
+    }
+
     /**
-     * Opens the card of graph symbol [target] from link [start] until [end] of [parentId]'s source (the root file for
-     * null), or returns the card already open there. Targets outside the project open a card without source.
+     * Opens the card of graph symbol [target] from link [start] until [end] of [parentId]'s source,
+     * or returns the card already open there. Targets outside the project open a card without source.
      */
-    suspend fun openSymbol(parentId: String?, start: Int, end: Int, target: Int,
+    suspend fun openSymbol(parentId: String, start: Int, end: Int, target: Int,
         openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val node = node(target) ?: error("Unknown symbol #$target.")
@@ -169,7 +192,7 @@ internal class CanvasSessionController(
     }
 
     /** Opens a card of [start] until [end] of [parentId]'s source, or the one already open there; null for blank text. EDT. */
-    fun openSelection(parentId: String?, start: Int, end: Int, openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard? {
+    fun openSelection(parentId: String, start: Int, end: Int, openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard? {
         val parent = source(parentId) ?: return null
         val from = start.coerceIn(0, parent.text.length)
         val to = end.coerceIn(from, parent.text.length)
@@ -182,7 +205,7 @@ internal class CanvasSessionController(
     }
 
     /** Attaches any local file, including files outside the project and languages absent from the graph. */
-    suspend fun attachFile(parentId: String?, file: VirtualFile): CanvasCard {
+    suspend fun attachFile(parentId: String, file: VirtualFile): CanvasCard {
         require(!file.isDirectory) { "Choose a file, not a directory." }
         val content = withContext(Dispatchers.IO) {
             val mediaType = java.nio.file.Files.probeContentType(java.nio.file.Path.of(file.path)) ?: "application/octet-stream"
@@ -196,10 +219,10 @@ internal class CanvasSessionController(
     }
 
     /**
-     * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source (the root file for
-     * null), or returns the card of that file already open there. For files the chain does not lead to.
+     * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source,
+     * or returns the card of that file already open there. For files the chain does not lead to.
      */
-    suspend fun openFile(parentId: String?, start: Int, end: Int, file: VirtualFile,
+    suspend fun openFile(parentId: String, start: Int, end: Int, file: VirtualFile,
         openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
@@ -264,7 +287,7 @@ internal class CanvasSessionController(
     }
 
     /** Where a card opened from [cardId]'s usage list anchors in [cardId]'s source: its declared name or first line. */
-    fun usageAnchor(cardId: String?): IntRange {
+    fun usageAnchor(cardId: String): IntRange {
         val source = source(cardId) ?: return 0 until 0
         val name = source.node?.let(::node)?.name?.substringBefore('(')?.substringBefore('<')?.substringBefore(':')?.trim()?.takeIf { it.isNotBlank() }
         val match = name?.let { Regex("\\b${Regex.escape(it)}\\b").find(source.text) }
@@ -315,10 +338,11 @@ internal class CanvasSessionController(
      * snapshot) or, when it is gone, its saved text. Selections keep their text. [onProgress] reports each card.
      */
     suspend fun restore(onProgress: (Int, Int) -> Unit = { _, _ -> }) {
-        val cards = model.cards
+        // The root card's source is read with the root file.
+        val cards = model.cards.filter { it.kind != CardKind.ROOT }
         cards.forEachIndexed { index, card ->
             withContext(Dispatchers.EDT) { onProgress(index + 1, cards.size) }
-            val parent = source(card.parentId)
+            val parent = card.parentId?.let(::source)
             val restored = try {
                 when {
                     card.kind == CardKind.ATTACHMENT -> saved(card,
@@ -403,15 +427,11 @@ internal class CanvasSessionController(
         return source to ref
     }
 
-    private fun schematicSource(schematic: Schematic, path: String, node: Int) = CanvasSource(canvasText(schematic),
-        canvasLinks(schematic), schematic.firstLine, path, schematic.file, node, gaps = schematic.gaps,
-        summarySpan = schematic.summarySpan)
-
     /**
-     * What the gap summary of [unit] in [cardId]'s source (the root file's for null) is written from: the file as it is
+     * What the gap summary of [unit] in [cardId]'s source is written from: the file as it is
      * now, with the IDE's facts about the gap. Throws when the file changed since the source was read.
      */
-    suspend fun gapSource(cardId: String?, unit: GapUnit): GapSource {
+    suspend fun gapSource(cardId: String, unit: GapUnit): GapSource {
         val source = source(cardId) ?: error("The source is not shown.")
         val file = source.file?.takeIf { it.isValid } ?: error("The file ${source.path} is no longer available.")
         return smartReadAction(project) { schematicGapSource(project, file, source.firstLine, source.text.split('\n'), unit) }
@@ -446,10 +466,6 @@ internal class CanvasSessionController(
     private fun saved(card: CanvasCard, notice: String) =
         CanvasSource(card.text, emptyList(), card.firstLine, card.filePath, findFile(card.filePath), notice = notice)
 
-    private fun attachmentNotice(attachment: CanvasAttachment?): String =
-        if (attachment?.imageBase64 != null) "Image snapshot. Open file to view the original in the IDE."
-        else "Linked attachment. Open file to view the original in the IDE."
-
     private fun open(source: CanvasSource, open: (CanvasSource) -> CanvasCard): CanvasCard {
         opening = source
         try {
@@ -469,8 +485,9 @@ internal class CanvasSessionController(
     }
 }
 
-/** A fresh exploration of [file] and its FILE symbol; null when the file cannot be shown. Off the EDT. */
-internal suspend fun openExploration(project: Project, file: VirtualFile): Pair<ProgressiveSchematic, Int>? {
+/** A fresh exploration with a FILE symbol for a file root. Off the EDT. */
+internal suspend fun openExploration(project: Project, file: VirtualFile): Pair<ProgressiveSchematic, Int?>? {
+    if (file.isValid && file.isDirectory) return ProgressiveSchematic.empty(project) to null
     val exploration = ProgressiveSchematic.open(project, file) ?: return null
     val root = exploration.result.graph.nodes.firstOrNull { it.kind == SymbolKind.FILE && it.filePath == file.path } ?: return null
     return exploration to root.id
@@ -479,3 +496,11 @@ internal suspend fun openExploration(project: Project, file: VirtualFile): Pair<
 /** [path] relative to the project's base directory, or unchanged when it lies elsewhere. */
 internal fun relativePath(project: Project, path: String): String =
     project.basePath?.let { base -> path.removePrefix("${base.trimEnd('/')}/") } ?: path
+
+internal fun schematicSource(schematic: Schematic, path: String, node: Int) = CanvasSource(canvasText(schematic),
+    canvasLinks(schematic), schematic.firstLine, path, schematic.file, node, gaps = schematic.gaps,
+    summarySpan = schematic.summarySpan)
+
+internal fun attachmentNotice(attachment: CanvasAttachment?): String =
+    if (attachment?.imageBase64 != null) "Image snapshot. Open file to view the original in the IDE."
+    else "Linked attachment. Open file to view the original in the IDE."

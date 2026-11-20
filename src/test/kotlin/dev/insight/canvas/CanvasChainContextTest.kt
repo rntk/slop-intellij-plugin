@@ -6,18 +6,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanvasChainContextTest {
-    private val run = CanvasCard("a", null, CardKind.SYMBOL, CardAnchor(10, 13, 4), SymbolRef("src/App.kt", "run", "FUNCTION", "App"),
+    private val rootCard = canvasRootCard("src/Main.kt")
+    private val run = CanvasCard("a", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(10, 13, 4), SymbolRef("src/App.kt", "run", "FUNCTION", "App"),
         "src/App.kt", 9, "fun run() {\n    store.save()\n}", summary = "Runs the app.")
     private val selection = CanvasCard("b", "a", CardKind.SELECTION, CardAnchor(16, 28, 10), null, "src/App.kt", 10, "    store.save()")
     private val save = CanvasCard("c", "b", CardKind.SYMBOL, CardAnchor(10, 14, 10), SymbolRef("src/Store.kt", "save", "FUNCTION", "Store"),
         "src/Store.kt", 2, "fun save() {}")
-    private val unrelated = CanvasCard("d", null, CardKind.SYMBOL, CardAnchor(0, 4, 0), SymbolRef("src/Main.kt", "main", "FUNCTION"),
+    private val unrelated = CanvasCard("d", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 4, 0), SymbolRef("src/Main.kt", "main", "FUNCTION"),
         "src/Main.kt", 0, "fun main() {}")
     private val root = CanvasSource("fun main() {}\n\n\n\n    app.run()", emptyList(), 0, "src/Main.kt", null)
 
     @Test
     fun `the chain names each card, where it was opened, its summary and numbered source, and leaves other chains out`() {
-        val session = CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(run, selection, save, unrelated))
+        val session = CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(rootCard, run, selection, save, unrelated))
         assertEquals("""
             Root file: src/Main.kt (card "root"; its source is not repeated here)
             Chain from the root file down to the current card; each card was opened from the source of the one above it.
@@ -44,7 +45,7 @@ class CanvasChainContextTest {
 
     @Test
     fun `the root file's chat gets the file's numbered source and the cards opened from it`() {
-        val session = CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(run, selection, unrelated))
+        val session = CanvasSession("s", "src/Main.kt", "Main", 0, 0, listOf(rootCard, run, selection, unrelated))
         assertEquals("""
             Root file: src/Main.kt (card "root")
             This chat belongs to the root file itself, so "current" names the root file; there is no chain above it.
@@ -60,8 +61,8 @@ class CanvasChainContextTest {
             Cards opened from the root file: run [card a] from line 5; main [card d] from line 1
 
             1 other card is open further down the canvas and left out here; canvas_overview lists them.
-        """.trimIndent(), canvasChainContext(session, null, root).lines().joinToString("\n") { it.trimEnd() })
-        assertTrue(canvasChainContext(session, null).contains("[File source: not shown yet; use read_file path src/Main.kt]"))
+        """.trimIndent(), canvasChainContext(session, CANVAS_ROOT, root).lines().joinToString("\n") { it.trimEnd() })
+        assertTrue(canvasChainContext(session, CANVAS_ROOT).contains("[File source: not shown yet; use read_file path src/Main.kt]"))
         val long = CanvasSource((1..500).joinToString("\n") { "line $it" }, emptyList(), 0, "src/Main.kt", null)
         assertTrue(canvasRootContext("src/Main.kt", long, CanvasContextBudget(current = 300))
             .contains("[truncated; use read_file path src/Main.kt from line"))

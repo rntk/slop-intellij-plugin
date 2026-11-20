@@ -87,7 +87,7 @@ class CanvasSessionStore(private val directory: Path) {
     private fun read(file: Path): JsonObject? = runCatching {
         val root = JsonParser.parseString(Files.readString(file)).asJsonObject
         val version = root["version"]?.asInt
-        if (version != VERSION) {
+        if (version == null || version !in 1..VERSION) {
             LOG.info("Skipping canvas session $file of version $version")
             null
         } else root.getAsJsonObject("session")
@@ -97,7 +97,7 @@ class CanvasSessionStore(private val directory: Path) {
     }.getOrNull()
 
     private fun entry(stored: JsonObject): CanvasSessionEntry? = decode(stored)?.let {
-        CanvasSessionEntry(it.id, it.rootPath, it.title, it.updated, it.cards.size)
+        CanvasSessionEntry(it.id, it.rootPath, it.title, it.updated, it.cards.count { card -> card.kind != CardKind.ROOT })
     }
 
     private fun encode(session: CanvasSession): JsonObject = JsonObject().apply {
@@ -106,13 +106,13 @@ class CanvasSessionStore(private val directory: Path) {
             session.cards.map { card ->
                 StoredCard(card.id, card.parentId, card.kind.name, card.anchor.startOffset, card.anchor.endOffset, card.anchor.line,
                     card.symbol?.let { StoredSymbol(it.filePath, it.name, it.kind, it.container, it.offset, it.line) },
-                    card.filePath, card.firstLine, card.text, card.textTruncated, card.summary, card.summaryError,
+                    // The root's source is read from its file each time; it keeps no snapshot.
+                    card.filePath, card.firstLine, card.text.takeIf { card.kind != CardKind.ROOT }, card.textTruncated, card.summary, card.summaryError,
                     card.folded.map { it.name }.sorted(), null, null, card.wholeFile,
                     encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment, encodeGaps(card.gapSummaries),
-                    card.usages?.let { usages -> StoredUsages(usages.targetName, usages.sites.map { StoredSite(it.line, it.call, it.owner) }) })
-            }, session.view.zoom, session.view.x, session.view.y,
-            session.root.let { StoredRoot(encodeChats(it.chats), it.activeChatId, it.folded.map { section -> section.name }.sorted(), it.summary, it.summaryError,
-                encodeGaps(it.gapSummaries)) })))
+                    card.usages?.let { usages -> StoredUsages(usages.targetName, usages.sites.map { StoredSite(it.line, it.call, it.owner) }) },
+                    card.size?.width, card.size?.height)
+            }, session.view.zoom, session.view.x, session.view.y, null, session.directoryInitialized.takeIf { it })))
     }
 
     private fun encodeGaps(gaps: List<GapSummary>) = gaps.map { StoredGap(it.first, it.last, it.hash, it.text) }.ifEmpty { null }
@@ -134,44 +134,63 @@ class CanvasSessionStore(private val directory: Path) {
     private fun encodeChats(chats: List<CanvasChat>) =
         chats.map { StoredChat(it.id, it.title, it.messages.map { m -> StoredMessage(m.role.name, m.text) }, it.draft) }
 
-    /** Lenient: missing optional fields take their defaults, unknown enum names are dropped, and a card without a parent is dropped. */
+    /**
+     * Lenient: missing optional fields take their defaults, unknown enum names are dropped, and a card whose parent is
+     * missing is dropped. Sessions saved before the root was a card (version 1) kept the root's chats and summary apart,
+     * and their cards opened from the root had no parent; they become the root card and its children.
+     */
     private fun decode(stored: JsonObject): CanvasSession? = runCatching {
         val session = json.fromJson(stored, StoredSession::class.java)
         val id = session.id?.takeIf { ID.matches(it) } ?: error("Session without a valid id")
         val rootPath = session.rootPath ?: error("Session $id without a root path")
-        val cards = mutableListOf<CanvasCard>()
+        val directory = session.directoryInitialized == true
+        val storedRoot = session.cards.orEmpty().firstOrNull { it?.id == CANVAS_ROOT && it.kind == CardKind.ROOT.name }
+        val cards = mutableListOf(decodeRoot(rootPath, directory, storedRoot, session.root))
         for (card in session.cards.orEmpty()) {
-            val cardId = card?.id ?: continue
+            val cardId = card?.id?.takeIf { it != CANVAS_ROOT } ?: continue
+            val kind = enumOrNull<CardKind>(card.kind)?.takeIf { it != CardKind.ROOT } ?: continue
+            val parentId = card.parentId ?: CANVAS_ROOT
             // Parents are saved before their children; an orphan has nowhere to be drawn.
-            if (card.parentId != null && cards.none { it.id == card.parentId }) continue
-            val kind = enumOrNull<CardKind>(card.kind) ?: continue
-            val symbol = card.symbol?.let { symbol ->
-                SymbolRef(symbol.filePath ?: return@let null, symbol.name ?: return@let null, symbol.kind.orEmpty(), symbol.container.orEmpty(),
-                    symbol.offset ?: -1, symbol.line ?: -1)
-            }
+            if (cards.none { it.id == parentId }) continue
+            val symbol = decodeSymbol(card.symbol)
             if (kind == CardKind.SYMBOL && symbol == null) continue
             val chats = decodeChats(card.chats).ifEmpty {
                 listOf(CanvasChat(messages = decodeMessages(card.messages), draft = card.draft.orEmpty()))
             }
-            cards += CanvasCard(cardId, card.parentId, kind, CardAnchor(card.start ?: 0, card.end ?: 0, card.line ?: 0), symbol,
+            cards += CanvasCard(cardId, parentId, kind, CardAnchor(card.start ?: 0, card.end ?: 0, card.line ?: 0), symbol,
                 card.filePath.orEmpty(), card.firstLine ?: 0, card.text.orEmpty(), card.truncated ?: false, card.summary, card.summaryError,
-                card.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) },
-                chats, card.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id, card.wholeFile ?: false,
+                decodeFolded(card.folded), chats, activeChat(chats, card.activeChatId), card.wholeFile ?: false,
                 enumOrNull<CardOpenedBy>(card.openedBy) ?: CardOpenedBy.USER, card.attachment, decodeGaps(card.gapSummaries),
-                decodeUsages(card.usages))
+                decodeUsages(card.usages), decodeSize(card))
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
-            CanvasView(session.zoom ?: 1.0, session.x ?: 0, session.y ?: 0), decodeRoot(session.root))
+            CanvasView(session.zoom ?: 1.0, session.x ?: 0, session.y ?: 0), directory)
     }.onFailure { rethrowCancellation(it); LOG.warn("Could not decode canvas session", it) }.getOrNull()
 
-    /** The root file's chats; sessions saved before the root had chats start with one empty chat. */
-    private fun decodeRoot(root: StoredRoot?): CanvasRootState {
-        val chats = decodeChats(root?.chats).ifEmpty { return CanvasRootState() }
-        return CanvasRootState(chats, root?.activeChatId?.takeIf { id -> chats.any { it.id == id } } ?: chats.first().id,
-            root?.folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) }, root?.summary, root?.summaryError,
-            decodeGaps(root?.gapSummaries))
+    /**
+     * The root card, from its saved [card], or else from the separate [legacy] root state of a version 1 session;
+     * sessions saved before the root had chats start with one empty chat.
+     */
+    private fun decodeRoot(rootPath: String, directoryInitialized: Boolean, card: StoredCard?, legacy: StoredRoot?): CanvasCard {
+        val directory = directoryInitialized || card?.symbol?.kind == "DIRECTORY"
+        val chats = decodeChats(card?.chats ?: legacy?.chats).ifEmpty { listOf(CanvasChat()) }
+        return canvasRootCard(rootPath, directory).copy(chats = chats, activeChatId = activeChat(chats, card?.activeChatId ?: legacy?.activeChatId),
+            folded = decodeFolded(card?.folded ?: legacy?.folded), summary = card?.summary ?: legacy?.summary,
+            summaryError = card?.summaryError ?: legacy?.summaryError, gapSummaries = decodeGaps(card?.gapSummaries ?: legacy?.gapSummaries),
+            size = card?.let(::decodeSize))
     }
+
+    /** A card's saved size; cards saved before they could be resized have none. */
+    private fun decodeSize(card: StoredCard): CardSize? = CardSize(card.width, card.height).bounded()
+
+    private fun decodeSymbol(symbol: StoredSymbol?): SymbolRef? = symbol?.let {
+        SymbolRef(it.filePath ?: return null, it.name ?: return null, it.kind.orEmpty(), it.container.orEmpty(), it.offset ?: -1, it.line ?: -1)
+    }
+
+    private fun decodeFolded(folded: List<String?>?): Set<CardSection> = folded.orEmpty().mapNotNullTo(linkedSetOf()) { enumOrNull<CardSection>(it) }
+
+    private fun activeChat(chats: List<CanvasChat>, id: String?): String = id?.takeIf { active -> chats.any { it.id == active } } ?: chats.first().id
 
     private fun decodeChats(chats: List<StoredChat?>?): List<CanvasChat> = chats.orEmpty().filterNotNull().mapNotNull { chat ->
         val chatId = chat.id?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -185,14 +204,15 @@ class CanvasSessionStore(private val directory: Path) {
     // The stored shape, apart from the domain types so they can change without breaking saved files. Gson leaves
     // missing fields null, whatever Kotlin declares, so every field is nullable.
     private class StoredSession(val id: String?, val rootPath: String?, val title: String?, val created: Long?, val updated: Long?,
-        val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?)
+        val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?, val directoryInitialized: Boolean?)
+    /** The root state of version 1 sessions, read only to migrate them. */
     private class StoredRoot(val chats: List<StoredChat?>?, val activeChatId: String?, val folded: List<String?>?,
         val summary: String?, val summaryError: String?, val gapSummaries: List<StoredGap?>?)
     private class StoredCard(val id: String?, val parentId: String?, val kind: String?, val start: Int?, val end: Int?, val line: Int?,
         val symbol: StoredSymbol?, val filePath: String?, val firstLine: Int?, val text: String?, val truncated: Boolean?,
         val summary: String?, val summaryError: String?, val folded: List<String?>?, val messages: List<StoredMessage?>?, val draft: String?,
         val wholeFile: Boolean?, val chats: List<StoredChat?>?, val activeChatId: String?, val openedBy: String?, val attachment: CanvasAttachment?,
-        val gapSummaries: List<StoredGap?>?, val usages: StoredUsages?)
+        val gapSummaries: List<StoredGap?>?, val usages: StoredUsages?, val width: Int?, val height: Int?)
     private class StoredUsages(val targetName: String?, val sites: List<StoredSite?>?)
     private class StoredSite(val line: Int?, val call: Boolean?, val owner: String?)
     private class StoredGap(val first: Int?, val last: Int?, val hash: Int?, val text: String?)
@@ -201,8 +221,11 @@ class CanvasSessionStore(private val directory: Path) {
     private class StoredMessage(val role: String?, val text: String?)
 
     companion object {
-        /** Bump when the stored shape changes incompatibly; older files are then skipped rather than misread. */
-        private const val VERSION = 1
+        /**
+         * Bump when the stored shape changes incompatibly; newer files are then skipped rather than misread, and older
+         * ones migrated on load. 2: the root is the first card, where version 1 kept a separate root state.
+         */
+        private const val VERSION = 2
         private const val SUFFIX = ".json"
         private val ID = Regex("[A-Za-z0-9_-]{1,64}")
         private val json = GsonBuilder().disableHtmlEscaping().create()

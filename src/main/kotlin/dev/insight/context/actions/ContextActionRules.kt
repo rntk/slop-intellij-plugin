@@ -44,10 +44,12 @@ internal fun canOpenInEditor(f: ContextFacts) = f.onDisk
 internal fun canOpenInIdeDiff(f: ContextFacts) = f.hasReviewFile && f.origin != ContextOrigin.IDE_DIFF &&
     f.kind != ContextScopeKind.CHANGE && f.kind != ContextScopeKind.DIRECTORY
 
-/** Source scopes of a project file open its canvas session; review diff scopes need the host to do so. */
-internal fun canOpenOnCanvas(f: ContextFacts) = if (f.hasReviewFile) f.hasCanvasCallback && f.kind != ContextScopeKind.CHANGE &&
-    f.kind != ContextScopeKind.DIRECTORY && f.context.path != null
-    else f.onDisk && f.kind in setOf(ContextScopeKind.FILE, ContextScopeKind.SYMBOL, ContextScopeKind.LINE, ContextScopeKind.SELECTION)
+/** Directory scopes open live project content. Captured file diffs use their host's canvas. */
+internal fun canOpenOnCanvas(f: ContextFacts) = when {
+    f.kind == ContextScopeKind.DIRECTORY -> f.hasFile
+    f.hasReviewFile -> f.hasCanvasCallback && f.kind != ContextScopeKind.CHANGE && f.context.path != null
+    else -> f.onDisk && f.kind in setOf(ContextScopeKind.FILE, ContextScopeKind.SYMBOL, ContextScopeKind.LINE, ContextScopeKind.SELECTION)
+}
 
 internal fun canShowCallGraph(f: ContextFacts) = f.onDisk && f.kind == ContextScopeKind.SYMBOL && f.context.lines != null &&
     f.context.symbol?.kind == "function"

@@ -45,6 +45,8 @@ data class CanvasSummaryInput(
  * the line. Empty when the card was opened at its own declaration in the opened file, since the path then says nothing.
  */
 fun canvasReadingPath(rootPath: String, chain: List<CanvasCard>): String {
+    // The root heads the steps as the file the developer opened.
+    @Suppress("NAME_SHADOWING") val chain = chain.filter { it.kind != CardKind.ROOT }
     val current = chain.lastOrNull() ?: return ""
     if (chain.size == 1 && openedInside(current, rootPath)) return ""
     val steps = listOf("$rootPath, the file the developer opened") + chain.mapIndexed { index, card ->
@@ -100,7 +102,7 @@ internal fun canvasSummaryMessages(input: CanvasSummaryInput, sourceOnly: Boolea
         CardKind.ATTACHMENT -> "Explain the attached document and its relevance to the code."
         CardKind.SELECTION -> "Explain what the selected code does in the context of its file: its purpose, what it reads and changes, " +
             "and how it fits the surrounding code."
-        CardKind.SYMBOL -> "Explain what this ${input.symbolKind?.lowercase() ?: "symbol"} does: its purpose, inputs, effects and result."
+        CardKind.SYMBOL, CardKind.ROOT -> "Explain what this ${input.symbolKind?.lowercase() ?: "symbol"} does: its purpose, inputs, effects and result."
     }
     val context = if (sourceOnly) "" else "When the message shows how the developer reached the code, " +
         "describe the code in general, then add what it does for that caller if that clarifies its role. " +

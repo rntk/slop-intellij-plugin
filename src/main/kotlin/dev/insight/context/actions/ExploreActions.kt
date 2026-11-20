@@ -8,18 +8,20 @@ import dev.insight.callgraph.ProjectGraphAnalyzer
 import dev.insight.callgraph.openCallGraph
 import dev.insight.callgraph.openFlowChart
 import dev.insight.canvas.OpenCanvasSessionAction
+import dev.insight.codereview.findCodeScopeFile
 import dev.insight.codereview.showInSummaryTree
 import dev.insight.codereview.openOnCodeWall
 import dev.insight.context.ContextAction
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextRequest
 import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextScopeKind
 import dev.insight.context.location
 import dev.insight.graph.SymbolKind
 import dev.insight.ui.SourceChainLocation
 import dev.insight.ui.openSourceChain
 
-/** The file on a canvas session: a project file's own, or for a review diff the host's way (the Diffs wall's related changes). */
+/** The directory or file on canvas, with captured file diffs opened by their host. */
 internal class OpenCanvasSessionContextAction : ContextAction {
     override val id = "explore.canvas"
     override val title get() = InsightBundle.message("context.action.canvas")
@@ -29,6 +31,16 @@ internal class OpenCanvasSessionContextAction : ContextAction {
     override fun isAvailable(request: ContextRequest) = canOpenOnCanvas(request.facts())
 
     override fun perform(request: ContextRequest) {
+        if (request.context.kind == ContextScopeKind.DIRECTORY) {
+            val directory = request.data[ContextKeys.VIRTUAL_FILE]?.takeIf { it.isValid && it.isDirectory }
+            if (directory != null) return OpenCanvasSessionAction().open(request.project, directory)
+            val path = request.context.absolutePath ?: return
+            resolveThenShow(request.project,
+                InsightBundle.message("context.action.missing.file", request.context.location()),
+                resolve = { findCodeScopeFile(request.project, path, directory = true) },
+                show = { OpenCanvasSessionAction().open(request.project, it) })
+            return
+        }
         request.data[ContextKeys.OPEN_ON_CANVAS]?.let { return it(request.context) }
         val file = request.sourceFile() ?: return report(request.project, InsightBundle.message("context.action.missing.file", request.context.location()))
         OpenCanvasSessionAction().open(request.project, file)
