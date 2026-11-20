@@ -299,7 +299,45 @@ class CanvasSessionNavigationTest : LightJavaCodeInsightFixtureTestCase() {
         assertTrue("Closing a card opened from the root should bring the root into view", viewport.viewRect.contains(root.location))
     }
 
-    private fun withLongPanel(test: (CanvasSessionPanel, List<CanvasCardView>, JViewport) -> Unit) {
+    fun testPanningPastLeftAndTopEdgesGrowsCanvas() = withLongPanel { panel, cards, viewport ->
+        val root = panel.canvas.components.single { it.name == "canvas-root" }
+        fun onScreen() = Point(root.x - viewport.viewPosition.x, root.y - viewport.viewPosition.y)
+        val before = onScreen()
+
+        press(panel, "LEFT")
+        press(panel, "UP")
+
+        val after = onScreen()
+        assertTrue("Stepping left at the edge moves the content right: $before -> $after", after.x > before.x)
+        assertTrue("Stepping up at the edge moves the content down: $before -> $after", after.y > before.y)
+        assertTrue("The canvas grows before its old left edge", root.x > before.x)
+
+        val card = cards.first().sourcePane!!.editor.contentComponent
+        viewport.viewPosition = Point(0, viewport.viewPosition.y)
+        val atEdge = onScreen()
+        wheel(card, rotation = -1, modifiers = InputEvent.SHIFT_DOWN_MASK)
+        assertTrue("The wheel goes on past the left edge", onScreen().x > atEdge.x)
+    }
+
+    fun testAltDragOverCardSourcePansCanvas() = withLongPanel { panel, cards, viewport ->
+        val editor = cards.first().sourcePane!!.editor
+        val target = editor.contentComponent
+        val pressed = javax.swing.SwingUtilities.convertPoint(target, Point(20, 20), panel.canvas)
+        viewport.viewPosition = Point(pressed.x - 300, pressed.y - 300)
+        val start = viewport.viewPosition
+        val queue = com.intellij.ide.IdeEventQueue.getInstance()
+        fun mouse(id: Int, x: Int, y: Int, mask: Int) = MouseEvent(target, id, 0L, mask, 20 + x, 20 + y, 500 + x, 500 + y,
+            1, false, MouseEvent.BUTTON1)
+        val alt = InputEvent.ALT_DOWN_MASK or InputEvent.BUTTON1_DOWN_MASK
+        queue.dispatchEvent(mouse(MouseEvent.MOUSE_PRESSED, 0, 0, alt))
+        queue.dispatchEvent(mouse(MouseEvent.MOUSE_DRAGGED, -60, -40, alt))
+        queue.dispatchEvent(mouse(MouseEvent.MOUSE_RELEASED, -60, -40, InputEvent.ALT_DOWN_MASK))
+
+        assertEquals("Alt + drag moves the canvas with the pointer", Point(start.x + 60, start.y + 40), viewport.viewPosition)
+        assertFalse("Alt + drag selects no text", editor.selectionModel.hasSelection())
+    }
+
+    private fun withLongPanel(test:(CanvasSessionPanel, List<CanvasCardView>, JViewport) -> Unit) {
         val text = "class LongFile {\n" + (1..100).joinToString("\n") {
             "    // line $it " + "long code ".repeat(60)
         } + "\n}"

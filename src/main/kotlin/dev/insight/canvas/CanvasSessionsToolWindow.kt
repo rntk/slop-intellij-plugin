@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -74,6 +75,10 @@ internal class CanvasSessionsPanel(private val project: Project) : JPanel(Border
         isEnabled = false
         addActionListener { openSelected() }
     }
+    private val delete = JButton("Delete").apply {
+        isEnabled = false
+        addActionListener { deleteSelected() }
+    }
     private var entries = emptyList<CanvasSessionEntry>()
     private var refreshing = false
     private var opening = false
@@ -88,13 +93,20 @@ internal class CanvasSessionsPanel(private val project: Project) : JPanel(Border
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(JPanel(BorderLayout()).apply {
             add(status, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { add(open) }, BorderLayout.SOUTH)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { add(delete); add(open) }, BorderLayout.SOUTH)
         }, BorderLayout.SOUTH)
         search.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) = filter()
         })
         search.textEditor.addActionListener { openSelected() }
-        list.addListSelectionListener { open.isEnabled = list.selectedValue != null && !opening }
+        list.addListSelectionListener {
+            open.isEnabled = list.selectedValue != null && !opening
+            delete.isEnabled = list.selectedValue != null
+        }
+        list.inputMap.put(javax.swing.KeyStroke.getKeyStroke("DELETE"), "deleteSession")
+        list.actionMap.put("deleteSession", object : javax.swing.AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent) = deleteSelected()
+        })
         list.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2 && javax.swing.SwingUtilities.isLeftMouseButton(e) &&
@@ -142,6 +154,27 @@ internal class CanvasSessionsPanel(private val project: Project) : JPanel(Border
         else if (filtered.isNotEmpty()) list.selectedIndex = 0
         list.emptyText.text = if (entries.isEmpty()) "No saved canvas sessions" else "No matching file names"
         status.text = "${filtered.size} of ${entries.size} sessions"
+    }
+
+    private fun deleteSelected() {
+        val entry = list.selectedValue ?: return
+        val cards = if (entry.cards == 1) "1 card" else "${entry.cards} cards"
+        val answer = Messages.showYesNoDialog(project,
+            "Delete the canvas session \"${entry.title}\" of ${entry.rootPath} with $cards? Its summaries and chats are lost.",
+            "Delete Canvas Session", Messages.getQuestionIcon())
+        if (answer != Messages.YES) return
+        // An open editor showing it would save it again on close, so that editor deletes it and switches away itself.
+        if (discardOpenCanvasSession(project, entry.id)) {
+            status.text = "Deleted ${entry.title}"
+            entries = entries.filter { it.id != entry.id }
+            filter()
+            return
+        }
+        scope.launch(Dispatchers.EDT) {
+            val removed = withContext(Dispatchers.IO) { store?.delete(entry.id) == true }
+            status.text = if (removed) "Deleted ${entry.title}" else "Could not delete session. See the IDE log."
+            refresh()
+        }
     }
 
     private fun openSelected() {

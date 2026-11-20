@@ -191,6 +191,14 @@ internal suspend fun showSavedCanvasSession(project: Project, source: VirtualFil
     return true
 }
 
+/** Called on the EDT: deletes session [id] from an open canvas editor that shows it; false when none does. */
+internal fun discardOpenCanvasSession(project: Project, id: String): Boolean {
+    val manager = FileEditorManager.getInstance(project)
+    return manager.openFiles.filterIsInstance<CanvasSessionFile>().any { file ->
+        manager.getEditors(file).filterIsInstance<CanvasSessionEditor>().any { it.discardSession(id) }
+    }
+}
+
 class CanvasSessionEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile) = file is CanvasSessionFile
     override fun createEditor(project: Project, file: VirtualFile): FileEditor =
@@ -208,6 +216,13 @@ private class CanvasSessionEditor(private val project: Project, private val file
 
     fun selectSession(session: CanvasSession) {
         if (panel.model.session.id != session.id) switchTo(session)
+    }
+
+    /** Deletes [id] when this editor shows it; returns whether it did. */
+    fun discardSession(id: String): Boolean {
+        if (panel.model.session.id != id) return false
+        panel.discard()
+        return true
     }
 
     private fun create(session: CanvasSession) = CanvasSessionPanel(project, file, session, services, ::switchTo).also {

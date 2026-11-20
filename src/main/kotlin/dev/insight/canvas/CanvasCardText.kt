@@ -123,7 +123,8 @@ val canvasHelpHtml = """
     are on; click a step to move there.<br><br>
     <b>Attach file</b> links documents, screenshots or other local files to the file or card. Text and pictures
     have previews and become context for chats on that chain. <b>Open file</b> opens the original in the IDE.<br><br>
-    Drag empty space, or middle-drag, to move; Ctrl/⌘ + wheel zooms. Click a card or press Tab / Shift+Tab to focus it;
+    Drag empty space, middle-drag, or Alt + drag anywhere (over cards and code too) to move; the canvas goes on in
+    every direction. Ctrl/⌘ + wheel zooms. Click a card or press Tab / Shift+Tab to focus it;
     the wheel and scroll keys (arrows, Page Up/Down, Space / Shift+Space, Home/End; Shift sideways) scroll the focused card
     on axes that scroll and the canvas on other axes. Esc or clicking empty space restores canvas navigation; Esc in a chat
     input returns focus to the canvas. + / − (or Ctrl/⌘ + = / −) zoom, and 0 (or Ctrl/⌘ + 0) resets the zoom. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the

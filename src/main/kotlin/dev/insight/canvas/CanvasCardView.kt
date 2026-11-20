@@ -67,6 +67,12 @@ internal interface CanvasCardHost {
     fun focusCanvas()
 }
 
+/** The outline of a card at rest, clearly set off from [CANVAS_BACKGROUND]. */
+internal val CANVAS_CARD_BORDER = JBColor(Color(0xA4, 0xAA, 0xB6), Color(0x6A, 0x6F, 0x78))
+
+/** The canvas behind the cards, a shade apart from the panel background the cards are drawn on. */
+internal val CANVAS_BACKGROUND = JBColor(Color(0xE9, 0xEB, 0xEF), Color(0x1A, 0x1B, 0x1E))
+
 /**
  * One card on the canvas: a header with the card's kind, name and place, then its summary, source (with a Diff tab for
  * a file opened from a diff), chat history and chat input, each folded with its toggle as saved in the card. The card's
@@ -466,7 +472,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         val accent = when {
             focused -> JBUI.CurrentTheme.Focus.focusColor()
             highlighted -> ACCENT
-            else -> JBColor.border()
+            else -> CANVAS_CARD_BORDER
         }
         val line = if (emphasized) scaled(2) else scaled(1)
         // Reserve the highlight width without thickening the normal outline.

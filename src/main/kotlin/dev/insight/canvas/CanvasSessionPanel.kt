@@ -19,6 +19,7 @@ import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
 import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.ide.IdeEventQueue
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -53,6 +54,7 @@ import dev.insight.ui.openSourceChain
 import dev.insight.ui.showCardSearch
 import java.awt.BasicStroke
 import java.awt.BorderLayout
+import java.awt.AWTEvent
 import java.awt.Color
 import java.awt.Component
 import java.awt.Container
@@ -105,7 +107,8 @@ import kotlinx.coroutines.withContext
 /**
  * One canvas session: the root file's source on the left and the cards opened from it in columns to the right, each
  * joined to its anchor by an arrow. Clicking a link opens a symbol card, selecting text offers a selection card. The
- * canvas pans by dragging empty space (or middle-dragging) and zooms with Ctrl/⌘ + wheel. Every model change is saved.
+ * canvas pans without edges by dragging empty space, middle-dragging, or Alt + dragging anywhere, and zooms with Ctrl/⌘ +
+ * wheel. Every model change is saved.
  * [onSwitch] shows another session of the same file in place of this panel, which the caller then disposes.
  */
 internal class CanvasSessionPanel(
@@ -151,7 +154,7 @@ internal class CanvasSessionPanel(
     private val scrollFrames: Timer = Timer(16) {
         val now = System.nanoTime()
         val at = scrollMotion.position("viewport", now)
-        scrollTo(at.x, at.y, animationFrame = true)
+        scrollTo(at.x + content.origin.x, at.y + content.origin.y, animationFrame = true)
         if (!scrollMotion.active(now)) scrollFrames.stop()
     }
     private var zoomFrom = 1.0
@@ -178,6 +181,12 @@ internal class CanvasSessionPanel(
     private var dragCursorOwner: Component? = null
     private var dragCursor: Cursor? = null
     private val mouseEvents = ComponentMouseEvents(content, ::drag)
+    /** Whether an Alt + drag pan is under way, and whether the click after its release is still to be swallowed. */
+    private var altPanning = false
+    private var swallowClick = false
+    private val altPanDispatcher = Disposer.newDisposable("canvas Alt pan").also {
+        IdeEventQueue.getInstance().addDispatcher(::altPan, it)
+    }
 
     private val sessions = JButton("Sessions").apply {
         isFocusable = false
@@ -863,12 +872,15 @@ internal class CanvasSessionPanel(
      * between files; at once when not on screen. A new destination mid-way continues from where the view is.
      */
     private fun glideTo(x: Int, y: Int) {
+        // Glides stay within the canvas; only the reader's own panning grows it.
         val destination = CanvasPlacement(maxOf(x, 0), maxOf(y, 0))
         if (!isShowing) return scrollTo(destination.x, destination.y)
+        // The glide runs relative to the canvas origin, which the reader may grow on the way.
+        val origin = content.origin
         val at = scroll.viewport.viewPosition
         val now = System.nanoTime()
-        scrollMotion.target("viewport", CanvasPlacement(at.x, at.y), now, false)
-        scrollMotion.target("viewport", destination, now, true)
+        scrollMotion.target("viewport", CanvasPlacement(at.x - origin.x, at.y - origin.y), now, false)
+        scrollMotion.target("viewport", CanvasPlacement(destination.x - origin.x, destination.y - origin.y), now, true)
         scrollFrames.start()
     }
 
@@ -1032,15 +1044,16 @@ internal class CanvasSessionPanel(
             val at = scroll.viewport.viewPosition
             val maxX = maxOf(0, content.preferredSize.width - scroll.viewport.width)
             val maxY = maxOf(0, content.preferredSize.height - scroll.viewport.height)
+            // Home and End go to the canvas's current edges; steps go on past them, growing the canvas.
             val x = when {
-                rest.x == 0 -> at.x
-                edge -> if (rest.x > 0) maxX else 0
-                else -> (at.x.toLong() + rest.x).coerceIn(0, maxX.toLong()).toInt()
+                rest.x == 0 -> at.x.toLong()
+                edge -> if (rest.x > 0) maxX.toLong() else 0L
+                else -> at.x.toLong() + rest.x
             }
             val y = when {
-                rest.y == 0 -> at.y
-                edge -> if (rest.y > 0) maxY else 0
-                else -> (at.y.toLong() + rest.y).coerceIn(0, maxY.toLong()).toInt()
+                rest.y == 0 -> at.y.toLong()
+                edge -> if (rest.y > 0) maxY.toLong() else 0L
+                else -> at.y.toLong() + rest.y
             }
             scrollTo(x, y)
         }
@@ -1126,6 +1139,13 @@ internal class CanvasSessionPanel(
         val answer = Messages.showYesNoDialog(project, "Delete the canvas session \"${session.title}\" with $cards? Its summaries and chats are lost.",
             "Delete Canvas Session", Messages.getQuestionIcon())
         if (answer != Messages.YES) return
+        discard()
+    }
+
+    /** Deletes this session without asking and shows the file's next saved session, or a new one. */
+    fun discard() {
+        val store = services.store ?: return
+        val session = model.session
         persist = false
         viewSave.stop()
         scope.launch(Dispatchers.EDT) {
@@ -1164,14 +1184,15 @@ internal class CanvasSessionPanel(
         content.validate()
         SwingUtilities.invokeLater {
             if (disposed) return@invokeLater
-            scrollTo(view.x, view.y)
+            scrollTo(view.x + content.origin.x, view.y + content.origin.y)
         }
     }
 
     private fun saveView() {
         if (!ready || disposed || !persist) return
+        // Relative to the origin, which is not saved: a resumed session grows the canvas again as needed.
         val position = scroll.viewport.viewPosition
-        model.setView(CanvasView(zoom, position.x, position.y))
+        model.setView(CanvasView(zoom, position.x - content.origin.x, position.y - content.origin.y))
     }
 
     private fun wheel(e: MouseWheelEvent) {
@@ -1191,6 +1212,18 @@ internal class CanvasSessionPanel(
             return
         }
         stopGlides()
+        // At an edge of the canvas, the wheel goes on past it, growing the canvas, rather than stopping there.
+        val rotation = e.preciseWheelRotation
+        val at = scroll.viewport.viewPosition
+        val extent = scroll.viewport.extentSize
+        val size = content.preferredSize
+        val atEdge = if (horizontal) (rotation < 0 && at.x <= 0) || (rotation > 0 && at.x + extent.width >= size.width)
+            else (rotation < 0 && at.y <= 0) || (rotation > 0 && at.y + extent.height >= size.height)
+        if (atEdge && rotation != 0.0) {
+            val delta = (rotation * e.scrollAmount.coerceAtLeast(1) * zoomScaled(24, zoom)).roundToInt()
+            if (horizontal) scrollTo(at.x.toLong() + delta, at.y) else scrollTo(at.x, at.y.toLong() + delta)
+            return
+        }
         scroll.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, scroll))
     }
 
@@ -1214,6 +1247,7 @@ internal class CanvasSessionPanel(
         val tracked = CanvasZoomAnchor(content, Point(previous.x + point.x, previous.y + point.y))
         scrollFrames.stop()
         content.resetMotion()
+        content.scaleOrigin(ratio)
         zoom = next
         zoomLevel.text = "${(zoom * 100).roundToInt()}%"
         applyZoom(content)
@@ -1262,11 +1296,27 @@ internal class CanvasSessionPanel(
         font = base.zoomed(zoom)
     }
 
+    /**
+     * Shows the canvas from ([x], [y]) on. Before the canvas's left or top edge, the canvas grows there first, so the
+     * reader can pan any way without hitting a wall.
+     */
     private fun scrollTo(x: Number, y: Number, animationFrame: Boolean = false) {
         if (!animationFrame) scrollFrames.stop()
         val viewport = scroll.viewport
-        val left = x.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.width).toLong())
-        val top = y.toLong().coerceIn(0L, (Int.MAX_VALUE - viewport.height).toLong())
+        var wantedX = x.toLong()
+        var wantedY = y.toLong()
+        if (wantedX < 0 || wantedY < 0) {
+            // Grow in generous steps, so a steady pan does not relayout on every frame.
+            fun growth(wanted: Long, extent: Int) = if (wanted >= 0) 0L
+                else (-wanted + maxOf(extent, JBUI.scale(CANVAS_MARGIN))).coerceAtMost((Int.MAX_VALUE / 4).toLong())
+            val dx = growth(wantedX, viewport.width)
+            val dy = growth(wantedY, viewport.height)
+            content.growOrigin(dx.toInt(), dy.toInt())
+            wantedX += dx
+            wantedY += dy
+        }
+        val left = wantedX.coerceIn(0L, (Int.MAX_VALUE - viewport.width).toLong())
+        val top = wantedY.coerceIn(0L, (Int.MAX_VALUE - viewport.height).toLong())
         content.reserve(left + viewport.width, top + viewport.height)
         viewport.viewSize = content.preferredSize
         viewport.viewPosition = Point(left.toInt(), top.toInt())
@@ -1307,7 +1357,7 @@ internal class CanvasSessionPanel(
                 if (SwingUtilities.isLeftMouseButton(e) && ancestors
                         .any { it is CanvasSourcePane || it is CanvasDiffPane || it is JTextComponent || it is AbstractButton || it is ActionLink }) return
                 dragStart = e.locationOnScreen
-                dragView = scroll.viewport.viewPosition
+                dragView = scroll.viewport.viewPosition.also { it.translate(-content.origin.x, -content.origin.y) }
                 content.requestFocusInWindow()
             }
             MouseEvent.MOUSE_DRAGGED -> {
@@ -1322,13 +1372,69 @@ internal class CanvasSessionPanel(
                         owner.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
                     }
                 }
-                scrollTo(view.x + start.x - now.x, view.y + start.y - now.y)
+                panBy(view, start, now)
             }
             MouseEvent.MOUSE_RELEASED -> endDrag()
         }
     }
 
+    /** Pans so the canvas follows the pointer from [start] to [now] (screen), [view] being the view's start relative to the origin. */
+    private fun panBy(view: Point, start: Point, now: Point) {
+        val origin = content.origin
+        scrollTo(view.x.toLong() + origin.x + start.x - now.x, view.y.toLong() + origin.y + start.y - now.y)
+    }
+
+    /**
+     * Alt + left drag pans the canvas from anywhere, cards and source text included. It runs ahead of the components
+     * under the pointer, so text keeps no selection and editors start no column selection.
+     */
+    private fun altPan(event: AWTEvent): Boolean {
+        val e = event as? MouseEvent ?: return false
+        if (swallowClick && e !is MouseWheelEvent) {
+            // The click that Swing may send after the release ends the gesture too.
+            swallowClick = false
+            if (e.id == MouseEvent.MOUSE_CLICKED) {
+                e.consume()
+                return true
+            }
+        }
+        if (!altPanning) {
+            if (e.id != MouseEvent.MOUSE_PRESSED || !e.isAltDown || !SwingUtilities.isLeftMouseButton(e)) return false
+            if (!ready || disposed) return false
+            val component = e.component ?: return false
+            if (!SwingUtilities.isDescendingFrom(component, content)) return false
+            val inView = SwingUtilities.convertPoint(component, e.point, scroll.viewport)
+            if (!Rectangle(scroll.viewport.size).contains(inView)) return false
+            stopGlides()
+            altPanning = true
+            dragStart = e.locationOnScreen
+            dragView = scroll.viewport.viewPosition.also { it.translate(-content.origin.x, -content.origin.y) }
+            dragCursorOwner = component.also { owner ->
+                dragCursor = owner.cursor.takeIf { owner.isCursorSet }
+                owner.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            }
+            e.consume()
+            return true
+        }
+        when (e.id) {
+            MouseEvent.MOUSE_DRAGGED -> {
+                val start = dragStart
+                val view = dragView
+                if (start != null && view != null) panBy(view, start, e.locationOnScreen)
+            }
+            MouseEvent.MOUSE_RELEASED -> if (SwingUtilities.isLeftMouseButton(e)) {
+                endDrag()
+                swallowClick = true
+            }
+            MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_CLICKED -> Unit
+            else -> return false
+        }
+        e.consume()
+        return true
+    }
+
     private fun endDrag() {
+        altPanning = false
         dragStart = null
         dragView = null
         dragCursorOwner?.cursor = dragCursor
@@ -1368,6 +1474,7 @@ internal class CanvasSessionPanel(
         viewSave.stop()
         unreveal.stop()
         mouseEvents.dispose()
+        Disposer.dispose(altPanDispatcher)
         endDrag()
         subscription.dispose()
         views.values.forEach(Disposer::dispose)
@@ -1461,12 +1568,12 @@ internal class CanvasSessionPanel(
         private fun updateBorder() {
             val line = zoomScaled(2, zoom)
             val pad = zoomScaled(6, zoom)
-            border = if (focused) {
-                BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(JBUI.CurrentTheme.Focus.focusColor(), line),
-                    pixelBorder(pad, pad, pad, pad))
-            } else {
-                pixelBorder(line + pad, line + pad, line + pad, line + pad)
-            }
+            // The resting outline is thinner; the padding keeps the content in place when focus thickens it.
+            val shown = if (focused) line else zoomScaled(1, zoom)
+            val inner = line + pad - shown
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(if (focused) JBUI.CurrentTheme.Focus.focusColor() else CANVAS_CARD_BORDER, shown),
+                pixelBorder(inner, inner, inner, inner))
         }
 
         /** Shows [root], the root file's chats and folding in the model. */
@@ -1574,7 +1681,31 @@ internal class CanvasSessionPanel(
         private var placements: Map<String, CanvasPlacement> = emptyMap()
         private val motion = CanvasMotion()
         val entering = HashSet<String>()
-        fun destination(id: String) = placements[id]
+        /**
+         * Where the layout's (0, 0) sits in the canvas. It grows when the reader pans past the left or top edge, so
+         * the canvas has no wall there; layouts, motion and saved views stay relative to it.
+         */
+        val origin = Point()
+        fun destination(id: String) = placements[id]?.let { CanvasPlacement(it.x + origin.x, it.y + origin.y) }
+
+        /** Moves everything [dx], [dy] further from the top left, adding that much space before it. */
+        fun growOrigin(dx: Int, dy: Int) {
+            if (dx <= 0 && dy <= 0) return
+            val x = maxOf(dx, 0)
+            val y = maxOf(dy, 0)
+            origin.translate(x, y)
+            space.setSize((space.width.toLong() + x).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                (space.height.toLong() + y).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            extent = Dimension(extent.width + x, extent.height + y)
+            components.forEach { it.setLocation(it.x + x, it.y + y) }
+            revalidate()
+            repaint()
+        }
+
+        /** Keeps the origin at the same content after a zoom by [ratio]. */
+        fun scaleOrigin(ratio: Double) {
+            origin.setLocation((origin.x * ratio).roundToInt(), (origin.y * ratio).roundToInt())
+        }
         private var layoutZoom = zoom
         private val frames = Timer(16) { animateFrame() }
 
@@ -1591,7 +1722,7 @@ internal class CanvasSessionPanel(
             for ((id, view) in views) {
                 if (id !in placements) continue
                 val at = motion.position(id, now)
-                view.setLocation(at.x, at.y)
+                view.setLocation(at.x + origin.x, at.y + origin.y)
                 view.appearance = motion.opacity(id, now)
             }
             repaint()
@@ -1599,7 +1730,7 @@ internal class CanvasSessionPanel(
         }
 
         init {
-            background = UIUtil.getPanelBackground()
+            background = CANVAS_BACKGROUND
             isOpaque = true
         }
 
@@ -1626,9 +1757,9 @@ internal class CanvasSessionPanel(
             var bottom = 0
             message?.let {
                 val size = it.preferredSize
-                it.setBounds(margin, top, size.width, size.height)
-                right = margin + size.width
-                bottom = top + size.height
+                it.setBounds(origin.x + margin, origin.y + top, size.width, size.height)
+                right = origin.x + margin + size.width
+                bottom = origin.y + top + size.height
             }
             val root = rootView
             if (root != null) {
@@ -1637,7 +1768,7 @@ internal class CanvasSessionPanel(
                 // Measured twice: the second time at its own width, after a zoom changed it.
                 root.setSize(root.preferredSize.width.coerceAtLeast(1), maxOf(root.height, 1))
                 val size = root.preferredSize
-                root.setBounds(margin, top, size.width, size.height)
+                root.setBounds(origin.x + margin, origin.y + top, size.width, size.height)
                 root.validate()
                 right = maxOf(right, root.x + root.width)
                 bottom = maxOf(bottom, root.y + root.height)
@@ -1667,11 +1798,11 @@ internal class CanvasSessionPanel(
                     motion.target(item.id, at, now, animate && (item.id in placements || item.id in entering), zoomScaled(12, zoom))
                     val shown = motion.position(item.id, now)
                     views[item.id]?.let { view ->
-                        view.setBounds(shown.x, shown.y, item.width, item.height)
+                        view.setBounds(shown.x + origin.x, shown.y + origin.y, item.width, item.height)
                         view.appearance = motion.opacity(item.id, now)
                     }
-                    right = maxOf(right, at.x + item.width)
-                    bottom = maxOf(bottom, at.y + item.height)
+                    right = maxOf(right, at.x + origin.x + item.width)
+                    bottom = maxOf(bottom, at.y + origin.y + item.height)
                 }
                 entering.clear()
                 placements = placed
