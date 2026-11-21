@@ -60,6 +60,8 @@ import kotlinx.coroutines.*
 import dev.insight.review.ui.CanvasState
 import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ui.ChartSearchActions
+import dev.insight.review.ChartPathSearch
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
 import dev.insight.review.ui.ReviewTileStat
@@ -169,6 +171,14 @@ internal class DiffReviewTab(
             },
         ),
         summaryActions = SummaryCanvasActions(
+            chartSearch = ChartSearchActions(scope) {
+                val tools = diffReviewTools(captureContext()).filter { it.definition.name in DIFF_CHART_SEARCH_TOOLS }
+                val search = {
+                    ChartPathSearch(this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete,
+                        tools, "changed files of the diff under review")
+                }
+                search
+            },
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,
             removeSummaries = ::closeSummaryPage,

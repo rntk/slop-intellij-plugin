@@ -85,6 +85,8 @@ import dev.insight.review.ui.SYMBOLS_CHANGED
 import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.SymbolSummaryActions
+import dev.insight.review.ui.ChartSearchActions
+import dev.insight.review.ChartPathSearch
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.openHighlightedLines
 import dev.insight.review.ui.readPsiThen
@@ -205,6 +207,14 @@ internal class CodeReviewTab(
         summaryActions = SummaryCanvasActions(
             symbolSummaries = SymbolSummaryActions(scope, project.service<SymbolSummaryCache>()) {
                 complete ?: ChatSettings.getInstance().createClient()::complete
+            },
+            chartSearch = ChartSearchActions(scope) {
+                val tools = codeReviewTools(captureContext()).filter { it.definition.name in CODE_CHART_SEARCH_TOOLS }
+                val search = {
+                    ChartPathSearch(complete ?: ChatSettings.getInstance().createClient()::complete, tools,
+                        "files in the review's scope")
+                }
+                search
             },
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,

@@ -23,12 +23,13 @@ internal class LineChartMetric private constructor(
         this == ITEMS -> 1L
         this == ADDED -> radarLines(file).added.toLong()
         this == REMOVED -> radarLines(file).removed.toLong()
+        this == FOUND -> radarLines(file).let { if (file is PatchSource) it.added + it.removed else it.source }.toLong()
         else -> 0L
     }
 
     fun value(declaration: OutlineDeclaration): Long = when {
         symbol != null -> declaration.symbols[symbol].toLong()
-        this == LINES -> (declaration.lines.last - declaration.lines.first + 1).toLong()
+        this == LINES || this == FOUND -> (declaration.lines.last - declaration.lines.first + 1).toLong()
         this == SIZE -> declaration.bytes.toLong()
         else -> 0L
     }
@@ -53,6 +54,8 @@ internal class LineChartMetric private constructor(
             RadarSeries.ADDED)
         val REMOVED = LineChartMetric("removed", "Removed lines", "removed line", "removed lines",
             "Removed lines in the selected diff directory", RadarSeries.REMOVED)
+        /** The lines of the files a Charts search found: source lines, or changed lines of a diff. */
+        val FOUND = LineChartMetric("found", "Search", "line", "lines", "Lines of the files and folders the search found")
 
         private val lenses = RadarSymbolKind.entries.associateWith {
             LineChartMetric("symbol:${it.name}", it.label, it.unit, it.plural, it.description, symbol = it)
@@ -76,6 +79,8 @@ internal class ReviewLineChart(
     tree: ReviewSummaryTree,
     val metric: LineChartMetric = LineChartMetric.LINES,
     private val outlines: SourceOutlines? = null,
+    /** The only file paths to show, such as a search's; folders without any of them are hidden. Null shows every file. */
+    private val only: Set<String>? = null,
 ) {
     enum class Kind { DIRECTORY, FILE, DECLARATION, PLACEHOLDER }
 
@@ -96,12 +101,13 @@ internal class ReviewLineChart(
         val directory: Boolean get() = kind == Kind.DIRECTORY
     }
 
-    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE }.distinctBy { it.path }
+    private fun shown(node: SummaryNode) = only == null || node.path in only
+    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && shown(it) }.distinctBy { it.path }
 
     private val sources: List<ReviewSource> = fileNodes.mapNotNull { it.file }
     private val byPath = sources.associateBy { it.path }
 
-    private val entries = tree.nodes.filter { it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE }
+    private val entries = tree.nodes.filter { it.kind == SummaryKind.DIRECTORY || (it.kind == SummaryKind.FILE && shown(it)) }
         .associate { node ->
             val file = node.kind == SummaryKind.FILE
             node.path to Entry(node.path, node.label, if (file) Kind.FILE else Kind.DIRECTORY, 0, if (file) 1 else 0,
@@ -121,6 +127,8 @@ internal class ReviewLineChart(
                 parent = parent.substringBeforeLast('/', "")
             }
         }
+        // Folders holding none of the shown files disappear, so drilling down passes only through matches.
+        if (only != null) entries.values.removeIf { it.directory && it.files == 0 && it.path != rootPath }
         root = entries[rootPath] ?: Entry("", tree.root.label, Kind.DIRECTORY,
             entries.values.filterNot { it.directory }.sumOf { it.value }, fileNodes.size)
     }

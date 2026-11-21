@@ -88,3 +88,6 @@ internal const val DIFF_PAGE_SIZE = 50
 internal const val MAX_READ_PATHS = 10
 
 internal fun diffReviewPrompt() = dev.insight.chat.visualCodeAssistantPrompt + "\n\n" + PromptTemplates.load("diff-review-system.md") + "\n\n" + dev.insight.agent.projectContextPrompt
+
+/** The read-only tools a Charts search explores the diff with. */
+internal val DIFF_CHART_SEARCH_TOOLS = setOf("get_current_diff", "read_diff_files")

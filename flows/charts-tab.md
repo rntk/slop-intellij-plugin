@@ -4,6 +4,8 @@ The Charts tab is a shared way to explore the file and directory structure of a 
 
 The hierarchy has metric tabs for source lines, captured source size in bytes, and file counts in Code Review. Diff Review uses green Added lines and red Removed lines tabs. Changing the metric keeps the current directory and open preview.
 
+A one-line search above the hierarchy asks the model which files match a short query. The model explores with the review's own read-only tools and answers only with paths. The answer becomes a Search tab, not a filter on the current tab. That tab shows the usual hierarchy and drill-down with every unrelated file and folder hidden; returned paths are matched leniently against the review's files and folders.
+
 In Code Review, the tabs also act as semantic lenses over the code: classes, functions, constants, tests, imports and other kinds recognized syntactically through PSI by each supported language. A lens counts only its kind and hides entries without it; only the kinds present in the scope get a tab. Parsed files unfold into declarations and members. Readers can preview their source, open them in the editor, or request a summary of a single declaration. The row's [context picker](context-picker.md) opens on the declaration's source range. The chart and [Canvas sessions](canvas-session.md) reuse declaration summaries for matching source. File and directory summaries keep their own review workflow.
 
 Entry points for further exploration:

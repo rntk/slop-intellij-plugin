@@ -23,6 +23,8 @@ import dev.insight.diff.DiffFileEditor
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.review.ReviewSource
+import dev.insight.review.ChartPathSearch
+import com.intellij.ui.components.JBTextField
 import dev.insight.review.SourceOutlines
 import dev.insight.review.SourceStructure
 import dev.insight.review.ReviewVocabulary
@@ -459,6 +461,49 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals("1 class · 2 files", all().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }.text)
             assertEquals(listOf("a.kt", "a.kt#0"), rows())
         } finally { canvas.dispose() }
+    }
+
+    fun testSearchAddsATabThatHidesUnrelatedFilesAndKeepsDrillDown() {
+        val files = listOf("src/ui/a.kt", "src/ui/b.kt", "src/model/c.kt", "readme.md").map { CodeFile(it, "/repo/$it", "one\ntwo\n") }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        val queries = mutableListOf<String>()
+        val canvas = NoteCanvas({}, {}, vocabulary = ReviewVocabulary.CODE, summaryActions = SummaryCanvasActions(
+            chartSearch = ChartSearchActions(scope) {
+                {
+                    ChartPathSearch({ request ->
+                        queries += request.messages.last().content.orEmpty()
+                        Completion("""{"paths": ["/repo/src/ui/a.kt", "model"]}""")
+                    }, emptyList(), "files in scope")
+                }
+            })).apply { setSize(1600, 900) }
+        fun components() = descendants(canvas)
+        fun entries() = components().filterIsInstance<ActionLink>().filter { it.name?.startsWith("charts-lines-entry:") == true }
+            .map { it.name!!.removePrefix("charts-lines-entry:") }
+        fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            val field = components().filterIsInstance<JBTextField>().single { it.name == "charts-search-field" }
+            field.text = "user interface"
+            components().filterIsInstance<JButton>().single { it.name == "charts-search-send" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Charts search", {
+                components().filterIsInstance<JButton>().singleOrNull { it.name == "charts-search-send" }?.isEnabled == true
+            }, 30)
+            assertEquals(listOf("user interface"), queries)
+            // The result is a new tab; the current tab stays unfiltered until the reader switches.
+            assertEquals("Lines of code", tabs().getTitleAt(tabs().selectedIndex))
+            assertEquals(setOf("src", "readme.md"), entries().toSet())
+            val search = (0 until tabs().tabCount).single { tabs().getTitleAt(it) == "Search: user interface" }
+            tabs().selectedIndex = search
+            assertEquals(listOf("src"), entries())
+            components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
+            assertEquals(setOf("src/ui", "src/model"), entries().toSet())
+            components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src/ui" }.doClick()
+            assertEquals(listOf("src/ui/a.kt"), entries())
+            assertEquals("user interface", components().filterIsInstance<JBTextField>().single { it.name == "charts-search-field" }.text)
+        } finally {
+            scope.cancel()
+            canvas.dispose()
+        }
     }
 
     fun testSymbolSummariesAreSharedWithCanvasAndUseExactCapturedSource() {

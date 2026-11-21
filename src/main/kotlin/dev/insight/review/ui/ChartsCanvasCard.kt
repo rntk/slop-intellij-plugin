@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
+import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -21,7 +22,9 @@ import dev.insight.canvas.relativePath
 import dev.insight.canvas.summarySource
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.ChartSearchResult
 import dev.insight.review.LineChartMetric
+import dev.insight.review.matchChartPaths
 import dev.insight.review.OutlineDeclaration
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
@@ -41,6 +44,7 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.KeyboardFocusManager
+import com.intellij.ui.components.JBTextField
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
@@ -61,6 +65,8 @@ internal data class ChartsCard(
     val summaries: ReviewSummaries,
     val canGenerateSummaries: Boolean = true,
     val pendingEntries: Set<Int> = emptySet(),
+    /** The review state's revision; search results of another revision are discarded. */
+    val revision: Int = 0,
 ) {
     val tree get() = summaries.tree
 }
@@ -87,6 +93,12 @@ internal class ChartsViewState {
     /** Whether the radar spaces its rings logarithmically. */
     var radarLog = false
     var radarSeries: RadarSeries? = null
+    /** The search field's text, kept while the page is rebuilt. */
+    var searchQuery = ""
+    /** The last finished search; its files make the Search tab. */
+    var searchResult: ChartSearchResult? = null
+    var searchStatus: String? = null
+    var searchRunning = false
 }
 
 /**
@@ -108,6 +120,8 @@ internal class ChartsCanvasCard(
     /** Parses files into declarations when unfolded; null keeps files as leaves. */
     private val outlines: SourceOutlines? = null,
     private val symbolSummaries: SymbolSummaryActions? = null,
+    /** Finds files for a query typed above the hierarchy; null hides the search. */
+    private val search: ChartSearchActions? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -116,6 +130,8 @@ internal class ChartsCanvasCard(
     private var activeSymbolKey: String? = null
     private val pendingSymbols = mutableSetOf<String>()
     private val symbolErrors = mutableMapOf<String, String>()
+    /** The review revision of the last built card; a search of another revision is stale. */
+    private var searchRevision = 0
 
     fun update(content: ChartsCard?) {
         if (content == null) {
@@ -133,9 +149,16 @@ internal class ChartsCanvasCard(
         val lines = view.chart != "Radar"
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
-        val metrics = if (diff) listOf(LineChartMetric.ADDED, LineChartMetric.REMOVED)
+        searchRevision = content.revision
+        // A search names the files of the revision it ran against; a new revision may have removed or changed them.
+        if (view.searchResult?.let { it.revision != content.revision } == true) {
+            view.searchResult = null
+            view.searchStatus = null
+        }
+        val baseMetrics = if (diff) listOf(LineChartMetric.ADDED, LineChartMetric.REMOVED)
             else listOf(LineChartMetric.LINES, LineChartMetric.SIZE, LineChartMetric.ITEMS) + LineChartMetric.lenses(
                 content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path })
+        val metrics = baseMetrics + listOfNotNull(LineChartMetric.FOUND.takeIf { search != null && view.searchResult?.files?.isNotEmpty() == true })
         val metric = view.lineMetric?.takeIf { it in metrics } ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
@@ -170,7 +193,8 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val hierarchy = if (lines) ReviewLineChart(content.tree, metric, outlines) else null
+        val hierarchy = if (lines) ReviewLineChart(content.tree, metric, outlines,
+            only = view.searchResult?.files?.takeIf { metric == LineChartMetric.FOUND }) else null
         val activePreview = hierarchy?.let { chart ->
             view.linesPreview?.takeIf { chart.hasEntry(it.path) }.also { view.linesPreview = it }
         }
@@ -184,7 +208,8 @@ internal class ChartsCanvasCard(
                 rebuildKeepingFocus()
             },
             open,
-            contextMenu = project?.let { { entry -> contextMenu(content.tree, entry) } },
+            // Search rows offer only the matching files, never the hidden ones of the same folder.
+            contextMenu = project?.let { { entry -> contextMenu(content.tree, entry, hierarchy.files(hierarchy.root.path)) } },
             preview = activePreview,
             togglePreview = { selection ->
                 view.linesPreview = if (view.linesPreview == selection) null else selection
@@ -267,7 +292,15 @@ internal class ChartsCanvasCard(
                 preview = it
             }
         } else bodyScroll
-        card.add(header, BorderLayout.NORTH)
+        val searchRow = search?.takeIf { lines }?.let { actions ->
+            searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
+                content.revision)
+        }
+        card.add(if (searchRow == null) header else JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(searchRow, BorderLayout.NORTH)
+            add(header, BorderLayout.CENTER)
+        }, BorderLayout.NORTH)
         card.add(if (lines) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
         currentCard = card
         if (lineChart != null && view.linesFocused) {
@@ -285,7 +318,10 @@ internal class ChartsCanvasCard(
             accessibleContext.accessibleName = "Chart metric"
             font = scaledFont(JBFont.small())
             metrics.forEachIndexed { index, metric ->
-                addTab(metric.label, null, if (metric == selected) content else JPanel(), metric.description)
+                val found = view.searchResult?.takeIf { metric == LineChartMetric.FOUND }
+                val title = found?.let { "Search: ${it.query.ellipsized(SEARCH_TAB_CHARS)}" } ?: metric.label
+                val tooltip = found?.let { "${it.files.size} files found for “${it.query}”" } ?: metric.description
+                addTab(title, null, if (metric == selected) content else JPanel(), tooltip)
                 // Darcula's scrolling layout can leave JBTabbedPane's custom labels unpainted.
                 setTabComponentAt(index, null)
                 metric.diffSeries?.let { series ->
@@ -304,6 +340,101 @@ internal class ChartsCanvasCard(
                 }
             }
         }
+
+    /**
+     * A one-line query and Send: the model lists and reads the review's files and names the matching paths. The result
+     * becomes a Search tab rather than filtering the current one.
+     */
+    private fun searchRow(actions: ChartSearchActions, files: List<ReviewSource>, revision: Int): JComponent {
+        val status = JLabel(view.searchStatus.orEmpty()).apply {
+            name = "charts-search-status"
+            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+        }
+        val field = JBTextField(view.searchQuery).apply {
+            name = "charts-search-field"
+            emptyText.text = if (vocabulary == ReviewVocabulary.DIFF) "Find changed files, e.g. “error handling”"
+                else "Find files, e.g. “settings persistence”"
+            accessibleContext.accessibleName = "Search query"
+            isEnabled = !view.searchRunning
+            document.addDocumentListener(object : DocumentAdapter() {
+                override fun textChanged(e: javax.swing.event.DocumentEvent) { view.searchQuery = text }
+            })
+        }
+        val send = JButton(if (view.searchRunning) "Searching…" else "Send").apply {
+            name = "charts-search-send"
+            isEnabled = !view.searchRunning
+            toolTipText = "Ask the model which files match; the matches open in a Search tab"
+        }
+        val start = {
+            val query = field.text.trim()
+            if (query.isNotEmpty() && !view.searchRunning) {
+                runSearch(actions, query, files, revision)
+                field.isEnabled = false
+                send.isEnabled = false
+                send.text = "Searching…"
+                status.text = view.searchStatus
+            }
+        }
+        field.addActionListener { start() }
+        send.addActionListener { start() }
+        return JPanel(BorderLayout(scaled(6), 0)).apply {
+            name = "charts-search"
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 8))
+            add(field, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
+                isOpaque = false
+                add(send)
+                add(status)
+                if (view.searchResult != null && !view.searchRunning) {
+                    add(InplaceButton(IconButton("Clear search", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                        view.searchResult = null
+                        view.searchStatus = null
+                        refresh()
+                    }.apply { name = "charts-search-clear"; cursor = Cursor.getDefaultCursor() })
+                }
+            }, BorderLayout.EAST)
+        }
+    }
+
+    private fun runSearch(actions: ChartSearchActions, query: String, files: List<ReviewSource>, revision: Int) {
+        if (!actions.scope.isActive) return
+        // The review context is captured here on the EDT; the client, which reads the password safe, starts on IO.
+        val start = try {
+            actions.search()
+        } catch (e: Exception) {
+            if (e is CancellationException || e is ControlFlowException) throw e
+            logger<ChartsCanvasCard>().warn("Could not start the Charts search", e)
+            view.searchStatus = "The search could not start. See the IDE log."
+            return refresh()
+        }
+        view.searchRunning = true
+        view.searchStatus = "Searching…"
+        actions.scope.launch {
+            try {
+                val paths = withContext(Dispatchers.IO) { start().find(query) }
+                if (revision != searchRevision) {
+                    view.searchStatus = "The review changed during the search. Send again to search the current files."
+                    return@launch
+                }
+                val found = matchChartPaths(paths, files)
+                view.searchResult = ChartSearchResult(query, paths, found, revision).takeIf { found.isNotEmpty() } ?: view.searchResult
+                view.searchStatus = when {
+                    found.isEmpty() -> "No matching files for “${query.ellipsized(SEARCH_TAB_CHARS)}”."
+                    else -> "${found.size} ${if (found.size == 1) "file" else "files"} found — see the Search tab."
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                logger<ChartsCanvasCard>().warn("Charts search failed", e)
+                view.searchStatus = "The search failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                view.searchRunning = false
+                if (isActive && currentCard != null) refresh()
+            }
+        }
+    }
+
+    private fun String.ellipsized(max: Int) = if (length <= max) this else take(max - 1) + "…"
 
     /** Rebuilds the card, returning keyboard focus to the chart when it had it. */
     private fun rebuildKeepingFocus() {
@@ -423,9 +554,9 @@ internal class ChartsCanvasCard(
         }
     }
 
-    private fun contextMenu(tree: ReviewSummaryTree, entry: ReviewLineChart.Entry): JPopupMenu {
+    private fun contextMenu(tree: ReviewSummaryTree, entry: ReviewLineChart.Entry, sources: List<ReviewSource>): JPopupMenu {
         val node = tree.nodes.firstOrNull { it.path == entry.filePath } ?: tree.root
-        return contextMenu(node, tree.nodes.mapNotNull { it.file }, entry.declaration)
+        return contextMenu(node, sources, entry.declaration)
     }
 
     private fun contextMenu(node: SummaryNode, sources: List<ReviewSource>, declaration: OutlineDeclaration? = null): JPopupMenu = JPopupMenu().apply {
@@ -476,5 +607,6 @@ internal class ChartsCanvasCard(
         const val PADDING = 12
         const val MIN_PREVIEW_HEIGHT = 560
         const val MAX_HEIGHT = 820
+        const val SEARCH_TAB_CHARS = 28
     }
 }

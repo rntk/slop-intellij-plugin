@@ -3,6 +3,7 @@ package dev.insight.review.ui
 import dev.insight.canvas.SymbolSummaryCache
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ChartPathSearch
 import dev.insight.review.PatchSource
 import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ReviewSource
@@ -58,6 +59,8 @@ internal data class SummaryCanvasActions(
     val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
     val contextSummaryActions: ContextSummaryActions? = null,
     val symbolSummaries: SymbolSummaryActions? = null,
+    /** Finds files for a Charts query; null hides the search. */
+    val chartSearch: ChartSearchActions? = null,
 )
 
 /** Topic classification and summary updates supplied by the review hosting the canvas. */
@@ -67,4 +70,13 @@ internal data class TopicCanvasActions(
     val removeTopics: () -> Unit = {},
     /** Persist topic fills and resummarizations as they arrive; null hides those entry actions. */
     val saveTopicSummaries: ((ReviewSummaries, Set<Int>) -> Unit)? = null,
+)
+
+/**
+ * Runs Charts searches in [scope]. [search] is called on the EDT for each query and captures the review's tools; the
+ * function it returns runs on IO and builds the search, so creating the client (a password safe read) never blocks the EDT.
+ */
+internal class ChartSearchActions(
+    val scope: CoroutineScope,
+    val search: () -> () -> ChartPathSearch,
 )
