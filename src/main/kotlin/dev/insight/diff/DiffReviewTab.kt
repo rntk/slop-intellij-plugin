@@ -263,6 +263,10 @@ internal class DiffReviewTab(
             "Let the model compose a grounded explainer page of the change: prose and callouts around real source, diff and call-chain blocks") {
             boards.savedCount(boardOrigin())?.takeIf { it > 0 }?.let { listOf(countStat(it, "saved board")) }.orEmpty()
         },
+        ReviewViewOption(CanvasTabKey.ReportViewer, "Report viewer",
+            "Read Markdown or text files and agent reports with smart clickable project paths, line links, and context picker support") {
+            canvas.reportViewerStats()
+        },
     )
 
     /** The changed lines, once the words have been counted for the current snapshot; counting is left to the charts. */
@@ -609,7 +613,7 @@ internal class DiffReviewTab(
             wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) },
             changeMap = changeMapCard())
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
-            charts = chartsCard()))
+            charts = chartsCard(), reportViewer = reportViewerCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()

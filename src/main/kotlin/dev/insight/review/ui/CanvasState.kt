@@ -17,4 +17,5 @@ internal data class CanvasState(
     val explanation: ExplainResult? = null,
     val grouping: TopicsCard? = null,
     val charts: ChartsCard? = null,
+    val reportViewer: ReportViewerCard? = null,
 )

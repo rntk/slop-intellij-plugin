@@ -35,3 +35,4 @@ internal class SessionDiffOverviewAction : SessionViewAction(ReviewDestination.D
 internal class SessionMetricsAction : SessionViewAction(ReviewDestination.METRICS, "context.action.review.metrics", 60)
 internal class SessionMovesAction : SessionViewAction(ReviewDestination.MOVES, "context.action.review.moves", 70)
 internal class SessionBoardAction : SessionViewAction(ReviewDestination.BOARD, "context.action.review.board", 80)
+internal class SessionReportViewerAction : SessionViewAction(ReviewDestination.REPORT_VIEWER, "context.action.review.report_viewer", 90)

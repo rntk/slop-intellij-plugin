@@ -141,6 +141,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             CanvasTabKey.Topics -> openTopics()
             CanvasTabKey.Grouping -> openGrouping()
             CanvasTabKey.Charts -> openCharts()
+            CanvasTabKey.ReportViewer -> openReportViewer()
             else -> {}
         }
     }
@@ -172,6 +173,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         add(ReviewDestination.METRICS, CanvasTabKey.Semantic)
         add(ReviewDestination.MOVES, CanvasTabKey.Moves)
         add(ReviewDestination.BOARD, CanvasTabKey.Board)
+        add(ReviewDestination.REPORT_VIEWER, CanvasTabKey.ReportViewer)
         return destinations
     }
 
@@ -313,6 +315,11 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             state.hideCharts()
             renderCanvas()
         }
+        canvas.onRemoveReportViewer = {
+            state.hideReportViewer()
+            renderCanvas()
+        }
+        canvas.onReportViewerChanged = { scheduleTileRefresh() }
         return session.subscribe {
             before()
             scopedSummaryFill.resume()
@@ -462,6 +469,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         showCanvas { canvas.focusCharts() }
     }
 
+    /** Puts the Report viewer page on the canvas and shows it. */
+    fun openReportViewer() {
+        state.showReportViewer()
+        renderCanvas()
+        showCanvas { canvas.focusReportViewer() }
+    }
+
     fun openTopics() {
         state.showTopics()
         renderCanvas()
@@ -539,6 +553,9 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         return ChartsCard(summaries, summariesAvailable, pendingSummaryEntries(summaries), state.revision)
     }
 
+    protected fun reportViewerCard(): ReportViewerCard? =
+        if (!state.reportViewerVisible) null else ReportViewerCard(state.snapshotFiles, state.summaries.tree, state.revision)
+
     protected fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
     protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
@@ -547,6 +564,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected open fun summariesChanged() {
         canvas.updateSummaries(summariesCard())
         canvas.updateCharts(chartsCard())
+        canvas.updateReportViewer(reportViewerCard())
         canvas.updateTopics(topicsCard())
         canvas.updateGrouping(groupingCard())
         runScheduled()
@@ -567,6 +585,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         canvas.onRemoveCharts = {}
+        canvas.onRemoveReportViewer = {}
+        canvas.onReportViewerChanged = {}
         canvas.onTopicSummariesFinished = {}
         artifactFiles.values.forEach {
             FileEditorManager.getInstance(project).closeFile(it)

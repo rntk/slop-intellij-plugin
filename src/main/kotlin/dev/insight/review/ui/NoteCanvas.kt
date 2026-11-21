@@ -131,6 +131,24 @@ internal class NoteCanvas(
         summaryActions = summaryActions.contextSummaryActions, openAt = { path, line -> openFileAt(path, line) },
         outlines = sourceActions.outlines, symbolSummaries = summaryActions.symbolSummaries, search = summaryActions.chartSearch)
     internal val chartsView get() = chartsCardBuilder.view
+    private val reportViewer: ReportViewerCard? get() = state.reportViewer
+    /** What the Report viewer's close button does: take the page off the canvas. */
+    internal var onRemoveReportViewer: () -> Unit = {}
+    /** Called when a report finishes rendering or clears, so tile stats can refresh. */
+    internal var onReportViewerChanged: () -> Unit = {}
+    private val reportViewerCardBuilder = ReportViewerCanvasCard(vocabulary,
+        refresh = { refreshCard(CanvasTabKey.ReportViewer) },
+        close = { onRemoveReportViewer() },
+        project = project,
+        openOnCanvas = summaryActions.openOnCanvas,
+        openOnWall = summaryActions.openOnWall,
+        reviewDestinations = { reviewDestinations() },
+        summaryActions = summaryActions.contextSummaryActions).apply {
+        onStatsChanged = { onReportViewerChanged() }
+    }
+    internal val reportViewerView get() = reportViewerCardBuilder.view
+    internal val reportViewerBuilder get() = reportViewerCardBuilder
+    internal fun reportViewerStats(): List<ReviewTileStat> = reportViewerCardBuilder.stats
     private val fileView: FileViewCard? get() = state.fileView
     private val fileViewCardBuilder = FileViewCanvasCard(vocabulary, FileViewCanvasActions(
         openFileAt = openFileAt, showFileLines = showFileLines, close = sourceActions.removeFileView,
@@ -219,6 +237,7 @@ internal class NoteCanvas(
         groupingCardBuilder.update(grouping)
         summariesCardBuilder.update(summaries)
         chartsCardBuilder.update(charts)
+        reportViewerCardBuilder.update(reportViewer)
         snapshotCards.update(sources)
         val selected = pages.entries.firstOrNull { it.value === tabs.selectedComponent }?.key
         val bodyScrolls = cards.mapValues { bodyScroll(it.value)?.viewport?.viewPosition?.let(::Point) }
@@ -233,7 +252,10 @@ internal class NoteCanvas(
         ).toMap() +
             extension?.leadingCards().orEmpty() +
             summaryCards +
-            listOfNotNull(charts?.let { CanvasTabKey.Charts to chartsCardBuilder.card(it) }).toMap() +
+            listOfNotNull(
+                charts?.let { CanvasTabKey.Charts to chartsCardBuilder.card(it) },
+                reportViewer?.let { CanvasTabKey.ReportViewer to reportViewerCardBuilder.card(it) },
+            ).toMap() +
             listOfNotNull(fileView?.let { CanvasTabKey.FileView to fileViewCard(it) }, flow?.let { CanvasTabKey.SymbolFlow to snapshotCards.flowCard(it) }).toMap() +
             notes.associate { it.key to snapshotCards.noteCard(it) } +
             sources.associate { it.key to snapshotCards.sourceCard(it) } +
@@ -249,6 +271,7 @@ internal class NoteCanvas(
                 revalidate()
                 repaint()
             }
+            installReportViewerNavigation(key, page, host, card)
             tabs.addTab(tabTitle(key), page, host)
             tabs.setToolTipTextAt(tabs.tabCount - 1, tabTooltip(key))
             bodyScrolls[key]?.let { position -> SwingUtilities.invokeLater {
@@ -284,6 +307,7 @@ internal class NoteCanvas(
 
     internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
     internal fun focusCharts() { focusCard(CanvasTabKey.Charts) }
+    internal fun focusReportViewer() { focusCard(CanvasTabKey.ReportViewer) }
     internal fun focusGrouping() { focusCard(CanvasTabKey.Grouping) }
 
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
@@ -331,6 +355,7 @@ internal class NoteCanvas(
         CanvasTabKey.Grouping -> "Grouping"
         is CanvasTabKey.SummaryPage, is CanvasTabKey.SummarySearch -> summariesCardBuilder.title(key)
         CanvasTabKey.Charts -> "Charts"
+        CanvasTabKey.ReportViewer -> "Report viewer"
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.ChangeMap -> "Change map"
@@ -780,6 +805,10 @@ internal class NoteCanvas(
         }
     }
 
+    private fun installReportViewerNavigation(key: CanvasTabKey, page: JScrollPane, host: JComponent, card: JPanel) {
+        if (key == CanvasTabKey.ReportViewer) reportViewerCardBuilder.installNavigation(card, page, host)
+    }
+
     private fun replaceCard(key: CanvasTabKey, card: JPanel) {
         val old = cards[key] ?: return
         val container = old.parent ?: return
@@ -787,7 +816,11 @@ internal class NoteCanvas(
         container.remove(old)
         container.add(card, BorderLayout.CENTER)
         cards[key] = card
-        pages[key]?.let { installStickyScrolling(key, it, card) }
+        pages[key]?.let { page ->
+            installStickyScrolling(key, page, card)
+            val host = if (project == null) page else editorPages[key] ?: page
+            installReportViewerNavigation(key, page, host, card)
+        }
         highlight(highlighted)
         container.revalidate(); container.repaint()
         horizontal?.let { value -> SwingUtilities.invokeLater {
@@ -938,6 +971,21 @@ internal class NoteCanvas(
         }
     }
 
+    /** Follows report viewer scope/revision changes without rebuilding the other cards. */
+    fun updateReportViewer(content: ReportViewerCard?) {
+        if ((content == null) != (reportViewer == null) || (content != null && cards[CanvasTabKey.ReportViewer] == null)) {
+            showNotes(state.copy(reportViewer = content))
+            return
+        }
+        val previous = reportViewer
+        if (content == previous) return
+        state = state.copy(reportViewer = content)
+        reportViewerCardBuilder.update(content)
+        if (content?.revision != previous?.revision || content?.reviewFiles != previous?.reviewFiles) {
+            refreshCard(CanvasTabKey.ReportViewer)
+        }
+    }
+
     private fun replaceSummaryCard(key: CanvasTabKey, card: JPanel) {
         replaceCard(key, card)
         pages[key]?.let { page -> tabs.indexOfComponent(page).takeIf { it >= 0 } }?.let { index ->
@@ -976,6 +1024,7 @@ internal class NoteCanvas(
             is CanvasTabKey.SummaryPage, is CanvasTabKey.SummarySearch ->
                 summariesCardBuilder.card(key)
             CanvasTabKey.Charts -> charts?.let(chartsCardBuilder::card)
+            CanvasTabKey.ReportViewer -> reportViewer?.let(reportViewerCardBuilder::card)
             CanvasTabKey.FileView -> fileView?.let(::fileViewCard)
             CanvasTabKey.SymbolFlow -> snapshotCards.flowCard(changeFlow(notes))
             CanvasTabKey.Explanation, CanvasTabKey.Board -> null
@@ -1007,6 +1056,7 @@ internal class NoteCanvas(
         topicsCardBuilder.dispose()
         groupingCardBuilder.dispose()
         chartsCardBuilder.dispose()
+        reportViewerCardBuilder.dispose()
         snapshotCards.dispose()
         extension?.dispose()
     }

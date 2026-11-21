@@ -277,6 +277,10 @@ internal class CodeReviewTab(
             "Let the model compose a grounded explainer page of the code: prose and callouts around real source and call-chain blocks") {
             boards.savedCount(boardOrigin())?.takeIf { it > 0 }?.let { listOf(countStat(it, "saved board")) }.orEmpty()
         },
+        ReviewViewOption(CanvasTabKey.ReportViewer, "Report viewer",
+            "Read Markdown or text files and agent reports with smart clickable project paths, line links, and context picker support") {
+            canvas.reportViewerStats()
+        },
     )
 
     override fun sourceStats(): List<ReviewTileStat> {
@@ -734,7 +738,7 @@ internal class CodeReviewTab(
         codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
         codeCards.codeMap = codeMapCard()
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
-            explanation = explanations.result, charts = chartsCard()))
+            explanation = explanations.result, charts = chartsCard(), reportViewer = reportViewerCard()))
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()
     }

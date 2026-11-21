@@ -30,6 +30,8 @@ internal sealed interface CanvasTabKey {
     data object Document : SummaryPage
     /** Charts that compare how much the folders and files of the review hold, starting with the radar. */
     data object Charts : CanvasTabKey
+    /** Markdown and text report viewer with smart clickable project paths and context picker support. */
+    data object ReportViewer : CanvasTabKey
     data object FileView : CanvasTabKey
     data object SymbolFlow : CanvasTabKey
     /** The explainer boards of the review: opens a menu of a new board and the saved ones, each in its own editor tab. */

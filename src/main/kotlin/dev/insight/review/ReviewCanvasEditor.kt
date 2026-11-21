@@ -12,6 +12,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.ui.LineChartPanel
+import dev.insight.review.ui.findReportViewerFocusTarget
 import dev.insight.review.wall.WallView
 import java.awt.BorderLayout
 import java.awt.Component
@@ -85,6 +86,7 @@ internal class ReviewCanvasEditor(private val file: ReviewCanvasFile) : UserData
             .takeWhile { it !== canvas }.all { it.isVisible }
         return UIUtil.findComponentOfType(canvas, LineChartPanel::class.java)?.takeIf(::visibleWithinCanvas)
             ?: UIUtil.findComponentOfType(canvas, WallView.Surface::class.java)?.takeIf(::visibleWithinCanvas)
+            ?: findReportViewerFocusTarget(canvas)?.takeIf(::visibleWithinCanvas)
             ?: canvas
     }
     override fun getName() = file.review.canvasTitle

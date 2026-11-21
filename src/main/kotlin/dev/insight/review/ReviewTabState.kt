@@ -63,6 +63,9 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     /** Whether the Charts page is on the canvas; it reads the summary tree, so it needs no summaries. */
     var chartsVisible = false
         private set
+    /** Whether the Report viewer page is on the canvas. */
+    var reportViewerVisible = false
+        private set
     var topics = ReviewTopics(emptyList())
         private set
     var topicSummaries = ReviewSummaries(topicTree(topics))
@@ -151,7 +154,7 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
 
     /** Empties the canvas; summaries and topics are kept for when their cards are shown again. */
     open fun clearNotes() {
-        cards.clear(); sourceCards.clear(); summaryPages.clear(); chartsVisible = false; topicsVisible = false; groupingVisible = false
+        cards.clear(); sourceCards.clear(); summaryPages.clear(); chartsVisible = false; reportViewerVisible = false; topicsVisible = false; groupingVisible = false
     }
 
     /** Starts /summaries: an incomplete tree is continued, a complete one is written again. */
@@ -182,6 +185,8 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     internal fun hideSummaries(page: CanvasTabKey.SummaryPage) { summaryPages.remove(page) }
     fun showCharts() { chartsVisible = true }
     fun hideCharts() { chartsVisible = false }
+    fun showReportViewer() { reportViewerVisible = true }
+    fun hideReportViewer() { reportViewerVisible = false }
 
     /** Starts /topics: an incomplete result is continued, a complete one is generated again. */
     fun startTopics(): ReviewTopics {

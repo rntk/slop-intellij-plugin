@@ -96,6 +96,7 @@
         <contextAction implementation="dev.insight.context.actions.SessionMetricsAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionMovesAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionBoardAction"/>
+        <contextAction implementation="dev.insight.context.actions.SessionReportViewerAction"/>
         <contextAction implementation="dev.insight.context.actions.OpenCodeWallContextAction"/>
         <contextAction implementation="dev.insight.context.actions.ShowCallGraphContextAction"/>
         <contextAction implementation="dev.insight.context.actions.AddToFlowChartContextAction"/>

@@ -30,6 +30,7 @@ internal fun viewTileId(key: CanvasTabKey): String = when (key) {
     CanvasTabKey.Hierarchy -> "view-hierarchy"
     CanvasTabKey.Document -> "view-document"
     CanvasTabKey.Charts -> "view-charts"
+    CanvasTabKey.ReportViewer -> "view-report-viewer"
     CanvasTabKey.Topics -> "view-topics"
     CanvasTabKey.Grouping -> "view-grouping"
     CanvasTabKey.Wall -> "view-wall"
