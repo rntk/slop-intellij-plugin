@@ -89,7 +89,7 @@ internal class FileStructurePanel(
     private val project: Project? = null,
 ) : DocumentColumnsPanel(zoom, vocabulary) {
     /** A block as a document section; its path is unique within the document. */
-    private class BlockSource(val block: FileBlock, val file: ReviewSource, override val text: String) : ReviewSource {
+    private class BlockSource(val index: Int, val block: FileBlock, val file: ReviewSource, override val text: String) : ReviewSource {
         override val path: String = "${file.path}#L${block.lines.first}-${block.lines.last}"
         override val absolutePath: String get() = file.absolutePath
         override val fingerprint: String get() = file.fingerprint
@@ -106,8 +106,8 @@ internal class FileStructurePanel(
     override val hoverSummariesOnly: Boolean = true
 
     init {
-        val sources = structure.blocks.map { block ->
-            BlockSource(block, card.file, lines.subList((block.lines.first - 1).coerceIn(0, lines.size), block.lines.last.coerceIn(0, lines.size)).joinToString("\n") + "\n")
+        val sources = structure.blocks.mapIndexed { index, block ->
+            BlockSource(index, block, card.file, lines.subList((block.lines.first - 1).coerceIn(0, lines.size), block.lines.last.coerceIn(0, lines.size)).joinToString("\n") + "\n")
         }
         val depth = railDepth(card)
         structure.blocks.forEachIndexed { index, block ->
@@ -168,7 +168,7 @@ internal class FileStructurePanel(
 
     override fun sectionBody(file: ReviewSource, width: Int): JComponent {
         val source = file as BlockSource
-        val index = structure.blocks.indexOf(source.block)
+        val index = source.index
         return SourceTextView(source.text, width, zoom, source.block.lines.first, digits) { line ->
             val paths = line?.let { source.block.lineReaches[it] }.orEmpty()
             hoverSource(lineItems[line], topicItems.filter { item ->

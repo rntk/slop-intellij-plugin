@@ -48,7 +48,7 @@ internal class SourceTextView(
         for (index in source.indices) if (source[index] == '\n' && line < count) lineStarts[line++] = index + 1
         numberWidth = metrics.stringWidth("0".repeat(maxOf(3, digits, (firstLine + count - 1).toString().length)))
         font = lineFont
-        val contentWidth = (0 until count).maxOfOrNull { metrics.stringWidth(line(it).replace("\t", "    ")) } ?: 0
+        val contentWidth = measuredLines(source, count).maxOfOrNull { metrics.stringWidth(line(it).replace("\t", "    ")) } ?: 0
         preferredSize = Dimension(maxOf(viewWidth, contentWidth + numberWidth + 4 * pad), maxOf(count, 1) * lineHeight + 2 * pad)
         if (hoverLine != null) {
             val listener = object : MouseAdapter() {
@@ -60,6 +60,22 @@ internal class SourceTextView(
             addMouseListener(listener)
             addMouseMotionListener(listener)
         }
+    }
+
+    /**
+     * The lines whose width can be the widest: every line of a short file, else the [MEASURED_LINES] longest once tabs are
+     * expanded. Editor fonts are monospaced, so measuring each line of a huge file would only repeat the character count.
+     */
+    private fun measuredLines(source: String, count: Int): List<Int> {
+        if (count <= MEASURED_LINES) return (0 until count).toList()
+        val lengths = IntArray(count)
+        for (index in 0 until count) {
+            val end = if (index + 1 < count) lineStarts[index + 1] - 1 else source.length
+            var length = 0
+            for (at in lineStarts[index] until end) length += if (source[at] == '\t') 4 else 1
+            lengths[index] = length
+        }
+        return (0 until count).sortedByDescending { lengths[it] }.take(MEASURED_LINES)
     }
 
     /** Snapshot line at this pixel, excluding the padding and empty rows. */
@@ -111,5 +127,10 @@ internal class SourceTextView(
                 g2.drawString(line(index).replace("\t", "    "), numberWidth + 3 * pad, baseline)
             }
         } finally { g2.dispose() }
+    }
+
+    companion object {
+        /** Lines measured for the view's width; a longer file measures only its longest lines. */
+        const val MEASURED_LINES = 256
     }
 }

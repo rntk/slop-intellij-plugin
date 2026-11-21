@@ -90,6 +90,8 @@ internal class ChangeSummaryActions(
     val reviewDestinations: () -> Map<dev.insight.context.ReviewDestination, () -> Unit> = { emptyMap() },
     val fillEntry: (SummaryNode) -> SummaryEntryFill? = { null },
     val contextSummaryActions: ContextSummaryActions? = null,
+    /** Rebuilds the card showing the panel, as after a hierarchy shows more of its entries. */
+    val refresh: () -> Unit = {},
 ) {
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
         addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas,

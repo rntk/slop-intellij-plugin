@@ -30,10 +30,39 @@ internal class ChangeTopicHierarchyPanel(
     private val active = outline.nodes.firstOrNull(state::isSelected)?.let { it.first..it.last }
     private val trace = state.tracing?.trace
     private val marks = traceMarks(reading.tree, trace)
+    /** The first match of each related node, by identity; a trace's related list is recomputed on every read. */
+    private val relatedMatches: Map<String, SummaryMatch> = HashMap<String, SummaryMatch>().also { found ->
+        trace?.related?.forEach { found.putIfAbsent(it.identity, it) }
+    }
 
     init {
+        // A page grows by show more, and starts over with the level or the searches; a jump to a traced entry extends it.
+        val scope = listOf(state.level, state.topicFilter.trim(), state.summaryFilter.trim())
+        state.rowBudget(scope)
+        state.reveal?.let { target -> cardsBefore(target)?.let { state.ensureRows(it + 1) } }
+        rowLimit = state.rowBudget(scope)
         cardWidth = measureCardWidth(outline.nodes.map { it.name } + outline.files.map { it.path.substringAfterLast('/') })
         if (outline.files.isEmpty()) showEmpty(vocabulary.noFiles) else layoutHierarchy()
+    }
+
+    /** The cards placed before [target] in reading order, or null when it is hidden by a fold or the search. */
+    private fun cardsBefore(target: String): Int? {
+        var count = 0
+        fun walk(entries: List<TopicEntry>): Boolean {
+            for (entry in entries) when (entry) {
+                is TopicEntry.File -> { if ("file:${outline.files[entry.index].path}" == target) return true; count++ }
+                is TopicEntry.Topic -> {
+                    if (ChangeTopicsViewState.identity(entry.node) == target) return true
+                    count++
+                    if (!state.isCollapsed(entry.node) && walk(outline.children(entry.node))) return true
+                }
+            }
+            return false
+        }
+        if (walk(outline.children(null))) return count
+        val pending = outline.pending ?: return null
+        count++
+        return pending.firstOrNull { "file:${outline.files[it].path}" == target }?.let { count + pending.indexOf(it) }
     }
 
     private fun layoutHierarchy() {
@@ -41,10 +70,11 @@ internal class ChangeTopicHierarchyPanel(
         var y = 0
         y = placeEntries(outline.children(null), 0, y, null)
         outline.pending?.let { pending ->
+            rowsPlaced++
             var childY = y
             for (index in pending) {
                 if (rowsLeft <= 0) {
-                    childY += moreNote(pending.last - index + 1, 1, childY) + gap
+                    childY += moreLink(pending.last - index + 1, 1, childY, ::showMore) + gap
                     break
                 }
                 childY += fileRow(index, 1, childY, null) + gap
@@ -65,7 +95,7 @@ internal class ChangeTopicHierarchyPanel(
         var next = y
         for ((index, entry) in entries.withIndex()) {
             if (rowsLeft <= 0) {
-                next += moreNote(entries.size - index, column, next) + gap
+                next += moreLink(entries.size - index, column, next, ::showMore) + gap
                 break
             }
             next += place(entry, column, next, topLevel) + gap
@@ -85,12 +115,12 @@ internal class ChangeTopicHierarchyPanel(
         val toggle = toggle("toggle:${node.level}:${node.identity}", collapsed, "Show sub-topics and files", "Fold sub-topics and files") {
             state.toggle(node); actions.refresh()
         }
+        rowsPlaced++
         val mark = marks[identity]
         val component = branchCard("topic:${node.level}:${node.identity}", node.name, node.path.first(), column, node.size,
             state.isSelected(node), node.fullPath, toggle, mark = mark, badge = badge(identity),
             review = readingIds[identity]?.let { actions.review?.control(reading.tree[it], summaryFont()) }) { state.select(node); actions.refresh() }
         val height = if (collapsed) {
-            rowsPlaced++
             val summary = readingIds[identity]?.let(reading::text)
             val note = note("summary:${node.level}:${node.identity}", summary ?: fileNames(node), summary != null, column + 1, y, mark, weights(identity))
             readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }
@@ -137,7 +167,9 @@ internal class ChangeTopicHierarchyPanel(
     private fun weights(identity: String): Map<String, Double> =
         if (state.tagsCloud) readingIds[identity]?.let { wordWeights[it] }.orEmpty() else emptyMap()
 
-    private fun badge(identity: String): String? = trace?.related?.firstOrNull { it.identity == identity }?.let { matchBadge(it, trace) }
+    private fun showMore() { state.showMoreRows(); actions.refresh() }
+
+    private fun badge(identity: String): String? = relatedMatches[identity]?.let { matchBadge(it, requireNotNull(trace)) }
 
     /** A folded topic without a summary lists the files it hides. */
     private fun fileNames(node: TopicNode): String {

@@ -66,9 +66,15 @@ internal abstract class HierarchyColumnsPanel(
     /** Fits the widest name within bounds; longer names wrap. */
     protected fun measureCardWidth(names: List<String>): Int {
         val metrics = getFontMetrics(font(JBFont.label().asBold()).forReviewName())
-        val widest = names.maxOfOrNull(metrics::stringWidth) ?: 0
         val chrome = scaled(RAIL_ACCENT + 2 * CARD_PAD + TOGGLE + 2 * INNER_GAP + DIFF_BUTTON) + 4
-        return (widest + chrome).coerceIn(scaled(MIN_CARD_WIDTH), scaled(MAX_CARD_WIDTH))
+        val max = scaled(MAX_CARD_WIDTH)
+        var widest = 0
+        // Names beyond the widest allowed card cannot widen it, so a huge scope stops measuring at the first such name.
+        for (name in names) {
+            widest = maxOf(widest, metrics.stringWidth(name))
+            if (widest + chrome >= max) break
+        }
+        return (widest + chrome).coerceIn(scaled(MIN_CARD_WIDTH), max)
     }
 
     protected fun showEmpty(message: String, name: String? = null) {
@@ -77,13 +83,33 @@ internal abstract class HierarchyColumnsPanel(
         preferredSize = Dimension(scaled(320), empty.height)
     }
 
-    /** Rows placed so far; a huge tree stops at [MAX_ROWS] and says how many entries it left out. */
+    /**
+     * Cards placed so far, branches included: a huge tree stops at [rowLimit] and offers to show more of the entries it left
+     * out. A leaf or a folded branch counts once, with its summary.
+     */
     protected var rowsPlaced = 0
-    protected val rowsLeft get() = MAX_ROWS - rowsPlaced
+    /** The cards this panel may place; the view state grows it a page at a time, and a subclass sets it before placing. */
+    protected var rowLimit = MAX_ROWS
+    protected val rowsLeft get() = rowLimit - rowsPlaced
 
-    /** A note in place of the [remaining] entries beyond the row cap; returns its height. */
-    protected fun moreNote(remaining: Int, column: Int, y: Int): Int =
-        note("more:$column:$y", "+$remaining more — fold or pick a level", false, column, y).preferredSize.height
+    /**
+     * A link in place of the [remaining] entries beyond the row limit; [showMore] grows the limit and rebuilds. Returns its
+     * height.
+     */
+    protected fun moreLink(remaining: Int, column: Int, y: Int, showMore: () -> Unit): Int {
+        val x = column * step
+        val width = (availableWidth - x).coerceAtLeast(scaled(MIN_SUMMARY_WIDTH))
+        val link = ActionLink("+$remaining more — show more, fold, or pick a level") { showMore() }.apply {
+            name = "more:$column:$y"
+            font = italic(JBFont.small())
+            toolTipText = "Show up to $MAX_ROWS more entries"
+            border = pixelBorder(scaled(CARD_PAD) + 2, scaled(NOTE_INSET), scaled(CARD_PAD) + 2, 0)
+        }
+        val size = link.preferredSize
+        add(link.apply { setBounds(x, y, minOf(width, size.width), size.height) })
+        right = maxOf(right, x + minOf(width, size.width))
+        return size.height
+    }
 
     /** Sizes the panel to the placed rows, [bottom] being the end of the last one plus its gap. */
     protected fun finish(bottom: Int) {

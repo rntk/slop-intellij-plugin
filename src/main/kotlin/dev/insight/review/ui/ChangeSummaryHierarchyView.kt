@@ -40,17 +40,38 @@ internal class ChangeSummaryHierarchyPanel(
     private fun previewNode(component: JComponent, node: SummaryNode) = preview(component, node.files.mapNotNull(sources::get))
     private val trace = state.resultTrace
     private val marks = traceMarks(tree, trace)
+    /** The first match of each related node, by identity; a trace's related list is recomputed on every read. */
+    private val relatedMatches: Map<String, SummaryMatch> = HashMap<String, SummaryMatch>().also { found ->
+        trace?.related?.forEach { found.putIfAbsent(it.identity, it) }
+    }
 
     override fun summaryFont() = super.summaryFont().forSummaryText()
 
     init {
         state.update(tree)
+        // A page grows by show more, and starts over with the level or the searches; a jump to a traced entry extends it.
+        val scope = listOf(tree.root.identity, state.selectedLevel, state.fuzzy.trim(), state.crumbs.lastOrNull()?.let { it.identity to it.query })
+        state.rowBudget(scope)
+        state.reveal?.let { target -> cardsBefore(target)?.let { state.ensureRows(it + 1) } }
+        rowLimit = state.rowBudget(scope)
         cardWidth = measureCardWidth(tree.nodes.map(::title))
         when {
             summaries.total == 0 -> showEmpty(vocabulary.noFiles)
             !state.shows(tree.root, summaries) -> showEmpty("No summaries match the search.", name = "no-matches")
             else -> finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
         }
+    }
+
+    /** The cards placed before [target] in reading order, or null when it is hidden by a fold or the search. */
+    private fun cardsBefore(target: String): Int? {
+        var count = 0
+        fun walk(node: SummaryNode): Boolean {
+            if (node.identity == target) return true
+            count++
+            if (node.children.isEmpty() || !state.isOpen(node, summaries)) return false
+            return tree.shownChildren(node).any { state.shows(it, summaries) && walk(it) }
+        }
+        return if (walk(tree.root)) count else null
     }
 
     /** Lays out [node] with its top-left at column [column] and row [y], and returns its height. */
@@ -64,6 +85,7 @@ internal class ChangeSummaryHierarchyPanel(
         val toggle = toggle("toggle:${node.identity}", collapsed, "Show subfolders and files", "Fold subfolders and files") {
             actions.toggle(node.identity)
         }
+        rowsPlaced++
         val mark = marks[node.identity]
         val component = branchCard("node:${node.identity}", title(node), family, column, node.files.size,
             node.identity == state.selected, node.location, toggle, icon(node), mark = mark, badge = badge(node),
@@ -77,7 +99,6 @@ internal class ChangeSummaryHierarchyPanel(
         previewNode(component, node)
         actions.installEntryMenu(component, node)
         val height = if (collapsed) {
-            rowsPlaced++
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark,
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
@@ -92,7 +113,7 @@ internal class ChangeSummaryHierarchyPanel(
             // Each top-level folder keeps one hue down its columns; the root stays neutral.
             for ((index, child) in children.withIndex()) {
                 if (rowsLeft <= 0) {
-                    childY += moreNote(children.size - index, column + 1, childY) + gap
+                    childY += moreLink(children.size - index, column + 1, childY, ::showMore) + gap
                     break
                 }
                 childY += place(child, column + 1, childY, family ?: child.identity) + gap
@@ -134,15 +155,17 @@ internal class ChangeSummaryHierarchyPanel(
         return height
     }
 
-    private fun badge(node: SummaryNode): String? = trace?.related?.firstOrNull { it.identity == node.identity }?.let { matchBadge(it, trace) }
+    private fun showMore() { state.showMoreRows(); actions.refresh() }
+
+    private fun badge(node: SummaryNode): String? = relatedMatches[node.identity]?.let { matchBadge(it, requireNotNull(trace)) }
 
     private fun missing() = if (card.running) "Summarizing…" else "No summary yet"
 
     /** A folded folder without a summary yet lists the entries it hides. */
     private fun folded(node: SummaryNode): String {
-        val names = tree.shownChildren(node).map(::title)
-        return missing() + " · " + names.take(FOLDED_NAMES).joinToString(", ") +
-            if (names.size > FOLDED_NAMES) ", +${names.size - FOLDED_NAMES} more" else ""
+        val children = tree.shownChildren(node)
+        return missing() + " · " + children.take(FOLDED_NAMES).joinToString(", ", transform = ::title) +
+            if (children.size > FOLDED_NAMES) ", +${children.size - FOLDED_NAMES} more" else ""
     }
 
     /** A file name, a folder name with a trailing slash, a group's range, a part's lines, or the root's label. */
@@ -172,11 +195,17 @@ internal class ChangeSummaryDocumentPanel(
     private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null && state.shows(it, summaries) }
     val files: List<ReviewSource> = fileNodes.map { requireNotNull(it.file) }
     private val nodesByPath = fileNodes.associateBy { it.path }
+    private val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
     private val branches = tree.nodes.filter { it.children.isNotEmpty() }.mapTo(hashSetOf()) { it.identity }
 
     init {
         state.update(tree)
-        val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
+        // A traced match beyond the files built so far extends the document down to its first file.
+        val revealed = state.reveal?.let(nodesByIdentity::get)?.let { node ->
+            node.files.mapNotNull(indexByPath::get).minOrNull() ?: indexByPath[node.path]
+        }
+        state.documentFiles = documentPage(state.documentFiles, revealed)
+        val loaded = state.documentFiles
         val missing = if (card.running) "Summarizing…" else "No summary yet"
         val folderDepth = state.railDepth(tree)
         val depth = railDepth(tree, state)
@@ -213,7 +242,7 @@ internal class ChangeSummaryDocumentPanel(
         }
         if (files.isNotEmpty()) collect(tree.root, 0, null)
         // Source reviews give every complete file a path card, including files summarized in parts.
-        if (depth > folderDepth) fileNodes.forEachIndexed { index, node ->
+        if (depth > folderDepth) fileNodes.take(loaded).forEachIndexed { index, node ->
             items += RailItem(
                 key = node.identity,
                 name = "node:${node.identity}",
@@ -232,7 +261,10 @@ internal class ChangeSummaryDocumentPanel(
             )
         }
         val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
-        layoutDocument(files, fileSummaries, items, depth, width, missing)
+        layoutDocument(files, fileSummaries, items, depth, width, missing, loaded) { next ->
+            state.documentFiles = next
+            actions.refresh()
+        }
         // Document cards and margin notes identify the entry they represent.
         fun install(component: java.awt.Component) {
             val name = component.name
@@ -266,7 +298,7 @@ internal class ChangeSummaryDocumentPanel(
     override fun wholeFileAction(file: ReviewSource): (() -> Unit)? = nodesByPath[file.path]?.let(actions::wholeFileAction)
 
     override fun directoryDiffAction(item: RailItem): (() -> Unit)? =
-        tree.nodes.firstOrNull { it.identity == item.key }?.let(actions::directoryAction)
+        nodesByIdentity[item.key]?.let(actions::directoryAction)
 
     override fun explainFileAction(file: ReviewSource): (() -> Unit)? = nodesByPath[file.path]?.let(actions::explainAction)
 
@@ -293,7 +325,7 @@ internal class ChangeSummaryDocumentPanel(
     override fun select(item: RailItem) { state.select(item.key) }
 
     override fun selectedFiles(): IntRange? =
-        files.indexOfFirst { "file:${it.path}" == state.selected }.takeIf { it >= 0 }?.let { it..it }
+        state.selected?.takeIf { it.startsWith("file:") }?.let { indexByPath[it.removePrefix("file:")] }?.let { it..it }
 
     companion object {
         fun railDepth(tree: ReviewSummaryTree, state: ChangeSummariesViewState): Int = state.railDepth(tree) +

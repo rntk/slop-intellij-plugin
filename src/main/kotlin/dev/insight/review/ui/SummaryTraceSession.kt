@@ -33,6 +33,26 @@ internal abstract class SummaryTraceState(private val traceRoot: Boolean = true)
     /** A node to scroll into view once the card is laid out again. */
     var reveal: String? = null
 
+    private var rowBudget = HierarchyColumnsPanel.MAX_ROWS
+    private var budgetScope: Any? = null
+
+    /**
+     * The cards the hierarchy of [scope] may place. Panels are rebuilt often, so the budget lives here: it grows by a page
+     * with [showMoreRows] and starts over when [scope] (the level, searches and the like) changes.
+     */
+    fun rowBudget(scope: Any?): Int {
+        if (scope != budgetScope) { budgetScope = scope; rowBudget = HierarchyColumnsPanel.MAX_ROWS }
+        return rowBudget
+    }
+
+    fun showMoreRows() { rowBudget += HierarchyColumnsPanel.MAX_ROWS }
+
+    /** Grows the budget, in whole pages, to hold [rows] cards, so a traced entry beyond it is placed. */
+    fun ensureRows(rows: Int) {
+        val page = HierarchyColumnsPanel.MAX_ROWS
+        if (rows > rowBudget) rowBudget = (rows + page - 1) / page * page
+    }
+
     /** The segments linked to the last hover or selection, shown in the same color in the summaries below and above it. */
     var echo: SummaryEcho? = null
         private set

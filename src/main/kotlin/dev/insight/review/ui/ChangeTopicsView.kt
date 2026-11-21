@@ -122,6 +122,8 @@ internal class ChangeTopicsViewState(
     private var filterFor: OutlineFilter? = null
     private var full: TopicOutline? = null
     private var shown: TopicOutline? = null
+    /** Files the document builds, a page at a time; survives rebuilds and starts again at one page when a search changes. */
+    var documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
 
     /** Every file of [card] in topic order. Like [outline], it updates this state. */
     fun fullOutline(card: TopicsCard): TopicOutline = outlines(card).first
@@ -135,6 +137,8 @@ internal class ChangeTopicsViewState(
         val previous = filterFor
         if (previous == null || previous.card !== card || previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery) {
             filterFor = OutlineFilter(card, topicQuery, summaryQuery)
+            if (previous != null && (previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery))
+                documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
             val outline = full.takeIf { previous?.card?.topics === card.topics } ?: topicOutline(card.topics)
             full = outline
             shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty()) outline else {
@@ -334,9 +338,21 @@ internal abstract class DocumentColumnsPanel(
     /** Reading views can mark semantic search results beside the source and on the folder rail. */
     protected open fun resultTrace(): SummaryTrace? = null
 
+    /** The related matches of the last [resultTrace] by identity, so marking every section and card stays linear. */
+    private var resultIndex: Pair<SummaryTrace, Map<String, SummaryMatch>>? = null
+
+    private fun resultMatch(trace: SummaryTrace, identity: String): SummaryMatch? {
+        val index = resultIndex?.takeIf { it.first === trace }?.second
+            ?: LinkedHashMap<String, SummaryMatch>().also { map ->
+                trace.related.forEach { map.putIfAbsent(it.identity, it) }
+                resultIndex = trace to map
+            }
+        return index[identity]
+    }
+
     private fun resultColor(identity: String): Color? {
         val trace = resultTrace() ?: return null
-        if (trace.related.none { it.identity == identity }) return null
+        if (resultMatch(trace, identity) == null) return null
         return if (trace.best?.identity == identity) TraceStyle.BEST_MATCH else TraceStyle.RELATED
     }
 
@@ -355,7 +371,7 @@ internal abstract class DocumentColumnsPanel(
 
     private fun resultBadge(identity: String): JLabel? {
         val trace = resultTrace() ?: return null
-        val match = trace.related.firstOrNull { it.identity == identity } ?: return null
+        val match = resultMatch(trace, identity) ?: return null
         val title = if (trace.best?.identity == identity) "● Best match" else "● Related"
         return JLabel("$title · ${levelsBelow(match)}").apply {
             name = "match:$identity"
@@ -390,14 +406,24 @@ internal abstract class DocumentColumnsPanel(
         if (summary != null) text(summary, width, summaryFont(), null)
         else text(missingSummary, width, cardFont(JBFont.small()).deriveFont(Font.ITALIC), help)
 
+    /**
+     * Lays out the first [loaded] [files] with the rail cards that start among them; a card reaching past them spans the ones
+     * built. With fewer than all files built, [showMore] receives the next page's count from the link below the last section.
+     */
     protected fun layoutDocument(
         files: List<ReviewSource>,
         summaries: Map<String, String?>,
-        items: List<RailItem>,
+        allItems: List<RailItem>,
         depth: Int,
         width: Int,
         missingSummary: String = "No summary yet",
+        loaded: Int = files.size,
+        showMore: ((Int) -> Unit)? = null,
     ) {
+        val built = if (showMore == null) files.size else loaded.coerceIn(minOf(files.size, 1), files.size)
+        val items = if (built == files.size) allItems else allItems.filter { it.first < built }
+        val allFiles = files
+        @Suppress("NAME_SHADOWING") val files = if (built == files.size) files else files.subList(0, built)
         if (files.isEmpty()) {
             val empty = text(vocabulary.noFiles, scaled(320), font(JBFont.label()), help)
             add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
@@ -414,7 +440,8 @@ internal abstract class DocumentColumnsPanel(
         val railInsets = 2 + cardScaled(RAIL_ACCENT) + cardScaled(8) + cardScaled(6)
         val cardWidth = maxOf(cardScaled(RAIL_CARD_WIDTH),
             (items.maxOfOrNull(::titleWidth) ?: 0) + railInsets + JBUI.scale(2))
-        val summaryWordWidth = (summaries.mapNotNull { (path, summary) -> summary?.let { summaryWordWidth("file:$path", it) } } +
+        val measured = if (built == allFiles.size) summaries else files.associate { it.path to summaries[it.path] }
+        val summaryWordWidth = (measured.mapNotNull { (path, summary) -> summary?.let { summaryWordWidth("file:$path", it) } } +
             items.mapNotNull { item -> item.summary?.let { summaryWordWidth(item.key, it) } }).maxOrNull() ?: 0
         val summaryTitleWidth = items.maxOfOrNull(::titleWidth) ?: 0
         val summaryWidth = maxOf(cardScaled(SUMMARY_WIDTH),
@@ -450,10 +477,16 @@ internal abstract class DocumentColumnsPanel(
             tops[index] = y; bottoms[index] = y + height
             y += height + scaled(SECTION_GAP)
         }
+        if (showMore != null && built < allFiles.size) {
+            val more = moreFiles(built, allFiles.size, showMore)
+            more.setBounds(docX, y, docWidth, more.preferredSize.height)
+            add(more)
+            y += more.height + scaled(SECTION_GAP)
+        }
         val step = cardWidth + scaled(RAIL_GAP)
         // The leaf level sits next to the diffs; the broadest level is outermost, as in the article canvas.
         for ((item, component) in preparedRail) {
-            component.setBounds(railX + (depth - 1 - item.level) * step, tops[item.first], cardWidth, bottoms[item.last] - tops[item.first])
+            component.setBounds(railX + (depth - 1 - item.level) * step, tops[item.first], cardWidth, bottoms[shownLast(item)] - tops[item.first])
             add(component)
             rail += item to component
         }
@@ -503,14 +536,15 @@ internal abstract class DocumentColumnsPanel(
             revalidate()
         }
         if (item == null || noteColumns.isEmpty()) return
-        for (index in item.first..item.last) noteColumns[index].isVisible = false
+        val last = shownLast(item)
+        for (index in item.first..last) noteColumns[index].isVisible = false
         val note = cardNote(item, summaryWidth)
         // Opaque and on top, so a summary longer than its files' margin covers the notes below rather than mixing with them.
         val column = JPanel(stickyHeaders.layout()).apply {
             name = "card-summary:${item.key}"
             background = UIUtil.getListBackground()
             add(note, BorderLayout.NORTH)
-            setBounds(0, tops[item.first], summaryWidth, maxOf(bottoms[item.last] - tops[item.first], note.preferredSize.height))
+            setBounds(0, tops[item.first], summaryWidth, maxOf(bottoms[last] - tops[item.first], note.preferredSize.height))
         }
         stickyHeaders.add(column, note)
         add(column, 0)
@@ -521,6 +555,23 @@ internal abstract class DocumentColumnsPanel(
             revalidate()
         }
     }
+
+    /** The last built file of [item]; a card can reach past the files built so far. */
+    private fun shownLast(item: RailItem) = minOf(item.last, tops.size - 1)
+
+    /** How many files are built, and the link that builds the next page. */
+    private fun moreFiles(built: Int, total: Int, showMore: (Int) -> Unit): JComponent =
+        JPanel(FlowLayout(FlowLayout.LEFT, scaled(8), scaled(4))).apply {
+            name = "document-more-files"
+            isOpaque = false
+            val next = minOf(DOCUMENT_PAGE_FILES, total - built)
+            add(JLabel("$built of ${countLabel(total)} shown").apply { font = font(JBFont.small()); foreground = help })
+            add(ActionLink("Show next ${countLabel(next)}") { showMore(built + next) }.apply {
+                name = "document-more"
+                font = font(JBFont.small())
+                toolTipText = "Large documents build ${countLabel(DOCUMENT_PAGE_FILES)} at a time"
+            })
+        }
 
     protected open fun cardNote(item: RailItem, width: Int): JComponent = JPanel(VerticalLayout(cardScaled(4))).apply {
         background = UIUtil.getListBackground()
@@ -756,6 +807,12 @@ internal abstract class DocumentColumnsPanel(
         const val RAIL_GAP = 6
         const val RAIL_ACCENT = 4
         const val NOTE_INSET = 10
+        /** Files a document builds at a time; each is a diff or source pane, so far more would stall the UI thread. */
+        const val DOCUMENT_PAGE_FILES = 200
+
+        /** The pages that cover [requested] files and, when given, the file at [index], so a revealed file is built. */
+        fun documentPage(requested: Int, index: Int?): Int =
+            maxOf(requested, DOCUMENT_PAGE_FILES, index?.let { (it / DOCUMENT_PAGE_FILES + 1) * DOCUMENT_PAGE_FILES } ?: 0)
 
         private fun scaledBy(zoom: Double, n: Int) = zoomScaled(n, zoom)
         /** Card geometry and typography must grow together, including during zoom out. */
@@ -828,7 +885,17 @@ internal class ChangeTopicsPanel(
             )
         })
         val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
-        layoutDocument(outline.files, summaries, items, depth, width)
+        // A traced match beyond the files built so far extends the document down to it.
+        val revealed = state.reveal?.let { target ->
+            if (target.startsWith(ChangeTopicsViewState.TOPIC))
+                outline.nodes.firstOrNull { ChangeTopicsViewState.identity(it) == target }?.first
+            else outline.files.indexOfFirst { "file:${it.path}" == target }.takeIf { it >= 0 }
+        }
+        state.documentFiles = documentPage(state.documentFiles, revealed)
+        layoutDocument(outline.files, summaries, items, depth, width, loaded = state.documentFiles) { next ->
+            state.documentFiles = next
+            actions.refresh()
+        }
         // A rail card is a topic's entry: it offers the same actions as the topic in the hierarchy.
         for (component in components) {
             val node = component.name?.takeIf { it.startsWith("topic:") }?.let { nodesByKey[it.removePrefix("topic:")] }
@@ -882,7 +949,21 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
     private val numberWidth: Int
 
     init {
-        val all = patch.split('\n').let { if (it.lastOrNull()?.isEmpty() == true) it.dropLast(1) else it }
+        // Only the painted lines are split and parsed; the rest of a huge patch is just counted.
+        val all = ArrayList<String>(minOf(MAX_LINES, 64))
+        var start = 0
+        while (start < patch.length && all.size < MAX_LINES) {
+            val end = patch.indexOf('\n', start).let { if (it < 0) patch.length else it }
+            all += patch.substring(start, end)
+            start = end + 1
+        }
+        // A final separator ends the last line rather than starting an empty one, as with split and dropping the empty tail.
+        var remaining = 0
+        if (start < patch.length) {
+            var at = patch.indexOf('\n', start)
+            while (at >= 0) { remaining++; at = patch.indexOf('\n', at + 1) }
+            if (!patch.endsWith('\n')) remaining++
+        }
         var old = 0
         var new = 0
         var inHunk = false
@@ -900,8 +981,8 @@ internal class PatchView(patch: String, viewWidth: Int, zoom: Double) : JCompone
                 else -> Line(text, Kind.CONTEXT, old++, new++, raw.drop(1))
             }
         }
-        lines = parsed.take(MAX_LINES)
-        hiddenLines = parsed.size - lines.size
+        lines = parsed
+        hiddenLines = remaining
         val largest = lines.maxOfOrNull { maxOf(it.old ?: 0, it.new ?: 0) } ?: 0
         numberWidth = if (lines.none { it.old != null || it.new != null }) 0 else metrics.stringWidth("0".repeat(maxOf(3, largest.toString().length)))
         font = lineFont

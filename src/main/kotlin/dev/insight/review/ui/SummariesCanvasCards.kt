@@ -250,6 +250,7 @@ internal class SummariesCanvasCards(
             reviewDestinations = actions.reviewDestinations,
             contextSources = tree.nodes.mapNotNull { it.file }.distinctBy { it.path },
             toggle = { identity -> summariesView.toggle(identity); refreshSummaries(tab) },
+            refresh = { refreshSummaries(tab) },
             select = { identity -> summariesView.select(identity); refreshSummaries(tab) },
             openFile = open,
             showDiffCard = sourceActions.showDiffCard,

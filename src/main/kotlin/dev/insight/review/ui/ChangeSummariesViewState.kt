@@ -107,6 +107,7 @@ internal class ChangeSummariesViewState(
         filterFor = null
         shown = null
         opened = emptySet()
+        documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
     }
 
     fun resummaryRequest(summaries: ReviewSummaries): ContextSummaryRequest? {
@@ -128,6 +129,8 @@ internal class ChangeSummariesViewState(
     private var filterFor: SummariesFilter? = null
     private var shown: Set<String>? = null
     private var opened = emptySet<String>()
+    /** Files the document builds, a page at a time; survives rebuilds and starts again at one page when a search changes. */
+    var documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
 
     /** The nodes left by the searches and the search field, every match with the nodes above it; null hides nothing. */
     fun shownNodes(summaries: ReviewSummaries): Set<String>? {
@@ -135,6 +138,10 @@ internal class ChangeSummariesViewState(
         val crumb = crumbs.lastOrNull()
         val key = SummariesFilter(summaries, query, crumb)
         if (filterFor == key) return shown
+        filterFor?.let { previous ->
+            if (previous.query != query || previous.crumb?.let { it.identity to it.query } != crumb?.let { it.identity to it.query })
+                documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
+        }
         filterFor = key
         val searched = crumb?.shown
         opened = emptySet()
