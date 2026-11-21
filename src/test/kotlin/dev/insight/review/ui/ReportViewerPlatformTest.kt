@@ -1,5 +1,7 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.impl.ApplicationImpl
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -15,7 +17,9 @@ import dev.insight.context.ContextActionRegistry
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextRequest
 import dev.insight.context.ContextScopeKind
+import dev.insight.context.ReportSelectionActions
 import dev.insight.context.ReviewDestination
+import dev.insight.context.buildContextPicker
 import dev.insight.diff.DiffReviewTab
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
@@ -504,6 +508,179 @@ class ReportViewerPlatformTest : FileEditorManagerTestCase() {
             val rawTextSize = rawGlyphs.first { "Audit" in it.first || "Widget.java" in it.first }.second
             assertEquals(Math.round(expectedBodySize * 0.94f), rawTextSize)
         } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test selected report prose is previewed and can be removed from the current view`() {
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val pickerLifetime = Disposer.newDisposable()
+        try {
+            tab.update(codeSnapshot(codeFile("src/demo/Widget.java", sampleJava)))
+            chooseView(tab, "Report viewer")
+            val builder = tab.canvas.reportViewerBuilder
+            val report = "# Findings\n\nKeep **this excerpt** here."
+            builder.loadPastedText(report)
+
+            fun awaitReport(raw: Boolean = false) {
+                PlatformTestUtil.waitWithEventsDispatching("Report should render", {
+                    !builder.view.loading && builder.view.rendered?.isPlainText == raw
+                }, 10)
+            }
+            fun pane() = descendants(tab.canvas).filterIsInstance<JEditorPane>().single { it.name == REPORT_VIEWER_PANE_NAME }
+            fun displayedText() = pane().document.let { it.getText(0, it.length) }
+
+            awaitReport()
+            val view = pane()
+            val excerpt = "this excerpt"
+            val start = displayedText().indexOf(excerpt)
+            assertTrue(start >= 0)
+            view.select(start, start + excerpt.length)
+            val selection = ReportTextSelection.capture(view)!!
+            var opened: String? = null
+            val delete = view.actionMap.get("report-delete-selection")!!
+            val pick = reportSelectionContextPick(selection, ReportSelectionActions(
+                openChat = { opened = it },
+                delete = { delete.actionPerformed(ActionEvent(view, ActionEvent.ACTION_PERFORMED, "")) },
+            ), emptyMap())
+            val picker = buildContextPicker(project, pick.candidates, pick.defaultIndex, pick.origin, pick.data,
+                view, pickerLifetime) { _, _ -> }
+            assertEquals(excerpt, picker.preview.document.text)
+
+            val request = ContextRequest(project, pick.candidates.single(), pick.candidates, pick.origin, pick.data, view)
+            val actions = ContextActionRegistry.getInstance().actions(request).associateBy { it.id }
+            assertFalse(actions.containsKey("ask.chat"))
+            actions.getValue("ask.reportSelection").perform(request)
+            assertEquals(excerpt, opened)
+            actions.getValue("edit.deleteReportSelection").perform(request)
+            assertTrue("Keep  here." in displayedText())
+            assertEquals(report, builder.view.rawContent)
+
+            builder.setRawTextMode(true)
+            awaitReport(raw = true)
+            assertTrue("**this excerpt**" in displayedText())
+            builder.setRawTextMode(false)
+            awaitReport()
+            assertTrue("Keep  here." in displayedText())
+
+            builder.reload()
+            awaitReport()
+            assertTrue("Keep this excerpt here." in displayedText())
+        } finally {
+            Disposer.dispose(pickerLifetime)
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test selected text is deleted from the report file in markdown and raw modes`() {
+        val original = "# Findings\n\nKeep this excerpt and **this excerpt** here.\n"
+        val file = myFixture.addFileToProject("reports/edit.md", original).virtualFile
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        try {
+            tab.update(codeSnapshot(codeFile("src/demo/Widget.java", sampleJava)))
+            chooseView(tab, "Report viewer")
+            val builder = tab.canvas.reportViewerBuilder
+            fun awaitReport(raw: Boolean = false) {
+                PlatformTestUtil.waitWithEventsDispatching("Report should render", {
+                    !builder.view.loading && builder.view.rendered?.isPlainText == raw
+                }, 10)
+            }
+            fun delete(excerpt: String, after: String = "") {
+                val pane = descendants(tab.canvas).filterIsInstance<JEditorPane>().single { it.name == REPORT_VIEWER_PANE_NAME }
+                val contextStart = pane.document.getText(0, pane.document.length).lastIndexOf(after + excerpt)
+                assertTrue(contextStart >= 0)
+                val start = contextStart + after.length
+                pane.select(start, start + excerpt.length)
+                val application = ApplicationManager.getApplication() as ApplicationImpl
+                application.rwLock.releaseTheAcquiredWriteIntentLockThenExecuteActionAndTakeWriteIntentLockBack {
+                    assertFalse(application.isReadAccessAllowed)
+                    pane.actionMap.get("report-delete-selection").actionPerformed(ActionEvent(pane, ActionEvent.ACTION_PERFORMED, ""))
+                }
+            }
+            fun diskText() = file.contentsToByteArray().toString(Charsets.UTF_8)
+
+            builder.openProjectFile("reports/edit.md")
+            awaitReport()
+            delete("this excerpt")
+            awaitReport()
+            assertEquals("# Findings\n\nKeep this excerpt and  here.\n", diskText())
+
+            builder.setRawTextMode(true)
+            awaitReport(raw = true)
+            delete(" and ")
+            awaitReport(raw = true)
+            assertEquals("# Findings\n\nKeep this excerpt here.\n", diskText())
+
+            val document = FileDocumentManager.getInstance().getDocument(file)!!
+            WriteCommandAction.runWriteCommandAction(project) { document.insertString(0, "New text\n") }
+            delete("this excerpt")
+            assertTrue(document.text.contains("this excerpt"))
+            assertNotNull(builder.view.noticeMessage)
+
+            builder.reload()
+            awaitReport(raw = true)
+            assertEquals("New text\n# Findings\n\nKeep this excerpt here.\n", builder.view.rawContent)
+            delete("\n", after = "Findings")
+            awaitReport(raw = true)
+            assertEquals("New text\n# Findings\nKeep this excerpt here.\n", diskText())
+        } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test selected report text offers its linked files as one scope opening them all`() {
+        myFixture.addFileToProject("src/demo/Widget.java", sampleJava)
+        myFixture.addFileToProject("src/demo/Gadget.java", "package demo;\n\npublic class Gadget {}\n")
+        val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        val pickerLifetime = Disposer.newDisposable()
+        try {
+            tab.update(codeSnapshot(codeFile("src/demo/Widget.java", sampleJava),
+                codeFile("src/demo/Gadget.java", "package demo;\n\npublic class Gadget {}\n")))
+            chooseView(tab, "Report viewer")
+            val builder = tab.canvas.reportViewerBuilder
+            builder.loadPastedText("Fix `src/demo/Widget.java:L4-L5`, then `src/demo/Gadget.java` and `src/demo/Widget.java:L7` in `src/demo/`.\n")
+            PlatformTestUtil.waitWithEventsDispatching("Report should render", {
+                !builder.view.loading && builder.view.rendered?.links?.isNotEmpty() == true
+            }, 10)
+            val pane = descendants(tab.canvas).filterIsInstance<JEditorPane>().single { it.name == REPORT_VIEWER_PANE_NAME }
+            pane.selectAll()
+            val selection = ReportTextSelection.capture(pane)!!
+            val links = reportLinksIn(pane.document, selection.start, selection.end, builder.view.rendered!!.links)
+            var walled: List<String>? = null
+            val pick = reportSelectionContextPick(selection, ReportSelectionActions({}, {}), emptyMap(), links,
+                reviewFiles = tab.state.snapshotFiles, openOnWall = { files, _ -> walled = files.map { it.path } })
+
+            val (text, linked) = pick.candidates
+            assertEquals(ContextScopeKind.SELECTION, text.kind)
+            assertEquals("Links in selection", linked.label)
+            assertEquals(listOf("src/demo/Widget.java", "src/demo/Gadget.java"), linked.files)
+            assertTrue(linked.text, "src/demo/Widget.java:L4-L5" in linked.text && "src/demo/Gadget.java" in linked.text)
+            assertTrue(linked.text, "src/demo/ (directory)" in linked.text)
+            val picker = buildContextPicker(project, pick.candidates, 1, pick.origin, pick.data, pane, pickerLifetime) { _, _ -> }
+            assertEquals(linked.text, picker.preview.document.text)
+
+            fun actions(context: dev.insight.context.CodeContext) = ContextActionRegistry.getInstance()
+                .actions(ContextRequest(project, context, pick.candidates, pick.origin, pick.data, pane)).associateBy { it.id }
+            val textActions = actions(text)
+            assertTrue(textActions.keys.toString(), "ask.reportSelection" in textActions && "explore.codeWall" !in textActions &&
+                "open.linkedEditors" !in textActions)
+            val linkActions = actions(linked)
+            assertTrue(linkActions.keys.toString(), linkActions.keys.containsAll(listOf("open.linkedEditors", "explore.linkedCanvas",
+                "explore.codeWall", "ask.chat")))
+            assertFalse(linkActions.keys.toString(), "ask.reportSelection" in linkActions || "edit.deleteReportSelection" in linkActions)
+
+            val request = ContextRequest(project, linked, pick.candidates, pick.origin, pick.data, pane)
+            linkActions.getValue("explore.codeWall").perform(request)
+            assertEquals(listOf("src/demo/Widget.java", "src/demo/Gadget.java"), walled)
+
+            linkActions.getValue("open.linkedEditors").perform(request)
+            val manager = FileEditorManager.getInstance(project)
+            assertTrue(manager.openFiles.map { it.name }.containsAll(listOf("Widget.java", "Gadget.java")))
+            val editor = manager.selectedTextEditor!!
+            assertEquals("Widget.java", FileDocumentManager.getInstance().getFile(editor.document)?.name)
+            assertEquals(3, editor.caretModel.logicalPosition.line)
+        } finally {
+            Disposer.dispose(pickerLifetime)
             Disposer.dispose(tab)
         }
     }

@@ -6,18 +6,21 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.ui.popup.JBPopupFactory
-import com.intellij.openapi.util.text.StringUtil
-import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.ReadonlyStatusHandler
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.DocumentAdapter
@@ -32,8 +35,11 @@ import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.InsightBundle
 import dev.insight.canvas.relativePath
+import dev.insight.chat.openReportSelectionChat
 import dev.insight.context.ContextSummaryActions
+import dev.insight.context.ReportSelectionActions
 import dev.insight.context.ReviewDestination
 import dev.insight.context.showContextPicker
 import dev.insight.diff.ReviewDiffSession
@@ -178,6 +184,8 @@ internal class ReportViewerCanvasCard(
     var onStatsChanged: () -> Unit = {}
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+    private val reportChats = Disposer.newDisposable("report selection chats")
+    private val textEdits = mutableMapOf<Boolean, ReportTextEdits>()
     private var disposed = false
     private var currentCard: JPanel? = null
     internal var navigation: ReportViewerNavigation? = null
@@ -191,6 +199,7 @@ internal class ReportViewerCanvasCard(
     private var indexJob: Job? = null
     private var renderJob: Job? = null
     private var hoveredLink: ReportLink? = null
+    private var reportFile: VirtualFile? = null
 
     /** Tile stats: empty before a report has been rendered; link and file counts once loaded. */
     val stats: List<ReviewTileStat>
@@ -289,6 +298,7 @@ internal class ReportViewerCanvasCard(
 
     /** Opens a project-relative `.md`, `.txt`, or `.log` file in the report viewer. */
     fun openProjectFile(relativePath: String) {
+        textEdits.clear()
         val clean = relativePath.trim().replace('\\', '/').trimStart('/')
         val abs = snapshot?.index?.absolutePathFor(clean)
         view.source = ReportSource.ProjectFile(clean, abs)
@@ -306,6 +316,7 @@ internal class ReportViewerCanvasCard(
 
     /** Opens any IDE [VirtualFile] (inside or outside the project) in the report viewer. */
     fun openVirtualFile(file: VirtualFile) {
+        textEdits.clear()
         val proj = project
         val indexedRel = snapshot?.index?.pathForAbsolute(file.path)
         val rel = indexedRel ?: if (proj != null) ReadAction.compute<String?, RuntimeException> {
@@ -327,10 +338,12 @@ internal class ReportViewerCanvasCard(
 
     /** Renders pasted report [text] directly against the current project index. */
     fun loadPastedText(text: String, label: String = "Pasted report") {
+        textEdits.clear()
         val src = ReportSource.PastedText(label, text)
         view.source = src
         view.rawTextOverride = null
         view.scroll = 0
+        view.rendered = null
         view.errorMessage = null
         view.noticeMessage = null
         view.rawContent = text
@@ -342,6 +355,7 @@ internal class ReportViewerCanvasCard(
 
     /** Reloads the project index and re-renders the active report. */
     fun reload() {
+        textEdits.clear()
         val content = latestContent
         indexJob?.cancel()
         snapshot = null
@@ -626,6 +640,7 @@ internal class ReportViewerCanvasCard(
             }
         }
 
+        val source = view.source
         val pane = JEditorPane().apply {
             name = REPORT_VIEWER_PANE_NAME
             editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
@@ -637,6 +652,83 @@ internal class ReportViewerCanvasCard(
             putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
             text = rendered.html
             caretPosition = 0
+        }
+        val mode = rendered.isPlainText
+        val sourceText = view.rawContent
+        val sourceFile = reportFile
+        if (textEdits[mode]?.restore(pane.document) == false) textEdits.remove(mode)
+
+        fun isCurrentReport() =
+            !disposed && !view.loading && currentCard === card && view.source === source && view.rendered === rendered
+
+        fun deleteSelection(selection: ReportTextSelection) {
+            if (!isCurrentReport()) return
+            val document = pane.document
+            val length = selection.end - selection.start
+            if (selection.end > document.length || document.getText(selection.start, length) != selection.text) return
+            if (source !is ReportSource.PastedText) {
+                fun notice(message: String) {
+                    view.noticeMessage = InsightBundle.message(message)
+                    statusLabel.foreground = UIUtil.getErrorForeground()
+                    statusLabel.text = defaultStatusText()
+                }
+
+                val map = rendered.sourceMap ?: return
+                val ranges = reportSourceDeletion(document as HTMLDocument, selection, map, mode)
+                if (ranges.isEmpty()) {
+                    notice("report.delete.noSource")
+                    return
+                }
+                val proj = project ?: return
+                WriteIntentReadAction.run {
+                    val manager = FileDocumentManager.getInstance()
+                    val file = sourceFile?.takeIf { it.isValid }
+                    val fileDocument = file?.let(manager::getDocument)
+                    if (file == null || fileDocument == null || fileDocument.text != sourceText) {
+                        notice("report.delete.sourceChanged")
+                        return@run
+                    }
+                    if (ReadonlyStatusHandler.getInstance(proj).ensureFilesWritable(listOf(file)).hasReadonlyFiles()) return@run
+                    if (!isCurrentReport()) return@run
+                    var edited = false
+                    WriteCommandAction.runWriteCommandAction(proj, InsightBundle.message("context.action.report.delete"), null, Runnable {
+                        if (file.isValid && fileDocument.isWritable && fileDocument.text == sourceText) {
+                            for (range in ranges.asReversed()) fileDocument.deleteString(range.first, range.last + 1)
+                            edited = true
+                        }
+                    })
+                    if (!edited) {
+                        notice("report.delete.sourceChanged")
+                        return@run
+                    }
+                    manager.saveDocument(fileDocument)
+                    val updated = fileDocument.text
+                    view.noticeMessage = null
+                    view.rawContent = updated
+                    pendingFocusTarget = REPORT_VIEWER_PANE_NAME
+                    renderTextContent(updated, latestContent)
+                }
+                return
+            }
+            textEdits.getOrPut(mode) { ReportTextEdits(document) }.delete(document, selection)
+            pane.caretPosition = selection.start
+            hoveredLink = null
+            pane.toolTipText = null
+            statusLabel.text = defaultStatusText()
+        }
+
+        fun showSelectionContext(selection: ReportTextSelection, point: Point) {
+            val proj = project ?: return
+            val actions = ReportSelectionActions(
+                openChat = { excerpt ->
+                    if (!disposed) openReportSelectionChat(proj, excerpt, reportChats)
+                },
+                delete = { deleteSelection(selection) },
+            )
+            val links = reportLinksIn(pane.document, selection.start, selection.end, rendered.links)
+            val pick = reportSelectionContextPick(selection, actions, reviewDestinations(), links,
+                absolutePath = { snapshot?.index?.absolutePathFor(it) }, reviewFiles = content.reviewFiles, openOnWall = openOnWall)
+            showContextPicker(proj, pick, pane, RelativePoint(pane, point))
         }
 
         pane.addHyperlinkListener { event ->
@@ -675,8 +767,27 @@ internal class ReportViewerCanvasCard(
             override fun mouseReleased(e: MouseEvent) = maybeShowPopup(e)
             private fun maybeShowPopup(e: MouseEvent) {
                 if (!e.isPopupTrigger) return
-                val link = linkAtPoint(pane, e.point, rendered.links) ?: hoveredLink ?: return
-                showLinkContextMenu(link, pane, e.point, content)
+                val link = linkAtPoint(pane, e.point, rendered.links)
+                val selection = ReportTextSelection.capture(pane)
+                val menu = JPopupMenu()
+                if (selection != null) {
+                    if (project != null) {
+                        menu.add(JMenuItem("Context…").apply {
+                            name = "report-selection-action:Context"
+                            addActionListener { showSelectionContext(selection, e.point) }
+                        })
+                    }
+                    menu.add(JMenuItem(InsightBundle.message("context.action.report.delete")).apply {
+                        name = "report-selection-action:Delete"
+                        addActionListener { deleteSelection(selection) }
+                    })
+                }
+                if (link != null && link.kind != ReportTargetKind.EXTERNAL_URL && project != null) {
+                    if (menu.componentCount > 0) menu.addSeparator()
+                    addLinkContextItems(menu, link, pane, e.point, content, hasSelection = selection != null)
+                }
+                if (menu.componentCount == 0) return
+                menu.show(pane, e.x, e.y)
                 e.consume()
             }
         })
@@ -685,11 +796,22 @@ internal class ReportViewerCanvasCard(
         pane.getInputMap(JComponent.WHEN_FOCUSED).put(contextKey, "report-context-picker")
         pane.actionMap.put("report-context-picker", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) {
-                val link = hoveredLink ?: linkAtOffset(pane, pane.caretPosition, rendered.links) ?: return
                 val point = pane.modelToView2D(pane.caretPosition.coerceIn(0, pane.document.length))
                     ?.let { Point(it.x.toInt(), it.y.toInt() + it.height.toInt()) }
                     ?: Point(pane.width / 2, pane.height / 2)
-                triggerContextPicker(link, pane, point, content)
+                val selection = ReportTextSelection.capture(pane)
+                if (selection != null) {
+                    showSelectionContext(selection, point)
+                } else {
+                    val link = hoveredLink ?: linkAtOffset(pane, pane.caretPosition, rendered.links) ?: return
+                    triggerContextPicker(link, pane, point, content)
+                }
+            }
+        })
+        pane.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "report-delete-selection")
+        pane.actionMap.put("report-delete-selection", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) {
+                ReportTextSelection.capture(pane)?.let(::deleteSelection)
             }
         })
 
@@ -740,11 +862,16 @@ internal class ReportViewerCanvasCard(
         }
     }
 
-    private fun showLinkContextMenu(link: ReportLink, owner: JEditorPane, point: Point, content: ReportViewerCard) {
+    private fun addLinkContextItems(
+        menu: JPopupMenu,
+        link: ReportLink,
+        owner: JEditorPane,
+        point: Point,
+        content: ReportViewerCard,
+        hasSelection: Boolean,
+    ) {
         val proj = project ?: return
-        if (link.kind == ReportTargetKind.EXTERNAL_URL) return
-        val menu = JPopupMenu()
-        menu.add(JMenuItem("Context…").apply {
+        menu.add(JMenuItem(if (hasSelection) "Link context…" else "Context…").apply {
             name = "report-link-action:Context"
             addActionListener { triggerContextPicker(link, owner, point, content) }
         })
@@ -785,7 +912,6 @@ internal class ReportViewerCanvasCard(
                 CopyPasteManager.getInstance().setContents(StringSelection(text))
             }
         })
-        menu.show(owner, point.x, point.y)
     }
 
     private fun openReviewFileDiff(proj: Project, file: ReviewFile, lines: IntRange?, content: ReportViewerCard) {
@@ -936,23 +1062,21 @@ internal class ReportViewerCanvasCard(
 
         renderJob = scope.launch {
             try {
-                val text = when (src) {
-                    is ReportSource.PastedText -> src.text
+                val (file, text) = when (src) {
+                    is ReportSource.PastedText -> null to src.text
                     is ReportSource.ExternalFile -> withContext(Dispatchers.IO) {
-                        ReadAction.compute<String, RuntimeException> {
-                            if (!src.file.isValid || src.file.isDirectory) error("File no longer exists: ${src.displayName}")
-                            StringUtil.convertLineSeparators(VfsUtilCore.loadText(src.file))
-                        }
+                        src.file to (readVirtualFileText(src.file) ?: error("Cannot read ${src.label}"))
                     }
                     is ReportSource.ProjectFile -> withContext(Dispatchers.IO) {
                         val proj = project ?: error("No active project")
                         val abs = src.absolutePath ?: snapshot?.index?.absolutePathFor(src.path)
-                        val vf = findReportSourceFile(proj, src.path, abs)
+                        val file = findReportSourceFile(proj, src.path, abs)
                             ?: error("Cannot find ${src.path} in the project")
-                        readVirtualFileText(vf) ?: error("Cannot read ${src.path}")
+                        file to (readVirtualFileText(file) ?: error("Cannot read ${src.path}"))
                     }
                 }
                 if (disposed || view.source !== src) return@launch
+                reportFile = file
                 view.rawContent = text
                 view.rawContentSource = src
                 renderLoadedText(src, text, latestContent ?: content)
@@ -1001,7 +1125,9 @@ internal class ReportViewerCanvasCard(
             val rawMode = isRawMode()
             val colors = themeColors()
             val rendered = withContext(Dispatchers.Default) {
-                if (rawMode) renderPlainTextReport(text, index, colors) else renderMarkdownReport(text, index, colors)
+                val mapSource = src !is ReportSource.PastedText
+                if (rawMode) renderPlainTextReport(text, index, colors, mapSource = mapSource)
+                else renderMarkdownReport(text, index, colors, mapSource = mapSource)
             }
             if (disposed || view.source !== src) return
             val latestSnapshot = snapshot
@@ -1065,7 +1191,7 @@ internal class ReportViewerCanvasCard(
         val ambig = if (rendered.ambiguousCount > 0) " (${rendered.ambiguousCount} ambiguous)" else ""
         val trunc = if (rendered.truncated) " · Truncated" else ""
         return "${rendered.links.size} $linkWord across ${rendered.referencedFiles.size} $fileWord$ambig$trunc · " +
-            "Click to open · Shift+Click or right-click for Context…"
+            "Click a link to open · Right-click a link or selection for Context…"
     }
 
     private fun linkAtPoint(pane: JEditorPane, point: Point, links: List<ReportLink>): ReportLink? {
@@ -1133,6 +1259,7 @@ internal class ReportViewerCanvasCard(
 
     override fun dispose() {
         disposed = true
+        Disposer.dispose(reportChats)
         indexJob?.cancel()
         renderJob?.cancel()
         scope.cancel()

@@ -49,6 +49,8 @@ internal data class RenderedReport(
     val referencedFiles: List<ReferencedFile>,
     val ambiguousCount: Int,
     val truncated: Boolean,
+    val isPlainText: Boolean,
+    val sourceMap: ReportSourceMap? = null,
 )
 
 internal fun isMarkdownFileName(name: String): Boolean {
@@ -104,19 +106,29 @@ internal fun renderMarkdownReport(
     colors: ReportThemeColors = ReportThemeColors.DEFAULT,
     maxChars: Int = MAX_REPORT_CHARS,
     maxTableCells: Int = MAX_TABLE_CELLS,
+): RenderedReport = renderMarkdownReport(text, index, colors, maxChars, maxTableCells, mapSource = false)
+
+internal fun renderMarkdownReport(
+    text: String,
+    index: ReportProjectIndex,
+    colors: ReportThemeColors,
+    maxChars: Int = MAX_REPORT_CHARS,
+    maxTableCells: Int = MAX_TABLE_CELLS,
+    mapSource: Boolean,
 ): RenderedReport {
     val (bounded, textTruncated) = truncateReportText(normalizeLineEndings(text), maxChars)
     val cellBudget = maxTableCells.coerceAtLeast(0)
     var renderedTableCells = 0
     var anyTableTruncated = false
     val collector = ReportLinkCollector(index)
-    val lines = bounded.split('\n')
+    val sourceMap = if (mapSource) ReportSourceMap() else null
+    val lines = reportSourceLines(bounded, sourceMap)
     val body = StringBuilder()
 
     var i = 0
     while (i < lines.size) {
         val line = lines[i]
-        val trimmed = line.trim()
+        val trimmed = line.text.trim()
 
         if (trimmed.isEmpty()) {
             collector.context.onBlankLine()
@@ -126,9 +138,9 @@ internal fun renderMarkdownReport(
 
         val fence = fencePrefix(trimmed)
         if (fence != null) {
-            val codeLines = mutableListOf<String>()
+            val codeLines = mutableListOf<ReportSourceText>()
             i++
-            while (i < lines.size && !lines[i].trim().startsWith(fence)) {
+            while (i < lines.size && !lines[i].text.trim().startsWith(fence)) {
                 codeLines += lines[i]
                 i++
             }
@@ -146,10 +158,13 @@ internal fun renderMarkdownReport(
         if (heading != null) {
             collector.context.onHeading()
             val level = heading.groupValues[1].length
-            val content = heading.groupValues[2].trim().replace(Regex("\\s+#+$"), "")
+            val headingRange = heading.groups[2]!!.range
+            val headingText = line.trim().slice(headingRange.first, headingRange.last + 1).trim()
+            val content = headingText.slice(0, HEADING_SUFFIX.find(headingText.text)?.range?.first ?: headingText.text.length)
             body.append("<h$level>")
                 .append(renderInline(content, collector, inHeading = true, inListItem = false))
                 .append("</h$level>\n")
+            line.recordMarkup(content)
             i++
             continue
         }
@@ -161,18 +176,19 @@ internal fun renderMarkdownReport(
             continue
         }
 
-        if (i + 1 < lines.size && isTableLine(trimmed) && TABLE_SEPARATOR_LINE.matches(lines[i + 1].trim())) {
+        if (i + 1 < lines.size && isTableLine(trimmed) && TABLE_SEPARATOR_LINE.matches(lines[i + 1].text.trim())) {
             if (renderedTableCells >= cellBudget) {
                 i += 2
-                while (i < lines.size && isTableLine(lines[i].trim()) && lines[i].trim().isNotEmpty()) i++
+                while (i < lines.size && isTableLine(lines[i].text.trim()) && lines[i].text.trim().isNotEmpty()) i++
                 anyTableTruncated = true
+                lines.getOrNull(i)?.let { sourceMap?.recordOmissionBefore(it.offset) }
                 body.append("<p class=\"muted\">Table truncated at ${formatNumber(cellBudget)} cells.</p>\n")
                 continue
             }
-            val headerCells = splitTableRow(trimmed)
+            val headerCells = splitTableRow(line.trim())
             val headerLimit = minOf(headerCells.size, cellBudget - renderedTableCells)
             var tableTruncated = headerLimit < headerCells.size
-            val alignments = parseTableAlignments(lines[i + 1].trim(), headerLimit)
+            val alignments = parseTableAlignments(lines[i + 1].text.trim(), headerLimit)
             body.append("<table cellspacing=\"0\" cellpadding=\"4\"><thead><tr>")
             collector.context.withTableRow {
                 for (col in 0 until headerLimit) {
@@ -185,10 +201,10 @@ internal fun renderMarkdownReport(
             renderedTableCells += headerLimit
             body.append("</tr></thead><tbody>")
             i += 2
-            while (i < lines.size && isTableLine(lines[i].trim()) && lines[i].trim().isNotEmpty()) {
+            while (i < lines.size && isTableLine(lines[i].text.trim()) && lines[i].text.trim().isNotEmpty()) {
                 if (renderedTableCells >= cellBudget) {
                     tableTruncated = true
-                    while (i < lines.size && isTableLine(lines[i].trim()) && lines[i].trim().isNotEmpty()) i++
+                    while (i < lines.size && isTableLine(lines[i].text.trim()) && lines[i].text.trim().isNotEmpty()) i++
                     break
                 }
                 val rowCells = splitTableRow(lines[i].trim())
@@ -207,29 +223,30 @@ internal fun renderMarkdownReport(
                 i++
                 if (rowLimit < rowCells.size) {
                     tableTruncated = true
-                    while (i < lines.size && isTableLine(lines[i].trim()) && lines[i].trim().isNotEmpty()) i++
+                    while (i < lines.size && isTableLine(lines[i].text.trim()) && lines[i].text.trim().isNotEmpty()) i++
                     break
                 }
             }
             body.append("</tbody></table>\n")
             if (tableTruncated) {
                 anyTableTruncated = true
+                lines.getOrNull(i)?.let { sourceMap?.recordOmissionBefore(it.offset) }
                 body.append("<p class=\"muted\">Table truncated at ${formatNumber(cellBudget)} cells.</p>\n")
             }
             continue
         }
 
-        if (BLOCKQUOTE_LINE.containsMatchIn(line)) {
-            val quoteLines = mutableListOf<String>()
-            while (i < lines.size && BLOCKQUOTE_LINE.containsMatchIn(lines[i])) {
-                quoteLines += lines[i].replaceFirst(BLOCKQUOTE_PREFIX, "")
+        if (BLOCKQUOTE_LINE.containsMatchIn(line.text)) {
+            val quoteLines = mutableListOf<ReportSourceText>()
+            while (i < lines.size && BLOCKQUOTE_LINE.containsMatchIn(lines[i].text)) {
+                quoteLines += lines[i].slice(BLOCKQUOTE_PREFIX.find(lines[i].text)!!.range.last + 1).trim()
                 i++
             }
             body.append("<blockquote>")
             quoteLines.forEachIndexed { idx, ql ->
                 if (idx > 0) body.append("<br>")
                 collector.context.onPlainLine()
-                body.append(renderInline(ql.trim(), collector, inHeading = false, inListItem = false))
+                body.append(renderInline(ql, collector, inHeading = false, inListItem = false))
             }
             body.append("</blockquote>\n")
             continue
@@ -240,19 +257,19 @@ internal fun renderMarkdownReport(
             continue
         }
 
-        val paragraphLines = mutableListOf<String>()
+        val paragraphLines = mutableListOf<ReportSourceText>()
         while (i < lines.size) {
             val next = lines[i]
-            val nextTrim = next.trim()
+            val nextTrim = next.text.trim()
             if (nextTrim.isEmpty() ||
                 fencePrefix(nextTrim) != null ||
                 HEADING_LINE.matches(nextTrim) ||
                 RULE_LINE.matches(nextTrim) ||
-                BLOCKQUOTE_LINE.containsMatchIn(next) ||
+                BLOCKQUOTE_LINE.containsMatchIn(next.text) ||
                 parseListItem(next) != null ||
-                (i + 1 < lines.size && isTableLine(nextTrim) && TABLE_SEPARATOR_LINE.matches(lines[i + 1].trim()))
+                (i + 1 < lines.size && isTableLine(nextTrim) && TABLE_SEPARATOR_LINE.matches(lines[i + 1].text.trim()))
             ) break
-            paragraphLines += nextTrim
+            paragraphLines += next.trim()
             i++
         }
         body.append("<p>")
@@ -268,7 +285,7 @@ internal fun renderMarkdownReport(
         body.append("<p class=\"muted\">Report truncated at ${formatNumber(maxChars)} characters.</p>\n")
     }
     val truncated = textTruncated || anyTableTruncated
-    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = false)
+    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = false, sourceMap = sourceMap)
 }
 
 /** Renders a plain-text or log report with line numbers and smart clickable project links. */
@@ -277,14 +294,23 @@ internal fun renderPlainTextReport(
     index: ReportProjectIndex,
     colors: ReportThemeColors = ReportThemeColors.DEFAULT,
     maxChars: Int = MAX_REPORT_CHARS,
+): RenderedReport = renderPlainTextReport(text, index, colors, maxChars, mapSource = false)
+
+internal fun renderPlainTextReport(
+    text: String,
+    index: ReportProjectIndex,
+    colors: ReportThemeColors,
+    maxChars: Int = MAX_REPORT_CHARS,
+    mapSource: Boolean,
 ): RenderedReport {
     val (bounded, truncated) = truncateReportText(normalizeLineEndings(text), maxChars)
     val collector = ReportLinkCollector(index)
-    val lines = bounded.split('\n')
+    val sourceMap = if (mapSource) ReportSourceMap() else null
+    val lines = reportSourceLines(bounded, sourceMap)
     val width = lines.size.toString().length.coerceAtLeast(2)
     val body = StringBuilder("<pre class=\"raw-text\">")
     lines.forEachIndexed { idx, line ->
-        val trimmed = line.trim()
+        val trimmed = line.text.trim()
         when {
             trimmed.isEmpty() -> collector.context.onBlankLine()
             HEADING_LINE.matches(trimmed) -> collector.context.onHeading()
@@ -297,42 +323,46 @@ internal fun renderPlainTextReport(
         }
         if (idx > 0) body.append('\n')
         val lineNo = (idx + 1).toString().padStart(width, ' ')
-        body.append("<span class=\"ln\">").append(lineNo).append("  </span>")
+        body.append("<span class=\"ln\"")
+        if (mapSource && idx < lines.lastIndex) {
+            body.append(" id=\"report-newline-").append(line.offset + line.text.length).append('"')
+        }
+        body.append('>').append(lineNo).append("  </span>")
         body.append(renderTextWithLinks(line, collector, inBackticks = false, allowContextualLines = true, inHeading = HEADING_LINE.matches(trimmed), inListItem = parseListItem(line) != null))
     }
     body.append("</pre>\n")
     if (truncated) {
         body.append("<p class=\"muted\">Report truncated at ${formatNumber(maxChars)} characters.</p>\n")
     }
-    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = true)
+    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = true, sourceMap = sourceMap)
 }
 
-private data class ListItemParse(val indent: Int, val ordered: Boolean, val startNumber: Int?, val checkbox: Boolean?, val content: String)
+private data class ListItemParse(val indent: Int, val ordered: Boolean, val startNumber: Int?, val checkbox: Boolean?, val content: ReportSourceText)
 
-private fun parseListItem(line: String): ListItemParse? {
-    val unordered = UNORDERED_LIST_ITEM.matchEntire(line)
+private fun parseListItem(line: ReportSourceText): ListItemParse? {
+    val unordered = UNORDERED_LIST_ITEM.matchEntire(line.text)
     if (unordered != null) {
         val indent = unordered.groupValues[1].length
-        val rest = unordered.groupValues[2]
-        val task = TASK_PREFIX.matchAt(rest, 0)
+        val rest = line.slice(unordered.groups[2]!!.range.first)
+        val task = TASK_PREFIX.matchAt(rest.text, 0)
         return if (task != null) {
             val checked = task.groupValues[1].equals("x", ignoreCase = true)
-            ListItemParse(indent, ordered = false, startNumber = null, checkbox = checked, content = rest.substring(task.range.last + 1))
+            ListItemParse(indent, ordered = false, startNumber = null, checkbox = checked, content = rest.slice(task.range.last + 1))
         } else {
             ListItemParse(indent, ordered = false, startNumber = null, checkbox = null, content = rest)
         }
     }
-    val ordered = ORDERED_LIST_ITEM.matchEntire(line)
+    val ordered = ORDERED_LIST_ITEM.matchEntire(line.text)
     if (ordered != null) {
         val indent = ordered.groupValues[1].length
         val num = ordered.groupValues[2].toIntOrNull()
-        val rest = ordered.groupValues[3]
+        val rest = line.slice(ordered.groups[3]!!.range.first)
         return ListItemParse(indent, ordered = true, startNumber = num, checkbox = null, content = rest)
     }
     return null
 }
 
-private fun renderListBlock(lines: List<String>, startIndex: Int, collector: ReportLinkCollector, out: StringBuilder): Int {
+private fun renderListBlock(lines: List<ReportSourceText>, startIndex: Int, collector: ReportLinkCollector, out: StringBuilder): Int {
     val first = parseListItem(lines[startIndex]) ?: return startIndex + 1
     val ordered = first.ordered
     val tag = if (ordered) "ol" else "ul"
@@ -363,7 +393,7 @@ private fun renderListBlock(lines: List<String>, startIndex: Int, collector: Rep
         // Consume nested list items or indented continuation lines.
         while (i < lines.size) {
             val next = lines[i]
-            val nextTrim = next.trim()
+            val nextTrim = next.text.trim()
             if (nextTrim.isEmpty()) break
             val nextItem = parseListItem(next)
             if (nextItem != null) {
@@ -372,8 +402,8 @@ private fun renderListBlock(lines: List<String>, startIndex: Int, collector: Rep
                     continue
                 } else break
             }
-            if (next.startsWith("  ") || next.startsWith("\t")) {
-                out.append(' ').append(renderInline(nextTrim, collector, inHeading = false, inListItem = true))
+            if (next.text.startsWith("  ") || next.text.startsWith("\t")) {
+                out.append(' ').append(renderInline(next.trim(), collector, inHeading = false, inListItem = true))
                 i++
             } else break
         }
@@ -384,11 +414,12 @@ private fun renderListBlock(lines: List<String>, startIndex: Int, collector: Rep
 }
 
 private fun renderInline(
-    text: String,
+    source: ReportSourceText,
     collector: ReportLinkCollector,
     inHeading: Boolean,
     inListItem: Boolean,
 ): String {
+    val text = source.text
     if (text.isEmpty()) return ""
     val out = StringBuilder()
     var i = 0
@@ -396,7 +427,7 @@ private fun renderInline(
 
     fun flushPlain(end: Int) {
         if (end > plainStart) {
-            out.append(renderTextWithLinks(text.substring(plainStart, end), collector, inBackticks = false, allowContextualLines = true, inHeading = inHeading, inListItem = inListItem))
+            out.append(renderTextWithLinks(source.slice(plainStart, end), collector, inBackticks = false, allowContextualLines = true, inHeading = inHeading, inListItem = inListItem))
         }
         plainStart = end
     }
@@ -404,7 +435,7 @@ private fun renderInline(
     while (i < text.length) {
         if (text[i] == '\\' && i + 1 < text.length && text[i + 1] in ESCAPABLE_MD_CHARS) {
             flushPlain(i)
-            out.append(escapeHtml(text[i + 1].toString()))
+            out.append(source.slice(i, i + 2).html(text[i + 1].toString()))
             i += 2
             plainStart = i
             continue
@@ -419,11 +450,12 @@ private fun renderInline(
                 flushPlain(i)
                 val rawInner = text.substring(i + ticks, close)
                 val inner = if (rawInner.length >= 2 && rawInner.startsWith(' ') && rawInner.endsWith(' ') && rawInner.any { it != ' ' }) {
-                    rawInner.substring(1, rawInner.length - 1)
-                } else rawInner
+                    source.slice(i + ticks + 1, close - 1)
+                } else source.slice(i + ticks, close)
                 out.append("<code>")
                     .append(renderTextWithLinks(inner, collector, inBackticks = true, allowContextualLines = true, inHeading = inHeading, inListItem = inListItem))
                     .append("</code>")
+                source.slice(i, close + ticks).recordMarkup(inner)
                 i = close + ticks
                 plainStart = i
                 continue
@@ -436,11 +468,13 @@ private fun renderInline(
             if (mdLink != null) {
                 flushPlain(i)
                 val resolved = collector.resolveMarkdownTarget(mdLink.target, mdLink.label, inHeading, inListItem)
+                val label = source.slice(i + 1, i + 1 + mdLink.label.length)
                 if (resolved != null) {
-                    out.append(wrapAnchor(resolved, renderInlineNoLinks(mdLink.label)))
+                    out.append(wrapAnchor(resolved, label.html()))
                 } else {
-                    out.append(renderInline(mdLink.label, collector, inHeading, inListItem))
+                    out.append(renderInline(label, collector, inHeading, inListItem))
                 }
+                source.slice(i, mdLink.end).recordMarkup(label)
                 i = mdLink.end
                 plainStart = i
                 continue
@@ -452,9 +486,11 @@ private fun renderInline(
             val close = findClosingDelimiter(text, i + 2, "**")
             if (close != null && close > i + 2 && !text[i + 2].isWhitespace() && !text[close - 1].isWhitespace()) {
                 flushPlain(i)
+                val inner = source.slice(i + 2, close)
                 out.append("<b>")
-                    .append(renderInline(text.substring(i + 2, close), collector, inHeading, inListItem))
+                    .append(renderInline(inner, collector, inHeading, inListItem))
                     .append("</b>")
+                source.slice(i, close + 2).recordMarkup(inner)
                 i = close + 2
                 plainStart = i
                 continue
@@ -466,9 +502,11 @@ private fun renderInline(
             val close = findClosingDelimiter(text, i + 2, "~~")
             if (close != null && close > i + 2 && !text[i + 2].isWhitespace() && !text[close - 1].isWhitespace()) {
                 flushPlain(i)
+                val inner = source.slice(i + 2, close)
                 out.append("<s>")
-                    .append(renderInline(text.substring(i + 2, close), collector, inHeading, inListItem))
+                    .append(renderInline(inner, collector, inHeading, inListItem))
                     .append("</s>")
+                source.slice(i, close + 2).recordMarkup(inner)
                 i = close + 2
                 plainStart = i
                 continue
@@ -480,9 +518,11 @@ private fun renderInline(
             val close = findClosingSingleStar(text, i + 1)
             if (close != null && close > i + 1 && !text[i + 1].isWhitespace() && !text[close - 1].isWhitespace()) {
                 flushPlain(i)
+                val inner = source.slice(i + 1, close)
                 out.append("<i>")
-                    .append(renderInline(text.substring(i + 1, close), collector, inHeading, inListItem))
+                    .append(renderInline(inner, collector, inHeading, inListItem))
                     .append("</i>")
+                source.slice(i, close + 1).recordMarkup(inner)
                 i = close + 1
                 plainStart = i
                 continue
@@ -494,9 +534,11 @@ private fun renderInline(
             val close = findClosingBoundaryUnderscore(text, i + 1)
             if (close != null && close > i + 1 && !text[i + 1].isWhitespace() && !text[close - 1].isWhitespace()) {
                 flushPlain(i)
+                val inner = source.slice(i + 1, close)
                 out.append("<i>")
-                    .append(renderInline(text.substring(i + 1, close), collector, inHeading, inListItem))
+                    .append(renderInline(inner, collector, inHeading, inListItem))
                     .append("</i>")
+                source.slice(i, close + 1).recordMarkup(inner)
                 i = close + 1
                 plainStart = i
                 continue
@@ -509,26 +551,25 @@ private fun renderInline(
     return out.toString()
 }
 
-private fun renderInlineNoLinks(text: String): String = escapeHtml(text)
-
 private fun renderTextWithLinks(
-    text: String,
+    source: ReportSourceText,
     collector: ReportLinkCollector,
     inBackticks: Boolean,
     allowContextualLines: Boolean,
     inHeading: Boolean = false,
     inListItem: Boolean = false,
 ): String {
+    val text = source.text
     val matches = collector.scanSegment(text, inBackticks, allowContextualLines, inHeading, inListItem)
-    if (matches.isEmpty()) return escapeHtml(text)
+    if (matches.isEmpty()) return source.html()
     val out = StringBuilder(text.length + matches.size * 32)
     var pos = 0
     for (m in matches) {
-        if (m.start > pos) out.append(escapeHtml(text.substring(pos, m.start)))
-        out.append(wrapAnchor(m.link, escapeHtml(text.substring(m.start, m.end))))
+        if (m.start > pos) out.append(source.slice(pos, m.start).html())
+        out.append(wrapAnchor(m.link, source.slice(m.start, m.end).html()))
         pos = m.end
     }
-    if (pos < text.length) out.append(escapeHtml(text.substring(pos)))
+    if (pos < text.length) out.append(source.slice(pos).html())
     return out.toString()
 }
 
@@ -659,43 +700,38 @@ private fun fencePrefix(trimmed: String): String? = when {
 
 private fun isTableLine(trimmed: String): Boolean = '|' in trimmed && !trimmed.startsWith('>')
 
-private fun splitTableRow(trimmed: String): List<String> {
-    val core = trimmed.removePrefix("|").removeSuffix("|")
-    val cells = mutableListOf<String>()
-    val current = StringBuilder()
+private fun splitTableRow(row: ReportSourceText): List<ReportSourceText> {
+    val start = if (row.text.startsWith('|')) 1 else 0
+    val end = if (row.text.endsWith('|')) maxOf(start, row.text.length - 1) else row.text.length
+    val core = row.slice(start, end)
+    val cells = mutableListOf<ReportSourceText>()
+    var cellStart = 0
     var i = 0
-    while (i < core.length) {
-        if (core[i] == '\\' && i + 1 < core.length && core[i + 1] == '|') {
-            current.append('|')
-            i += 2
-        } else if (core[i] == '`') {
-            var ticks = 0
-            while (i + ticks < core.length && core[i + ticks] == '`') ticks++
-            val close = findClosingBackticks(core, i + ticks, ticks)
-            if (close != null) {
-                current.append(core, i, close + ticks)
-                i = close + ticks
-            } else {
-                current.append(core, i, i + ticks)
-                i += ticks
+    while (i < core.text.length) {
+        when {
+            core.text[i] == '\\' && core.text.getOrNull(i + 1) == '|' -> i += 2
+            core.text[i] == '`' -> {
+                var ticks = 1
+                while (core.text.getOrNull(i + ticks) == '`') ticks++
+                val close = findClosingBackticks(core.text, i + ticks, ticks)
+                i = if (close != null) close + ticks else i + ticks
             }
-        } else if (core[i] == '|') {
-            cells += current.toString().trim()
-            current.setLength(0)
-            i++
-        } else {
-            current.append(core[i])
-            i++
+            core.text[i] == '|' -> {
+                cells += core.slice(cellStart, i).trim()
+                i++
+                cellStart = i
+            }
+            else -> i++
         }
     }
-    cells += current.toString().trim()
+    cells += core.slice(cellStart).trim()
     return cells
 }
 
 private fun parseTableAlignments(separatorLine: String, columns: Int): List<String?> {
-    val cells = splitTableRow(separatorLine)
+    val cells = splitTableRow(ReportSourceText(separatorLine, 0, null))
     return (0 until columns).map { idx ->
-        val cell = cells.getOrNull(idx)?.trim().orEmpty()
+        val cell = cells.getOrNull(idx)?.text.orEmpty()
         when {
             cell.startsWith(':') && cell.endsWith(':') -> "center"
             cell.endsWith(':') -> "right"
@@ -721,6 +757,7 @@ private fun buildRenderedReport(
     colors: ReportThemeColors,
     truncated: Boolean,
     isPlainText: Boolean,
+    sourceMap: ReportSourceMap?,
 ): RenderedReport {
     val counts = LinkedHashMap<String, Int>()
     for (link in links) {
@@ -740,7 +777,7 @@ private fun buildRenderedReport(
         append(bodyHtml)
         append("</body></html>")
     }
-    return RenderedReport(html, links, referenced, ambiguous, truncated)
+    return RenderedReport(html, links, referenced, ambiguous, truncated, isPlainText, sourceMap)
 }
 
 private fun reportCss(c: ReportThemeColors, isPlainText: Boolean): String = """
@@ -789,6 +826,7 @@ private const val LINK_HREF_PREFIX = "report-link:"
 private val MARKDOWN_EXTENSIONS = setOf("md", "markdown", "mdown", "mkd")
 private val MARKDOWN_HINT = Regex("(?m)^#{1,6}\\s|^```|^\\|.+\\|\\s*$|^\\s*[-*]\\s+\\[[ xX]\\]|\\[[^\\]]+]\\([^)]+\\)")
 private val HEADING_LINE = Regex("^(#{1,6})\\s+(.+)$")
+private val HEADING_SUFFIX = Regex("\\s+#+$")
 private val RULE_LINE = Regex("^([-*_])(?:\\s*\\1){2,}$")
 private val TABLE_SEPARATOR_LINE = Regex("^\\|?\\s*:?-{2,}:?\\s*(?:\\|\\s*:?-{2,}:?\\s*)*\\|?$")
 private val BLOCKQUOTE_LINE = Regex("^\\s*>")

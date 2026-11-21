@@ -28,8 +28,12 @@ import java.util.regex.PatternSyntaxException
 /** Current project content for extra context, independent of a review's snapshot or selected scope. */
 internal fun projectContextTools(project: Project): List<ChatTool> {
     val files = ProjectFiles(project)
-    return listOf(ListFilesTool(files), ReadFileTool(files), SearchTextTool(files))
+    return projectFileTools(files) + SearchTextTool(files)
 }
+
+internal fun projectFileTools(project: Project): List<ChatTool> = projectFileTools(ProjectFiles(project))
+
+private fun projectFileTools(files: ProjectFiles): List<ChatTool> = listOf(ListFilesTool(files), ReadFileTool(files))
 
 internal fun openFileTool(files: ProjectFiles): ChatTool = OpenFileTool(files)
 

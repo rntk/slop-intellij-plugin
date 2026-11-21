@@ -53,10 +53,10 @@ class ContextActionsPlatformTest : BasePlatformTestCase() {
         assertEquals(ids.toSet().size, ids.size)
         assertTrue(ids.toString(), ids.containsAll(listOf("open.editor", "open.diff", "explore.canvas", "explore.callGraph", "explore.flowChart",
             "explore.sideBySide", "explore.summaryTree", "explore.summarizeFile", "explore.summarizeFileDiff", "explore.summarizeDirectory",
-            "ask.chat", "copy.markdown")))
+            "ask.chat", "ask.reportSelection", "edit.deleteReportSelection", "open.linkedEditors", "explore.linkedCanvas", "copy.markdown")))
         for (action in ContextAction.EP_NAME.extensionList) {
             assertTrue(action.id, action.title.isNotBlank() && !action.title.startsWith("!"))
-            assertTrue(action.id, action.group in listOf("Open", "Explore", "Ask", "Copy", "Review views"))
+            assertTrue(action.id, action.group in listOf("Open", "Explore", "Ask", "Edit", "Copy", "Review views"))
         }
     }
 

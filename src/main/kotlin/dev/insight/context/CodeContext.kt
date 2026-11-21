@@ -76,6 +76,14 @@ internal class ContextSummaryActions(
     val matchesDiff: (ReviewFile) -> Boolean = { true },
 )
 
+/** A project file a picked text links to: [path] is project-relative, [lines] the 1-based range the link names, if any. */
+data class LinkedFile(val path: String, val absolutePath: String?, val lines: IntRange? = null)
+
+internal class ReportSelectionActions(
+    val openChat: (String) -> Unit,
+    val delete: () -> Unit,
+)
+
 /** View-specific extras a host passes to actions without changing the core model. */
 class ContextData {
     private val values = HashMap<ContextKey<*>, Any>()
@@ -91,7 +99,10 @@ class ContextData {
 /** Keys hosts commonly fill; plugin views may declare their own. */
 object ContextKeys {
     internal val SUMMARY_GENERATION = ContextKey<ContextSummaryActions>("summaryGeneration")
+    internal val REPORT_SELECTION = ContextKey<ReportSelectionActions>("reportSelection")
     val REVIEW_FILE = ContextKey<ReviewFile>("reviewFile")
+    /** The files a multi-file scope of linked targets covers, matched by [CodeContext.files]; actions open them all at once. */
+    val LINKED_FILES = ContextKey<List<LinkedFile>>("linkedFiles")
     val OPEN_ON_DIFFS_WALL = ContextKey<(CodeContext) -> Unit>("openOnDiffsWall")
     val OPEN_ON_CODE_WALL = ContextKey<(CodeContext) -> Unit>("openOnCodeWall")
     val REVIEW_DESTINATIONS = ContextKey<Map<ReviewDestination, () -> Unit>>("reviewDestinations")

@@ -28,7 +28,7 @@ interface ContextAction {
     /** Unique; a programmatic action with the id of an extension replaces it. */
     val id: String
     val title: String
-    /** The section the menu lists the action under, such as `Open`, `Explore`, `Ask` or `Copy`. */
+    /** The section the menu lists the action under, such as `Open`, `Explore`, `Ask`, `Edit` or `Copy`. */
     val group: String
     val order: Int get() = 0
     val icon: Icon? get() = null
@@ -44,7 +44,7 @@ interface ContextAction {
 }
 
 /** Menu sections in this order; other groups follow alphabetically. */
-private val GROUP_ORDER = listOf("Open", "Explore", "Ask", "Copy")
+private val GROUP_ORDER = listOf("Open", "Explore", "Ask", "Edit", "Copy")
 
 /** [actions] in menu sections: known groups first in [GROUP_ORDER], then by [ContextAction.order] and title within each. */
 fun arrangeActions(actions: List<ContextAction>): List<Pair<String, List<ContextAction>>> =

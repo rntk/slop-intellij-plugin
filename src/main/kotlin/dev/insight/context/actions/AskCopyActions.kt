@@ -5,7 +5,9 @@ import com.intellij.openapi.wm.ToolWindowManager
 import dev.insight.InsightBundle
 import dev.insight.chat.ChatPanel
 import dev.insight.context.ContextAction
+import dev.insight.context.ContextKeys
 import dev.insight.context.ContextRequest
+import dev.insight.context.ContextScopeKind
 import dev.insight.context.toMarkdown
 import java.awt.datatransfer.StringSelection
 
@@ -19,7 +21,7 @@ internal class AskInChatAction : ContextAction {
     override val group = "Ask"
     override val order = 10
 
-    override fun isAvailable(request: ContextRequest) = true
+    override fun isAvailable(request: ContextRequest) = !request.isReportSelectionText()
 
     override fun perform(request: ContextRequest) {
         val window = ToolWindowManager.getInstance(request.project).getToolWindow(CHAT_TOOL_WINDOW)
@@ -32,6 +34,30 @@ internal class AskInChatAction : ContextAction {
             panel.input.caretPosition = panel.input.document.length
             panel.input.requestFocusInWindow()
         }
+    }
+}
+
+internal class AskAboutReportSelectionAction : ContextAction {
+    override val id = "ask.reportSelection"
+    override val title get() = InsightBundle.message("context.action.report.chat")
+    override val group = "Ask"
+
+    override fun isAvailable(request: ContextRequest) = request.isReportSelectionText()
+
+    override fun perform(request: ContextRequest) {
+        request.data[ContextKeys.REPORT_SELECTION]?.openChat?.invoke(request.context.text)
+    }
+}
+
+internal class DeleteReportSelectionAction : ContextAction {
+    override val id = "edit.deleteReportSelection"
+    override val title get() = InsightBundle.message("context.action.report.delete")
+    override val group = "Edit"
+
+    override fun isAvailable(request: ContextRequest) = request.isReportSelectionText()
+
+    override fun perform(request: ContextRequest) {
+        request.data[ContextKeys.REPORT_SELECTION]?.delete?.invoke()
     }
 }
 
@@ -48,3 +74,7 @@ internal class CopyAsMarkdownAction : ContextAction {
         CopyPasteManager.getInstance().setContents(StringSelection(request.context.toMarkdown()))
     }
 }
+
+/** The selected report text itself, rather than another scope of a report selection picker such as its linked files. */
+private fun ContextRequest.isReportSelectionText() =
+    ContextKeys.REPORT_SELECTION in data && context.kind == ContextScopeKind.SELECTION

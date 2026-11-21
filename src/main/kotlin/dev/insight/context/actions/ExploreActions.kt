@@ -137,7 +137,7 @@ internal class OpenDiffsWallContextAction : ContextAction {
     override val group = "Explore"
     override val order = 11
     override fun isAvailable(request: ContextRequest) = request.origin != ContextOrigin.DIFFS_WALL &&
-        ContextKeys.OPEN_ON_DIFFS_WALL in request.data
+        ContextKeys.OPEN_ON_DIFFS_WALL in request.data && request.context.files.isNotEmpty()
     override fun perform(request: ContextRequest) { request.data[ContextKeys.OPEN_ON_DIFFS_WALL]?.invoke(request.context) }
 }
 
@@ -147,7 +147,7 @@ internal class OpenCodeWallContextAction : ContextAction {
     override val group = "Explore"
     override val order = 12
     override fun isAvailable(request: ContextRequest) = request.origin != ContextOrigin.CODE_WALL &&
-        (ContextKeys.OPEN_ON_CODE_WALL in request.data || canOpenCodeWall(request.facts()))
+        ((ContextKeys.OPEN_ON_CODE_WALL in request.data && request.context.files.isNotEmpty()) || canOpenCodeWall(request.facts()))
     override fun perform(request: ContextRequest) {
         request.data[ContextKeys.OPEN_ON_CODE_WALL]?.let { return it(request.context) }
         val file = request.sourceFile() ?: return report(request.project, InsightBundle.message("context.action.missing.file", request.context.location()))

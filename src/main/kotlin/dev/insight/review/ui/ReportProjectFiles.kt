@@ -230,7 +230,7 @@ internal fun reportLinkContextPick(
     }
 }
 
-private fun matchingReviewSource(reviewFiles: List<ReviewSource>, path: String, absolutePath: String?): ReviewSource? {
+internal fun matchingReviewSource(reviewFiles: List<ReviewSource>, path: String, absolutePath: String?): ReviewSource? {
     val normAbs = absolutePath?.let(ReportProjectIndex::normalizeAbsPath)
     if (normAbs != null) {
         reviewFiles.firstOrNull { rf ->

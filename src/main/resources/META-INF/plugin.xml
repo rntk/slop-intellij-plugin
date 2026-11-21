@@ -106,6 +106,10 @@
         <contextAction implementation="dev.insight.context.actions.SummarizeFileDiffContextAction"/>
         <contextAction implementation="dev.insight.context.actions.SummarizeDirectoryContextAction"/>
         <contextAction implementation="dev.insight.context.actions.AskInChatAction"/>
+        <contextAction implementation="dev.insight.context.actions.AskAboutReportSelectionAction"/>
+        <contextAction implementation="dev.insight.context.actions.DeleteReportSelectionAction"/>
+        <contextAction implementation="dev.insight.context.actions.OpenLinkedFilesInEditorsAction"/>
+        <contextAction implementation="dev.insight.context.actions.OpenLinkedFilesOnCanvasAction"/>
         <contextAction implementation="dev.insight.context.actions.CopyAsMarkdownAction"/>
     </extensions>
     <actions resource-bundle="messages.InsightBundle">
