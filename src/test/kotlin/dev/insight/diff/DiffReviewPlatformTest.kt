@@ -102,7 +102,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
         try {
-            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Report viewer",
+            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Report viewer",
                 "Open chat"), tab.tileGrid.tiles.map { it.title })
             assertFalse("No files, nothing to open", viewsEnabled(tab))
             assertTrue("The source and chat tiles stay enabled", tab.tileGrid.isTileEnabled("source") && tab.tileGrid.isTileEnabled("chat"))
@@ -122,7 +122,6 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
 
             chooseView(tab, "Words")
             assertEquals(listOf("+1 added", "−1 deleted"), tileStats(tab, "view-words"))
-            assertEquals(listOf("+1 added", "−1 deleted"), tileStats(tab, "view-diff-overview"))
             assertTrue(tab.state.wordsVisible)
             assertEquals(dev.insight.review.CanvasTabKey.Words, tab.canvas.selectedKey)
             chooseView(tab, "Metrics")
@@ -151,12 +150,11 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             // Focusing a page from the canvas selects its tile without running its open action.
             tab.canvas.focusWords()
             assertEquals("Words", shownView(tab))
-            assertFalse(tab.state.diffOverviewVisible)
 
             // A tile reopens the page of its view once its editor tab is closed.
             manager.openFiles.filterIsInstance<ReviewCanvasFile>().forEach(manager::closeFile)
             chooseView(tab, "Words")
-            assertTrue(manager.openFiles.any { it is ReviewCanvasFile && it.name.endsWith("Word changes") })
+            assertTrue(manager.openFiles.any { it is ReviewCanvasFile && it.name.endsWith("Words") })
 
             // While the files refresh nothing can be chosen, and the tiles say why.
             tab.invalidate(false)
@@ -167,26 +165,28 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
-    fun testWordChartsOpenAndCloseIndependently() {
+    fun testOverviewShortcutOpensWordsAndRefreshKeepsItsSelectedView() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        val manager = FileEditorManager.getInstance(project)
         try {
             tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+newWord\n")), emptyList()))
             chooseView(tab, "Words")
             assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
-            assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart })
-            chooseView(tab, "Diff overview")
-            assertEquals(1, descendants(tab.canvas).filterIsInstance<WordChangeChart>().size)
+            val wordsFile = manager.openFiles.filterIsInstance<ReviewCanvasFile>().single { it.name.endsWith("Words") }
+            tab.reviewDestinations().getValue(dev.insight.context.ReviewDestination.DIFF_OVERVIEW)()
+            assertEquals(dev.insight.review.CanvasTabKey.Words, tab.canvas.selectedKey)
+            assertEquals("Words", shownView(tab))
+            assertEquals(wordsFile, manager.selectedFiles.single())
             assertEquals(1, descendants(tab.canvas).filterIsInstance<DiffOverviewChart>().size)
-            descendants(tab.canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove diff overview" }.doClick()
-            assertTrue(tab.state.wordsVisible)
-            assertFalse(tab.state.diffOverviewVisible)
-            assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart })
-            tab.openDiffOverview()
             tab.update(ReviewSnapshot(listOf(file("a.kt").copy(patch = "@@ -1 +1 @@\n-oldWord\n+updatedWord\n", fingerprint = "updated")), emptyList()))
             assertTrue(descendants(tab.canvas).filterIsInstance<DiffOverviewChart>().single().changes.words.any { it.word == "updatedWord" })
+            descendants(tab.canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove words" }.doClick()
+            assertFalse(tab.state.wordsVisible)
+            assertTrue(descendants(tab.canvas).none { it is DiffOverviewChart || it is WordChangeChart })
+
+            chooseView(tab, "Words")
             descendants(tab).filterIsInstance<JButton>().single { it.text == "Clear tabs" }.doClick()
             assertFalse(tab.state.wordsVisible)
-            assertFalse(tab.state.diffOverviewVisible)
         } finally { Disposer.dispose(tab) }
     }
 
@@ -992,7 +992,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(hub, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Report viewer"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Report viewer"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.tileGrid })
             assertTrue(descendants(first).none { it is JComboBox<*> })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })

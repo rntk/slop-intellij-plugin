@@ -24,7 +24,7 @@ internal const val SOURCE_TILE = "source"
 /** The tile that shows the tab's chat in the side panel. */
 internal const val CHAT_TILE = "chat"
 
-/** The stable id of the tile of the view on [key]'s page: "view-summaries", "view-diff-overview", … */
+/** The stable id of the tile of the view on [key]'s page: "view-summaries", "view-words", … */
 internal fun viewTileId(key: CanvasTabKey): String = when (key) {
     CanvasTabKey.Summaries -> "view-summaries"
     CanvasTabKey.Hierarchy -> "view-hierarchy"
@@ -35,7 +35,6 @@ internal fun viewTileId(key: CanvasTabKey): String = when (key) {
     CanvasTabKey.Grouping -> "view-grouping"
     CanvasTabKey.Wall -> "view-wall"
     CanvasTabKey.Words -> "view-words"
-    CanvasTabKey.DiffOverview -> "view-diff-overview"
     CanvasTabKey.Semantic -> "view-metrics"
     CanvasTabKey.Moves -> "view-moves"
     CanvasTabKey.CodeMap -> "view-code-map"

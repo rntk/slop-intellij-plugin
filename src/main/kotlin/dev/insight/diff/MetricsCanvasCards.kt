@@ -29,7 +29,6 @@ internal data class MetricsCanvasActions(
     val openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
     val openOnWall: (List<ReviewFile>) -> Unit = {},
     val removeWords: () -> Unit = {},
-    val removeDiffOverview: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
     val removeMoves: () -> Unit = {},
     val refresh: (CanvasTabKey) -> Unit,
@@ -42,6 +41,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     /** Placing the words is slow, so the chart is kept across rebuilds while its counts are the same. */
     private var wordChart: WordChangeChart? = null
     private var diffOverviewChart: DiffOverviewChart? = null
+    private var wordView = WordView.CHANGES
     /** The selected view and plotted metric of the semantic changes card, kept across rebuilds. */
     private var semanticMode = SemanticMode.METRICS
     private var semanticMetric = Metric.CYCLOMATIC
@@ -64,7 +64,8 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     }
 
     /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
-    fun wordsCard(all: WordChanges, overview: Boolean = false): JPanel {
+    fun wordsCard(all: WordChanges): JPanel {
+        val overview = wordView == WordView.OVERVIEW
         val width = scaled(WORDS_WIDTH)
         val scopes = wordScopes(wordFiles)
         wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
@@ -85,11 +86,14 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
                 add(wordScopeButton(scopes))
-                add(InplaceButton(IconButton(if (overview) "Remove diff overview" else "Remove word changes", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                    if (overview) actions.removeDiffOverview() else actions.removeWords()
-                }
+                add(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeWords() }
                     .apply { cursor = Cursor.getDefaultCursor() })
             }, BorderLayout.WEST)
+            add(viewSelector("words-view", WordView.entries, wordView, scaled(4), scaledFont(JBFont.small()),
+                WordView::label, WordView::hint) {
+                wordView = it
+                actions.refresh(CanvasTabKey.Words)
+            }, BorderLayout.EAST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -335,8 +339,9 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
         if (scope == wordScope) return
         wordScope = scope
         actions.refresh(CanvasTabKey.Words)
-        actions.refresh(CanvasTabKey.DiffOverview)
     }
+
+    fun selectWordOverview() { wordView = WordView.OVERVIEW }
 
     private fun scrollBody(body: JComponent, width: Int, maxHeight: Int) = JBScrollPane(body).apply {
         border = null; isOpaque = false; viewport.isOpaque = false
@@ -354,6 +359,11 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
 
     /** The word changes of [scope], memoized while the unscoped changes stay [all]. */
     private data class ScopedWords(val all: WordChanges, val scope: WordScope, val words: WordChanges)
+
+    private enum class WordView(val label: String, val hint: String) {
+        CHANGES("Word changes", "Compare how often words occur in added and removed lines"),
+        OVERVIEW("Diff overview", "Compare line counts and see how vocabulary shifted"),
+    }
 
     private companion object {
         const val PADDING = 12

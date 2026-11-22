@@ -311,7 +311,6 @@ internal class NoteCanvas(
     internal fun focusGrouping() { focusCard(CanvasTabKey.Grouping) }
 
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
-    internal fun focusDiffOverview() { focusCard(CanvasTabKey.DiffOverview) }
     internal fun focusSemantic() { focusCard(CanvasTabKey.Semantic) }
     internal fun focusMoves() { focusCard(CanvasTabKey.Moves) }
     internal fun focusCodeMap() { focusCard(CanvasTabKey.CodeMap) }
@@ -356,7 +355,7 @@ internal class NoteCanvas(
         CanvasTabKey.Charts -> "Charts"
         CanvasTabKey.ReportViewer -> "Report viewer"
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
-        CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
+        CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.CodeMap -> "Code map"
         CanvasTabKey.Wall -> vocabulary.wallName
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
@@ -1014,7 +1013,7 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Words, CanvasTabKey.DiffOverview, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.CodeMap, CanvasTabKey.Wall ->
+            CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.CodeMap, CanvasTabKey.Wall ->
                 extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)

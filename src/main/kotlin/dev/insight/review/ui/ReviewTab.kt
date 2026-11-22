@@ -140,7 +140,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         }
     }
     /** Destinations open this tab's whole review, independent of the picked code scope. */
-    internal fun reviewDestinations(): Map<ReviewDestination, () -> Unit> {
+    internal open fun reviewDestinations(): Map<ReviewDestination, () -> Unit> {
         if (disposed || state.refreshing || state.snapshotFiles.isEmpty()) return emptyMap()
         val available = views.map { it.key }.toSet()
         val destinations = linkedMapOf<ReviewDestination, () -> Unit>()
@@ -162,7 +162,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         add(ReviewDestination.TOPICS, CanvasTabKey.Topics)
         add(ReviewDestination.GROUPING, CanvasTabKey.Grouping)
         add(ReviewDestination.WORDS, CanvasTabKey.Words)
-        add(ReviewDestination.DIFF_OVERVIEW, CanvasTabKey.DiffOverview)
         add(ReviewDestination.METRICS, CanvasTabKey.Semantic)
         add(ReviewDestination.MOVES, CanvasTabKey.Moves)
         add(ReviewDestination.REPORT_VIEWER, CanvasTabKey.ReportViewer)

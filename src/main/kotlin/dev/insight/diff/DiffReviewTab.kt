@@ -24,6 +24,7 @@ import dev.insight.agent.TraceFile
 import dev.insight.agent.projectContextTools
 import dev.insight.agent.tracedFileCompletion
 import dev.insight.chat.*
+import dev.insight.context.ReviewDestination
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
 import dev.insight.review.CanvasTabKey
@@ -118,7 +119,6 @@ internal class DiffReviewTab(
         openMovesOnWall = { files -> openDiffsWall(files, "Moved code") },
         metricActions = MetricCardActions(
             removeWords = { state.hideWords(); renderCanvas() },
-            removeDiffOverview = { state.hideDiffOverview(); renderCanvas() },
             removeSemantic = { state.hideSemantic(); renderCanvas() },
             removeMoves = { state.hideMoves(); renderCanvas() },
         ),
@@ -235,9 +235,7 @@ internal class DiffReviewTab(
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
             "Lay out every changed file's raw diff as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
-            "Chart the words of the removed and added lines: removed on the left, added on the right") { lineStats() },
-        ReviewViewOption(CanvasTabKey.DiffOverview, "Diff overview",
-            "Compare deleted and added line counts with compact word lists filling opposite corners") { lineStats() },
+            "Explore added and removed words, line counts, and vocabulary balance") { lineStats() },
         ReviewViewOption(CanvasTabKey.Semantic, "Metrics",
             "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs") {
             state.readySemantic?.let { listOf(countStat(it.declarations.size, "function counted", "functions counted")) }.orEmpty()
@@ -266,7 +264,6 @@ internal class DiffReviewTab(
     override fun openView(key: CanvasTabKey) {
         when (key) {
             CanvasTabKey.Words -> openWords()
-            CanvasTabKey.DiffOverview -> openDiffOverview()
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
             CanvasTabKey.Wall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
@@ -440,10 +437,15 @@ internal class DiffReviewTab(
         showCanvas { canvas.focusWords() }
     }
 
-    fun openDiffOverview() {
-        state.showDiffOverview()
-        renderCanvas()
-        showCanvas { canvas.focusDiffOverview() }
+    override fun reviewDestinations(): Map<ReviewDestination, () -> Unit> {
+        val destinations = super.reviewDestinations()
+        if (ReviewDestination.WORDS !in destinations) return destinations
+        return destinations + (ReviewDestination.DIFF_OVERVIEW to {
+            if (!disposed && !state.refreshing) {
+                diffCards.selectWordOverview()
+                openWords()
+            }
+        })
     }
 
     /** Counting parses both sides of every file, so it runs in a background read action and fills the card when done. */
@@ -540,7 +542,7 @@ internal class DiffReviewTab(
 
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
-            wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
+            wordFiles = state.snapshot.files,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
             wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) })
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),

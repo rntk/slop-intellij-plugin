@@ -32,7 +32,7 @@ class WordChangeChartTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
         try {
             canvas.showNotes(cards, DiffCanvasContent(words = wordChanges(files), wordFiles = files))
-            assertEquals("Word changes", canvas.tabs.getTitleAt(0))
+            assertEquals("Words", canvas.tabs.getTitleAt(0))
             val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
             chart.setSize(chart.preferredSize)
             chart.paint(BufferedImage(chart.width, chart.height, BufferedImage.TYPE_INT_ARGB).createGraphics())

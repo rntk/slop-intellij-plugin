@@ -1,7 +1,7 @@
 package dev.insight.diff
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import com.intellij.ui.InplaceButton
+import javax.swing.JComboBox
 import java.awt.Container
 import java.awt.image.BufferedImage
 import dev.insight.review.ui.NoteCanvas
@@ -45,51 +45,37 @@ class DiffOverviewChartTest : BasePlatformTestCase() {
         assertTrue(chart(emptyList()).placedWords().isEmpty())
     }
 
-    fun testBothViewsAreSeparateAndFollowScopeChangesAndIndependentRemoval() {
+    fun testBothViewsShareOneTabAndFollowScopeChanges() {
         val files = listOf(file("a.kt", "@@ -1 +1 @@\n-oldOne\n+newOne\n"), file("b.kt", "@@ -0,0 +1 @@\n+newTwo\n"))
         val counts = wordChanges(files)
-        var removeWords = 0
-        var removeOverview = 0
-        val cards = DiffCanvasCards({}, metricActions = MetricCardActions(removeWords = { removeWords++ }, removeDiffOverview = { removeOverview++ }))
+        val cards = DiffCanvasCards({})
         val canvas = NoteCanvas({}, {}, extension = cards)
         try {
-            canvas.showNotes(cards, DiffCanvasContent(words = counts, wordFiles = files, diffOverview = counts))
-            assertEquals(listOf("Word changes", "Diff overview"), (0 until canvas.tabs.tabCount).map { canvas.tabs.getTitleAt(it) })
-            assertEquals(1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
-            assertEquals(1, descendants(canvas).filterIsInstance<DiffOverviewChart>().size)
-            canvas.focusDiffOverview()
-            assertEquals("Diff overview", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
-            cards.chooseWordScope(wordScopes(files).single { it.path == "b.kt" })
-            assertEquals(setOf("newTwo"), descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word }.toSet())
-            assertEquals(setOf("newTwo"), descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes.words.map { it.word }.toSet())
-            assertEquals(ChangedLineCounts(0, 1), descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes.lines)
-            descendants(canvas).filterIsInstance<InplaceButton>().single { it.toolTipText == "Remove diff overview" }.doClick()
-            assertEquals(1, removeOverview)
-            assertEquals(0, removeWords)
             canvas.showNotes(cards, DiffCanvasContent(words = counts, wordFiles = files))
-            assertEquals("Word changes", canvas.tabs.getTitleAt(0))
+            canvas.focusWords()
             assertEquals(1, canvas.tabs.tabCount)
-            assertTrue(descendants(canvas).none { it is DiffOverviewChart })
-            canvas.showNotes(cards, DiffCanvasContent(wordFiles = files, diffOverview = counts))
-            assertEquals("Diff overview", canvas.tabs.getTitleAt(0))
-            assertTrue(descendants(canvas).none { it is WordChangeChart })
-        } finally { canvas.dispose() }
-    }
+            assertEquals("Words", canvas.tabs.getTitleAt(0))
+            val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
 
-    fun testVisibilityIsIndependentAndClearTabsClearsBoth() {
-        val state = DiffReviewState()
-        state.showWords()
-        assertFalse(state.diffOverviewVisible)
-        state.showDiffOverview()
-        state.hideWords()
-        assertTrue(state.diffOverviewVisible)
-        state.showWords()
-        state.hideDiffOverview()
-        assertTrue(state.wordsVisible)
-        state.showDiffOverview()
-        state.clearNotes()
-        assertFalse(state.wordsVisible)
-        assertFalse(state.diffOverviewVisible)
+            chooseView(canvas, 1)
+            assertEquals(1, canvas.tabs.tabCount)
+            assertEquals(0, canvas.tabs.selectedIndex)
+            val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
+            assertSame(counts, overview.changes)
+            assertTrue(descendants(canvas).any { it is WordBalanceChart })
+
+            chooseView(canvas, 0)
+            assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
+            chooseView(canvas, 1)
+            assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
+            cards.chooseWordScope(wordScopes(files).single { it.path == "b.kt" })
+            val scoped = descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes
+            assertEquals(setOf("newTwo"), scoped.words.map { it.word }.toSet())
+            assertEquals(ChangedLineCounts(0, 1), scoped.lines)
+
+            chooseView(canvas, 0)
+            assertSame(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
+        } finally { canvas.dispose() }
     }
 
     fun testChangesWithoutWordsStillShowTheLineChart() {
@@ -99,13 +85,18 @@ class DiffOverviewChartTest : BasePlatformTestCase() {
         val cards = DiffCanvasCards({})
         val canvas = NoteCanvas({}, {}, extension = cards)
         try {
-            canvas.showNotes(cards, DiffCanvasContent(wordFiles = files, diffOverview = counts))
+            canvas.showNotes(cards, DiffCanvasContent(words = counts, wordFiles = files))
+            chooseView(canvas, 1)
             val chart = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
             assertEquals(ChangedLineCounts(1, 2), chart.changes.lines)
             chart.setSize(chart.preferredSize)
             val graphics = BufferedImage(chart.width, chart.height, BufferedImage.TYPE_INT_ARGB).createGraphics()
             try { chart.paint(graphics) } finally { graphics.dispose() }
         } finally { canvas.dispose() }
+    }
+
+    private fun chooseView(canvas: NoteCanvas, index: Int) {
+        descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "words-view" }.selectedIndex = index
     }
 
     private fun descendants(component: Container): List<java.awt.Component> = component.components.flatMap {

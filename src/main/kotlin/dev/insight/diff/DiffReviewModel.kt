@@ -60,7 +60,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     private val diffCards = linkedMapOf<String, ReviewFile>()
     val diffs: List<ReviewFile> get() = diffCards.values.toList()
 
-    /** Whether the word-changes chart is on the canvas; it is counted from the current snapshot when first needed. */
+    /** Whether Words is on the canvas; its views share counts from the current snapshot. */
     var wordsVisible = false
         private set
     private var wordsOf: List<ReviewFile>? = null
@@ -72,10 +72,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     internal val countedWords: WordChanges? get() = counted?.takeIf { wordsOf === snapshot.files }
     fun showWords() { wordsVisible = true }
     fun hideWords() { wordsVisible = false }
-    var diffOverviewVisible = false
-        private set
-    fun showDiffOverview() { diffOverviewVisible = true }
-    fun hideDiffOverview() { diffOverviewVisible = false }
     /** Whether the semantic changes card is on the canvas; counting needs PSI, so the tab delivers it with [setSemantic]. */
     var semanticVisible = false
         private set
@@ -147,7 +143,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun clearNotes() {
         super.clearNotes()
         diffCards.clear()
-        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false; movesVisible = false
+        wordsVisible = false; semanticVisible = false; movesVisible = false
         wallScope = null
     }
 }

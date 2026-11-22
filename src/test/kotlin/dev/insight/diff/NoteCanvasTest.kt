@@ -77,15 +77,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val cards = DiffCanvasCards({})
         val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
         try {
-            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, diffOverview = words, semantic = SemanticResult.Counting),
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, semantic = SemanticResult.Counting),
                 CanvasState(notes = listOf(note), explanation = explanation))
             canvas.focusWords()
             val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
-            val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
             fun assertRetained() {
                 assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
-                assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
-                assertEquals("Word changes", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
+                assertEquals("Words", canvas.tabs.getTitleAt(canvas.tabs.selectedIndex))
                 assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
                 assertTrue(descendants(canvas).filterIsInstance<javax.swing.text.JTextComponent>().any { it.text == explanation.text })
                 assertTrue((0 until canvas.tabs.tabCount).any { canvas.tabs.getTitleAt(it) == "Note · a.kt" })
@@ -114,7 +112,6 @@ class NoteCanvasTest : BasePlatformTestCase() {
             cards.chooseWordScope(wordScopes(files).single { it.path == files.first().path })
             val scoped = wordChanges(files.take(1))
             assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
-            assertEquals(scoped, descendants(canvas).filterIsInstance<DiffOverviewChart>().single().changes)
             canvas.updateSummaries(summaryCard)
             assertEquals(scoped, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)
             canvas.showNotes(cards, DiffCanvasContent(), CanvasState(notes = listOf(note)))
@@ -134,25 +131,22 @@ class NoteCanvasTest : BasePlatformTestCase() {
             summariesView.mode = ReviewSummariesMode.OUTLINE
         }
         try {
-            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = listOf(file), diffOverview = words, semantic = SemanticResult.Counting),
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = listOf(file), semantic = SemanticResult.Counting),
                 CanvasState(summaries = SummariesCard(summaries, false, true)))
             canvas.focusSummaries()
             layoutTree(canvas)
             val chart = descendants(canvas).filterIsInstance<WordChangeChart>().single()
-            val overview = descendants(canvas).filterIsInstance<DiffOverviewChart>().single()
             val row = descendants(canvas).single { it.name == "summary:root" } as Container
             val area = descendants(row).filterIsInstance<javax.swing.text.JTextComponent>().first()
             area.select(0, "Updates".length)
             selectionMenu(area)!!.components.filterIsInstance<javax.swing.JMenuItem>().single { it.name == "search-tab" }.doClick()
-            assertEquals(5, canvas.tabs.tabCount)
+            assertEquals(4, canvas.tabs.tabCount)
             assertTrue(canvas.tabs.getTitleAt(canvas.tabs.selectedIndex).startsWith("Search"))
             assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
-            assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
             assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
             (descendants(canvas).single { it.name == "close-search-tab" } as com.intellij.ui.InplaceButton).doClick()
-            assertEquals(4, canvas.tabs.tabCount)
+            assertEquals(3, canvas.tabs.tabCount)
             assertSame(chart, descendants(canvas).filterIsInstance<WordChangeChart>().single())
-            assertSame(overview, descendants(canvas).filterIsInstance<DiffOverviewChart>().single())
             assertTrue(descendants(canvas).any { it.name == "semantic-counting" })
             cards.chooseWordScope(wordScopes(listOf(file)).single { it.path == file.path })
             assertEquals(words, descendants(canvas).filterIsInstance<WordChangeChart>().single().changes)

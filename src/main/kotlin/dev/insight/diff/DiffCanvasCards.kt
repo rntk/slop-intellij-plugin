@@ -22,7 +22,6 @@ import javax.swing.JPanel
 /** Metric card removal supplied by the review hosting the canvas. */
 internal data class MetricCardActions(
     val removeWords: () -> Unit = {},
-    val removeDiffOverview: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
     val removeMoves: () -> Unit = {},
 )
@@ -32,7 +31,6 @@ internal data class DiffCanvasContent(
     val diffs: List<ReviewFile> = emptyList(),
     val words: WordChanges? = null,
     val wordFiles: List<ReviewFile> = emptyList(),
-    val diffOverview: WordChanges? = null,
     val semantic: SemanticResult? = null,
     val moves: CodeMoves? = null,
     val wall: DiffsWallContent? = null,
@@ -46,7 +44,7 @@ internal data class DiffWallLinks(
 )
 
 /**
- * The diff review's canvas pages: the Diffs wall, word changes, diff overview, semantic metrics and moved code, diff snapshots in
+ * The diff review's canvas pages: the Diffs wall, Words, semantic metrics and moved code, diff snapshots in
  * native viewers, and the summaries Diff mode. Set [content] before the canvas rebuilds.
  */
 internal class DiffCanvasCards(
@@ -108,7 +106,7 @@ internal class DiffCanvasCards(
     private val wall by wallView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
-        removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
+        removeSemantic = metricActions.removeSemantic,
         removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
     ), project)
 
@@ -127,7 +125,6 @@ internal class DiffCanvasCards(
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
         content.wall?.let { CanvasTabKey.Wall to wallCard(it) },
         content.words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) },
-        content.diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
         content.semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) },
         content.moves?.let { CanvasTabKey.Moves to metricsCards.movesCard(it) },
     ).toMap()
@@ -136,8 +133,7 @@ internal class DiffCanvasCards(
         content.diffs.associate { it.diffKey to diffCard(it, snapshots) }
 
     override fun card(key: CanvasTabKey, snapshots: SnapshotCanvasCards): JPanel? = when (key) {
-        CanvasTabKey.Words -> content.words?.let { metricsCards.wordsCard(it) }
-        CanvasTabKey.DiffOverview -> content.diffOverview?.let { metricsCards.wordsCard(it, overview = true) }
+        CanvasTabKey.Words -> content.words?.let(metricsCards::wordsCard)
         CanvasTabKey.Semantic -> content.semantic?.let(metricsCards::semanticCard)
         CanvasTabKey.Moves -> content.moves?.let(metricsCards::movesCard)
         CanvasTabKey.Wall -> content.wall?.let(::wallCard)
@@ -146,8 +142,7 @@ internal class DiffCanvasCards(
     }
 
     override fun title(key: CanvasTabKey): String? = when (key) {
-        CanvasTabKey.Words -> "Word changes"
-        CanvasTabKey.DiffOverview -> "Diff overview"
+        CanvasTabKey.Words -> "Words"
         CanvasTabKey.Semantic -> "Semantic changes"
         CanvasTabKey.Moves -> "Moved code"
         CanvasTabKey.Wall -> ReviewVocabulary.DIFF.wallName
@@ -158,6 +153,8 @@ internal class DiffCanvasCards(
     override fun summaryDiffView(card: SummariesCard, state: ChangeSummariesViewState, zoom: Double,
                                  actions: ChangeSummaryActions): SummaryDiffView =
         ChangeSummaryDiffPanel(card, state, zoom, actions, project)
+
+    fun selectWordOverview() = metricsCards.selectWordOverview()
 
     internal fun chooseWordScope(scope: WordScope) = metricsCards.chooseWordScope(scope)
 

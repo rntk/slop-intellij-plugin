@@ -15,7 +15,6 @@ internal sealed interface CanvasTabKey {
     data object Topics : CanvasTabKey
     data object Grouping : CanvasTabKey
     data object Words : CanvasTabKey
-    data object DiffOverview : CanvasTabKey
     data object Semantic : CanvasTabKey
     data object Moves : CanvasTabKey
     /** The code review's code map: classes and files grouped into flows read from their roots, with the shared code they use. */
