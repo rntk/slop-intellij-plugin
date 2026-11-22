@@ -123,12 +123,24 @@ internal fun renderMarkdownReport(
     mapSource: Boolean,
     symbols: SymbolNames = SymbolNames.NONE,
     embedded: Boolean = false,
+): RenderedReport = renderMarkdownReport(text, index, colors, maxChars, maxTableCells, mapSource, symbols, embedded, defaultFile = null)
+
+internal fun renderMarkdownReport(
+    text: String,
+    index: ReportProjectIndex,
+    colors: ReportThemeColors,
+    maxChars: Int = MAX_REPORT_CHARS,
+    maxTableCells: Int = MAX_TABLE_CELLS,
+    mapSource: Boolean,
+    symbols: SymbolNames = SymbolNames.NONE,
+    embedded: Boolean = false,
+    defaultFile: String?,
 ): RenderedReport {
     val (bounded, textTruncated) = truncateReportText(normalizeLineEndings(text), maxChars)
     val cellBudget = maxTableCells.coerceAtLeast(0)
     var renderedTableCells = 0
     var anyTableTruncated = false
-    val collector = ReportLinkCollector(index, symbols = symbols)
+    val collector = ReportLinkCollector(index, ReportLinkContext(defaultFile), symbols = symbols)
     val sourceMap = if (mapSource) ReportSourceMap() else null
     val lines = reportSourceLines(bounded, sourceMap)
     val body = StringBuilder()

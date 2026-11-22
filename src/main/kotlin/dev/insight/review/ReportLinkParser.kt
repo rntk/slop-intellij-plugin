@@ -43,7 +43,7 @@ internal data class ParsedLineSpec(val lines: IntRange, val column: Int? = null)
  * Tracks contextual files and directories across headings, list hierarchies, and table rows so relative paths and
  * bare line references (`L42-L50`, `lines 10-20`, `at L151`) bind accurately without bleeding across unrelated entries.
  */
-internal class ReportLinkContext {
+internal class ReportLinkContext(private val defaultFile: String? = null) {
     private companion object {
         /** Enough history to disambiguate and rank, bounded so long reports keep per-link costs constant. */
         const val MAX_RECENT_FILES = 64
@@ -55,23 +55,40 @@ internal class ReportLinkContext {
     /** The last [MAX_RECENT_FILES] files resolved unambiguously, oldest first. */
     val recentFiles: LinkedHashSet<String> = linkedSetOf()
     val lineDirs: MutableSet<String> = linkedSetOf()
-    var activeFiles: List<String> = emptyList()
-        private set
+    private var explicitActiveFiles: List<String> = emptyList()
+    val activeFiles: List<String>
+        get() = explicitActiveFiles.ifEmpty { listOfNotNull(defaultFile) }
 
     private val listStack = ArrayDeque<Pair<Int, List<String>>>()
 
+    init {
+        seedDefault()
+    }
+
+    private fun seedDefault() {
+        val file = defaultFile ?: return
+        file.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { sectionDirs += it }
+        sectionFiles += file
+        if (file !in recentFiles) {
+            recentFiles.add(file)
+            if (recentFiles.size > MAX_RECENT_FILES) recentFiles.remove(recentFiles.first())
+        }
+    }
+
     fun onHeading() {
-        activeFiles = emptyList()
+        explicitActiveFiles = emptyList()
         listStack.clear()
         sectionFiles.clear()
         sectionDirs.clear()
         lineDirs.clear()
+        seedDefault()
     }
 
     fun onRule() {
-        activeFiles = emptyList()
+        explicitActiveFiles = emptyList()
         listStack.clear()
         lineDirs.clear()
+        seedDefault()
     }
 
     fun onListItem(indent: Int) {
@@ -79,8 +96,8 @@ internal class ReportLinkContext {
         while (listStack.isNotEmpty() && listStack.last().first >= indent) {
             listStack.removeLast()
         }
-        activeFiles = listStack.lastOrNull()?.second.orEmpty()
-        listStack.addLast(indent to activeFiles)
+        explicitActiveFiles = listStack.lastOrNull()?.second.orEmpty()
+        listStack.addLast(indent to explicitActiveFiles)
     }
 
     fun onPlainLine() {
@@ -93,13 +110,13 @@ internal class ReportLinkContext {
     }
 
     fun <T> withTableRow(block: () -> T): T {
-        val savedFiles = activeFiles
+        val savedFiles = explicitActiveFiles
         val savedLineDirs = lineDirs.toList()
         lineDirs.clear()
         return try {
             block()
         } finally {
-            activeFiles = savedFiles
+            explicitActiveFiles = savedFiles
             lineDirs.clear()
             lineDirs.addAll(savedLineDirs)
         }
@@ -108,7 +125,7 @@ internal class ReportLinkContext {
     fun recordResolvedFile(candidates: List<String>, inListItem: Boolean) {
         if (candidates.isEmpty()) return
         val distinct = candidates.distinct()
-        activeFiles = distinct
+        explicitActiveFiles = distinct
         if (distinct.size == 1) {
             val path = distinct.single()
             sectionFiles += path
@@ -301,6 +318,27 @@ internal class ReportProjectIndex(
 
     /** Returns the captured absolute path for an indexed directory [path], if known. */
     fun absoluteDirPathFor(path: String): String? = dirAbsByKey[path]
+
+    /** Whether [path] (normalized) is already indexed as a file. */
+    fun hasExactFile(path: String): Boolean = normalizeRelPath(path)?.let { it in exactFiles } == true
+
+    /**
+     * Returns an index containing all existing entries plus any [extraFiles] not already indexed (marked in review scope),
+     * or `this` when every normalized extra path is already present.
+     */
+    fun withExtraFiles(extraFiles: Collection<String>): ReportProjectIndex {
+        val missing = extraFiles.mapNotNull(::normalizeRelPath).distinct().filter { it !in exactFiles }
+        if (missing.isEmpty()) return this
+        val existingFiles = exactFiles.keys.map { ReportIndexedEntry(it, fileAbsByKey[it], it in reviewScopeFiles) }
+        val extraEntries = missing.map { ReportIndexedEntry(it, absolutePath = null, inReviewScope = true) }
+        val existingDirs = exactDirs.keys.map { ReportIndexedEntry(it, dirAbsByKey[it]) }
+        return ReportProjectIndex(
+            contentRoots = normalizedRoots,
+            reportFileDir = reportFileDir,
+            fileEntries = existingFiles + extraEntries,
+            directoryEntries = existingDirs,
+        )
+    }
 
     /** Resolves an on-disk [absolutePath] back to its canonical indexed path key. */
     fun pathForAbsolute(absolutePath: String): String? {

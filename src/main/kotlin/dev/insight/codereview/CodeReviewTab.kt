@@ -88,8 +88,11 @@ import dev.insight.review.ui.SymbolSummaryActions
 import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
 import dev.insight.review.ui.TopicCanvasActions
+import dev.insight.review.ui.findReportSourceFile
 import dev.insight.review.ui.openHighlightedLines
 import dev.insight.review.ui.readPsiThen
+import dev.insight.review.ui.readVirtualFileText
+import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
 import dev.insight.review.wall.WALL_CANVAS_CHAT
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
@@ -162,12 +165,13 @@ internal class CodeReviewTab(
         chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
         showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project,
         reviewDestinations = { reviewDestinations() },
-        contextSummaryActions = contextSummaryActions,
         codeMapActions = CodeMapActions(
             generate = { if (canSummarize) session.send(ReviewCommand.CODE_MAP.command) },
             remove = { state.hideCodeMap(); renderCanvas() },
             open = { path, line -> openFile(path, line) },
-        ))
+        ),
+        contextSummaryActions = contextSummaryActions,
+        wallLinks = CodeWallLinks(scope, { state.snapshot.files }, { state.summaries.tree }, ::openCodeWall))
     /** The words shown, and the words of every file, kept so choosing every file again needs no count. */
     private var wordCount: WordCount? = null
     private var allWords: WordCount? = null
@@ -391,9 +395,12 @@ internal class CodeReviewTab(
     private fun wallChatBackend(path: String): ChatBackend = if (path == WALL_CANVAS_CHAT) wallCanvasChatBackend() else object : ChatBackend {
         override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
             val turn = withContext(Dispatchers.EDT) {
-                state.snapshot.byPath[path]?.let { file ->
-                    Triple(captureContext(), file, fileSummaries()[path]) to codePromptScope(state.snapshot.scope, state.scopePaths)
-                }
+                val scopeName = codePromptScope(state.snapshot.scope, state.scopePaths)
+                val file = state.snapshot.byPath[path]
+                    ?: findReportSourceFile(project, path, null)
+                        ?.takeIf { it.isValid && !it.isDirectory && !it.fileType.isBinary && it.length <= MAX_ADDED_FILE_BYTES }
+                        ?.let { vf -> readVirtualFileText(vf)?.let { text -> CodeFile(path, vf.path, text) } }
+                file?.let { Triple(captureContext(), it, fileSummaries()[path]) to scopeName }
             } ?: return "$path is no longer in this review's scope, so there is no source to discuss."
             val (captured, scopeName) = turn
             val (context, file, summary) = captured

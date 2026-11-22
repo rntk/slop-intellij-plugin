@@ -6,11 +6,22 @@ import com.intellij.ui.awt.RelativePoint
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextData
 import dev.insight.context.ContextKeys
+import dev.insight.context.ContextPick
 import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.showContextPicker
+import dev.insight.review.ReportLink
+import dev.insight.review.ReportProjectIndex
+import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ui.findReportSourceFile
+import dev.insight.review.ui.matchingReviewSource
+import dev.insight.review.ui.openReportFile
+import dev.insight.review.ui.readVirtualFileText
+import dev.insight.review.ui.reportLinkContextPick
+import dev.insight.review.wall.AddedWallSource
+import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
@@ -19,10 +30,16 @@ import dev.insight.review.wall.WallContent
 import dev.insight.review.wall.WallHighlighter
 import dev.insight.review.wall.WallLabels
 import dev.insight.review.wall.WallLine
+import dev.insight.review.wall.WallLinkHost
+import dev.insight.review.wall.WallLinkSupport
 import dev.insight.review.wall.WallSyntax
 import dev.insight.review.wall.WallView
+import dev.insight.review.wall.normalizeWallPath
+import dev.insight.review.wall.wallAddedSourceBlock
+import dev.insight.review.wall.wallExpandBlockForLine
 import dev.insight.review.wall.wallRowSpans
 import dev.insight.review.wall.wallSideExtents
+import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
 /**
@@ -31,39 +48,190 @@ import javax.swing.JPanel
  */
 internal class CodeWallView(
     /** Opens the file at the path in the editor, at the double-clicked line when there is one. */
-    openFile: (path: String, line: Int?) -> Unit,
+    private val openFile: (path: String, line: Int?) -> Unit,
     /** Shown as a link when the wall holds a subset of the scope. */
     showAllFiles: () -> Unit,
     /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
     chats: WallChats? = null,
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
-    project: Project? = null,
+    private val project: Project? = null,
     /** Destinations belonging to the tab that owns this wall. */
     private val reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
     private val summaryActions: ContextSummaryActions? = null,
+    scope: CoroutineScope? = null,
+    private val allFiles: (() -> List<CodeFile>)? = null,
+    private val summaryTree: (() -> ReviewSummaryTree?)? = null,
+    private val openOnWall: ((List<CodeFile>, String) -> Unit)? = null,
 ) : Disposable {
     private var files: List<CodeFile> = emptyList()
+    private var baseContent: CodeWallContent? = null
+    private var baseBlocks: List<WallBlock> = emptyList()
+    private val addedScopeFiles = linkedMapOf<String, CodeFile>()
+    private val addedProjectFiles = linkedMapOf<String, AddedWallSource>()
+    private val expandedBlocks = mutableMapOf<String, WallBlock>()
     private var shown: WallContent? = null
-    val view = WallView(CODE_WALL_LABELS, { path, line -> openFile(path, line?.new) }, showAllFiles, chats,
-        codeWallHighlighter(project) { path -> files.firstOrNull { it.path == path } },
-        onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } })
+
+    private fun snapshotFiles(): List<CodeFile> = allFiles?.invoke() ?: files
+
+    private fun scopeFileFor(path: String): CodeFile? =
+        files.firstOrNull { it.path == path } ?: addedScopeFiles[path]
+
+    private val linkHost = object : WallLinkHost {
+        override val isDiffWall: Boolean = false
+
+        override fun scopePaths(): List<String> = snapshotFiles().map { it.path }
+
+        override fun wallPathFor(path: String, absolutePath: String?): String {
+            val normAbs = absolutePath?.let(ReportProjectIndex::normalizeAbsPath)
+            val all = snapshotFiles()
+            if (normAbs != null) {
+                all.firstOrNull { it.absolutePath.isNotBlank() && ReportProjectIndex.normalizeAbsPath(it.absolutePath) == normAbs }
+                    ?.let { return it.path }
+                addedProjectFiles.values.firstOrNull { !it.absolutePath.isNullOrBlank() && ReportProjectIndex.normalizeAbsPath(it.absolutePath) == normAbs }
+                    ?.let { return it.path }
+            }
+            val norm = normalizeWallPath(path)
+            all.firstOrNull { normalizeWallPath(it.path) == norm }?.let { return it.path }
+            return norm
+        }
+
+        override fun ensureCard(path: String, absolutePath: String?, lines: IntRange?): String? {
+            val all = snapshotFiles()
+            val scopeMatch = matchingReviewSource(all, path, absolutePath) as? CodeFile
+            if (scopeMatch != null) {
+                addedScopeFiles[scopeMatch.path] = scopeMatch
+                lines?.first?.let { target ->
+                    val base = codeWallBlock(scopeMatch)
+                    val expanded = wallExpandBlockForLine(base, target)
+                    if (expanded !== base) expandedBlocks[scopeMatch.path] = expanded
+                }
+                rebuildAndShow()
+                return scopeMatch.path
+            }
+            val p = project ?: return null
+            val vf = findReportSourceFile(p, path, absolutePath) ?: return null
+            if (!vf.isValid || vf.isDirectory || vf.fileType.isBinary || vf.length > MAX_ADDED_FILE_BYTES) return null
+            val text = readVirtualFileText(vf) ?: return null
+            val canonical = normalizeWallPath(path)
+            addedProjectFiles[canonical] = AddedWallSource(canonical, vf.path, text, lines?.first)
+            expandedBlocks.remove(canonical)
+            rebuildAndShow()
+            return canonical
+        }
+
+        override fun ensureLineLoaded(path: String, targetLine: Int): Boolean {
+            val current = shown?.blocks?.firstOrNull { it.path == path } ?: return false
+            val expanded = wallExpandBlockForLine(current, targetLine)
+            if (expanded === current) return false
+            expandedBlocks[path] = expanded
+            rebuildAndShow()
+            return true
+        }
+
+        override fun isAddedCard(path: String): Boolean = path in addedScopeFiles || path in addedProjectFiles
+
+        override fun contextPick(link: ReportLink, path: String, absolutePath: String?): ContextPick? {
+            val p = project ?: return null
+            return reportLinkContextPick(
+                p, link.kind, path, link.lines,
+                reviewFiles = snapshotFiles(),
+                summaryTree = summaryTree?.invoke(),
+                reviewDestinations = reviewDestinations(),
+                summaryActions = summaryActions,
+                openOnWall = openOnWall?.let { open -> { srcs, title -> open(srcs.filterIsInstance<CodeFile>(), title) } },
+                openOnCanvas = null,
+                absolutePath = absolutePath,
+            )
+        }
+    }
+
+    val view = WallView(
+        CODE_WALL_LABELS,
+        openLine = ::openWallTarget,
+        showAll = showAllFiles,
+        chats = chats,
+        highlighter = codeWallHighlighter(project, ::scopeFileFor, addedProjectFiles::get),
+        openOnCanvas = null,
+        onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } },
+        summarize = null,
+        cardWidthScale = 1.0,
+        links = WallLinkSupport(
+            project = project,
+            coroutineScope = scope,
+            linkHost = linkHost,
+            onRemoveBlock = ::removeAdded,
+        ),
+    )
     val card: JPanel get() = view.card
+
+    private fun openWallTarget(path: String, line: WallLine?) {
+        if (scopeFileFor(path) != null) {
+            openFile(path, line?.new)
+            return
+        }
+        val added = addedProjectFiles[path] ?: return
+        val p = project
+        if (p != null) openReportFile(p, added.path, line?.new?.let { it..it }, absolutePath = added.absolutePath)
+        else openFile(path, line?.new)
+    }
+
+    private fun removeAdded(path: String) {
+        val removed = addedScopeFiles.remove(path) != null || addedProjectFiles.remove(path) != null
+        if (!removed) return
+        expandedBlocks.remove(path)
+        rebuildAndShow()
+    }
 
     /** Opens the context picker for a right-click on [block]: the source scopes at the row, or only the file for the header. */
     private fun showContext(project: Project, block: WallBlock, line: WallLine?, point: RelativePoint) {
-        val file = files.firstOrNull { it.path == block.path } ?: return
+        val file = scopeFileFor(block.path)
+        val path = file?.path ?: addedProjectFiles[block.path]?.path ?: return
+        val abs = file?.absolutePath ?: addedProjectFiles[block.path]?.absolutePath
+        val text = file?.text ?: addedProjectFiles[block.path]?.text ?: return
         val data = ContextData().put(ContextKeys.REVIEW_DESTINATIONS, reviewDestinations())
-        summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
-        showContextPicker(project, capturedSourcePick(project, ContextOrigin.CODE_WALL, file.path, file.absolutePath, file.text, line?.new, data),
+        if (file != null) summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
+        showContextPicker(project, capturedSourcePick(project, ContextOrigin.CODE_WALL, path, abs, text, line?.new, data),
             point.component, point)
     }
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: CodeWallContent) {
-        val previous = shown
-        val wall = if (previous != null && content.files == files) previous.copy(scope = content.scope, summaries = content.summaries)
-            else content.toWall()
+        val scopeChanged = content.scope != baseContent?.scope
+        if (scopeChanged) {
+            addedScopeFiles.clear()
+            addedProjectFiles.clear()
+            expandedBlocks.clear()
+        }
+        val basePaths = content.files.map { it.path }.toSet()
+        val allByPath = snapshotFiles().associateBy { it.path }
+        addedScopeFiles.entries.filter { (path, prev) -> path in basePaths || allByPath[path] != prev }.map { it.key }.forEach {
+            expandedBlocks.remove(it)
+        }
+        addedScopeFiles.keys.retainAll { it !in basePaths && it in allByPath }
+        addedScopeFiles.replaceAll { path, _ -> allByPath.getValue(path) }
+        addedProjectFiles.keys.removeAll { it in basePaths || it in allByPath }
+        expandedBlocks.keys.retainAll { it in basePaths || it in addedScopeFiles || it in addedProjectFiles }
+
+        val blocksChanged = baseContent == null || content.files != files || scopeChanged
+        if (blocksChanged) {
+            baseBlocks = content.files.map { codeWallBlock(it) }
+            expandedBlocks.keys.removeAll { it in basePaths }
+        }
         files = content.files
+        baseContent = content
+        rebuildAndShow()
+    }
+
+    private fun rebuildAndShow() {
+        val content = baseContent ?: return
+        val blocks = buildList {
+            baseBlocks.forEach { block -> add(expandedBlocks[block.path] ?: block) }
+            addedScopeFiles.values.forEach { cf -> add(expandedBlocks[cf.path] ?: codeWallBlock(cf)) }
+            addedProjectFiles.values.forEach { src ->
+                add(expandedBlocks[src.path] ?: wallAddedSourceBlock(src.path, src.text, src.targetLine, badge = "outside scope"))
+            }
+        }
+        val wall = WallContent(content.scope, blocks, content.summaries)
         shown = wall
         view.show(wall)
     }
@@ -72,11 +240,22 @@ internal class CodeWallView(
 }
 
 /** Colours a source block from its file's whole text, lexed only as far as the block shows. */
-internal fun codeWallHighlighter(project: Project?, file: (path: String) -> CodeFile?) = WallHighlighter { block ->
-    val code = file(block.path) ?: return@WallHighlighter null
+internal fun codeWallHighlighter(
+    project: Project?,
+    file: (path: String) -> CodeFile?,
+): WallHighlighter = codeWallHighlighter(project, file) { null }
+
+internal fun codeWallHighlighter(
+    project: Project?,
+    file: (path: String) -> CodeFile?,
+    source: (path: String) -> AddedWallSource?,
+) = WallHighlighter { block ->
+    val code = file(block.path)
+    val path = code?.path ?: source(block.path)?.path ?: return@WallHighlighter null
+    val text = code?.text ?: source(block.path)?.text ?: return@WallHighlighter null
     val last = wallSideExtents(block.lines).second
     if (last == 0) return@WallHighlighter null
-    { WallSyntax.side(project, code.path, code.text, last)?.let { wallRowSpans(block.lines, null, it) } }
+    { WallSyntax.side(project, path, text, last)?.let { wallRowSpans(block.lines, null, it) } }
 }
 
 /** The words and component names of the Code wall. */

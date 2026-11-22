@@ -8,13 +8,25 @@ import dev.insight.agent.SourceSide
 import dev.insight.context.ContextData
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextOrigin
+import dev.insight.context.ContextPick
 import dev.insight.context.ContextSummaryActions
+import dev.insight.context.capturedSourcePick
 import dev.insight.context.reviewDiffPick
 import dev.insight.context.showContextPicker
+import dev.insight.review.ReportLink
+import dev.insight.review.ReportProjectIndex
+import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ui.EvidenceLine
 import dev.insight.review.ui.LineSide
 import dev.insight.review.ui.LineTrace
+import dev.insight.review.ui.findReportSourceFile
+import dev.insight.review.ui.matchingReviewSource
+import dev.insight.review.ui.openReportFile
+import dev.insight.review.ui.readVirtualFileText
+import dev.insight.review.ui.reportLinkContextPick
+import dev.insight.review.wall.AddedWallSource
+import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
@@ -23,10 +35,16 @@ import dev.insight.review.wall.WallContent
 import dev.insight.review.wall.WallHighlighter
 import dev.insight.review.wall.WallLabels
 import dev.insight.review.wall.WallLine
+import dev.insight.review.wall.WallLinkHost
+import dev.insight.review.wall.WallLinkSupport
 import dev.insight.review.wall.WallSyntax
 import dev.insight.review.wall.WallView
+import dev.insight.review.wall.normalizeWallPath
+import dev.insight.review.wall.wallAddedSourceBlock
+import dev.insight.review.wall.wallExpandBlockForLine
 import dev.insight.review.wall.wallRowSpans
 import dev.insight.review.wall.wallSideExtents
+import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
 /**
@@ -41,7 +59,7 @@ internal class DiffsWallView(
     /** Each file's chats, opened from the Chat tab on its block's right edge; without them blocks have no tab. */
     chats: WallChats? = null,
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
-    project: Project? = null,
+    private val project: Project? = null,
     /** Opens a file of the wall on a canvas session; null leaves the block menu without that item. */
     private val openOnCanvas: ((path: String) -> Unit)? = null,
     private val openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
@@ -49,37 +67,200 @@ internal class DiffsWallView(
     /** Asks for the summary of a file that has none; see [WallView]. Null leaves only files with a summary their Summary switch. */
     summarize: ((path: String) -> Boolean)? = null,
     private val summaryActions: ContextSummaryActions? = null,
+    /** Coroutine scope for background link rendering in summaries and chats. */
+    scope: CoroutineScope? = null,
+    /** Every changed file in the current comparison snapshot, so subset walls can pull in linked diff files. */
+    private val allFiles: (() -> List<ReviewFile>)? = null,
+    /** Optional summary tree for context picker actions on linked files. */
+    private val summaryTree: (() -> ReviewSummaryTree?)? = null,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
+    private var baseContent: DiffsWallContent? = null
+    private var baseBlocks: List<WallBlock> = emptyList()
+    private val addedDiffs = linkedMapOf<String, ReviewFile>()
+    private val addedSources = linkedMapOf<String, AddedWallSource>()
+    private val expandedBlocks = mutableMapOf<String, WallBlock>()
     private var shown: WallContent? = null
-    val view = WallView(DIFFS_WALL_LABELS, { path, line -> files.firstOrNull { it.path == path }?.let { openDiff(it, line) } },
-        showAllChanges, chats, diffsWallHighlighter(project) { path -> files.firstOrNull { it.path == path } }, openOnCanvas,
-        project?.let { p -> { block, line, point -> showContext(p, block, line, point) } }, summarize, cardWidthScale = 1.2)
+
+    private fun snapshotFiles(): List<ReviewFile> = allFiles?.invoke() ?: files
+
+    private fun diffFileFor(path: String): ReviewFile? =
+        files.firstOrNull { it.path == path } ?: addedDiffs[path]
+
+    private val linkHost = object : WallLinkHost {
+        override val isDiffWall: Boolean = true
+
+        override fun scopePaths(): List<String> = snapshotFiles().map { it.path }
+
+        override fun previousPaths(): Map<String, String> =
+            (files + addedDiffs.values + snapshotFiles()).mapNotNull { f ->
+                f.previousPath?.takeIf { it != f.path }?.let { it to f.path }
+            }.toMap()
+
+        override fun wallPathFor(path: String, absolutePath: String?): String {
+            val normAbs = absolutePath?.let(ReportProjectIndex::normalizeAbsPath)
+            val all = snapshotFiles()
+            if (normAbs != null) {
+                all.firstOrNull { it.absolutePath.isNotBlank() && ReportProjectIndex.normalizeAbsPath(it.absolutePath) == normAbs }
+                    ?.let { return it.path }
+                addedSources.values.firstOrNull { !it.absolutePath.isNullOrBlank() && ReportProjectIndex.normalizeAbsPath(it.absolutePath) == normAbs }
+                    ?.let { return it.path }
+            }
+            val norm = normalizeWallPath(path)
+            all.firstOrNull { normalizeWallPath(it.path) == norm }?.let { return it.path }
+            all.firstOrNull { it.previousPath?.let(::normalizeWallPath) == norm }?.let { return it.path }
+            return norm
+        }
+
+        override fun ensureCard(path: String, absolutePath: String?, lines: IntRange?): String? {
+            val all = snapshotFiles()
+            val matchingDiff = matchingReviewSource(all, path, absolutePath) as? ReviewFile
+                ?: all.firstOrNull { it.previousPath?.let(::normalizeWallPath) == normalizeWallPath(path) }
+            if (matchingDiff != null) {
+                addedDiffs[matchingDiff.path] = matchingDiff
+                lines?.first?.let { target ->
+                    val base = wallBlock(matchingDiff)
+                    val expanded = wallExpandBlockForLine(base, target)
+                    if (expanded !== base) expandedBlocks[matchingDiff.path] = expanded
+                }
+                rebuildAndShow()
+                return matchingDiff.path
+            }
+            val p = project ?: return null
+            val vf = findReportSourceFile(p, path, absolutePath) ?: return null
+            if (!vf.isValid || vf.isDirectory || vf.fileType.isBinary || vf.length > MAX_ADDED_FILE_BYTES) return null
+            val text = readVirtualFileText(vf) ?: return null
+            val canonical = normalizeWallPath(path)
+            addedSources[canonical] = AddedWallSource(canonical, vf.path, text, lines?.first)
+            expandedBlocks.remove(canonical)
+            rebuildAndShow()
+            return canonical
+        }
+
+        override fun ensureLineLoaded(path: String, targetLine: Int): Boolean {
+            val current = shown?.blocks?.firstOrNull { it.path == path } ?: return false
+            val expanded = wallExpandBlockForLine(current, targetLine)
+            if (expanded === current) return false
+            expandedBlocks[path] = expanded
+            rebuildAndShow()
+            return true
+        }
+
+        override fun isAddedCard(path: String): Boolean = path in addedDiffs || path in addedSources
+
+        override fun contextPick(link: ReportLink, path: String, absolutePath: String?): ContextPick? {
+            val p = project ?: return null
+            return reportLinkContextPick(
+                p, link.kind, path, link.lines,
+                reviewFiles = snapshotFiles(),
+                summaryTree = summaryTree?.invoke(),
+                reviewDestinations = reviewDestinations?.invoke().orEmpty(),
+                summaryActions = summaryActions,
+                openOnWall = openOnWall?.let { open -> { srcs, title -> open(srcs.filterIsInstance<ReviewFile>(), title) } },
+                openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path) } },
+                absolutePath = absolutePath,
+            )
+        }
+    }
+
+    val view = WallView(
+        DIFFS_WALL_LABELS,
+        openLine = ::openWallTarget,
+        showAll = showAllChanges,
+        chats = chats,
+        highlighter = diffsWallHighlighter(project, ::diffFileFor, addedSources::get),
+        openOnCanvas = openOnCanvas,
+        onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } },
+        summarize = summarize,
+        cardWidthScale = 1.2,
+        links = WallLinkSupport(
+            project = project,
+            coroutineScope = scope,
+            linkHost = linkHost,
+            canSummarize = { it !in addedSources },
+            onRemoveBlock = ::removeAdded,
+        ),
+    )
     val card: JPanel get() = view.card
+
+    private fun openWallTarget(path: String, line: WallLine?) {
+        diffFileFor(path)?.let { openDiff(it, line); return }
+        val src = addedSources[path] ?: return
+        val p = project ?: return
+        openReportFile(p, src.path, line?.new?.let { it..it }, absolutePath = src.absolutePath)
+    }
+
+    private fun removeAdded(path: String) {
+        val removed = addedDiffs.remove(path) != null || addedSources.remove(path) != null
+        if (!removed) return
+        expandedBlocks.remove(path)
+        rebuildAndShow()
+    }
 
     /** Opens the context picker for a right-click on [block]: the diff scopes at the row, and the whole wall as one change. */
     private fun showContext(project: Project, block: WallBlock, line: WallLine?, point: RelativePoint) {
-        val file = files.firstOrNull { it.path == block.path } ?: return
-        val (side, number) = wallLineSide(line)
+        val file = diffFileFor(block.path)
+        if (file != null) {
+            val (side, number) = wallLineSide(line)
+            val data = ContextData()
+            reviewDestinations?.invoke()?.let { data.put(ContextKeys.REVIEW_DESTINATIONS, it) }
+            summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
+            val contextFiles = (snapshotFiles() + addedDiffs.values).distinctBy { it.path }
+            openOnWall?.let { open -> data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
+                val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
+                val selected = contextFiles.filter { it.path in paths }
+                if (selected.isNotEmpty()) open(selected, context.label)
+            } }
+            openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let(open) } }
+            showContextPicker(project, reviewDiffPick(project, ContextOrigin.DIFFS_WALL, file, number, side, contextFiles, data),
+                point.component, point)
+            return
+        }
+        val added = addedSources[block.path] ?: return
         val data = ContextData()
         reviewDestinations?.invoke()?.let { data.put(ContextKeys.REVIEW_DESTINATIONS, it) }
-        summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
-        openOnWall?.let { open -> data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context ->
-            val paths = if (context.kind == dev.insight.context.ContextScopeKind.CHANGE) context.files.toSet() else setOf(file.path)
-            val selected = files.filter { it.path in paths }
-            if (selected.isNotEmpty()) open(selected, context.label)
-        } }
-        openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let(open) } }
-        showContextPicker(project, reviewDiffPick(project, ContextOrigin.DIFFS_WALL, file, number, side, files, data), point.component, point)
+        showContextPicker(project, capturedSourcePick(project, ContextOrigin.DIFFS_WALL, added.path, added.absolutePath, added.text, line?.new, data),
+            point.component, point)
     }
 
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: DiffsWallContent) {
-        val previous = shown
-        val wall = if (previous != null && content.files == files) previous.copy(scope = content.scope,
-            summaries = content.summaries, summarizing = content.summarizing)
-            else content.toWall()
+        val scopeChanged = content.scope != baseContent?.scope
+        if (scopeChanged) {
+            addedDiffs.clear()
+            addedSources.clear()
+            expandedBlocks.clear()
+        }
+        val basePaths = content.files.map { it.path }.toSet()
+        val allByPath = snapshotFiles().associateBy { it.path }
+        addedDiffs.entries.filter { (path, prev) -> path in basePaths || allByPath[path] != prev }.map { it.key }.forEach {
+            expandedBlocks.remove(it)
+        }
+        addedDiffs.keys.retainAll { it !in basePaths && it in allByPath }
+        addedDiffs.replaceAll { path, _ -> allByPath.getValue(path) }
+        addedSources.keys.removeAll { it in basePaths || it in allByPath }
+        expandedBlocks.keys.retainAll { it in basePaths || it in addedDiffs || it in addedSources }
+
+        val blocksChanged = baseContent == null || content.files != files || scopeChanged
+        if (blocksChanged) {
+            baseBlocks = content.files.map { wallBlock(it) }
+            expandedBlocks.keys.removeAll { it in basePaths }
+        }
         files = content.files
+        baseContent = content
+        rebuildAndShow()
+    }
+
+    private fun rebuildAndShow() {
+        val content = baseContent ?: return
+        val blocks = buildList {
+            baseBlocks.forEach { block -> add(expandedBlocks[block.path] ?: block) }
+            addedDiffs.values.forEach { rf -> add(expandedBlocks[rf.path] ?: wallBlock(rf)) }
+            addedSources.values.forEach { src ->
+                add(expandedBlocks[src.path] ?: wallAddedSourceBlock(src.path, src.text, src.targetLine, badge = "not in diff"))
+            }
+        }
+        val wall = WallContent(content.scope, blocks, content.summaries, content.summarizing)
         shown = wall
         view.show(wall)
     }
@@ -88,18 +269,32 @@ internal class DiffsWallView(
 }
 
 /**
- * Colours a diff block from both whole sides of its file, so a row inside a comment or string that starts outside its hunk is
- * still coloured right; the old side is lexed by its old name, for renames. Rows whose side is missing stay plain.
+ * Colours a diff block from both whole sides of its file, or an added project source block from its source text.
  */
-internal fun diffsWallHighlighter(project: Project?, file: (path: String) -> ReviewFile?) = WallHighlighter { block ->
-    val review = file(block.path) ?: return@WallHighlighter null
-    val (lastBefore, lastAfter) = wallSideExtents(block.lines)
-    if (lastBefore == 0 && lastAfter == 0) return@WallHighlighter null
-    {
-        val before = WallSyntax.side(project, review.previousPath ?: review.path, review.before, lastBefore)
-        val after = WallSyntax.side(project, review.path, review.after, lastAfter)
-        if (before == null && after == null) null else wallRowSpans(block.lines, before, after)
+internal fun diffsWallHighlighter(
+    project: Project?,
+    file: (path: String) -> ReviewFile?,
+): WallHighlighter = diffsWallHighlighter(project, file) { null }
+
+internal fun diffsWallHighlighter(
+    project: Project?,
+    file: (path: String) -> ReviewFile?,
+    source: (path: String) -> AddedWallSource?,
+) = WallHighlighter { block ->
+    val review = file(block.path)
+    if (review != null) {
+        val (lastBefore, lastAfter) = wallSideExtents(block.lines)
+        if (lastBefore == 0 && lastAfter == 0) return@WallHighlighter null
+        return@WallHighlighter {
+            val before = WallSyntax.side(project, review.previousPath ?: review.path, review.before, lastBefore)
+            val after = WallSyntax.side(project, review.path, review.after, lastAfter)
+            if (before == null && after == null) null else wallRowSpans(block.lines, before, after)
+        }
     }
+    val added = source(block.path) ?: return@WallHighlighter null
+    val last = wallSideExtents(block.lines).second
+    if (last == 0) return@WallHighlighter null
+    { WallSyntax.side(project, added.path, added.text, last)?.let { wallRowSpans(block.lines, null, it) } }
 }
 
 /** The words and component names of the Diffs wall. */

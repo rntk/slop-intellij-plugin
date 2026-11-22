@@ -76,7 +76,10 @@ import dev.insight.review.ui.SourceCanvasActions
 import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.changeFlow
+import dev.insight.review.ui.findReportSourceFile
 import dev.insight.review.ui.readPsiThen
+import dev.insight.review.ui.readVirtualFileText
+import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
 import dev.insight.review.wall.WALL_CANVAS_CHAT
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
@@ -136,7 +139,6 @@ internal class DiffReviewTab(
         openWallOnCanvas = openOnCanvas,
         openOnWall = ::openDiffsWall,
         reviewDestinations = ::reviewDestinations,
-        contextSummaryActions = contextSummaryActions,
         summarizeWallFile = { path -> fillSummary(path, SummaryKind.FILE) },
         diffSession = ::diffSession,
         changeMapActions = ChangeMapActions(
@@ -144,6 +146,8 @@ internal class DiffReviewTab(
             remove = { state.hideChangeMap(); renderCanvas() },
             openAtom = ::openAtom,
         ),
+        contextSummaryActions = contextSummaryActions,
+        wallLinks = DiffWallLinks(scope, { state.snapshot.files }, { state.summaries.tree }),
     )
     /** Writes summaries with the same evidence and prompts as /summaries, for the entries a run asks for. */
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
@@ -385,17 +389,24 @@ internal class DiffReviewTab(
      */
     private fun wallChatBackend(path: String): ChatBackend = if (path == WALL_CANVAS_CHAT) wallCanvasChatBackend() else object : ChatBackend {
         override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
-            val turn = withContext(Dispatchers.EDT) {
-                state.snapshot.files.firstOrNull { it.path == path }?.let { file ->
-                    Triple(captureContext(), file, fileSummaryTexts()[path]) to state.snapshot.comparison.summary
+            val (context, prompt) = withContext(Dispatchers.EDT) {
+                val comparison = state.snapshot.comparison.summary
+                val budget = configuredChatBudget(ChatProfile.FOCUSED)
+                val file = state.snapshot.files.firstOrNull { it.path == path }
+                if (file != null) {
+                    captureContext() to wallChatPrompt(file, fileSummaryTexts()[path], comparison, budget.pinnedChars)
+                } else {
+                    val vf = findReportSourceFile(project, path, null)
+                        ?.takeIf { it.isValid && !it.isDirectory && !it.fileType.isBinary && it.length <= MAX_ADDED_FILE_BYTES }
+                    val text = vf?.let(::readVirtualFileText)
+                    if (text != null) {
+                        captureContext() to wallAddedSourceChatPrompt(path, text, comparison, budget.pinnedChars)
+                    } else null
                 }
             } ?: return "$path is no longer part of this change, so there is no diff to discuss."
-            val (captured, comparison) = turn
-            val (context, file, summary) = captured
             val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
             val budget = configuredChatBudget(ChatProfile.FOCUSED)
-            return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project),
-                wallChatPrompt(file, summary, comparison, budget.pinnedChars), budget)
+            return LlmChatBackend(complete, wallChatTools(context) + projectContextTools(project), prompt, budget)
                 .reply(messages, onToolCall)
         }
     }

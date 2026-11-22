@@ -6,6 +6,7 @@ import com.intellij.openapi.util.Disposer
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewNoteKey
+import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ui.CanvasExtension
 import dev.insight.review.ui.ChangeSummariesViewState
 import dev.insight.review.ui.ChangeSummaryActions
@@ -15,6 +16,7 @@ import dev.insight.review.ui.SummaryDiffView
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
+import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
 /** Metric card removal supplied by the review hosting the canvas. */
@@ -35,6 +37,13 @@ internal data class DiffCanvasContent(
     val moves: CodeMoves? = null,
     val wall: DiffsWallContent? = null,
     val changeMap: ChangeMapCard? = null,
+)
+
+/** Optional context-aware wall link dependencies passed to [DiffCanvasCards]. */
+internal data class DiffWallLinks(
+    val scope: CoroutineScope? = null,
+    val allWallFiles: (() -> List<ReviewFile>)? = null,
+    val summaryTree: (() -> ReviewSummaryTree?)? = null,
 )
 
 /**
@@ -64,12 +73,41 @@ internal class DiffCanvasCards(
     changeMapActions: ChangeMapActions = ChangeMapActions(),
     contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
+    private var wallLinks: DiffWallLinks? = null
+
+    internal constructor(
+        open: (String) -> Unit,
+        project: Project?,
+        removeDiff: (String) -> Unit,
+        openDirectoryDiff: ((List<ReviewFile>) -> Unit)?,
+        openMovesOnWall: (List<ReviewFile>) -> Unit,
+        metricActions: MetricCardActions,
+        openWallDiff: (ReviewFile, WallLine?) -> Unit,
+        showAllChanges: () -> Unit,
+        wallChats: WallChats?,
+        openWallOnCanvas: ((path: String) -> Unit)?,
+        openOnWall: ((List<ReviewFile>, String) -> Unit)?,
+        reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)?,
+        summarizeWallFile: ((path: String) -> Boolean)?,
+        diffSession: (() -> ReviewDiffSession)?,
+        changeMapActions: ChangeMapActions,
+        contextSummaryActions: ContextSummaryActions?,
+        wallLinks: DiffWallLinks,
+    ) : this(open, project, removeDiff, openDirectoryDiff, openMovesOnWall, metricActions, openWallDiff, showAllChanges,
+        wallChats, openWallOnCanvas, openOnWall, reviewDestinations, summarizeWallFile, diffSession, changeMapActions,
+        contextSummaryActions) {
+        this.wallLinks = wallLinks
+    }
+
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
-        summarizeWallFile, contextSummaryActions) }
+    private val wallView = lazy {
+        DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
+            summarizeWallFile, contextSummaryActions, wallLinks?.scope,
+            { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree)
+    }
     private val wall by wallView
     /** One view for the tab session, so the selected change survives rebuilds. */
     private val changeMapView = ChangeMapView(changeMapActions)

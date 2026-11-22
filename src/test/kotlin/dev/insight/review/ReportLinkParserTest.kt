@@ -2,6 +2,7 @@ package dev.insight.review
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -444,5 +445,41 @@ class ReportLinkParserTest {
 
         assertEquals("src/a%20b.kt", rendered.links[4].primaryPath)
         assertEquals(4..4, rendered.links[4].lines)
+    }
+
+    @Test fun `defaultFile seeds bare line references and sibling filename disambiguation`() {
+        val files = listOf("src/sub/Alpha.kt", "src/sub/Helper.kt", "other/Helper.kt")
+        val idx = index(files = files)
+        val collector = ReportLinkCollector(idx, ReportLinkContext(defaultFile = "src/sub/Alpha.kt"))
+        val first = collector.scanSegment("Problem near L12 and Helper.kt", inBackticks = false, allowContextualLines = true)
+        assertEquals(listOf("src/sub/Alpha.kt", "src/sub/Helper.kt"), first.map { it.link.primaryPath })
+        assertEquals(12..12, first[0].link.lines)
+        assertTrue(first[0].link.contextual)
+        assertFalse(first[1].link.isAmbiguous)
+
+        // Explicit file overrides defaultFile for following line refs, and heading restores defaultFile.
+        val override = collector.scanSegment("other/Helper.kt at lines 5-7", inBackticks = false, allowContextualLines = true)
+        assertEquals(listOf("other/Helper.kt", "other/Helper.kt"), override.map { it.link.primaryPath })
+        assertEquals(5..7, override[1].link.lines)
+
+        collector.context.onHeading()
+        val afterHeading = collector.scanSegment("Also L30", inBackticks = false, allowContextualLines = true)
+        assertEquals("src/sub/Alpha.kt", afterHeading.single().link.primaryPath)
+        assertEquals(30..30, afterHeading.single().link.lines)
+    }
+
+    @Test fun `withExtraFiles adds missing paths while preserving existing index`() {
+        val base = index(files = listOf("src/Existing.kt"))
+        assertTrue(base.hasExactFile("src/Existing.kt"))
+        assertFalse(base.hasExactFile("src/Deleted.kt"))
+        assertSame(base, base.withExtraFiles(listOf("src/Existing.kt")))
+
+        val extended = base.withExtraFiles(listOf("src/Existing.kt", "./src/Deleted.kt"))
+        assertTrue(extended.hasExactFile("src/Existing.kt"))
+        assertTrue(extended.hasExactFile("src/Deleted.kt"))
+        assertTrue("src/Deleted.kt" in extended.reviewScopeFiles)
+        val rendered = renderMarkdownReport("Removed `src/Deleted.kt:L4` and kept `src/Existing.kt`.", extended)
+        assertEquals(listOf("src/Deleted.kt", "src/Existing.kt"), rendered.links.map { it.primaryPath })
+        assertEquals(4..4, rendered.links[0].lines)
     }
 }

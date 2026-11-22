@@ -20,6 +20,7 @@ import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.context.ContextPick
 import dev.insight.context.showContextPicker
 import dev.insight.links.ProjectSymbols
 import dev.insight.links.SymbolCandidate
@@ -72,43 +73,61 @@ internal data class LinkedText(val rendered: RenderedReport, val index: ReportPr
  */
 @Service(Service.Level.PROJECT)
 internal class LinkedTextLinks(private val project: Project, private val scope: CoroutineScope) {
+    private data class RenderKey(
+        val markdown: String,
+        val colors: ReportThemeColors,
+        val defaultFile: String?,
+        val missingExtras: List<String>,
+    )
+
     private var index = ReportProjectIndex()
     private var symbols: SymbolNames = SymbolNames.NONE
     private var indexedAt = -1L
     private var checkedAt = 0L
     private var job: Job? = null
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
-    private val cache = object : LinkedHashMap<Pair<String, ReportThemeColors>, LinkedText>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, ReportThemeColors>, LinkedText>) = size > MAX_CACHED
+    private val cache = object : LinkedHashMap<RenderKey, LinkedText>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RenderKey, LinkedText>) = size > MAX_CACHED
     }
     /** Renderings under way, shared by panes showing the same text; all against the current [index] and [symbols]. */
-    private val pending = HashMap<Pair<String, ReportThemeColors>, Deferred<LinkedText>>()
+    private val pending = HashMap<RenderKey, Deferred<LinkedText>>()
     private var watching: MessageBusConnection? = null
     private val refreshQueued = AtomicBoolean()
     @Volatile private var changedAt = 0L
 
+    private fun missingExtras(extraFiles: List<String>): List<String> {
+        if (extraFiles.isEmpty()) return emptyList()
+        return extraFiles.asSequence()
+            .map { it.trim().replace('\\', '/').removePrefix("./").trim('/') }
+            .filter { it.isNotEmpty() && !index.hasExactFile(it) }
+            .distinct()
+            .sorted()
+            .toList()
+    }
+
     /** [markdown] as it links now if it was rendered already, else null; on the EDT. */
-    fun cached(markdown: String): LinkedText? {
+    fun cached(markdown: String, defaultFile: String? = null, extraFiles: List<String> = emptyList()): LinkedText? {
         refresh()
-        return cache[markdown to reportThemeColors()]
+        return cache[RenderKey(markdown, reportThemeColors(), defaultFile, missingExtras(extraFiles))]
     }
 
     /** [markdown] rendered with links; call on the EDT, the rendering itself runs in the background. */
-    suspend fun render(markdown: String): LinkedText {
-        val key = markdown to reportThemeColors()
+    suspend fun render(markdown: String, defaultFile: String? = null, extraFiles: List<String> = emptyList()): LinkedText {
+        val key = RenderKey(markdown, reportThemeColors(), defaultFile, missingExtras(extraFiles))
         cache[key]?.let { return it }
         return pending.getOrPut(key) { startRendering(key) }.await()
     }
 
     /** Renders [key]'s text in the background, caching it unless the links changed meanwhile. EDT. */
-    private fun startRendering(key: Pair<String, ReportThemeColors>): Deferred<LinkedText> {
-        val linkedIndex = index
+    private fun startRendering(key: RenderKey): Deferred<LinkedText> {
+        val linkedIndex = if (key.missingExtras.isEmpty()) index else index.withExtraFiles(key.missingExtras)
         val names = symbols
         lateinit var rendering: Deferred<LinkedText>
         rendering = scope.async(Dispatchers.EDT, start = CoroutineStart.LAZY) {
             try {
                 val html = withContext(Dispatchers.Default) {
-                    renderMarkdownReport(key.first, linkedIndex, key.second, mapSource = false, symbols = names, embedded = true)
+                    renderMarkdownReport(key.markdown, linkedIndex, key.colors, mapSource = false, symbols = names,
+                        embedded = true, defaultFile = key.defaultFile)
                 }
                 LinkedText(html, linkedIndex).also { if (pending[key] === rendering) cache[key] = it }
             } finally {
@@ -226,6 +245,30 @@ internal interface LinkedTextNavigator {
     fun openDeclaration(declaration: SymbolCandidate, mention: SymbolMention)
 }
 
+/** Extended navigator adding default file resolution, ambiguous candidate preferences, tooltips, and context picks. */
+internal interface ContextualLinkedTextNavigator : LinkedTextNavigator {
+    /** Project-relative path assumed when the text mentions a bare line reference (`L42`, `line 10`) before naming a file. */
+    fun defaultFile(): String? = null
+
+    /** Project-relative paths (e.g. deleted diff files or synthetic test paths) to index even when absent from disk. */
+    fun extraFiles(): List<String> = emptyList()
+
+    /** Picks the matching path from ambiguous [candidates] without asking when the view's context makes it unambiguous. */
+    fun preferredFile(candidates: List<String>): String? = null
+
+    /** Orders ambiguous [candidates] most relevant first for the chooser popup. */
+    fun rankFiles(candidates: List<String>): List<String> = candidates
+
+    /** The declaration among [candidates] the view already shows, with [hints] from the surrounding text. */
+    fun shown(candidates: List<SymbolCandidate>, hints: SymbolHints): SymbolCandidate? = shown(candidates)
+
+    /** Custom tooltip for [link] in this view, or null for the default. */
+    fun linkTooltip(link: ReportLink): String? = null
+
+    /** Context pick for right-clicking / Shift+clicking [link] resolved to [path], or null for the default. */
+    fun contextPick(link: ReportLink, path: String, absolutePath: String?): ContextPick? = null
+}
+
 /**
  * Read-only Markdown text whose file paths, line references, URLs and code symbols link the way they do in the report viewer:
  * a click opens the file or declaration in the editor (listing the candidates when several match), Shift+click or right-click
@@ -242,6 +285,13 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
     var onRendered: (() -> Unit)? = null
     /** Where links lead; null opens them in the editor. */
     var navigator: LinkedTextNavigator? = null
+        set(value) {
+            if (field === value) return
+            field = value
+            if (shown != null || rendering?.isActive == true) showMarkdown(notify = true)
+        }
+    private val contextNavigator: ContextualLinkedTextNavigator?
+        get() = navigator as? ContextualLinkedTextNavigator
 
     /** The Markdown shown. */
     var markdown: String = ""
@@ -250,6 +300,16 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
             field = value
             showMarkdown(notify = false)
         }
+
+    /** The links resolved in the currently shown rendering. */
+    internal val renderedLinks: List<ReportLink> get() = shown?.rendered?.links.orEmpty()
+
+    /** Triggers [link] activation programmatically (primarily for headless tests). */
+    internal fun activateLink(link: ReportLink, shift: Boolean = false, inEditor: Boolean = false) =
+        activate(link, Point(width / 2, height / 2), shift, inEditor)
+
+    /** Re-evaluates links against the current navigator context. */
+    fun refreshLinks() = showMarkdown(notify = true)
 
     init {
         editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
@@ -266,7 +326,8 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
             val link = parseReportLinkHref(event.description)?.let { shown?.rendered?.links?.getOrNull(it) } ?: return@addHyperlinkListener
             val mouse = event.inputEvent as? MouseEvent
             when (event.eventType) {
-                HyperlinkEvent.EventType.ENTERED -> toolTipText = linkTooltip(link, inReviewScope = false, isDiffReview = false)
+                HyperlinkEvent.EventType.ENTERED ->
+                    toolTipText = contextNavigator?.linkTooltip(link) ?: linkTooltip(link, inReviewScope = false, isDiffReview = false)
                 HyperlinkEvent.EventType.EXITED -> toolTipText = null
                 HyperlinkEvent.EventType.ACTIVATED -> activate(link, mouse?.point ?: Point(width / 2, height / 2), mouse?.isShiftDown == true,
                     inEditor = mouse != null && (mouse.isControlDown || mouse.isMetaDown))
@@ -303,13 +364,17 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
      * does, shows each finished rendering on the way to the latest.
      */
     private fun showMarkdown(notify: Boolean) {
-        links.cached(markdown)?.let { if (draw(it) && notify) onRendered?.invoke(); return }
+        val defaultFile = contextNavigator?.defaultFile()
+        val extraFiles = contextNavigator?.extraFiles().orEmpty()
+        links.cached(markdown, defaultFile, extraFiles)?.let { if (draw(it) && notify) onRendered?.invoke(); return }
         if (rendering?.isActive == true) return
         rendering = scope.launch(Dispatchers.EDT) {
             while (true) {
                 val wanted = markdown
+                val wantedDefault = contextNavigator?.defaultFile()
+                val wantedExtras = contextNavigator?.extraFiles().orEmpty()
                 val next = try {
-                    links.render(wanted)
+                    links.render(wanted, wantedDefault, wantedExtras)
                 } catch (e: CancellationException) {
                     // A rendering the links outdated was dropped; render again unless this pane stopped.
                     currentCoroutineContext().ensureActive()
@@ -320,7 +385,10 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
                     break
                 }
                 if (draw(next)) onRendered?.invoke()
-                if (wanted == markdown && links.cached(wanted) === next) break
+                val latestDefault = contextNavigator?.defaultFile()
+                val latestExtras = contextNavigator?.extraFiles().orEmpty()
+                if (wanted == markdown && wantedDefault == latestDefault && wantedExtras == latestExtras &&
+                    links.cached(wanted, wantedDefault, wantedExtras) === next) break
             }
         }
     }
@@ -347,10 +415,21 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
                 if (navigator != null && mention != null) navigator.openDeclaration(declaration, mention)
                 else openReportFile(project, declaration.path, declaration.line..declaration.line, declaration.column, declaration.absolutePath)
             }
-            else -> choosePath(link, point, "Open matching file…") { path ->
-                val absolute = index.absolutePathFor(path)
-                if (navigator != null) navigator.openFile(path, absolute, link.lines, link.column)
-                else openReportFile(project, path, link.lines, link.column, absolutePath = absolute)
+            else -> {
+                val ctx = navigator as? ContextualLinkedTextNavigator
+                val preferred = if (link.isAmbiguous) ctx?.preferredFile(link.candidates) else null
+                if (preferred != null) {
+                    val absolute = index.absolutePathFor(preferred)
+                    if (navigator != null) navigator.openFile(preferred, absolute, link.lines, link.column)
+                    else openReportFile(project, preferred, link.lines, link.column, absolutePath = absolute)
+                } else {
+                    val candidates = ctx?.rankFiles(link.candidates) ?: link.candidates
+                    choosePath(candidates, point, "Open matching file…") { path ->
+                        val absolute = index.absolutePathFor(path)
+                        if (navigator != null) navigator.openFile(path, absolute, link.lines, link.column)
+                        else openReportFile(project, path, link.lines, link.column, absolutePath = absolute)
+                    }
+                }
             }
         }
     }
@@ -366,11 +445,14 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
             }
             ReportTargetKind.FILE, ReportTargetKind.DIRECTORY -> {
                 val title = if (link.kind == ReportTargetKind.DIRECTORY) "Choose matching directory…" else "Choose matching file…"
-                choosePath(link, point, title) { path ->
+                val ctx = contextNavigator
+                val candidates = if (link.kind == ReportTargetKind.FILE) ctx?.rankFiles(link.candidates) ?: link.candidates else link.candidates
+                choosePath(candidates, point, title) { path ->
                     val absolute = if (link.kind == ReportTargetKind.FILE) index.absolutePathFor(path) else index.absoluteDirPathFor(path)
-                    val pick = reportLinkContextPick(project, link.kind, path, link.lines, reviewFiles = emptyList(), summaryTree = null,
-                        reviewDestinations = emptyMap(), summaryActions = null, openOnWall = null, openOnCanvas = null,
-                        absolutePath = absolute) ?: return@choosePath
+                    val pick = ctx?.contextPick(link, path, absolute)
+                        ?: reportLinkContextPick(project, link.kind, path, link.lines, reviewFiles = emptyList(), summaryTree = null,
+                            reviewDestinations = emptyMap(), summaryActions = null, openOnWall = null, openOnCanvas = null,
+                            absolutePath = absolute) ?: return@choosePath
                     showContextPicker(project, pick, this, RelativePoint(this, point))
                 }
             }
@@ -386,22 +468,24 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
         val mention = link.symbol ?: return
         val index = shown?.index
         val hints = link.symbolHints ?: SymbolHints()
+        val effectiveHints = navigator?.let { hints.copy(files = (hints.files + it.contextFiles()).distinct()) } ?: hints
+        val ctx = navigator as? ContextualLinkedTextNavigator
         SymbolLinkNavigator.follow(project, scope, mention,
-            navigator?.let { hints.copy(files = (it.contextFiles() + hints.files).distinct()) } ?: hints,
+            effectiveHints,
             at = { RelativePoint(this, point) },
             notice = { StatusBar.Info.set(it, project) },
             relativePath = { index?.pathForAbsolute(it.absolutePath) ?: it.path },
-            preferred = { navigator?.shown(it) },
+            preferred = { ctx?.shown(it, hints) ?: navigator?.shown(it) },
             open = open)
     }
 
-    private fun choosePath(link: ReportLink, point: Point, title: String, onChosen: (String) -> Unit) {
-        if (!link.isAmbiguous) {
-            link.primaryPath?.let(onChosen)
+    private fun choosePath(candidates: List<String>, point: Point, title: String, onChosen: (String) -> Unit) {
+        if (candidates.size <= 1) {
+            candidates.firstOrNull()?.let(onChosen)
             return
         }
         JBPopupFactory.getInstance()
-            .createPopupChooserBuilder(link.candidates)
+            .createPopupChooserBuilder(candidates)
             .setTitle(title)
             .setItemChosenCallback(onChosen)
             .createPopup()

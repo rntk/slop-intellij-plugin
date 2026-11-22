@@ -16,14 +16,19 @@ import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatRole
 import dev.insight.chat.ChatBackendFactory
 import dev.insight.chat.ChatSession
+import dev.insight.review.ui.LinkedTextNavigator
+import dev.insight.review.ui.LinkedTextPane
 import kotlinx.coroutines.CoroutineScope
 import java.awt.BorderLayout
+import java.awt.Component
+import java.awt.Container
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GridLayout
+import java.awt.LayoutManager
 import java.awt.RenderingHints
 import java.awt.Rectangle
 import java.awt.event.ActionEvent
@@ -34,7 +39,6 @@ import java.awt.event.MouseEvent
 import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.AbstractAction
-import javax.swing.BoxLayout
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.Icon
@@ -50,8 +54,8 @@ import javax.swing.SwingUtilities
  * whenever its block is. The client's [backend] decides what a chat knows and can read. EDT.
  */
 internal class WallChats(
-    private val project: Project,
-    private val scope: CoroutineScope,
+    internal val project: Project,
+    internal val scope: CoroutineScope,
     /** A backend for one turn of a chat about the file at path. */
     private val backend: (String) -> ChatBackend,
     /** The notice a new chat about the file at path opens with. */
@@ -170,6 +174,8 @@ internal class WallChatPanel(
     private val onClose: () -> Unit,
     /** Brings the window in front of the blocks it overlaps. */
     private val onRaise: () -> Unit = {},
+    /** Where file and symbol links in messages lead on the wall. */
+    private val navigator: LinkedTextNavigator? = null,
 ) : JPanel(BorderLayout(0, JBUI.scale(6))), Disposable {
     private val history = ComboBox<ChatSession>().apply {
         name = "$id-chat-history"
@@ -182,7 +188,7 @@ internal class WallChatPanel(
         minimumSize = Dimension(0, preferredSize.height)
         accessibleContext.accessibleName = "Chat history"
     }
-    private val transcript = WidthTracking().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false }
+    private val transcript = WidthTracking().apply { layout = VerticalStackLayout(JBUI.scale(4)); isOpaque = false }
     private val scroll = JBScrollPane(transcript).apply {
         border = JBUI.Borders.customLine(JBColor.border(), 1, 0, 1, 0)
         horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
@@ -320,16 +326,22 @@ internal class WallChatPanel(
                     toolTipText = message.toolCall?.let { "${it.name}(${it.arguments})" }
                 }
                 ChatRole.NOTICE -> text(message.text).apply { foreground = UIUtil.getContextHelpForeground() }
-                else -> JPanel(BorderLayout(0, JBUI.scale(2))).apply {
+                else -> JPanel(VerticalStackLayout(JBUI.scale(2))).apply {
                     isOpaque = false
                     border = JBUI.Borders.empty(4)
                     add(JBLabel(if (message.role == ChatRole.USER) "You" else "Insight").apply {
                         font = font.deriveFont(Font.BOLD)
                         if (message.role == ChatRole.USER) foreground = USER
-                    }, BorderLayout.NORTH)
-                    add(text(message.text), BorderLayout.CENTER)
+                    })
+                    add(LinkedTextPane(chats.project, chats.scope).apply {
+                        border = JBUI.Borders.empty(2, 4)
+                        navigator = this@WallChatPanel.navigator
+                        onRendered = { onMessageRendered() }
+                        addMouseListener(object : MouseAdapter() { override fun mousePressed(e: MouseEvent) = onRaise() })
+                        markdown = message.text
+                    })
                 }
-            }.apply { alignmentX = LEFT_ALIGNMENT })
+            })
         }
         val busy = active.busy
         send.isEnabled = !busy
@@ -341,6 +353,27 @@ internal class WallChatPanel(
         transcript.revalidate()
         transcript.repaint()
         SwingUtilities.invokeLater { scroll.verticalScrollBar.let { it.value = it.maximum } }
+    }
+
+    /** Re-evaluates resolved links across shown messages, e.g. when cards are added to or removed from the wall. */
+    internal fun refreshLinks() {
+        fun walk(container: Container) {
+            container.components.forEach { child ->
+                when (child) {
+                    is LinkedTextPane -> child.refreshLinks()
+                    is Container -> walk(child)
+                }
+            }
+        }
+        walk(transcript)
+    }
+
+    private fun onMessageRendered() {
+        val bar = scroll.verticalScrollBar
+        val atBottom = bar.value + bar.visibleAmount >= bar.maximum - JBUI.scale(24)
+        transcript.revalidate()
+        transcript.repaint()
+        if (atBottom) SwingUtilities.invokeLater { bar.value = bar.maximum }
     }
 
     private fun text(value: String) = JBTextArea(value).apply {
@@ -355,6 +388,41 @@ internal class WallChatPanel(
     override fun dispose() {
         subscription.dispose()
         transcript.removeAll()
+    }
+
+    /** Stacks visible children top-to-bottom at the container's inner width so wrapping text panes measure accurately. */
+    private class VerticalStackLayout(private val gap: Int = 0) : LayoutManager {
+        override fun addLayoutComponent(name: String?, comp: Component?) = Unit
+        override fun removeLayoutComponent(comp: Component?) = Unit
+        override fun minimumLayoutSize(parent: Container): Dimension = preferredLayoutSize(parent)
+
+        override fun preferredLayoutSize(parent: Container): Dimension {
+            val insets = parent.insets
+            val visible = parent.components.filter { it.isVisible }
+            val width = if (parent.width > 0) parent.width - insets.left - insets.right
+            else visible.maxOfOrNull { it.preferredSize.width } ?: 0
+            var height = 0
+            visible.forEachIndexed { index, child ->
+                height += measure(child, width) + if (index > 0) gap else 0
+            }
+            return Dimension(width + insets.left + insets.right, height + insets.top + insets.bottom)
+        }
+
+        override fun layoutContainer(parent: Container) {
+            val insets = parent.insets
+            val width = maxOf(parent.width - insets.left - insets.right, 0)
+            var y = insets.top
+            parent.components.filter { it.isVisible }.forEach { child ->
+                val height = measure(child, width)
+                child.setBounds(insets.left, y, width, height)
+                y += height + gap
+            }
+        }
+
+        private fun measure(child: Component, width: Int): Int {
+            if (width > 0 && child.width != width) child.setSize(width, maxOf(child.height, 1))
+            return child.preferredSize.height
+        }
     }
 
     /** Lays out its rows at the viewport width, so wrapped replies never scroll sideways. */

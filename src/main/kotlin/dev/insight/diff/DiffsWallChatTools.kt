@@ -186,6 +186,30 @@ internal fun wallChatPrompt(file: ReviewFile, summary: String?, comparison: Stri
 }
 
 /**
+ * The system prompt of a Diffs wall chat about an unchanged project file [path] added to the wall from a link:
+ * its numbered source lines are pinned up to [sourceChars] characters, and the change and project are read through tools.
+ */
+internal fun wallAddedSourceChatPrompt(
+    path: String,
+    text: String,
+    comparison: String,
+    sourceChars: Int = WALL_CHAT_PATCH_CHARS,
+): String {
+    val normalized = text.replace("\r\n", "\n").removeSuffix("\n")
+    val end = patchPageEnd(normalized, 0, sourceChars)
+    val pinned = normalized.substring(0, end)
+    return buildString {
+        append(wallChatPolicy("diff-wall-chat-system.md"))
+        append("\n\nFocused file (added to wall from project; not in this diff):\n")
+        append("path: ").append(path).append('\n')
+        if (comparison.isNotBlank()) append("comparison: ").append(comparison).append('\n')
+        append("\nIts source, with line numbers before \"|\":\n")
+        append(if (pinned.isEmpty()) "(empty file)" else numberedRows(pinned, 1))
+        if (end < normalized.length) append("\n\n[The source continues: call read_file with path $path to read on.]")
+    }
+}
+
+/**
  * The system prompt of the Diffs wall's own chat about all its [files]: the chat's opening and shared policy, the files' list,
  * then each patch in wall order, numbered as read_diff_files numbers it. Patches are pinned whole while [patchChars] lasts; the
  * one that runs past it is cut at a line and says where to read on, and those after it are listed for the tools to read.

@@ -9,6 +9,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.diagnostic.Logger
@@ -20,14 +21,29 @@ import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.project.Project
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolHints
+import dev.insight.links.SymbolMention
+import dev.insight.review.ReportLink
+import dev.insight.review.ui.ContextualLinkedTextNavigator
+import dev.insight.review.ui.LinkedTextNavigator
+import dev.insight.review.ui.LinkedTextPane
 import dev.insight.review.ui.ReviewTab
+import dev.insight.review.ui.openReportFile
+import dev.insight.ui.pixelBorder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -63,11 +79,13 @@ import javax.swing.JViewport
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 import javax.swing.KeyStroke
+import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.ToolTipManager
 import javax.swing.event.ChangeListener
 import javax.swing.text.JTextComponent
+import javax.swing.text.View
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.pow
@@ -102,6 +120,35 @@ internal class WallView(
     /** Multiplier for the shared card width at 100% zoom. */
     private val cardWidthScale: Double = 1.0,
 ) : Disposable {
+    private var project: Project? = null
+    private var externalScope: CoroutineScope? = null
+    private var ownedScope: CoroutineScope? = null
+    private val textScope: CoroutineScope? get() = externalScope ?: ownedScope
+    private var linkHost: WallLinkHost? = null
+    private var canSummarize: ((path: String) -> Boolean)? = null
+    private var onRemoveBlock: ((path: String) -> Unit)? = null
+
+    internal constructor(
+        labels: WallLabels,
+        openLine: (path: String, line: WallLine?) -> Unit,
+        showAll: () -> Unit,
+        chats: WallChats?,
+        highlighter: WallHighlighter?,
+        openOnCanvas: ((path: String) -> Unit)?,
+        onContext: ((block: WallBlock, line: WallLine?, point: RelativePoint) -> Unit)?,
+        summarize: ((path: String) -> Boolean)?,
+        cardWidthScale: Double,
+        links: WallLinkSupport,
+    ) : this(labels, openLine, showAll, chats, highlighter, openOnCanvas, onContext, summarize, cardWidthScale) {
+        project = links.project
+        externalScope = links.coroutineScope
+        linkHost = links.linkHost
+        canSummarize = links.canSummarize
+        onRemoveBlock = links.onRemoveBlock
+        ownedScope = if (links.project != null && links.coroutineScope == null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        } else null
+    }
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
         font = JBFont.small()
@@ -161,9 +208,18 @@ internal class WallView(
     private val summarized = mutableSetOf<String>()
     /** The first summary row shown in each block that shows its summary. */
     private val summaryScrolls = mutableMapOf<String, Int>()
+    /** Logical (100% zoom) vertical scroll offset of each rich Markdown summary, by path. */
+    private val summaryScrollOffsets = mutableMapOf<String, Double>()
     /** Where each block sits at 100%, by path. */
     private val positions = mutableMapOf<String, Point>()
     private var views: List<BlockView> = emptyList()
+    /** Card width locked once blocks are arranged so newly added wider cards never overlap existing columns. */
+    private var lockedCardWidth: Int? = null
+    /** Path of the card whose text link is currently adding a new card, so the new card lands beside it. */
+    private var pendingAnchorPath: String? = null
+    /** Path and 0-based row indices currently highlighted after following a line/symbol link. */
+    private var highlightedTarget: Pair<String, Set<Int>>? = null
+    private var highlightClearTimer: Timer? = null
     /** Compact blocks by path, with the height (at 100%) each is capped at. */
     private val compact = mutableMapOf<String, Int>()
     /** Blocks the reader turned compact off for, which a pack must not make compact again. */
@@ -235,6 +291,10 @@ internal class WallView(
     /** The blocks in the scope's file order. */
     internal val blocks: List<BlockView> get() = views
 
+    /** The 0-based row indices currently emphasized for [path] after navigating to a link target. */
+    internal fun highlightedRows(path: String): Set<Int> =
+        if (highlightedTarget?.first == path) highlightedTarget!!.second else emptySet()
+
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: WallContent) {
         label.text = labels.header(content.scope.title, content.blocks.size)
@@ -245,6 +305,7 @@ internal class WallView(
                 summaries = content.summaries
                 summarizing = content.summarizing
                 forgetMissingSummaries()
+                views.forEach { it.syncSummary() }
                 if (mode == WallMode.SKIM) {
                     // Shown summaries take room in the skim column, so new text restacks it.
                     packedFor = null
@@ -258,13 +319,18 @@ internal class WallView(
         val wasEmpty = shown.isEmpty()
         if (scopeChanged) {
             stopAnimation()
+            stopHighlightTimer()
+            highlightedTarget = null
             positions.clear()
+            lockedCardWidth = null
+            pendingAnchorPath = null
             compact.clear()
             expanded.clear()
             scrolls.clear()
             horizontalScrolls.clear()
             summarized.clear()
             summaryScrolls.clear()
+            summaryScrollOffsets.clear()
             folded.clear()
             modeStates.clear()
             arranged = false
@@ -284,20 +350,56 @@ internal class WallView(
         summaries = content.summaries
         summarizing = content.summarizing
         forgetMissingSummaries()
-        folded.retainAll(content.blocks.map { it.path }.toSet())
+        val currentPaths = content.blocks.map { it.path }.toSet()
+        folded.retainAll(currentPaths)
+        positions.keys.retainAll(currentPaths)
+        compact.keys.retainAll(currentPaths)
+        expanded.retainAll(currentPaths)
+        scrolls.keys.retainAll(currentPaths)
+        horizontalScrolls.keys.retainAll(currentPaths)
+        summaryScrollOffsets.keys.retainAll(currentPaths)
+        if (highlightedTarget?.first !in currentPaths) {
+            highlightedTarget = null
+            stopHighlightTimer()
+        }
         buildViews()
+        views.forEach { it.syncSummary() }
         if (scopeChanged || wasEmpty || (activePath != null && activeBlock == null)) {
             activePath = null
             views.firstOrNull()?.let(::activate)
             firstStep = true
             if (activePath == null) overview = null
         }
-        // Files that join an arranged scope go below the others rather than reshuffling them.
-        if (arranged && mode == WallMode.CARDS) views.filter { it.block.path !in positions }.forEach { joined ->
-            val bottom = views.filter { it.block.path in positions }
-                .maxOfOrNull { positions.getValue(it.block.path).y + it.logical.height } ?: 0
-            positions[joined.block.path] = Point(gap, bottom + gap)
+        // Files that join an arranged scope open compact when tall and land beside their link or in the shortest column.
+        if (arranged && mode == WallMode.CARDS) {
+            val joined = views.filter { it.block.path !in positions }
+            if (joined.isNotEmpty()) {
+                available()?.let { avail ->
+                    val cap = wallCompactHeight(avail.height, zoom, views.first().metrics)
+                    joined.filter { it.block.path !in compact && it.block.path !in expanded }
+                        .filter { it.fullHeight > cap && wallDefaultCompact(it.fullHeight, avail.height, zoom) }
+                        .forEach { compact[it.block.path] = cap }
+                }
+                val existingRects = views.filter { it.block.path in positions }.map(::rect).toMutableList()
+                val avoidedRects = chatOpen.mapNotNull { chatPath ->
+                    val owner = views.firstOrNull { it.block.path == chatPath } ?: return@mapNotNull null
+                    val at = positions[chatPath] ?: return@mapNotNull null
+                    val chatWidthLogical = ((CHAT_TAB_WIDTH * zoom + wallChatWidth()) / zoom).roundToInt()
+                    val chatHeightLogical = (wallChatHeight((owner.logical.height * zoom).roundToInt()) / zoom).roundToInt()
+                    WallRect(at.x + owner.logical.width, at.y, chatWidthLogical, chatHeightLogical)
+                }
+                val sourceRect = pendingAnchorPath?.takeIf { it in positions }
+                    ?.let { p -> views.firstOrNull { it.block.path == p } }?.let(::rect)
+                joined.forEach { newView ->
+                    val size = newView.logical
+                    val at = wallNewCardPosition(sourceRect, existingRects, size.width, size.height, gap, avoidedRects)
+                    positions[newView.block.path] = at
+                    existingRects += WallRect(at.x, at.y, size.width, size.height)
+                }
+            }
         }
+        chatPanels.values.forEach { it.refreshLinks() }
+        canvasChatPanel?.refreshLinks()
         surface.revalidate()
         surface.repaint()
         requestHighlights()
@@ -310,8 +412,12 @@ internal class WallView(
     private fun buildViews() {
         val metrics = metrics()
         val blocks = if (mode == WallMode.SKIM) shown.map(::wallSkimBlock) else shown
-        val baseWidth = wallBlockWidth(blocks, metrics)
-        val width = if (mode == WallMode.CARDS) (baseWidth * cardWidthScale).roundToInt() else baseWidth
+        val width = if (mode == WallMode.CARDS && arranged && lockedCardWidth != null) {
+            lockedCardWidth!!
+        } else {
+            val baseWidth = wallBlockWidth(blocks, metrics)
+            if (mode == WallMode.CARDS) (baseWidth * cardWidthScale).roundToInt() else baseWidth
+        }
         surface.removeAll()
         views = blocks.map { BlockView(it, width, metrics) }
         views.forEach(surface::add)
@@ -333,7 +439,7 @@ internal class WallView(
         if (next == mode) return
         stopAnimation()
         val viewport = viewport()
-        modeStates[mode] = ModeState(zoom, zoomTouched, arranged, positions.toMap(), viewport?.viewPosition)
+        modeStates[mode] = ModeState(zoom, zoomTouched, arranged, lockedCardWidth, positions.toMap(), viewport?.viewPosition)
         overview = null
         firstStep = true
         mode = next
@@ -346,10 +452,12 @@ internal class WallView(
         if (restored != null) {
             positions.putAll(restored.positions)
             arranged = restored.arranged
+            lockedCardWidth = restored.lockedCardWidth
             zoomTouched = restored.zoomTouched
             setZoom(restored.zoom)
         } else {
             arranged = false
+            lockedCardWidth = null
             zoomTouched = false
             setZoom(1.0)
         }
@@ -358,6 +466,7 @@ internal class WallView(
         val path = activePath
         if (shown.isNotEmpty()) {
             buildViews()
+            views.forEach { it.syncSummary() }
             views.firstOrNull { it.block.path == path }?.let(::activate)
             requestHighlights()
         }
@@ -436,6 +545,7 @@ internal class WallView(
     private fun toggleFold(view: BlockView) {
         val path = view.block.path
         if (!folded.remove(path)) folded += path
+        view.syncSummary()
         packedFor = null
         surface.revalidate()
         surface.repaint()
@@ -450,6 +560,7 @@ internal class WallView(
     private fun toggleFoldAll() {
         val paths = views.map { it.block.path }
         if (folded.containsAll(paths)) folded.clear() else folded.addAll(paths)
+        views.forEach { it.syncSummary() }
         packedFor = null
         surface.revalidate()
         surface.repaint()
@@ -597,8 +708,10 @@ internal class WallView(
     private fun setZoom(value: Double) {
         // The skim column's width follows the zoom so it keeps filling the page.
         if (mode == WallMode.SKIM && value != zoom) packedFor = null
+        val changed = value != zoom
         zoom = value
         zoomLabel.text = "${(value * 100).roundToInt()}%"
+        if (changed) views.forEach { it.syncSummary() }
     }
 
     /** Where the surface starts in the scrolled view, below the label row. */
@@ -676,10 +789,12 @@ internal class WallView(
     private fun forgetMissingSummaries() {
         summarized.retainAll { it in summaries || it in summarizing }
         summaryScrolls.keys.retainAll(summarized)
+        summaryScrollOffsets.keys.retainAll(summarized)
     }
 
     /** Whether the file at [path] has a summary to show, or one the wall can ask for. */
-    private fun hasSummary(path: String): Boolean = path in summaries || path in summarizing || summarize != null
+    private fun hasSummary(path: String): Boolean =
+        path in summaries || path in summarizing || (summarize != null && (canSummarize?.invoke(path) ?: true))
 
     /**
      * Shows [view]'s summary in place of its rows, or its rows again; the block keeps its size. A file without a summary asks
@@ -690,11 +805,13 @@ internal class WallView(
         if (path in summarized) {
             summarized -= path
             summaryScrolls.remove(path)
-        } else if (path in summaries || path in summarizing || summarize?.invoke(path) == true) {
+            summaryScrollOffsets.remove(path)
+        } else if (path in summaries || path in summarizing || (canSummarize?.invoke(path) != false && summarize?.invoke(path) == true)) {
             summarized += path
             // The skim column shows the summary of a folded file above its rows, so it opens too.
             if (mode == WallMode.SKIM) folded -= path
         }
+        view.syncSummary()
         if (mode == WallMode.SKIM) {
             // There the summary adds rows above the diff rather than taking their place, so the column restacks.
             packedFor = null
@@ -703,10 +820,203 @@ internal class WallView(
         } else view.repaint()
     }
 
+    /** Context-aware link navigator for summaries and chats on this wall. */
+    internal fun textNavigator(sourcePath: String?, fromChat: Boolean = false): LinkedTextNavigator = object : ContextualLinkedTextNavigator {
+        override fun defaultFile(): String? = sourcePath
+
+        override fun extraFiles(): List<String> =
+            (views.map { it.block.path } + linkHost?.scopePaths().orEmpty() + linkHost?.previousPaths()?.keys.orEmpty()).distinct()
+
+        override fun contextFiles(): List<String> =
+            wallContextFiles(sourcePath, views.map { it.block.path }, linkHost?.scopePaths().orEmpty())
+
+        override fun preferredFile(candidates: List<String>): String? =
+            wallPreferredFile(candidates, sourcePath, views.map { it.block.path }.toSet(), linkHost?.scopePaths().orEmpty().toSet())
+
+        override fun rankFiles(candidates: List<String>): List<String> =
+            wallRankFiles(candidates, sourcePath, views.map { it.block.path }.toSet(), linkHost?.scopePaths().orEmpty().toSet())
+
+        override fun shown(candidates: List<SymbolCandidate>, hints: SymbolHints): SymbolCandidate? {
+            val mapped = candidates.map { candidate ->
+                val resolved = linkHost?.wallPathFor(candidate.path, candidate.absolutePath) ?: normalizeWallPath(candidate.path)
+                candidate.copy(path = resolved) to candidate
+            }
+            val explicit = if (hints.files.firstOrNull() == sourcePath) emptyList() else hints.files.filter { it != sourcePath }
+            val picked = wallPreferredSymbol(mapped.map { it.first }, sourcePath, views.map { it.block }, explicit) ?: return null
+            return mapped.firstOrNull { it.first === picked }?.second ?: picked
+        }
+
+        override fun linkTooltip(link: ReportLink): String {
+            val wallPaths = views.map { it.block.path }.toSet()
+            val scopePaths = linkHost?.scopePaths().orEmpty().toSet()
+            val preferred = if (link.isAmbiguous) preferredFile(link.candidates) else null
+            return wallLinkTooltip(link, wallPaths, scopePaths, linkHost?.isDiffWall == true, preferred)
+        }
+
+        override fun contextPick(link: ReportLink, path: String, absolutePath: String?) =
+            linkHost?.contextPick(link, path, absolutePath)
+
+        override fun openFile(path: String, absolutePath: String?, lines: IntRange?, column: Int?) =
+            followLink(sourcePath, path, absolutePath, lines, column, fromChat)
+
+        override fun openDeclaration(declaration: SymbolCandidate, mention: SymbolMention) =
+            followLink(sourcePath, declaration.path, declaration.absolutePath, declaration.line..declaration.line, declaration.column, fromChat)
+    }
+
+    /** Follows a link to [rawPath] at 1-based [lines], scrolling an existing card or adding a missing card first. */
+    internal fun followLink(
+        sourcePath: String?,
+        rawPath: String,
+        absolutePath: String?,
+        lines: IntRange?,
+        column: Int? = null,
+        fromChat: Boolean = false,
+    ) {
+        val resolved = linkHost?.wallPathFor(rawPath, absolutePath) ?: normalizeWallPath(rawPath)
+        when (val move = wallTextMove(resolved, lines, views.map { it.block }, linkHost?.previousPaths().orEmpty())) {
+            is WallTextMove.Scroll -> {
+                var row = move.row
+                if (lines != null && row?.exact != true && shown.firstOrNull { it.path == move.path }?.more?.isNotEmpty() == true) {
+                    if (linkHost?.ensureLineLoaded(move.path, lines.first) == true) {
+                        views.firstOrNull { it.block.path == move.path }?.let { updated ->
+                            row = wallTargetRow(updated.block.lines, lines)
+                        }
+                    }
+                }
+                revealBlock(move.path, row, focusSurface = !fromChat && sourcePath != null)
+            }
+            is WallTextMove.AddAndScroll -> {
+                if (mode == WallMode.CARDS && !arranged && views.isNotEmpty()) {
+                    ensureLayout()
+                    arranged = true
+                    lockedCardWidth = views.first().blockWidth
+                }
+                pendingAnchorPath = sourcePath
+                val addedPath = try {
+                    linkHost?.ensureCard(resolved, absolutePath, lines)
+                } finally {
+                    pendingAnchorPath = null
+                }
+                if (addedPath == null) {
+                    project?.let { openReportFile(it, rawPath, lines, column, absolutePath) }
+                    return
+                }
+                val view = views.firstOrNull { it.block.path == addedPath } ?: return
+                val row = wallTargetRow(view.block.lines, lines)
+                revealBlock(addedPath, row, focusSurface = !fromChat && sourcePath != null)
+            }
+        }
+    }
+
+    /** Brings card [path] into view, activates it, unfolds or reveals its body, and scrolls/highlights [rowTarget]. */
+    internal fun revealBlock(path: String, rowTarget: WallRowTarget?, focusSurface: Boolean = true) {
+        val view = views.firstOrNull { it.block.path == path } ?: return
+        var relayout = false
+        if (mode == WallMode.SKIM && path in folded) {
+            folded -= path
+            view.syncSummary()
+            relayout = true
+        }
+        if (mode == WallMode.CARDS && rowTarget != null && path in summarized) {
+            summarized -= path
+            summaryScrolls.remove(path)
+            summaryScrollOffsets.remove(path)
+            view.syncSummary()
+        }
+        activate(view)
+        val rowsToHighlight = rowTarget?.highlightedRows.orEmpty()
+        val previousHighlighted = highlightedTarget?.first
+        if (rowsToHighlight.isNotEmpty()) {
+            highlightedTarget = path to rowsToHighlight
+            scheduleHighlightClear()
+        } else {
+            highlightedTarget = null
+            stopHighlightTimer()
+        }
+        previousHighlighted?.takeIf { it != path }?.let { oldPath ->
+            views.firstOrNull { it.block.path == oldPath }?.repaint()
+        }
+        view.repaint()
+        if (relayout) packedFor = null
+        surface.revalidate()
+        surface.doLayout()
+        (scrollPane() ?: viewport())?.validate()
+
+        if (mode == WallMode.CARDS) {
+            if (rowTarget != null && view.isCompact) {
+                val cap = view.capHeight
+                if (cap != null) {
+                    val bodyHeight = cap - view.metrics.headerHeight - 2 * view.metrics.padding
+                    val targetY = rowTarget.rowIndex * view.metrics.lineHeight
+                    val desired = (targetY - bodyHeight / 2 + view.metrics.lineHeight / 2).coerceAtLeast(0)
+                    scrolls[path] = wallBodyScroll(0, desired, view.fullHeight, cap)
+                    horizontalScrolls.remove(path)
+                    view.repaint()
+                }
+            }
+            val viewport = viewport()?.takeIf { it.width > 0 && it.height > 0 }
+            if (viewport != null) {
+                beginCardFocus(viewport)
+                val rect = rect(view)
+                val margin = gap
+                val effWidth = if (canvasChatOpen && viewport.width > wallChatWidth() + JBUI.scale(300)) {
+                    viewport.width - wallChatWidth() - JBUI.scale(16)
+                } else viewport.width
+                val targetZoom = wallFocusZoom(rect.width, effWidth, zoom, margin,
+                    blockHeight = rect.height.takeIf { view.isCompact }, viewportHeight = viewport.height)
+                val offset = surfaceOffset(viewport)
+                val pos = wallFocusPosition(rect, targetZoom, offset.x, offset.y, effWidth, viewport.height, margin)
+                if (rowTarget != null && !view.isCompact && rect.height * targetZoom > viewport.height) {
+                    val rowCenterY = offset.y + (rect.y + view.metrics.headerHeight + view.metrics.padding +
+                        rowTarget.rowIndex * view.metrics.lineHeight + view.metrics.lineHeight / 2.0) * targetZoom
+                    val minY = (offset.y + rect.y * targetZoom - margin).roundToInt().coerceAtLeast(0)
+                    pos.y = maxOf(minY, (rowCenterY - viewport.height / 2.0).roundToInt())
+                }
+                zoomTouched = true
+                animate(targetZoom, pos)
+            }
+        } else {
+            val viewport = viewport()?.takeIf { it.width > 0 && it.height > 0 }
+            if (viewport != null) {
+                val targetY = if (rowTarget != null) {
+                    val offset = surfaceOffset(viewport).y
+                    val headerPx = (view.metrics.headerHeight * zoom).roundToInt()
+                    val rowY = offset + view.y + view.rowTop(rowTarget.rowIndex)
+                    val leadIn = maxOf(headerPx + gap, viewport.height / 3)
+                    maxOf(skimTop(view), rowY - leadIn)
+                } else {
+                    skimTop(view)
+                }
+                animate(zoom, Point(viewport.viewPosition.x, targetY))
+            }
+        }
+        if (focusSurface) surface.requestFocusInWindow()
+    }
+
+    private fun scheduleHighlightClear() {
+        stopHighlightTimer()
+        if (ApplicationManager.getApplication()?.isUnitTestMode == true) return
+        highlightClearTimer = Timer(HIGHLIGHT_MS) {
+            val oldPath = highlightedTarget?.first
+            highlightedTarget = null
+            highlightClearTimer = null
+            oldPath?.let { p -> views.firstOrNull { it.block.path == p }?.repaint() }
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    private fun stopHighlightTimer() {
+        highlightClearTimer?.stop()
+        highlightClearTimer = null
+    }
+
     /** [path]'s chat window, made when first unfolded. */
     private fun chatPanel(path: String): WallChatPanel = chatPanels.getOrPut(path) {
         WallChatPanel(path, chats!!, labels.fileChat(path), labels.id, onClose = { if (path in chatOpen) toggleChat(path) },
-            onRaise = { chatPanels[path]?.let { if (it.parent === surface) surface.setComponentZOrder(it, 0); it.repaint() } })
+            onRaise = { chatPanels[path]?.let { if (it.parent === surface) surface.setComponentZOrder(it, 0); it.repaint() } },
+            navigator = textNavigator(path, fromChat = true))
     }
 
     /** Keeps unfolded chat windows in front of the blocks they reach over, the latest unfolded frontmost. */
@@ -719,6 +1029,7 @@ internal class WallView(
     private fun canvasChat(): WallChatPanel = canvasChatPanel ?: WallChatPanel(WALL_CANVAS_CHAT, chats!!, labels.canvasChat, labels.id,
         onClose = { if (canvasChatOpen) toggleCanvasChat() },
         onRaise = { canvasChatPanel?.let { if (it.parent === surface) surface.setComponentZOrder(it, 0); it.repaint() } },
+        navigator = textNavigator(null, fromChat = true),
     ).apply { name = "${labels.id}-canvas-chat" }.also { canvasChatPanel = it }
 
     /**
@@ -823,6 +1134,7 @@ internal class WallView(
         disposed = true
         schemeConnection?.disconnect()
         stopAnimation()
+        stopHighlightTimer()
         chatSubscription?.dispose()
         chatPanels.values.forEach(Disposer::dispose)
         chatPanels.clear()
@@ -830,6 +1142,8 @@ internal class WallView(
         canvasChatPanel?.let(Disposer::dispose)
         canvasChatPanel = null
         canvasChatOpen = false
+        surface.removeAll()
+        ownedScope?.cancel()
         watch(null)
     }
 
@@ -837,8 +1151,8 @@ internal class WallView(
         val previous = activeBlock
         activePath = view.block.path
         surface.setComponentZOrder(view, 0)
-        // Skim chat windows lie over their blocks and must stay in front of them.
-        if (mode == WallMode.SKIM) raiseChats()
+        // Open chat windows stay in front of blocks.
+        if (mode == WallMode.SKIM || chatOpen.isNotEmpty() || canvasChatOpen) raiseChats()
         previous?.repaint()
         view.repaint()
     }
@@ -982,7 +1296,14 @@ internal class WallView(
     }
 
     /** Where a mode left the wall: its zoom, whether the reader set it or moved blocks, the blocks' places and the page's scroll. */
-    private class ModeState(val zoom: Double, val zoomTouched: Boolean, val arranged: Boolean, val positions: Map<String, Point>, val view: Point?)
+    private class ModeState(
+        val zoom: Double,
+        val zoomTouched: Boolean,
+        val arranged: Boolean,
+        val lockedCardWidth: Int?,
+        val positions: Map<String, Point>,
+        val view: Point?,
+    )
 
     /** One keyboard command of the wall, bound to its [strokes] while the surface has focus. */
     private class Key(val name: String, val strokes: List<KeyStroke>, val enabled: () -> Boolean = { true }, val run: () -> Unit)
@@ -1117,10 +1438,11 @@ internal class WallView(
 
         private fun repaintActive() { views.firstOrNull { it.block.path == activePath }?.repaint() }
 
-        /** Whether the keyboard is in one of the surface's text fields, such as a chat input, rather than on the wall. */
+        /** Whether the keyboard is in an editable field or a chat panel, rather than on the wall or its read-only summaries. */
         private fun typing(): Boolean {
             val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-            return owner is JTextComponent && SwingUtilities.isDescendingFrom(owner, this)
+            return owner is JTextComponent && SwingUtilities.isDescendingFrom(owner, this) &&
+                (owner.isEditable || SwingUtilities.getAncestorOfClass(WallChatPanel::class.java, owner) != null)
         }
 
         override fun doLayout() {
@@ -1130,6 +1452,7 @@ internal class WallView(
                 val at = positions[path] ?: Point(0, 0)
                 val size = view.preferredSize
                 view.setBounds((at.x * zoom).roundToInt(), (at.y * zoom).roundToInt(), size.width, size.height)
+                view.doLayout()
                 val tab = chatTabs[path] ?: return@forEach
                 tab.bounds = chatTabBounds(view.bounds)
                 if (mode == WallMode.CARDS) chatPanels[path]?.takeIf { path in chatOpen }?.let { panel ->
@@ -1196,14 +1519,25 @@ internal class WallView(
         private val skim: Boolean get() = mode == WallMode.SKIM
         /** The cap (at 100%) while the block is compact; the skim column never caps. */
         private val cap: Int? get() = if (skim) null else compact[block.path]?.takeIf { it < fullHeight }
+        internal val capHeight: Int? get() = cap
         internal val isCompact: Boolean get() = cap != null
         /** Whether the skim column shows the block as its header alone. */
         internal val isFolded: Boolean get() = skim && block.path in folded
         /** Whether the summary takes the rows' place, as on the cards; the skim column shows it above them instead. */
         private val replacesBody: Boolean get() = showsSummary && !skim
+        private var summaryPane: LinkedTextPane? = null
+        private var summaryScroll: JBScrollPane? = null
+        private var inlineSummaryHolder: InlineSummaryHolder? = null
+        internal val summaryTextPane: LinkedTextPane? get() = summaryPane
+        private fun isSketch(): Boolean = textFont().size2D * zoom.toFloat() < SKETCH_FONT_SIZE
+        private fun richSummaryAvailable(): Boolean = project != null && textScope != null && summary != null && !isSketch()
         /** The summary rows the skim column shows above the block's rows, and the height (at 100%) they take. */
-        private val inlineSummary: List<String> get() = if (skim && showsSummary) summaryRows() else emptyList()
-        private val lead: Int get() = inlineSummary.size.takeIf { it > 0 }?.let { it * metrics.lineHeight + metrics.padding } ?: 0
+        private val inlineSummary: List<String> get() = if (skim && showsSummary && !richSummaryAvailable()) summaryRows() else emptyList()
+        private val lead: Int get() = when {
+            !skim || !showsSummary -> 0
+            richSummaryAvailable() -> measureSummaryPaneLogicalHeight() + metrics.padding / 2
+            else -> inlineSummary.size.takeIf { it > 0 }?.let { it * metrics.lineHeight + metrics.padding } ?: 0
+        }
         /** The block's painted size at 100%. */
         val logical: Dimension get() = Dimension(blockWidth, when {
             isFolded -> metrics.headerHeight
@@ -1214,8 +1548,11 @@ internal class WallView(
         internal val active: Boolean get() = activePath == block.path
         private val offset: Int get() = if (isCompact && !replacesBody) scrolls[block.path] ?: 0 else 0
         /** Current body scroll at 100%, for both the diff/source and summary views. */
-        internal val bodyScroll: Point get() = if (replacesBody) Point(0, (summaryScrolls[block.path] ?: 0) * metrics.lineHeight)
-            else Point(horizontalScrolls[block.path] ?: 0, offset)
+        internal val bodyScroll: Point get() = when {
+            replacesBody && summaryScroll?.parent === this -> Point(0, (summaryScrollOffsets[block.path] ?: 0.0).roundToInt())
+            replacesBody -> Point(0, (summaryScrolls[block.path] ?: 0) * metrics.lineHeight)
+            else -> Point(horizontalScrolls[block.path] ?: 0, offset)
+        }
         /** Where the header paints from the block's top: under the viewport's top edge while the skim column scrolls past it. */
         internal val stickyTop: Int get() {
             if (!skim) return 0
@@ -1339,9 +1676,21 @@ internal class WallView(
             ToolTipManager.sharedInstance().registerComponent(this)
         }
 
-        /** Scrolls the body without moving the canvas or header. Summary offsets are measured in rows. */
+        /** Scrolls the body without moving the canvas or header. Summary offsets are measured in rows (or logical px for rich summaries). */
         internal fun scrollContent(dx: Int, dy: Int) {
-            if (replacesBody) {
+            if (replacesBody && summaryScroll?.parent === this) {
+                val scroller = summaryScroll!!
+                val pane = summaryPane!!
+                val viewHeight = scroller.viewport.height.coerceAtLeast(1)
+                val contentHeight = maxOf(pane.height, pane.preferredSize.height)
+                val maxPx = (contentHeight - viewHeight).coerceAtLeast(0)
+                val currentPx = scroller.viewport.viewPosition.y
+                val nextPx = (currentPx.toDouble() + dy.toDouble() * zoom).roundToInt()
+                    .let { if (dy > 0 && dy >= Int.MAX_VALUE / 4) maxPx else if (dy < 0 && dy <= -(Int.MAX_VALUE / 4)) 0 else it }
+                    .coerceIn(0, maxPx)
+                scroller.viewport.viewPosition = Point(0, nextPx)
+                summaryScrollOffsets[block.path] = nextPx / zoom
+            } else if (replacesBody) {
                 val rows = summaryRows()
                 val delta = if (dy == 0) 0 else (dy / metrics.lineHeight).let {
                     if (it == 0) (if (dy < 0) -1 else 1) else it
@@ -1359,8 +1708,17 @@ internal class WallView(
         private val longest: Int = (block.lines.maxOfOrNull { it.text.length } ?: 0) + gutter
         private val maxHorizontalScroll: Int get() = (longest * metrics.charWidth + 2 * metrics.padding - blockWidth).coerceAtLeast(0)
         val canScrollHorizontally: Boolean get() = !replacesBody && maxHorizontalScroll > 0
-        val canScrollVertically: Boolean get() = if (replacesBody)
-            summaryRows().size > wallBodyRows(logical.height, metrics) else cap != null
+        val canScrollVertically: Boolean
+            get() = when {
+                replacesBody && summaryScroll?.parent === this -> {
+                    val scroller = summaryScroll!!
+                    val pane = summaryPane!!
+                    scroller.verticalScrollBar.maximum > scroller.viewport.extentSize.height ||
+                        pane.preferredSize.height > scroller.viewport.height
+                }
+                replacesBody -> summaryRows().size > wallBodyRows(logical.height, metrics)
+                else -> cap != null
+            }
 
         private fun onToggle(point: Point) = toggle?.contains(point) == true
 
@@ -1383,8 +1741,11 @@ internal class WallView(
             else -> labels.compactTooltip
         }
 
-        /** The block's "..." menu: display switches and the context picker. */
-        private fun showMenu(at: Point) {
+        /** The 0-based row indices currently emphasized in this block after navigating to a link target. */
+        internal fun highlightedRows(): Set<Int> = highlightedRows(block.path)
+
+        /** The block's "..." menu: display switches, context picker, and remove action for added cards. */
+        internal fun buildMenu(): JPopupMenu {
             val menu = JPopupMenu().apply { name = "${labels.id}-menu:${block.path}" }
             fun item(text: String, tooltip: String?, enabled: Boolean, action: () -> Unit) {
                 menu.add(JMenuItem(text).apply {
@@ -1406,12 +1767,210 @@ internal class WallView(
             }
             if (onContext != null) {
                 item("Context…", "Explore this file in other views", true) {
-                    onContext.invoke(block, null, RelativePoint(this, at))
+                    onContext.invoke(block, null, RelativePoint(this, Point(width - 10, metrics.headerHeight / 2)))
                 }
             } else openOnCanvas?.let { open ->
                 item("Open on canvas", "Explore this file as source cards on a canvas session", true) { open(block.path) }
             }
-            menu.show(this, at.x, at.y)
+            onRemoveBlock?.takeIf { linkHost?.isAddedCard(block.path) == true }?.let { remove ->
+                item("Remove from wall", "Remove this added file from the wall", true) {
+                    remove(block.path)
+                }
+            }
+            return menu
+        }
+
+        private fun showMenu(at: Point) {
+            buildMenu().show(this, at.x, at.y)
+        }
+
+        /** Ensures [summaryPane] and its scroll/inline wrapper match the current mode, zoom, and summary visibility. */
+        internal fun syncSummary() {
+            val activeRich = showsSummary && !isFolded && richSummaryAvailable()
+            if (!activeRich) {
+                summaryScroll?.takeIf { it.parent === this }?.let(::remove)
+                inlineSummaryHolder?.takeIf { it.parent === this }?.let(::remove)
+                return
+            }
+            val pane = summaryPane ?: LinkedTextPane(project!!, textScope!!).apply {
+                name = "${labels.id}-summary:${block.path}"
+                navigator = textNavigator(block.path, fromChat = false)
+                onRendered = { onSummaryRendered() }
+                addMouseListener(object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        if (SwingUtilities.isLeftMouseButton(e)) {
+                            surface.requestFocusInWindow()
+                            activate(this@BlockView)
+                        } else if (SwingUtilities.isMiddleMouseButton(e)) {
+                            this@BlockView.dispatchEvent(SwingUtilities.convertMouseEvent(this@apply, e, this@BlockView))
+                        }
+                        if (e.isPopupTrigger && !e.isConsumed) {
+                            surface.requestFocusInWindow()
+                            activate(this@BlockView)
+                            onContext?.invoke(block, null, RelativePoint(e))
+                            e.consume()
+                        }
+                    }
+                    override fun mouseReleased(e: MouseEvent) {
+                        if (SwingUtilities.isMiddleMouseButton(e)) {
+                            this@BlockView.dispatchEvent(SwingUtilities.convertMouseEvent(this@apply, e, this@BlockView))
+                        }
+                        if (e.isPopupTrigger && !e.isConsumed) {
+                            surface.requestFocusInWindow()
+                            activate(this@BlockView)
+                            onContext?.invoke(block, null, RelativePoint(e))
+                            e.consume()
+                        }
+                    }
+                })
+                addMouseMotionListener(object : MouseAdapter() {
+                    override fun mouseDragged(e: MouseEvent) {
+                        if (SwingUtilities.isMiddleMouseButton(e)) {
+                            this@BlockView.dispatchEvent(SwingUtilities.convertMouseEvent(this@apply, e, this@BlockView))
+                        }
+                    }
+                })
+                addMouseWheelListener { e ->
+                    e.consume()
+                    this@BlockView.dispatchEvent(SwingUtilities.convertMouseEvent(this@apply, e, this@BlockView))
+                }
+            }.also { summaryPane = it }
+            updateSummaryPaneAppearance(pane)
+            pane.markdown = summary.orEmpty()
+            if (skim) {
+                summaryScroll?.takeIf { it.parent === this }?.let(::remove)
+                val holder = inlineSummaryHolder ?: InlineSummaryHolder().also { inlineSummaryHolder = it }
+                if (pane.parent !== holder) {
+                    holder.removeAll()
+                    holder.add(pane)
+                }
+                if (holder.parent !== this) add(holder)
+            } else {
+                inlineSummaryHolder?.takeIf { it.parent === this }?.let(::remove)
+                val scroller = summaryScroll ?: JBScrollPane(pane).apply {
+                    border = JBUI.Borders.empty()
+                    isOpaque = false
+                    viewport.isOpaque = false
+                    horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                    isWheelScrollingEnabled = false
+                    addMouseWheelListener { e ->
+                        e.consume()
+                        this@BlockView.dispatchEvent(SwingUtilities.convertMouseEvent(this@apply, e, this@BlockView))
+                    }
+                    viewport.addChangeListener {
+                        if (parent === this@BlockView && !skim) {
+                            summaryScrollOffsets[block.path] = viewport.viewPosition.y / zoom
+                        }
+                    }
+                }.also { summaryScroll = it }
+                if (scroller.viewport.view !== pane) scroller.setViewportView(pane)
+                if (scroller.parent !== this) add(scroller)
+            }
+            if (width > 0 && height > 0) doLayout()
+        }
+
+        private fun updateSummaryPaneAppearance(pane: LinkedTextPane) {
+            val base = UIUtil.getLabelFont()
+            pane.font = base.deriveFont(base.size2D * zoom.toFloat())
+            val pad = (metrics.padding * zoom).roundToInt().coerceAtLeast(1)
+            pane.border = pixelBorder(pad, pad, pad, pad)
+        }
+
+        private fun onSummaryRendered() {
+            if (skim) {
+                packedFor = null
+                surface.revalidate()
+                surface.repaint()
+            } else {
+                summaryPane?.revalidate()
+                summaryScroll?.revalidate()
+                if (width > 0 && height > 0) doLayout()
+                repaint()
+            }
+        }
+
+        private fun measureSummaryPaneLogicalHeight(): Int {
+            val pane = summaryPane ?: return summaryRows().size * metrics.lineHeight + metrics.padding
+            updateSummaryPaneAppearance(pane)
+            val targetW = ((blockWidth * zoom).roundToInt() - 2).coerceAtLeast(JBUI.scale(40))
+            val root = pane.ui?.getRootView(pane)
+            if (root != null && pane.document.length > 0) {
+                val insets = pane.insets
+                val innerW = (targetW - insets.left - insets.right).coerceAtLeast(1).toFloat()
+                root.setSize(innerW, Int.MAX_VALUE.toFloat())
+                val pxHeight = ceil(root.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() + insets.top + insets.bottom
+                return ceil(pxHeight / zoom).toInt().coerceAtLeast(metrics.lineHeight + 2 * metrics.padding)
+            }
+            return summaryRows().size * metrics.lineHeight + metrics.padding
+        }
+
+        override fun doLayout() {
+            if (width <= 2 || height <= 2) return
+            val z = zoom
+            val headerPx = (metrics.headerHeight * z).roundToInt()
+            if (replacesBody && summaryScroll?.parent === this) {
+                val scroller = summaryScroll!!
+                val pane = summaryPane!!
+                updateSummaryPaneAppearance(pane)
+                val bw = (width - 2).coerceAtLeast(1)
+                val bh = (height - headerPx - 1).coerceAtLeast(1)
+                scroller.setBounds(1, headerPx, bw, bh)
+                scroller.doLayout()
+                scroller.viewport.doLayout()
+                val vpW = scroller.viewport.width.coerceAtLeast(1)
+                pane.setSize(vpW, maxOf(pane.height, 1))
+                val prefH = pane.preferredSize.height
+                pane.setSize(vpW, maxOf(prefH, scroller.viewport.height))
+                scroller.doLayout()
+                scroller.viewport.doLayout()
+                val saved = summaryScrollOffsets[block.path] ?: 0.0
+                val maxY = (prefH - scroller.viewport.height).coerceAtLeast(0)
+                val targetY = (saved * z).roundToInt().coerceIn(0, maxY)
+                if (scroller.viewport.viewPosition.y != targetY) scroller.viewport.viewPosition = Point(0, targetY)
+            } else if (skim && showsSummary && inlineSummaryHolder?.parent === this) {
+                val holder = inlineSummaryHolder!!
+                val pane = summaryPane!!
+                updateSummaryPaneAppearance(pane)
+                val topPx = ((metrics.headerHeight + metrics.padding / 2.0) * z).roundToInt()
+                val bandH = (measureSummaryPaneLogicalHeight() * z).roundToInt().coerceAtLeast(1)
+                holder.setBounds(1, topPx, (width - 2).coerceAtLeast(1), bandH)
+                holder.doLayout()
+            }
+        }
+
+        override fun paintChildren(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            try {
+                val clipTop = stickyTop + (metrics.headerHeight * zoom).roundToInt()
+                g2.clipRect(1, clipTop, (width - 2).coerceAtLeast(0), (height - clipTop - 1).coerceAtLeast(0))
+                super.paintChildren(g2)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        /** Hosts the skim column's inline [LinkedTextPane] summary while deferring sticky-header hits to [BlockView]. */
+        private inner class InlineSummaryHolder : JComponent() {
+            init {
+                layout = null
+                isOpaque = false
+            }
+
+            override fun doLayout() {
+                val pane = summaryPane ?: return
+                pane.setBounds(0, 0, width.coerceAtLeast(1), height.coerceAtLeast(1))
+            }
+
+            override fun contains(x: Int, y: Int): Boolean {
+                val clipTop = stickyTop + (metrics.headerHeight * zoom).roundToInt()
+                if (this.y + y < clipTop) return false
+                return super.contains(x, y)
+            }
+
+            override fun paintComponent(g: Graphics) {
+                g.color = ColorUtil.mix(UIUtil.getListBackground(), JBUI.CurrentTheme.Link.Foreground.ENABLED, 0.07)
+                g.fillRect(0, 0, width, height)
+            }
         }
 
         /** The summary wrapped to the rows this block's width holds. */
@@ -1470,7 +2029,7 @@ internal class WallView(
                 val pad = metrics.padding * z
                 val lineHeight = metrics.lineHeight * z
                 val inline = inlineSummary
-                if (inline.isNotEmpty()) paintInlineSummary(g2, inline, scheme, background, sketch, ascent)
+                if (inline.isNotEmpty() && inlineSummaryHolder?.parent !== this) paintInlineSummary(g2, inline, scheme, background, sketch, ascent)
                 val top = (metrics.headerHeight + metrics.padding + lead - offset) * z
                 fun rowTop(index: Int) = (top + index * lineHeight).roundToInt()
                 val clip = g2.clipBounds ?: Rectangle(0, 0, width, height)
@@ -1486,24 +2045,39 @@ internal class WallView(
                 val spans = rowSpans(block)
                 val added = tint(scheme, DiffColors.DIFF_INSERTED, ADDED, background)
                 val removed = tint(scheme, DiffColors.DIFF_DELETED, REMOVED, background)
+                val highlighted = highlightedRows(block.path)
+                val focusColor = JBUI.CurrentTheme.Focus.focusColor()
                 if (shown != null) {
-                    g2.color = scheme.defaultForeground
-                    for (index in from until to) {
-                        val y = rowTop(index)
-                        if (sketch) sketch(g2, " " + shown[index], pad, y, rowTop(index + 1) - y)
-                        else g2.drawString(shown[index], pad.toFloat(), (top + index * lineHeight + ascent).toFloat())
+                    if (summaryScroll?.parent === this) {
+                        g2.color = UIUtil.getListBackground()
+                        g2.fillRect(1, bodyTop, width - 2, (height - bodyTop - 1).coerceAtLeast(0))
+                    } else {
+                        g2.color = scheme.defaultForeground
+                        for (index in from until to) {
+                            val y = rowTop(index)
+                            if (sketch) sketch(g2, " " + shown[index], pad, y, rowTop(index + 1) - y)
+                            else g2.drawString(shown[index], pad.toFloat(), (top + index * lineHeight + ascent).toFloat())
+                        }
+                        paintSummaryIndicator(g2, first + shown.size, first, bodyTop, muted)
                     }
-                    paintSummaryIndicator(g2, first + shown.size, first, bodyTop, muted)
                 } else {
                     for (index in from until to) {
                         val line = block.lines[index]
                         val y = rowTop(index)
                         val next = rowTop(index + 1)
+                        val rowX = (horizontal * z).roundToInt() + 1
                         when (line.kind) {
                             WallLine.Kind.ADDED -> added
                             WallLine.Kind.REMOVED -> removed
                             else -> null
-                        }?.let { g2.color = it; g2.fillRect((horizontal * z).roundToInt() + 1, y, width - 2, next - y) }
+                        }?.let { g2.color = it; g2.fillRect(rowX, y, width - 2, next - y) }
+                        if (index in highlighted) {
+                            g2.color = ColorUtil.withAlpha(focusColor, 0.14)
+                            g2.fillRect(rowX, y, width - 2, next - y)
+                            g2.color = focusColor
+                            val barW = (JBUI.scale(3) * z).roundToInt().coerceAtLeast(2)
+                            g2.fillRect(rowX, y, barW, next - y)
+                        }
                         val baseline = (top + index * lineHeight + ascent).toFloat()
                         if (line.kind == WallLine.Kind.SOURCE) {
                             // A source row has no marker: its number, right-aligned in the gutter, comes before its text.
@@ -1807,6 +2381,7 @@ internal class WallView(
         const val KEY_ZOOM = 1.25
         const val WHEEL_ZOOM = 1.1
         const val ANIMATION_MS = 180.0
+        const val HIGHLIGHT_MS = 2_500
         const val SKETCH_FONT_SIZE = 4.5f
         const val WHEEL_ROWS = 3
         const val COMPACT = "Compact"

@@ -17,6 +17,7 @@ import dev.insight.codereview.map.CodeMapActions
 import dev.insight.codereview.map.CodeMapCard
 import dev.insight.codereview.map.CodeMapView
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.WordScope
 import dev.insight.review.ui.CanvasExtension
@@ -28,6 +29,7 @@ import dev.insight.review.ui.SummaryDiffView
 import dev.insight.review.wall.WallChats
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
+import kotlinx.coroutines.CoroutineScope
 import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.FlowLayout
@@ -46,6 +48,14 @@ internal data class CodeWordsPage(
     val scope: WordScope,
     val scopes: List<WordScope>,
     val updating: Boolean = false,
+)
+
+/** Optional context-aware wall link dependencies passed to [CodeCanvasCards]. */
+internal data class CodeWallLinks(
+    val scope: CoroutineScope? = null,
+    val allWallFiles: (() -> List<CodeFile>)? = null,
+    val summaryTree: (() -> ReviewSummaryTree?)? = null,
+    val openOnWall: ((List<CodeFile>, String) -> Unit)? = null,
 )
 
 /**
@@ -69,6 +79,25 @@ internal class CodeCanvasCards(
     codeMapActions: CodeMapActions = CodeMapActions(),
     contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
+    private var wallLinks: CodeWallLinks? = null
+
+    internal constructor(
+        open: (String) -> Unit,
+        removeWords: () -> Unit,
+        chooseWordScope: (WordScope) -> Unit,
+        openWallFile: (path: String, line: Int?) -> Unit,
+        showAllFiles: () -> Unit,
+        wallChats: WallChats?,
+        project: Project?,
+        reviewDestinations: () -> Map<ReviewDestination, () -> Unit>,
+        codeMapActions: CodeMapActions,
+        contextSummaryActions: ContextSummaryActions?,
+        wallLinks: CodeWallLinks,
+    ) : this(open, removeWords, chooseWordScope, openWallFile, showAllFiles, wallChats, project, reviewDestinations,
+        codeMapActions, contextSummaryActions) {
+        this.wallLinks = wallLinks
+    }
+
     var words: CodeWordsPage? = null
     /** The code map card while it is on the canvas. */
     var codeMap: CodeMapCard? = null
@@ -76,7 +105,11 @@ internal class CodeCanvasCards(
     private var refresh: (CanvasTabKey) -> Unit = {}
     var wall: CodeWallContent? = null
     // One view for the tab session, so block positions survive canvas rebuilds.
-    private val wallView = lazy { CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations, contextSummaryActions) }
+    private val wallView = lazy {
+        CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations, contextSummaryActions,
+            wallLinks?.scope, { wallLinks?.allWallFiles?.invoke() ?: wall?.files.orEmpty() },
+            wallLinks?.summaryTree, wallLinks?.openOnWall)
+    }
     private val wallPage by wallView
     /** Placing the words is slow, so the cloud is kept across rebuilds while its counts are the same. */
     private var cloud: CodeWordCloud? = null

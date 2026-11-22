@@ -4,6 +4,7 @@ import com.intellij.navigation.ChooseByNameContributor
 import com.intellij.navigation.ChooseByNameContributorEx
 import com.intellij.navigation.NavigationItem
 import com.intellij.navigation.PsiElementNavigationItem
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
@@ -34,7 +35,10 @@ object ProjectSymbols {
      * included; light tests pass null because their in-memory files have no ids to filter by. Collecting the names again
      * after an edit that declared nothing new returns the same instance, so callers can tell a change by identity.
      */
-    internal fun namesNow(project: Project, filter: IdFilter? = IdFilter.getProjectIdFilter(project, false)): SymbolNames =
+    internal fun namesNow(
+        project: Project,
+        filter: IdFilter? = if (ApplicationManager.getApplication()?.isUnitTestMode == true) null else IdFilter.getProjectIdFilter(project, false),
+    ): SymbolNames =
         CachedValuesManager.getManager(project).getCachedValue(project) {
             CachedValueProvider.Result.create(stableNames(project, collectNames(project, filter)), PsiModificationTracker.getInstance(project))
         }
@@ -78,7 +82,8 @@ object ProjectSymbols {
         val names = HashSet<String>()
         for (contributor in contributors()) {
             if (contributor is ChooseByNameContributorEx) {
-                contributor.processNames({ ProgressManager.checkCanceled(); names += it; true }, scope, filter)
+                val contributorFilter = if (contributor.javaClass.name.startsWith("org.rust.")) null else filter
+                contributor.processNames({ ProgressManager.checkCanceled(); names += it; true }, scope, contributorFilter)
             } else {
                 names += contributor.getNames(project, false)
             }

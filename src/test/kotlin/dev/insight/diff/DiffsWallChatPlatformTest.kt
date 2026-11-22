@@ -11,6 +11,7 @@ import dev.insight.agent.ChatRole
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmRole
+import dev.insight.review.ui.LinkedTextPane
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.chooseView
 import dev.insight.review.wall.WallChatPanel
@@ -195,7 +196,9 @@ class DiffsWallChatPlatformTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
-    private fun texts(panel: WallChatPanel) = descendants(panel).filterIsInstance<JBTextArea>().filter { !it.isEditable }.map { it.text }
+    private fun texts(panel: WallChatPanel) =
+        descendants(panel).filterIsInstance<LinkedTextPane>().map { it.markdown } +
+            descendants(panel).filterIsInstance<JBTextArea>().filter { !it.isEditable }.map { it.text }
 
     private fun panelBusy(panel: WallChatPanel) =
         descendants(panel).filterIsInstance<javax.swing.JButton>().single { it.text == "Stop" }.isEnabled
