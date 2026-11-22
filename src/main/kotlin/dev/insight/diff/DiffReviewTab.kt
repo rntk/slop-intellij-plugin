@@ -102,7 +102,7 @@ internal class DiffReviewTab(
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
     /** Opens a file of the change on a canvas session, with its related changed files. */
-    openOnCanvas: ((path: String) -> Unit)? = null,
+    openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
     /** Builds the change map of a snapshot; null reads it from PSI. A test seam, like [complete]. */
     private val changeMapBuilder: (suspend (List<ReviewFile>) -> ChangeMap)? = null,
     /** The judgments of the change map while [complete] is injected; otherwise the configured Decisions API, if any. */
@@ -214,7 +214,7 @@ internal class DiffReviewTab(
             },
             openDirectoryDiff = { files -> openDirectoryDiff(files.filterIsInstance<ReviewFile>()) },
             openOnWall = { files, title -> openDiffsWall(files.filterIsInstance<ReviewFile>(), title) },
-            openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path) } },
+            openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path, node.lines?.first) } },
             explainNode = { node -> explain(node) },
             chatNode = { node, summaries -> toChat(chatFocus(node, summaries)) },
         ),

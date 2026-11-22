@@ -136,6 +136,8 @@ internal class CanvasSessionPanel(
     /** True once the root file is shown and a saved session's cards are restored. */
     internal var ready = false
         private set
+    private var pendingInitialLine: Int? = file.initialLine.also { file.initialLine = null }
+        ?: model.session.root.symbol?.line?.takeIf { it > 0 }
     private val directory = file.source.isDirectory
     private val rootKind = if (directory) "directory" else "file"
     /** Every card's view, the root card's first, once the root file is shown. */
@@ -377,10 +379,14 @@ internal class CanvasSessionPanel(
                     else -> "Click an underlined name or select code to open a card, or ask about the file."
                 })
                 refreshAnchors()
+                val initialLine = pendingInitialLine
+                    ?: file.initialLine.also { file.initialLine = null }
+                    ?: model.session.root.symbol?.line?.takeIf { it > 0 }
+                pendingInitialLine = null
                 restoreCardScrolls()
                 content.revalidate()
                 content.repaint()
-                restoreView(model.session.view)
+                restoreView(model.session.view, initialLine)
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) {
                     if (!disposed && currentActive()) showMessage("Loading cancelled.", retry = true)
@@ -710,11 +716,16 @@ internal class CanvasSessionPanel(
             if (view.id == CANVAS_ROOT) continue
             val src = view.source ?: continue
             if (src.text.isEmpty()) continue
-            val offset = model.children(view.id).minOfOrNull { it.anchor.startOffset }
+            val childOrUsageOffset = model.children(view.id).minOfOrNull { it.anchor.startOffset }
                 ?: view.card.usages?.sites?.firstOrNull()?.let { view.sourcePane?.lineStart(it.line) ?: sourceLineOffset(src.text, src.firstLine, it.line) }
-                ?: continue
-            // The cards hanging from this one follow the line, so lay them out again once it has moved.
-            view.scheduleInitialScroll(offset) { if (!disposed) content.revalidate() }
+            if (childOrUsageOffset != null) {
+                // The cards hanging from this one follow the line, so lay them out again once it has moved.
+                view.scheduleInitialScroll(childOrUsageOffset) { if (!disposed) content.revalidate() }
+                continue
+            }
+            val targetLine = view.card.symbol?.line?.takeIf { it > 0 && view.card.wholeFile } ?: continue
+            val offset = view.sourcePane?.lineStart(targetLine) ?: sourceLineOffset(src.text, src.firstLine, targetLine) ?: continue
+            view.scheduleInitialLine(targetLine, offset) { if (!disposed) content.revalidate() }
         }
     }
 
@@ -1571,14 +1582,27 @@ internal class CanvasSessionPanel(
         content.repaint()
     }
 
-    private fun restoreView(view: CanvasView) {
+    internal fun revealInitialLine(line: Int) {
+        val target = line.coerceAtLeast(0)
+        file.initialLine = null
+        if (ready) {
+            pendingInitialLine = null
+            revealLine(CANVAS_ROOT, target)
+        } else {
+            pendingInitialLine = target
+        }
+    }
+
+    private fun restoreView(view: CanvasView, initialLine: Int? = null) {
         zoomTo(view.zoom)
         content.validate()
+        if (initialLine != null) revealLine(CANVAS_ROOT, initialLine)
         SwingUtilities.invokeLater {
             if (disposed) return@invokeLater
             scrollTo(view.x + content.origin.x, view.y + content.origin.y)
             content.validate()
             reconcileActiveEditors()
+            if (initialLine != null) revealLine(CANVAS_ROOT, initialLine)
         }
     }
 

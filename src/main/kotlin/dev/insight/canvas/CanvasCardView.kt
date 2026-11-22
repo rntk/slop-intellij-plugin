@@ -152,6 +152,7 @@ internal class CanvasCardView(
     private var savedScrollX = 0
     private var savedScrollY = 0
     private var pendingScrollOffset: Int? = null
+    private var pendingScrollLine: Int? = null
     private var cachedAnchorYs: Map<Int, Int> = emptyMap()
     private var wasShowingDiff = false
     private val hibernatedPlaceholder = HibernatedSourcePlaceholder()
@@ -526,9 +527,12 @@ internal class CanvasCardView(
         }
         showDiff(card)
         if (restoreDiff && diffPane != null) sourceSection.restoreDiff()
+        val pendingLine = pendingScrollLine
+        pendingScrollLine = null
         val pendingOffset = pendingScrollOffset
         pendingScrollOffset = null
         if (pane != null) {
+            if (pendingLine != null) pane.scrollToLine(pendingLine)
             if (pendingOffset != null) {
                 pane.centerOnceSized(pendingOffset) { host.cardResized() }
             } else if (savedScrollX != 0 || savedScrollY != 0) {
@@ -562,9 +566,25 @@ internal class CanvasCardView(
 
     /** Centers the source on [offset] once sized, or defers it until the card is materialized. */
     fun scheduleInitialScroll(offset: Int, onScrolled: () -> Unit) {
+        pendingScrollLine = null
         val pane = sourcePane
         if (pane != null) pane.centerOnceSized(offset, onScrolled)
         else if (hibernated) pendingScrollOffset = offset
+    }
+
+    /** Highlights 0-based [line] and centers the source on [offset] once sized, or defers both until materialized. */
+    fun scheduleInitialLine(line: Int, offset: Int, onScrolled: () -> Unit) {
+        val pane = sourcePane
+        if (pane != null) {
+            pendingScrollLine = null
+            pendingScrollOffset = null
+            if (pane.scrollToLine(line, onScrolled) == null) {
+                pane.centerOnceSized(offset, onScrolled)
+            }
+        } else if (hibernated) {
+            pendingScrollLine = line
+            pendingScrollOffset = offset
+        }
     }
 
     private fun populateSourceBody(card: CanvasCard, fresh: CanvasSource?): CanvasSourcePane? {

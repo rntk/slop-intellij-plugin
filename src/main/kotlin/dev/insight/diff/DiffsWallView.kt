@@ -66,7 +66,7 @@ internal class DiffsWallView(
     /** The project the files' syntax highlighting is looked up for; highlighting still works without one for most file types. */
     private val project: Project? = null,
     /** Opens a file of the wall on a canvas session; null leaves the block menu without that item. */
-    private val openOnCanvas: ((path: String) -> Unit)? = null,
+    private val openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
     private val openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     private val reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
     /** Asks for the summary of a file that has none; see [WallView]. Null leaves only files with a summary their Summary switch. */
@@ -191,7 +191,7 @@ internal class DiffsWallView(
                 reviewDestinations = reviewDestinations?.invoke().orEmpty(),
                 summaryActions = summaryActions,
                 openOnWall = openOnWall?.let { open -> { srcs, title -> open(srcs.filterIsInstance<ReviewFile>(), title) } },
-                openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path) } },
+                openOnCanvas = openOnCanvas?.let { open -> { node -> open(node.path, node.lines?.first) } },
                 absolutePath = absolutePath,
             )
         }
@@ -203,7 +203,7 @@ internal class DiffsWallView(
         showAll = showAllChanges,
         chats = chats,
         highlighter = diffsWallHighlighter(project, ::diffFileFor, addedSources::get),
-        openOnCanvas = openOnCanvas,
+        openOnCanvas = openOnCanvas?.let { open -> { path -> open(path, null) } },
         onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } },
         summarize = summarize,
         cardWidthScale = 1.2,
@@ -246,7 +246,7 @@ internal class DiffsWallView(
                 val selected = contextFiles.filter { it.path in paths }
                 if (selected.isNotEmpty()) open(selected, context.label)
             } }
-            openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let(open) } }
+            openOnCanvas?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { context -> context.path?.let { open(it, context.lines?.first ?: number) } } }
             showContextPicker(project, reviewDiffPick(project, ContextOrigin.DIFFS_WALL, file, number, side, contextFiles, data),
                 point.component, point)
             return

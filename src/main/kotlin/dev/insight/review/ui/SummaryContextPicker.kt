@@ -43,7 +43,9 @@ internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: Su
                     if (selected.isNotEmpty()) open(selected, context.label)
                 }
             }
-            openOnCanvas?.takeIf { files.size == 1 }?.let { open -> data.put(ContextKeys.OPEN_ON_CANVAS) { open(node) } }
+            openOnCanvas?.takeIf { files.size == 1 }?.let { open ->
+                data.put(ContextKeys.OPEN_ON_CANVAS) { context -> open(node.copy(lines = context.lines ?: node.lines)) }
+            }
             val scopes = summaryPickerScopes(project, node, files, data, declaration)
             val owner = menu.invoker as? JComponent ?: return@addActionListener
             showContextPicker(project, ContextPick(ContextOrigin.OTHER, scopes, data), owner, RelativePoint.getSouthWestOf(owner))

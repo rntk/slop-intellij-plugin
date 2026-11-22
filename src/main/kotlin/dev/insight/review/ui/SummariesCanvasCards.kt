@@ -286,7 +286,7 @@ internal class SummariesCanvasCards(
                 val open: (SummaryNode) -> Unit = { node ->
                     val path = node.file?.absolutePath?.replace('\\', '/')
                     val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByPath(it) }
-                    if (file != null && file.isValid && !file.isDirectory) OpenCanvasSessionAction().open(project, file)
+                    if (file != null && file.isValid && !file.isDirectory) OpenCanvasSessionAction().open(project, file, node.lines?.first)
                     else Messages.showInfoMessage(project, "This file is not in the working tree, so it cannot be opened on a canvas.", "Open on Canvas")
                 }
                 open

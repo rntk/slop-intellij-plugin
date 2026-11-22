@@ -165,16 +165,20 @@ internal class CanvasSourcePane(
         }
     }
 
+    /** The 0-based document offset range currently highlighted as picked, if any (for tests). */
+    internal val pickedRange: IntRange?
+        get() = pickedHighlighter?.takeIf { it.isValid }?.let { it.startOffset..it.endOffset }
+
     /**
      * Scrolls the pane to 0-based document [line] and marks it as the picked usage site; returns the middle of the line
      * in this pane's y, or null when the line is not in the shown text.
      */
-    fun scrollToLine(line: Int): Int? {
+    fun scrollToLine(line: Int, onScrolled: () -> Unit = {}): Int? {
         val range = lineRange(line) ?: return null
         pickedHighlighter?.let { editor.markupModel.removeHighlighter(it) }
         pickedHighlighter = editor.markupModel.addRangeHighlighter(range.first, range.last, HighlighterLayer.SELECTION - 1,
             TextAttributes().apply { backgroundColor = PICKED_BACKGROUND }, HighlighterTargetArea.LINES_IN_RANGE)
-        centerOn(range.first)
+        centerOnceSized(range.first, onScrolled)
         return anchorY(range.first)
     }
 
@@ -188,6 +192,7 @@ internal class CanvasSourcePane(
             centerOn(offset)
             return scrolled()
         }
+        centerOn(offset)
         viewport.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(e: java.awt.event.ComponentEvent) {
                 if (viewport.height <= 0 || editor.isDisposed) return

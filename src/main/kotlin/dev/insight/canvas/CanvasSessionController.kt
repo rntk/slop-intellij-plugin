@@ -387,7 +387,7 @@ internal class CanvasSessionController(
                 }
                 val (parentCard, parentSource) = parentCardAndSource ?: snapshot.rootCardAndSource
                 val path = relative(file.path).orEmpty()
-                val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
+                val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = entry.line.coerceAtLeast(0))
                 val shown = schematicSource(schematic, path, schematic.scope)
                 val anchor = parentSource?.let { fileConnectionAnchor(it, file.path, entry.offset, ::node) }
                     ?: CardAnchor(0, 0, 0)
@@ -510,13 +510,13 @@ internal class CanvasSessionController(
      * whole-file schematic when the caller already has it.
      */
     suspend fun openFile(parentId: String, start: Int, end: Int, file: VirtualFile,
-        openedBy: CardOpenedBy = CardOpenedBy.USER, built: Schematic? = null): CanvasCard {
+        openedBy: CardOpenedBy = CardOpenedBy.USER, built: Schematic? = null, line: Int = 0): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
         val path = relative(file.path).orEmpty()
         val schematic = built ?: withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
             ?: error("The file $path cannot be shown on the canvas; its language may not be supported.")
-        val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
+        val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = line.coerceAtLeast(0))
         val shown = schematicSource(schematic, path, schematic.scope)
         return withContext(Dispatchers.EDT) {
             model.findOpen(parentId, CardKind.SYMBOL, anchor, ref)?.let { return@withContext it }

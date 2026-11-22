@@ -21,9 +21,12 @@ import java.awt.Component
 internal val SUMMARY_SOURCE_TEXT = ContextKey<String>("summarySourceText")
 
 /** What a host hands the picker: the candidate scopes, the one to select first, and the host's extras. */
-internal class ContextPick(val origin: ContextOrigin, val candidates: List<CodeContext>, val data: ContextData) {
-    val defaultIndex: Int get() = defaultScopeIndex(candidates)
-}
+internal class ContextPick(
+    val origin: ContextOrigin,
+    val candidates: List<CodeContext>,
+    val data: ContextData,
+    val defaultIndex: Int = defaultScopeIndex(candidates),
+)
 
 /** Opens the picker for [pick] over [owner] at [at]; does nothing for an empty pick. */
 internal fun showContextPicker(project: Project, pick: ContextPick, owner: Component, at: RelativePoint) {

@@ -117,12 +117,24 @@ class CanvasSessionStore(private val directory: Path) {
     }
 
     private fun encodePendingFiles(files: List<CanvasPendingFile>) =
-        files.map { StoredPendingFile(it.filePath, it.parentPath, it.offset.takeIf { o -> o != 0 }) }.ifEmpty { null }
+        files.map {
+            StoredPendingFile(
+                it.filePath,
+                it.parentPath,
+                it.offset.takeIf { o -> o != 0 },
+                it.line.takeIf { l -> l > 0 },
+            )
+        }.ifEmpty { null }
 
     private fun decodePendingFiles(files: List<StoredPendingFile?>?): List<CanvasPendingFile> =
         files.orEmpty().mapNotNull { entry ->
             val path = entry?.filePath?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            CanvasPendingFile(path, entry.parentPath?.takeIf { it.isNotBlank() }, (entry.offset ?: 0).coerceAtLeast(0))
+            CanvasPendingFile(
+                path,
+                entry.parentPath?.takeIf { it.isNotBlank() },
+                (entry.offset ?: 0).coerceAtLeast(0),
+                (entry.line ?: 0).coerceAtLeast(0),
+            )
         }.distinctBy { it.filePath }
 
     private fun encodeGaps(gaps: List<GapSummary>) = gaps.map { StoredGap(it.first, it.last, it.hash, it.text) }.ifEmpty { null }
@@ -186,10 +198,18 @@ class CanvasSessionStore(private val directory: Path) {
     private fun decodeRoot(rootPath: String, directoryInitialized: Boolean, card: StoredCard?, legacy: StoredRoot?): CanvasCard {
         val directory = directoryInitialized || card?.symbol?.kind == "DIRECTORY"
         val chats = decodeChats(card?.chats ?: legacy?.chats).ifEmpty { listOf(CanvasChat()) }
-        return canvasRootCard(rootPath, directory).copy(chats = chats, activeChatId = activeChat(chats, card?.activeChatId ?: legacy?.activeChatId),
-            folded = decodeFolded(card?.folded ?: legacy?.folded), summary = card?.summary ?: legacy?.summary,
-            summaryError = card?.summaryError ?: legacy?.summaryError, gapSummaries = decodeGaps(card?.gapSummaries ?: legacy?.gapSummaries),
-            size = card?.let(::decodeSize))
+        val base = canvasRootCard(rootPath, directory)
+        val rootLine = card?.symbol?.line?.takeIf { it > 0 }
+        return base.copy(
+            symbol = if (rootLine != null) base.symbol?.copy(line = rootLine) else base.symbol,
+            chats = chats,
+            activeChatId = activeChat(chats, card?.activeChatId ?: legacy?.activeChatId),
+            folded = decodeFolded(card?.folded ?: legacy?.folded),
+            summary = card?.summary ?: legacy?.summary,
+            summaryError = card?.summaryError ?: legacy?.summaryError,
+            gapSummaries = decodeGaps(card?.gapSummaries ?: legacy?.gapSummaries),
+            size = card?.let(::decodeSize),
+        )
     }
 
     /** A card's saved size; cards saved before they could be resized have none. */
@@ -217,7 +237,7 @@ class CanvasSessionStore(private val directory: Path) {
     private class StoredSession(val id: String?, val rootPath: String?, val title: String?, val created: Long?, val updated: Long?,
         val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?, val directoryInitialized: Boolean?,
         val directoryCursor: String? = null, val pendingFiles: List<StoredPendingFile?>? = null)
-    private class StoredPendingFile(val filePath: String?, val parentPath: String?, val offset: Int?)
+    private class StoredPendingFile(val filePath: String?, val parentPath: String?, val offset: Int?, val line: Int? = null)
     /** The root state of version 1 sessions, read only to migrate them. */
     private class StoredRoot(val chats: List<StoredChat?>?, val activeChatId: String?, val folded: List<String?>?,
         val summary: String?, val summaryError: String?, val gapSummaries: List<StoredGap?>?)

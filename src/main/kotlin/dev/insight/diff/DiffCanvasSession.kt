@@ -79,6 +79,7 @@ internal suspend fun prepareDiffCanvasSession(
     snapshot: ReviewSnapshot,
     path: String,
     initialLimit: Int = CANVAS_LOAD_CHUNK,
+    line: Int? = null,
 ): DiffCanvasSession {
     val selected = snapshot.files.firstOrNull { it.path == path } ?: error("$path is no longer in this diff.")
     val eligible = matchingDiffSources(project, snapshot)
@@ -91,6 +92,14 @@ internal suspend fun prepareDiffCanvasSession(
     val opened = openCanvasSessionFile(project, source, store = null, saved = CanvasSession.new(
         relativePath(project, source.path), "${source.name} · ${snapshot.comparison.summary}"), diffs = diffs)
         ?: error("${selected.path} cannot be shown on canvas. Check that its language plugin is enabled.")
+    val rootLine0 = line?.let { (it - 1).coerceAtLeast(0) }
+    opened.initialLine = rootLine0
+    if (rootLine0 != null && rootLine0 > 0) {
+        val rootCard = opened.session.root
+        opened.session = opened.session.copy(
+            cards = listOf(rootCard.copy(symbol = rootCard.symbol?.copy(line = rootLine0))) + opened.session.cards.drop(1),
+        )
+    }
     val (supported, connections) = relateDiffFiles(project, snapshot, opened.exploration, eligible, "canvas")
     val model = CanvasSessionModel(opened.session)
     val controller = CanvasSessionController(project, source, opened.exploration, opened.root, model)

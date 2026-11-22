@@ -65,7 +65,14 @@ internal fun selectionLinks(links: List<ReportLink>, absolutePath: (String) -> S
             link.kind == ReportTargetKind.EXTERNAL_URL || path == null -> Unit
             link.kind == ReportTargetKind.DIRECTORY -> skipped += "${path.ifEmpty { "." }}/ (directory)"
             link.isAmbiguous -> skipped += "${link.displayText} (ambiguous: ${link.candidates.joinToString(", ")})"
-            else -> files.getOrPut(path) { LinkedFile(path, absolutePath(path), link.lines) }
+            else -> {
+                val existing = files[path]
+                if (existing == null) {
+                    files[path] = LinkedFile(path, absolutePath(path), link.lines)
+                } else if (existing.lines == null && link.lines != null) {
+                    files[path] = existing.copy(lines = link.lines)
+                }
+            }
         }
     }
     if (files.isEmpty()) return null
@@ -140,27 +147,64 @@ internal class ReportTextEdits(document: Document) {
         document.remove(selection.start, selection.end - selection.start)
         removals += selection.start until selection.end
     }
+
+    /** Map a display selection back to the surviving runs of the original document. */
+    fun originalRanges(selected: IntRange): List<IntRange> {
+        var ranges = listOf(selected)
+        for (removed in removals.asReversed()) {
+            val length = removed.last - removed.first + 1
+            ranges = ranges.flatMap { range ->
+                when {
+                    range.last < removed.first -> listOf(range)
+                    range.first >= removed.first -> listOf(range.first + length..range.last + length)
+                    else -> listOf(range.first until removed.first, removed.last + 1..range.last + length)
+                }
+            }
+        }
+        return ranges
+    }
 }
 
-/** Swing collapses whitespace in Markdown, so map each selected glyph within its own source span. */
 internal fun reportSourceDeletion(
     document: HTMLDocument,
     selection: ReportTextSelection,
     map: ReportSourceMap,
     isPlainText: Boolean,
-): List<IntRange> {
+): List<IntRange> = reportSourceSelection(document, selection.start until selection.end, map, isPlainText)
+    ?.let(map::deletionRanges).orEmpty()
+
+internal fun reportSourceCopy(
+    originalDocument: HTMLDocument,
+    selection: ReportTextSelection,
+    map: ReportSourceMap,
+    isPlainText: Boolean,
+    edits: ReportTextEdits?,
+): String? {
+    val selected = selection.start until selection.end
+    val ranges = edits?.originalRanges(selected) ?: listOf(selected)
+    return map.copySource(ranges.mapNotNull { reportSourceSelection(originalDocument, it, map, isPlainText) })
+}
+
+/** Swing collapses whitespace in Markdown, so map each selected glyph within its own source span. */
+private fun reportSourceSelection(
+    document: HTMLDocument,
+    selected: IntRange,
+    map: ReportSourceMap,
+    isPlainText: Boolean,
+): IntRange? {
     var first: Int? = null
     var last: Int? = null
-    var position = selection.start
-    while (position < selection.end) {
+    var position = selected.first
+    val end = minOf(selected.last + 1, document.length)
+    while (position < end) {
         val leaf = document.getCharacterElement(position)
         val span = document.reportSpanId(position, "report-source-")?.let(map.spans::getOrNull)
         val leafEnd = minOf(leaf.endOffset, document.length)
         val range = if (span != null) {
             val displayed = document.getText(leaf.startOffset, leafEnd - leaf.startOffset)
             sourceRangeInSpan(span, displayed, position - leaf.startOffset,
-                minOf(selection.end, leafEnd) - leaf.startOffset, isPlainText) ?: return emptyList()
-        } else if (isPlainText && document.getText(position, minOf(selection.end, leafEnd) - position) == "\n") {
+                minOf(end, leafEnd) - leaf.startOffset, isPlainText) ?: return null
+        } else if (isPlainText && document.getText(position, minOf(end, leafEnd) - position) == "\n") {
             val lineStart = document.getParagraphElement(position).startOffset
             document.reportSpanId(lineStart, "report-newline-")?.let { it..it }
         } else null
@@ -170,7 +214,7 @@ internal fun reportSourceDeletion(
         }
         position = leafEnd
     }
-    return if (first != null && last != null && first <= last) map.deletionRanges(first..last) else emptyList()
+    return if (first != null && last != null && first <= last) first..last else null
 }
 
 private fun HTMLDocument.reportSpanId(position: Int, prefix: String): Int? {

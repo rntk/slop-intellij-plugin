@@ -5,6 +5,7 @@ import dev.insight.agent.SourceSide
 import com.intellij.ui.awt.RelativePoint
 
 import com.intellij.diff.DiffManager
+import dev.insight.canvas.openCanvasSessionTab
 import dev.insight.core.describeFailure
 import dev.insight.core.runCatchingReported
 import com.intellij.openapi.Disposable
@@ -220,7 +221,7 @@ internal class DiffReviewPanel(
                     }
                     val tab = tabs.selected?.takeIf(::includesSelection) ?: tabs.all.firstOrNull(::includesSelection)
                     val data = ContextData().put(ContextKeys.REVIEW_SNAPSHOT, snapshot)
-                    if (file != null) data.put(ContextKeys.OPEN_ON_CANVAS) { _: CodeContext -> openOnCanvas(file) }
+                    if (file != null) data.put(ContextKeys.OPEN_ON_CANVAS) { context: CodeContext -> openOnCanvas(file, context.lines?.first) }
                     if (tab != null) {
                         data.put(REVIEW_CONTEXT_SESSION) { tab.diffSession() }
                         data.put(ContextKeys.REVIEW_DESTINATIONS, tab.reviewDestinations())
@@ -391,11 +392,11 @@ internal class DiffReviewPanel(
     }
 
     /** Opens a wall block's file, which need not be the tree's selection. */
-    private fun openPathOnCanvas(path: String) {
-        openOnCanvas(state.snapshot.files.firstOrNull { it.path == path } ?: return)
+    private fun openPathOnCanvas(path: String, line: Int? = null) {
+        openOnCanvas(state.snapshot.files.firstOrNull { it.path == path } ?: return, line)
     }
 
-    private fun openOnCanvas(selected: ReviewFile) {
+    private fun openOnCanvas(selected: ReviewFile, line: Int? = null) {
         if (state.refreshing || openJob?.isActive == true) return
         val snapshot = state.snapshot
         openJob = scope.launch {
@@ -403,10 +404,10 @@ internal class DiffReviewPanel(
             try {
                 runCatchingReported(LOG, "Could not open diff on canvas") {
                     val prepared = withBackgroundProgress(project, "Opening related changes: ${selected.path}") {
-                        withContext(Dispatchers.Default) { prepareDiffCanvasSession(project, snapshot, selected.path) }
+                        withContext(Dispatchers.Default) { prepareDiffCanvasSession(project, snapshot, selected.path, line = line) }
                     }
                     check(!state.refreshing && state.snapshot == snapshot) { "The diff changed. Retry after refreshing." }
-                    FileEditorManager.getInstance(project).openFile(prepared.file, true)
+                    openCanvasSessionTab(project, prepared.file)
                     val shown = prepared.file.session.cards.size
                     val pending = prepared.file.session.pendingFiles.size
                     status.text = (if (pending > 0) "Opened $shown of ${shown + pending} related changed files on canvas (load more on the canvas)"

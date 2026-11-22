@@ -574,4 +574,80 @@ class CanvasDynamicLoadingTest : LightJavaCodeInsightFixtureTestCase() {
             Disposer.dispose(panel)
         }
     }
+
+    fun testLinkedFilesCanvasWithLinesScrollsRootChildAndDeferredCards() {
+        fun longClass(name: String): String = buildString {
+            append("class $name {\n")
+            for (i in 1..100) append("    int item$i = $i;\n")
+            append("}\n")
+        }
+        val root = myFixture.addFileToProject("LLRoot.java", longClass("LLRoot"))
+        val f1 = myFixture.addFileToProject("LL1.java", longClass("LL1"))
+        val f2 = myFixture.addFileToProject("LL2.java", longClass("LL2"))
+
+        val prepared = background {
+            prepareLinkedFilesCanvas(
+                project,
+                listOf(
+                    CanvasLinkedFile(root.virtualFile, line = 70),
+                    CanvasLinkedFile(f1.virtualFile, line = 55),
+                    CanvasLinkedFile(f2.virtualFile, line = 80),
+                ),
+                "Linked with lines",
+                initialLimit = 1,
+            )
+        }!!
+        assertEquals(69, prepared.file.session.root.symbol?.line)
+        assertEquals(54, prepared.file.session.cards.last().symbol?.line)
+        assertEquals(79, prepared.file.session.pendingFiles.single().line)
+
+        val storePath = Files.createTempDirectory("linked-lines-session")
+        try {
+            val store = CanvasSessionStore(storePath)
+            assertTrue(store.save(prepared.file.session))
+            val reloaded = store.load(prepared.file.session.id)!!
+            assertEquals(69, reloaded.root.symbol?.line)
+            assertEquals(54, reloaded.cards.last().symbol?.line)
+            assertEquals(79, reloaded.pendingFiles.single().line)
+
+            val services = CanvasSessionServices(store, { error("No summary") }) { _, _ -> error("No chat") }
+            val panel = CanvasSessionPanel(project, prepared.file, reloaded, services, loadChunk = 1) {}
+            try {
+                panel.setSize(1200, 600)
+                PlatformTestUtil.waitWithEventsDispatching("Linked session should load", { panel.ready }, 30)
+                fun relayout(container: Container) {
+                    container.doLayout()
+                    container.components.filterIsInstance<Container>().forEach(::relayout)
+                }
+                repeat(2) { relayout(panel) }
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+
+                val rootPane = panel.cardViews.getValue(CANVAS_ROOT).sourcePane!!
+                assertEquals(69, rootPane.editor.document.getLineNumber(rootPane.pickedRange!!.first))
+                assertTrue("Root card should scroll to line 70", rootPane.editor.scrollingModel.visibleArea.y > 0)
+
+                val childView = panel.cardViews.values.single { it.card.filePath.endsWith("LL1.java") }
+                childView.materializeSource()
+                repeat(2) { relayout(panel) }
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                val childPane = childView.sourcePane!!
+                assertEquals(54, childPane.editor.document.getLineNumber(childPane.pickedRange!!.first))
+                assertTrue("Child card should scroll to line 55", childPane.editor.scrollingModel.visibleArea.y > 0)
+
+                val job = panel.loadMore()!!
+                PlatformTestUtil.waitWithEventsDispatching("Pending card should load", { job.isCompleted }, 30)
+                val deferredView = panel.cardViews.values.single { it.card.filePath.endsWith("LL2.java") }
+                deferredView.materializeSource()
+                repeat(2) { relayout(panel) }
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                val deferredPane = deferredView.sourcePane!!
+                assertEquals(79, deferredPane.editor.document.getLineNumber(deferredPane.pickedRange!!.first))
+                assertTrue("Deferred card should scroll to line 80", deferredPane.editor.scrollingModel.visibleArea.y > 0)
+            } finally {
+                Disposer.dispose(panel)
+            }
+        } finally {
+            storePath.toFile().deleteRecursively()
+        }
+    }
 }

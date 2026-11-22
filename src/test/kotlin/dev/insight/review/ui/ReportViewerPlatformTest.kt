@@ -14,6 +14,7 @@ import dev.insight.codereview.CodeReviewTab
 import dev.insight.codereview.codeFile
 import dev.insight.codereview.codeSnapshot
 import dev.insight.context.ContextActionRegistry
+import dev.insight.context.ContextKeys
 import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextRequest
 import dev.insight.context.ContextScopeKind
@@ -24,8 +25,10 @@ import dev.insight.diff.DiffReviewTab
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ReportLink
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewCanvasFile
+import dev.insight.review.SummaryNode
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.UIUtil
@@ -683,6 +686,80 @@ class ReportViewerPlatformTest : FileEditorManagerTestCase() {
             Disposer.dispose(pickerLifetime)
             Disposer.dispose(tab)
         }
+    }
+
+    fun `test selectionLinks preserves line numbers from following contextual or explicit links`() {
+        val selected = selectionLinks(
+            listOf(
+                ReportLink(0, "Widget.java", ReportTargetKind.FILE, candidates = listOf("src/demo/Widget.java"), lines = null),
+                ReportLink(1, "L50", ReportTargetKind.FILE, candidates = listOf("src/demo/Widget.java"), lines = 50..50, contextual = true),
+                ReportLink(2, "Gadget.java:L12", ReportTargetKind.FILE, candidates = listOf("src/demo/Gadget.java"), lines = 12..12),
+                ReportLink(3, "Widget.java:L60", ReportTargetKind.FILE, candidates = listOf("src/demo/Widget.java"), lines = 60..60),
+            ),
+            absolutePath = { "/repo/$it" },
+        )!!
+        assertEquals(2, selected.files.size)
+        assertEquals("src/demo/Widget.java", selected.files[0].path)
+        assertEquals(50..50, selected.files[0].lines)
+        assertEquals("src/demo/Gadget.java", selected.files[1].path)
+        assertEquals(12..12, selected.files[1].lines)
+    }
+
+    fun `test single line report link selects line scope by default and diff file wires canvas line without summary tree`() {
+        myFixture.addFileToProject("src/demo/Widget.java", sampleJava)
+
+        val codeTab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> })
+        try {
+            codeTab.update(codeSnapshot(codeFile("src/demo/Widget.java", sampleJava)))
+            val linePick = reportLinkContextPick(
+                project = project,
+                kind = ReportTargetKind.FILE,
+                path = "src/demo/Widget.java",
+                lines = 6..6,
+                reviewFiles = codeTab.state.snapshotFiles,
+                summaryTree = codeTab.state.summaries.tree,
+                reviewDestinations = codeTab.reviewDestinations(),
+                summaryActions = codeTab.contextSummaryActions,
+                openOnWall = null,
+                openOnCanvas = null,
+            )!!
+            assertEquals(0, linePick.defaultIndex)
+            assertEquals(ContextScopeKind.LINE, linePick.candidates[linePick.defaultIndex].kind)
+            assertEquals(6..6, linePick.candidates[linePick.defaultIndex].lines)
+        } finally {
+            Disposer.dispose(codeTab)
+        }
+
+        val reviewFile = ReviewFile(
+            "src/demo/Widget.java",
+            "/project/src/demo/Widget.java",
+            null,
+            "modified",
+            "@@ -4,4 +4,4 @@\n-    return x;\n+    return result;\n",
+            "fp1",
+            before = sampleJava,
+            after = sampleJava,
+        )
+        var openedNode: SummaryNode? = null
+        val diffPick = reportLinkContextPick(
+            project = project,
+            kind = ReportTargetKind.FILE,
+            path = "src/demo/Widget.java",
+            lines = 6..6,
+            reviewFiles = listOf(reviewFile),
+            summaryTree = null,
+            reviewDestinations = emptyMap(),
+            summaryActions = null,
+            openOnWall = null,
+            openOnCanvas = { node -> openedNode = node },
+        )!!
+        assertEquals(0, diffPick.defaultIndex)
+        assertEquals(ContextScopeKind.LINE, diffPick.candidates[diffPick.defaultIndex].kind)
+        val callback = diffPick.data[ContextKeys.OPEN_ON_CANVAS]
+        assertNotNull(callback)
+        callback!!(diffPick.candidates[diffPick.defaultIndex])
+        assertEquals("src/demo/Widget.java", openedNode?.path)
+        assertEquals(6..6, openedNode?.lines)
     }
 
     private fun collectGlyphFontSizes(pane: JEditorPane): List<Pair<String, Int>> {

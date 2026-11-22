@@ -1,10 +1,12 @@
 package dev.insight.review
 
 /** Offsets in the report's normalized source text, tracked through Markdown rendering. */
-internal class ReportSourceMap {
+internal class ReportSourceMap(private val source: String) {
     val spans = mutableListOf<ReportSourceText>()
-    private val markup = mutableListOf<Pair<IntRange, IntRange>>()
+    private val markup = mutableListOf<Markup>()
     private val omissionBoundaries = mutableListOf<Int>()
+
+    private data class Markup(val source: IntRange, val content: IntRange, val isLink: Boolean, val copyOnly: Boolean)
 
     fun render(text: ReportSourceText, display: String): String {
         if (display.isEmpty()) return ""
@@ -13,12 +15,47 @@ internal class ReportSourceMap {
         return "<span id=\"report-source-$id\">${escapeHtml(display)}</span>"
     }
 
-    fun recordMarkup(source: ReportSourceText, content: ReportSourceText) {
-        markup += source.range to content.range
+    fun recordMarkup(source: ReportSourceText, content: ReportSourceText, isLink: Boolean) {
+        markup += Markup(source.range, content.range, isLink, copyOnly = false)
+    }
+
+    fun recordCopyMarkup(source: IntRange, content: IntRange) {
+        if (!content.isEmpty()) markup += Markup(source, content, isLink = false, copyOnly = true)
     }
 
     fun recordOmissionBefore(offset: Int) {
         omissionBoundaries += offset
+    }
+
+    fun copySource(selections: List<IntRange>): String? {
+        val ranges = mutableListOf<IntRange>()
+        for (selection in selections) {
+            val range = copyRange(selection) ?: return null
+            val previous = ranges.lastOrNull()
+            if (previous != null && previous.last >= range.first) {
+                ranges[ranges.lastIndex] = minOf(previous.first, range.first)..maxOf(previous.last, range.last)
+            } else {
+                ranges += range
+            }
+        }
+        if (ranges.isEmpty()) return null
+        return ranges.joinToString("") { source.substring(it.first, it.last + 1) }
+    }
+
+    /** Include the original target even when the selection covers only part of a link label. */
+    private fun copyRange(selected: IntRange): IntRange? {
+        var first = selected.first
+        var last = selected.last
+        for ((whole, content, isLink) in markup) {
+            val fullySelected = first <= content.first && last >= content.last
+            val touchesLink = isLink && selected.first <= content.last && selected.last >= content.first
+            if (fullySelected || touchesLink) {
+                first = minOf(first, whole.first)
+                last = maxOf(last, whole.last)
+            }
+        }
+        if (omissionBoundaries.any { it > first && it <= last }) return null
+        return first..last
     }
 
     /** Remove delimiters of fully selected inline markup, and keep them around surviving text. */
@@ -27,7 +64,8 @@ internal class ReportSourceMap {
         var first = selected.first
         var last = selected.last
         val keep = mutableListOf<IntRange>()
-        for ((source, content) in markup) {
+        for ((source, content, _, copyOnly) in markup) {
+            if (copyOnly) continue
             if (first <= content.first && last >= content.last) {
                 first = minOf(first, source.first)
                 last = maxOf(last, source.last)
@@ -60,8 +98,8 @@ internal data class ReportSourceText(val text: String, val offset: Int, val map:
 
     fun html(display: String = text): String = map?.render(this, display) ?: escapeHtml(display)
 
-    fun recordMarkup(content: ReportSourceText) {
-        if (content.text.isNotEmpty()) map?.recordMarkup(this, content)
+    fun recordMarkup(content: ReportSourceText, isLink: Boolean = false) {
+        if (content.text.isNotEmpty()) map?.recordMarkup(this, content, isLink)
     }
 }
 

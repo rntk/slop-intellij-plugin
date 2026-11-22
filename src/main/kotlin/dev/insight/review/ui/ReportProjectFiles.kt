@@ -29,6 +29,7 @@ import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
 import dev.insight.context.SUMMARY_SOURCE_TEXT
 import dev.insight.context.capContext
+import dev.insight.context.defaultScopeIndex
 import dev.insight.context.directoryScope
 import dev.insight.context.reviewDiffPick
 import dev.insight.context.sourceScopes
@@ -273,9 +274,23 @@ private fun buildFileContextPick(
                 if (selected.isNotEmpty()) open(selected, context.label)
             }
         }
-        val node = summaryTree?.scopeNode(reviewSource.path, SummaryKind.FILE)
-        if (node != null && openOnCanvas != null) {
-            data.put(ContextKeys.OPEN_ON_CANVAS) { openOnCanvas(node) }
+        if (openOnCanvas != null) {
+            val baseNode = summaryTree?.scopeNode(reviewSource.path, SummaryKind.FILE)
+                ?: SummaryNode(
+                    id = -1,
+                    kind = SummaryKind.FILE,
+                    path = reviewSource.path,
+                    label = reviewSource.path.substringAfterLast('/'),
+                    parent = null,
+                    children = emptyList(),
+                    files = listOf(reviewSource.path),
+                    key = "file:${reviewSource.path}",
+                    identity = "file:${reviewSource.path}",
+                    file = reviewSource,
+                )
+            data.put(ContextKeys.OPEN_ON_CANVAS) { context ->
+                openOnCanvas(baseNode.copy(lines = context.lines ?: clamped))
+            }
         }
         val pick = reviewDiffPick(project, ContextOrigin.OTHER, reviewSource, clamped?.first, side, allDiffs, data)
         val scopes = if (clamped != null && clamped.first < clamped.last && lineBasis.isNotEmpty()) {
@@ -291,7 +306,7 @@ private fun buildFileContextPick(
             )
             listOf(selectionScope) + pick.candidates
         } else pick.candidates
-        return ContextPick(ContextOrigin.OTHER, scopes, pick.data)
+        return ContextPick(ContextOrigin.OTHER, scopes, pick.data, if (clamped != null) 0 else defaultScopeIndex(scopes))
     }
 
     val liveText = vf?.let(::readVirtualFileText) ?: reviewSource?.text ?: return null
@@ -326,7 +341,7 @@ private fun buildFileContextPick(
         val symbols = symbolsForCapturedText(project, resolvedPath, resolvedAbs, liveText, clamped.first)
         sourceScopes(resolvedPath, resolvedAbs, liveText, clamped.first, selection, symbols, null)
     }
-    return ContextPick(ContextOrigin.OTHER, scopes, data)
+    return ContextPick(ContextOrigin.OTHER, scopes, data, if (clamped != null) 0 else defaultScopeIndex(scopes))
 }
 
 private fun buildDirectoryContextPick(

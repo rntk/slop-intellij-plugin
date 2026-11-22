@@ -86,6 +86,7 @@ import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.io.StringReader
 import javax.swing.AbstractAction
 import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListModel
@@ -665,8 +666,21 @@ internal class ReportViewerCanvasCard(
         val sourceFile = reportFile
         if (textEdits[mode]?.restore(pane.document) == false) textEdits.remove(mode)
 
+        val originalDocument by lazy {
+            (pane.editorKit.createDefaultDocument() as HTMLDocument).also {
+                pane.editorKit.read(StringReader(rendered.html), it, 0)
+            }
+        }
+
         fun isCurrentReport() =
             !disposed && !view.loading && currentCard === card && view.source === source && view.rendered === rendered
+
+        fun selectionSource(selection: ReportTextSelection): String? {
+            val map = rendered.sourceMap ?: return null
+            val edits = textEdits[mode]
+            val document = if (edits == null) pane.document as HTMLDocument else originalDocument
+            return reportSourceCopy(document, selection, map, mode, edits)
+        }
 
         fun deleteSelection(selection: ReportTextSelection) {
             if (!isCurrentReport()) return
@@ -784,6 +798,16 @@ internal class ReportViewerCanvasCard(
                             addActionListener { showSelectionContext(selection, e.point) }
                         })
                     }
+                    val sourceExcerpt = selectionSource(selection)
+                    menu.add(JMenuItem(InsightBundle.message("context.action.report.copySource")).apply {
+                        name = "report-selection-action:CopySource"
+                        isEnabled = sourceExcerpt != null
+                        addActionListener {
+                            if (isCurrentReport() && sourceExcerpt != null) {
+                                CopyPasteManager.getInstance().setContents(StringSelection(sourceExcerpt))
+                            }
+                        }
+                    })
                     menu.add(JMenuItem(InsightBundle.message("context.action.report.delete")).apply {
                         name = "report-selection-action:Delete"
                         addActionListener { deleteSelection(selection) }
@@ -1205,9 +1229,8 @@ internal class ReportViewerCanvasCard(
             val rawMode = isRawMode()
             val colors = reportThemeColors()
             val rendered = withContext(Dispatchers.Default) {
-                val mapSource = src !is ReportSource.PastedText
-                if (rawMode) renderPlainTextReport(text, index, colors, mapSource = mapSource, symbols = usedSymbols)
-                else renderMarkdownReport(text, index, colors, mapSource = mapSource, symbols = usedSymbols)
+                if (rawMode) renderPlainTextReport(text, index, colors, mapSource = true, symbols = usedSymbols)
+                else renderMarkdownReport(text, index, colors, mapSource = true, symbols = usedSymbols)
             }
             if (disposed || view.source !== src) return
             val latestSnapshot = snapshot

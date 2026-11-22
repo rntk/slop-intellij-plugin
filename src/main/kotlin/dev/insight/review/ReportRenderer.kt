@@ -141,7 +141,7 @@ internal fun renderMarkdownReport(
     var renderedTableCells = 0
     var anyTableTruncated = false
     val collector = ReportLinkCollector(index, ReportLinkContext(defaultFile), symbols = symbols)
-    val sourceMap = if (mapSource) ReportSourceMap() else null
+    val sourceMap = if (mapSource) ReportSourceMap(bounded) else null
     val lines = reportSourceLines(bounded, sourceMap)
     val body = StringBuilder()
 
@@ -171,6 +171,13 @@ internal fun renderMarkdownReport(
                 body.append(renderTextWithLinks(codeLine, collector, inBackticks = true, allowContextualLines = false))
             }
             body.append("</pre>\n")
+            if (sourceMap != null) {
+                val firstCode = codeLines.firstOrNull { it.text.isNotEmpty() }
+                val lastCode = codeLines.lastOrNull { it.text.isNotEmpty() }
+                if (firstCode != null && lastCode != null) {
+                    sourceMap.recordCopyMarkup(line.offset..lines[i - 1].range.last, firstCode.offset..lastCode.range.last)
+                }
+            }
             continue
         }
 
@@ -257,16 +264,16 @@ internal fun renderMarkdownReport(
         }
 
         if (BLOCKQUOTE_LINE.containsMatchIn(line.text)) {
-            val quoteLines = mutableListOf<ReportSourceText>()
-            while (i < lines.size && BLOCKQUOTE_LINE.containsMatchIn(lines[i].text)) {
-                quoteLines += lines[i].slice(BLOCKQUOTE_PREFIX.find(lines[i].text)!!.range.last + 1).trim()
-                i++
-            }
             body.append("<blockquote>")
-            quoteLines.forEachIndexed { idx, ql ->
-                if (idx > 0) body.append("<br>")
+            val start = i
+            while (i < lines.size && BLOCKQUOTE_LINE.containsMatchIn(lines[i].text)) {
+                val quote = lines[i]
+                val quoteText = quote.slice(BLOCKQUOTE_PREFIX.find(quote.text)!!.range.last + 1).trim()
+                if (i > start) body.append("<br>")
                 collector.context.onPlainLine()
-                body.append(renderInline(ql, collector, inHeading = false, inListItem = false))
+                body.append(renderInline(quoteText, collector, inHeading = false, inListItem = false))
+                sourceMap?.recordCopyMarkup(quote.range, quoteText.range)
+                i++
             }
             body.append("</blockquote>\n")
             continue
@@ -327,7 +334,7 @@ internal fun renderPlainTextReport(
 ): RenderedReport {
     val (bounded, truncated) = truncateReportText(normalizeLineEndings(text), maxChars)
     val collector = ReportLinkCollector(index, symbols = symbols)
-    val sourceMap = if (mapSource) ReportSourceMap() else null
+    val sourceMap = if (mapSource) ReportSourceMap(bounded) else null
     val lines = reportSourceLines(bounded, sourceMap)
     val width = lines.size.toString().length.coerceAtLeast(2)
     val body = StringBuilder("<pre class=\"raw-text\">")
@@ -411,6 +418,7 @@ private fun renderListBlock(lines: List<ReportSourceText>, startIndex: Int, coll
             null -> Unit
         }
         out.append(renderInline(item.content, collector, inHeading = false, inListItem = true))
+        lines[i].map?.recordCopyMarkup(lines[i].range, item.content.range)
         i++
         // Consume nested list items or indented continuation lines.
         while (i < lines.size) {
@@ -496,7 +504,7 @@ private fun renderInline(
                 } else {
                     out.append(renderInline(label, collector, inHeading, inListItem))
                 }
-                source.slice(i, mdLink.end).recordMarkup(label)
+                source.slice(i, mdLink.end).recordMarkup(label, isLink = true)
                 i = mdLink.end
                 plainStart = i
                 continue

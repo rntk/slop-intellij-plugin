@@ -150,7 +150,7 @@ fun canvasRootCard(rootPath: String, directory: Boolean = false): CanvasCard = C
  * A file scheduled to be opened on demand in a later chunk (for linked files or diff-connected components).
  * [filePath] and [parentPath] are project-relative canvas paths, matching [CanvasCard.filePath] and [CanvasSession.rootPath].
  */
-data class CanvasPendingFile(val filePath: String, val parentPath: String? = null, val offset: Int = 0)
+data class CanvasPendingFile(val filePath: String, val parentPath: String? = null, val offset: Int = 0, val line: Int = 0)
 
 /**
  * A saved exploration of one file or directory: [rootPath] is the project-relative path of what was opened, [cards] in

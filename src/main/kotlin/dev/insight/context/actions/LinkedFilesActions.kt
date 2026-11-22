@@ -6,7 +6,8 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.InsightBundle
 import dev.insight.agent.findSourceFile
-import dev.insight.canvas.openFilesOnCanvas
+import dev.insight.canvas.CanvasLinkedFile
+import dev.insight.canvas.openLinkedFilesOnCanvas
 import dev.insight.context.ContextAction
 import dev.insight.context.ContextKeys
 import dev.insight.context.ContextRequest
@@ -70,8 +71,14 @@ internal class OpenLinkedFilesOnCanvasAction : ContextAction {
 
     override fun perform(request: ContextRequest) {
         val linked = request.linkedFiles()
-        val found = request.resolve(linked).map { it.second }.distinct()
+        val found = LinkedHashMap<VirtualFile, Int?>()
+        for ((item, file) in request.resolve(linked)) {
+            val line = item.lines?.first
+            if (file !in found || (found[file] == null && line != null)) {
+                found[file] = line
+            }
+        }
         if (found.isEmpty()) return report(request.project, InsightBundle.message("context.action.missing.file", linked.first().path))
-        openFilesOnCanvas(request.project, found, request.context.label)
+        openLinkedFilesOnCanvas(request.project, found.map { (file, line) -> CanvasLinkedFile(file, line) }, request.context.label)
     }
 }

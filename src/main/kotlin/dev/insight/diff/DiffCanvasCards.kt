@@ -64,7 +64,7 @@ internal class DiffCanvasCards(
     /** The chats wall blocks unfold; null leaves blocks without a Chat tab. */
     wallChats: WallChats? = null,
     /** Opens a wall block's file on a canvas session. */
-    openWallOnCanvas: ((path: String) -> Unit)? = null,
+    openWallOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
     openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
     /** Asks for the summary of a wall file that has none; true when it is being written. */
@@ -85,7 +85,7 @@ internal class DiffCanvasCards(
         openWallDiff: (ReviewFile, WallLine?) -> Unit,
         showAllChanges: () -> Unit,
         wallChats: WallChats?,
-        openWallOnCanvas: ((path: String) -> Unit)?,
+        openWallOnCanvas: ((path: String, line: Int?) -> Unit)?,
         openOnWall: ((List<ReviewFile>, String) -> Unit)?,
         reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)?,
         summarizeWallFile: ((path: String) -> Boolean)?,

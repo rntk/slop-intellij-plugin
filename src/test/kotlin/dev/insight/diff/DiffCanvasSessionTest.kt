@@ -148,4 +148,18 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
             storePath.toFile().deleteRecursively()
         }
     }
+
+    fun testPrepareDiffCanvasSessionWithLineSetsRootTargetLine() {
+        val code = buildString {
+            append("class DiffTarget {\n")
+            for (i in 1..60) append("    int line$i = $i;\n")
+            append("}\n")
+        }
+        val target = file("DiffTarget.java", code)
+        val prepared = background {
+            prepareDiffCanvasSession(project, ReviewSnapshot(listOf(target), emptyList()), "DiffTarget.java", line = 42)
+        }
+        assertEquals(41, prepared.file.initialLine)
+        assertEquals(41, prepared.file.session.root.symbol?.line)
+    }
 }

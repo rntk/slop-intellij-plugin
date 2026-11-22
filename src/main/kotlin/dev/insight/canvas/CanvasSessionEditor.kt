@@ -90,6 +90,8 @@ internal class CanvasSessionFile(
     val diffs: Map<String, String> = emptyMap(),
 ) : LightVirtualFile("Canvas: ${source.name}") {
     @Volatile var session: CanvasSession = session
+    /** Optional 0-based line to reveal on the root card when the session opens or is focused. */
+    @Volatile var initialLine: Int? = null
 
     /** Each diff file's stamp while its source still matched the diff's new side. */
     private val diffStamps = diffs.keys.associateWith(::diffStamp)
@@ -121,10 +123,12 @@ class OpenCanvasSessionAction : AnAction() {
     }
 
     /** Shows the canvas session of [file] in an editor tab: the open one, else a saved or new one. */
-    internal fun open(project: Project, file: VirtualFile) {
+    internal fun open(project: Project, file: VirtualFile, line: Int? = null) {
+        val targetLine = line?.let { (it - 1).coerceAtLeast(0) }
         val manager = FileEditorManager.getInstance(project)
-        manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file }?.let {
-            manager.openFile(it, true)
+        manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file }?.let { existing ->
+            existing.initialLine = targetLine
+            openCanvasSessionTab(project, existing)
             return
         }
         fun showNotice(text: String, type: NotificationType = NotificationType.WARNING) {
@@ -140,9 +144,10 @@ class OpenCanvasSessionAction : AnAction() {
                     log.warn("Canvas session source is unavailable or unsupported: ${file.path}")
                     showNotice("This file cannot be shown. Check that its language plugin is enabled and the file is included in project content.")
                 } else {
-                    val existing = manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file }
-                    manager.openFile(existing ?: opened, true)
-                    log.info("Opened canvas session ${(existing ?: opened).session.id} for ${file.path}")
+                    val target = manager.openFiles.filterIsInstance<CanvasSessionFile>().firstOrNull { it.source == file } ?: opened
+                    if (targetLine != null) target.initialLine = targetLine
+                    openCanvasSessionTab(project, target)
+                    log.info("Opened canvas session ${target.session.id} for ${file.path}")
                 }
             } catch (e: CancellationException) {
                 log.info("Canvas session cancelled for ${file.path}", e)
@@ -210,6 +215,19 @@ class CanvasSessionEditorProvider : FileEditorProvider, DumbAware {
     override fun getPolicy() = FileEditorPolicy.HIDE_DEFAULT_EDITOR
 }
 
+/** Opens [file] in its editor tab and reveals [CanvasSessionFile.initialLine] on any open canvas editor for it. */
+internal fun openCanvasSessionTab(project: Project, file: CanvasSessionFile) {
+    val targetLine = file.initialLine
+    val manager = FileEditorManager.getInstance(project)
+    manager.openFile(file, true)
+    if (targetLine != null) {
+        manager.getEditors(file).filterIsInstance<CanvasSessionEditor>().forEach { it.revealLine(targetLine) }
+    }
+}
+
+internal fun activeCanvasSessionPanel(project: Project, file: CanvasSessionFile): CanvasSessionPanel? =
+    FileEditorManager.getInstance(project).getEditors(file).filterIsInstance<CanvasSessionEditor>().firstOrNull()?.activePanel
+
 /** Shows one session of the file at a time; switching sessions replaces the panel. */
 private class CanvasSessionEditor(private val project: Project, private val file: CanvasSessionFile,
     private val services: CanvasSessionServices) : UserDataHolderBase(), FileEditor {
@@ -217,8 +235,14 @@ private class CanvasSessionEditor(private val project: Project, private val file
     private var panel = create(file.session)
     private var disposed = false
 
+    internal val activePanel: CanvasSessionPanel get() = panel
+
     fun selectSession(session: CanvasSession) {
         if (panel.model.session.id != session.id) switchTo(session)
+    }
+
+    fun revealLine(line: Int) {
+        panel.revealInitialLine(line)
     }
 
     /** Deletes [id] when this editor shows it; returns whether it did. */

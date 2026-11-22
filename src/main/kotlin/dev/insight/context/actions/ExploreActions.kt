@@ -43,7 +43,10 @@ internal class OpenCanvasSessionContextAction : ContextAction {
         }
         request.data[ContextKeys.OPEN_ON_CANVAS]?.let { return it(request.context) }
         val file = request.sourceFile() ?: return report(request.project, InsightBundle.message("context.action.missing.file", request.context.location()))
-        OpenCanvasSessionAction().open(request.project, file)
+        val line = request.context.lines?.first
+            ?: request.candidates.firstOrNull { it.kind == ContextScopeKind.SELECTION || it.kind == ContextScopeKind.LINE }?.lines?.first
+            ?: request.candidates.firstNotNullOfOrNull { it.lines?.first }
+        OpenCanvasSessionAction().open(request.project, file, line)
     }
 }
 
