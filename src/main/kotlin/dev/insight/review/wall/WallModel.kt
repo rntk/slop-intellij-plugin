@@ -24,7 +24,7 @@ internal data class WallLine(val kind: Kind, val text: String, val old: Int? = n
  * One file of a wall: its [path], which keys its place, state and chats; the [title] its header names, folder muted; quiet
  * [stats] after it, such as a diff's line counts; and the rows to paint.
  */
-internal data class WallBlock(
+internal data class WallBlock @JvmOverloads constructor(
     val path: String,
     val title: String,
     /** Painted after the title, such as `+3 −1`; empty for none. */
@@ -34,7 +34,28 @@ internal data class WallBlock(
     val hiddenLines: Int,
     /** The cut rows the client still has, which the skim column shows after [lines]; empty when it has none. */
     val more: List<WallLine> = emptyList(),
-)
+    /** Loads additional cut rows up to [maxSkimLines] when rows exist beyond [lines] and [more]. */
+    val loadMore: ((maxSkimLines: Int) -> WallBlock)? = null,
+) {
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is WallBlock &&
+            path == other.path &&
+            title == other.title &&
+            stats == other.stats &&
+            lines == other.lines &&
+            hiddenLines == other.hiddenLines &&
+            more == other.more)
+
+    override fun hashCode(): Int {
+        var result = path.hashCode()
+        result = 31 * result + title.hashCode()
+        result = 31 * result + stats.hashCode()
+        result = 31 * result + lines.hashCode()
+        result = 31 * result + hiddenLines
+        result = 31 * result + more.hashCode()
+        return result
+    }
+}
 
 /**
  * How a wall lays its blocks out: [CARDS], a pannable masonry of movable, height-capped blocks; or [SKIM], one column of blocks
@@ -43,9 +64,23 @@ internal data class WallBlock(
 enum class WallMode { CARDS, SKIM }
 
 /** [block] as the skim column shows it: its rows and the cut rows the client kept, with only the rest noted as hidden. */
-internal fun wallSkimBlock(block: WallBlock): WallBlock =
-    if (block.more.isEmpty()) block
-    else block.copy(lines = block.lines + block.more, hiddenLines = (block.hiddenLines - block.more.size).coerceAtLeast(0), more = emptyList())
+internal fun wallSkimBlock(block: WallBlock): WallBlock {
+    val skimLoader = block.loadMore?.let { loader -> { limit: Int -> wallSkimBlock(loader(limit)) } }
+    return if (block.more.isEmpty()) {
+        if (skimLoader == null) block else block.copy(loadMore = skimLoader)
+    } else {
+        block.copy(
+            lines = block.lines + block.more,
+            hiddenLines = (block.hiddenLines - block.more.size).coerceAtLeast(0),
+            more = emptyList(),
+            loadMore = skimLoader,
+        )
+    }
+}
+
+/** Materializes remaining rows of [block] up to [maxSkimLines] (all remaining rows by default) when [WallBlock.loadMore] is available. */
+internal fun wallLoadMoreLines(block: WallBlock, maxSkimLines: Int = Int.MAX_VALUE): WallBlock =
+    block.loadMore?.invoke(maxSkimLines) ?: block
 
 /**
  * The width (at 100%) of the skim column's blocks in a viewport [viewportWidth] wide at [zoom]: the page less a [gap] each side and
@@ -69,14 +104,17 @@ internal fun wallNextTop(tops: List<Int>, current: Int, forward: Boolean): Int? 
 data class WallScope(val paths: List<String>?, val title: String)
 
 /**
- * What a wall shows: [scope] names it and keeps its layout; [blocks] are its files, in order; [summaries] holds the summary text
- * of the files that have one, by path; [summarizing] the files whose summary is being written.
+ * What a wall shows: [scope] names it and keeps its layout; [blocks] are its eager files, in order; [summaries] holds the
+ * summary text of the files that have one, by path; [summarizing] the files whose summary is being written. When [blockFor]
+ * is provided, [allPaths] lists every file in order and blocks are constructed lazily for loaded paths.
  */
 internal data class WallContent(
     val scope: WallScope,
     val blocks: List<WallBlock>,
     val summaries: Map<String, String> = emptyMap(),
     val summarizing: Set<String> = emptySet(),
+    val allPaths: List<String> = blocks.map { it.path },
+    val blockFor: ((String) -> WallBlock?)? = null,
 )
 
 /** A block's size or a placed block, in pixels. */
@@ -85,11 +123,48 @@ internal data class WallRect(val x: Int, val y: Int, val width: Int, val height:
 /** Pixel measures of the wall's monospace text, so sizing needs no font. */
 internal data class WallMetrics(val charWidth: Int, val lineHeight: Int, val headerHeight: Int, val padding: Int, val gap: Int)
 
+/** Counts non-trailing-empty lines in [text] (ignoring one final `\n` or `\r\n`) without allocating substrings. */
+internal fun countWallSourceLines(text: String): Int {
+    if (text.isEmpty()) return 0
+    val effectiveEnd = when {
+        text.endsWith("\r\n") -> text.length - 2
+        text.endsWith('\n') -> text.length - 1
+        else -> text.length
+    }
+    if (effectiveEnd <= 0) return 0
+    var count = 1
+    var pos = 0
+    while (true) {
+        val nl = text.indexOf('\n', pos)
+        if (nl < 0 || nl >= effectiveEnd) break
+        count++
+        pos = nl + 1
+    }
+    return count
+}
+
 /** The source rows of [text], numbered from [firstLine], at most [maxLines] of them; a final line break adds no row. */
 internal fun wallSourceLines(text: String, firstLine: Int = 1, maxLines: Int = Int.MAX_VALUE): List<WallLine> {
-    val body = text.replace("\r\n", "\n").removeSuffix("\n")
-    if (body.isEmpty()) return emptyList()
-    return body.split('\n').asSequence().take(maxLines).mapIndexed { index, line -> WallLine.source(firstLine + index, line) }.toList()
+    if (maxLines <= 0 || text.isEmpty()) return emptyList()
+    val effectiveEnd = when {
+        text.endsWith("\r\n") -> text.length - 2
+        text.endsWith('\n') -> text.length - 1
+        else -> text.length
+    }
+    if (effectiveEnd <= 0) return emptyList()
+    val result = ArrayList<WallLine>(minOf(maxLines, 64))
+    var start = 0
+    var index = 0
+    while (start <= effectiveEnd && result.size < maxLines) {
+        val nl = text.indexOf('\n', start)
+        val lineEnd = if (nl < 0 || nl > effectiveEnd) effectiveEnd else nl
+        val cleanEnd = if (lineEnd > start && text[lineEnd - 1] == '\r') lineEnd - 1 else lineEnd
+        result += WallLine.source(firstLine + index, text.substring(start, cleanEnd))
+        index++
+        if (nl < 0 || nl >= effectiveEnd) break
+        start = nl + 1
+    }
+    return result
 }
 
 /** The characters [block]'s line-number gutter takes: its widest number and a space, or none without source rows. */
@@ -293,3 +368,116 @@ internal fun wallFocusPosition(rect: WallRect, zoom: Double, offsetX: Int, offse
 
 /** The most rows a block paints by default; a longer file stays readable on a crowded wall and opens in full elsewhere. */
 internal const val WALL_MAX_LINES = 400
+
+/** Default number of file blocks loaded per chunk onto a wall so small/medium scopes load whole without interruption. */
+internal const val WALL_LOAD_CHUNK = 60
+
+/** Maximum rows materialized per block across cards and skim modes so huge files or patches never stall the UI thread. */
+internal const val WALL_MAX_SKIM_LINES = 2_000
+
+/** Maximum concurrent rich HTML summary panes kept active on a wall before off-screen summaries hibernate to painted rows. */
+internal const val WALL_ACTIVE_SUMMARY_LIMIT = 24
+
+/** Selects the initial chunk of up to [limit] paths from [allPaths], plus any [pinned] paths present in [allPaths]. */
+internal fun selectInitialWallPaths(
+    allPaths: List<String>,
+    limit: Int = WALL_LOAD_CHUNK,
+    pinned: Set<String> = emptySet(),
+): LinkedHashSet<String> {
+    val maxInitial = limit.coerceAtLeast(0)
+    val initialCount = minOf(maxInitial, allPaths.size)
+    val selected = LinkedHashSet<String>(initialCount + pinned.size)
+    for (index in 0 until initialCount) selected += allPaths[index]
+    if (pinned.isNotEmpty()) {
+        for (path in allPaths) {
+            if (path in pinned) selected += path
+        }
+    }
+    return selected
+}
+
+/** Selects up to [limit] unloaded paths from [allPaths] not yet in [loadedPaths], preserving scope order. */
+internal fun selectNextWallPaths(
+    allPaths: List<String>,
+    loadedPaths: Set<String>,
+    limit: Int = WALL_LOAD_CHUNK,
+): List<String> {
+    val maxAdd = limit.coerceAtLeast(0)
+    if (maxAdd == 0) return emptyList()
+    val next = ArrayList<String>(minOf(maxAdd, allPaths.size))
+    for (path in allPaths) {
+        if (path !in loadedPaths) {
+            next += path
+            if (next.size >= maxAdd) break
+        }
+    }
+    return next
+}
+
+internal fun wallLoadMoreAction(remaining: Int, chunkSize: Int = WALL_LOAD_CHUNK): String =
+    if (remaining <= chunkSize) "Load all $remaining" else "Load next $chunkSize"
+
+internal fun wallLoadMoreHeaderText(loaded: Int, total: Int, chunkSize: Int = WALL_LOAD_CHUNK): String =
+    "${wallLoadMoreAction((total - loaded).coerceAtLeast(0), chunkSize)} ($loaded / $total)"
+
+internal fun wallMoreCardTitle(loaded: Int, total: Int): String {
+    val rem = (total - loaded).coerceAtLeast(0)
+    return "+$rem more ${if (rem == 1) "file" else "files"} · $loaded of $total shown"
+}
+
+/**
+ * Selects up to [limit] paths among [summarizedPaths] to keep rich Markdown panes for, pinning [activePath] and
+ * prioritizing cards visible in or nearest to [viewport].
+ */
+internal fun selectActiveSummaryPaths(
+    summarizedPaths: Set<String>,
+    rects: Map<String, WallRect>,
+    viewport: WallRect?,
+    activePath: String?,
+    limit: Int = WALL_ACTIVE_SUMMARY_LIMIT,
+): Set<String> {
+    val maxActive = limit.coerceAtLeast(0)
+    if (summarizedPaths.size <= maxActive) return summarizedPaths
+    if (maxActive == 0) return emptySet()
+    val selected = LinkedHashSet<String>(maxActive)
+    if (activePath != null && activePath in summarizedPaths) {
+        selected += activePath
+        if (selected.size >= maxActive) return selected
+    }
+    val candidates = summarizedPaths.filter { it !in selected }
+    if (viewport == null || viewport.width <= 0 || viewport.height <= 0) {
+        for (path in candidates) {
+            if (selected.size >= maxActive) break
+            selected += path
+        }
+        return selected
+    }
+    val vLeft = viewport.x.toLong()
+    val vTop = viewport.y.toLong()
+    val vRight = vLeft + viewport.width
+    val vBottom = vTop + viewport.height
+    val cx = viewport.x + viewport.width / 2.0
+    val cy = viewport.y + viewport.height / 2.0
+    fun intersects(r: WallRect): Boolean =
+        r.width > 0 && r.height > 0 &&
+            r.x.toLong() < vRight && r.x.toLong() + r.width > vLeft &&
+            r.y.toLong() < vBottom && r.y.toLong() + r.height > vTop
+    fun distSq(r: WallRect): Double {
+        val dx = (r.x + r.width / 2.0) - cx
+        val dy = (r.y + r.height / 2.0) - cy
+        return dx * dx + dy * dy
+    }
+    val visible = candidates.filter { path -> rects[path]?.let(::intersects) == true }
+        .sortedBy { path -> rects[path]?.let(::distSq) ?: Double.MAX_VALUE }
+    val rest = candidates.filter { path -> rects[path]?.let(::intersects) != true }
+        .sortedBy { path -> rects[path]?.let(::distSq) ?: Double.MAX_VALUE }
+    for (path in visible) {
+        if (selected.size >= maxActive) break
+        selected += path
+    }
+    for (path in rest) {
+        if (selected.size >= maxActive) break
+        selected += path
+    }
+    return selected
+}

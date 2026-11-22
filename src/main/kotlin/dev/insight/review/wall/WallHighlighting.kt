@@ -88,16 +88,47 @@ internal fun wallSideExtents(rows: List<WallLine>): Pair<Int, Int> {
     return before to after
 }
 
-/** [text] with `\n` line breaks, cut after its line [lastLine] (1-based), so lexing it stops where the wall stops reading. */
-internal fun wallTextThrough(text: String, lastLine: Int): String {
-    val body = text.replace("\r\n", "\n")
-    if (lastLine <= 0) return ""
+/** Maximum number of source lines lexed for syntax highlighting on one side of a wall block. */
+internal const val WALL_MAX_HIGHLIGHT_LINES = 4_000
+
+/** Maximum character prefix lexed for syntax highlighting on one side of a wall block. */
+internal const val WALL_MAX_HIGHLIGHT_CHARS = 256_000
+
+/**
+ * [text] with `\n` line breaks, cut after its line [lastLine] (1-based) and bounded by [maxLines] and [maxChars],
+ * so lexing it stops where the wall stops reading.
+ */
+internal fun wallTextThrough(
+    text: String,
+    lastLine: Int,
+    maxLines: Int = WALL_MAX_HIGHLIGHT_LINES,
+    maxChars: Int = WALL_MAX_HIGHLIGHT_CHARS,
+): String {
+    val targetLines = minOf(lastLine, maxLines)
+    if (targetLines <= 0 || maxChars <= 0 || text.isEmpty()) return ""
     var at = -1
-    repeat(lastLine) {
-        at = body.indexOf('\n', at + 1)
-        if (at < 0) return body
+    var lastSafeNewline = -1
+    var reachedCharCap = false
+    for (line in 0 until targetLines) {
+        val next = text.indexOf('\n', at + 1)
+        if (next < 0) {
+            if (text.length > maxChars) reachedCharCap = true else at = text.length
+            break
+        }
+        if (next > maxChars) {
+            reachedCharCap = true
+            break
+        }
+        lastSafeNewline = next
+        at = next
     }
-    return body.substring(0, at)
+    val rawEnd = when {
+        reachedCharCap -> if (lastSafeNewline >= 0) lastSafeNewline else minOf(text.length, maxChars)
+        at >= 0 -> at
+        else -> text.length
+    }
+    val cleanEnd = if (rawEnd > 0 && text[rawEnd - 1] == '\r') rawEnd - 1 else rawEnd
+    return text.substring(0, cleanEnd).replace("\r\n", "\n")
 }
 
 /**

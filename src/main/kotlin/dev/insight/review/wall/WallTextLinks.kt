@@ -251,7 +251,7 @@ internal fun wallNewCardPosition(
 
 /**
  * Builds a numbered source [WallBlock] for a file added to the wall on demand, expanding past [maxLines] up to
- * [MAX_ADDED_BLOCK_LINES] when [targetLine] sits deeper in the file, and keeping remaining lines in [WallBlock.more].
+ * [MAX_ADDED_BLOCK_LINES] when [targetLine] sits deeper in the file, and keeping remaining lines up to [WALL_MAX_SKIM_LINES] in [WallBlock.more].
  */
 internal fun wallAddedSourceBlock(
     path: String,
@@ -259,22 +259,45 @@ internal fun wallAddedSourceBlock(
     targetLine: Int? = null,
     badge: String? = null,
     maxLines: Int = WALL_MAX_LINES,
+): WallBlock = wallAddedSourceBlock(path, text, targetLine, badge, maxLines, WALL_MAX_SKIM_LINES)
+
+/**
+ * Builds a numbered source [WallBlock] for a file added to the wall on demand, expanding past [maxLines] up to
+ * [MAX_ADDED_BLOCK_LINES] when [targetLine] sits deeper in the file, and keeping remaining lines up to [maxSkimLines] in [WallBlock.more].
+ */
+internal fun wallAddedSourceBlock(
+    path: String,
+    text: String,
+    targetLine: Int?,
+    badge: String?,
+    maxLines: Int,
+    maxSkimLines: Int,
 ): WallBlock {
-    val all = wallSourceLines(text)
+    val totalLines = countWallSourceLines(text)
     val showCount = if (targetLine != null && targetLine > maxLines) {
-        minOf(all.size, maxOf(maxLines, targetLine + 50), MAX_ADDED_BLOCK_LINES)
+        minOf(totalLines, maxOf(maxLines, targetLine + 50), MAX_ADDED_BLOCK_LINES)
     } else {
-        minOf(all.size, maxLines)
+        minOf(totalLines, maxLines)
     }
-    val countLabel = if (all.isEmpty()) "" else "${all.size} ${if (all.size == 1) "line" else "lines"}"
+    val parseLimit = minOf(MAX_ADDED_BLOCK_LINES, maxOf(showCount, maxSkimLines))
+    val parsed = wallSourceLines(text, maxLines = parseLimit)
+    val lines = parsed.take(showCount)
+    val more = parsed.drop(showCount)
+    val hiddenLines = (totalLines - lines.size).coerceAtLeast(0)
+    val countLabel = if (totalLines == 0) "" else "$totalLines ${if (totalLines == 1) "line" else "lines"}"
     val stats = listOfNotNull(countLabel.takeIf { it.isNotEmpty() }, badge?.takeIf { it.isNotBlank() }).joinToString(" · ")
-    return WallBlock(path, path, stats, all.take(showCount), (all.size - showCount).coerceAtLeast(0), all.drop(showCount))
+    val loadMore: ((Int) -> WallBlock)? = if (hiddenLines > more.size && parseLimit < MAX_ADDED_BLOCK_LINES) {
+        { nextMaxSkim -> wallAddedSourceBlock(path, text, targetLine, badge, maxLines, maxOf(parseLimit, nextMaxSkim)) }
+    } else null
+    return WallBlock(path, path, stats, lines, hiddenLines, more, loadMore)
 }
 
 /** Materializes rows from [WallBlock.more] into [WallBlock.lines] when [targetLine] lies beyond the current line cap. */
 internal fun wallExpandBlockForLine(block: WallBlock, targetLine: Int): WallBlock {
     if (block.more.isEmpty()) return block
-    val index = block.more.indexOfFirst { it.new == targetLine || it.old == targetLine }
+    val index = block.more.indexOfFirst { it.new == targetLine }
+        .takeIf { it >= 0 }
+        ?: block.more.indexOfFirst { it.old == targetLine }
     if (index < 0) return block
     val take = minOf(block.more.size, index + 51)
     return block.copy(

@@ -1,10 +1,18 @@
 package dev.insight.diff
 
+import dev.insight.review.wall.WALL_MAX_LINES
+import dev.insight.review.wall.WALL_MAX_SKIM_LINES
 import dev.insight.review.wall.WallLine
 import dev.insight.review.wall.WallMetrics
 import dev.insight.review.wall.wallBlockHeight
 import dev.insight.review.wall.wallBlockWidth
+import dev.insight.review.wall.wallLoadMoreLines
+import dev.insight.review.wall.wallSkimBlock
+import dev.insight.review.wall.wallTargetRow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiffsWallModelTest {
@@ -67,5 +75,62 @@ class DiffsWallModelTest {
         assertEquals(listOf("b.kt", "a.kt"), wall.blocks.map { it.path })
         assertEquals(mapOf("a.kt" to "Sum"), wall.summaries)
         assertEquals(setOf("b.kt"), wall.summarizing)
+    }
+
+    @Test
+    fun oversizedPatchCapsMaterializedLinesWhileCountingFullStatsAndHiddenLines() {
+        val totalAdded = WALL_MAX_SKIM_LINES + 50
+        val totalRemoved = 10
+        val patch = buildString {
+            append("@@ -1,$totalRemoved +1,$totalAdded @@\n")
+            repeat(totalRemoved) { append("-old $it\n") }
+            repeat(totalAdded) { append("+new $it\n") }
+        }
+        val block = wallBlock(file("huge.kt", patch))
+        val totalLines = 1 + totalRemoved + totalAdded
+        assertEquals(WALL_MAX_LINES, block.lines.size)
+        assertEquals(WALL_MAX_SKIM_LINES - WALL_MAX_LINES, block.more.size)
+        assertEquals(totalLines - WALL_MAX_LINES, block.hiddenLines)
+        assertEquals("+$totalAdded −$totalRemoved", block.stats)
+        assertNotNull(block.loadMore)
+
+        val skim = wallSkimBlock(block)
+        assertEquals(WALL_MAX_SKIM_LINES, skim.lines.size)
+        assertEquals(totalLines - WALL_MAX_SKIM_LINES, skim.hiddenLines)
+        assertNotNull(skim.loadMore)
+
+        val expanded = wallLoadMoreLines(skim)
+        assertEquals(totalLines, expanded.lines.size)
+        assertEquals(0, expanded.hiddenLines)
+        assertNull(expanded.loadMore)
+    }
+
+    @Test
+    fun locatesSmallNewLineNumberAfterManyDeletionsUsingHunkCoordinates() {
+        val deletedRows = 2_200
+        val patch = buildString {
+            append("@@ -1,$deletedRows +1,15 @@\n")
+            repeat(deletedRows) { i -> append("-removed ${i + 1}\n") }
+            repeat(15) { i -> append("+added ${i + 1}\n") }
+        }
+        val rf = file("deleted_heavy.kt", patch)
+        val block = wallBlock(rf)
+        // Old-side line 12 sits inside the initial 400-line prefix, while new-side line 12 sits well past WALL_MAX_SKIM_LINES
+        // and past targetLine * 2 + 100 (12 * 2 + 100 = 124).
+        val expectedNewRow = 1 + deletedRows + 11
+        assertEquals(expectedNewRow, wallPatchTargetRow(patch, 12))
+        assertEquals(100, wallPatchTargetRow(patch, 100))
+        assertNull(wallPatchTargetRow(patch, 9_999))
+
+        val expanded = wallExpandDiffBlock(rf, block, targetLine = 12)
+        assertNotNull(expanded)
+        val hit = wallTargetRow(expanded!!.lines, 12..12)!!
+        assertTrue(hit.exact)
+        assertEquals(expectedNewRow, hit.rowIndex)
+        assertEquals("+added 12", expanded.lines[hit.rowIndex].text)
+
+        // Already shown line or missing line requires no expansion.
+        assertNull(wallExpandDiffBlock(rf, expanded, targetLine = 12))
+        assertNull(wallExpandDiffBlock(rf, block, targetLine = 9_999))
     }
 }

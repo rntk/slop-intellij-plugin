@@ -21,7 +21,11 @@ import dev.insight.review.ui.openReportFile
 import dev.insight.review.ui.readVirtualFileText
 import dev.insight.review.ui.reportLinkContextPick
 import dev.insight.review.wall.AddedWallSource
+import dev.insight.review.wall.MAX_ADDED_BLOCK_LINES
 import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
+import dev.insight.review.wall.WALL_LOAD_CHUNK
+import dev.insight.review.wall.WALL_MAX_LINES
+import dev.insight.review.wall.WALL_MAX_SKIM_LINES
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
@@ -39,6 +43,7 @@ import dev.insight.review.wall.wallAddedSourceBlock
 import dev.insight.review.wall.wallExpandBlockForLine
 import dev.insight.review.wall.wallRowSpans
 import dev.insight.review.wall.wallSideExtents
+import dev.insight.review.wall.wallTargetRow
 import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
@@ -62,19 +67,52 @@ internal class CodeWallView(
     private val allFiles: (() -> List<CodeFile>)? = null,
     private val summaryTree: (() -> ReviewSummaryTree?)? = null,
     private val openOnWall: ((List<CodeFile>, String) -> Unit)? = null,
+    /** Number of source blocks loaded per chunk so large scopes stay responsive. */
+    loadChunk: Int = WALL_LOAD_CHUNK,
 ) : Disposable {
     private var files: List<CodeFile> = emptyList()
+    private var filesByPath: Map<String, CodeFile> = emptyMap()
     private var baseContent: CodeWallContent? = null
-    private var baseBlocks: List<WallBlock> = emptyList()
+    private val blockCache = mutableMapOf<String, Pair<CodeFile, WallBlock>>()
     private val addedScopeFiles = linkedMapOf<String, CodeFile>()
     private val addedProjectFiles = linkedMapOf<String, AddedWallSource>()
     private val expandedBlocks = mutableMapOf<String, WallBlock>()
-    private var shown: WallContent? = null
 
     private fun snapshotFiles(): List<CodeFile> = allFiles?.invoke() ?: files
 
     private fun scopeFileFor(path: String): CodeFile? =
-        files.firstOrNull { it.path == path } ?: addedScopeFiles[path]
+        filesByPath[path] ?: addedScopeFiles[path]
+
+    private fun baseBlockFor(file: CodeFile): WallBlock {
+        val cached = blockCache[file.path]
+        if (cached != null && cached.first == file) return cached.second
+        return codeWallBlock(file).also { blockCache[file.path] = file to it }
+    }
+
+    private fun blockForPath(path: String): WallBlock? {
+        expandedBlocks[path]?.let { return it }
+        filesByPath[path]?.let { return baseBlockFor(it) }
+        addedScopeFiles[path]?.let { return baseBlockFor(it) }
+        return addedProjectFiles[path]?.let { wallAddedSourceBlock(it.path, it.text, it.targetLine, badge = "outside scope") }
+    }
+
+    private fun expandForTargetLine(path: String, current: WallBlock, targetLine: Int): WallBlock? {
+        if (wallTargetRow(current.lines, targetLine..targetLine)?.exact == true) return null
+        var expanded = wallExpandBlockForLine(current, targetLine)
+        if (expanded !== current) return expanded
+        if (current.hiddenLines <= current.more.size || targetLine > MAX_ADDED_BLOCK_LINES) return null
+        val cf = scopeFileFor(path)
+        if (cf != null) {
+            val maxSkim = minOf(MAX_ADDED_BLOCK_LINES, maxOf(WALL_MAX_SKIM_LINES, targetLine + 51))
+            val larger = codeWallBlock(cf, WALL_MAX_LINES, maxSkim)
+            expanded = wallExpandBlockForLine(larger, targetLine)
+            return expanded.takeIf { it !== larger }
+        }
+        val src = addedProjectFiles[path] ?: return null
+        val maxSkim = minOf(MAX_ADDED_BLOCK_LINES, maxOf(WALL_MAX_SKIM_LINES, targetLine + 51))
+        val larger = wallAddedSourceBlock(src.path, src.text, targetLine, "outside scope", WALL_MAX_LINES, maxSkim)
+        return larger.takeIf { it.lines.size > current.lines.size }
+    }
 
     private val linkHost = object : WallLinkHost {
         override val isDiffWall: Boolean = false
@@ -99,13 +137,14 @@ internal class CodeWallView(
             val all = snapshotFiles()
             val scopeMatch = matchingReviewSource(all, path, absolutePath) as? CodeFile
             if (scopeMatch != null) {
-                addedScopeFiles[scopeMatch.path] = scopeMatch
-                lines?.first?.let { target ->
-                    val base = codeWallBlock(scopeMatch)
-                    val expanded = wallExpandBlockForLine(base, target)
-                    if (expanded !== base) expandedBlocks[scopeMatch.path] = expanded
+                val inBase = scopeMatch.path in filesByPath
+                if (!inBase) addedScopeFiles[scopeMatch.path] = scopeMatch
+                val expanded = lines?.first?.let { target ->
+                    val current = expandedBlocks[scopeMatch.path] ?: baseBlockFor(scopeMatch)
+                    expandForTargetLine(scopeMatch.path, current, target)
                 }
-                rebuildAndShow()
+                if (expanded != null) expandedBlocks[scopeMatch.path] = expanded
+                if (!inBase || expanded != null) rebuildAndShow()
                 return scopeMatch.path
             }
             val p = project ?: return null
@@ -120,9 +159,8 @@ internal class CodeWallView(
         }
 
         override fun ensureLineLoaded(path: String, targetLine: Int): Boolean {
-            val current = shown?.blocks?.firstOrNull { it.path == path } ?: return false
-            val expanded = wallExpandBlockForLine(current, targetLine)
-            if (expanded === current) return false
+            val current = view.blocks.firstOrNull { it.block.path == path }?.block ?: blockForPath(path) ?: return false
+            val expanded = expandForTargetLine(path, current, targetLine) ?: return false
             expandedBlocks[path] = expanded
             rebuildAndShow()
             return true
@@ -145,7 +183,7 @@ internal class CodeWallView(
         }
     }
 
-    val view = WallView(
+    val view: WallView = WallView(
         CODE_WALL_LABELS,
         openLine = ::openWallTarget,
         showAll = showAllFiles,
@@ -161,6 +199,7 @@ internal class CodeWallView(
             linkHost = linkHost,
             onRemoveBlock = ::removeAdded,
         ),
+        loadChunk = loadChunk,
     )
     val card: JPanel get() = view.card
 
@@ -201,6 +240,7 @@ internal class CodeWallView(
             addedScopeFiles.clear()
             addedProjectFiles.clear()
             expandedBlocks.clear()
+            blockCache.clear()
         }
         val basePaths = content.files.map { it.path }.toSet()
         val allByPath = snapshotFiles().associateBy { it.path }
@@ -212,27 +252,31 @@ internal class CodeWallView(
         addedProjectFiles.keys.removeAll { it in basePaths || it in allByPath }
         expandedBlocks.keys.retainAll { it in basePaths || it in addedScopeFiles || it in addedProjectFiles }
 
-        val blocksChanged = baseContent == null || content.files != files || scopeChanged
-        if (blocksChanged) {
-            baseBlocks = content.files.map { codeWallBlock(it) }
-            expandedBlocks.keys.removeAll { it in basePaths }
-        }
+        val oldByPath = filesByPath
         files = content.files
+        filesByPath = content.files.associateBy { it.path }
+        for ((path, cf) in filesByPath) {
+            if (oldByPath[path] != cf) expandedBlocks.remove(path)
+        }
+        blockCache.keys.retainAll(filesByPath.keys + addedScopeFiles.keys)
         baseContent = content
         rebuildAndShow()
     }
 
     private fun rebuildAndShow() {
         val content = baseContent ?: return
-        val blocks = buildList {
-            baseBlocks.forEach { block -> add(expandedBlocks[block.path] ?: block) }
-            addedScopeFiles.values.forEach { cf -> add(expandedBlocks[cf.path] ?: codeWallBlock(cf)) }
-            addedProjectFiles.values.forEach { src ->
-                add(expandedBlocks[src.path] ?: wallAddedSourceBlock(src.path, src.text, src.targetLine, badge = "outside scope"))
-            }
+        val allPaths = buildList(files.size + addedScopeFiles.size + addedProjectFiles.size) {
+            files.forEach { add(it.path) }
+            addedScopeFiles.keys.forEach { add(it) }
+            addedProjectFiles.keys.forEach { add(it) }
         }
-        val wall = WallContent(content.scope, blocks, content.summaries)
-        shown = wall
+        val wall = WallContent(
+            scope = content.scope,
+            blocks = emptyList(),
+            summaries = content.summaries,
+            allPaths = allPaths,
+            blockFor = ::blockForPath,
+        )
         view.show(wall)
     }
 

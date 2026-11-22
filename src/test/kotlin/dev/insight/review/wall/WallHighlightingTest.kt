@@ -66,6 +66,10 @@ class WallHighlightingTest {
         assertEquals("1\n2", wallTextThrough("1\r\n2\r\n3\r\n", 2))
         assertEquals("1\n2", wallTextThrough("1\n2", 5))
         assertEquals("", wallTextThrough("1\n2", 0))
+        // Respects maxLines and maxChars caps on oversized sources without splitting inside a line when newlines exist.
+        assertEquals("1\n2", wallTextThrough("1\n2\n3\n4", 10, maxLines = 2))
+        assertEquals("1\n2", wallTextThrough("1\r\n2\r\n3\r\n4", 10, maxChars = 6))
+        assertEquals("abc", wallTextThrough("abcdef", 1, maxChars = 3))
     }
 
     @Test

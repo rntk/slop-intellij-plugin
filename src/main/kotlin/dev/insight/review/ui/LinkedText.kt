@@ -189,7 +189,7 @@ internal class LinkedTextLinks(private val project: Project, private val scope: 
 
     private fun refresh(throttle: Boolean = true) {
         val now = System.currentTimeMillis()
-        if (job?.isActive == true || project.isDisposed || (throttle && now - checkedAt < REFRESH_INTERVAL_MS)) return
+        if (job?.isActive == true || project.isDisposed || (throttle && watching != null && now - checkedAt < REFRESH_INTERVAL_MS)) return
         checkedAt = now
         job = scope.launch(Dispatchers.EDT) {
             try {

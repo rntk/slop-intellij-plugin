@@ -26,7 +26,11 @@ import dev.insight.review.ui.openReportFile
 import dev.insight.review.ui.readVirtualFileText
 import dev.insight.review.ui.reportLinkContextPick
 import dev.insight.review.wall.AddedWallSource
+import dev.insight.review.wall.MAX_ADDED_BLOCK_LINES
 import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
+import dev.insight.review.wall.WALL_LOAD_CHUNK
+import dev.insight.review.wall.WALL_MAX_LINES
+import dev.insight.review.wall.WALL_MAX_SKIM_LINES
 import dev.insight.review.wall.WALL_MENU_KEY
 import dev.insight.review.wall.WallChatText
 import dev.insight.review.wall.WallChats
@@ -44,6 +48,7 @@ import dev.insight.review.wall.wallAddedSourceBlock
 import dev.insight.review.wall.wallExpandBlockForLine
 import dev.insight.review.wall.wallRowSpans
 import dev.insight.review.wall.wallSideExtents
+import dev.insight.review.wall.wallTargetRow
 import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
@@ -73,19 +78,48 @@ internal class DiffsWallView(
     private val allFiles: (() -> List<ReviewFile>)? = null,
     /** Optional summary tree for context picker actions on linked files. */
     private val summaryTree: (() -> ReviewSummaryTree?)? = null,
+    /** Number of diff blocks loaded per chunk so large changes stay responsive. */
+    loadChunk: Int = WALL_LOAD_CHUNK,
 ) : Disposable {
     private var files: List<ReviewFile> = emptyList()
+    private var filesByPath: Map<String, ReviewFile> = emptyMap()
     private var baseContent: DiffsWallContent? = null
-    private var baseBlocks: List<WallBlock> = emptyList()
+    private val blockCache = mutableMapOf<String, Pair<ReviewFile, WallBlock>>()
     private val addedDiffs = linkedMapOf<String, ReviewFile>()
     private val addedSources = linkedMapOf<String, AddedWallSource>()
     private val expandedBlocks = mutableMapOf<String, WallBlock>()
-    private var shown: WallContent? = null
 
     private fun snapshotFiles(): List<ReviewFile> = allFiles?.invoke() ?: files
 
     private fun diffFileFor(path: String): ReviewFile? =
-        files.firstOrNull { it.path == path } ?: addedDiffs[path]
+        filesByPath[path] ?: addedDiffs[path]
+
+    private fun baseBlockFor(file: ReviewFile): WallBlock {
+        val cached = blockCache[file.path]
+        if (cached != null && cached.first == file) return cached.second
+        return wallBlock(file).also { blockCache[file.path] = file to it }
+    }
+
+    private fun blockForPath(path: String): WallBlock? {
+        expandedBlocks[path]?.let { return it }
+        filesByPath[path]?.let { return baseBlockFor(it) }
+        addedDiffs[path]?.let { return baseBlockFor(it) }
+        return addedSources[path]?.let { wallAddedSourceBlock(it.path, it.text, it.targetLine, badge = "not in diff") }
+    }
+
+    private fun expandForTargetLine(path: String, current: WallBlock, targetLine: Int): WallBlock? {
+        val rf = diffFileFor(path)
+        if (rf != null) return wallExpandDiffBlock(rf, current, targetLine)
+        if (wallTargetRow(current.lines, targetLine..targetLine)?.exact == true) return null
+        val expanded = wallExpandBlockForLine(current, targetLine)
+        if (expanded !== current) return expanded
+        if (current.hiddenLines <= current.more.size) return null
+        val src = addedSources[path] ?: return null
+        if (targetLine > MAX_ADDED_BLOCK_LINES) return null
+        val maxSkim = minOf(MAX_ADDED_BLOCK_LINES, maxOf(WALL_MAX_SKIM_LINES, targetLine + 51))
+        val larger = wallAddedSourceBlock(src.path, src.text, targetLine, "not in diff", WALL_MAX_LINES, maxSkim)
+        return larger.takeIf { it.lines.size > current.lines.size }
+    }
 
     private val linkHost = object : WallLinkHost {
         override val isDiffWall: Boolean = true
@@ -117,13 +151,14 @@ internal class DiffsWallView(
             val matchingDiff = matchingReviewSource(all, path, absolutePath) as? ReviewFile
                 ?: all.firstOrNull { it.previousPath?.let(::normalizeWallPath) == normalizeWallPath(path) }
             if (matchingDiff != null) {
-                addedDiffs[matchingDiff.path] = matchingDiff
-                lines?.first?.let { target ->
-                    val base = wallBlock(matchingDiff)
-                    val expanded = wallExpandBlockForLine(base, target)
-                    if (expanded !== base) expandedBlocks[matchingDiff.path] = expanded
+                val inBase = matchingDiff.path in filesByPath
+                if (!inBase) addedDiffs[matchingDiff.path] = matchingDiff
+                val expanded = lines?.first?.let { target ->
+                    val current = expandedBlocks[matchingDiff.path] ?: baseBlockFor(matchingDiff)
+                    expandForTargetLine(matchingDiff.path, current, target)
                 }
-                rebuildAndShow()
+                if (expanded != null) expandedBlocks[matchingDiff.path] = expanded
+                if (!inBase || expanded != null) rebuildAndShow()
                 return matchingDiff.path
             }
             val p = project ?: return null
@@ -138,9 +173,8 @@ internal class DiffsWallView(
         }
 
         override fun ensureLineLoaded(path: String, targetLine: Int): Boolean {
-            val current = shown?.blocks?.firstOrNull { it.path == path } ?: return false
-            val expanded = wallExpandBlockForLine(current, targetLine)
-            if (expanded === current) return false
+            val current = view.blocks.firstOrNull { it.block.path == path }?.block ?: blockForPath(path) ?: return false
+            val expanded = expandForTargetLine(path, current, targetLine) ?: return false
             expandedBlocks[path] = expanded
             rebuildAndShow()
             return true
@@ -163,7 +197,7 @@ internal class DiffsWallView(
         }
     }
 
-    val view = WallView(
+    val view: WallView = WallView(
         DIFFS_WALL_LABELS,
         openLine = ::openWallTarget,
         showAll = showAllChanges,
@@ -180,6 +214,7 @@ internal class DiffsWallView(
             canSummarize = { it !in addedSources },
             onRemoveBlock = ::removeAdded,
         ),
+        loadChunk = loadChunk,
     )
     val card: JPanel get() = view.card
 
@@ -230,6 +265,7 @@ internal class DiffsWallView(
             addedDiffs.clear()
             addedSources.clear()
             expandedBlocks.clear()
+            blockCache.clear()
         }
         val basePaths = content.files.map { it.path }.toSet()
         val allByPath = snapshotFiles().associateBy { it.path }
@@ -241,27 +277,32 @@ internal class DiffsWallView(
         addedSources.keys.removeAll { it in basePaths || it in allByPath }
         expandedBlocks.keys.retainAll { it in basePaths || it in addedDiffs || it in addedSources }
 
-        val blocksChanged = baseContent == null || content.files != files || scopeChanged
-        if (blocksChanged) {
-            baseBlocks = content.files.map { wallBlock(it) }
-            expandedBlocks.keys.removeAll { it in basePaths }
-        }
+        val oldByPath = filesByPath
         files = content.files
+        filesByPath = content.files.associateBy { it.path }
+        for ((path, rf) in filesByPath) {
+            if (oldByPath[path] != rf) expandedBlocks.remove(path)
+        }
+        blockCache.keys.retainAll(filesByPath.keys + addedDiffs.keys)
         baseContent = content
         rebuildAndShow()
     }
 
     private fun rebuildAndShow() {
         val content = baseContent ?: return
-        val blocks = buildList {
-            baseBlocks.forEach { block -> add(expandedBlocks[block.path] ?: block) }
-            addedDiffs.values.forEach { rf -> add(expandedBlocks[rf.path] ?: wallBlock(rf)) }
-            addedSources.values.forEach { src ->
-                add(expandedBlocks[src.path] ?: wallAddedSourceBlock(src.path, src.text, src.targetLine, badge = "not in diff"))
-            }
+        val allPaths = buildList(files.size + addedDiffs.size + addedSources.size) {
+            files.forEach { add(it.path) }
+            addedDiffs.keys.forEach { add(it) }
+            addedSources.keys.forEach { add(it) }
         }
-        val wall = WallContent(content.scope, blocks, content.summaries, content.summarizing)
-        shown = wall
+        val wall = WallContent(
+            scope = content.scope,
+            blocks = emptyList(),
+            summaries = content.summaries,
+            summarizing = content.summarizing,
+            allPaths = allPaths,
+            blockFor = ::blockForPath,
+        )
         view.show(wall)
     }
 

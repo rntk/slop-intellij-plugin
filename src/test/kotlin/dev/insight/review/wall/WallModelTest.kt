@@ -14,13 +14,46 @@ class WallModelTest {
 
     @Test
     fun skimBlockShowsTheKeptCutRowsAndNotesOnlyTheRest() {
-        val kept = WallBlock("a", "a", "", listOf(WallLine(WallLine.Kind.CONTEXT, " a")), 3, listOf(WallLine(WallLine.Kind.ADDED, "+b")))
+        var extraLoaded = false
+        val kept = WallBlock(
+            "a",
+            "a",
+            "",
+            listOf(WallLine(WallLine.Kind.CONTEXT, " a")),
+            3,
+            listOf(WallLine(WallLine.Kind.ADDED, "+b")),
+            loadMore = { limit ->
+                extraLoaded = true
+                WallBlock(
+                    "a",
+                    "a",
+                    "",
+                    listOf(WallLine(WallLine.Kind.CONTEXT, " a")),
+                    3,
+                    listOf(
+                        WallLine(WallLine.Kind.ADDED, "+b"),
+                        WallLine(WallLine.Kind.ADDED, "+c"),
+                        WallLine(WallLine.Kind.ADDED, "+d"),
+                    ).take(limit - 1),
+                )
+            },
+        )
         val skim = wallSkimBlock(kept)
         assertEquals(listOf(" a", "+b"), skim.lines.map { it.text })
         assertEquals(2, skim.hiddenLines)
         assertTrue(skim.more.isEmpty())
+
+        // Equality ignores the loadMore lambda identity, while wallLoadMoreLines materializes the remaining rows.
+        assertEquals(kept, kept.copy(loadMore = null))
+        val loaded = wallLoadMoreLines(skim)
+        assertTrue(extraLoaded)
+        assertEquals(listOf(" a", "+b", "+c", "+d"), loaded.lines.map { it.text })
+        assertEquals(0, loaded.hiddenLines)
+        assertNull(loaded.loadMore)
+
         val plain = block("x", hidden = 4)
         assertTrue(wallSkimBlock(plain) === plain)
+        assertTrue(wallLoadMoreLines(plain) === plain)
     }
 
     @Test
@@ -237,6 +270,63 @@ class WallModelTest {
         // The body shows what is left under the header and padding, and at least one row.
         assertEquals(4, wallBodyRows(24 + 2 * 4 + 4 * 16, metrics))
         assertEquals(1, wallBodyRows(10, metrics))
+    }
+
+    @Test
+    fun chunkSelectionAndContinuationTextAreGenerousAndOrdered() {
+        assertTrue(WALL_LOAD_CHUNK >= 50)
+        val all = (0 until 10).map { "src/File$it.kt" }
+        val initial = selectInitialWallPaths(all, limit = 4, pinned = setOf("src/File8.kt"))
+        assertEquals(listOf("src/File0.kt", "src/File1.kt", "src/File2.kt", "src/File3.kt", "src/File8.kt"), initial.toList())
+        assertEquals(all.toSet(), selectInitialWallPaths(all, limit = 20))
+
+        val batch1 = selectNextWallPaths(all, initial, limit = 3)
+        assertEquals(listOf("src/File4.kt", "src/File5.kt", "src/File6.kt"), batch1)
+        val loaded = initial + batch1
+        val batch2 = selectNextWallPaths(all, loaded, limit = 3)
+        assertEquals(listOf("src/File7.kt", "src/File9.kt"), batch2)
+        assertTrue(selectNextWallPaths(all, loaded + batch2, limit = 3).isEmpty())
+
+        assertEquals("Load next 60", wallLoadMoreAction(100, 60))
+        assertEquals("Load all 40", wallLoadMoreAction(40, 60))
+        assertEquals("Load next 60 (60 / 150)", wallLoadMoreHeaderText(60, 150, 60))
+        assertEquals("Load all 40 (60 / 100)", wallLoadMoreHeaderText(60, 100, 60))
+        assertEquals("+1 more file · 9 of 10 shown", wallMoreCardTitle(9, 10))
+        assertEquals("+40 more files · 60 of 100 shown", wallMoreCardTitle(60, 100))
+    }
+
+    @Test
+    fun activeSummaryPlannerKeepsAllUnderLimitAndPrioritizesActiveAndVisible() {
+        val all = (0 until 8).map { "f$it.kt" }.toSet()
+        assertEquals(all, selectActiveSummaryPaths(all, emptyMap(), null, "f0.kt", limit = 8))
+
+        val rects = mapOf(
+            "f0.kt" to WallRect(5000, 0, 200, 200),
+            "f1.kt" to WallRect(10, 10, 200, 200),
+            "f2.kt" to WallRect(250, 10, 200, 200),
+            "f3.kt" to WallRect(1200, 0, 200, 200),
+            "f4.kt" to WallRect(3000, 0, 200, 200),
+        )
+        val viewport = WallRect(0, 0, 500, 500)
+        val selected = selectActiveSummaryPaths(rects.keys, rects, viewport, activePath = "f0.kt", limit = 3)
+        assertEquals(setOf("f0.kt", "f1.kt", "f2.kt"), selected)
+    }
+
+    @Test
+    fun sourceLineCountingAndCappedParsingMatchAcrossLineEndings() {
+        assertEquals(0, countWallSourceLines(""))
+        assertEquals(0, countWallSourceLines("\n"))
+        assertEquals(0, countWallSourceLines("\r\n"))
+        assertEquals(2, countWallSourceLines("a\r\nb\r\n"))
+        assertEquals(2, countWallSourceLines("a\n\n"))
+
+        val big = (1..1000).joinToString("\r\n") { "line $it" } + "\r\n"
+        assertEquals(1000, countWallSourceLines(big))
+        val capped = wallSourceLines(big, firstLine = 1, maxLines = 15)
+        assertEquals(15, capped.size)
+        assertEquals("line 1", capped.first().text)
+        assertEquals("line 15", capped.last().text)
+        assertEquals(15, capped.last().new)
     }
 }
 

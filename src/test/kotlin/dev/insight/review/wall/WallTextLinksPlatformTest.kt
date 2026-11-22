@@ -8,6 +8,8 @@ import dev.insight.codereview.CodeReviewTab
 import dev.insight.codereview.codeFile
 import dev.insight.codereview.codeSnapshot
 import dev.insight.diff.DiffReviewTab
+import dev.insight.diff.DiffsWallContent
+import dev.insight.diff.DiffsWallView
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
 import dev.insight.llm.Completion
@@ -306,6 +308,59 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             assertEquals(diffScroll, block.bodyScroll)
         } finally {
             Disposer.dispose(tab)
+        }
+    }
+
+    fun `test link to unloaded scope file loads only that card on demand without external badge`() {
+        val files = (0 until 5).map { i ->
+            val path = "src/F$i.kt"
+            val text = "fun f$i() = 1\nfun target$i() = $i\n"
+            val vf = myFixture.addFileToProject(path, text).virtualFile
+            ReviewFile(
+                path = path,
+                absolutePath = vf.path,
+                previousPath = null,
+                status = "modified",
+                patch = "@@ -1,2 +1,2 @@\n fun f$i() = 1\n-fun target$i() = 0\n+fun target$i() = $i\n",
+                fingerprint = "fp$i",
+                before = "fun f$i() = 1\nfun target$i() = 0\n",
+                after = text,
+            )
+        }
+        val wall = DiffsWallView(
+            openDiff = { _, _ -> },
+            showAllChanges = {},
+            project = project,
+            allFiles = { files },
+            loadChunk = 2,
+        )
+        try {
+            wall.show(DiffsWallContent(WallScope(null, "All changes"), files, mapOf("src/F0.kt" to "Calls `src/F4.kt:L2`.")))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            layoutTree(pane)
+
+            assertEquals(listOf("src/F0.kt", "src/F1.kt"), wall.view.blocks.map { it.block.path })
+            assertEquals(3, wall.view.remainingFilesCount)
+
+            val block0 = wall.view.blocks.single { it.block.path == "src/F0.kt" }
+            clickSummaryToggle(block0)
+            assertTrue(block0.showsSummary)
+            val summaryPane = block0.summaryTextPane!!
+            waitForLinks(summaryPane) { it.renderedLinks.any { l -> l.primaryPath == "src/F4.kt" && l.lines == 2..2 } }
+
+            summaryPane.activateLink(summaryPane.renderedLinks.first { it.primaryPath == "src/F4.kt" && it.lines == 2..2 })
+            layoutTree(pane)
+
+            assertEquals(setOf("src/F0.kt", "src/F1.kt", "src/F4.kt"), wall.view.blocks.map { it.block.path }.toSet())
+            assertEquals(2, wall.view.remainingFilesCount)
+            val loaded4 = wall.view.blocks.single { it.block.path == "src/F4.kt" }
+            assertTrue("Loaded target block should become active", loaded4.active)
+            assertEquals(setOf(3), loaded4.highlightedRows())
+            assertTrue("Base-scope file must not be marked as an external added card",
+                loaded4.buildMenu().components.filterIsInstance<JMenuItem>().none { it.text == "Remove from wall" })
+        } finally {
+            Disposer.dispose(wall)
         }
     }
 

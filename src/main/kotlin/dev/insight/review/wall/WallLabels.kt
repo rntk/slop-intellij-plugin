@@ -24,6 +24,8 @@ internal data class WallLabels(
     val emptyBlock: String,
     /** The row noting how many rows the line cap cut. */
     val hiddenLines: (Int) -> String,
+    /** The row noting how many rows the skim column's initial cap cut when clicking loads the rest. */
+    val hiddenSkimLines: (Int) -> String = { count -> "⋯ $count more ${if (count == 1) "line" else "lines"}; click to load remaining lines" },
     /** The Compact switch's tooltip while compact, and while whole. */
     val expandTooltip: String,
     val compactTooltip: String,

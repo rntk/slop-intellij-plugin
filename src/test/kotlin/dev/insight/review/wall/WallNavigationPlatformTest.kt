@@ -3,7 +3,10 @@ package dev.insight.review.wall
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.components.ActionLink
 import dev.insight.diff.DIFFS_WALL_LABELS
+import dev.insight.diff.ReviewFile
+import dev.insight.diff.wallBlock
 import java.awt.Container
 import java.awt.Dimension
 import java.awt.Point
@@ -12,6 +15,8 @@ import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.JScrollPane
 import javax.swing.JViewport
 import javax.swing.KeyStroke
@@ -432,6 +437,200 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             assertEquals(listOf("a.kt", "b.kt"), asked)
             assertFalse("A file that cannot be summarized keeps its rows", b.showsSummary)
         } finally { Disposer.dispose(wall) }
+    }
+
+    fun testChunkedLoadingShowsContinuationControlsPreservesPositionsAndWorksAcrossModes() {
+        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {}, loadChunk = 3)
+        try {
+            val allBlocks = (0 until 8).map { i ->
+                WallBlock("src/F$i.kt", "src/F$i.kt", "", listOf(WallLine.source(1, "fun f$i() = $i")), 0)
+            }
+            val byPath = allBlocks.associateBy { it.path }
+            wall.show(WallContent(WallScope(null, "All changes"), emptyList(), allPaths = allBlocks.map { it.path }, blockFor = byPath::get))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            relayout(pane)
+
+            fun descendants(c: Container): List<java.awt.Component> =
+                c.components.flatMap { listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList()) }
+            val loadMoreLink = descendants(wall.card).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-load-more" }
+            fun moreCards() = descendants(wall.card).filterIsInstance<WallView.MoreView>()
+            val headerLabel = descendants(wall.card).filterIsInstance<JLabel>().first { it.text.startsWith("Diffs wall") }
+
+            assertEquals(listOf("src/F0.kt", "src/F1.kt", "src/F2.kt"), wall.blocks.map { it.block.path })
+            assertEquals(8, wall.totalFilesCount)
+            assertEquals(5, wall.remainingFilesCount)
+            assertTrue(loadMoreLink.isVisible)
+            assertEquals("Load next 3 (3 / 8)", loadMoreLink.text)
+            assertEquals("Diffs wall · All changes · 8 files · 3 shown", headerLabel.text)
+            assertEquals(1, moreCards().size)
+
+            val initialPositions = wall.blocks.associate { it.block.path to it.location }
+            loadMoreLink.doClick()
+            relayout(pane)
+            assertEquals((0 until 6).map { "src/F$it.kt" }, wall.blocks.map { it.block.path })
+            assertEquals(2, wall.remainingFilesCount)
+            assertEquals("Load all 2 (6 / 8)", loadMoreLink.text)
+            initialPositions.forEach { (path, pos) ->
+                assertEquals("Existing card $path keeps its position", pos, wall.blocks.single { it.block.path == path }.location)
+            }
+
+            // Switch to SKIM mode and load remaining chunk via the on-canvas continuation card.
+            val surface = wall.blocks.first().parent as JComponent
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.SKIM, wall.mode)
+            assertEquals(1, moreCards().size)
+            val moreCard = moreCards().single()
+            moreCard.dispatchEvent(MouseEvent(moreCard, MouseEvent.MOUSE_CLICKED, 0L, InputEvent.BUTTON1_DOWN_MASK, 10, 10, 1, false, MouseEvent.BUTTON1))
+            relayout(pane)
+
+            assertEquals((0 until 8).map { "src/F$it.kt" }, wall.blocks.map { it.block.path })
+            assertEquals(0, wall.remainingFilesCount)
+            assertFalse(loadMoreLink.isVisible)
+            assertTrue(moreCards().isEmpty())
+            assertEquals("Diffs wall · All changes · 8 files", headerLabel.text)
+
+            // Switching back to CARDS mode places the cards loaded while in SKIM mode cleanly.
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.CARDS, wall.mode)
+            assertEquals(8, wall.blocks.size)
+            val bounds = wall.blocks.map { it.bounds }
+            for (i in bounds.indices) {
+                for (j in i + 1 until bounds.size) {
+                    assertFalse("Cards $i and $j must not overlap", bounds[i].intersects(bounds[j]))
+                }
+            }
+        } finally {
+            Disposer.dispose(wall)
+        }
+    }
+
+    fun testSkimModeLoadsRemainingLinesViaFooterAndNextHunkNavigation() {
+        val patchA = buildString {
+            append("@@ -1,1 +1,2100 @@\n")
+            repeat(2100) { append("+line $it\n") }
+            append("@@ -10,1 +2101,5 @@\n")
+            repeat(5) { append("+tailA $it\n") }
+        }
+        val patchB = buildString {
+            append("@@ -1,1 +1,2100 @@\n")
+            repeat(2100) { append("+lineB $it\n") }
+            append("@@ -10,1 +2101,5 @@\n")
+            repeat(5) { append("+tailB $it\n") }
+        }
+        val blockA = wallBlock(ReviewFile("a.kt", "/a.kt", null, "modified", patchA, "fpA"))
+        val blockB = wallBlock(ReviewFile("b.kt", "/b.kt", null, "modified", patchB, "fpB"))
+        val totalA = 1 + 2100 + 1 + 5
+        val totalB = 1 + 2100 + 1 + 5
+        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {})
+        try {
+            wall.show(WallContent(WallScope(null, "All changes"), listOf(blockA, blockB)))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            relayout(pane)
+            val surface = wall.blocks.first().parent as JComponent
+
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.SKIM, wall.mode)
+
+            val initialA = wall.blocks[0]
+            assertEquals(WALL_MAX_SKIM_LINES, initialA.block.lines.size)
+            assertEquals(totalA - WALL_MAX_SKIM_LINES, initialA.block.hiddenLines)
+            assertTrue(initialA.canLoadMoreLines())
+            assertTrue(initialA.buildMenu().components.filterIsInstance<JMenuItem>().any { it.text.startsWith("Load remaining") })
+
+            // Clicking the footer row loads all remaining rows for a.kt.
+            val footerY = initialA.rowTop(initialA.block.lines.size) + initialA.metrics.lineHeight / 2
+            assertTrue(initialA.onMoreLines(Point(20, footerY)))
+            initialA.dispatchEvent(MouseEvent(initialA, MouseEvent.MOUSE_PRESSED, 0L, InputEvent.BUTTON1_DOWN_MASK,
+                20, footerY, 1, false, MouseEvent.BUTTON1))
+            relayout(pane)
+
+            val expandedA = wall.blocks[0]
+            assertEquals(totalA, expandedA.block.lines.size)
+            assertEquals(0, expandedA.block.hiddenLines)
+            assertFalse(expandedA.canLoadMoreLines())
+
+            // Pressing N through a.kt reaches its later hunk past row 2,000, and pressing N on b.kt materializes its tail hunk too.
+            pane.viewport.viewPosition = Point(0, 0)
+            press(surface, "N") // a.kt hunk 1
+            press(surface, "N") // a.kt hunk 2 (beyond row 2,000)
+            val hunk2AY = pane.viewport.viewPosition.y
+            assertTrue("Hunk 2 of a.kt should be reached below row 2,000", hunk2AY > expandedA.y + expandedA.rowTop(WALL_MAX_SKIM_LINES))
+
+            press(surface, "N") // b.kt hunk 1
+            val hunk1BY = pane.viewport.viewPosition.y
+            assertEquals(WALL_MAX_SKIM_LINES, wall.blocks[1].block.lines.size)
+            assertTrue(wall.blocks[1].canLoadMoreLines())
+
+            press(surface, "N") // loads b.kt remaining rows and lands on b.kt hunk 2
+            val expandedB = wall.blocks[1]
+            assertEquals(totalB, expandedB.block.lines.size)
+            assertEquals(0, expandedB.block.hiddenLines)
+            assertTrue("Hunk 2 of b.kt should be reached after auto-loading remaining rows",
+                pane.viewport.viewPosition.y > hunk1BY && pane.viewport.viewPosition.y > expandedB.y + expandedB.rowTop(WALL_MAX_SKIM_LINES))
+            press(surface, "shift N")
+            assertEquals(hunk1BY, pane.viewport.viewPosition.y)
+        } finally {
+            Disposer.dispose(wall)
+        }
+    }
+
+    fun testManyOpenSummariesInSkimModeRankFromCachedLayoutBoundsOnScroll() {
+        val count = WALL_ACTIVE_SUMMARY_LIMIT + 6
+        val blocks = (0 until count).map { i ->
+            val path = "src/File${i.toString().padStart(2, '0')}.kt"
+            WallBlock(path, path, "", (1..8).map { WallLine.source(it, "fun f$i$it() = $it") }, 0)
+        }
+        val summaries = blocks.associate { it.path to "Summary paragraph for ${it.path} with enough detail to wrap." }
+        val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {})
+        try {
+            wall.show(WallContent(WallScope(null, "Many summaries"), blocks, summaries))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1400, 900)
+            relayout(pane)
+            val surface = wall.blocks.first().parent as JComponent
+
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.SKIM, wall.mode)
+
+            wall.blocks.forEach { block ->
+                val image = java.awt.image.BufferedImage(block.width.coerceAtLeast(1), block.height.coerceAtLeast(1), java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                val g = image.createGraphics()
+                try { block.paint(g) } finally { g.dispose() }
+                val toggle = block.summaryToggle!!
+                block.dispatchEvent(MouseEvent(block, MouseEvent.MOUSE_PRESSED, 0L, InputEvent.BUTTON1_DOWN_MASK,
+                    toggle.centerX.toInt(), toggle.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            }
+            relayout(pane)
+
+            assertTrue(wall.blocks.all { it.showsSummary })
+            wall.blocks.forEach { view ->
+                val cached = wall.cachedLayoutRect(view.block.path)
+                assertNotNull("Expected cached layout rect for ${view.block.path}", cached)
+                assertEquals(WallRect(view.x, view.y, view.logical.width, view.logical.height), cached)
+            }
+
+            pane.viewport.viewPosition = Point(0, 0)
+            relayout(pane)
+            val activeAtTop = wall.activeSummaries
+            assertEquals(WALL_ACTIVE_SUMMARY_LIMIT, activeAtTop.size)
+            assertTrue(blocks.first().path in activeAtTop)
+
+            val bottomY = (wall.blocks.last().y - 100).coerceAtLeast(0)
+            pane.viewport.viewPosition = Point(0, bottomY)
+            relayout(pane)
+            val activeAtBottom = wall.activeSummaries
+            assertEquals(WALL_ACTIVE_SUMMARY_LIMIT, activeAtBottom.size)
+            assertTrue("Bottom summary should be active after scrolling to bottom", blocks.last().path in activeAtBottom)
+            assertFalse("Top off-screen summary should hibernate after scrolling to bottom", blocks.first().path in activeAtBottom)
+        } finally {
+            Disposer.dispose(wall)
+        }
     }
 
     private fun relayout(component: Container) {
