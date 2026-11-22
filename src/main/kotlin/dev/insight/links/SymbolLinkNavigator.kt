@@ -8,6 +8,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.awt.RelativePoint
 import kotlinx.coroutines.CancellationException
@@ -20,7 +21,8 @@ import javax.swing.JList
  * Follows a symbol link from any view: looks up the mention's declarations, opens the only one, or lists several the way
  * Find Usages does, most likely first. Views decide what opening means through [open] and how a miss is reported through
  * [notice]; by default a declaration opens in the editor. [preferred] may pick one of several declarations without asking,
- * such as one the view already shows.
+ * such as one the view already shows. With [openFile], several declarations are listed one entry per file instead, and the
+ * chosen file's declarations are handed over together, for views that list them on the file they open.
  */
 object SymbolLinkNavigator {
     private val LOG = logger<SymbolLinkNavigator>()
@@ -35,6 +37,7 @@ object SymbolLinkNavigator {
         relativePath: (SymbolCandidate) -> String = { it.path },
         preferred: (List<SymbolCandidate>) -> SymbolCandidate? = { null },
         open: (SymbolCandidate) -> Unit = { openDeclaration(project, it) },
+        openFile: ((SymbolCandidateFile) -> Unit)? = null,
     ) {
         scope.launch(Dispatchers.EDT) {
             try {
@@ -44,7 +47,16 @@ object SymbolLinkNavigator {
                 when (ranked.size) {
                     0 -> notice("No declaration of ${mention.name} found in project sources")
                     1 -> open(ranked.single())
-                    else -> preferred(ranked)?.let(open) ?: choose(mention.name, ranked, at(), open)
+                    else -> {
+                        val picked = preferred(ranked)
+                        when {
+                            openFile == null -> picked?.let(open) ?: choose(mention.name, ranked, at(), open)
+                            picked != null -> openFile(symbolCandidateFileFor(ranked, picked))
+                            else -> symbolCandidateFiles(ranked).let { files ->
+                                if (files.size == 1) openFile(files.single()) else chooseFile(mention.name, files, at(), openFile)
+                            }
+                        }
+                    }
                 }
             } catch (e: Throwable) {
                 if (e is CancellationException || e is ControlFlowException) throw e
@@ -61,6 +73,18 @@ object SymbolLinkNavigator {
             .setTitle(symbolCandidatesTitle(name, candidates.size))
             .setRenderer(CandidateRenderer())
             .setNamerForFiltering { "${it.container.orEmpty()} ${it.name} ${it.path}" }
+            .setItemChosenCallback(onChosen)
+            .createPopup()
+            .show(point)
+    }
+
+    /** Lists one entry per file of [files] in a popup at [point] and passes the chosen file to [onChosen]. */
+    fun chooseFile(name: String, files: List<SymbolCandidateFile>, point: RelativePoint, onChosen: (SymbolCandidateFile) -> Unit) {
+        JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(files)
+            .setTitle(symbolCandidateFilesTitle(name, files.size))
+            .setRenderer(SimpleListCellRenderer.create("") { file: SymbolCandidateFile -> symbolCandidateFileLabel(file) })
+            .setNamerForFiltering { it.path }
             .setItemChosenCallback(onChosen)
             .createPopup()
             .show(point)

@@ -24,6 +24,7 @@ import dev.insight.context.ContextPick
 import dev.insight.context.showContextPicker
 import dev.insight.links.ProjectSymbols
 import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolCandidateFile
 import dev.insight.links.SymbolHints
 import dev.insight.links.SymbolLinkNavigator
 import dev.insight.links.SymbolMention
@@ -267,6 +268,15 @@ internal interface ContextualLinkedTextNavigator : LinkedTextNavigator {
 
     /** Context pick for right-clicking / Shift+clicking [link] resolved to [path], or null for the default. */
     fun contextPick(link: ReportLink, path: String, absolutePath: String?): ContextPick? = null
+
+    /**
+     * Whether a symbol naming several declarations lists one entry per file, handing the chosen file's declarations to
+     * [openDeclarations], rather than listing every declaration.
+     */
+    val groupsDeclarationsByFile: Boolean get() = false
+
+    /** Follows a symbol link to the declarations [mention] names in one [file], listed together on what opens. */
+    fun openDeclarations(file: SymbolCandidateFile, mention: SymbolMention, at: RelativePoint? = null) = openDeclaration(file.best, mention)
 }
 
 /**
@@ -410,10 +420,16 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
         when {
             link.kind == ReportTargetKind.EXTERNAL_URL -> link.externalUrl?.let(BrowserUtil::browse)
             shift || link.kind == ReportTargetKind.DIRECTORY -> showContext(link, point)
-            link.kind == ReportTargetKind.SYMBOL -> followSymbol(link, point, navigator) { declaration ->
+            link.kind == ReportTargetKind.SYMBOL -> {
                 val mention = link.symbol
-                if (navigator != null && mention != null) navigator.openDeclaration(declaration, mention)
-                else openReportFile(project, declaration.path, declaration.line..declaration.line, declaration.column, declaration.absolutePath)
+                val ctx = navigator as? ContextualLinkedTextNavigator
+                val byFile: ((SymbolCandidateFile) -> Unit)? = if (ctx != null && mention != null && ctx.groupsDeclarationsByFile) {
+                    { file -> ctx.openDeclarations(file, mention, RelativePoint(this, point)) }
+                } else null
+                followSymbol(link, point, navigator, byFile) { declaration ->
+                    if (navigator != null && mention != null) navigator.openDeclaration(declaration, mention)
+                    else openReportFile(project, declaration.path, declaration.line..declaration.line, declaration.column, declaration.absolutePath)
+                }
             }
             else -> {
                 val ctx = navigator as? ContextualLinkedTextNavigator
@@ -461,10 +477,10 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
 
     /**
      * Looks up the declarations [link] names, ranked first by the files [navigator] says the text is about, and opens the
-     * only one, the one the view already shows, or the one the reader picks.
+     * only one, the one the view already shows, or the one the reader picks; with [openFile], the reader picks a file instead.
      */
     private fun followSymbol(link: ReportLink, point: Point, navigator: LinkedTextNavigator? = this.navigator,
-        open: (SymbolCandidate) -> Unit) {
+        openFile: ((SymbolCandidateFile) -> Unit)? = null, open: (SymbolCandidate) -> Unit) {
         val mention = link.symbol ?: return
         val index = shown?.index
         val hints = link.symbolHints ?: SymbolHints()
@@ -476,7 +492,8 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
             notice = { StatusBar.Info.set(it, project) },
             relativePath = { index?.pathForAbsolute(it.absolutePath) ?: it.path },
             preferred = { ctx?.shown(it, hints) ?: navigator?.shown(it) },
-            open = open)
+            open = open,
+            openFile = openFile)
     }
 
     private fun choosePath(candidates: List<String>, point: Point, title: String, onChosen: (String) -> Unit) {

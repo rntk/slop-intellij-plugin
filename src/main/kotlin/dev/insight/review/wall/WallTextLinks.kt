@@ -3,6 +3,8 @@ package dev.insight.review.wall
 import com.intellij.openapi.project.Project
 import dev.insight.context.ContextPick
 import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolCandidateFile
+import dev.insight.links.symbolCandidateSiteLabel
 import dev.insight.review.ReportLink
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.formatLinkLocation
@@ -305,6 +307,107 @@ internal fun wallExpandBlockForLine(block: WallBlock, targetLine: Int): WallBloc
         hiddenLines = (block.hiddenLines - take).coerceAtLeast(0),
         more = block.more.drop(take),
     )
+}
+
+/** One place a link led to within a card's file: its 1-based [line] and how the list names it. */
+internal data class WallLinkSite(val line: Int, val label: String)
+
+/** The places a link led to in card [path], listed on the card under [title]; [current] is the 1-based line last scrolled to. */
+internal data class WallLinkSites(val path: String, val title: String, val sites: List<WallLinkSite>, val current: Int?)
+
+/** The declarations of [file] listed on card [path], the card first scrolled to the most likely one. */
+internal fun wallDeclarationSites(path: String, name: String, file: SymbolCandidateFile): WallLinkSites = WallLinkSites(
+    path = path,
+    title = "Declarations of $name (${file.candidates.size})",
+    sites = file.candidates.map { WallLinkSite(it.line, symbolCandidateSiteLabel(it)) }.distinctBy { it.line },
+    current = file.best.line,
+)
+
+/**
+ * Computes screen-coordinate bounds on the wall surface for a card's link-sites overlay, avoiding [obstacles]
+ * (open file chats and the wall-wide canvas chat). Prefers the card's visible top-right corner under its header;
+ * shifts left, below, or above overlapping obstacles, or sits just below/above a short card when wide enough.
+ * Returns null when no unobstructed readable slot fits.
+ */
+internal fun wallLinkSitesBounds(
+    card: WallRect,
+    headerHeight: Int,
+    visible: WallRect,
+    surfaceWidth: Int,
+    surfaceHeight: Int,
+    preferredWidth: Int,
+    preferredHeight: Int,
+    skim: Boolean,
+    obstacles: List<WallRect>,
+    margin: Int,
+    maxWidth: Int,
+    maxHeight: Int,
+    minWidth: Int,
+    minHeight: Int,
+): WallRect? {
+    fun intersects(a: WallRect, b: WallRect): Boolean =
+        a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
+
+    fun trySlot(left: Int, right: Int, top: Int, bottom: Int, stickyY: Int): WallRect? {
+        val availW = right - left
+        val availH = bottom - top
+        if (availW < minWidth || availH < minHeight) return null
+        val w = minOf(preferredWidth, maxWidth, availW)
+        val h = minOf(preferredHeight, maxHeight, availH)
+        val y = stickyY.coerceAtMost(bottom - h).coerceAtLeast(top)
+        var curRight = right
+        var initialBlocking: List<WallRect>? = null
+        while (curRight - left >= minWidth) {
+            val sw = minOf(preferredWidth, maxWidth, curRight - left)
+            val candidate = WallRect(curRight - sw, y, sw, h)
+            val hit = obstacles.filter { intersects(candidate, it) }
+            if (hit.isEmpty()) return candidate
+            if (initialBlocking == null) initialBlocking = hit
+            val nextRight = hit.minOf { it.x } - margin
+            if (nextRight >= curRight) break
+            curRight = nextRight
+        }
+        val blocking = initialBlocking.orEmpty()
+        if (blocking.isNotEmpty()) {
+            val visTop = if (visible.height > 0) maxOf(top, visible.y + margin) else top
+            val visBottom = if (visible.height > 0) minOf(bottom, visible.y + visible.height - margin) else bottom
+            val belowTop = blocking.maxOf { it.y + it.height } + margin
+            val belowAvailH = visBottom - belowTop
+            if (belowAvailH >= minHeight) {
+                val bh = minOf(preferredHeight, maxHeight, belowAvailH)
+                val below = WallRect(right - w, belowTop, w, bh)
+                if (obstacles.none { intersects(below, it) }) return below
+            }
+            val aboveBottom = blocking.minOf { it.y } - margin
+            val aboveAvailH = aboveBottom - visTop
+            if (aboveAvailH >= minHeight) {
+                val ah = minOf(preferredHeight, maxHeight, aboveAvailH)
+                val above = WallRect(right - w, aboveBottom - ah, w, ah)
+                if (obstacles.none { intersects(above, it) }) return above
+            }
+        }
+        return null
+    }
+
+    val cardLeft = card.x + margin
+    val cardRight = card.x + card.width - margin
+    val minTop = card.y + headerHeight + margin
+    val cardBottom = card.y + card.height - margin
+    val stickyY = if (skim) visible.y + headerHeight + margin else visible.y + margin
+    trySlot(cardLeft, cardRight, minTop, cardBottom, stickyY)?.let { return it }
+
+    // Short card at readable width: place right below or above the card so its lines stay readable.
+    if (cardRight - cardLeft >= minWidth && cardBottom - minTop < minHeight) {
+        val maxBottom = maxOf(surfaceHeight, visible.y + visible.height) - margin
+        val belowTop = card.y + card.height + margin
+        val belowBottom = minOf(maxBottom, visible.y + visible.height - margin)
+        trySlot(cardLeft, cardRight, belowTop, belowBottom, belowTop)?.let { return it }
+
+        val aboveTop = maxOf(margin, visible.y + margin)
+        val aboveBottom = card.y - margin
+        trySlot(cardLeft, cardRight, aboveTop, aboveBottom, aboveBottom)?.let { return it }
+    }
+    return null
 }
 
 /** Context-aware tooltip for a [ReportLink] inside a wall summary or chat. */

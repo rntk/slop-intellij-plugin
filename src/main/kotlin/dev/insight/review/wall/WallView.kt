@@ -22,8 +22,10 @@ import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
+import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
@@ -31,7 +33,9 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolCandidateFile
 import dev.insight.links.SymbolHints
+import dev.insight.links.SymbolLinkNavigator
 import dev.insight.links.SymbolMention
 import dev.insight.review.ReportLink
 import dev.insight.review.ui.ContextualLinkedTextNavigator
@@ -274,6 +278,7 @@ internal class WallView(
     private var overview: Pair<Double, Point>? = null
     private var clickZoom: Timer? = null
     private var animation: Timer? = null
+    private var onAnimationDone: (() -> Unit)? = null
     private var watched: JScrollPane? = null
     /** Each block's Chat tab, by path; empty without [chats]. */
     private var chatTabs: Map<String, ChatTab> = emptyMap()
@@ -284,6 +289,23 @@ internal class WallView(
     /** The wall's own chat window once opened, kept with its draft while folded; it stays open across scopes. */
     private var canvasChatPanel: WallChatPanel? = null
     private var canvasChatOpen = false
+    /** Each card's list of the places a link led to in its file, by path, laid over the card until hidden. */
+    private val linkSitesPanels = linkedMapOf<String, WallLinkSitesPanel>()
+    /** Shows a declaration chooser when a file cannot host a wall card and has multiple declarations; overridable in tests. */
+    internal var chooseDeclaration: (name: String, candidates: List<SymbolCandidate>, point: RelativePoint, onChosen: (SymbolCandidate) -> Unit) -> Unit =
+        { name, candidates, point, onChosen -> SymbolLinkNavigator.choose(name, candidates, point, onChosen) }
+    /** Shows a chooser popup of [sites] when the inline overlay cannot fit on its card; overridable in tests. */
+    internal var chooseLinkSite: (sites: WallLinkSites, point: RelativePoint, onChosen: (WallLinkSite) -> Unit) -> Unit =
+        { sites, point, onChosen ->
+            JBPopupFactory.getInstance()
+                .createPopupChooserBuilder(sites.sites)
+                .setTitle(sites.title)
+                .setRenderer(SimpleListCellRenderer.create("") { site: WallLinkSite -> site.label })
+                .setNamerForFiltering { it.label }
+                .setItemChosenCallback(onChosen)
+                .createPopup()
+                .show(point)
+        }
     /** Keeps the wall's own chat window in the visible corner of the wall while the page scrolls. */
     private val scrolled = ChangeListener {
         if (canvasChatOpen) { placeCanvasChat(); canvasChatPanel?.repaint() }
@@ -292,6 +314,7 @@ internal class WallView(
             placeFileChats()
             followScroll()
         }
+        if (linkSitesPanels.isNotEmpty()) placeLinkSites()
         if (summarized.size > WALL_ACTIVE_SUMMARY_LIMIT && activePath == prevActive) reconcileActiveSummaries()
     }
     /** Each block's row colours once worked out, by path, with the block they were worked out for; null rows for a plain block. */
@@ -375,6 +398,7 @@ internal class WallView(
             loadedPaths.clear()
             // A new layout starts folded; each file's chats stay to be unfolded again.
             chatOpen.clear()
+            linkSitesPanels.clear()
             // The canvas restores the page's previous scroll after its rebuild; a new layout starts at the top instead.
             SwingUtilities.invokeLater { SwingUtilities.invokeLater { viewport()?.viewPosition = Point(0, 0); focusWhenOpened() } }
         } else {
@@ -582,6 +606,9 @@ internal class WallView(
         surface.removeAll()
         views = blocks.map { BlockView(it, width, metrics) }
         views.forEach(surface::add)
+        val viewPaths = views.map { it.block.path }.toSet()
+        linkSitesPanels.keys.retainAll(viewPaths)
+        linkSitesPanels.values.forEach(surface::add)
         syncMoreViewAttachment()
         if (chats != null) {
             chatTabs = views.associate { it.block.path to ChatTab(it) }
@@ -589,8 +616,8 @@ internal class WallView(
             chatOpen.retainAll(chatTabs.keys)
             chatOpen.forEach { surface.add(chatPanel(it)) }
             if (canvasChatOpen) surface.add(canvasChat())
-            raiseChats()
         }
+        raiseOverlays()
     }
 
     /**
@@ -1174,14 +1201,167 @@ internal class WallView(
         override fun contextPick(link: ReportLink, path: String, absolutePath: String?) =
             linkHost?.contextPick(link, path, absolutePath)
 
-        override fun openFile(path: String, absolutePath: String?, lines: IntRange?, column: Int?) =
-            followLink(sourcePath, path, absolutePath, lines, column, fromChat)
+        override val groupsDeclarationsByFile: Boolean get() = true
 
-        override fun openDeclaration(declaration: SymbolCandidate, mention: SymbolMention) =
+        override fun openFile(path: String, absolutePath: String?, lines: IntRange?, column: Int?) {
+            followLink(sourcePath, path, absolutePath, lines, column, fromChat)
+        }
+
+        override fun openDeclaration(declaration: SymbolCandidate, mention: SymbolMention) {
             followLink(sourcePath, declaration.path, declaration.absolutePath, declaration.line..declaration.line, declaration.column, fromChat)
+        }
+
+        override fun openDeclarations(file: SymbolCandidateFile, mention: SymbolMention, at: RelativePoint?) {
+            val best = file.best
+            val multiple = file.candidates.size > 1
+            val path = followLink(
+                sourcePath, best.path, best.absolutePath, best.line..best.line, best.column, fromChat,
+                fallbackToEditor = !multiple,
+            )
+            if (path == null) {
+                if (multiple) chooseDeclarationForEditor(mention.name, file.candidates, at)
+                return
+            }
+            if (multiple) {
+                showLinkSites(wallDeclarationSites(path, mention.name, file), offerPopupIfHidden = true, popupAnchor = at)
+            }
+        }
     }
 
-    /** Follows a link to [rawPath] at 1-based [lines], scrolling an existing card or adding a missing card first. */
+    private fun defaultPopupAnchor(): RelativePoint {
+        val visible = surface.visibleRect.takeIf { !it.isEmpty } ?: Rectangle(0, 0, surface.width, surface.height)
+        return RelativePoint(surface, Point(visible.x + visible.width / 2, visible.y + JBUI.scale(32)))
+    }
+
+    private fun chooseDeclarationForEditor(name: String, candidates: List<SymbolCandidate>, at: RelativePoint?) {
+        val p = project ?: return
+        val unique = candidates.distinctBy { it.identity }
+        if (unique.size <= 1) {
+            unique.firstOrNull()?.let { c -> openReportFile(p, c.path, c.line..c.line, c.column, c.absolutePath) }
+            return
+        }
+        chooseDeclaration(name, unique, at ?: defaultPopupAnchor()) { chosen ->
+            openReportFile(p, chosen.path, chosen.line..chosen.line, chosen.column, chosen.absolutePath)
+        }
+    }
+
+    private fun showLinkSitesPopup(view: BlockView, sites: WallLinkSites, fallbackAnchor: RelativePoint? = null) {
+        val anchor = if (view.width > 0 && view.height > 0 && (fallbackAnchor == null || view.isShowing)) {
+            val header = (view.metrics.headerHeight * zoom).roundToInt()
+            RelativePoint(view, Point((view.width - JBUI.scale(16)).coerceAtLeast(0), (header + JBUI.scale(4)).coerceAtMost(view.height)))
+        } else {
+            fallbackAnchor ?: defaultPopupAnchor()
+        }
+        chooseLinkSite(sites, anchor) { site -> followLinkSite(sites.path, site) }
+    }
+
+    /** Lists [sites] over their card, replacing any list the card had; each entry scrolls the card to its line. */
+    internal fun showLinkSites(
+        sites: WallLinkSites,
+        offerPopupIfHidden: Boolean = false,
+        popupAnchor: RelativePoint? = null,
+    ) {
+        if (views.none { it.block.path == sites.path }) return
+        val existing = linkSitesPanels[sites.path]
+        if (existing != null) existing.show(sites)
+        else linkSitesPanels[sites.path] = WallLinkSitesPanel(labels.id, sites,
+            onSite = { site -> followLinkSite(sites.path, site) },
+            onHide = { hideLinkSites(sites.path) },
+            onRaise = { raiseOverlays(frontLinkSites = sites.path); linkSitesPanels[sites.path]?.repaint() })
+        val panel = linkSitesPanels.getValue(sites.path)
+        if (panel.parent !== surface) surface.add(panel)
+        if (canvasChatOpen) placeCanvasChat()
+        if (mode == WallMode.SKIM) placeFileChats()
+        placeLinkSites()
+        raiseOverlays(frontLinkSites = sites.path)
+        surface.revalidate()
+        surface.repaint()
+        if (offerPopupIfHidden && sites.sites.size > 1) {
+            val checkPopup = {
+                val currentView = views.firstOrNull { it.block.path == sites.path }
+                val currentPanel = linkSitesPanels[sites.path]
+                if (currentView != null && currentView.width > 0 && currentView.height > 0 && currentPanel?.isVisible != true) {
+                    showLinkSitesPopup(currentView, currentPanel?.sites ?: sites, popupAnchor)
+                }
+            }
+            if (animation != null) onAnimationDone = checkPopup else checkPopup()
+        }
+    }
+
+    /** Drops the list of link sites over card [path]. */
+    internal fun hideLinkSites(path: String) {
+        val panel = linkSitesPanels.remove(path) ?: return
+        if (panel.parent === surface) surface.remove(panel)
+        surface.revalidate()
+        surface.repaint()
+    }
+
+    /** The list of link sites over card [path], when it has one. */
+    internal fun linkSitesPanel(path: String): WallLinkSitesPanel? = linkSitesPanels[path]
+
+    /** Scrolls card [path] to [site] and marks it as the current entry of its list. */
+    internal fun followLinkSite(path: String, site: WallLinkSite) {
+        followLink(path, path, null, site.line..site.line)
+        linkSitesPanels[path]?.let { panel ->
+            panel.show(panel.sites.copy(current = site.line))
+            placeLinkSites()
+            raiseOverlays(frontLinkSites = path)
+            panel.repaint()
+        }
+    }
+
+    /**
+     * Lays each list of link sites over its card at screen size, avoiding open file chats and the canvas chat;
+     * a folded or too-narrow card hides it.
+     */
+    private fun placeLinkSites() {
+        if (linkSitesPanels.isEmpty()) return
+        val margin = JBUI.scale(8)
+        val visibleRect = surface.visibleRect.takeIf { !it.isEmpty } ?: Rectangle(0, 0, surface.width, surface.height)
+        val visible = WallRect(visibleRect.x, visibleRect.y, visibleRect.width, visibleRect.height)
+        val obstacles = buildList {
+            chatOpen.forEach { chatPath ->
+                chatPanels[chatPath]?.takeIf { it.parent === surface && it.width > 0 && it.height > 0 }?.let { c ->
+                    add(WallRect(c.x, c.y, c.width, c.height))
+                }
+            }
+            canvasChatPanel?.takeIf { canvasChatOpen && it.parent === surface && it.width > 0 && it.height > 0 }?.let { c ->
+                add(WallRect(c.x, c.y, c.width, c.height))
+            }
+        }
+        linkSitesPanels.forEach { (path, panel) ->
+            val view = views.firstOrNull { it.block.path == path }
+            if (view == null || view.isFolded) { panel.isVisible = false; return@forEach }
+            val header = (view.metrics.headerHeight * zoom).roundToInt()
+            val pref = panel.preferredSize
+            val placed = wallLinkSitesBounds(
+                card = WallRect(view.x, view.y, view.width, view.height),
+                headerHeight = header,
+                visible = visible,
+                surfaceWidth = surface.width,
+                surfaceHeight = surface.height,
+                preferredWidth = pref.width,
+                preferredHeight = pref.height,
+                skim = mode == WallMode.SKIM,
+                obstacles = obstacles,
+                margin = margin,
+                maxWidth = JBUI.scale(360),
+                maxHeight = JBUI.scale(220),
+                minWidth = JBUI.scale(140),
+                minHeight = JBUI.scale(36),
+            )
+            if (placed == null) { panel.isVisible = false; return@forEach }
+            panel.isVisible = true
+            val bounds = Rectangle(placed.x, placed.y, placed.width, placed.height)
+            if (panel.bounds != bounds) {
+                panel.bounds = bounds
+                panel.validate()
+                panel.repaint()
+            }
+        }
+    }
+
+    /** Follows a link to [rawPath] at 1-based [lines], scrolling an existing card or adding a missing card first; returns the card's path, or null when it opened elsewhere. */
     internal fun followLink(
         sourcePath: String?,
         rawPath: String,
@@ -1189,7 +1369,8 @@ internal class WallView(
         lines: IntRange?,
         column: Int? = null,
         fromChat: Boolean = false,
-    ) {
+        fallbackToEditor: Boolean = true,
+    ): String? {
         val resolved = linkHost?.wallPathFor(rawPath, absolutePath) ?: normalizeWallPath(rawPath)
         when (val move = wallTextMove(resolved, lines, views.map { it.block }, linkHost?.previousPaths().orEmpty())) {
             is WallTextMove.Scroll -> {
@@ -1206,6 +1387,7 @@ internal class WallView(
                     }
                 }
                 revealBlock(move.path, row, focusSurface = !fromChat && sourcePath != null)
+                return move.path
             }
             is WallTextMove.AddAndScroll -> {
                 if (mode == WallMode.CARDS && !arranged && views.isNotEmpty()) {
@@ -1226,12 +1408,13 @@ internal class WallView(
                     pendingAnchorPath = null
                 }
                 if (addedPath == null) {
-                    project?.let { openReportFile(it, rawPath, lines, column, absolutePath) }
-                    return
+                    if (fallbackToEditor) project?.let { openReportFile(it, rawPath, lines, column, absolutePath) }
+                    return null
                 }
-                val view = views.firstOrNull { it.block.path == addedPath } ?: return
+                val view = views.firstOrNull { it.block.path == addedPath } ?: return null
                 val row = wallTargetRow(view.block.lines, lines)
                 revealBlock(addedPath, row, focusSurface = !fromChat && sourcePath != null)
+                return addedPath
             }
         }
     }
@@ -1351,8 +1534,12 @@ internal class WallView(
             navigator = textNavigator(path, fromChat = true))
     }
 
-    /** Keeps unfolded chat windows in front of the blocks they reach over, the latest unfolded frontmost. */
-    private fun raiseChats() {
+    /** Keeps link-site lists in front of blocks, and unfolded chat windows in front of both. */
+    private fun raiseOverlays(frontLinkSites: String? = activePath) {
+        linkSitesPanels.forEach { (path, panel) ->
+            if (path != frontLinkSites && panel.parent === surface) surface.setComponentZOrder(panel, 0)
+        }
+        frontLinkSites?.let { linkSitesPanels[it] }?.takeIf { it.parent === surface }?.let { surface.setComponentZOrder(it, 0) }
         chatOpen.forEach { path -> chatPanels[path]?.takeIf { it.parent === surface }?.let { surface.setComponentZOrder(it, 0) } }
         canvasChatPanel?.takeIf { canvasChatOpen && it.parent === surface }?.let { surface.setComponentZOrder(it, 0) }
     }
@@ -1443,7 +1630,7 @@ internal class WallView(
         } else {
             chatOpen += path
             surface.add(panel)
-            surface.setComponentZOrder(panel, 0)
+            raiseOverlays()
         }
         chatTabs[path]?.repaint()
         surface.revalidate()
@@ -1484,10 +1671,11 @@ internal class WallView(
         activePath = view.block.path
         if (summarized.size > WALL_ACTIVE_SUMMARY_LIMIT) reconcileActiveSummaries()
         surface.setComponentZOrder(view, 0)
-        // Open chat windows stay in front of blocks.
-        if (mode == WallMode.SKIM || chatOpen.isNotEmpty() || canvasChatOpen) raiseChats()
+        // Open overlays stay in front of blocks.
+        if (linkSitesPanels.isNotEmpty() || mode == WallMode.SKIM || chatOpen.isNotEmpty() || canvasChatOpen) raiseOverlays()
         previous?.repaint()
         view.repaint()
+        linkSitesPanels[view.block.path]?.repaint()
     }
 
     /** Activates the next block in reading order, or the previous one, and zooms and scrolls to read it. */
@@ -1573,7 +1761,11 @@ internal class WallView(
             val eased = 1 - (1 - t).pow(3)
             place(fromZoom + (target - fromZoom) * eased, (from.x + (position.x - from.x) * eased).roundToInt(),
                 (from.y + (position.y - from.y) * eased).roundToInt())
-            if (t >= 1.0) stopAnimation()
+            if (t >= 1.0) {
+                val done = onAnimationDone
+                stopAnimation()
+                done?.invoke()
+            }
         }.apply { start() }
     }
 
@@ -1582,6 +1774,7 @@ internal class WallView(
         clickZoom = null
         animation?.stop()
         animation = null
+        onAnimationDone = null
     }
 
     /** Focuses the surface when the wall is opened from its own review tab, but not away from text the reader is typing. */
@@ -1713,6 +1906,8 @@ internal class WallView(
 
     /** The null-layout, focusable surface: empty space pans the enclosing page, Ctrl/Cmd + wheel zooms, keys scroll and step. */
     internal inner class Surface : JComponent() {
+        override fun isOptimizedDrawingEnabled(): Boolean = false
+
         init {
             name = "${labels.id}-surface"
             layout = null
@@ -1801,6 +1996,7 @@ internal class WallView(
             }
             if (mode == WallMode.SKIM) placeFileChats()
             placeCanvasChat()
+            placeLinkSites()
         }
 
         /** The Chat tab hanging off a block's right edge near its top, scaled with the zoom so it stays in the gap. */
@@ -1965,6 +2161,7 @@ internal class WallView(
                     // A moved block is the reader's layout; a later viewport size must not repack it.
                     arranged = true
                     location = Point((at.x * zoom).roundToInt(), (at.y * zoom).roundToInt())
+                    if (block.path in linkSitesPanels) placeLinkSites()
                     surface.revalidate()
                     surface.scrollRectToVisible(Rectangle(pointer.x, pointer.y, 1, 1))
                 }
@@ -2124,6 +2321,11 @@ internal class WallView(
             if (canLoadMoreLines()) {
                 item("Load remaining ${block.hiddenLines} lines", "Show the remaining lines of this file", true) {
                     loadMoreLines(block.path)
+                }
+            }
+            linkSitesPanels[block.path]?.let { panel ->
+                item("${panel.sites.title}…", "Jump to one of the listed declarations in this file", true) {
+                    showLinkSitesPopup(this@BlockView, panel.sites)
                 }
             }
             if (onContext != null) {

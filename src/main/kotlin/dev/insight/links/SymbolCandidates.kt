@@ -80,6 +80,42 @@ fun symbolCandidateDetail(candidate: SymbolCandidate): String {
 fun symbolCandidateLocation(candidate: SymbolCandidate): String =
     "${candidate.fileName}:${candidate.line}" + candidate.directory.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
 
+/**
+ * The declarations of one name found in one file: [path] project-relative (or absolute outside the project), [candidates] in
+ * line order, and [best] the one ranked most likely, which a card opened for the file scrolls to first.
+ */
+data class SymbolCandidateFile(val absolutePath: String, val path: String, val candidates: List<SymbolCandidate>, val best: SymbolCandidate) {
+    val fileName: String get() = path.substringAfterLast('/')
+    val directory: String get() = path.substringBeforeLast('/', "")
+}
+
+/** Ranked [candidates] joined by file, files in the order their most likely declaration ranks, each file's in line order. */
+fun symbolCandidateFiles(candidates: List<SymbolCandidate>): List<SymbolCandidateFile> =
+    candidates.groupBy { it.absolutePath }.map { (absolutePath, found) ->
+        SymbolCandidateFile(absolutePath, found.first().path, found.sortedWith(compareBy({ it.line }, { it.column })), found.first())
+    }
+
+/** The file of [preferred] among [candidates], with [preferred] as [SymbolCandidateFile.best] and all its declarations in line order. */
+fun symbolCandidateFileFor(candidates: List<SymbolCandidate>, preferred: SymbolCandidate): SymbolCandidateFile {
+    val inFile = candidates.filter { it.absolutePath == preferred.absolutePath }
+        .ifEmpty { listOf(preferred) }
+        .sortedWith(compareBy({ it.line }, { it.column }))
+    return SymbolCandidateFile(preferred.absolutePath, preferred.path, inFile, preferred)
+}
+
+/** `Files declaring run (3)`: the title of a list of files with declarations. */
+fun symbolCandidateFilesTitle(name: String, files: Int): String = "Files declaring $name ($files)"
+
+/** `ReportLinkParser.kt (3) · Function, Property · src/main/kotlin/dev/insight/review`, or the line for a single declaration. */
+fun symbolCandidateFileLabel(file: SymbolCandidateFile): String {
+    val location = if (file.candidates.size == 1) "${file.fileName}:${file.best.line}" else "${file.fileName} (${file.candidates.size})"
+    val kinds = file.candidates.map { symbolKindLabel(it.kind) }.distinct().joinToString(", ")
+    return "$location · $kinds" + file.directory.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
+}
+
+/** `Line 42 · Function in ReportLinkCollector`: one declaration listed on the card of its file. */
+fun symbolCandidateSiteLabel(candidate: SymbolCandidate): String = "Line ${candidate.line} · ${symbolCandidateDetail(candidate)}"
+
 fun symbolKindLabel(kind: SymbolKind?): String = when (kind) {
     SymbolKind.CLASS -> "Class"
     SymbolKind.FUNCTION -> "Function"

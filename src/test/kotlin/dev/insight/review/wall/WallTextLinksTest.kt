@@ -3,6 +3,7 @@ package dev.insight.review.wall
 import dev.insight.graph.SymbolKind
 import dev.insight.links.SymbolCandidate
 import dev.insight.links.SymbolMention
+import dev.insight.links.symbolCandidateFiles
 import dev.insight.review.ReportLink
 import dev.insight.review.ReportTargetKind
 import org.junit.Assert.assertEquals
@@ -16,6 +17,135 @@ import java.awt.Point
 class WallTextLinksTest {
     private fun diffBlock(path: String, vararg lines: WallLine, more: List<WallLine> = emptyList()) =
         WallBlock(path, path, "", lines.toList(), more.size, more)
+
+    @Test
+    fun `declaration sites list a file's declarations on its card, current at the most likely`() {
+        fun cand(line: Int, column: Int = 1, owner: String) = SymbolCandidate("run", SymbolKind.FUNCTION, owner, "src/A.kt", "/src/A.kt", line, column)
+        val late = cand(30, owner = "Late")
+        val file = symbolCandidateFiles(listOf(late, cand(4, owner = "Early"), cand(4, column = 20, owner = "Early")))
+            .single()
+        val sites = wallDeclarationSites("src/A.kt", "run", file)
+        assertEquals("src/A.kt", sites.path)
+        assertEquals("Declarations of run (3)", sites.title)
+        assertEquals("one entry per line", listOf(4, 30), sites.sites.map { it.line })
+        assertEquals("Line 30 · Function in Late", sites.sites.last().label)
+        assertEquals(30, sites.current)
+    }
+
+    @Test
+    fun `wallLinkSitesBounds places top-right, avoids overlapping chats, handles short cards, and hides when blocked`() {
+        val visible = WallRect(0, 0, 1000, 800)
+        // Unobstructed card: top-right under header.
+        val clear = wallLinkSitesBounds(
+            card = WallRect(20, 20, 600, 400),
+            headerHeight = 28,
+            visible = visible,
+            surfaceWidth = 1200,
+            surfaceHeight = 900,
+            preferredWidth = 220,
+            preferredHeight = 90,
+            skim = false,
+            obstacles = emptyList(),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        )!!
+        assertEquals(WallRect(392, 56, 220, 90), clear)
+
+        // Overlapping canvas chat in skim mode shifts panel left with margin and zero intersection.
+        val canvasChat = WallRect(590, 8, 400, 420)
+        val shifted = wallLinkSitesBounds(
+            card = WallRect(20, 20, 960, 600),
+            headerHeight = 28,
+            visible = visible,
+            surfaceWidth = 1000,
+            surfaceHeight = 900,
+            preferredWidth = 220,
+            preferredHeight = 90,
+            skim = true,
+            obstacles = listOf(canvasChat),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        )!!
+        assertEquals(WallRect(362, 56, 220, 90), shifted)
+        assertFalse(shifted.x + shifted.width > canvasChat.x)
+
+        // Short card (body height < minHeight) falls back below the card when wide enough.
+        val shortCard = WallRect(20, 40, 400, 56) // header 28 + margins 16 -> body height 12 < 36
+        val belowShort = wallLinkSitesBounds(
+            card = shortCard,
+            headerHeight = 28,
+            visible = visible,
+            surfaceWidth = 1000,
+            surfaceHeight = 900,
+            preferredWidth = 220,
+            preferredHeight = 80,
+            skim = false,
+            obstacles = emptyList(),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        )!!
+        assertEquals(WallRect(192, 104, 220, 80), belowShort)
+
+        // Narrow card or fully blocked card returns null.
+        assertNull(wallLinkSitesBounds(
+            card = WallRect(20, 20, 120, 400),
+            headerHeight = 28,
+            visible = visible,
+            surfaceWidth = 1000,
+            surfaceHeight = 900,
+            preferredWidth = 220,
+            preferredHeight = 90,
+            skim = false,
+            obstacles = emptyList(),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        ))
+        assertNull(wallLinkSitesBounds(
+            card = WallRect(20, 20, 500, 300),
+            headerHeight = 28,
+            visible = visible,
+            surfaceWidth = 1000,
+            surfaceHeight = 900,
+            preferredWidth = 220,
+            preferredHeight = 90,
+            skim = true,
+            obstacles = listOf(WallRect(0, 0, 1000, 400)),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        ))
+        // Do not place below an obstacle when that space sits off the bottom of the viewport.
+        assertNull(wallLinkSitesBounds(
+            card = WallRect(16, 100, 460, 600),
+            headerHeight = 28,
+            visible = WallRect(0, 172, 500, 400),
+            surfaceWidth = 500,
+            surfaceHeight = 720,
+            preferredWidth = 220,
+            preferredHeight = 90,
+            skim = true,
+            obstacles = listOf(WallRect(92, 180, 400, 384)),
+            margin = 8,
+            maxWidth = 360,
+            maxHeight = 220,
+            minWidth = 140,
+            minHeight = 36,
+        ))
+    }
 
     @Test
     fun `wallTargetRow prefers exact new lines, then old lines, then nearest row`() {

@@ -9,6 +9,32 @@ class SymbolCandidatesTest {
         SymbolCandidate(name, kind, container, path, "/app/$path", line)
 
     @Test
+    fun `candidates join by file in rank order, each file's declarations in line order`() {
+        val lateA = candidate("src/A.kt", line = 40, container = "Late")
+        val b = candidate("src/b/B.kt", line = 3, kind = SymbolKind.PROPERTY)
+        val earlyA = candidate("src/A.kt", line = 5, container = "Early")
+        val files = symbolCandidateFiles(listOf(lateA, b, earlyA))
+        assertEquals(listOf("src/A.kt", "src/b/B.kt"), files.map { it.path })
+        assertEquals(listOf(earlyA, lateA), files[0].candidates)
+        assertEquals("the most likely declaration is scrolled to first", lateA, files[0].best)
+        assertEquals("A.kt (2) · Function · src", symbolCandidateFileLabel(files[0]))
+        assertEquals("B.kt:3 · Property · src/b", symbolCandidateFileLabel(files[1]))
+        assertEquals("Files declaring run (2)", symbolCandidateFilesTitle("run", files.size))
+        assertEquals("Line 5 · Function in Early", symbolCandidateSiteLabel(earlyA))
+    }
+
+    @Test
+    fun `symbolCandidateFileFor picks preferred declaration while keeping all overloads in line order`() {
+        val earlyA = candidate("src/A.kt", line = 5, container = "Early")
+        val lateA = candidate("src/A.kt", line = 40, container = "Late")
+        val other = candidate("src/B.kt", line = 10, container = "Other")
+        val file = symbolCandidateFileFor(listOf(earlyA, other, lateA), lateA)
+        assertEquals("src/A.kt", file.path)
+        assertEquals(lateA, file.best)
+        assertEquals(listOf(earlyA, lateA), file.candidates)
+    }
+
+    @Test
     fun `qualifier keeps only declarations in that owner`() {
         val a = candidate("src/a/Worker.kt", container = "dev.a.Worker")
         val b = candidate("src/b/Runner.kt", container = "dev.b.Runner")

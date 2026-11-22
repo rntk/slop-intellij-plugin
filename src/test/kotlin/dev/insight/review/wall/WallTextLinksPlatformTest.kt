@@ -1,24 +1,37 @@
 package dev.insight.review.wall
 
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ToolCallEvent
 import dev.insight.codereview.CodeReviewTab
 import dev.insight.codereview.codeFile
 import dev.insight.codereview.codeSnapshot
+import dev.insight.context.ContextPick
+import dev.insight.diff.DIFFS_WALL_LABELS
 import dev.insight.diff.DiffReviewTab
 import dev.insight.diff.DiffsWallContent
 import dev.insight.diff.DiffsWallView
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.ReviewSnapshot
+import dev.insight.links.SymbolCandidate
 import dev.insight.llm.Completion
+import dev.insight.review.ReportLink
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.SummaryKind
 import dev.insight.review.summarize
 import dev.insight.review.ui.LinkedTextPane
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.chooseView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.awt.Component
 import java.awt.Container
 import java.awt.Point
@@ -169,6 +182,93 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             val reAdded = blocks(tab.canvas).single { it.block.path == "src/Helper.kt" }
             assertEquals(setOf(6), reAdded.highlightedRows())
             assertEquals(1, blocks(tab.canvas).count { it.block.path == "src/Helper.kt" })
+        } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test symbol declared several times in one file opens one card listing its declarations`() {
+        val helperText = (1..30).joinToString("\n") { n ->
+            when (n) {
+                5 -> "fun process(x: Int) = x"
+                25 -> "fun process(s: String) = s"
+                else -> "// helper line $n"
+            }
+        } + "\n"
+        val aText = "fun alpha() = process(1)\n"
+        val aVf = myFixture.addFileToProject("src/A.kt", aText).virtualFile
+        myFixture.addFileToProject("src/Helper.kt", helperText)
+        val diffA = ReviewFile("src/A.kt", aVf.path, null, "modified", "@@ -1 +1 @@\n-fun alpha() = 0\n+$aText", "a",
+            before = "fun alpha() = 0\n", after = aText)
+
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            tab.update(ReviewSnapshot(listOf(diffA), emptyList()))
+            val aId = tab.state.summaries.tree.nodes.single { it.kind == SummaryKind.FILE && it.path == "src/A.kt" }.id
+            tab.state.summarize(tab.state.revision, mapOf(aId to "Calls `process()` for each item."))
+            tab.update(ReviewSnapshot(listOf(diffA), emptyList()))
+            chooseView(tab, "Diffs wall")
+            val surface = surfaceOf(tab.canvas)
+            val scrollPane = javax.swing.SwingUtilities.getAncestorOfClass(JScrollPane::class.java, surface) as JScrollPane
+            scrollPane.setSize(1400, 900)
+            layoutTree(scrollPane)
+
+            val blockA = blocks(tab.canvas).single { it.block.path == "src/A.kt" }
+            clickSummaryToggle(blockA)
+            val summaryPane = blockA.summaryTextPane!!
+            waitForLinks(summaryPane) { pane -> pane.renderedLinks.any { it.symbol?.name == "process" } }
+
+            // Both declarations sit in one file: no chooser, one card, and its declarations listed over it.
+            summaryPane.activateLink(summaryPane.renderedLinks.first { it.symbol?.name == "process" })
+            PlatformTestUtil.waitWithEventsDispatching("The declarations should be listed on the Helper.kt card", {
+                descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().isNotEmpty()
+            }, 10)
+            val panel = descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().single()
+            assertTrue(panel.sites.path.endsWith("Helper.kt"))
+            assertEquals(listOf(5, 25), panel.sites.sites.map { it.line })
+            assertEquals(5, panel.sites.current)
+            val helper = blocks(tab.canvas).single { it.block.path == panel.sites.path }
+            assertTrue(helper.active)
+            assertEquals(setOf(4), helper.highlightedRows())
+            layoutTree(scrollPane)
+            assertTrue("The list lies over its card", helper.bounds.contains(panel.bounds))
+            assertTrue(panel.isVisible)
+            assertTrue("The list stays in front of its card", surface.getComponentZOrder(panel) < surface.getComponentZOrder(helper))
+
+            // Each entry scrolls the card to its declaration without hiding or burying the list.
+            descendants(panel).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-link-site" && "Line 25" in it.text }.doClick()
+            assertEquals(setOf(24), blocks(tab.canvas).single { it.block.path == panel.sites.path }.highlightedRows())
+            assertEquals(25, panel.sites.current)
+            assertSame(surface, panel.parent)
+            assertTrue(panel.isVisible)
+            assertTrue("Clicking an entry keeps the list in front of its card",
+                surface.getComponentZOrder(panel) < surface.getComponentZOrder(helper))
+
+            descendants(panel).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-link-site" && "Line 5" in it.text }.doClick()
+            assertEquals(setOf(4), blocks(tab.canvas).single { it.block.path == panel.sites.path }.highlightedRows())
+            assertEquals(5, panel.sites.current)
+            assertTrue(panel.isVisible)
+            assertTrue("Repeated clicks keep the list in front of its card",
+                surface.getComponentZOrder(panel) < surface.getComponentZOrder(helper))
+
+            // Clicking the card itself keeps the list visible in front of it.
+            helper.dispatchEvent(MouseEvent(helper, MouseEvent.MOUSE_PRESSED, 0L, InputEvent.BUTTON1_DOWN_MASK,
+                helper.width / 2, helper.height / 2, 1, false, MouseEvent.BUTTON1))
+            assertTrue(panel.isVisible)
+            assertTrue("Clicking the card keeps the list in front of it",
+                surface.getComponentZOrder(panel) < surface.getComponentZOrder(helper))
+
+            // Switching to skim mode preserves the list over the rebuilt card.
+            pressKey(surface, "M")
+            layoutTree(scrollPane)
+            val skimHelper = blocks(tab.canvas).single { it.block.path == panel.sites.path }
+            assertSame(surface, panel.parent)
+            assertTrue(panel.isVisible)
+            assertTrue("Switching to skim mode keeps the list in front of its card",
+                surface.getComponentZOrder(panel) < surface.getComponentZOrder(skimHelper))
+
+            descendants(panel).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-link-sites-hide" }.doClick()
+            assertTrue(descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().isEmpty())
         } finally {
             Disposer.dispose(tab)
         }
@@ -361,6 +461,295 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
                 loaded4.buildMenu().components.filterIsInstance<JMenuItem>().none { it.text == "Remove from wall" })
         } finally {
             Disposer.dispose(wall)
+        }
+    }
+
+    fun `test preferred visible overload on diff card still lists hidden sibling overload`() {
+        val totalLines = WALL_MAX_LINES + 25
+        val bBeforeLines = (1..totalLines).map { n ->
+            when (n) {
+                2 -> "fun overloadFn(x: Int) = 0"
+                totalLines - 5 -> "fun overloadFn(s: String) = \"0\""
+                else -> "// line $n"
+            }
+        }
+        val bAfterLines = bBeforeLines.mapIndexed { idx, line ->
+            when (idx + 1) {
+                2 -> "fun overloadFn(x: Int) = x"
+                totalLines - 5 -> "fun overloadFn(s: String) = s"
+                else -> line
+            }
+        }
+        val bBefore = bBeforeLines.joinToString("\n") + "\n"
+        val bAfter = bAfterLines.joinToString("\n") + "\n"
+        val hiddenLine = totalLines - 5
+        val patchB = buildString {
+            val firstHunkCount = WALL_MAX_LINES + 5
+            append("@@ -1,$firstHunkCount +1,$firstHunkCount @@\n")
+            append(" // line 1\n")
+            append("-fun overloadFn(x: Int) = 0\n")
+            append("+fun overloadFn(x: Int) = x\n")
+            for (n in 3..firstHunkCount) append(" // line $n\n")
+            append("@@ -${hiddenLine - 1},3 +${hiddenLine - 1},3 @@\n")
+            append(" // line ${hiddenLine - 1}\n")
+            append("-fun overloadFn(s: String) = \"0\"\n")
+            append("+fun overloadFn(s: String) = s\n")
+            append(" // line ${hiddenLine + 1}\n")
+        }
+        val aText = "fun alpha() = overloadFn(1)\n"
+        val aVf = myFixture.addFileToProject("src/A.kt", aText).virtualFile
+        val bVf = myFixture.addFileToProject("src/B.kt", bAfter).virtualFile
+        val diffA = ReviewFile("src/A.kt", aVf.path, null, "modified", "@@ -1 +1 @@\n-fun alpha() = 0\n+$aText", "a",
+            before = "fun alpha() = 0\n", after = aText)
+        val diffB = ReviewFile("src/B.kt", bVf.path, null, "modified", patchB, "b",
+            before = bBefore, after = bAfter)
+
+        val tab = DiffReviewTab(project, null, { emptyList() }, {})
+        try {
+            tab.update(ReviewSnapshot(listOf(diffA, diffB), emptyList()))
+            val aId = tab.state.summaries.tree.nodes.single { it.kind == SummaryKind.FILE && it.path == "src/A.kt" }.id
+            tab.state.summarize(tab.state.revision, mapOf(aId to "Calls `overloadFn()`."))
+            tab.update(ReviewSnapshot(listOf(diffA, diffB), emptyList()))
+            chooseView(tab, "Diffs wall")
+
+            val surface = surfaceOf(tab.canvas)
+            val scrollPane = javax.swing.SwingUtilities.getAncestorOfClass(JScrollPane::class.java, surface) as JScrollPane
+            scrollPane.setSize(1400, 900)
+            layoutTree(scrollPane)
+
+            val blockA = blocks(tab.canvas).single { it.block.path == "src/A.kt" }
+            clickSummaryToggle(blockA)
+            val summaryPane = blockA.summaryTextPane!!
+            waitForLinks(summaryPane) { it.renderedLinks.any { l -> l.symbol?.name == "overloadFn" } }
+
+            // One overload is visible in src/B.kt's initial hunk (line 2), the other sits past WALL_MAX_LINES: both must still appear on B's card.
+            summaryPane.activateLink(summaryPane.renderedLinks.first { it.symbol?.name == "overloadFn" })
+            PlatformTestUtil.waitWithEventsDispatching("Preferred overload should still list sibling overload on B.kt card", {
+                descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().isNotEmpty()
+            }, 10)
+            val panel = descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().single()
+            assertEquals("src/B.kt", panel.sites.path)
+            assertEquals(listOf(2, hiddenLine), panel.sites.sites.map { it.line })
+            assertEquals(2, panel.sites.current)
+
+            // Clicking the hidden overload expands the diff card to include hiddenLine.
+            descendants(panel).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-link-site" && "Line $hiddenLine" in it.text }.doClick()
+            val updatedB = blocks(tab.canvas).single { it.block.path == "src/B.kt" }
+            assertEquals(hiddenLine, panel.sites.current)
+            assertTrue("Hidden overload line should now be highlighted", updatedB.highlightedRows().isNotEmpty())
+            assertEquals(hiddenLine, updatedB.block.lines[updatedB.highlightedRows().single()].new)
+        } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test canvas chat in skim mode does not cover declaration list`() {
+        val helperText = (1..30).joinToString("\n") { n ->
+            when (n) {
+                5 -> "fun skimProc(x: Int) = x"
+                25 -> "fun skimProc(s: String) = s"
+                else -> "// helper line $n"
+            }
+        } + "\n"
+        val aText = "fun alpha() = skimProc(1)\n"
+        val aVf = myFixture.addFileToProject("src/A.kt", aText).virtualFile
+        myFixture.addFileToProject("src/Helper.kt", helperText)
+        val diffA = ReviewFile("src/A.kt", aVf.path, null, "modified", "@@ -1 +1 @@\n-fun alpha() = 0\n+$aText", "a",
+            before = "fun alpha() = 0\n", after = aText)
+
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = {
+            Completion("Uses `skimProc()` from helper.")
+        })
+        try {
+            tab.update(ReviewSnapshot(listOf(diffA), emptyList()))
+            chooseView(tab, "Diffs wall")
+            val surface = surfaceOf(tab.canvas)
+            val scrollPane = javax.swing.SwingUtilities.getAncestorOfClass(JScrollPane::class.java, surface) as JScrollPane
+            scrollPane.setSize(1200, 800)
+            layoutTree(scrollPane)
+
+            pressKey(surface, "M")
+            layoutTree(scrollPane)
+
+            descendants(tab.canvas).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-canvas-chat-link" }.doClick()
+            val chatPanel = descendants(tab.canvas).filterIsInstance<WallChatPanel>().single()
+            chatPanel.send("Where is skimProc?")
+            PlatformTestUtil.waitWithEventsDispatching("Chat reply should complete", {
+                descendants(chatPanel).filterIsInstance<LinkedTextPane>().any { "skimProc()" in it.markdown }
+            }, 10)
+            val replyPane = descendants(chatPanel).filterIsInstance<LinkedTextPane>().last { "skimProc()" in it.markdown }
+            waitForLinks(replyPane) { it.renderedLinks.any { l -> l.symbol?.name == "skimProc" } }
+
+            replyPane.activateLink(replyPane.renderedLinks.first { it.symbol?.name == "skimProc" })
+            PlatformTestUtil.waitWithEventsDispatching("Declaration list should appear without being covered by canvas chat", {
+                descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().isNotEmpty()
+            }, 10)
+            layoutTree(scrollPane)
+
+            val panel = descendants(tab.canvas).filterIsInstance<WallLinkSitesPanel>().single()
+            assertTrue(panel.isVisible)
+            assertTrue(chatPanel.isVisible)
+            assertTrue(panel.width > 0 && panel.height > 0)
+            assertFalse("Canvas chat must not cover the link sites panel", panel.bounds.intersects(chatPanel.bounds))
+        } finally {
+            Disposer.dispose(tab)
+        }
+    }
+
+    fun `test hidden inline link sites falls back to popup and card menu`() {
+        val helperText = (1..30).joinToString("\n") { n ->
+            when (n) {
+                5 -> "fun tightFn(x: Int) = x"
+                25 -> "fun tightFn(s: String) = s"
+                else -> "// helper line $n"
+            }
+        } + "\n"
+        val aText = "fun alpha() = tightFn(1)\n"
+        val aVf = myFixture.addFileToProject("src/A.kt", aText).virtualFile
+        myFixture.addFileToProject("src/Helper.kt", helperText)
+        val diffA = ReviewFile("src/A.kt", aVf.path, null, "modified", "@@ -1 +1 @@\n-fun alpha() = 0\n+$aText", "a",
+            before = "fun alpha() = 0\n", after = aText)
+
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        val chats = WallChats(project, scope, backend = {
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit) = ""
+            }
+        }, welcome = { "" })
+        val wall = DiffsWallView(
+            openDiff = { _, _ -> },
+            showAllChanges = {},
+            chats = chats,
+            project = project,
+            scope = scope,
+            allFiles = { listOf(diffA) },
+        )
+        try {
+            wall.show(DiffsWallContent(WallScope(null, "All changes"), listOf(diffA), mapOf("src/A.kt" to "Calls `tightFn()`.")))
+            val scrollPane = JScrollPane(wall.card)
+            scrollPane.setSize(500, 400)
+            layoutTree(scrollPane)
+
+            val surface = descendants(wall.card).filterIsInstance<WallView.Surface>().single()
+            pressKey(surface, "M")
+            wall.view.toggleCanvasChat()
+            layoutTree(scrollPane)
+
+            var popped: WallLinkSites? = null
+            var chooseCallback: ((WallLinkSite) -> Unit)? = null
+            wall.view.chooseLinkSite = { sites, _, onChosen ->
+                popped = sites
+                chooseCallback = onChosen
+            }
+
+            val blockA = wall.view.blocks.single { it.block.path == "src/A.kt" }
+            clickSummaryToggle(blockA)
+            val summaryPane = blockA.summaryTextPane!!
+            waitForLinks(summaryPane) { it.renderedLinks.any { l -> l.symbol?.name == "tightFn" } }
+
+            summaryPane.activateLink(summaryPane.renderedLinks.first { it.symbol?.name == "tightFn" })
+            PlatformTestUtil.waitWithEventsDispatching("Popup fallback should trigger when inline panel cannot fit", {
+                popped != null
+            }, 10)
+            layoutTree(scrollPane)
+
+            val sites = popped!!
+            val panel = wall.view.linkSitesPanel(sites.path)!!
+            assertFalse("Inline panel should stay hidden when no unobstructed slot fits", panel.isVisible)
+            assertEquals(listOf(5, 25), sites.sites.map { it.line })
+
+            chooseCallback!!(sites.sites.last())
+            val helperBlock = wall.view.blocks.single { it.block.path == sites.path }
+            assertEquals(setOf(24), helperBlock.highlightedRows())
+
+            // Card "..." menu keeps the declarations reachable as well.
+            popped = null
+            helperBlock.buildMenu().components.filterIsInstance<JMenuItem>().single { it.text.startsWith("Declarations of tightFn") }.doClick()
+            assertNotNull(popped)
+            assertEquals(25, popped!!.current)
+        } finally {
+            Disposer.dispose(wall)
+            Disposer.dispose(chats)
+            scope.cancel()
+        }
+    }
+
+    fun `test editor fallback opens declaration chooser when file cannot host a wall card`() {
+        val bigText = (1..20).joinToString("\n") { n ->
+            when (n) {
+                3 -> "fun hugeFn(x: Int) = x"
+                10 -> "fun hugeFn(s: String) = s"
+                else -> "// line $n"
+            }
+        } + "\n"
+        myFixture.addFileToProject("src/Big.kt", bigText)
+
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        val decliningHost = object : WallLinkHost {
+            override val isDiffWall: Boolean = true
+            override fun scopePaths(): List<String> = listOf("src/A.kt")
+            override fun wallPathFor(path: String, absolutePath: String?): String = normalizeWallPath(path)
+            override fun ensureCard(path: String, absolutePath: String?, lines: IntRange?): String? = null
+            override fun ensureLineLoaded(path: String, targetLine: Int): Boolean = false
+            override fun isAddedCard(path: String): Boolean = false
+            override fun contextPick(link: ReportLink, path: String, absolutePath: String?): ContextPick? = null
+        }
+        val wall = WallView(
+            DIFFS_WALL_LABELS,
+            openLine = { _, _ -> },
+            showAll = {},
+            chats = null,
+            highlighter = null,
+            openOnCanvas = null,
+            onContext = null,
+            summarize = null,
+            cardWidthScale = 1.0,
+            links = WallLinkSupport(project = project, coroutineScope = scope, linkHost = decliningHost),
+        )
+        try {
+            val editorManager = FileEditorManager.getInstance(project)
+            editorManager.openFiles.forEach(editorManager::closeFile)
+            wall.show(WallContent(
+                WallScope(null, "All"),
+                listOf(WallBlock("src/A.kt", "src/A.kt", "", listOf(WallLine.source(1, "fun a() = hugeFn(1)")), 0)),
+                mapOf("src/A.kt" to "Calls `hugeFn()`."),
+            ))
+            val scrollPane = JScrollPane(wall.card)
+            scrollPane.setSize(1200, 800)
+            layoutTree(scrollPane)
+
+            var chosenName: String? = null
+            var chosenCands: List<SymbolCandidate> = emptyList()
+            var onChosen: ((SymbolCandidate) -> Unit)? = null
+            wall.chooseDeclaration = { name, cands, _, cb ->
+                chosenName = name
+                chosenCands = cands
+                onChosen = cb
+            }
+
+            val blockA = wall.blocks.single()
+            clickSummaryToggle(blockA)
+            val summaryPane = blockA.summaryTextPane!!
+            waitForLinks(summaryPane) { it.renderedLinks.any { l -> l.symbol?.name == "hugeFn" } }
+
+            summaryPane.activateLink(summaryPane.renderedLinks.first { it.symbol?.name == "hugeFn" })
+            PlatformTestUtil.waitWithEventsDispatching("Editor fallback should ask which declaration to open", {
+                onChosen != null
+            }, 10)
+
+            assertNull("Editor must not open before choosing an overload", FileEditorManager.getInstance(project).selectedTextEditor)
+            assertEquals("hugeFn", chosenName)
+            assertEquals(listOf(3, 10), chosenCands.map { it.line }.sorted())
+
+            onChosen!!(chosenCands.maxBy { it.line })
+            val editor = FileEditorManager.getInstance(project).selectedTextEditor
+            assertNotNull("Chosen declaration should open in editor", editor)
+            assertEquals("Big.kt", FileEditorManager.getInstance(project).selectedFiles.single().name)
+            assertEquals(9, editor!!.caretModel.logicalPosition.line)
+        } finally {
+            FileEditorManager.getInstance(project).let { mgr -> mgr.openFiles.forEach(mgr::closeFile) }
+            Disposer.dispose(wall)
+            scope.cancel()
         }
     }
 
