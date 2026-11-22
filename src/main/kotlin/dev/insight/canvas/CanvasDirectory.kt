@@ -24,7 +24,7 @@ internal suspend fun directoryCanvasFiles(project: Project, directory: VirtualFi
     val roots = if (projectFiles.index.isInContent(directory)) listOf(directory)
         else ProjectRootManager.getInstance(project).contentRoots.filter { VfsUtilCore.isAncestor(directory, it, false) }
     roots.flatMap { projectFiles.contentFiles(it, null) }.distinct().filterNot { cache != null && it.path.startsWith(cache) }
-        .sortedBy { it.path }
+        .sortedBy { relativePath(project, it.path) }
 }
 
 internal data class DirectoryCards(
@@ -35,23 +35,54 @@ internal data class DirectoryCards(
 
 internal suspend fun buildDirectoryCards(project: Project, files: List<VirtualFile>,
     onProgress: (Int, Int) -> Unit): DirectoryCards = withContext(Dispatchers.Default) {
-    val byPath = files.associateBy { it.path }
     val exploration = ProgressiveSchematic.openFiles(project, files)
+    val (cards, sources) = populateDirectoryBatch(project, exploration, emptyMap(), emptyMap(), files, onProgress)
+    DirectoryCards(exploration, cards, sources)
+}
+
+/**
+ * Adds [files] to an existing directory [exploration] and builds cards connected to [existingCards] (keyed by absolute
+ * file path) where graph relations exist.
+ */
+internal suspend fun buildDirectoryBatch(
+    project: Project,
+    exploration: ProgressiveSchematic,
+    existingCards: Map<String, CanvasCard>,
+    existingSources: Map<String, CanvasSource>,
+    files: List<VirtualFile>,
+    onProgress: (Int, Int) -> Unit,
+): Pair<List<CanvasCard>, Map<String, CanvasSource>> = withContext(Dispatchers.Default) {
+    if (files.isEmpty()) return@withContext emptyList<CanvasCard>() to emptyMap()
+    exploration.addFiles(files)
+    populateDirectoryBatch(project, exploration, existingCards, existingSources, files, onProgress)
+}
+
+private suspend fun populateDirectoryBatch(
+    project: Project,
+    exploration: ProgressiveSchematic,
+    existingCards: Map<String, CanvasCard>,
+    existingSources: Map<String, CanvasSource>,
+    files: List<VirtualFile>,
+    onProgress: (Int, Int) -> Unit,
+): Pair<List<CanvasCard>, Map<String, CanvasSource>> {
+    val byPath = files.associateBy { it.path }
+    val allPaths = (existingCards.keys + byPath.keys).associateWith { it }
     val result = exploration.result
     val nodes = result.graph.nodes.filter { it.kind == SymbolKind.FILE && it.filePath in byPath }.associateBy { it.filePath }
-    val connections = smartReadAction(project) { fileConnections(result, nodes.keys.filterNotNull().associateWith { it }) }
+    val connections = smartReadAction(project) { fileConnections(result, allPaths) }
     val cards = linkedMapOf<String, CanvasCard>()
     val sources = linkedMapOf<String, CanvasSource>()
-    fileConnectionForest(byPath.keys.sorted(), connections).forEachIndexed { index, entry ->
+    extendFileConnectionForest(existingCards.keys.sorted(), byPath.keys.sorted(), connections).forEachIndexed { index, entry ->
         withContext(Dispatchers.EDT) { onProgress(index + 1, byPath.size) }
         val file = byPath.getValue(entry.path)
         val path = relativePath(project, file.path)
         val node = nodes[entry.path]
         val schematic = node?.let { exploration.schematic(it.id, whole = true) }
-        val parent = entry.parent?.let(cards::getValue)
-        val anchor = parent?.let {
-            fileConnectionAnchor(sources.getValue(it.id), file.path, entry.offset, result.graph.nodes::getOrNull)
-        } ?: CardAnchor(0, 0, 0)
+        val parent = entry.parent?.let { cards[it] ?: existingCards[it] }
+        val parentSource = parent?.let { sources[it.id] ?: existingSources[it.id] }
+        val anchor = if (parent != null && parentSource != null) {
+            fileConnectionAnchor(parentSource, file.path, entry.offset, result.graph.nodes::getOrNull)
+        } else CardAnchor(0, 0, 0)
         val id = newCanvasId()
         val card = if (schematic != null) {
             val shown = schematicSource(schematic, path, schematic.scope)
@@ -69,7 +100,7 @@ internal suspend fun buildDirectoryCards(project: Project, files: List<VirtualFi
         cards[entry.path] = card
     }
     exploration.ensureSourcesCurrent()
-    DirectoryCards(exploration, cards.values.toList(), sources)
+    return cards.values.toList() to sources
 }
 
 internal suspend fun directoryAttachment(file: VirtualFile): CanvasAttachmentContent {

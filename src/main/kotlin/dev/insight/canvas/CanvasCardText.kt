@@ -131,7 +131,9 @@ val canvasHelpHtml = """
     the wheel and scroll keys (arrows, Page Up/Down, Space / Shift+Space, Home/End; Shift sideways) scroll the focused card
     on axes that scroll and the canvas on other axes. Esc or clicking empty space restores canvas navigation; Esc in a chat
     input returns focus to the canvas. + / − (or Ctrl/⌘ + = / −) zoom, and 0 (or Ctrl/⌘ + 0) resets the zoom. <b>Find card</b> (Ctrl/⌘ + F outside source text, which keeps the IDE's Find) fuzzy-searches the
-    cards by name, file or text and moves the canvas to the one you pick. The session is saved as you work: <b>Sessions</b>
+    cards by name, file or text and moves the canvas to the one you pick. Large directories, graphs, and saved sessions
+    load in chunks — click <b>Load more</b> or an inline continuation card to expand further, or jump straight to any
+    card with <b>Find card</b>. The session is saved as you work: <b>Sessions</b>
     opens the saved sessions side panel, with fuzzy search by file name. <b>Session ▾</b> starts a new one, switches
     to another session of this file, or deletes this one. After the code changes, <b>Refresh</b> reads it again in
     place, keeping cards, chats and layout; reopening does the same. Either resolves symbols

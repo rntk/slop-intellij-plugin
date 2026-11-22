@@ -8,7 +8,9 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiManager
 import dev.insight.callgraph.ProgressiveSchematic
+import dev.insight.canvas.CANVAS_LOAD_CHUNK
 import dev.insight.canvas.CANVAS_ROOT
+import dev.insight.canvas.CanvasPendingFile
 import dev.insight.canvas.CanvasSession
 import dev.insight.canvas.CanvasSessionController
 import dev.insight.canvas.CanvasSessionFile
@@ -72,7 +74,12 @@ internal suspend fun relateDiffFiles(project: Project, snapshot: ReviewSnapshot,
  * matching the after-side can contribute PSI evidence. Resolve every eligible changed file to find incoming links,
  * but open only the selected file's connected component; unchanged files never bridge two changed files.
  */
-internal suspend fun prepareDiffCanvasSession(project: Project, snapshot: ReviewSnapshot, path: String): DiffCanvasSession {
+internal suspend fun prepareDiffCanvasSession(
+    project: Project,
+    snapshot: ReviewSnapshot,
+    path: String,
+    initialLimit: Int = CANVAS_LOAD_CHUNK,
+): DiffCanvasSession {
     val selected = snapshot.files.firstOrNull { it.path == path } ?: error("$path is no longer in this diff.")
     val eligible = matchingDiffSources(project, snapshot)
     // Patches only where both sides were read; their new-side lines number the source the canvas shows.
@@ -87,20 +94,30 @@ internal suspend fun prepareDiffCanvasSession(project: Project, snapshot: Review
     val (supported, connections) = relateDiffFiles(project, snapshot, opened.exploration, eligible, "canvas")
     val model = CanvasSessionModel(opened.session)
     val controller = CanvasSessionController(project, source, opened.exploration, opened.root, model)
+    val related = relatedDiffFiles(path, connections)
+    val eager = related.take(initialLimit.coerceAtLeast(0))
+    val deferred = related.drop(eager.size)
     try {
         controller.loadRoot()
         val cards = mutableMapOf<String, String>()
-        for (related in relatedDiffFiles(path, connections)) {
-            val parent = cards[related.parent] ?: CANVAS_ROOT
+        for (entry in eager) {
+            val parent = cards[entry.parent] ?: CANVAS_ROOT
             val shown = checkNotNull(controller.source(parent))
-            val target = supported.getValue(related.path)
-            val anchor = fileConnectionAnchor(shown, target.path, related.offset, controller::node)
+            val target = supported.getValue(entry.path)
+            val anchor = fileConnectionAnchor(shown, target.path, entry.offset, controller::node)
             val card = controller.openFile(parent, anchor.startOffset, anchor.endOffset, target)
-            cards[related.path] = card.id
+            cards[entry.path] = card.id
         }
         // Check source stamps again before handing this graph to the editor.
         opened.exploration.fileDeclarations(source)
-        withContext(Dispatchers.EDT) { opened.session = model.session }
+        val pending = deferred.map { entry ->
+            CanvasPendingFile(
+                filePath = relativePath(project, supported.getValue(entry.path).path),
+                parentPath = entry.parent?.let { supported[it]?.path }?.let { relativePath(project, it) },
+                offset = entry.offset,
+            )
+        }
+        withContext(Dispatchers.EDT) { opened.session = model.session.copy(pendingFiles = pending) }
     } finally {
         controller.dispose()
     }

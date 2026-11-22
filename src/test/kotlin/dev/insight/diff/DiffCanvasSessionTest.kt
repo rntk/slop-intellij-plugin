@@ -104,4 +104,48 @@ class DiffCanvasSessionTest : BasePlatformTestCase() {
             }
         }
     }
+
+    fun testChunkedDiffCanvasDefersRemainingFilesAndLoadsThemViaPanel() {
+        val files = listOf(
+            file("Root.java", "class Root { static void run() {} }"),
+            file("C1.java", "class C1 { void a() { Root.run(); } }"),
+            file("C2.java", "class C2 { void a() { Root.run(); } C2Leaf leaf; }"),
+            file("C2Leaf.java", "class C2Leaf {}"),
+            file("C3.java", "class C3 { void a() { Root.run(); } }"),
+        )
+        val snapshot = ReviewSnapshot(files, emptyList())
+        val prepared = background { prepareDiffCanvasSession(project, snapshot, "Root.java", initialLimit = 2) }
+        assertEquals(3, prepared.file.session.cards.size)
+        assertEquals(2, prepared.file.session.pendingFiles.size)
+
+        val storePath = java.nio.file.Files.createTempDirectory("diff-pending")
+        try {
+            val store = dev.insight.canvas.CanvasSessionStore(storePath)
+            assertTrue(store.save(prepared.file.session))
+            val restored = store.load(prepared.file.session.id)!!
+            assertEquals(prepared.file.session.pendingFiles, restored.pendingFiles)
+
+            val services = dev.insight.canvas.CanvasSessionServices(store, { error("No summary") }) { _, _ -> error("No chat") }
+            val panel = dev.insight.canvas.CanvasSessionPanel(project, prepared.file, restored, services, loadChunk = 2) {}
+            try {
+                panel.setSize(1200, 800)
+                PlatformTestUtil.waitWithEventsDispatching("Diff canvas should open", { panel.ready }, 30)
+                assertEquals(3, panel.cardViews.size)
+                assertTrue(panel.moreCards.isNotEmpty())
+
+                val job = panel.loadMore()!!
+                PlatformTestUtil.waitWithEventsDispatching("Pending diff files should load", { job.isCompleted }, 30)
+                assertEquals(5, panel.cardViews.size)
+                assertTrue(panel.moreCards.isEmpty())
+                assertTrue(panel.model.session.pendingFiles.isEmpty())
+                val leaf = panel.model.cards.single { it.filePath.endsWith("C2Leaf.java") }
+                val c2 = panel.model.cards.single { it.filePath.endsWith("C2.java") }
+                assertEquals(c2.id, leaf.parentId)
+            } finally {
+                Disposer.dispose(panel)
+            }
+        } finally {
+            storePath.toFile().deleteRecursively()
+        }
+    }
 }

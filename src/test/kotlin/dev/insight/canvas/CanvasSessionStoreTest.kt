@@ -235,4 +235,56 @@ class CanvasSessionStoreTest {
         val lean = store.load("lean")!!
         assertEquals(listOf(null, null, CardSize(CARD_MIN_WIDTH, CARD_MAX_HEIGHT)), lean.cards.map { it.size })
     }
+
+    @Test
+    fun `directoryCursor round-trips for initialized directories and is omitted when null`() {
+        val store = CanvasSessionStore(directory)
+        val base = session("dircur", "src", 10)
+        val withCursor = base.copy(
+            cards = listOf(canvasRootCard("src", directory = true)) + base.cards.drop(1),
+            directoryInitialized = true,
+            directoryCursor = "src/M.kt",
+        )
+        assertTrue(store.save(withCursor))
+        val loaded = store.load("dircur")!!
+        assertEquals("src/M.kt", loaded.directoryCursor)
+        assertEquals(withCursor, loaded)
+
+        val cleared = withCursor.copy(directoryCursor = null)
+        assertTrue(store.save(cleared))
+        assertFalse(Files.readString(directory.resolve("dircur.json")).contains("directoryCursor"))
+        assertNull(store.load("dircur")!!.directoryCursor)
+    }
+
+    @Test
+    fun `pendingFiles round trip with parentPath and offset, and invalid or duplicate entries are cleaned`() {
+        val store = CanvasSessionStore(directory)
+        val base = session("pending", "src/Main.kt", 10)
+        val withPending = base.copy(pendingFiles = listOf(
+            CanvasPendingFile("src/A.kt"),
+            CanvasPendingFile("src/B.kt", "src/A.kt", 42),
+        ))
+        assertTrue(store.save(withPending))
+        assertEquals(withPending, store.load("pending"))
+        assertFalse("Zero offset is omitted when encoded", Files.readString(directory.resolve("pending.json")).contains("\"offset\":0"))
+
+        val cleared = withPending.copy(pendingFiles = emptyList())
+        assertTrue(store.save(cleared))
+        assertFalse(Files.readString(directory.resolve("pending.json")).contains("pendingFiles"))
+        assertTrue(store.load("pending")!!.pendingFiles.isEmpty())
+
+        Files.writeString(directory.resolve("dirty-pending.json"), """
+            {"version":2,"session":{"id":"dirty-pending","rootPath":"src/Main.kt","cards":[{"id":"root","kind":"ROOT","filePath":"src/Main.kt"}],
+              "pendingFiles":[
+                {"filePath":"  ","parentPath":"src/Main.kt"},
+                {"filePath":"src/A.kt","parentPath":"","offset":-5},
+                {"filePath":"src/A.kt","parentPath":"src/Other.kt","offset":9},
+                {"filePath":"src/B.kt","parentPath":"src/A.kt","offset":12}
+              ]}}
+        """.trimIndent())
+        assertEquals(
+            listOf(CanvasPendingFile("src/A.kt", null, 0), CanvasPendingFile("src/B.kt", "src/A.kt", 12)),
+            store.load("dirty-pending")!!.pendingFiles,
+        )
+    }
 }

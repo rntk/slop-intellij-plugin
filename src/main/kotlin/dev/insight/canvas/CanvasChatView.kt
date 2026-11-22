@@ -313,6 +313,14 @@ internal class CanvasSourceSection(private val host: CanvasCardHost, private val
         if (showsDiff) select(diff = false)
     }
 
+    /** Selects the Diff tab when present without altering the section's folded state. */
+    fun restoreDiff() {
+        if (!showsDiff && diff != null) {
+            showsDiff = true
+            showTab()
+        }
+    }
+
     private fun select(diff: Boolean) {
         showsDiff = diff
         showTab()

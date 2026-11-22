@@ -407,7 +407,10 @@ internal class DiffReviewPanel(
                     }
                     check(!state.refreshing && state.snapshot == snapshot) { "The diff changed. Retry after refreshing." }
                     FileEditorManager.getInstance(project).openFile(prepared.file, true)
-                    status.text = "Opened ${prepared.file.session.cards.size} related changed files on canvas" +
+                    val shown = prepared.file.session.cards.size
+                    val pending = prepared.file.session.pendingFiles.size
+                    status.text = (if (pending > 0) "Opened $shown of ${shown + pending} related changed files on canvas (load more on the canvas)"
+                        else "Opened $shown related changed files on canvas") +
                         if (prepared.unavailable.isEmpty()) "" else
                             " · ${prepared.unavailable.size} files could not be analyzed (missing, unsupported, or different from the reviewed source)"
                     status.toolTipText = prepared.unavailable.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: status.text

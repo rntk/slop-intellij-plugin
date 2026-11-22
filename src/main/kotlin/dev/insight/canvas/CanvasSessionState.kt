@@ -147,10 +147,17 @@ fun canvasRootCard(rootPath: String, directory: Boolean = false): CanvasCard = C
     rootPath, 0, "", wholeFile = true)
 
 /**
+ * A file scheduled to be opened on demand in a later chunk (for linked files or diff-connected components).
+ * [filePath] and [parentPath] are project-relative canvas paths, matching [CanvasCard.filePath] and [CanvasSession.rootPath].
+ */
+data class CanvasPendingFile(val filePath: String, val parentPath: String? = null, val offset: Int = 0)
+
+/**
  * A saved exploration of one file or directory: [rootPath] is the project-relative path of what was opened, [cards] in
  * the order they were opened (parents always before their children), starting with the [CardKind.ROOT] card of
- * [rootPath], and [view] the canvas position. [directoryInitialized] tells a directory's starting files were opened.
- * Times are epoch millis.
+ * [rootPath], and [view] the canvas position. [directoryInitialized] tells a directory's starting files were opened,
+ * [directoryCursor] holds the last loaded relative path when more directory files remain to load, and [pendingFiles]
+ * holds remaining linked or diff-connected files deferred past the initial chunk. Times are epoch millis.
  */
 data class CanvasSession(
     val id: String,
@@ -161,6 +168,8 @@ data class CanvasSession(
     val cards: List<CanvasCard> = listOf(canvasRootCard(rootPath)),
     val view: CanvasView = CanvasView(),
     val directoryInitialized: Boolean = false,
+    val directoryCursor: String? = null,
+    val pendingFiles: List<CanvasPendingFile> = emptyList(),
 ) {
     init {
         require(cards.firstOrNull()?.let { it.id == CANVAS_ROOT && it.kind == CardKind.ROOT } == true) { "A session starts with its root card" }
@@ -228,6 +237,8 @@ fun List<SavedMessage>.toChatMessages(): List<ChatMessage> = map { ChatMessage(i
 /** What changed in a [CanvasSessionModel]; views redraw only what they need. */
 sealed interface CanvasChange {
     data class CardOpened(val card: CanvasCard) : CanvasChange
+    /** Multiple cards appended at once (for example, the next chunk of directory or pending files). */
+    data class CardsOpened(val cards: List<CanvasCard>) : CanvasChange
     /** [ids] are the removed card and its whole subtree. */
     data class CardsRemoved(val ids: Set<String>) : CanvasChange
     /** Summary, folding, size, chat or draft of [card] changed; [card] is the new state. */
@@ -402,10 +413,29 @@ class CanvasSessionModel(initial: CanvasSession, private val clock: () -> Long =
     }
 
     /** Opens a directory's starting files, [cards] opened from the root card, all at once; the root lists the directory. */
-    internal fun initializeDirectory(cards: List<CanvasCard>) {
+    internal fun initializeDirectory(cards: List<CanvasCard>, directoryCursor: String? = null) {
         check(!session.directoryInitialized && session.cards.size == 1)
         val root = session.root.copy(symbol = canvasRootCard(session.rootPath, directory = true).symbol)
-        session = session.copy(cards = listOf(root) + cards, directoryInitialized = true, updated = clock())
+        session = session.copy(cards = listOf(root) + cards, directoryInitialized = true, directoryCursor = directoryCursor,
+            updated = clock())
+    }
+
+    /** Appends [cards] at once (e.g. a directory or pending-file batch) and updates [directoryCursor] and [pendingFiles]. */
+    internal fun appendCards(
+        cards: List<CanvasCard>,
+        directoryCursor: String? = session.directoryCursor,
+        pendingFiles: List<CanvasPendingFile> = session.pendingFiles,
+    ) {
+        val existing = session.cards.mapTo(hashSetOf()) { it.id }
+        val fresh = cards.filter { it.id !in existing }
+        if (fresh.isEmpty() && directoryCursor == session.directoryCursor && pendingFiles == session.pendingFiles) return
+        session = session.copy(
+            cards = session.cards + fresh,
+            directoryCursor = directoryCursor,
+            pendingFiles = pendingFiles,
+            updated = clock(),
+        )
+        if (fresh.isNotEmpty()) notify(CanvasChange.CardsOpened(fresh))
     }
 
     fun setView(view: CanvasView) {

@@ -25,7 +25,12 @@ internal class LinkedFilesCanvas(val file: CanvasSessionFile, val unavailable: L
  * Builds a new session rooted at the first of [files] that the canvas can show, with every other one as a whole-file card anchored
  * where the root mentions it, or at its top. Files the canvas cannot read are listed in [LinkedFilesCanvas.unavailable]. Off the EDT.
  */
-internal suspend fun prepareLinkedFilesCanvas(project: Project, files: List<VirtualFile>, title: String): LinkedFilesCanvas? {
+internal suspend fun prepareLinkedFilesCanvas(
+    project: Project,
+    files: List<VirtualFile>,
+    title: String,
+    initialLimit: Int = CANVAS_LOAD_CHUNK,
+): LinkedFilesCanvas? {
     val unavailable = mutableListOf<String>()
     var opened: CanvasSessionFile? = null
     var rest = files
@@ -39,13 +44,20 @@ internal suspend fun prepareLinkedFilesCanvas(project: Project, files: List<Virt
     val session = opened ?: return null
     val model = CanvasSessionModel(session.session)
     val controller = CanvasSessionController(project, session.source, session.exploration, session.root, model)
+    val pending = mutableListOf<CanvasPendingFile>()
     try {
         val root = controller.loadRoot()
+        var openedCount = 0
         for (file in rest) {
             val path = relativePath(project, file.path)
+            if (openedCount >= initialLimit.coerceAtLeast(0)) {
+                pending += CanvasPendingFile(path)
+                continue
+            }
             val anchor = fileConnectionAnchor(root, file.path, 0, controller::node)
             try {
                 controller.openFile(CANVAS_ROOT, anchor.startOffset, anchor.endOffset, file)
+                openedCount++
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -54,7 +66,7 @@ internal suspend fun prepareLinkedFilesCanvas(project: Project, files: List<Virt
                 unavailable += path
             }
         }
-        withContext(Dispatchers.EDT) { session.session = model.session }
+        withContext(Dispatchers.EDT) { session.session = model.session.copy(pendingFiles = pending) }
     } finally {
         controller.dispose()
     }

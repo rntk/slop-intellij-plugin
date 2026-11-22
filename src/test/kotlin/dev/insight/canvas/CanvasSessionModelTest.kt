@@ -226,4 +226,47 @@ class CanvasSessionModelTest {
         assertEquals(listOf(card.id, card.id, CANVAS_ROOT, card.id, CANVAS_ROOT),
             changes.map { (it as CanvasChange.CardChanged).card.id })
     }
+
+    @Test
+    fun `appendCards adds non-duplicate cards in one CardsOpened notification and updates directoryCursor`() {
+        val model = model()
+        val changes = mutableListOf<CanvasChange>()
+        model.subscribe { changes += it }
+        val c1 = CanvasCard("c1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 1, 0),
+            SymbolRef("A.kt", "A.kt", "FILE"), "A.kt", 0, "class A", wholeFile = true, openedBy = CardOpenedBy.DIRECTORY)
+        val c2 = CanvasCard("c2", "c1", CardKind.SYMBOL, CardAnchor(0, 1, 0),
+            SymbolRef("B.kt", "B.kt", "FILE"), "B.kt", 0, "class B", wholeFile = true, openedBy = CardOpenedBy.DIRECTORY)
+        model.initializeDirectory(listOf(c1), directoryCursor = "A.kt")
+        assertEquals("A.kt", model.session.directoryCursor)
+        assertTrue(changes.isEmpty())
+
+        model.appendCards(listOf(c1, c2), directoryCursor = "B.kt")
+        assertEquals(listOf(CANVAS_ROOT, "c1", "c2"), model.cards.map { it.id })
+        assertEquals("B.kt", model.session.directoryCursor)
+        assertEquals(listOf(CanvasChange.CardsOpened(listOf(c2))), changes)
+
+        model.appendCards(emptyList(), directoryCursor = null)
+        assertNull(model.session.directoryCursor)
+        assertEquals(1, changes.size)
+    }
+
+    @Test
+    fun `appendCards updates pendingFiles with and without opening cards`() {
+        val model = model()
+        val p1 = CanvasPendingFile("A.kt")
+        val p2 = CanvasPendingFile("B.kt", "A.kt", 12)
+        val withPending = CanvasSessionModel(model.session.copy(pendingFiles = listOf(p1, p2)))
+        val changes = mutableListOf<CanvasChange>()
+        withPending.subscribe { changes += it }
+
+        val c1 = CanvasCard("c1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 1, 0),
+            SymbolRef("A.kt", "A.kt", "FILE"), "A.kt", 0, "class A", wholeFile = true)
+        withPending.appendCards(listOf(c1), pendingFiles = listOf(p2))
+        assertEquals(listOf(p2), withPending.session.pendingFiles)
+        assertEquals(listOf(CanvasChange.CardsOpened(listOf(c1))), changes)
+
+        withPending.appendCards(emptyList(), pendingFiles = emptyList())
+        assertTrue(withPending.session.pendingFiles.isEmpty())
+        assertEquals("Updating pendingFiles alone emits no CardsOpened", 1, changes.size)
+    }
 }

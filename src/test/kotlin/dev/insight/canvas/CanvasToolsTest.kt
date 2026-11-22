@@ -338,4 +338,45 @@ class CanvasToolsTest {
         assertTrue(read, read.contains("Gap summaries (model-written):\n- lines 2-2: Creates the app.\nSource"))
         assertFalse(read.contains("Stale."))
     }
+
+    @Test
+    fun `read_card loads deferred source before reading metadata and formatting lines`() {
+        val initialCard = CanvasCard(
+            "c1", CANVAS_ROOT, CardKind.SYMBOL, CardAnchor(0, 3, 1),
+            SymbolRef("src/App.kt", "run", "FUNCTION"), "src/App.kt", 0, "old snapshot",
+        )
+        val model = CanvasSessionModel(CanvasSession("s1", "src/Main.kt", "Main", 0, 0,
+            listOf(canvasRootCard("src/Main.kt"), initialCard)))
+        val sources = mutableMapOf<String, CanvasSource>()
+        var loadedCount = 0
+        val actions = object : CanvasActions {
+            override val session: CanvasSession get() = model.session
+            override fun source(cardId: String): CanvasSource? = sources[cardId]
+            override suspend fun loadSource(cardId: String): CanvasSource? {
+                loadedCount++
+                if (cardId == "c1" && cardId !in sources) {
+                    val freshText = "fun run() {\n    line11()\n    line12()\n}"
+                    model.restoreSnapshot("c1", CardAnchor(10, 13, 5), 10, freshText)
+                    sources["c1"] = CanvasSource(freshText, emptyList(), 10, "src/App.kt", null, 2)
+                }
+                return sources[cardId]
+            }
+            override fun target(id: Int): CanvasTarget? = null
+            override suspend fun declarations(path: String, name: String): List<CanvasTarget> = emptyList()
+            override suspend fun openSymbol(parentId: String, start: Int, end: Int, target: Int) = error("unused")
+            override suspend fun openSelection(parentId: String, start: Int, end: Int) = error("unused")
+            override suspend fun openFile(parentId: String, start: Int, end: Int, path: String) = error("unused")
+            override suspend fun show(cardId: String) = Unit
+        }
+        val read = canvasTools(actions, CANVAS_ROOT).call("read_card", """{"card":"c1","start_line":12,"end_line":13}""")
+        assertEquals(1, loadedCount)
+        assertEquals("""
+            Card c1: function run at src/App.kt:11-14
+            Opened from: the root file, line 6
+            Source (lines 12-13):
+            12:     line11()
+            13:     line12()
+            [truncated; use read_file path src/App.kt from line 14]
+        """.trimIndent(), read)
+    }
 }

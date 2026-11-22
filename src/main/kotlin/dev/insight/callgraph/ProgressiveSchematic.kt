@@ -15,6 +15,9 @@ import dev.insight.enrichment.liftCalls
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** Thrown when explored sources changed and the graph needs a refresh before continuing. */
+internal class StaleSchematicException(message: String) : IllegalStateException(message)
+
 /** One exploration, with stable symbol ids and only explicitly opened scopes resolved. */
 internal class ProgressiveSchematic private constructor(
     private val project: Project,
@@ -38,8 +41,8 @@ internal class ProgressiveSchematic private constructor(
     }
 
     private fun checkSources() {
-        check(stamps.all { (file, stamp) -> file.isValid && fileStamp(file) == stamp }) {
-            "Source changed. Refresh the canvas to explore the updated code."
+        if (!stamps.all { (file, stamp) -> file.isValid && fileStamp(file) == stamp }) {
+            throw StaleSchematicException("Source changed. Refresh the canvas to explore the updated code.")
         }
     }
 
@@ -53,7 +56,7 @@ internal class ProgressiveSchematic private constructor(
         val next = smartReadAction(project) {
             checkSources()
             val element = result.pointers.getOrNull(id)?.element?.takeIf { it.isValid }
-                ?: error("Source is no longer available. Refresh the canvas.")
+                ?: throw StaleSchematicException("Source is no longer available. Refresh the canvas.")
             val branch = ProjectGraphAnalyzer.buildScope(project, element, foldFunctions = !whole)
             val merged = mergeSchematicResults(result, branch) { snapshot, node ->
                 val target = snapshot.pointers.getOrNull(node.id)?.element
@@ -71,6 +74,29 @@ internal class ProgressiveSchematic private constructor(
     suspend fun fileSchematic(file: VirtualFile): Schematic? {
         val id = fileDeclarations(file) ?: return null
         return schematic(id, whole = true)
+    }
+
+    /** Resolves all bodies in [files] and merges them into the graph without renumbering existing symbol ids. */
+    suspend fun addFiles(files: List<VirtualFile>) = mutex.withLock {
+        if (files.isEmpty()) return@withLock
+        val next = smartReadAction(project) {
+            checkSources()
+            val manager = PsiManager.getInstance(project)
+            val psiFiles = files.filter { it.isValid && !it.fileType.isBinary }.mapNotNull(manager::findFile)
+            if (psiFiles.isEmpty()) return@smartReadAction null
+            val branch = ProjectGraphAnalyzer.buildFileSet(project, psiFiles)
+            val merged = mergeSchematicResults(result, branch) { snapshot, node ->
+                val target = snapshot.pointers.getOrNull(node.id)?.element
+                Triple(node.filePath, target?.textOffset, node.kind) to node.unresolved
+            }
+            merged to fileStamps(merged)
+        } ?: return@withLock
+        result = next.first
+        stamps = next.second
+        val paths = files.mapTo(hashSetOf()) { it.path }
+        openedWhole += result.graph.nodes
+            .filter { it.kind == dev.insight.graph.SymbolKind.FILE && it.filePath in paths }
+            .map { it.id }
     }
 
     /** Registers a file's declarations without resolving references in every function body. */

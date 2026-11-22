@@ -24,7 +24,25 @@ internal fun fileConnections(result: CallGraphResult, pathKeys: Map<String, Stri
     }.distinct()
 
 /** Visit both directions once per file, starting a new tree at each seed outside the trees already visited. */
-internal fun fileConnectionForest(seeds: List<String>, connections: List<FileConnection>): List<ConnectedFile> {
+internal fun fileConnectionForest(seeds: List<String>, connections: List<FileConnection>): List<ConnectedFile> =
+    traverseFileConnections(emptyList(), seeds, null, connections)
+
+/**
+ * Extends an already-loaded set of [existing] files by visiting [batch] in BFS order along [connections], connecting
+ * new files to [existing] first before starting standalone trees for remaining [batch] seeds.
+ */
+internal fun extendFileConnectionForest(
+    existing: List<String>,
+    batch: List<String>,
+    connections: List<FileConnection>,
+): List<ConnectedFile> = traverseFileConnections(existing, batch, batch.toHashSet(), connections)
+
+private fun traverseFileConnections(
+    existing: List<String>,
+    seeds: List<String>,
+    allowed: Set<String>?,
+    connections: List<FileConnection>,
+): List<ConnectedFile> {
     val neighbours = linkedMapOf<String, MutableList<Pair<String, Int>>>()
     connections.forEach {
         if (it.from != it.to) {
@@ -34,20 +52,27 @@ internal fun fileConnectionForest(seeds: List<String>, connections: List<FileCon
     }
     val seen = hashSetOf<String>()
     val queue = ArrayDeque<String>()
+    for (path in existing) {
+        if (seen.add(path)) queue.add(path)
+    }
     return buildList {
-        for (seed in seeds) {
-            if (!seen.add(seed)) continue
-            add(ConnectedFile(seed, null))
-            queue.add(seed)
+        fun drainQueue() {
             while (queue.isNotEmpty()) {
                 val parent = queue.removeFirst()
                 neighbours[parent].orEmpty().sortedBy { it.first }.forEach { (path, offset) ->
-                    if (seen.add(path)) {
+                    if ((allowed == null || path in allowed) && seen.add(path)) {
                         add(ConnectedFile(path, parent, offset))
                         queue.add(path)
                     }
                 }
             }
+        }
+        drainQueue()
+        for (seed in seeds) {
+            if (!seen.add(seed)) continue
+            add(ConnectedFile(seed, null))
+            queue.add(seed)
+            drainQueue()
         }
     }
 }

@@ -228,7 +228,7 @@ private class CanvasSessionEditor(private val project: Project, private val file
         return true
     }
 
-    private fun create(session: CanvasSession) = CanvasSessionPanel(project, file, session, services, ::switchTo).also {
+    private fun create(session: CanvasSession) = CanvasSessionPanel(project, file, session, services, onSwitch = ::switchTo).also {
         holder.add(it, BorderLayout.CENTER)
     }
 

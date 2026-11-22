@@ -16,6 +16,7 @@ import dev.insight.callgraph.GapSource
 import dev.insight.callgraph.GapUnit
 import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.callgraph.Schematic
+import dev.insight.callgraph.StaleSchematicException
 import dev.insight.callgraph.schematicGapSource
 import dev.insight.enrichment.liftCalls
 import dev.insight.graph.CallGraph
@@ -93,6 +94,10 @@ internal class CanvasSessionController(
     private val sources = ConcurrentHashMap<String, CanvasSource>()
     /** The source of the card being opened; the model's listener takes it once the card has an id. */
     private var opening: CanvasSource? = null
+    private val pendingDirectory = mutableListOf<VirtualFile>()
+
+    val pendingDirectoryCount: Int get() = pendingDirectory.size
+    val pendingLinkedFiles: List<CanvasPendingFile> get() = model.session.pendingFiles
 
     // Subscribed first, so views listening to the model find each new card's source.
     private val subscription = model.subscribe { change ->
@@ -105,9 +110,35 @@ internal class CanvasSessionController(
 
     fun node(id: Int): CallGraphNode? = exploration.result.graph.nodes.getOrNull(id)
 
-    private fun directoryRoot(files: List<VirtualFile>) = CanvasSource(
-        files.joinToString("\n") { it.path.removePrefix(rootFile.path.trimEnd('/') + "/") },
-        emptyList(), 0, model.session.rootPath, null)
+    private fun directoryRoot(files: List<VirtualFile>): CanvasSource {
+        val shown = if (files.size > DIRECTORY_ROOT_LIST_LIMIT) files.take(DIRECTORY_ROOT_LIST_LIMIT) else files
+        val prefix = rootFile.path.trimEnd('/') + "/"
+        val listing = buildString {
+            append(shown.joinToString("\n") { it.path.removePrefix(prefix) })
+            if (files.size > DIRECTORY_ROOT_LIST_LIMIT) {
+                append("\n… and ${files.size - DIRECTORY_ROOT_LIST_LIMIT} more files")
+            }
+        }
+        val notice = if (files.size > DIRECTORY_ROOT_LIST_LIMIT) {
+            "Showing the first $DIRECTORY_ROOT_LIST_LIMIT of ${files.size} files in this directory."
+        } else null
+        return CanvasSource(listing, emptyList(), 0, model.session.rootPath, null, notice = notice)
+    }
+
+    private fun syncPendingDirectory(files: List<VirtualFile>) {
+        pendingDirectory.clear()
+        val cursor = model.session.directoryCursor ?: return
+        if (!model.session.directoryInitialized) return
+        val openPaths = openFilePaths()
+        pendingDirectory += files.filter { file ->
+            val rel = relativePath(project, file.path)
+            rel > cursor && rel !in openPaths
+        }
+    }
+
+    private fun openFilePaths(): Set<String> = model.cards
+        .filter { it.kind != CardKind.ROOT && (it.wholeFile || it.kind == CardKind.ATTACHMENT) }
+        .mapTo(hashSetOf()) { it.filePath }
 
     val rootName: String get() = rootNode?.let(::node)?.name ?: rootFile.name
 
@@ -120,6 +151,8 @@ internal class CanvasSessionController(
     /** The project-relative form of an absolute [path]; other paths stay as they are. */
     fun relative(path: String?): String? = path?.let { relativePath(project, it) }
 
+    private fun normalizePath(path: String): String = relative(path) ?: path
+
     /** The file of a project-relative or absolute [path], if it exists. */
     fun findFile(path: String): VirtualFile? {
         if (path.isEmpty()) return null
@@ -131,7 +164,11 @@ internal class CanvasSessionController(
 
     /** Builds the root file's source; throws with a short message when it cannot be read. */
     suspend fun loadRoot(): CanvasSource {
-        if (rootFile.isDirectory) return directoryRoot(directoryCanvasFiles(project, rootFile)).also { sources[CANVAS_ROOT] = it }
+        if (rootFile.isDirectory) {
+            val files = directoryCanvasFiles(project, rootFile)
+            withContext(Dispatchers.EDT) { syncPendingDirectory(files) }
+            return directoryRoot(files).also { sources[CANVAS_ROOT] = it }
+        }
         val id = checkNotNull(rootNode)
         val schematic = withContext(Dispatchers.Default) { exploration.schematic(id, whole = true) }
             ?: error("The source of ${rootName} is no longer available. Reopen the canvas session.")
@@ -140,13 +177,18 @@ internal class CanvasSessionController(
 
     /**
      * Reads the code again after it changed: a fresh exploration of [rootFile] replaces the current one, then every
-     * card is resolved again as [restore] does, keeping the cards, their chats and layout. Symbol ids of the previous
-     * exploration mean nothing afterwards. Throws, leaving everything as it was, when the root file cannot be read.
+     * card (or the [cardIds] subset when specified) is resolved again as [restore] does, keeping the cards, their chats
+     * and layout. Symbol ids of the previous exploration mean nothing afterwards. Throws, leaving everything as it was,
+     * when the root file cannot be read.
      */
-    suspend fun refresh(onProgress: (Int, Int) -> Unit = { _, _ -> }): CanvasSource {
+    suspend fun refresh(cardIds: Set<String>? = null, onProgress: (Int, Int) -> Unit = { _, _ -> }): CanvasSource {
         val (next, nextRoot) = withContext(Dispatchers.Default) { reopen() }
             ?: error("The source of $rootName is no longer available.")
-        val fresh = if (rootFile.isDirectory) directoryRoot(directoryCanvasFiles(project, rootFile)) else {
+        val fresh = if (rootFile.isDirectory) {
+            val files = directoryCanvasFiles(project, rootFile)
+            withContext(Dispatchers.EDT) { syncPendingDirectory(files) }
+            directoryRoot(files)
+        } else {
             val id = checkNotNull(nextRoot)
             val schematic = withContext(Dispatchers.Default) { next.schematic(id, whole = true) }
                 ?: error("The source of $rootName is no longer available.")
@@ -157,20 +199,263 @@ internal class CanvasSessionController(
         lifted = null
         sources.clear()
         sources[CANVAS_ROOT] = fresh
-        restore(onProgress)
+        restore(cardIds, onProgress)
         return fresh
     }
 
     /** Seed the directory in one model update, so interruption cannot save a partial set of cards. */
-    suspend fun initializeDirectory(onProgress: (Int, Int) -> Unit) {
+    suspend fun initializeDirectory(limit: Int = CANVAS_LOAD_CHUNK, onProgress: (Int, Int) -> Unit) {
         val files = directoryCanvasFiles(project, rootFile)
-        val prepared = buildDirectoryCards(project, files, onProgress)
+        val batch = if (limit > 0) files.take(limit) else emptyList()
+        val remaining = files.drop(batch.size)
+        val prepared = buildDirectoryCards(project, batch, onProgress)
+        val cursor = if (remaining.isNotEmpty() && batch.isNotEmpty()) relativePath(project, batch.last().path) else null
         withContext(Dispatchers.EDT) {
             exploration = prepared.exploration
             lifted = null
             sources.putAll(prepared.sources)
-            model.initializeDirectory(prepared.cards)
+            pendingDirectory.clear()
+            pendingDirectory.addAll(remaining)
+            model.initializeDirectory(prepared.cards, cursor)
         }
+    }
+
+    /** Loads up to [limit] more pending directory files and appends them to the session. */
+    suspend fun loadMoreDirectoryFiles(
+        limit: Int = CANVAS_LOAD_CHUNK,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): List<CanvasCard> {
+        if (limit <= 0) return emptyList()
+        data class Snapshot(
+            val consumed: Int,
+            val batch: List<VirtualFile>,
+            val existingCards: Map<String, CanvasCard>,
+            val existingSources: Map<String, CanvasSource>,
+        )
+        val snapshot = withContext(Dispatchers.EDT) {
+            val open = openFilePaths()
+            val picked = mutableListOf<VirtualFile>()
+            var consumed = 0
+            for (file in pendingDirectory) {
+                if (picked.size >= limit) break
+                consumed++
+                if (!file.isValid || file.isDirectory) continue
+                if (relativePath(project, file.path) in open) continue
+                picked += file
+            }
+            val cardsByAbs = linkedMapOf<String, CanvasCard>()
+            val sourcesById = linkedMapOf<String, CanvasSource>()
+            for (card in model.cards) {
+                if (card.kind == CardKind.ROOT || (!card.wholeFile && card.kind != CardKind.ATTACHMENT)) continue
+                val src = sources[card.id] ?: continue
+                val abs = src.file?.path ?: findFile(card.filePath)?.path ?: continue
+                if (card.wholeFile || abs !in cardsByAbs) {
+                    cardsByAbs[abs] = card
+                    sourcesById[card.id] = src
+                }
+            }
+            Snapshot(consumed, picked.toList(), cardsByAbs, sourcesById)
+        }
+        if (snapshot.consumed == 0) return emptyList()
+        val (builtCards, builtSources) = if (snapshot.batch.isNotEmpty()) {
+            buildDirectoryBatch(project, exploration, snapshot.existingCards, snapshot.existingSources, snapshot.batch, onProgress)
+        } else {
+            emptyList<CanvasCard>() to emptyMap()
+        }
+        return withContext(Dispatchers.EDT) {
+            val dropCount = minOf(snapshot.consumed, pendingDirectory.size)
+            var lastConsumed: VirtualFile? = null
+            repeat(dropCount) { lastConsumed = pendingDirectory.removeAt(0) }
+            val nextCursor = if (pendingDirectory.isEmpty()) null
+                else lastConsumed?.let { relativePath(project, it.path) } ?: model.session.directoryCursor
+            val finalCards = reconcileBatchParents(model.cards.mapTo(hashSetOf()) { it.id }, builtCards)
+            lifted = null
+            sources.putAll(builtSources)
+            model.appendCards(finalCards, nextCursor)
+            finalCards
+        }
+    }
+
+    /** Computes pending file counts grouped by their deepest ancestor currently in [loadedIds]. EDT. */
+    fun pendingLinkedByParent(loadedIds: Set<String>): Map<String, Int> {
+        val pending = model.session.pendingFiles
+        if (pending.isEmpty()) return emptyMap()
+        val loadedByPath = loadedCardsByPath(loadedIds)
+        val pendingParent = pending.associate { normalizePath(it.filePath) to it.parentPath?.let(::normalizePath) }
+        val resolved = HashMap<String, String>(pending.size)
+        val counts = LinkedHashMap<String, Int>()
+        for (entry in pending) {
+            val ancestor = resolveLoadedAncestor(entry, loadedByPath, pendingParent, resolved)
+            counts[ancestor] = (counts[ancestor] ?: 0) + 1
+        }
+        return counts
+    }
+
+    /** Loads up to [limit] pending linked/diff files (optionally narrowed to [branchParentId]). */
+    suspend fun loadMorePendingFiles(
+        limit: Int = CANVAS_LOAD_CHUNK,
+        branchParentId: String? = null,
+        loadedIds: Set<String> = emptySet(),
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): PendingLoadResult {
+        if (limit <= 0) return PendingLoadResult(emptyList())
+        data class Snapshot(
+            val selected: List<CanvasPendingFile>,
+            val pendingParents: Map<String, String?>,
+            val openPaths: Set<String>,
+            val loadedByPath: Map<String, Pair<CanvasCard, CanvasSource?>>,
+            val rootCardAndSource: Pair<CanvasCard, CanvasSource?>,
+        )
+        val snapshot = withContext(Dispatchers.EDT) {
+            val pending = model.session.pendingFiles
+            if (pending.isEmpty()) return@withContext null
+            val activeIds = loadedIds.ifEmpty { model.cards.mapTo(hashSetOf()) { it.id } }
+            val loadedMap = loadedCardsByPath(activeIds)
+            val pendingParents = pending.associate { normalizePath(it.filePath) to it.parentPath?.let(::normalizePath) }
+            val resolved = HashMap<String, String>(pending.size)
+            val selected = if (branchParentId == null) pending.take(limit)
+            else pending.filter { resolveLoadedAncestor(it, loadedMap, pendingParents, resolved) == branchParentId }.take(limit)
+            if (selected.isEmpty()) return@withContext null
+            val loadedCards = linkedMapOf<String, Pair<CanvasCard, CanvasSource?>>()
+            val rootPair = model.session.root to sources[CANVAS_ROOT]
+            loadedCards[normalizePath(model.session.rootPath)] = rootPair
+            loadedCards[normalizePath(rootFile.path)] = rootPair
+            for (card in model.cards) {
+                if (card.id !in activeIds || card.kind == CardKind.ROOT || (!card.wholeFile && card.kind != CardKind.ATTACHMENT)) continue
+                val src = sources[card.id]
+                val path = normalizePath(src?.file?.path ?: card.filePath)
+                if (card.wholeFile || path !in loadedCards) {
+                    loadedCards[path] = card to src
+                }
+            }
+            val openPaths = openFilePaths().mapTo(hashSetOf(), ::normalizePath).apply {
+                add(normalizePath(model.session.rootPath))
+                add(normalizePath(rootFile.path))
+            }
+            Snapshot(selected.toList(), pendingParents, openPaths, loadedCards, rootPair)
+        } ?: return PendingLoadResult(emptyList())
+
+        val createdCards = mutableListOf<CanvasCard>()
+        val createdSources = LinkedHashMap<String, CanvasSource>()
+        val createdByPath = HashMap<String, Pair<CanvasCard, CanvasSource>>()
+        val consumed = HashSet<CanvasPendingFile>()
+        val unavailable = mutableListOf<String>()
+        var retryableError: String? = null
+        withContext(Dispatchers.Default) {
+            for ((index, entry) in snapshot.selected.withIndex()) {
+                withContext(Dispatchers.EDT) { onProgress(index + 1, snapshot.selected.size) }
+                val entryPath = normalizePath(entry.filePath)
+                if (entryPath in snapshot.openPaths) {
+                    consumed += entry
+                    continue
+                }
+                val file = findFile(entry.filePath)
+                if (file == null || !file.isValid || file.isDirectory) {
+                    consumed += entry
+                    unavailable += entryPath
+                    continue
+                }
+                val schematic = try {
+                    exploration.fileSchematic(file)
+                } catch (e: Throwable) {
+                    if (e is CancellationException || e is ControlFlowException) throw e
+                    if (e is StaleSchematicException) {
+                        LOG.info("Pending file ${entry.filePath} requires canvas refresh", e)
+                    } else {
+                        LOG.warn("Pending file ${entry.filePath} could not be analyzed", e)
+                    }
+                    retryableError = e.message ?: e.javaClass.simpleName
+                    break
+                }
+                if (schematic == null) {
+                    consumed += entry
+                    unavailable += entryPath
+                    continue
+                }
+                var parentCardAndSource: Pair<CanvasCard, CanvasSource?>? = null
+                var p = entry.parentPath?.let(::normalizePath)
+                val seen = hashSetOf(entryPath)
+                while (p != null) {
+                    val found = createdByPath[p] ?: snapshot.loadedByPath[p]
+                    if (found != null) {
+                        parentCardAndSource = found
+                        break
+                    }
+                    if (!seen.add(p)) break
+                    p = snapshot.pendingParents[p]
+                }
+                val (parentCard, parentSource) = parentCardAndSource ?: snapshot.rootCardAndSource
+                val path = relative(file.path).orEmpty()
+                val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
+                val shown = schematicSource(schematic, path, schematic.scope)
+                val anchor = parentSource?.let { fileConnectionAnchor(it, file.path, entry.offset, ::node) }
+                    ?: CardAnchor(0, 0, 0)
+                val (bounded, truncated) = boundCardText(shown.text)
+                val card = CanvasCard(newCanvasId(), parentCard.id, CardKind.SYMBOL, anchor, ref, path, shown.firstLine,
+                    bounded, truncated, wholeFile = true)
+                createdCards += card
+                createdSources[card.id] = shown
+                createdByPath[entryPath] = card to shown
+                consumed += entry
+            }
+        }
+        return withContext(Dispatchers.EDT) {
+            if (consumed.isEmpty()) {
+                return@withContext PendingLoadResult(emptyList(), unavailable, retryableError)
+            }
+            val remaining = model.session.pendingFiles.filterNot { it in consumed }
+            val finalCards = reconcileBatchParents(model.cards.mapTo(hashSetOf()) { it.id }, createdCards)
+            lifted = null
+            sources.putAll(createdSources)
+            model.appendCards(finalCards, pendingFiles = remaining)
+            PendingLoadResult(finalCards, unavailable, retryableError)
+        }
+    }
+
+    private fun loadedCardsByPath(loadedIds: Set<String>): Map<String, String> {
+        val loadedByPath = HashMap<String, String>()
+        loadedByPath[normalizePath(model.session.rootPath)] = CANVAS_ROOT
+        loadedByPath[normalizePath(rootFile.path)] = CANVAS_ROOT
+        for (card in model.cards) {
+            if (card.id !in loadedIds || card.kind == CardKind.ROOT || (!card.wholeFile && card.kind != CardKind.ATTACHMENT)) continue
+            val path = normalizePath(sources[card.id]?.file?.path ?: card.filePath)
+            if (card.wholeFile || path !in loadedByPath) {
+                loadedByPath[path] = card.id
+            }
+        }
+        return loadedByPath
+    }
+
+    private fun resolveLoadedAncestor(
+        entry: CanvasPendingFile,
+        loadedByPath: Map<String, String>,
+        pendingParents: Map<String, String?>,
+        cache: MutableMap<String, String> = HashMap(),
+    ): String {
+        val entryPath = normalizePath(entry.filePath)
+        cache[entryPath]?.let { return it }
+        val path = ArrayList<String>()
+        val seen = hashSetOf(entryPath)
+        var p = entry.parentPath?.let(::normalizePath)
+        var resolved = CANVAS_ROOT
+        while (p != null) {
+            val loaded = loadedByPath[p]
+            if (loaded != null) {
+                resolved = loaded
+                break
+            }
+            val cached = cache[p]
+            if (cached != null) {
+                resolved = cached
+                break
+            }
+            if (!seen.add(p)) break
+            path += p
+            p = pendingParents[p]
+        }
+        cache[entryPath] = resolved
+        for (node in path) cache[node] = resolved
+        return resolved
     }
 
     /**
@@ -335,13 +620,22 @@ internal class CanvasSessionController(
     /**
      * Resolves the cards of a saved session again, root-first, once [loadRoot] is done: a symbol card is looked up
      * among its parent's link targets, then the whole graph, and shows its current source (refreshing the saved
-     * snapshot) or, when it is gone, its saved text. Selections keep their text. [onProgress] reports each card.
+     * snapshot) or, when it is gone, its saved text. Selections keep their text. When [cardIds] is non-null, only
+     * those cards are restored. [onProgress] reports each card.
      */
-    suspend fun restore(onProgress: (Int, Int) -> Unit = { _, _ -> }) {
+    suspend fun restore(cardIds: Set<String>? = null, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
         // The root card's source is read with the root file.
-        val cards = model.cards.filter { it.kind != CardKind.ROOT }
-        cards.forEachIndexed { index, card ->
-            withContext(Dispatchers.EDT) { onProgress(index + 1, cards.size) }
+        val cards = model.cards.filter { it.kind != CardKind.ROOT && (cardIds == null || it.id in cardIds) }
+        restoreCards(cards, onProgress)
+    }
+
+    /**
+     * Resolves [cards] (in root-first order) that do not yet have a live source in [sources].
+     */
+    suspend fun restoreCards(cards: List<CanvasCard>, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
+        val pending = cards.filter { it.kind != CardKind.ROOT && !sources.containsKey(it.id) }
+        pending.forEachIndexed { index, card ->
+            withContext(Dispatchers.EDT) { onProgress(index + 1, pending.size) }
             val parent = card.parentId?.let(::source)
             val restored = try {
                 when {
@@ -482,6 +776,7 @@ internal class CanvasSessionController(
 
     private companion object {
         val LOG = logger<CanvasSessionController>()
+        const val DIRECTORY_ROOT_LIST_LIMIT = 2_000
     }
 }
 

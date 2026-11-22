@@ -33,6 +33,8 @@ interface CanvasActions {
     val session: CanvasSession
     /** The source shown for [cardId] (the root file's for [CANVAS_ROOT]); null when nothing is shown. */
     fun source(cardId: String): CanvasSource?
+    /** Ensures a deferred [cardId] is loaded and returns its source, or null when unavailable. */
+    suspend fun loadSource(cardId: String): CanvasSource? = source(cardId)
     fun target(id: Int): CanvasTarget?
     /** The symbols named [name] (without parameters) declared in project file [path], after reading that file. */
     suspend fun declarations(path: String, name: String): List<CanvasTarget>
@@ -111,9 +113,9 @@ private class CanvasToolContext(val actions: CanvasActions, val cardId: String) 
         }
     }
 
-    /** The source shown for [id], with text to open from. */
-    fun shown(id: String): Shown {
-        val source = actions.source(id) ?: throw ToolInputException("${name(id)} is not shown yet; try again shortly.")
+    /** The source shown for [id], with text to open from, loading a deferred card on demand. */
+    suspend fun shown(id: String): Shown {
+        val source = actions.loadSource(id) ?: throw ToolInputException("${name(id)} is not shown yet; try again shortly.")
         if (source.text.isEmpty()) throw ToolInputException("${name(id)} has no source: ${source.notice ?: "nothing to open from"}")
         return Shown(source)
     }
@@ -232,9 +234,10 @@ private class ReadCardTool(private val canvas: CanvasToolContext) : CanvasTool(
 ) {
     override suspend fun call(arguments: JsonObject): String {
         val id = canvas.card(arguments.optionalStringArg("card"))
-        val card = canvas.actions.session.card(id)?.takeIf { it.kind != CardKind.ROOT }
-        val source = canvas.actions.source(id)
+        val source = canvas.actions.loadSource(id)
         val session = canvas.actions.session
+        val target = session.card(id) ?: throw ToolInputException("Card $id was closed.")
+        val card = target.takeIf { it.kind != CardKind.ROOT }
         return buildString {
             if (card == null) append("Root ${session.rootKind} ${session.rootPath}\n")
             else {
@@ -330,7 +333,7 @@ private class FindUsagesTool(private val canvas: CanvasToolContext) : CanvasTool
         val id = canvas.card(arguments.optionalStringArg("card"))
         val name = arguments.optionalStringArg("name")?.trim()?.takeIf { it.isNotEmpty() }
         val targetId = if (name == null) {
-            val source = canvas.actions.source(id) ?: throw ToolInputException("${canvas.name(id)} is not shown yet; try again shortly.")
+            val source = canvas.actions.loadSource(id) ?: throw ToolInputException("${canvas.name(id)} is not shown yet; try again shortly.")
             val node = source.node
             if (node == null || canvas.actions.session.card(id)?.wholeFile != false) {
                 throw ToolInputException("${canvas.name(id)} does not represent a single symbol; pass name to find usages of a symbol in its source.")
@@ -551,7 +554,7 @@ private class CallPathTool(private val canvas: CanvasToolContext, private val gr
     override suspend fun call(arguments: JsonObject): String {
         val from = arguments.symbolId("from", required = false)
         val roots = if (from != null) emptyList() else {
-            canvas.actions.source(canvas.card(arguments.optionalStringArg("card")))?.links.orEmpty().flatMap { it.targets }.distinct()
+            canvas.actions.loadSource(canvas.card(arguments.optionalStringArg("card")))?.links.orEmpty().flatMap { it.targets }.distinct()
         }
         return graph.callPaths(from, roots, arguments.symbolId("to")!!, (arguments.lenientInt("max_depth") ?: 8).coerceIn(1, 15))
     }

@@ -14,18 +14,24 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.ui.zoomScaled
+import dev.insight.ui.zoomUnscaled
 import java.awt.AlphaComposite
-import java.awt.Graphics
-import java.awt.Graphics2D
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.BorderFactory
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +71,8 @@ internal interface CanvasCardHost {
     fun navigate(source: CanvasSource?, path: String, line: Int)
     /** Moves keyboard focus back to the canvas surface. */
     fun focusCanvas()
+    /** Anchors of open children inside [cardId]'s source, for highlighting and hibernation anchor caching. */
+    fun childAnchors(cardId: String): List<CardAnchor> = model.children(cardId).filterNot { it.isDirectorySeed }.map { it.anchor }
 }
 
 /** The outline of a card at rest, clearly set off from [CANVAS_BACKGROUND]. */
@@ -101,7 +109,11 @@ internal sealed interface CanvasCardWidth {
  * chat keeps its history in the model. The [CardKind.ROOT] card shows the root file (or lists a directory's files) and
  * cannot be closed.
  */
-internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasCard) : JPanel(StackLayout { zoomScaled(4, host.zoom) }), Disposable {
+internal class CanvasCardView(
+    private val host: CanvasCardHost,
+    initial: CanvasCard,
+    materializeSource: Boolean = true,
+) : JPanel(StackLayout { zoomScaled(4, host.zoom) }), Disposable {
     var appearance = 1f
     private val isRoot = initial.kind == CardKind.ROOT
     /** How [layOut] sizes the card. */
@@ -128,8 +140,22 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     private var rendered = false
     var source: CanvasSource? = host.controller.source(id)
         private set
-    /** The card's source viewer; null when it has no source text. */
-    var sourcePane: CanvasSourcePane? = source?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+    private val initialHibernated = !materializeSource && !isRoot && source != null && source!!.text.isNotEmpty() &&
+        !(initial.kind == CardKind.ATTACHMENT && initial.attachment?.imageBase64 != null)
+    /** Whether this card's heavy `EditorEx` viewer is currently paused off-screen. */
+    var hibernated: Boolean = initialHibernated
+        private set
+    private var hibernatedBaseHeight: Int = if (initialHibernated) estimateBaseSourceHeight(source!!.text) else 0
+    private var savedScrollX = 0
+    private var savedScrollY = 0
+    private var pendingScrollOffset: Int? = null
+    private var cachedAnchorYs: Map<Int, Int> = emptyMap()
+    private var wasShowingDiff = false
+    private val hibernatedPlaceholder = HibernatedSourcePlaceholder()
+    /** The card's source viewer; null when it has no source text or is hibernated. */
+    var sourcePane: CanvasSourcePane? = if (!initialHibernated) {
+        source?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+    } else null
         private set
     /** Whether this card currently owns keyboard and wheel navigation. */
     var focused = false
@@ -186,15 +212,11 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     private val sourceBody = JPanel(BorderLayout()).apply {
         isOpaque = false
-        add(sourcePane
-        ?: host.zoomFont(JLabel(when (initial.kind) {
-            CardKind.ROOT -> if (initial.isDirectoryRoot) "No project files." else "No source to show."
-            CardKind.SYMBOL -> "No source to show."
-            CardKind.ATTACHMENT -> "Use Open file to view this attachment in the IDE."
-            CardKind.SELECTION -> "No text."
-        }).apply {
-            foreground = UIUtil.getContextHelpForeground()
-        }))
+        add(when {
+            initialHibernated -> hibernatedPlaceholder
+            sourcePane != null -> sourcePane
+            else -> emptySourceLabel(initial)
+        })
     }
     /** The changed hunks within the card's source; null when it shows no change from a diff. */
     var diffPane: CanvasDiffPane? = null
@@ -308,16 +330,34 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             usages.removeAll()
             usages.isVisible = false
             sourcePane?.let(Disposer::dispose)
+            sourcePane = null
             source = fresh
-            sourcePane = fresh?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
-            sourceBody.removeAll()
-            sourcePane?.let { sourceBody.add(it) }
-            sourcePane?.applyZoom(host.zoom)
+            val shouldHibernate = hibernated && !isRoot && fresh != null && fresh.text.isNotEmpty() &&
+                !(next.kind == CardKind.ATTACHMENT && next.attachment?.imageBase64 != null)
+            if (shouldHibernate) {
+                hibernatedBaseHeight = estimateBaseSourceHeight(fresh!!.text)
+                savedScrollX = 0
+                savedScrollY = 0
+                cachedAnchorYs = emptyMap()
+                sourceBody.removeAll()
+                sourceBody.add(hibernatedPlaceholder)
+            } else {
+                hibernated = false
+                sourcePane = populateSourceBody(next, fresh)
+            }
             notice.text = fresh?.notice.orEmpty()
             notice.isVisible = !fresh?.notice.isNullOrBlank()
         }
-        if (sourceChanged || !rendered) showDiff(next)
+        if (sourceChanged || !rendered) {
+            if (!hibernated) showDiff(next)
+            else {
+                diffPane?.let(Disposer::dispose)
+                diffPane = null
+                sourceSection.setDiff(null, "")
+            }
+        }
         if ((sourceChanged || !rendered) && next.kind == CardKind.ATTACHMENT && next.attachment?.imageBase64 != null) {
+            hibernated = false
             sourceBody.removeAll()
             sourceBody.add(CanvasImagePreview(next.attachment.imageBase64) { host.zoom })
         }
@@ -335,6 +375,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         showUsageSites(next.usages)
         listOf(summary, usageSites, sourceSection, history).forEach { it.fold(it.section in next.folded) }
         sourcePane?.isVisible = CardSection.SOURCE !in next.folded
+        hibernatedPlaceholder.isVisible = CardSection.SOURCE !in next.folded
         sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
         renderedSummaryPending = pending
@@ -421,6 +462,157 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
 
     /** Whether a reply runs in any of the card's chats. */
     val chatBusy: Boolean get() = chat.replying
+
+    /** Whether any background work or active drag prevents safely hibernating this card's editor. */
+    val busy: Boolean get() = chatBusy || summaryJob?.isActive == true || usageSearch?.isActive == true || resizing
+
+    /** Whether this card can release its heavy `EditorEx` viewer when off-screen. */
+    val canHibernate: Boolean
+        get() = !isRoot && !busy && source != null && source!!.text.isNotEmpty() &&
+            !(card.kind == CardKind.ATTACHMENT && card.attachment?.imageBase64 != null)
+
+    /** Releases the heavy `EditorEx` viewers while preserving cached geometry, scroll state, and anchors. */
+    fun hibernateSource() {
+        if (hibernated || !canHibernate) return
+        val pane = sourcePane
+        val visibleArea = pane?.editor?.scrollingModel?.visibleArea
+        if (visibleArea != null) {
+            savedScrollX = visibleArea.x
+            savedScrollY = visibleArea.y
+        }
+        wasShowingDiff = sourceSection.showsDiff
+        hibernatedBaseHeight = pane?.preferredSize?.height?.let { zoomUnscaled(it, host.zoom).coerceIn(48, CARD_MAX_HEIGHT) }
+            ?: estimateBaseSourceHeight(source!!.text)
+        if (pane != null && sourceSection.body.isVisible && !sourceSection.showsDiff) {
+            cachedAnchorYs = host.childAnchors(id).associate { anchor ->
+                val y = pane.shownAnchorY(anchor.startOffset)
+                val inCardY = SwingUtilities.convertPoint(pane, 0, y, this).y
+                anchor.startOffset to zoomUnscaled(inCardY, host.zoom)
+            }
+        } else {
+            cachedAnchorYs = emptyMap()
+        }
+        pane?.let(Disposer::dispose)
+        sourcePane = null
+        diffPane?.let(Disposer::dispose)
+        diffPane = null
+        hibernated = true
+        sourceSection.setDiff(null, "")
+        sourceBody.removeAll()
+        sourceBody.add(hibernatedPlaceholder)
+        hibernatedPlaceholder.isVisible = CardSection.SOURCE !in card.folded
+        revalidate()
+        repaint()
+    }
+
+    /** Re-creates the `EditorEx` source/diff viewers for a hibernated card and restores scroll/highlights. */
+    fun materializeSource() {
+        if (!hibernated) return
+        hibernated = false
+        val restoreDiff = wasShowingDiff
+        wasShowingDiff = false
+        val fresh = host.controller.source(id)
+        source = fresh
+        val pane = populateSourceBody(card, fresh)
+        sourcePane = pane
+        if (pane != null && fresh != null) {
+            pane.showGapSummaries(fresh.shownGapSummaries(card.gapSummaries))
+            pane.showUsageSites(card.usages?.sites.orEmpty().map { it.line })
+            pane.highlightAnchors(host.childAnchors(id))
+            pane.isVisible = CardSection.SOURCE !in card.folded
+        }
+        showDiff(card)
+        if (restoreDiff && diffPane != null) sourceSection.restoreDiff()
+        val pendingOffset = pendingScrollOffset
+        pendingScrollOffset = null
+        if (pane != null) {
+            if (pendingOffset != null) {
+                pane.centerOnceSized(pendingOffset) { host.cardResized() }
+            } else if (savedScrollX != 0 || savedScrollY != 0) {
+                val sx = savedScrollX
+                val sy = savedScrollY
+                val vp = pane.editor.scrollPane.viewport
+                fun restoreScroll() {
+                    val sm = pane.editor.scrollingModel
+                    sm.disableAnimation()
+                    try {
+                        if (sx > 0) sm.scrollHorizontally(sx)
+                        if (sy > 0) sm.scrollVertically(sy)
+                    } finally {
+                        sm.enableAnimation()
+                    }
+                }
+                if (vp.height > 0) restoreScroll()
+                else vp.addComponentListener(object : java.awt.event.ComponentAdapter() {
+                    override fun componentResized(e: java.awt.event.ComponentEvent) {
+                        if (vp.height <= 0 || pane.editor.isDisposed) return
+                        vp.removeComponentListener(this)
+                        restoreScroll()
+                    }
+                })
+            }
+        }
+        revalidate()
+        repaint()
+        host.cardResized()
+    }
+
+    /** Centers the source on [offset] once sized, or defers it until the card is materialized. */
+    fun scheduleInitialScroll(offset: Int, onScrolled: () -> Unit) {
+        val pane = sourcePane
+        if (pane != null) pane.centerOnceSized(offset, onScrolled)
+        else if (hibernated) pendingScrollOffset = offset
+    }
+
+    private fun populateSourceBody(card: CanvasCard, fresh: CanvasSource?): CanvasSourcePane? {
+        sourceBody.removeAll()
+        val pane = fresh?.takeIf { it.text.isNotEmpty() }?.let { CanvasSourcePane(host.project, id, it, host.sourceListener) }
+        val image = card.attachment?.imageBase64
+        when {
+            pane != null -> {
+                sourceBody.add(pane)
+                pane.applyZoom(host.zoom)
+            }
+            card.kind == CardKind.ATTACHMENT && image != null -> sourceBody.add(CanvasImagePreview(image) { host.zoom })
+            else -> sourceBody.add(emptySourceLabel(card))
+        }
+        return pane
+    }
+
+    private fun emptySourceLabel(card: CanvasCard): JComponent = host.zoomFont(JLabel(when (card.kind) {
+        CardKind.ROOT -> if (card.isDirectoryRoot) "No project files." else "No source to show."
+        CardKind.SYMBOL -> "No source to show."
+        CardKind.ATTACHMENT -> "Use Open file to view this attachment in the IDE."
+        CardKind.SELECTION -> "No text."
+    }).apply {
+        foreground = UIUtil.getContextHelpForeground()
+    })
+
+    private inner class HibernatedSourcePlaceholder : JPanel(BorderLayout()) {
+        var maxWidth: Int = Int.MAX_VALUE
+        var maxHeight: Int = Int.MAX_VALUE
+
+        init {
+            isOpaque = true
+            background = UIUtil.getEditorPaneBackground()
+            border = BorderFactory.createLineBorder(CANVAS_CARD_BORDER)
+            add(host.zoomFont(JLabel("Source paused off-screen — click to view", SwingConstants.CENTER).apply {
+                foreground = UIUtil.getContextHelpForeground()
+            }), BorderLayout.CENTER)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    if (SwingUtilities.isLeftMouseButton(e)) materializeSource()
+                }
+            })
+            addMouseWheelListener(host.sourceListener::wheel)
+        }
+
+        override fun getPreferredSize(): Dimension {
+            val w = minOf(scaled(CARD_WIDTH - 18), maxWidth).coerceAtLeast(1)
+            val h = minOf(scaled(hibernatedBaseHeight), maxHeight).coerceAtLeast(1)
+            return Dimension(w, h)
+        }
+    }
 
     /** Lists [usages] above the source, each site scrolling the source to its line, and tints their lines. */
     private fun showUsageSites(usages: CardUsages?) {
@@ -548,6 +740,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             val viewerMax = canvasViewerMaxHeight(target, chrome, scaled(CARD_VIEWER_MIN_HEIGHT), autoMax)
             sourcePane?.maxHeight = viewerMax
             diffPane?.maxHeight = viewerMax
+            hibernatedPlaceholder.maxHeight = viewerMax
             setSize(width, preferredSize.height)
         }
     }
@@ -555,15 +748,21 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
     /** The source or diff viewer the card shows, or null when it shows neither (folded, an image, no text). */
     private fun shownViewer(): JComponent? {
         if (!sourceSection.body.isVisible) return null
-        val viewer: JComponent = (if (sourceSection.showsDiff) diffPane else sourcePane) ?: return null
-        return viewer.takeIf { it.isVisible && javax.swing.SwingUtilities.isDescendingFrom(it, this) }
+        val viewer: JComponent = when {
+            hibernated -> hibernatedPlaceholder
+            sourceSection.showsDiff -> diffPane
+            else -> sourcePane
+        } ?: return null
+        return viewer.takeIf { it.isVisible && SwingUtilities.isDescendingFrom(it, this) }
     }
 
     private fun bound(width: Int, height: Int) {
         sourcePane?.maxWidth = width
         diffPane?.maxWidth = width
+        hibernatedPlaceholder.maxWidth = width
         sourcePane?.maxHeight = height
         diffPane?.maxHeight = height
+        hibernatedPlaceholder.maxHeight = height
     }
 
     /** As wide as the source, its diff or the header want, and wide enough to chat in, even beside a short, narrow file. */
@@ -576,6 +775,7 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
         updateBorder()
         sourcePane?.applyZoom(host.zoom)
         diffPane?.applyZoom(host.zoom)
+        if (hibernated) hibernatedPlaceholder.revalidate()
     }
 
     private fun updateBorder() {
@@ -591,15 +791,26 @@ internal class CanvasCardView(private val host: CanvasCardHost, initial: CanvasC
             pixel(scaled(8) + scaled(2) - line))
     }
 
-    val navigationEditor get() = if (!sourceSection.body.isVisible) null
+    val navigationEditor get() = if (hibernated || !sourceSection.body.isVisible) null
         else if (sourceSection.showsDiff) diffPane?.editor else sourcePane?.editor
 
     /** The y of [anchor]'s line in this card, or the header's middle when the source is folded or shows its diff. */
     fun anchorY(anchor: CardAnchor): Int {
+        if (hibernated) {
+            if (!sourceSection.body.isVisible || wasShowingDiff) return headerMiddle()
+            cachedAnchorYs[anchor.startOffset]?.let { return scaled(it) }
+            val src = source ?: return headerMiddle()
+            val totalLines = (src.text.count { it == '\n' } + 1).coerceAtLeast(1)
+            val relLine = (anchor.line - src.firstLine).coerceIn(0, totalLines - 1)
+            val bodyTop = if (sourceBody.height > 0) SwingUtilities.convertPoint(sourceBody, 0, 0, this).y
+                else headerMiddle() + scaled(40)
+            val bodyHeight = sourceBody.height.takeIf { it > 0 } ?: scaled(hibernatedBaseHeight).coerceAtLeast(1)
+            return bodyTop + (bodyHeight.toDouble() * (relLine + 0.5) / totalLines).toInt()
+        }
         val pane = sourcePane?.takeIf { sourceSection.body.isVisible && !sourceSection.showsDiff }
             ?: return headerMiddle()
         val y = pane.shownAnchorY(anchor.startOffset)
-        return javax.swing.SwingUtilities.convertPoint(pane, 0, y, this).y
+        return SwingUtilities.convertPoint(pane, 0, y, this).y
     }
 
     /** The middle of the header, where arrows end. */
@@ -659,4 +870,72 @@ internal fun canvasGapActions(host: CanvasCardHost, cardId: String, source: Canv
         CanvasCardAction("canvas-clear-gaps", "Clear gap summaries", "Remove the gap summaries shown in this source",
             enabled = !running) { host.model.clearGapSummaries(cardId) }.takeIf { shown },
     )
+}
+
+/**
+ * Compact inline continuation card placed where a large graph, directory, or pending file list was chunked.
+ */
+internal class CanvasMoreCard(
+    private val host: CanvasCardHost,
+    initial: CanvasDeferredBranch,
+    private val onLoad: (String) -> Unit,
+) : JPanel(StackLayout { zoomScaled(4, host.zoom) }) {
+    var branch: CanvasDeferredBranch = initial
+        private set
+    private var loading = false
+    private val titleLabel = host.zoomFont(JLabel(), UIUtil.getLabelFont().deriveFont(Font.BOLD))
+    private val actionLink = host.zoomFont(ActionLink("") { trigger() }).apply {
+        name = "canvas-more-action"
+    }
+
+    init {
+        isOpaque = true
+        background = UIUtil.getPanelBackground()
+        name = "canvas-more-${initial.parentId}"
+        add(titleLabel)
+        add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(actionLink)
+        })
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) trigger()
+            }
+        })
+        addMouseWheelListener(host.sourceListener::wheel)
+        applyZoom(host.zoom)
+        update(initial, CANVAS_LOAD_CHUNK, loading = false)
+    }
+
+    private fun trigger() {
+        if (!loading) onLoad(branch.parentId)
+    }
+
+    fun update(next: CanvasDeferredBranch, chunkSize: Int, loading: Boolean) {
+        this.branch = next
+        this.loading = loading
+        titleLabel.text = next.title()
+        actionLink.text = if (loading) "Loading…" else next.actionLabel(chunkSize)
+        actionLink.isEnabled = !loading
+        toolTipText = "${next.title()} — ${next.actionLabel(chunkSize)}"
+        revalidate()
+        repaint()
+    }
+
+    fun applyZoom(zoom: Double) {
+        val stroke = zoomScaled(1, zoom).toFloat().coerceAtLeast(1f)
+        val dash = zoomScaled(4, zoom).toFloat().coerceAtLeast(2f)
+        val pad = zoomScaled(10, zoom)
+        border = BorderFactory.createCompoundBorder(
+            BorderFactory.createDashedBorder(CANVAS_CARD_BORDER, stroke, dash, dash, false),
+            JBUI.Borders.empty(pad, pad, pad, pad),
+        )
+    }
+
+    fun layOut(zoom: Double) {
+        val targetWidth = zoomScaled(360, zoom).coerceAtLeast(1)
+        setSize(targetWidth, maxOf(height, 1))
+        setSize(targetWidth, preferredSize.height.coerceAtLeast(1))
+        validate()
+    }
 }

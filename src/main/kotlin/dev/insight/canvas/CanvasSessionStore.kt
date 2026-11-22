@@ -112,8 +112,18 @@ class CanvasSessionStore(private val directory: Path) {
                     encodeChats(card.chats), card.activeChatId, card.openedBy.name, card.attachment, encodeGaps(card.gapSummaries),
                     card.usages?.let { usages -> StoredUsages(usages.targetName, usages.sites.map { StoredSite(it.line, it.call, it.owner) }) },
                     card.size?.width, card.size?.height)
-            }, session.view.zoom, session.view.x, session.view.y, null, session.directoryInitialized.takeIf { it })))
+            }, session.view.zoom, session.view.x, session.view.y, null, session.directoryInitialized.takeIf { it },
+                session.directoryCursor.takeIf { session.directoryInitialized }, encodePendingFiles(session.pendingFiles))))
     }
+
+    private fun encodePendingFiles(files: List<CanvasPendingFile>) =
+        files.map { StoredPendingFile(it.filePath, it.parentPath, it.offset.takeIf { o -> o != 0 }) }.ifEmpty { null }
+
+    private fun decodePendingFiles(files: List<StoredPendingFile?>?): List<CanvasPendingFile> =
+        files.orEmpty().mapNotNull { entry ->
+            val path = entry?.filePath?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            CanvasPendingFile(path, entry.parentPath?.takeIf { it.isNotBlank() }, (entry.offset ?: 0).coerceAtLeast(0))
+        }.distinctBy { it.filePath }
 
     private fun encodeGaps(gaps: List<GapSummary>) = gaps.map { StoredGap(it.first, it.last, it.hash, it.text) }.ifEmpty { null }
 
@@ -165,7 +175,8 @@ class CanvasSessionStore(private val directory: Path) {
         }
         val created = session.created ?: 0L
         CanvasSession(id, rootPath, session.title ?: rootPath.substringAfterLast('/'), created, session.updated ?: created, cards,
-            CanvasView(session.zoom ?: 1.0, session.x ?: 0, session.y ?: 0), directory)
+            CanvasView(session.zoom ?: 1.0, session.x ?: 0, session.y ?: 0), directory,
+            session.directoryCursor?.takeIf { directory && it.isNotBlank() }, decodePendingFiles(session.pendingFiles))
     }.onFailure { rethrowCancellation(it); LOG.warn("Could not decode canvas session", it) }.getOrNull()
 
     /**
@@ -204,7 +215,9 @@ class CanvasSessionStore(private val directory: Path) {
     // The stored shape, apart from the domain types so they can change without breaking saved files. Gson leaves
     // missing fields null, whatever Kotlin declares, so every field is nullable.
     private class StoredSession(val id: String?, val rootPath: String?, val title: String?, val created: Long?, val updated: Long?,
-        val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?, val directoryInitialized: Boolean?)
+        val cards: List<StoredCard?>?, val zoom: Double?, val x: Int?, val y: Int?, val root: StoredRoot?, val directoryInitialized: Boolean?,
+        val directoryCursor: String? = null, val pendingFiles: List<StoredPendingFile?>? = null)
+    private class StoredPendingFile(val filePath: String?, val parentPath: String?, val offset: Int?)
     /** The root state of version 1 sessions, read only to migrate them. */
     private class StoredRoot(val chats: List<StoredChat?>?, val activeChatId: String?, val folded: List<String?>?,
         val summary: String?, val summaryError: String?, val gapSummaries: List<StoredGap?>?)
