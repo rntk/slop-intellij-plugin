@@ -39,7 +39,6 @@
     </extensionPoints>
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Insight Canvas Session" displayType="BALLOON" isLogByDefault="true"/>
-        <notificationGroup id="Insight Board" displayType="BALLOON" isLogByDefault="true"/>
         <notificationGroup id="Insight Review Summaries" displayType="BALLOON" isLogByDefault="true"/>
         <toolWindow id="Prompt Constructor" anchor="right" icon="/icons/prompts.svg"
                     factoryClass="dev.insight.prompts.PromptConstructorToolWindowFactory"/>
@@ -68,7 +67,6 @@
         <fileEditorProvider implementation="dev.insight.ui.SourceChainEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.canvas.CanvasSessionEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.diff.DiffFlowChartEditorProvider"/>
-        <fileEditorProvider implementation="dev.insight.board.ui.BoardEditorProvider"/>
         <fileEditorProvider implementation="dev.insight.chat.SourcePointsEditorProvider"/>
     </extensions>
     <!-- The call graph uses Kotlin PSI references only, so it works with both the K1 and K2 Kotlin front ends. -->
@@ -95,7 +93,6 @@
         <contextAction implementation="dev.insight.context.actions.SessionDiffOverviewAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionMetricsAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionMovesAction"/>
-        <contextAction implementation="dev.insight.context.actions.SessionBoardAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionReportViewerAction"/>
         <contextAction implementation="dev.insight.context.actions.OpenCodeWallContextAction"/>
         <contextAction implementation="dev.insight.context.actions.ShowCallGraphContextAction"/>

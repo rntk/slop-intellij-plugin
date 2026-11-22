@@ -102,7 +102,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
         try {
-            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board", "Report viewer",
+            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Report viewer",
                 "Open chat"), tab.tileGrid.tiles.map { it.title })
             assertFalse("No files, nothing to open", viewsEnabled(tab))
             assertTrue("The source and chat tiles stay enabled", tab.tileGrid.isTileEnabled("source") && tab.tileGrid.isTileEnabled("chat"))
@@ -992,7 +992,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(hub, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Explainer board", "Report viewer"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Change map", "Diffs wall", "Words", "Diff overview", "Metrics", "Moves", "Report viewer"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.tileGrid })
             assertTrue(descendants(first).none { it is JComboBox<*> })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })

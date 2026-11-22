@@ -111,10 +111,10 @@ class ContextActionsPlatformTest : BasePlatformTestCase() {
         val original = request(pick(), ContextScopeKind.LINE)
         val registered = ContextAction.EP_NAME.extensionList.filter { it.group == "Review views" }
         assertEquals(ReviewDestination.entries.map { "review.${it.name.lowercase()}" }.toSet(), registered.map { it.id }.toSet())
-        val actions = listOf(SessionSummaryTreeAction(), SessionTopicsAction(), SessionBoardAction())
+        val actions = listOf(SessionSummaryTreeAction(), SessionTopicsAction(), SessionWordsAction())
         actions.forEach { assertFalse(it.isAvailable(original)) }
         val opened = mutableListOf<ReviewDestination>()
-        val destinations = listOf(ReviewDestination.TREE, ReviewDestination.TOPICS, ReviewDestination.BOARD)
+        val destinations = listOf(ReviewDestination.TREE, ReviewDestination.TOPICS, ReviewDestination.WORDS)
         val data = ContextData().put(ContextKeys.REVIEW_DESTINATIONS,
             destinations.associateWith { destination -> { opened.add(destination); Unit } })
         val request = ContextRequest(project, original.context, original.candidates, original.origin, data, null)

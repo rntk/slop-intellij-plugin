@@ -14,7 +14,6 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import dev.insight.context.ContextData
-import dev.insight.context.boardPickerEvidence
 import dev.insight.context.embeddedPickerEvidence
 import dev.insight.review.ReviewCodeLocation
 import com.intellij.psi.util.PsiModificationTracker
@@ -127,11 +126,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         )
     }
 
-    /** Reads the review when each picker opens; the clip's own evidence decides whether it still belongs to the review. */
-    protected fun boardPickerContext(): (CodeContext) -> ContextData = { context ->
-        boardPickerEvidence(context, state.snapshotFiles, if (disposed) null else summaryActionsAtCurrentRevision())
-    }
-
     /** The views of this tab, in the order of their tiles; the first is the one selected initially. */
     protected abstract fun viewOptions(): List<ReviewViewOption>
     /** Opens the page of [key]; summaries, topics and grouping are generated only from their page's buttons or a [schedule]. */
@@ -172,7 +166,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         add(ReviewDestination.DIFF_OVERVIEW, CanvasTabKey.DiffOverview)
         add(ReviewDestination.METRICS, CanvasTabKey.Semantic)
         add(ReviewDestination.MOVES, CanvasTabKey.Moves)
-        add(ReviewDestination.BOARD, CanvasTabKey.Board)
         add(ReviewDestination.REPORT_VIEWER, CanvasTabKey.ReportViewer)
         return destinations
     }

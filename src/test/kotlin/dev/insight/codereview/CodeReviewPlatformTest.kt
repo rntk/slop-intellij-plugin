@@ -234,8 +234,8 @@ class CodeReviewPlatformTest : FileEditorManagerTestCase() {
             val buttons = descendants(tab).filterIsInstance<JButton>().map { it.text }
             assertTrue(buttons.contains("Clear tabs"))
             assertFalse(buttons.any { it == "Open review" || it == "Description" || it == "Flows" || it == "Summaries" || it == "Topics" })
-            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Charts", "Code map", "Code wall", "Words", "Explainer board", "Report viewer"), viewLabels(tab))
-            assertEquals(listOf("Scope", "Summaries", "Hierarchy", "Document", "Topics", "Charts", "Code map", "Code wall", "Words", "Explainer board", "Report viewer", "Open chat"), tab.tileGrid.tiles.map { it.title })
+            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Charts", "Code map", "Code wall", "Words", "Report viewer"), viewLabels(tab))
+            assertEquals(listOf("Scope", "Summaries", "Hierarchy", "Document", "Topics", "Charts", "Code map", "Code wall", "Words", "Report viewer", "Open chat"), tab.tileGrid.tiles.map { it.title })
             assertTrue(descendants(tab).any { it === tab.tileGrid })
             assertTrue(viewsEnabled(tab))
             assertEquals(listOf("1 file"), tileStats(tab, "source"))

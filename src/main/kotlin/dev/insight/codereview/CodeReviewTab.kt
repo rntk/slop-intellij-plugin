@@ -96,10 +96,6 @@ import dev.insight.review.wall.MAX_ADDED_FILE_BYTES
 import dev.insight.review.wall.WALL_CANVAS_CHAT
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
-import dev.insight.board.BoardOrigin
-import dev.insight.board.ProjectBoardSources
-import dev.insight.board.boardGraph
-import dev.insight.board.ui.BoardLauncher
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ui.viewTileId
 import dev.insight.codereview.map.CodeMap
@@ -252,8 +248,6 @@ internal class CodeReviewTab(
     private var fileViewTarget: CodeFile? = null
     private var fileViewRevision = -1
 
-    /** The explainer boards of this scope; see [openBoards]. */
-    private val boards = BoardLauncher(project, scope) { scheduleTileRefresh() }
     private val scopeLabel = JLabel()
 
     override fun viewOptions() = listOf(
@@ -277,10 +271,6 @@ internal class CodeReviewTab(
             wordCount?.takeIf { it.counts(state.snapshot.files, wordScope) }?.words
                 ?.let { listOf(countStat(it.distinctWords, "distinct word"), countStat(it.totalWords, "word")) }.orEmpty()
         },
-        ReviewViewOption(CanvasTabKey.Board, "Explainer board",
-            "Let the model compose a grounded explainer page of the code: prose and callouts around real source and call-chain blocks") {
-            boards.savedCount(boardOrigin())?.takeIf { it > 0 }?.let { listOf(countStat(it, "saved board")) }.orEmpty()
-        },
         ReviewViewOption(CanvasTabKey.ReportViewer, "Report viewer",
             "Read Markdown or text files and agent reports with smart clickable project paths, line links, and context picker support") {
             canvas.reportViewerStats()
@@ -297,7 +287,6 @@ internal class CodeReviewTab(
         when (key) {
             CanvasTabKey.Words -> openWords()
             CanvasTabKey.Wall -> openCodeWall(state.snapshot.files, ALL_FILES)
-            CanvasTabKey.Board -> openBoards()
             CanvasTabKey.CodeMap -> openCodeMap()
             else -> super.openView(key)
         }
@@ -614,16 +603,6 @@ internal class CodeReviewTab(
         val file = state.snapshot.byPath[path] ?: return false
         openCodeWall(listOf(file), file.path.substringAfterLast('/'))
         return true
-    }
-
-    /** What this tab's boards explain: the code in scope, with the paths of its files. */
-    private fun boardOrigin() = BoardOrigin("code", state.snapshot.scope.displayName, state.snapshot.files.map { it.path })
-
-    /** Shows the board menu below the tile: a new board or a saved one of this scope, reading current project files and the call graph. */
-    private fun openBoards() {
-        boards.show(tileGrid.tileComponents[viewTileId(CanvasTabKey.Board)], boardOrigin(), boardPickerContext()) {
-            ProjectBoardSources(project, boardGraph(project))
-        }
     }
 
     /** The summary text of each file in scope that has one, by path, for the Code wall. */

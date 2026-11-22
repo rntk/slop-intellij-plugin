@@ -2,8 +2,6 @@ package dev.insight.context
 
 import com.intellij.openapi.util.text.StringUtil
 import dev.insight.agent.SourceSide
-import dev.insight.board.BoardAnchor
-import dev.insight.board.sourceExcerpt
 import dev.insight.diff.ReviewFile
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewSource
@@ -31,35 +29,6 @@ internal fun embeddedPickerEvidence(
     } ?: return data
     if (file is ReviewFile) data.put(ContextKeys.REVIEW_FILE, file)
     summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
-    return data
-}
-
-/** A board may retain clips after a refresh. Use full captured evidence only when it contains the clip. */
-internal fun boardPickerEvidence(
-    context: CodeContext,
-    files: List<ReviewSource>,
-    summaryActions: ContextSummaryActions?,
-): ContextData {
-    val data = ContextData()
-    val path = context.path ?: return data
-    val lines = context.lines ?: return data
-    val before = context.side == SourceSide.BEFORE
-    val file = files.firstOrNull { it.path == path || before && (it as? ReviewFile)?.previousPath == path }
-        ?: return data
-    val diff = file as? ReviewFile
-    val fullText = if (diff == null) file.text else if (before) diff.before else diff.after
-    val matches = if (context.isPatch) {
-        diff != null && normalizeCapturedText(diff.patch).contains(normalizeCapturedText(context.text))
-    } else {
-        fullText != null && runCatching {
-            sourceExcerpt(BoardAnchor(path, lines.first, lines.last), fullText).text == normalizeCapturedText(context.text)
-        }.getOrDefault(false)
-    }
-    if (matches) {
-        if (diff != null) data.put(ContextKeys.REVIEW_FILE, diff)
-        else if (fullText != null) data.put(SUMMARY_SOURCE_TEXT, fullText)
-        summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
-    }
     return data
 }
 
