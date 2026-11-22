@@ -36,7 +36,6 @@ internal data class DiffCanvasContent(
     val semantic: SemanticResult? = null,
     val moves: CodeMoves? = null,
     val wall: DiffsWallContent? = null,
-    val changeMap: ChangeMapCard? = null,
 )
 
 /** Optional context-aware wall link dependencies passed to [DiffCanvasCards]. */
@@ -47,7 +46,7 @@ internal data class DiffWallLinks(
 )
 
 /**
- * The diff review's canvas pages: the change map, the Diffs wall, word changes, diff overview, semantic metrics and moved code, diff snapshots in
+ * The diff review's canvas pages: the Diffs wall, word changes, diff overview, semantic metrics and moved code, diff snapshots in
  * native viewers, and the summaries Diff mode. Set [content] before the canvas rebuilds.
  */
 internal class DiffCanvasCards(
@@ -70,7 +69,6 @@ internal class DiffCanvasCards(
     /** Asks for the summary of a wall file that has none; true when it is being written. */
     summarizeWallFile: ((path: String) -> Boolean)? = null,
     private val diffSession: (() -> ReviewDiffSession)? = null,
-    changeMapActions: ChangeMapActions = ChangeMapActions(),
     contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
     private var wallLinks: DiffWallLinks? = null
@@ -90,11 +88,10 @@ internal class DiffCanvasCards(
         reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)?,
         summarizeWallFile: ((path: String) -> Boolean)?,
         diffSession: (() -> ReviewDiffSession)?,
-        changeMapActions: ChangeMapActions,
         contextSummaryActions: ContextSummaryActions?,
         wallLinks: DiffWallLinks,
     ) : this(open, project, removeDiff, openDirectoryDiff, openMovesOnWall, metricActions, openWallDiff, showAllChanges,
-        wallChats, openWallOnCanvas, openOnWall, reviewDestinations, summarizeWallFile, diffSession, changeMapActions,
+        wallChats, openWallOnCanvas, openOnWall, reviewDestinations, summarizeWallFile, diffSession,
         contextSummaryActions) {
         this.wallLinks = wallLinks
     }
@@ -109,8 +106,6 @@ internal class DiffCanvasCards(
             { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree)
     }
     private val wall by wallView
-    /** One view for the tab session, so the selected change survives rebuilds. */
-    private val changeMapView = ChangeMapView(changeMapActions)
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
         removeDiffOverview = metricActions.removeDiffOverview, removeSemantic = metricActions.removeSemantic,
@@ -119,7 +114,6 @@ internal class DiffCanvasCards(
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) {
         this.refresh = refresh
-        changeMapView.refresh = { refresh(CanvasTabKey.ChangeMap) }
     }
 
     override fun update() {
@@ -131,7 +125,6 @@ internal class DiffCanvasCards(
     }
 
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
-        content.changeMap?.let { CanvasTabKey.ChangeMap to changeMapView.card(it) },
         content.wall?.let { CanvasTabKey.Wall to wallCard(it) },
         content.words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) },
         content.diffOverview?.let { CanvasTabKey.DiffOverview to metricsCards.wordsCard(it, overview = true) },
@@ -148,7 +141,6 @@ internal class DiffCanvasCards(
         CanvasTabKey.Semantic -> content.semantic?.let(metricsCards::semanticCard)
         CanvasTabKey.Moves -> content.moves?.let(metricsCards::movesCard)
         CanvasTabKey.Wall -> content.wall?.let(::wallCard)
-        CanvasTabKey.ChangeMap -> content.changeMap?.let(changeMapView::card)
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { diffCard(it, snapshots) }
         else -> null
     }
@@ -158,7 +150,6 @@ internal class DiffCanvasCards(
         CanvasTabKey.DiffOverview -> "Diff overview"
         CanvasTabKey.Semantic -> "Semantic changes"
         CanvasTabKey.Moves -> "Moved code"
-        CanvasTabKey.ChangeMap -> "Change map"
         CanvasTabKey.Wall -> ReviewVocabulary.DIFF.wallName
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { "Diff · ${it.path.substringAfterLast('/')}" }
         else -> null
@@ -178,17 +169,6 @@ internal class DiffCanvasCards(
         if (current.summaries == summaries && current.summarizing == summarizing) return
         content = content.copy(wall = current.copy(summaries = summaries, summarizing = summarizing))
         wall.show(content.wall!!)
-    }
-
-    /** The change selected on the change map card, kept across rebuilds. */
-    internal val changeMapSelection: String? get() = changeMapView.selected
-
-    /** Gives the shown change map card its latest map and summaries in place; false when the card must be added or removed by a rebuild. */
-    fun updateChangeMap(card: ChangeMapCard?): Boolean {
-        if ((card == null) != (content.changeMap == null)) return false
-        content = content.copy(changeMap = card)
-        if (card != null) refresh(CanvasTabKey.ChangeMap)
-        return true
     }
 
     private fun diffCard(file: ReviewFile, snapshots: SnapshotCanvasCards): JPanel =

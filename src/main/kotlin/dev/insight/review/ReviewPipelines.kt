@@ -10,7 +10,6 @@ internal enum class ReviewPipeline(val command: ReviewCommand, val label: String
     TOPIC_SUMMARIES(ReviewCommand.TOPIC_SUMMARIES, "Fill topic summaries", "Fill missing summaries for every topic and subtopic"),
     GROUPING(ReviewCommand.GROUPING, "Grouping", "Group every changed file by shared change cause and affected code"),
     GROUPING_SUMMARIES(ReviewCommand.GROUPING_SUMMARIES, "Fill grouping summaries", "Fill missing summaries for every group and subgroup"),
-    CHANGE_MAP(ReviewCommand.CHANGE_MAP, "Change map", "Group changed declarations into logical changes and summarize each as a chain"),
     CODE_MAP(ReviewCommand.CODE_MAP, "Code map", "Group classes and files into flows read from their roots, with the shared code they use, and summarize each");
 
     /** The pipeline whose result this one fills in, so the Start page shows it beneath; null for a pipeline of its own. */
@@ -21,7 +20,7 @@ internal enum class ReviewPipeline(val command: ReviewCommand, val label: String
     }
 
     companion object {
-        /** Grouping and the change map read a diff, so code reviews offer only the other pipelines. */
+        /** Grouping reads a diff, so code reviews offer only the other pipelines. */
         val code: List<ReviewPipeline> = entries.filter { it.command in ReviewCommand.code }
         /** The code map reads a code scope, so diff reviews offer the other pipelines. */
         val diff: List<ReviewPipeline> = entries.filter { it.command in ReviewCommand.diff }
@@ -41,7 +40,6 @@ internal fun ReviewTabState<*>.isDone(pipeline: ReviewPipeline): Boolean = when 
     ReviewPipeline.TOPIC_SUMMARIES -> topics.labels.isEmpty() || topicSummaries.complete
     ReviewPipeline.GROUPING -> grouping.complete
     ReviewPipeline.GROUPING_SUMMARIES -> grouping.labels.isEmpty() || groupingSummaries.complete
-    ReviewPipeline.CHANGE_MAP -> changeMapDone
     ReviewPipeline.CODE_MAP -> codeMapDone
 }
 

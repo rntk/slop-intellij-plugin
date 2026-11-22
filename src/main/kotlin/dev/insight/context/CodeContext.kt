@@ -67,7 +67,7 @@ class ContextKey<T : Any>(val name: String) {
     override fun toString() = name
 }
 
-enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, CHANGE_MAP, WORDS, DIFF_OVERVIEW, METRICS, MOVES, REPORT_VIEWER }
+enum class ReviewDestination { SUMMARIES, OUTLINE, HIERARCHY, DOCUMENT, EXPLORER, SPLIT, TREE, DIFF, TOPICS, GROUPING, WORDS, DIFF_OVERVIEW, METRICS, MOVES, REPORT_VIEWER }
 
 /** Starts a missing file or directory summary in the review that owns a picker. */
 internal class ContextSummaryActions(

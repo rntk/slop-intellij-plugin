@@ -88,7 +88,6 @@
         <contextAction implementation="dev.insight.context.actions.SessionSummaryDiffAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionTopicsAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionGroupingAction"/>
-        <contextAction implementation="dev.insight.context.actions.SessionChangeMapAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionWordsAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionDiffOverviewAction"/>
         <contextAction implementation="dev.insight.context.actions.SessionMetricsAction"/>

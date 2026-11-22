@@ -28,19 +28,6 @@ class ReviewPipelineQueueTest {
     }
 
     @Test
-    fun `the change map runs last after the summaries it does not reuse and code reviews never run it`() {
-        val queue = ReviewPipelineQueue()
-        queue.schedule(listOf(ReviewPipeline.CHANGE_MAP, ReviewPipeline.GROUPING, ReviewPipeline.SUMMARIES))
-        assertEquals(listOf(ReviewPipeline.SUMMARIES, ReviewPipeline.GROUPING, ReviewPipeline.CHANGE_MAP),
-            generateSequence { queue.next(ready = true) { false } }.toList())
-        assertEquals(ReviewCommand.CHANGE_MAP, ReviewPipeline.CHANGE_MAP.command)
-        assertNull(ReviewPipeline.CHANGE_MAP.follows)
-        assertTrue(ReviewPipeline.CHANGE_MAP !in ReviewPipeline.code)
-        val codeState = dev.insight.codereview.CodeReviewState()
-        assertTrue("A code review has no change map to generate", codeState.isDone(ReviewPipeline.CHANGE_MAP))
-    }
-
-    @Test
     fun `code reviews offer no grouping pipelines and diff reviews no code map`() {
         assertEquals(listOf(ReviewPipeline.SUMMARIES, ReviewPipeline.TOPICS, ReviewPipeline.TOPIC_SUMMARIES, ReviewPipeline.CODE_MAP), ReviewPipeline.code)
         assertTrue(ReviewPipeline.CODE_MAP !in ReviewPipeline.diff)

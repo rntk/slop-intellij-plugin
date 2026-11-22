@@ -26,9 +26,6 @@ import dev.insight.agent.tracedFileCompletion
 import dev.insight.chat.*
 import dev.insight.core.withCountProgress
 import dev.insight.llm.CompletionFn
-import dev.insight.decisions.DecisionFn
-import dev.insight.diff.atoms.ChangeMap
-import dev.insight.decisions.configuredDecisions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
@@ -67,8 +64,8 @@ import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
 import dev.insight.review.ui.ReviewTileStat
 import dev.insight.review.ui.ReviewViewOption
-import dev.insight.review.ui.countStat
 import dev.insight.review.ui.summaryStats
+import dev.insight.review.ui.countStat
 import dev.insight.review.ui.tileCount
 import dev.insight.review.ui.topicStats
 import dev.insight.review.ui.SYMBOLS_CHANGED
@@ -99,10 +96,6 @@ internal class DiffReviewTab(
     private val toChat: (ChatFocus) -> Unit = {},
     /** Opens a file of the change on a canvas session, with its related changed files. */
     openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
-    /** Builds the change map of a snapshot; null reads it from PSI. A test seam, like [complete]. */
-    private val changeMapBuilder: (suspend (List<ReviewFile>) -> ChangeMap)? = null,
-    /** The judgments of the change map while [complete] is injected; otherwise the configured Decisions API, if any. */
-    private val decide: DecisionFn? = null,
 ) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
     ReviewVocabulary.DIFF) {
     private val sourcePoints = SourcePoints(project, "Diff chat")
@@ -137,11 +130,6 @@ internal class DiffReviewTab(
         reviewDestinations = ::reviewDestinations,
         summarizeWallFile = { path -> fillSummary(path, SummaryKind.FILE) },
         diffSession = ::diffSession,
-        changeMapActions = ChangeMapActions(
-            generate = { if (canSummarize) session.send(ReviewCommand.CHANGE_MAP.command) },
-            remove = { state.hideChangeMap(); renderCanvas() },
-            openAtom = ::openAtom,
-        ),
         contextSummaryActions = contextSummaryActions,
         wallLinks = DiffWallLinks(scope, { state.snapshot.files }, { state.summaries.tree }),
     )
@@ -244,8 +232,6 @@ internal class DiffReviewTab(
             "Read the change grouped by shared change cause and affected code (/grouping)") { topicStats(state.grouping, "group") },
         ReviewViewOption(CanvasTabKey.Charts, "Charts",
             "Explore added or removed lines by directory and file, or compare changes on a radar"),
-        ReviewViewOption(CanvasTabKey.ChangeMap, "Change map",
-            "Read the change as logical changes: related declarations across files, ordered from origin to tests (/change-map)") { changeMapStats() },
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
             "Lay out every changed file's raw diff as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
@@ -283,7 +269,6 @@ internal class DiffReviewTab(
             CanvasTabKey.DiffOverview -> openDiffOverview()
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
-            CanvasTabKey.ChangeMap -> openChangeMap()
             CanvasTabKey.Wall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
             else -> super.openView(key)
         }
@@ -294,8 +279,7 @@ internal class DiffReviewTab(
         "Ask about ${focus.label}. Its summaries and diff are in this chat's context; other project files are read when a " +
             "question needs them." else
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /summaries to read the change from the whole down to each file. " +
-            "Use /topics to read every diff as one document grouped by code topic, /grouping to group by shared change cause, or " +
-            "/change-map to follow related declarations from origin to tests. " +
+            "Use /topics to read every diff as one document grouped by code topic, or /grouping to group by shared change cause. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
         override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change", ReviewCommand.diff)
     }
@@ -324,17 +308,6 @@ internal class DiffReviewTab(
                         .run(context.startGrouping(), summariesFocus(question), context::assignGrouping, onToolCall, onProgress)
                 }
                 return groupingReply(run)
-            }
-            if (command == ReviewCommand.CHANGE_MAP) {
-                withContext(Dispatchers.EDT) { changeMapRunning = true; changeMapChanged() }
-                try {
-                    return ChangeMapTurn(state, changeMapBuilder ?: { mapped ->
-                        withContext(Dispatchers.Default) { smartReadAction(project) { dev.insight.diff.atoms.changeMap(project, mapped) } }
-                    }, complete, if (this@DiffReviewTab.complete != null) decide else configuredDecisions(), diffReviewTools(context).single { it.definition.name == "read_diff_files" },
-                        configuredContextChars(), ::changeMapChanged, { disposed }).run(snapshot, question, onToolCall)
-                } finally {
-                    withContext(NonCancellable + Dispatchers.EDT) { changeMapRunning = false; if (!disposed) changeMapChanged() }
-                }
             }
             if (command == ReviewCommand.SUMMARIES || command == ReviewCommand.TOPIC_SUMMARIES || command == ReviewCommand.GROUPING_SUMMARIES) {
                 val topicSummaries = command == ReviewCommand.TOPIC_SUMMARIES
@@ -423,7 +396,7 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/summaries, /topics, /grouping, /change-map, /explain or ask about this tab's changes…"
+        chat.input.emptyText.text = "/summaries, /topics, /grouping, /explain or ask about this tab's changes…"
         add(tileArea(scopeLabel) { state.clearNotes(); renderCanvas() }, BorderLayout.CENTER)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
@@ -485,39 +458,6 @@ internal class DiffReviewTab(
         state.showMoves()
         renderCanvas()
         showCanvas { canvas.focusMoves() }
-    }
-
-    /** Shows the change map card; the map is built only by /change-map, from the card's button or the chat. */
-    fun openChangeMap() {
-        state.showChangeMap()
-        renderCanvas()
-        showCanvas { canvas.focusChangeMap() }
-    }
-
-    /** Whether a /change-map turn runs now, so the card says so and offers no second run. */
-    private var changeMapRunning = false
-
-    private fun changeMapCard(): ChangeMapCard? = if (!state.changeMapVisible) null else
-        ChangeMapCard(state.changeMap, state.snapshot.files, state.changeMapSummaries, changeMapRunning, canSummarize)
-
-    /** Follows the map, its summaries and whether it can run, rebuilding the card only when one of them changed (EDT). */
-    private fun changeMapChanged() {
-        val card = changeMapCard()
-        val shown = diffCards.content.changeMap
-        if (card != null && shown != null && card.map === shown.map && card.summaries === shown.summaries && card.files === shown.files &&
-            card.running == shown.running && card.canRun == shown.canRun) return
-        if (!diffCards.updateChangeMap(card)) renderCanvas()
-        scheduleTileRefresh()
-    }
-
-    private fun changeMapStats(): List<ReviewTileStat> = state.changeMap?.let { map ->
-        listOf(countStat(map.chains.size, "chain"), countStat(map.graph.atoms.size, "atom")) + summaryStats(state.changeMapSummaries)
-    }.orEmpty()
-
-    /** Opens the snapshot diff of [atom]'s file at its changed lines, as a summary's cited lines open. */
-    private fun openAtom(atom: dev.insight.diff.atoms.ChangeAtom) {
-        val file = state.snapshot.files.firstOrNull { it.path == atom.path } ?: return
-        atomTrace(atom, file)?.let { showDiffLines(project, file, it, ::diffSession) }
     }
 
     /**
@@ -596,15 +536,13 @@ internal class DiffReviewTab(
         canvasTimer.stop()
         super.summariesChanged()
         diffCards.updateWallSummaries(fileSummaryTexts(), scopedSummaryFill.pendingFiles)
-        changeMapChanged()
     }
 
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files, diffOverview = if (state.diffOverviewVisible) state.words else null,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) },
-            changeMap = changeMapCard())
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) })
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
             charts = chartsCard(), reportViewer = reportViewerCard()))
         countSemantic()

@@ -153,7 +153,7 @@ class CodeMapClusteringTest {
         assertEquals("test", codeEvidenceKind("src/test/kotlin/FooTest.kt"))
         assertEquals("test", codeEvidenceKind("pkg/test_foo.py"))
         assertEquals("test", codeEvidenceKind("web/foo.spec.ts"))
-        assertEquals("documentation", codeEvidenceKind("flows/change-map.md"))
+        assertEquals("documentation", codeEvidenceKind("flows/code-map.md"))
         assertEquals("implementation", codeEvidenceKind("src/main/kotlin/Testing.kt"))
     }
 

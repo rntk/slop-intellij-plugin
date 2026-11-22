@@ -29,7 +29,6 @@ internal class SessionSummaryDiffAction : SessionViewAction(ReviewDestination.DI
 internal class SessionSummaryDocumentAction : SessionViewAction(ReviewDestination.DOCUMENT, "context.action.review.document", 16)
 internal class SessionTopicsAction : SessionViewAction(ReviewDestination.TOPICS, "context.action.review.topics", 20)
 internal class SessionGroupingAction : SessionViewAction(ReviewDestination.GROUPING, "context.action.review.grouping", 30)
-internal class SessionChangeMapAction : SessionViewAction(ReviewDestination.CHANGE_MAP, "context.action.review.change_map", 35)
 internal class SessionWordsAction : SessionViewAction(ReviewDestination.WORDS, "context.action.review.words", 40)
 internal class SessionDiffOverviewAction : SessionViewAction(ReviewDestination.DIFF_OVERVIEW, "context.action.review.diff_overview", 50)
 internal class SessionMetricsAction : SessionViewAction(ReviewDestination.METRICS, "context.action.review.metrics", 60)

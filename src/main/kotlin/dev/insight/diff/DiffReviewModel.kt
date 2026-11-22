@@ -11,16 +11,8 @@ import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import dev.insight.review.diffCardKey
 import dev.insight.review.wall.WallScope
-import dev.insight.agent.ToolInputException
-import dev.insight.diff.atoms.ChangeGraph
-import dev.insight.diff.atoms.ChangeMap
-import dev.insight.diff.atoms.buildChangeMapTree
-import dev.insight.review.ReviewSummaries
-import dev.insight.review.Summary
 
 internal const val DIFF_CHANGED = "The diff changed. Start a new request to review the current snapshot."
-internal val EMPTY_CHANGE_MAP = ChangeMap(ChangeGraph(emptyList(), emptyList()), emptyList())
-internal val EMPTY_MAP_SUMMARIES = ReviewSummaries(buildChangeMapTree(EMPTY_CHANGE_MAP, emptyList()))
 
 /** Immutable review evidence, independent of PSI, graph construction and the Git plugin. */
 data class ReviewFile(
@@ -118,42 +110,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showMoves() { movesVisible = true }
     fun hideMoves() { movesVisible = false }
 
-    /**
-     * Whether the change map card is on the canvas. The map needs PSI and models, so the tab builds it on /change-map and
-     * delivers it with [setChangeMap]. Map and summaries live in memory only in this version: there is no disk cache, so a
-     * new IDE session or a new request builds them again.
-     */
-    var changeMapVisible = false
-        private set
-    fun showChangeMap() { changeMapVisible = true }
-    fun hideChangeMap() { changeMapVisible = false }
-    private var changeMapOf: List<ReviewFile>? = null
-    private var builtMap: ChangeMap? = null
-    /** Kept across snapshots, so the next map of a changed snapshot keeps the summaries of its unchanged chains and atoms. */
-    private var mapSummaries = EMPTY_MAP_SUMMARIES
-    /** The change map of the current snapshot, or null until one is built for it. */
-    internal val changeMap: ChangeMap? get() = builtMap?.takeIf { changeMapOf === snapshot.files }
-    /** The summaries of [changeMap]; an empty tree while there is none. */
-    val changeMapSummaries: ReviewSummaries get() = if (changeMap != null) mapSummaries else EMPTY_MAP_SUMMARIES
-    override val changeMapDone: Boolean get() = changeMap != null && mapSummaries.complete
-
-    /** Keeps [map] unless the revision or the snapshot changed since [files] were mapped; summaries of unchanged nodes stay. */
-    internal fun setChangeMap(expected: Int, files: List<ReviewFile>, map: ChangeMap) {
-        check(expected)
-        if (files !== snapshot.files) throw ToolInputException(DIFF_CHANGED)
-        val tree = buildChangeMapTree(map, files)
-        mapSummaries = mapSummaries.retainedIn(tree)
-        builtMap = map; changeMapOf = files
-    }
-
-    /** Forgets the summaries before a complete map is generated again, so a regeneration writes them afresh. */
-    internal fun clearChangeMapSummaries() { mapSummaries = ReviewSummaries(mapSummaries.tree) }
-
-    internal fun summarizeChangeMap(expected: Int, entries: Map<Int, Summary>): ReviewSummaries {
-        check(expected)
-        if (changeMap == null) throw ToolInputException(DIFF_CHANGED)
-        return mapSummaries.summarize(entries).also { mapSummaries = it }
-    }
     /** The scope of the Diffs wall while it is on the canvas; see [wallFiles]. */
     var wallScope: WallScope? = null
         private set
@@ -176,7 +132,6 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
             diffCards.entries.removeIf { (path, _) -> requestChanged || changed(path) }
             diffCards.replaceAll { path, _ -> fresh.getValue(path) }
             applyRevision(next.files, next.comparison.request, reset = requestChanged, ::changed)
-            if (requestChanged) mapSummaries = EMPTY_MAP_SUMMARIES
         }
         snapshot = next
         refreshing = false
@@ -192,7 +147,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun clearNotes() {
         super.clearNotes()
         diffCards.clear()
-        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false; movesVisible = false; changeMapVisible = false
+        wordsVisible = false; diffOverviewVisible = false; semanticVisible = false; movesVisible = false
         wallScope = null
     }
 }

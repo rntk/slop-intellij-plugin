@@ -92,7 +92,7 @@ internal data class ReviewVocabulary(
             openOnWallTooltip = "Show the raw diffs of this entry's files together on the diffs wall",
             sourceTitle = "Diff",
             sourceHint = "Choose the diff to review and browse its changed files",
-            chatHint = "Ask about this tab's changes; /summaries, /topics, /grouping, /change-map and /explain run here too",
+            chatHint = "Ask about this tab's changes; /summaries, /topics, /grouping and /explain run here too",
             hubHeading = "Diff review views",
             hubHint = "Each review tab has its own chat and views of the chosen diff. Pick a view to open it in the editor; " +
                 "the side panel shows only the selected tab's chat.",
