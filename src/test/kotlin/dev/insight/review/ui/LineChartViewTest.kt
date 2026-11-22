@@ -125,7 +125,7 @@ class LineChartViewTest : BasePlatformTestCase() {
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
-            assertEquals(listOf("charts-lines-entry:readme.md", "charts-lines-entry:src"), entries().map { it.name })
+            assertEquals(listOf("charts-lines-entry:src", "charts-lines-entry:readme.md"), entries().map { it.name })
             click("charts-lines-entry:src")
             assertEquals(listOf("charts-lines-entry:src/a.kt", "charts-lines-entry:src/nested"), entries().map { it.name })
             assertEquals("4 lines · 2 files", components().filterIsInstance<JLabel>().single { it.name == "charts-lines-total" }.text)
@@ -353,23 +353,23 @@ class LineChartViewTest : BasePlatformTestCase() {
         fun split() = all().filterIsInstance<javax.swing.JSplitPane>().single { it.name == "hierarchy-preview-split" }
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
-            assertEquals(listOf("readme.md", "src"), rows())
-            assertEquals("readme.md", panel().cursorPath)
+            assertEquals(listOf("src", "readme.md"), rows())
+            assertEquals("src", panel().cursorPath)
             assertTrue(all().none { it.name == "charts-lines-fold:readme.md" })
 
             // Clicking the chevron unfolds in place; the number column keeps its width for nested rows.
             fold("src").mouseListeners.forEach { it.mouseClicked(java.awt.event.MouseEvent(fold("src"), 0, 0, 0, 1, 1, 1, false,
                 java.awt.event.MouseEvent.BUTTON1)) }
-            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+            assertEquals(listOf("src", "src/a.kt", "src/nested", "readme.md"), rows())
             assertEquals(setOf("src"), canvas.chartsView.linesExpanded)
             assertSame(AllIcons.General.ChevronDown, fold("src").icon)
 
-            key("charts-lines-down")
-            assertEquals("src", panel().cursorPath)
             key("charts-lines-unfold")
+            assertEquals("src/a.kt", panel().cursorPath)
+            key("charts-lines-down")
             assertEquals("src/nested", panel().cursorPath)
             key("charts-lines-unfold")
-            assertEquals(listOf("readme.md", "src", "src/nested", "src/nested/b.kt", "src/a.kt"), rows())
+            assertEquals(listOf("src", "src/a.kt", "src/nested", "src/nested/b.kt", "readme.md"), rows())
             key("charts-lines-down")
             assertEquals("src/nested/b.kt", panel().cursorPath)
             key("charts-lines-activate")
@@ -377,7 +377,7 @@ class LineChartViewTest : BasePlatformTestCase() {
             key("charts-lines-fold")
             assertEquals("src/nested", panel().cursorPath)
             key("charts-lines-fold")
-            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+            assertEquals(listOf("src", "src/a.kt", "src/nested", "readme.md"), rows())
 
             // A moved divider, the cursor, and the folds survive a rebuild such as toggling a preview.
             split().apply { setSize(1400, 600); dividerLocation = 333 }
@@ -386,7 +386,7 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals(LineChartPreview("src/nested", LineChartPreviewKind.SOURCE), canvas.chartsView.linesPreview)
             assertEquals(333, split().dividerLocation)
             assertEquals("src/nested", panel().cursorPath)
-            assertEquals(listOf("readme.md", "src", "src/nested", "src/a.kt"), rows())
+            assertEquals(listOf("src", "src/a.kt", "src/nested", "readme.md"), rows())
 
             // Enter explores a directory; going back up keeps the directory just left current.
             key("charts-lines-activate")
@@ -432,18 +432,17 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals(listOf("Lines of code", "Size", "Items", "Classes", "Functions"),
                 (0 until tabs().tabCount).map { tabs().getTitleAt(it) })
             (0 until tabs().tabCount).forEach { assertNull(tabs().getTabComponentAt(it)) }
-            assertEquals(listOf("notes.md", "a.kt"), rows())
+            assertEquals(listOf("a.kt", "notes.md"), rows())
             assertTrue(all().none { it.name == "charts-lines-fold:notes.md" })
 
-            key("charts-lines-down")
             key("charts-lines-unfold")
-            assertEquals(listOf("notes.md", "a.kt", "a.kt#…"), rows())
+            assertEquals(listOf("a.kt", "a.kt#…", "notes.md"), rows())
             pending!!.invoke()
-            assertEquals(listOf("notes.md", "a.kt", "a.kt#0"), rows())
+            assertEquals(listOf("a.kt", "a.kt#0", "notes.md"), rows())
             assertEquals("a.kt", panel().cursorPath)
             key("charts-lines-unfold")
             key("charts-lines-unfold")
-            assertEquals(listOf("notes.md", "a.kt", "a.kt#0", "a.kt#0/0"), rows())
+            assertEquals(listOf("a.kt", "a.kt#0", "a.kt#0/0", "notes.md"), rows())
             key("charts-lines-down")
             assertEquals("a.kt#0/0", panel().cursorPath)
             assertTrue(all().none { it.name == "charts-lines-summary-toggle:a.kt#0/0" })
