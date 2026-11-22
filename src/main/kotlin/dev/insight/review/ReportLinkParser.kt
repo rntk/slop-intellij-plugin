@@ -1,15 +1,21 @@
 package dev.insight.review
 
+import dev.insight.links.SymbolHints
+import dev.insight.links.SymbolMention
+import dev.insight.links.SymbolNames
+import dev.insight.links.matchSymbolMention
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 /** What a clickable link inside a Markdown or plain-text report points to. */
-internal enum class ReportTargetKind { FILE, DIRECTORY, EXTERNAL_URL }
+internal enum class ReportTargetKind { FILE, DIRECTORY, EXTERNAL_URL, SYMBOL }
 
 /**
  * One resolved link inside a rendered report.
  * [candidates] holds one project-relative path for an unambiguous target, or several ordered candidates when a bare
  * filename or partial path matches more than one file or directory in the project.
+ * A [ReportTargetKind.SYMBOL] link has no candidates yet: its declarations are looked up from [symbol] when it is followed,
+ * ranked by [symbolHints].
  */
 internal data class ReportLink(
     val id: Int,
@@ -20,6 +26,8 @@ internal data class ReportLink(
     val column: Int? = null,
     val contextual: Boolean = false,
     val externalUrl: String? = null,
+    val symbol: SymbolMention? = null,
+    val symbolHints: SymbolHints? = null,
 ) {
     val isAmbiguous: Boolean get() = candidates.size > 1
     val primaryPath: String? get() = candidates.firstOrNull()
@@ -36,8 +44,15 @@ internal data class ParsedLineSpec(val lines: IntRange, val column: Int? = null)
  * bare line references (`L42-L50`, `lines 10-20`, `at L151`) bind accurately without bleeding across unrelated entries.
  */
 internal class ReportLinkContext {
+    private companion object {
+        /** Enough history to disambiguate and rank, bounded so long reports keep per-link costs constant. */
+        const val MAX_RECENT_FILES = 64
+    }
+
+
     val sectionDirs: MutableSet<String> = linkedSetOf()
     val sectionFiles: MutableSet<String> = linkedSetOf()
+    /** The last [MAX_RECENT_FILES] files resolved unambiguously, oldest first. */
     val recentFiles: LinkedHashSet<String> = linkedSetOf()
     val lineDirs: MutableSet<String> = linkedSetOf()
     var activeFiles: List<String> = emptyList()
@@ -99,6 +114,7 @@ internal class ReportLinkContext {
             sectionFiles += path
             recentFiles.remove(path)
             recentFiles.add(path)
+            if (recentFiles.size > MAX_RECENT_FILES) recentFiles.remove(recentFiles.first())
         }
         if (inListItem && listStack.isNotEmpty()) {
             val top = listStack.removeLast()
@@ -663,6 +679,7 @@ internal class ReportProjectIndex(
 internal class ReportLinkCollector(
     private val index: ReportProjectIndex,
     val context: ReportLinkContext = ReportLinkContext(),
+    private val symbols: SymbolNames = SymbolNames.NONE,
 ) {
     private val collected = mutableListOf<ReportLink>()
     val links: List<ReportLink> get() = collected
@@ -771,12 +788,14 @@ internal class ReportLinkCollector(
                     cursor = resolved.last().end
                     continue
                 }
-                val nextPos = if (allowContextualLines) tryEmitContextualLine(segment, cursor, matches) else null
+                val nextPos = (if (allowContextualLines) tryEmitContextualLine(segment, cursor, matches) else null)
+                    ?: tryEmitSymbol(segment, cursor, inBackticks, matches)
                 cursor = nextPos ?: tokenMatch.end
                 continue
             }
 
-            val nextPos = if (allowContextualLines) tryEmitContextualLine(segment, cursor, matches) else null
+            val nextPos = (if (allowContextualLines) tryEmitContextualLine(segment, cursor, matches) else null)
+                ?: tryEmitSymbol(segment, cursor, inBackticks, matches)
             cursor = nextPos ?: (cursor + 1)
         }
 
@@ -914,6 +933,19 @@ internal class ReportLinkCollector(
         return ctxMatch.end
     }
 
+    /** Links a declared code name at [pos], carrying the files the report referred to so far for ranking its declarations. */
+    private fun tryEmitSymbol(segment: String, pos: Int, inCode: Boolean, matches: MutableList<LineLinkMatch>): Int? {
+        val mention = matchSymbolMention(segment, pos, symbols, inCode) ?: return null
+        val files = (context.activeFiles.asSequence() + context.recentFiles.toList().asReversed() + context.sectionFiles)
+            .distinct().take(MAX_SYMBOL_HINT_FILES).toList()
+        val hints = SymbolHints(files, index.reviewScopeFiles)
+        val link = register { id ->
+            ReportLink(id, segment.substring(mention.start, mention.end), ReportTargetKind.SYMBOL, symbol = mention, symbolHints = hints)
+        }
+        matches += LineLinkMatch(mention.start, mention.end, link)
+        return mention.end
+    }
+
     private data class AttachedSpecMatch(val end: Int, val spec: ParsedLineSpec)
 
     private fun matchAttachedLineSpec(segment: String, pos: Int): AttachedSpecMatch? {
@@ -958,6 +990,8 @@ internal class ReportLinkCollector(
 
     companion object {
         private const val MAX_LINE_NUMBER = 1_000_000
+        /** Files carried to a symbol link for ranking; ranking only weighs the most recent ones. */
+        private const val MAX_SYMBOL_HINT_FILES = 24
         private val PATH_LEFT_FORBIDDEN = (('a'..'z') + ('A'..'Z') + ('0'..'9') + listOf('_', '$', '@')).toSet()
         private val CONTEXTUAL_LEFT_FORBIDDEN = (('a'..'z') + ('A'..'Z') + ('0'..'9') + listOf('_', ':', '#', '/')).toSet()
         private val TRAILING_PUNCTUATION = setOf('.', ',', ';', ':', '!', '?', '\'', '"')

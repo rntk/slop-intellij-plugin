@@ -7,6 +7,7 @@ import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.io.OSAgnosticPathUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
@@ -158,7 +159,7 @@ internal class CanvasSessionController(
         if (path.isEmpty()) return null
         if (path == model.session.rootPath || path == rootFile.path) return rootFile
         val base = project.basePath
-        val absolute = if (base != null && !path.startsWith("/")) "$base/$path" else path
+        val absolute = if (base != null && !OSAgnosticPathUtil.isAbsolute(path)) "$base/$path" else path
         return rootFile.fileSystem.findFileByPath(absolute) ?: LocalFileSystem.getInstance().findFileByPath(absolute)
     }
 
@@ -505,14 +506,15 @@ internal class CanvasSessionController(
 
     /**
      * Opens a card showing all of [file], anchored at [start] until [end] of [parentId]'s source,
-     * or returns the card of that file already open there. For files the chain does not lead to.
+     * or returns the card of that file already open there. For files the chain does not lead to. [built] is the file's
+     * whole-file schematic when the caller already has it.
      */
     suspend fun openFile(parentId: String, start: Int, end: Int, file: VirtualFile,
-        openedBy: CardOpenedBy = CardOpenedBy.USER): CanvasCard {
+        openedBy: CardOpenedBy = CardOpenedBy.USER, built: Schematic? = null): CanvasCard {
         val parent = source(parentId) ?: error("The card to open from is not shown.")
         val anchor = cardAnchor(parent.text, start, end, parent.firstLine)
         val path = relative(file.path).orEmpty()
-        val schematic = withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
+        val schematic = built ?: withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
             ?: error("The file $path cannot be shown on the canvas; its language may not be supported.")
         val ref = SymbolRef(path, node(schematic.scope)?.name ?: file.name, SymbolKind.FILE.name, line = 0)
         val shown = schematicSource(schematic, path, schematic.scope)
@@ -522,6 +524,15 @@ internal class CanvasSessionController(
             open(shown) { model.open(parentId, CardKind.SYMBOL, anchor, path, it.firstLine, it.text, ref, wholeFile = true,
                 openedBy = openedBy) }
         }
+    }
+
+    /**
+     * Opens all of [file] from [start] until [end] of [parentId]'s source like [openFile], or attaches it like [attachFile]
+     * when it is binary or in a language the graph cannot read, so any local file can be shown on the canvas.
+     */
+    suspend fun openOrAttachFile(parentId: String, start: Int, end: Int, file: VirtualFile): CanvasCard {
+        val schematic = if (file.fileType.isBinary) null else withContext(Dispatchers.Default) { exploration.fileSchematic(file) }
+        return if (schematic != null) openFile(parentId, start, end, file, built = schematic) else attachFile(parentId, file)
     }
 
     /** The resolved symbols named [name] (without parameters) declared in [file], once the file is in the graph. */

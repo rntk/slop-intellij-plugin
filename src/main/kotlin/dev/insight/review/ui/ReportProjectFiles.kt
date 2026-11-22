@@ -220,7 +220,7 @@ internal fun reportLinkContextPick(
 ): ContextPick? {
     if (project.isDisposed) return null
     return when (kind) {
-        ReportTargetKind.EXTERNAL_URL -> null
+        ReportTargetKind.EXTERNAL_URL, ReportTargetKind.SYMBOL -> null
         ReportTargetKind.FILE -> buildFileContextPick(
             project, path, lines, reviewFiles, summaryTree, reviewDestinations, summaryActions, openOnWall, openOnCanvas, absolutePath,
         )

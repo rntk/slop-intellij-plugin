@@ -205,7 +205,7 @@ internal class CanvasChatView(
                     add(host.zoomFont(JLabel(line.label).apply {
                         foreground = if (line.kind == CanvasChatLineKind.USER) USER else UIUtil.getContextHelpForeground()
                     }, JBUI.Fonts.smallFont().deriveFont(Font.BOLD)))
-                    add(host.zoomFont(wrappedText(line.text)))
+                    add(host.linkedText(cardId).apply { markdown = line.text })
                 }
             })
         }

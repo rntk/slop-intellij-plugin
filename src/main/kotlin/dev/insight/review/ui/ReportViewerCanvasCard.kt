@@ -60,6 +60,11 @@ import dev.insight.review.SummaryNode
 import dev.insight.review.formatLinkLocation
 import dev.insight.review.isMarkdownFileName
 import dev.insight.review.linkTooltip
+import dev.insight.links.ProjectSymbols
+import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolHints
+import dev.insight.links.SymbolLinkNavigator
+import dev.insight.links.SymbolNames
 import dev.insight.review.looksLikeMarkdown
 import dev.insight.review.parseReportLinkHref
 import dev.insight.review.renderMarkdownReport
@@ -198,6 +203,8 @@ internal class ReportViewerCanvasCard(
     private var snapshotDir: String? = null
     private var indexJob: Job? = null
     private var renderJob: Job? = null
+    private var symbolNames: SymbolNames = SymbolNames.NONE
+    private var symbolJob: Job? = null
     private var hoveredLink: ReportLink? = null
     private var reportFile: VirtualFile? = null
 
@@ -847,6 +854,11 @@ internal class ReportViewerCanvasCard(
             return
         }
         val proj = project ?: return
+        if (link.kind == ReportTargetKind.SYMBOL) {
+            if (shiftDown) triggerContextPicker(link, owner, point, content)
+            else followSymbol(proj, link, owner, point) { openReportFile(proj, it.path, it.line..it.line, it.column, it.absolutePath) }
+            return
+        }
         if (shiftDown || link.kind == ReportTargetKind.DIRECTORY) {
             triggerContextPicker(link, owner, point, content)
             return
@@ -875,6 +887,22 @@ internal class ReportViewerCanvasCard(
             name = "report-link-action:Context"
             addActionListener { triggerContextPicker(link, owner, point, content) }
         })
+        if (link.kind == ReportTargetKind.SYMBOL) {
+            menu.add(JMenuItem("Go to declaration").apply {
+                name = "report-link-action:Declaration"
+                addActionListener {
+                    followSymbol(proj, link, owner, point) { openReportFile(proj, it.path, it.line..it.line, it.column, it.absolutePath) }
+                }
+            })
+            menu.add(JMenuItem("Copy name").apply {
+                name = "report-link-action:CopyName"
+                addActionListener {
+                    val text = link.symbol?.let { (it.qualifier + it.name).joinToString(".") } ?: link.displayText
+                    CopyPasteManager.getInstance().setContents(StringSelection(text))
+                }
+            })
+            return
+        }
         if (link.kind == ReportTargetKind.FILE) {
             menu.add(JMenuItem("Open in editor").apply {
                 name = "report-link-action:Open"
@@ -937,11 +965,21 @@ internal class ReportViewerCanvasCard(
     private fun triggerContextPicker(link: ReportLink, owner: JComponent, point: Point, content: ReportViewerCard) {
         val proj = project ?: return
         if (link.kind == ReportTargetKind.EXTERNAL_URL) return
+        if (link.kind == ReportTargetKind.SYMBOL) {
+            // A symbol's context is the file and line of the declaration it names.
+            followSymbol(proj, link, owner, point) { declaration ->
+                triggerContextPicker(
+                    ReportLink(link.id, link.displayText, ReportTargetKind.FILE, listOf(declaration.path), declaration.line..declaration.line),
+                    owner, point, content,
+                )
+            }
+            return
+        }
         fun showForPath(path: String) {
             val abs = when (link.kind) {
                 ReportTargetKind.FILE -> snapshot?.index?.absolutePathFor(path)
                 ReportTargetKind.DIRECTORY -> snapshot?.index?.absoluteDirPathFor(path)
-                ReportTargetKind.EXTERNAL_URL -> null
+                ReportTargetKind.EXTERNAL_URL, ReportTargetKind.SYMBOL -> null
             }
             val pick = reportLinkContextPick(
                 project = proj,
@@ -964,6 +1002,24 @@ internal class ReportViewerCanvasCard(
         } else {
             link.primaryPath?.let(::showForPath)
         }
+    }
+
+    /** Looks up the declarations a symbol [link] names and passes the only one, or the one the reader picks, to [onChosen]. */
+    private fun followSymbol(proj: Project, link: ReportLink, owner: JComponent, point: Point, onChosen: (SymbolCandidate) -> Unit) {
+        val mention = link.symbol ?: return
+        SymbolLinkNavigator.follow(
+            project = proj,
+            scope = scope,
+            mention = mention,
+            hints = link.symbolHints ?: SymbolHints(),
+            at = { RelativePoint(owner, point) },
+            notice = { message ->
+                view.noticeMessage = message
+                refreshIfShowing()
+            },
+            relativePath = { snapshot?.index?.pathForAbsolute(it.absolutePath) ?: it.path },
+            open = onChosen,
+        )
     }
 
     private fun chooseCandidate(
@@ -1018,6 +1074,7 @@ internal class ReportViewerCanvasCard(
             }
             return
         }
+        loadSymbolNames(proj)
         if (!forceReload && indexJob?.isActive == true && snapshotRevision == content.revision && snapshotDir == reportDir) return
         indexJob?.cancel()
         val reviewFilesSnapshot = content.reviewFiles
@@ -1049,6 +1106,28 @@ internal class ReportViewerCanvasCard(
             } catch (e: Exception) {
                 if (e is ControlFlowException) throw e
                 LOG.warn("Could not index project report files", e)
+            }
+        }
+    }
+
+    /** Loads the project's declared names, which wait for indexing, and renders the report again once they link symbols. */
+    private fun loadSymbolNames(proj: Project) {
+        if (symbolJob?.isActive == true) return
+        symbolJob = scope.launch {
+            try {
+                val names = ProjectSymbols.names(proj)
+                if (disposed || proj.isDisposed || names === symbolNames) return@launch
+                symbolNames = names
+                val currentSource = view.source
+                val currentText = view.rawContent
+                if (currentSource != null && currentText != null && view.rawContentSource === currentSource && renderJob?.isActive != true) {
+                    renderTextContent(currentText, latestContent)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is ControlFlowException) throw e
+                LOG.warn("Could not collect project symbol names", e)
             }
         }
     }
@@ -1121,19 +1200,21 @@ internal class ReportViewerCanvasCard(
             val effectiveContent = latestContent ?: content
             val index = ensureIndexReady(effectiveContent, src.reportFileDir)
             val usedSnapshot = snapshot
+            val usedSymbols = symbolNames
             if (disposed || view.source !== src) return
             val rawMode = isRawMode()
-            val colors = themeColors()
+            val colors = reportThemeColors()
             val rendered = withContext(Dispatchers.Default) {
                 val mapSource = src !is ReportSource.PastedText
-                if (rawMode) renderPlainTextReport(text, index, colors, mapSource = mapSource)
-                else renderMarkdownReport(text, index, colors, mapSource = mapSource)
+                if (rawMode) renderPlainTextReport(text, index, colors, mapSource = mapSource, symbols = usedSymbols)
+                else renderMarkdownReport(text, index, colors, mapSource = mapSource, symbols = usedSymbols)
             }
             if (disposed || view.source !== src) return
             val latestSnapshot = snapshot
             if (attempt == 0 && latestSnapshot != null && latestSnapshot !== usedSnapshot && snapshotDir == src.reportFileDir) {
                 continue
             }
+            if (attempt == 0 && symbolNames !== usedSymbols) continue
             view.rendered = rendered
             view.loading = false
             view.errorMessage = null
@@ -1232,34 +1313,10 @@ internal class ReportViewerCanvasCard(
         }
     }
 
-    private fun themeColors(): ReportThemeColors {
-        val bg = UIUtil.getListBackground()
-        val fg = UIUtil.getLabelForeground()
-        val muted = UIUtil.getContextHelpForeground()
-        val border = JBColor.border()
-        val linkFg = JBUI.CurrentTheme.Link.Foreground.ENABLED
-        val codeBg = JBColor(Color(0xF2F4F7), Color(0x2B2D30))
-        val codeBlockBg = JBColor(Color(0xF6F8FA), Color(0x26282E))
-        val linkBg = JBColor(Color(0xEEF4FF), Color(0x263449))
-        val ambigBg = JBColor(Color(0xFFF4E5), Color(0x453520))
-        val tableHeaderBg = JBColor(Color(0xF5F7FA), Color(0x32343A))
-        return ReportThemeColors(
-            text = "#${ColorUtil.toHex(fg)}",
-            muted = "#${ColorUtil.toHex(muted)}",
-            background = "#${ColorUtil.toHex(bg)}",
-            codeBg = "#${ColorUtil.toHex(codeBg)}",
-            codeBlockBg = "#${ColorUtil.toHex(codeBlockBg)}",
-            border = "#${ColorUtil.toHex(border)}",
-            linkFg = "#${ColorUtil.toHex(linkFg)}",
-            linkBg = "#${ColorUtil.toHex(linkBg)}",
-            ambiguousLinkBg = "#${ColorUtil.toHex(ambigBg)}",
-            tableHeaderBg = "#${ColorUtil.toHex(tableHeaderBg)}",
-        )
-    }
-
     override fun dispose() {
         disposed = true
         Disposer.dispose(reportChats)
+        symbolJob?.cancel()
         indexJob?.cancel()
         renderJob?.cancel()
         scope.cancel()
@@ -1272,4 +1329,30 @@ internal class ReportViewerCanvasCard(
     private companion object {
         const val SELECT_REPORT_ITEM = "Select project report…"
     }
+}
+
+/** The current IDE theme's colors for rendered report text. */
+internal fun reportThemeColors(): ReportThemeColors {
+    val bg = UIUtil.getListBackground()
+    val fg = UIUtil.getLabelForeground()
+    val muted = UIUtil.getContextHelpForeground()
+    val border = JBColor.border()
+    val linkFg = JBUI.CurrentTheme.Link.Foreground.ENABLED
+    val codeBg = JBColor(Color(0xF2F4F7), Color(0x2B2D30))
+    val codeBlockBg = JBColor(Color(0xF6F8FA), Color(0x26282E))
+    val linkBg = JBColor(Color(0xEEF4FF), Color(0x263449))
+    val ambigBg = JBColor(Color(0xFFF4E5), Color(0x453520))
+    val tableHeaderBg = JBColor(Color(0xF5F7FA), Color(0x32343A))
+    return ReportThemeColors(
+        text = "#${ColorUtil.toHex(fg)}",
+        muted = "#${ColorUtil.toHex(muted)}",
+        background = "#${ColorUtil.toHex(bg)}",
+        codeBg = "#${ColorUtil.toHex(codeBg)}",
+        codeBlockBg = "#${ColorUtil.toHex(codeBlockBg)}",
+        border = "#${ColorUtil.toHex(border)}",
+        linkFg = "#${ColorUtil.toHex(linkFg)}",
+        linkBg = "#${ColorUtil.toHex(linkBg)}",
+        ambiguousLinkBg = "#${ColorUtil.toHex(ambigBg)}",
+        tableHeaderBg = "#${ColorUtil.toHex(tableHeaderBg)}",
+    )
 }

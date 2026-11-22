@@ -2,7 +2,9 @@ package dev.insight.canvas
 
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ui.LinkedTextPane
 import java.awt.Component
+import java.awt.Font
 import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
@@ -65,10 +67,20 @@ internal fun wrappedText(text: String): JTextArea = JTextArea(text).apply {
 
 internal const val SUMMARY_FONT_SCALE = 1.2f
 
+/**
+ * Read-only generated Markdown, such as a summary or chat reply, whose file paths, line references and code symbols link
+ * as they do in the report viewer, but lead to code on the canvas from card [cardId]; shown in [base] at the canvas zoom,
+ * and laying out the canvas again when its links change.
+ */
+internal fun CanvasCardHost.linkedText(cardId: String, base: Font = UIUtil.getLabelFont()): LinkedTextPane =
+    zoomFont(LinkedTextPane(project, scope).apply {
+        onRendered = { cardResized() }
+        navigator = textNavigator(cardId)
+    }, base)
+
 /** Summary prose stays larger than the surrounding labels, including when zoomed. */
-internal fun wrappedSummaryText(text: String): JTextArea = wrappedText(text).apply {
-    font = font.deriveFont(font.size2D * SUMMARY_FONT_SCALE)
-}
+internal fun CanvasCardHost.linkedSummaryText(cardId: String): LinkedTextPane =
+    linkedText(cardId, UIUtil.getLabelFont().let { it.deriveFont(it.size2D * SUMMARY_FONT_SCALE) })
 
 /** Runs [action] on a plain left click on this component, with a hand cursor. */
 internal fun <T : JComponent> T.onLeftClick(action: (MouseEvent) -> Unit): T = apply {

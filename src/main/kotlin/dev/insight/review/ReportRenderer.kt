@@ -1,5 +1,7 @@
 package dev.insight.review
 
+import dev.insight.links.SymbolNames
+
 /** Safety cap for rendered report length so multi-megabyte log files stay responsive in Swing HTML panes. */
 internal const val MAX_REPORT_CHARS = 2_000_000
 
@@ -78,6 +80,10 @@ internal fun formatLinkLocation(path: String, lines: IntRange?, column: Int? = n
 
 internal fun linkTooltip(link: ReportLink, inReviewScope: Boolean, isDiffReview: Boolean): String = when (link.kind) {
     ReportTargetKind.EXTERNAL_URL -> link.externalUrl.orEmpty()
+    ReportTargetKind.SYMBOL -> {
+        val name = link.symbol?.let { (it.qualifier + it.name).joinToString(".") } ?: link.displayText
+        "Symbol: $name · Click to go to its declaration · Right-click for Context…"
+    }
     ReportTargetKind.DIRECTORY -> {
         val path = link.primaryPath.orEmpty().ifEmpty { "." }
         if (link.isAmbiguous) {
@@ -115,12 +121,14 @@ internal fun renderMarkdownReport(
     maxChars: Int = MAX_REPORT_CHARS,
     maxTableCells: Int = MAX_TABLE_CELLS,
     mapSource: Boolean,
+    symbols: SymbolNames = SymbolNames.NONE,
+    embedded: Boolean = false,
 ): RenderedReport {
     val (bounded, textTruncated) = truncateReportText(normalizeLineEndings(text), maxChars)
     val cellBudget = maxTableCells.coerceAtLeast(0)
     var renderedTableCells = 0
     var anyTableTruncated = false
-    val collector = ReportLinkCollector(index)
+    val collector = ReportLinkCollector(index, symbols = symbols)
     val sourceMap = if (mapSource) ReportSourceMap() else null
     val lines = reportSourceLines(bounded, sourceMap)
     val body = StringBuilder()
@@ -285,7 +293,8 @@ internal fun renderMarkdownReport(
         body.append("<p class=\"muted\">Report truncated at ${formatNumber(maxChars)} characters.</p>\n")
     }
     val truncated = textTruncated || anyTableTruncated
-    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = false, sourceMap = sourceMap)
+    return buildRenderedReport(body.toString(), collector.links, index, colors, truncated, isPlainText = false, sourceMap = sourceMap,
+        embedded = embedded)
 }
 
 /** Renders a plain-text or log report with line numbers and smart clickable project links. */
@@ -302,9 +311,10 @@ internal fun renderPlainTextReport(
     colors: ReportThemeColors,
     maxChars: Int = MAX_REPORT_CHARS,
     mapSource: Boolean,
+    symbols: SymbolNames = SymbolNames.NONE,
 ): RenderedReport {
     val (bounded, truncated) = truncateReportText(normalizeLineEndings(text), maxChars)
-    val collector = ReportLinkCollector(index)
+    val collector = ReportLinkCollector(index, symbols = symbols)
     val sourceMap = if (mapSource) ReportSourceMap() else null
     val lines = reportSourceLines(bounded, sourceMap)
     val width = lines.size.toString().length.coerceAtLeast(2)
@@ -577,6 +587,7 @@ private fun wrapAnchor(link: ReportLink, escapedInnerHtml: String): String {
     val cls = when {
         link.kind == ReportTargetKind.EXTERNAL_URL -> "rl-ext"
         link.kind == ReportTargetKind.DIRECTORY -> "rl-dir"
+        link.kind == ReportTargetKind.SYMBOL -> "rl-sym"
         link.isAmbiguous -> "rl-ambig"
         else -> "rl"
     }
@@ -758,6 +769,7 @@ private fun buildRenderedReport(
     truncated: Boolean,
     isPlainText: Boolean,
     sourceMap: ReportSourceMap?,
+    embedded: Boolean = false,
 ): RenderedReport {
     val counts = LinkedHashMap<String, Int>()
     for (link in links) {
@@ -772,7 +784,7 @@ private fun buildRenderedReport(
     val ambiguous = links.count { it.isAmbiguous }
     val html = buildString {
         append("<html><head><style>")
-        append(reportCss(colors, isPlainText))
+        append(reportCss(colors, isPlainText, embedded))
         append("</style></head><body>")
         append(bodyHtml)
         append("</body></html>")
@@ -780,8 +792,9 @@ private fun buildRenderedReport(
     return RenderedReport(html, links, referenced, ambiguous, truncated, isPlainText, sourceMap)
 }
 
-private fun reportCss(c: ReportThemeColors, isPlainText: Boolean): String = """
-    body { color: ${c.text}; background-color: ${c.background}; margin: 12px 16px; ${if (isPlainText) "" else "line-height: 1.45;"} }
+/** [embedded] text sits inside another view, such as a card, so it keeps that view's background and adds no margin. */
+private fun reportCss(c: ReportThemeColors, isPlainText: Boolean, embedded: Boolean): String = """
+    body { color: ${c.text}; ${if (embedded) "margin: 0;" else "background-color: ${c.background}; margin: 12px 16px;"} ${if (isPlainText) "" else "line-height: 1.45;"} }
     h1 { font-size: 1.45em; margin: 14px 0 8px 0; border-bottom: 1px solid ${c.border}; padding-bottom: 4px; }
     h2 { font-size: 1.25em; margin: 14px 0 6px 0; border-bottom: 1px solid ${c.border}; padding-bottom: 3px; }
     h3 { font-size: 1.1em; margin: 12px 0 4px 0; }
@@ -802,6 +815,7 @@ private fun reportCss(c: ReportThemeColors, isPlainText: Boolean): String = """
     a.rl-ambig { color: ${c.linkFg}; background-color: ${c.ambiguousLinkBg}; text-decoration: underline; }
     a.rl-dir { color: ${c.linkFg}; text-decoration: underline; }
     a.rl-ext { color: ${c.linkFg}; text-decoration: underline; }
+    a.rl-sym { color: ${c.linkFg}; text-decoration: none; }
     .muted { color: ${c.muted}; font-style: italic; }
 """.trimIndent()
 

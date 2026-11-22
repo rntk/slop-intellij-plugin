@@ -42,6 +42,9 @@ import dev.insight.callgraph.CallGraphService
 import dev.insight.callgraph.SchematicGapWorkflow
 import dev.insight.core.withCountProgress
 import dev.insight.graph.CallGraphNode
+import dev.insight.links.SymbolCandidate
+import dev.insight.links.SymbolMention
+import dev.insight.review.ui.LinkedTextNavigator
 import dev.insight.ui.ComponentMouseEvents
 import dev.insight.ui.FloatingPanel
 import dev.insight.ui.CanvasZoomAnchor
@@ -89,6 +92,7 @@ import javax.swing.SwingUtilities
 import javax.swing.KeyStroke
 import javax.swing.Timer
 import javax.swing.text.JTextComponent
+import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
@@ -988,6 +992,120 @@ internal class CanvasSessionPanel(
         }
         if (target.fileType.isBinary) FileEditorManager.getInstance(project).openFile(target, true)
         else OpenFileDescriptor(project, target, maxOf(line, 0), 0).navigate(true)
+    }
+
+    /**
+     * Links in a card's summary and chats keep the reader on the canvas: code the card itself shows scrolls it there,
+     * code another card shows reveals that card, and other code opens on a new card from this one (a declaration's
+     * symbol card, or the whole file at the referenced line, attached when the graph cannot read it).
+     */
+    override fun textNavigator(cardId: String): LinkedTextNavigator = object : LinkedTextNavigator {
+        override fun contextFiles(): List<String> = model.session.chain(cardId).asReversed()
+            .filterNot { it.isDirectoryRoot }.map { canvasPath(it.filePath) }.distinct()
+
+        override fun shown(candidates: List<SymbolCandidate>): SymbolCandidate? {
+            val spans = shownSpans()
+            return candidates.mapNotNull { candidate ->
+                val move = canvasTextMove(cardId, canvasPath(candidate.absolutePath), candidate.line - 1, spans, nearness(cardId),
+                    column = candidate.column - 1)
+                (move as? CanvasTextMove.Scroll)?.let { candidate to nearness(cardId)(it.cardId) }
+            }.minByOrNull { it.second }?.first
+        }
+
+        override fun openFile(path: String, absolutePath: String?, lines: IntRange?, column: Int?) {
+            val file = controller.findFile(absolutePath ?: path) ?: return showStatus("Cannot find $path.")
+            if (file.isDirectory) return
+            showTextTarget(cardId, canvasPath(file.path), lines?.first?.minus(1)?.coerceAtLeast(0), file.name) { parentId ->
+                val (start, end) = textAnchor(parentId, file.name)
+                controller.openOrAttachFile(parentId, start, end, file)
+            }
+        }
+
+        override fun openDeclaration(declaration: SymbolCandidate, mention: SymbolMention) {
+            val file = controller.findFile(declaration.absolutePath) ?: return showStatus("Cannot find ${declaration.path}.")
+            val line = (declaration.line - 1).coerceAtLeast(0)
+            showTextTarget(cardId, canvasPath(file.path), line, mention.name, column = declaration.column - 1) { parentId ->
+                val (start, end) = textAnchor(parentId, mention.name)
+                val node = controller.declarations(file, mention.name)
+                    .mapNotNull { node -> nodeLine(node)?.let { node to abs(it - line) } }
+                    .filter { it.second <= DECLARATION_LINE_SLACK }
+                    .minByOrNull { it.second }?.first
+                if (node != null) controller.openSymbol(parentId, start, end, node.id)
+                else controller.openOrAttachFile(parentId, start, end, file)
+            }
+        }
+    }
+
+    private fun canvasPath(path: String): String = controller.relative(path) ?: path
+
+    private fun nearness(contextId: String): (String) -> Int = { canvasCardNearness(model.session, contextId, it) }
+
+    /** What each card shows, for leading text links to cards already on the canvas. */
+    private fun shownSpans(): List<CanvasShownSpan> {
+        val columns = HashMap<String, Pair<Int, Int>>()
+        // A selection's columns follow from its offsets in its parent's text, and that parent may be a selection too.
+        fun selectionColumns(card: CanvasCard): Pair<Int, Int>? {
+            if (card.kind != CardKind.SELECTION) return null
+            columns[card.id]?.let { return it }
+            val parentId = card.parentId ?: return null
+            val parentText = controller.source(parentId)?.text ?: return null
+            val parentStart = model.session.card(parentId)?.let(::selectionColumns)?.first ?: 0
+            return canvasSelectionColumns(parentText, parentStart, card.anchor).also { columns[card.id] = it }
+        }
+        return model.cards.filterNot { it.isDirectoryRoot }.map { card ->
+            val source = controller.source(card.id)
+            val first = source?.firstLine ?: card.firstLine
+            val last = first + (source?.text ?: card.text).count { it == '\n' }
+            val selected = selectionColumns(card)
+            CanvasShownSpan(card.id, canvasPath(card.filePath), first..last,
+                whole = card.kind == CardKind.ROOT || card.kind == CardKind.ATTACHMENT || card.wholeFile,
+                startColumn = selected?.first ?: 0, endColumn = selected?.second)
+        }
+    }
+
+    /** Where a card opened from a link in [parentId]'s text anchors: where its source names [name], else its own name. */
+    private fun textAnchor(parentId: String, name: String): Pair<Int, Int> {
+        val range = controller.source(parentId)?.text?.let { canvasTextAnchor(it, name) } ?: controller.usageAnchor(parentId)
+        return range.first to maxOf(range.first, range.last + 1)
+    }
+
+    /**
+     * Shows [path] at 0-based [line] (the file as a whole when null) for a link in [contextId]'s text: scrolls the card
+     * that already shows it, nearest [contextId] first, or opens a card from [contextId] with [open] and scrolls a
+     * whole-file card to [line]. A [column] on that line must be shown too, for selections that start or end within it.
+     */
+    private fun showTextTarget(contextId: String, path: String, line: Int?, label: String, column: Int? = null,
+        open: suspend (String) -> CanvasCard) {
+        scope.launch(Dispatchers.EDT) {
+            try {
+                when (val move = canvasTextMove(contextId, path, line, shownSpans(), nearness(contextId), column)) {
+                    is CanvasTextMove.Scroll -> showCardLine(move.cardId, move.line)
+                    CanvasTextMove.Open -> {
+                        showStatus("Opening $label…")
+                        if (!ensureCardLoaded(contextId)) return@launch
+                        val card = open(contextId)
+                        showStatus("")
+                        val scrolls = card.wholeFile || card.kind == CardKind.ATTACHMENT
+                        showCardLine(card.id, line.takeIf { scrolls })
+                    }
+                }
+            } catch (e: Throwable) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                LOG.warn("Unable to show $label on the canvas", e)
+                showStatus("Could not open $label: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Brings card [cardId] into view, scrolled to 0-based [line] when given. */
+    private suspend fun showCardLine(cardId: String, line: Int?) {
+        if (!ensureCardLoaded(cardId) || disposed) return
+        content.validate()
+        if (line == null) reveal(cardId)
+        else {
+            if (revealed != cardId) reveal(cardId, glide = false)
+            revealLine(cardId, line)
+        }
     }
 
     override fun attachFile(cardId: String) {
@@ -1973,6 +2091,8 @@ internal class CanvasSessionPanel(
     }
 
     private companion object {
+        /** How far the line a declaration's name is on may be from where the graph places the declaration. */
+        const val DECLARATION_LINE_SLACK = 5
         val LOG = logger<CanvasSessionPanel>()
         val ARROW = JBColor(Color(130, 150, 200), Color(110, 130, 175))
         val ARROW_ACTIVE = JBColor(Color(76, 112, 220), Color(110, 150, 240))

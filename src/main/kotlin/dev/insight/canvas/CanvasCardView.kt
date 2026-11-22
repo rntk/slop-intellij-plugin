@@ -13,6 +13,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import dev.insight.review.ui.LinkedTextNavigator
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomUnscaled
 import java.awt.AlphaComposite
@@ -64,6 +65,8 @@ internal interface CanvasCardHost {
     fun openUsageFile(cardId: String, file: CanvasUsageFile, targetName: String)
     /** Scrolls card [cardId]'s source to 0-based document [line] and brings it into view. */
     fun revealLine(cardId: String, line: Int)
+    /** Where links in [cardId]'s summary and chats lead: to the code on the canvas, the card itself first. */
+    fun textNavigator(cardId: String): LinkedTextNavigator
     /** Summarizes the gaps of [cardId]'s source that have no summary yet. */
     fun summarizeGaps(cardId: String)
     /** Whether the gaps of [cardId] are being summarized. */
@@ -185,7 +188,7 @@ internal class CanvasCardView(
         add(notice)
     }
 
-    private val summaryText = host.zoomFont(wrappedSummaryText(""))
+    private val summaryText = host.linkedSummaryText(initial.id)
     private val summaryStatus = host.zoomFont(JLabel().apply { foreground = UIUtil.getContextHelpForeground() })
     private val summaryRetry = host.zoomFont(ActionLink("Summarize") { requestSummary() })
     private var summaryJob: Job? = null
@@ -379,7 +382,7 @@ internal class CanvasCardView(
         sourceSection.title.text = canvasSourceTitle(shown)
         val pending = summaryJob?.isActive == true
         renderedSummaryPending = pending
-        summaryText.text = next.summary.orEmpty()
+        summaryText.markdown = next.summary.orEmpty()
         summaryText.isVisible = next.summary != null
         summaryStatus.text = when {
             pending -> "Summarizing…"
