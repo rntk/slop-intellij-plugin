@@ -12,7 +12,6 @@ internal enum class ReviewCommand(
     SUMMARIES("/summaries", bareAlias = true, arguments = true),
     TOPIC_SUMMARIES("/topic-summaries"),
     GROUPING_SUMMARIES("/grouping-summaries"),
-    CODE_MAP("/code-map", arguments = true),
     EXPLAIN("/explain", arguments = true, multiline = true);
 
     private fun matches(text: String): Boolean = text == command ||
@@ -25,8 +24,8 @@ internal enum class ReviewCommand(
          * Grouping reads a diff, so code reviews do not offer it, and diff reviews do not offer the code
          * map; their text then stays an ordinary question.
          */
-        val code: List<ReviewCommand> = listOf(TOPICS, SUMMARIES, TOPIC_SUMMARIES, CODE_MAP, EXPLAIN)
-        val diff: List<ReviewCommand> = entries - CODE_MAP
+        val code: List<ReviewCommand> = listOf(TOPICS, SUMMARIES, TOPIC_SUMMARIES, EXPLAIN)
+        val diff: List<ReviewCommand> = entries
 
         /** The command [text] names among [supported], which are all commands by default. */
         fun parse(text: String, supported: Collection<ReviewCommand> = entries): ReviewCommand? {
@@ -41,7 +40,6 @@ internal fun reviewProgressTitle(text: String, subject: String, supported: Colle
     when (ReviewCommand.parse(text, supported)) {
     ReviewCommand.TOPICS -> "Generating $subject topics"
     ReviewCommand.GROUPING -> "Generating $subject grouping"
-    ReviewCommand.CODE_MAP -> "Generating $subject map"
     ReviewCommand.EXPLAIN -> "Explaining the $subject"
     ReviewCommand.SUMMARIES, ReviewCommand.TOPIC_SUMMARIES, ReviewCommand.GROUPING_SUMMARIES -> "Generating $subject summaries"
     null -> "Insight $subject review chat"

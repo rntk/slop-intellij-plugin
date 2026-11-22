@@ -99,8 +99,9 @@ internal fun reportSelectionContextPick(
     absolutePath: (String) -> String? = { null },
     reviewFiles: List<ReviewSource> = emptyList(),
     openOnWall: ((List<ReviewSource>, String) -> Unit)? = null,
+    label: String = "Selected report text",
 ): ContextPick {
-    val text = CodeContext(ContextScopeKind.SELECTION, "Selected report text", null, null, null,
+    val text = CodeContext(ContextScopeKind.SELECTION, label, null, null, null,
         SourceSide.CURRENT, capContext(selection.text))
     val data = ContextData().put(ContextKeys.REPORT_SELECTION, actions)
     if (destinations.isNotEmpty()) data.put(ContextKeys.REVIEW_DESTINATIONS, destinations)

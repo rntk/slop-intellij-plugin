@@ -13,9 +13,6 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
-import dev.insight.codereview.map.CodeMapActions
-import dev.insight.codereview.map.CodeMapCard
-import dev.insight.codereview.map.CodeMapView
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
@@ -76,7 +73,6 @@ internal class CodeCanvasCards(
     /** The project the wall's syntax highlighting is looked up for. */
     project: Project? = null,
     reviewDestinations: () -> Map<ReviewDestination, () -> Unit> = { emptyMap() },
-    codeMapActions: CodeMapActions = CodeMapActions(),
     contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
     private var wallLinks: CodeWallLinks? = null
@@ -90,18 +86,14 @@ internal class CodeCanvasCards(
         wallChats: WallChats?,
         project: Project?,
         reviewDestinations: () -> Map<ReviewDestination, () -> Unit>,
-        codeMapActions: CodeMapActions,
         contextSummaryActions: ContextSummaryActions?,
         wallLinks: CodeWallLinks,
     ) : this(open, removeWords, chooseWordScope, openWallFile, showAllFiles, wallChats, project, reviewDestinations,
-        codeMapActions, contextSummaryActions) {
+        contextSummaryActions) {
         this.wallLinks = wallLinks
     }
 
     var words: CodeWordsPage? = null
-    /** The code map card while it is on the canvas. */
-    var codeMap: CodeMapCard? = null
-    private val codeMapView = CodeMapView(codeMapActions)
     private var refresh: (CanvasTabKey) -> Unit = {}
     var wall: CodeWallContent? = null
     // One view for the tab session, so block positions survive canvas rebuilds.
@@ -116,7 +108,6 @@ internal class CodeCanvasCards(
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) {
         this.refresh = refresh
-        codeMapView.refresh = { refresh(CanvasTabKey.CodeMap) }
     }
 
     override fun update() {
@@ -124,7 +115,6 @@ internal class CodeCanvasCards(
     }
 
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
-        codeMap?.let { CanvasTabKey.CodeMap to codeMapView.card(it) },
         wall?.let { CanvasTabKey.Wall to wallCard(it) },
         words?.let { CanvasTabKey.Words to wordsCard(it) },
     ).toMap()
@@ -134,30 +124,17 @@ internal class CodeCanvasCards(
     override fun card(key: CanvasTabKey, snapshots: SnapshotCanvasCards): JPanel? = when (key) {
         CanvasTabKey.Words -> words?.let(::wordsCard)
         CanvasTabKey.Wall -> wall?.let(::wallCard)
-        CanvasTabKey.CodeMap -> codeMap?.let(codeMapView::card)
         else -> null
     }
 
     override fun title(key: CanvasTabKey): String? = when (key) {
         CanvasTabKey.Words -> "Words"
         CanvasTabKey.Wall -> ReviewVocabulary.CODE.wallName
-        CanvasTabKey.CodeMap -> "Code map"
         else -> null
     }
 
     override fun summaryDiffView(card: SummariesCard, state: ChangeSummariesViewState, zoom: Double,
                                  actions: ChangeSummaryActions): SummaryDiffView? = null
-
-    /** The flow selected on the code map card, kept across rebuilds. */
-    internal val codeMapSelection: String? get() = codeMapView.selected
-
-    /** Gives the shown code map card its latest map and summaries in place; false when the card must be added or removed by a rebuild. */
-    fun updateCodeMap(card: CodeMapCard?): Boolean {
-        if ((card == null) != (codeMap == null)) return false
-        codeMap = card
-        if (card != null) refresh(CanvasTabKey.CodeMap)
-        return true
-    }
 
     private fun wallCard(content: CodeWallContent): JPanel = wallPage.card.also { wallPage.show(content) }
 

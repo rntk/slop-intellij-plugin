@@ -316,7 +316,13 @@ internal fun installWordTracing(
         }
     }
     fun contextMenu(point: Point?): JPopupMenu? {
-        val menu = entryMenu?.invoke() ?: summaryEntryMenu(area)?.invoke() ?: JPopupMenu()
+        // A linked summary puts the pointed link's and the selection's items first, as the report viewer does.
+        val menu = JPopupMenu()
+        val linkItems = summaryTextLinks(area)?.addItems(menu, point) == true
+        (entryMenu?.invoke() ?: summaryEntryMenu(area)?.invoke())?.takeIf { it.componentCount > 0 }?.let { entry ->
+            if (linkItems) menu.addSeparator()
+            entry.components.toList().forEach(menu::add)
+        }
         if (menu.componentCount > 0) menu.addSeparator()
         val start = area.selectionStart
         val end = area.selectionEnd
@@ -352,6 +358,8 @@ internal fun installWordTracing(
     val tooltip = area.toolTipText
     val pointer = object : MouseAdapter() {
         override fun mouseMoved(e: MouseEvent) {
+            // A link keeps its own cursor and tooltip; see installSummaryTextLinks.
+            if (summaryTextLinks(area)?.linkAt?.invoke(e.point) == true) return
             // A word that continues the search stays put on hover, so reaching it never replaces the search it belongs to.
             val next = trailAt(e.point)
             area.toolTipText = next?.let { "Click to follow the citations further down: “${it.query}”" } ?: tooltip
@@ -365,7 +373,7 @@ internal fun installWordTracing(
         }
 
         override fun mouseClicked(e: MouseEvent) {
-            if (!SwingUtilities.isLeftMouseButton(e)) return
+            if (!SwingUtilities.isLeftMouseButton(e) || e.isConsumed) return
             if (click != null) { click(e); return }
             if (e.clickCount != 1) return
             val next = trailAt(e.point)
@@ -403,12 +411,19 @@ private val SUMMARY_ENTRY_MENU = Key.create<() -> JPopupMenu>("insight.summary.e
 
 private fun summaryEntryMenu(area: JComponent): (() -> JPopupMenu)? = ClientProperty.get(area, SUMMARY_ENTRY_MENU)
 
+/** A fresh copy of the entry menu given to [area], or null when it has none. */
+internal fun summaryEntryMenuItems(area: JComponent): JPopupMenu? = summaryEntryMenu(area)?.invoke()?.takeIf { it.componentCount > 0 }
+
+/** Whether [area] shows a traced summary's word menu, which includes its link items. */
+internal fun hasSelectionMenu(area: JComponent): Boolean = ClientProperty.get(area, SELECTION_MENU) != null
+
 /** Gives [component] and everything in it the entry's [menu]; a traced summary puts it above its own word actions. */
 internal fun installSummaryEntryMenu(component: JComponent, menu: () -> JPopupMenu) {
     fun install(part: java.awt.Component) {
         if (part is JComponent) {
             ClientProperty.put(part, SUMMARY_ENTRY_MENU, menu)
-            if (part !is JTextComponent || ClientProperty.get(part, SELECTION_MENU) == null)
+            // Traced and linked summaries show the entry's items within their own menus.
+            if (part !is JTextComponent || ClientProperty.get(part, SELECTION_MENU) == null && summaryTextLinks(part) == null)
                 part.componentPopupMenu = menu()
         }
         if (part is java.awt.Container) part.components.forEach(::install)

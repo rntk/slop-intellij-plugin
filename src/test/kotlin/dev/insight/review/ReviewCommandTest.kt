@@ -55,13 +55,4 @@ class ReviewCommandTest {
         assertEquals("Insight code review chat", reviewProgressTitle("/grouping", "code", ReviewCommand.code))
     }
 
-    @Test fun `the code map takes a focus only in code reviews and has no bare alias`() {
-        assertEquals(ReviewCommand.CODE_MAP, ReviewCommand.parse("/code-map", ReviewCommand.code))
-        assertEquals(ReviewCommand.CODE_MAP, ReviewCommand.parse("/code-map request handling", ReviewCommand.code))
-        assertEquals("request handling", summariesFocus("/code-map request handling"))
-        assertEquals("Generating code map", reviewProgressTitle("/code-map", "code", ReviewCommand.code))
-        assertNull(ReviewCommand.parse("code-map", ReviewCommand.code))
-        assertNull(ReviewCommand.parse("/code-map", ReviewCommand.diff))
-        assertEquals("Insight change review chat", reviewProgressTitle("/code-map", "change", ReviewCommand.diff))
-    }
 }

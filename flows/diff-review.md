@@ -4,7 +4,7 @@ Diff Review is a read-only workspace for understanding a selected code compariso
 
 In the Words tab, the **View** selector switches between **Word changes** and **Diff overview**. Both use the same file or folder scope.
 
-Focused review tabs, wall chats, and graph-backed canvas or flowchart views connect assistant explanations and call relationships back to the underlying diff, while keeping interpretations grounded in the comparison. The Hierarchy and Document views build very large comparisons progressively, a page at a time with a link to load more, so huge diffs stay responsive. The tool window holds only the active tab's chat and stays hidden until it is opened.
+Focused review tabs, wall chats, and graph-backed canvas or flowchart views connect assistant explanations and call relationships back to the underlying diff, while keeping interpretations grounded in the comparison. The Hierarchy and Document views build very large comparisons progressively, a page at a time with a link to load more, so huge diffs stay responsive. Their summaries link file paths, line references, and code symbols as the [Report viewer](report-viewer.md) does, with its link and selection context menus, while keeping word tracing. The tool window holds only the active tab's chat and stays hidden until it is opened.
 
 Entry points for further exploration:
 

@@ -17,8 +17,6 @@ internal sealed interface CanvasTabKey {
     data object Words : CanvasTabKey
     data object Semantic : CanvasTabKey
     data object Moves : CanvasTabKey
-    /** The code review's code map: classes and files grouped into flows read from their roots, with the shared code they use. */
-    data object CodeMap : CanvasTabKey
     /** The review's wall of file blocks: the Diffs wall, or a code review's wall of source files. */
     data object Wall : CanvasTabKey
     sealed interface SummaryPage : CanvasTabKey

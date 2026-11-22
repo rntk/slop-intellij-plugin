@@ -4,6 +4,8 @@ import com.intellij.ui.components.ActionLink
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.PatchSource
+import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryKind
@@ -12,6 +14,7 @@ import java.awt.Font
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
+import javax.swing.text.JTextComponent
 
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
 internal data class SummariesCard(
@@ -92,7 +95,37 @@ internal class ChangeSummaryActions(
     val contextSummaryActions: ContextSummaryActions? = null,
     /** Rebuilds the card showing the panel, as after a hierarchy shows more of its entries. */
     val refresh: () -> Unit = {},
+    /** The tree the panel shows, for the Context picker of the files its summaries link to. */
+    val summaryTree: ReviewSummaryTree? = null,
 ) {
+    private val linkScope by lazy { contextSources.map { it.path } }
+    private val linkDiff by lazy { contextSources.any { it is PatchSource } }
+    private val linkFileNodes by lazy { summaryTree?.nodes?.filter { it.kind == SummaryKind.FILE }?.associateBy { it.path }.orEmpty() }
+
+    /**
+     * Links the file paths, line references and code symbols of [node]'s summary [text] shown in [area], as the report viewer
+     * does; see [installSummaryTextLinks]. Needs a [contextProject]. Call before [installEntryMenu] so the link menu holds the
+     * entry's items.
+     */
+    fun installTextLinks(area: JTextComponent, node: SummaryNode, text: String) {
+        val project = contextProject ?: return
+        val scope = linkScope
+        val diff = linkDiff
+        val wall: ((List<ReviewSource>, String) -> Unit)? = openOnWall?.let { open -> { files, _ -> open(node.copy(files = files.map { it.path })) } }
+        val navigator = summaryTextNavigator(project, node.file?.path, node.files, scope, diff) { link, path, absolutePath ->
+            reportLinkContextPick(project, link.kind, path, link.lines, contextSources, summaryTree, reviewDestinations(),
+                contextSummaryActions, wall, openOnCanvas, absolutePath)
+        }
+        installSummaryTextLinks(area, text, project, SummaryTextLinkContext(navigator, reviewDestinations, contextSources, wall) { path, _ ->
+            val target = matchingReviewSource(contextSources, path, null)?.let { linkFileNodes[it.path] }
+            if (!diff || target == null) emptyList() else listOf(JMenuItem("Open diff").apply {
+                name = "summary-link-action:OpenDiff"
+                toolTipText = "Open the diff of ${target.path} in this review"
+                addActionListener { openNode(target) }
+            })
+        })
+    }
+
     fun addEntryItems(menu: JPopupMenu, node: SummaryNode) {
         addSummaryContextItem(menu, contextProject, node, contextSources, openOnCanvas,
             openOnWall?.let { open -> { files, _ -> open(node.copy(files = files.map { it.path })) } }, reviewDestinations(),

@@ -102,6 +102,7 @@ internal class ChangeSummaryHierarchyPanel(
             val summary = summaries.text(node.id)
             val note = note("summary:${node.identity}", summary ?: folded(node), summary != null, column + 1, y, mark,
                 if (state.tagsCloud) wordWeights[node.id] else emptyMap())
+            summary?.let { actions.installTextLinks(note, node, it) }
             actions.review?.decorate(note, node)
             summary?.let { installWordTracing(note, node.identity, it, state, actions.trace, actions.searchSelection, actions.searchTab, actions.follow) { actions.toggle(node.identity) } }
             previewNode(note, node)
@@ -143,6 +144,7 @@ internal class ChangeSummaryHierarchyPanel(
             review = actions.review?.control(node, summaryFont()))
         val note = note("summary:${node.identity}", summary ?: missing(), summary != null, column + 1, y, mark,
             if (state.tagsCloud) wordWeights[node.id] else emptyMap())
+        if (summary != null) actions.installTextLinks(note, node, summary)
         actions.review?.decorate(note, node)
         if (summary != null && state.traced(node)) installWordTracing(note, node.identity, summary, state, actions.trace, actions.searchSelection, follow = actions.follow)
         previewNode(leaf, node)
@@ -310,6 +312,7 @@ internal class ChangeSummaryDocumentPanel(
         (if (summary != null) summaryText(identity, summary, width)
             else nodesByIdentity[identity]?.let { actions.fillLink(it, cardFont(JBFont.small())) }
                 ?: super.summaryBody(identity, null, missingSummary, width)).also { area ->
+            if (summary != null) nodesByIdentity[identity]?.let { actions.installTextLinks(area as JTextComponent, it, summary) }
             if (summary != null) installWordTracing(area as JTextComponent, identity, summary, state, actions.trace, actions.searchSelection,
                 actions.searchTab.takeIf { identity in branches }, actions.follow)
         }.let { actions.review?.body(identity, it) ?: it }

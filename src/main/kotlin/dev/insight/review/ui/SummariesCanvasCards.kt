@@ -296,6 +296,7 @@ internal class SummariesCanvasCards(
             fillEntry = { node -> entryActions?.let { fillEntry(content, node, it) } },
             contextSummaryActions = entryActions,
             review = tab.review.presentation(content.summaries, actions.toggleReviewed),
+            summaryTree = tree,
         )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val split = if (splitMode) ChangeSummarySplitPanel(content, summariesView, zoom, panelActions, vocabulary, project) else null

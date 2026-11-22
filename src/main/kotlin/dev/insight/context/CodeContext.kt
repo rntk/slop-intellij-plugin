@@ -81,7 +81,8 @@ data class LinkedFile(val path: String, val absolutePath: String?, val lines: In
 
 internal class ReportSelectionActions(
     val openChat: (String) -> Unit,
-    val delete: () -> Unit,
+    /** Removes the selected text; null where the text is read-only, which hides Delete. */
+    val delete: (() -> Unit)? = null,
 )
 
 /** View-specific extras a host passes to actions without changing the core model. */

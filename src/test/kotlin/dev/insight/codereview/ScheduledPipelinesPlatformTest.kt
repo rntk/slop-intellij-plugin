@@ -27,9 +27,8 @@ class ScheduledPipelinesPlatformTest : FileEditorManagerTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("The scheduled pipelines should finish",
                 { tab.scheduledPipelines.isEmpty() && !tab.session.busy }, 20)
             PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-            // Topic summaries need topics, which the failing model never assigned, so that pipeline is skipped; the code map is built by code
-            // and keeps going without titles or summaries.
-            assertEquals(listOf("/summaries", "/topics", "/code-map"), tab.session.messages.filter { it.role == ChatRole.USER }.map { it.text })
+            // Topic summaries are skipped because the failing model assigned no topics.
+            assertEquals(listOf("/summaries", "/topics"), tab.session.messages.filter { it.role == ChatRole.USER }.map { it.text })
         } finally { Disposer.dispose(tab) }
     }
 }

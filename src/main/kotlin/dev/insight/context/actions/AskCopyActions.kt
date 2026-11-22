@@ -54,7 +54,8 @@ internal class DeleteReportSelectionAction : ContextAction {
     override val title get() = InsightBundle.message("context.action.report.delete")
     override val group = "Edit"
 
-    override fun isAvailable(request: ContextRequest) = request.isReportSelectionText()
+    override fun isAvailable(request: ContextRequest) =
+        request.isReportSelectionText() && request.data[ContextKeys.REPORT_SELECTION]?.delete != null
 
     override fun perform(request: ContextRequest) {
         request.data[ContextKeys.REPORT_SELECTION]?.delete?.invoke()

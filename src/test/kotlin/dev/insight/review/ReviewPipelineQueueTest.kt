@@ -28,9 +28,8 @@ class ReviewPipelineQueueTest {
     }
 
     @Test
-    fun `code reviews offer no grouping pipelines and diff reviews no code map`() {
-        assertEquals(listOf(ReviewPipeline.SUMMARIES, ReviewPipeline.TOPICS, ReviewPipeline.TOPIC_SUMMARIES, ReviewPipeline.CODE_MAP), ReviewPipeline.code)
-        assertTrue(ReviewPipeline.CODE_MAP !in ReviewPipeline.diff)
-        assertEquals(ReviewPipeline.entries - ReviewPipeline.CODE_MAP, ReviewPipeline.diff)
+    fun `code reviews offer no grouping pipelines and diff reviews offer all pipelines`() {
+        assertEquals(listOf(ReviewPipeline.SUMMARIES, ReviewPipeline.TOPICS, ReviewPipeline.TOPIC_SUMMARIES), ReviewPipeline.code)
+        assertEquals(ReviewPipeline.entries, ReviewPipeline.diff)
     }
 }
