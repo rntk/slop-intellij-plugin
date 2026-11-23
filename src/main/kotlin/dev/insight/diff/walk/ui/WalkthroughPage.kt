@@ -23,6 +23,11 @@ import dev.insight.diff.walk.WalkHunk
 import dev.insight.diff.walk.WalkStepKind
 import dev.insight.diff.walk.Walkthrough
 import dev.insight.review.ui.LinkedTextPane
+import dev.insight.diff.walk.WalkCanvasView
+import dev.insight.review.wall.WALL_CANVAS_CHAT
+import dev.insight.review.wall.WallChatPanel
+import dev.insight.review.wall.WallChatText
+import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
 import kotlinx.coroutines.CoroutineScope
 import java.awt.BorderLayout
@@ -43,6 +48,7 @@ import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
+import javax.swing.SwingUtilities
 import kotlin.math.roundToInt
 
 /**
@@ -68,6 +74,11 @@ internal class WalkthroughActions(
     /** Opens the native diff of a file, at a double-clicked row when there is one. */
     val openDiff: (ReviewFile, WallLine?) -> Unit = { _, _ -> },
     val showContext: ((ReviewFile, WalkHunk, WallLine?, RelativePoint) -> Unit)? = null,
+    /**
+     * The page's chats: by hunk id about one card and the hunks linked to it, and under [WALL_CANVAS_CHAT] about every card on
+     * the canvas; null leaves the page without chats.
+     */
+    val chats: WallChats? = null,
 )
 
 /**
@@ -93,7 +104,29 @@ internal class WalkthroughPage(
         showContext = actions.showContext?.let { show ->
             { hunk, line, point -> files[hunk.path]?.let { show(it, hunk, line, point) } }
         },
+        toggleChat = actions.chats?.let { { hunkId -> toggleChat(hunkId) } },
+        chatMark = { hunkId ->
+            val chats = actions.chats
+            if (chats == null) WalkChatMark()
+            else WalkChatMark(open = shownChat == hunkId, started = chats.hasConversation(hunkId), busy = chats.busy(hunkId))
+        },
     ))
+
+    /** The chat windows made so far, by key; one shows in the dock beside the canvas at a time. */
+    private val chatPanels = HashMap<String, WallChatPanel>()
+    /** The key of the chat the dock shows, or null while it is folded. */
+    private var shownChat: String? = null
+    private val chatTitle = JLabel().apply { name = "walkthrough-chat-title"; font = JBFont.label().asBold(); border = JBUI.Borders.empty(4, 8, 0, 8) }
+    private val chatDock = JPanel(BorderLayout()).apply {
+        name = "walkthrough-chat-dock"
+        add(chatTitle, BorderLayout.NORTH)
+    }
+    private val canvasSplit = JBSplitter(false, 0.62f).apply { firstComponent = canvas }
+    private val canvasChatLink: JLabel? = actions.chats?.let {
+        smallButton(CANVAS_CHAT_SHOW, "Chat about every card on the canvas, its steps and links") { toggleChat(WALL_CANVAS_CHAT) }
+            .apply { name = "walkthrough-canvas-chat" }
+    }
+    private val chatSubscription = actions.chats?.subscribe { canvas.repaint() }
 
     private val build = JButton("Build walkthrough", AllIcons.Actions.Execute).apply {
         name = "walkthrough-build"
@@ -201,9 +234,73 @@ internal class WalkthroughPage(
                 add(smallButton("+", "Zoom in (+)") { canvas.zoomTo(canvas.zoom * WalkCanvas.KEY_ZOOM) })
                 add(smallButton("Fit", "Show every card (F)") { canvas.fit() })
                 add(smallButton("Clear", "Remove every card from the canvas") { canvas.clear() })
+                canvasChatLink?.let(::add)
             }, BorderLayout.EAST)
         }, BorderLayout.NORTH)
-        add(canvas, BorderLayout.CENTER)
+        add(canvasSplit, BorderLayout.CENTER)
+    }
+
+    /**
+     * Shows the chat under [key] (a hunk id, or [WALL_CANVAS_CHAT] for the canvas's own chat) in the dock beside the canvas and
+     * focuses its input, or folds the dock when that chat is the one shown.
+     */
+    internal fun toggleChat(key: String) {
+        val chats = actions.chats ?: return
+        if (shownChat == key) { hideChat(); return }
+        val panel = chatPanels.getOrPut(key) {
+            WallChatPanel(key, chats, chatText(key), "walkthrough", onClose = { if (shownChat == key) hideChat() })
+        }
+        chatDock.components.filterIsInstance<WallChatPanel>().forEach(chatDock::remove)
+        chatDock.add(panel, BorderLayout.CENTER)
+        shownChat = key
+        chatTitle.text = chatText(key).title
+        chatTitle.toolTipText = chatText(key).titleTooltip
+        if (canvasSplit.secondComponent !== chatDock) canvasSplit.secondComponent = chatDock
+        canvasChatLink?.text = if (key == WALL_CANVAS_CHAT) CANVAS_CHAT_HIDE else CANVAS_CHAT_SHOW
+        chatDock.revalidate()
+        chatDock.repaint()
+        canvas.repaint()
+        SwingUtilities.invokeLater { if (shownChat == key) panel.input.requestFocusInWindow() }
+    }
+
+    private fun hideChat() {
+        shownChat = null
+        chatDock.components.filterIsInstance<WallChatPanel>().forEach(chatDock::remove)
+        canvasSplit.secondComponent = null
+        canvasChatLink?.text = CANVAS_CHAT_SHOW
+        canvas.repaint()
+        canvas.requestFocusInWindow()
+    }
+
+    /** The key of the chat shown beside the canvas, or null while none is; for tests. */
+    internal fun shownChat(): String? = shownChat
+
+    /** The chat window under [key], once it has been shown. */
+    internal fun chatWindow(key: String): WallChatPanel? = chatPanels[key]
+
+    /** The hunk cards and step notes the canvas shows, in board order, and the focused card's hunk: what its own chat is about. */
+    internal fun canvasView(): WalkCanvasView {
+        val cards = canvas.board.cards
+        val focused = canvas.board.focused?.let(canvas.board::card)?.takeIf { it.kind == WalkCard.Kind.HUNK }?.ref
+        return WalkCanvasView(cards.filter { it.kind == WalkCard.Kind.HUNK }.map { it.ref },
+            cards.filter { it.kind == WalkCard.Kind.NOTE }.map { it.ref }, focused)
+    }
+
+    private fun chatText(key: String): WallChatText = if (key == WALL_CANVAS_CHAT) WallChatText(
+        title = "Chat about the canvas",
+        titleTooltip = "The walkthrough's steps and every card on the canvas, with the links between them, are in this chat's context",
+        placeholder = "Ask about the changes on the canvas…",
+        historyTooltip = "Earlier chats about the canvas",
+        newChatTooltip = "New chat about the canvas",
+    ) else {
+        val name = content.walkthrough.hunk(key)?.let(::walkHunkName) ?: key
+        WallChatText(
+            title = "Chat about $name",
+            titleTooltip = "This change, its steps and the changes linked to it are in this chat's context",
+            placeholder = "Ask about $name and what it is linked to…",
+            historyTooltip = "Earlier chats about $name",
+            newChatTooltip = "New chat about $name",
+        )
     }
 
     private fun smallButton(text: String, tooltip: String, run: () -> Unit) = JLabel(text).apply {
@@ -349,7 +446,11 @@ internal class WalkthroughPage(
     /** The rows the list shows now; for tests. */
     internal fun listRows(): List<WalkListRow> = (0 until listModel.size()).map(listModel::get)
 
-    override fun dispose() {}
+    override fun dispose() {
+        chatSubscription?.dispose()
+        chatPanels.values.forEach(Disposer::dispose)
+        chatPanels.clear()
+    }
 
     private inner class RowRenderer : ColoredListCellRenderer<WalkListRow>() {
         override fun customizeCellRenderer(list: JList<out WalkListRow>, value: WalkListRow?, index: Int, selected: Boolean, hasFocus: Boolean) {
@@ -427,3 +528,6 @@ internal class WalkthroughPage(
     }
 }
 
+
+private const val CANVAS_CHAT_SHOW = "Chat"
+private const val CANVAS_CHAT_HIDE = "Hide chat"

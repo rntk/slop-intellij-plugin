@@ -114,6 +114,20 @@ internal class WallChats(
     /** Stops every running reply, as when the change under them is replaced. */
     fun stop() = threads.values.flatMap { it.sessions }.filter { it.busy }.forEach { it.stop() }
 
+    /** The keys that have chats. */
+    val keys: Set<String> get() = threads.keys.toSet()
+
+    /**
+     * Deletes every conversation under a key failing [keep], stopping its replies, as when the key now names something else;
+     * a window still showing such a key starts over with a fresh chat.
+     */
+    fun retain(keep: (String) -> Boolean) {
+        for (key in threads.keys.filterNot(keep)) {
+            threads.remove(key)?.sessions?.forEach(::release)
+            changed(key)
+        }
+    }
+
     /** Calls [listener] with the path whose chats changed: a message, a reply starting or ending, or a chat added or removed. */
     fun subscribe(listener: (String) -> Unit): Disposable {
         listeners += listener

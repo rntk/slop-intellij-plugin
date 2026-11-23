@@ -12,6 +12,7 @@ import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextSummaryActions
 import dev.insight.context.reviewDiffPick
 import dev.insight.context.showContextPicker
+import dev.insight.diff.walk.WalkCanvasView
 import dev.insight.diff.walk.WalkHunk
 import dev.insight.diff.walk.ui.WalkthroughActions
 import dev.insight.diff.walk.ui.WalkthroughContent
@@ -125,9 +126,12 @@ internal class DiffCanvasCards(
         WalkthroughPage(project, wallLinks?.scope, WalkthroughActions(
             run = { walkthroughActions.run(it) }, stop = { walkthroughActions.stop() },
             openDiff = { file, line -> walkthroughActions.openDiff(file, line) },
-            showContext = project?.let { ::showWalkthroughContext }))
+            showContext = project?.let { ::showWalkthroughContext }, chats = walkthroughActions.chats))
     }
     internal val walkthroughPage by walkView
+
+    /** What the Walkthrough canvas shows, for its own chat; null before the page is first shown. */
+    internal fun walkthroughCanvasView(): WalkCanvasView? = if (walkView.isInitialized()) walkthroughPage.canvasView() else null
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
         removeSemantic = metricActions.removeSemantic,

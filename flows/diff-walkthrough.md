@@ -14,6 +14,8 @@ The page streams the run's updates in place. Its canvas follows the [canvas sess
 
 With the canvas focused, the arrow keys pan it. Page Up and Page Down move by a screenful with a small overlap. Hold Shift to page horizontally. Home and End move to the top and bottom of the opened cards.
 
+Each hunk card has its own chats, and the canvas has one about all its cards; one shows at a time beside the canvas. A card's chat knows the hunk, its steps and the hunks linked to it; the canvas chat knows the steps and every card on the canvas with the links between them. Both follow the shared [chats](chats.md) conventions and read the rest of the walkthrough, both sides of the changed files and project files through read-only tools.
+
 Right-click a hunk card to open the [context picker](context-picker.md). Clicking a diff row uses that row's side and line. The picker can open the current project file in a [canvas session](canvas-session.md) when the file exists locally.
 
 Entry points for further exploration:
@@ -21,5 +23,6 @@ Entry points for further exploration:
 - [WalkModel.kt](../src/main/kotlin/dev/insight/diff/walk/WalkModel.kt) — hunks, links, steps, statuses, and the coverage guarantee
 - [WalkthroughWorkflow.kt](../src/main/kotlin/dev/insight/diff/walk/WalkthroughWorkflow.kt) — triage, seed turns, limits, and link verification
 - [WalkTools.kt](../src/main/kotlin/dev/insight/diff/walk/WalkTools.kt) — the tools the model reads and records with
+- [WalkChat.kt](../src/main/kotlin/dev/insight/diff/walk/WalkChat.kt) — what the chats know and the tools they read with
 - [WalkBoard.kt](../src/main/kotlin/dev/insight/diff/walk/ui/WalkBoard.kt) — where opened cards go on the canvas
 - [WalkthroughPage.kt](../src/main/kotlin/dev/insight/diff/walk/ui/WalkthroughPage.kt) — the page and its wiring into the review

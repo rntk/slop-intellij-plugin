@@ -1,6 +1,8 @@
 package dev.insight.diff.walk.ui
 
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.diff.DiffCanvasCards
 import dev.insight.diff.DiffCanvasContent
@@ -9,12 +11,22 @@ import dev.insight.diff.ReviewSnapshot
 import dev.insight.diff.showNotes
 import dev.insight.diff.walk.LinkDirection
 import dev.insight.diff.walk.RenameFixture
+import dev.insight.diff.walk.WalkCanvasView
 import dev.insight.diff.walk.WalkRelation
 import dev.insight.diff.walk.Walkthrough
 import dev.insight.diff.walk.reviewFile
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ui.NoteCanvas
+import dev.insight.agent.ChatBackend
+import dev.insight.agent.ChatMessage
+import dev.insight.agent.ToolCallEvent
+import dev.insight.review.wall.WALL_CANVAS_CHAT
+import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.awt.Container
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -159,6 +171,49 @@ class WalkthroughPageTest : BasePlatformTestCase() {
         assertTrue(state.walkthroughVisible)
         state.clearNotes()
         assertFalse(state.walkthroughVisible)
+    }
+
+    fun testCardsAndTheCanvasOpenTheirOwnChatsBesideTheCanvas() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+        val asked = mutableListOf<String>()
+        val chats = WallChats(project, scope, backend = { key ->
+            object : ChatBackend {
+                override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+                    asked += key
+                    return "ok"
+                }
+            }
+        }, welcome = { "" })
+        val page = WalkthroughPage(project, scope, WalkthroughActions(chats = chats))
+        try {
+            page.card.setSize(1400, 900)
+            page.show(WalkthroughContent(WalkedFixture.finished, files, built = true))
+            page.openStep("S1")
+            layout(page.card)
+            page.canvas.setSize(900, 700)
+            paint(page.canvas)
+            assertEquals(WalkCanvasView(listOf(WalkedFixture.DECL), listOf("S1"), WalkedFixture.DECL), page.canvasView())
+
+            page.toggleChat(WalkedFixture.DECL)
+            assertEquals(WalkedFixture.DECL, page.shownChat())
+            val window = page.chatWindow(WalkedFixture.DECL)!!
+            assertTrue("The dock shows the card's chat", generateSequence<java.awt.Component>(window) { it.parent }.any { it === page.card })
+            paint(page.canvas)
+            window.send("What does this change cause?")
+            PlatformTestUtil.waitWithEventsDispatching("The card's chat answers", { asked.isNotEmpty() && !chats.busy(WalkedFixture.DECL) }, 10)
+            assertEquals(listOf(WalkedFixture.DECL), asked)
+            assertTrue(chats.hasConversation(WalkedFixture.DECL))
+
+            page.toggleChat(WALL_CANVAS_CHAT)
+            assertEquals("One chat shows at a time", WALL_CANVAS_CHAT, page.shownChat())
+            assertNull(page.chatWindow(WalkedFixture.DECL)!!.parent)
+            page.toggleChat(WALL_CANVAS_CHAT)
+            assertNull(page.shownChat())
+        } finally {
+            Disposer.dispose(page)
+            Disposer.dispose(chats)
+            scope.cancel()
+        }
     }
 
     fun testTheReviewCanvasHostsTheWalkthroughPage() {

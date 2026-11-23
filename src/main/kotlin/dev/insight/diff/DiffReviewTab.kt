@@ -87,9 +87,15 @@ import dev.insight.review.wall.WallScope
 import dev.insight.review.ui.viewTileId
 import dev.insight.decisions.configuredDecisions
 import dev.insight.diff.walk.WalkOptions
+import dev.insight.diff.walk.WalkCanvasView
 import dev.insight.diff.walk.WalkPhase
 import dev.insight.diff.walk.Walkthrough
 import dev.insight.diff.walk.WalkthroughWorkflow
+import dev.insight.diff.walk.walkCanvasChatPrompt
+import dev.insight.diff.walk.walkCardChatPrompt
+import dev.insight.diff.walk.sameChangeAs
+import dev.insight.diff.walk.walkChatTools
+import dev.insight.diff.walk.ui.walkHunkName
 import dev.insight.diff.walk.ui.WalkthroughActions
 import dev.insight.diff.walk.ui.WalkthroughContent
 import dev.insight.diff.walk.ui.walkCoverageText
@@ -127,6 +133,16 @@ internal class DiffReviewTab(
         else "Ask about the changes in ${path.substringAfterLast('/')}. Its diff is in this chat's context; the rest of the change " +
             "and other project files are read when a question needs them."
     }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's changes" else path.substringAfterLast('/') })
+    /**
+     * The Walkthrough's chats about one hunk card and the hunks linked to it, by hunk id, and under [WALL_CANVAS_CHAT] its own
+     * chat about every card on its canvas, kept for the tab's life so they outlast the page's runs and rebuilds.
+     */
+    private val walkChats = WallChats(project, scope, ::walkChatBackend, welcome = { key ->
+        if (key == WALL_CANVAS_CHAT) "Ask about the changes on the canvas. The walkthrough's steps and every card on the canvas, with " +
+            "their links, are in this chat's context; the rest of the change and other project files are read when a question needs them."
+        else "Ask about this change. It, its steps and the changes linked to it are in this chat's context; the rest of the change " +
+            "and other project files are read when a question needs them."
+    }, subject = { key -> if (key == WALL_CANVAS_CHAT) "the walkthrough's canvas" else state.walkthroughOrPending.hunk(key)?.let(::walkHunkName) ?: key })
     private val diffCards = DiffCanvasCards(showDiff, project,
         removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         openDirectoryDiff = openDirectoryDiff,
@@ -422,6 +438,31 @@ internal class DiffReviewTab(
         }
     }
 
+    /**
+     * One turn of a Walkthrough chat under [key]: a hunk card's chat pins that hunk, its steps and the hunks linked to it; the
+     * canvas's own chat pins the steps and every card the canvas shows when the question is asked. Both read the rest of the
+     * walkthrough, both sides of the changed files and current project files through read-only tools.
+     */
+    private fun walkChatBackend(key: String): ChatBackend = object : ChatBackend {
+        override suspend fun reply(messages: List<ChatMessage>, onToolCall: suspend (ToolCallEvent) -> Unit): String {
+            val budget = configuredChatBudget(ChatProfile.FOCUSED)
+            // Only immutable state is captured on the EDT; the prompt is formatted off it, as a hunk may be huge.
+            val captured = withContext(Dispatchers.EDT) {
+                val view = if (key == WALL_CANVAS_CHAT) diffCards.walkthroughCanvasView() ?: WalkCanvasView(emptyList(), emptyList()) else null
+                WalkChatCapture(state.snapshot.files, state.walkthroughOrPending, state.snapshot.comparison.summary, view)
+            }
+            val (files, walk, comparison, view) = captured
+            val prompt = withContext(Dispatchers.Default) {
+                if (view != null) walkCanvasChatPrompt(walk, view, comparison, budget.pinnedChars)
+                else walkCardChatPrompt(walk, key, comparison, budget.pinnedChars)
+            } ?: return "This change is no longer part of the diff, so there is nothing to discuss about it."
+            val complete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val tools = walkChatTools(files, walk, projectContextTools(project))
+            return LlmChatBackend(complete, tools.tools, prompt, budget, registry = tools.registry)
+                .reply(messages, onToolCall)
+        }
+    }
+
     override val chat = ChatPanel(project, session, title = "Diff Chat", showDashboard = false, showFileTrace = true)
     override val chatInput get() = chat.input
 
@@ -430,10 +471,11 @@ internal class DiffReviewTab(
         chat.input.emptyText.text = "/summaries, /topics, /grouping, /walkthrough, /explain or ask about this tab's changes…"
         add(tileArea(scopeLabel) { state.clearNotes(); renderCanvas() }, BorderLayout.CENTER)
         diffCards.walkthroughActions = WalkthroughActions(run = { startWalkthrough(it) }, stop = { walkJob?.cancel() },
-            openDiff = { file, line -> openWallDiff(project, file, line, ::diffSession) })
+            openDiff = { file, line -> openWallDiff(project, file, line, ::diffSession) }, chats = walkChats)
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, wallChats)
+        Disposer.register(this, walkChats)
         Disposer.register(this, sourcePoints)
         Disposer.register(this, followSession(updateControls = ::updateControls))
         updateControls()
@@ -454,10 +496,19 @@ internal class DiffReviewTab(
     fun update(snapshot: ReviewSnapshot): Int {
         val previousRevision = state.revision
         val previousNotes = state.notes.size
+        // Hunk ids are positions in their files, so a hunk card's chats are kept only while their id names the same change.
+        val chattedHunks = walkChats.keys.filter { it != WALL_CANVAS_CHAT }.takeIf { it.isNotEmpty() }
+            ?.let { keys -> state.walkthroughOrPending.let { walk -> keys.associateWith(walk::hunk) } }
         state.update(snapshot)
         if (state.revision != previousRevision) {
             scopedSummaryFill.cancel()
-            requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear()
+            requeueRunningPipeline(); session.stop(); wallChats.stop(); walkChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear()
+            if (chattedHunks != null) {
+                val walk = state.walkthroughOrPending
+                walkChats.retain { key ->
+                    key !in chattedHunks || chattedHunks[key]?.let { before -> walk.hunk(key)?.let(before::sameChangeAs) } == true
+                }
+            }
             walkJob?.cancel(); walkJob = null; walkProgress = null; walkMessage = null
         }
         renderCanvas()
@@ -809,3 +860,8 @@ internal class DiffReviewTab(
         const val ALL_CHANGES = "All changes"
     }
 }
+
+/** What a Walkthrough chat turn reads on the EDT before its prompt is formatted off it; [view] only for the canvas's chat. */
+private data class WalkChatCapture(
+    val files: List<ReviewFile>, val walk: Walkthrough, val comparison: String, val view: WalkCanvasView?,
+)

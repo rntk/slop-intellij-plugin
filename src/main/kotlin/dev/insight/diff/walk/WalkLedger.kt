@@ -202,6 +202,19 @@ class WalkLedger(
     private fun clipExplanation(text: String): String = text.trim().let { if (it.length <= MAX_EXPLANATION_CHARS) it else it.take(MAX_EXPLANATION_CHARS - 1) + "…" }
 
     companion object {
+        /**
+         * A finished ledger holding [walkthrough] as it is, for read-only tools over a built (or pending) walkthrough, such as
+         * its chats; nothing more can be recorded.
+         */
+        fun of(walkthrough: Walkthrough): WalkLedger = WalkLedger(walkthrough.hunks, walkthrough.triage).apply {
+            status.putAll(walkthrough.status)
+            steps += walkthrough.steps
+            walkthrough.links.forEach { links[it.key] = it }
+            warnings += walkthrough.warnings
+            complete = walkthrough.complete
+            finalized = walkthrough
+        }
+
         const val MAX_STEP_HUNKS = 400
         const val MAX_TITLE_CHARS = 120
         const val MAX_EXPLANATION_CHARS = 4_000

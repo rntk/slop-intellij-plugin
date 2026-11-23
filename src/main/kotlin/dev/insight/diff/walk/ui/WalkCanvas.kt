@@ -69,7 +69,14 @@ internal class WalkCanvasActions(
     val boardChanged: () -> Unit = {},
     val zoomChanged: (Double) -> Unit = {},
     val showContext: ((WalkHunk, WallLine?, RelativePoint) -> Unit)? = null,
+    /** Opens or folds the chat about a hunk card; null paints no chat chip. */
+    val toggleChat: ((hunkId: String) -> Unit)? = null,
+    /** How a hunk card's chat chip shows its chats. */
+    val chatMark: (hunkId: String) -> WalkChatMark = { WalkChatMark() },
 )
+
+/** A hunk card's chats as its chip shows them: [open] beside the canvas, [started] with a question, or [busy] answering. */
+internal data class WalkChatMark(val open: Boolean = false, val started: Boolean = false, val busy: Boolean = false)
 
 /**
  * The walkthrough's canvas: diff hunks as cards with their link groups as chips, a step's note above its root, and arrows
@@ -126,6 +133,8 @@ internal class WalkCanvas(
         /** Leads from a card back to a step showing it. */
         data class Step(val card: String, val step: String, override val rect: Rectangle) : Hit
         data class Status(val card: String, override val rect: Rectangle) : Hit
+        /** Opens or folds the chat about a hunk card. */
+        data class Chat(val card: String, override val rect: Rectangle) : Hit
         data class Row(val card: String, val line: WallLine, override val rect: Rectangle) : Hit
         data class Edge(val edge: WalkEdge, val points: List<Point2D.Double>, override val rect: Rectangle) : Hit
     }
@@ -447,6 +456,7 @@ internal class WalkCanvas(
             is Hit.Card -> hit.card
             is Hit.Row -> hit.card
             is Hit.Status -> hit.card
+            is Hit.Chat -> hit.card
             is Hit.Step -> hit.card
             is Hit.Chip -> hit.card
             is Hit.More -> hit.card
@@ -486,6 +496,7 @@ internal class WalkCanvas(
             is Hit.Step -> { focus(hit.card); openStepOf(hit.card, hit.step) }
             is Hit.Card -> focus(hit.card)
             is Hit.Status -> focus(hit.card)
+            is Hit.Chat -> { focus(hit.card); actions.toggleChat?.invoke(hit.card) }
             is Hit.Row -> focus(hit.card)
             is Hit.Edge -> reveal(hit.edge.to)
         }
@@ -496,7 +507,7 @@ internal class WalkCanvas(
         if (hit != hover) {
             hover = hit
             cursor = when (hit) {
-                is Hit.Chip, is Hit.More, is Hit.OpenAll, is Hit.StepMore, is Hit.Step, is Hit.Edge -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                is Hit.Chip, is Hit.More, is Hit.OpenAll, is Hit.StepMore, is Hit.Step, is Hit.Chat, is Hit.Edge -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 else -> Cursor.getDefaultCursor()
             }
             repaint()
@@ -538,6 +549,14 @@ internal class WalkCanvas(
                 "<html><b>$what</b><br>${StringUtil.escapeXmlEntities(step.title)}</html>"
             }
             is Hit.Status -> walkStatusTooltip(walkthrough.statusOf(hit.card))
+            is Hit.Chat -> actions.chatMark(hit.card).let { mark ->
+                when {
+                    mark.open -> "Fold this change's chat"
+                    mark.busy -> "Answering · open the chat about this change and what it is linked to"
+                    mark.started -> "Open the chat about this change and what it is linked to"
+                    else -> "Chat about this change and what it is linked to"
+                }
+            }
             is Hit.Row -> "Double-click to open the diff at this line"
             is Hit.Edge -> {
                 val from = board.card(hit.edge.from)?.ref ?: return null
@@ -760,12 +779,14 @@ internal class WalkCanvas(
         hits += Hit.Status(card.id, chip)
         val stats = "+${hunk.added} −${hunk.removed}"
         val statsWidth = m.small.stringWidth(stats)
+        val chatWidth = if (actions.toggleChat != null) paintChatChip(g2, card.id, chip.x - JBUI.scale(8) - statsWidth, chip, text) else 0
         if (text) {
+            g2.font = smallFont
             g2.color = Color.WHITE
             g2.drawString(statusText, chip.x + JBUI.scale(6), chip.y + JBUI.scale(2) + m.small.ascent)
             g2.color = UIUtil.getContextHelpForeground()
             g2.drawString(stats, chip.x - JBUI.scale(8) - statsWidth, y + (m.title + m.small.ascent) / 2)
-            val titleRoom = chip.x - JBUI.scale(16) - statsWidth - left
+            val titleRoom = chip.x - JBUI.scale(16) - statsWidth - chatWidth - left
             paintPath(g2, walkHunkTitle(hunk) + " #${hunk.index}", left + JBUI.scale(4), y + (m.title + m.ui.ascent) / 2 - JBUI.scale(1), titleRoom)
         }
         y += m.title
@@ -779,6 +800,37 @@ internal class WalkCanvas(
         val rowsOf = rowsOf(hunk)
         y += (rowsOf.lines.size + if (rowsOf.hidden > 0) 1 else 0) * m.line + JBUI.scale(6)
         paintChips(g2, card.id, hunk, status, left + JBUI.scale(4), right, y)
+    }
+
+    /**
+     * Paints a hunk card's chat chip ending at [right] (before the counts), as tall as the status [chip]: outlined until a chat
+     * has a question, marked while it answers and filled while it is open. Returns the room it takes, gap included.
+     */
+    private fun paintChatChip(g2: Graphics2D, cardId: String, right: Int, chip: Rectangle, text: Boolean): Int {
+        val m = metrics()
+        val mark = actions.chatMark(cardId)
+        val label = when {
+            mark.busy -> "chat …"
+            mark.started -> "chat ●"
+            else -> "chat"
+        }
+        val width = m.small.stringWidth(label) + JBUI.scale(12)
+        val rect = Rectangle(right - JBUI.scale(8) - width, chip.y, width, chip.height)
+        val color = JBUI.CurrentTheme.Link.Foreground.ENABLED
+        val hovered = hover?.rect == rect
+        if (mark.open || hovered) {
+            g2.color = withAlpha(color, if (mark.open) 60 else 35)
+            g2.fillRoundRect(rect.x, rect.y, rect.width, rect.height, rect.height, rect.height)
+        }
+        g2.color = color
+        g2.stroke = BasicStroke(1f)
+        g2.drawRoundRect(rect.x, rect.y, rect.width, rect.height, rect.height, rect.height)
+        if (text) {
+            g2.font = smallFont
+            g2.drawString(label, rect.x + JBUI.scale(6), rect.y + JBUI.scale(2) + m.small.ascent)
+        }
+        hits += Hit.Chat(cardId, rect)
+        return width + JBUI.scale(8)
     }
 
     private fun paintPath(g2: Graphics2D, path: String, x: Int, baseline: Int, room: Int) {

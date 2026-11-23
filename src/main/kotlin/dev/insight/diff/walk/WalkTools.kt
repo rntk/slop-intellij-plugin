@@ -321,18 +321,7 @@ class WalkTools(
         }
     }
 
-    private fun hunkLine(hunk: WalkHunk, walk: Walkthrough): String = buildString {
-        val status = walk.statusOf(hunk.id)
-        append(hunk.id).append(" [").append(status.name.lowercase())
-        walk.stepsOf(hunk.id).takeIf { it.isNotEmpty() }?.let { steps -> append(" in ").append(steps.joinToString(",") { it.id }) }
-        walk.triage?.get(hunk.id)?.let { append("; ").append(it.kind.wire) }
-        append("] ")
-        if (hunk.fileStatus != "modified") append(hunk.fileStatus).append(' ')
-        append("+${hunk.added} -${hunk.removed}")
-        if (hunk.header.isNotEmpty()) append(' ').append(hunk.header.clipLine(HEADER_CHARS))
-        else append(" (whole file")
-            .append(hunk.previousPath?.let { ", from $it" } ?: "").append(')')
-    }
+    private fun hunkLine(hunk: WalkHunk, walk: Walkthrough): String = walkHunkLine(hunk, walk)
 
     private fun changeResult(verb: String, change: StepChange): String {
         val walk = ledger.snapshot()
@@ -387,14 +376,32 @@ class WalkTools(
         const val SEARCH_PAGE = 25
         const val SEARCH_SAMPLES = 3
         private const val SEARCH_ROW_CHARS = 240
-        private const val HEADER_CHARS = 120
     }
 }
 
+/** One line naming [hunk] for the model: its id, status, steps and triage kind, then its size and header. */
+internal fun walkHunkLine(hunk: WalkHunk, walk: Walkthrough): String = buildString {
+    val status = walk.statusOf(hunk.id)
+    append(hunk.id).append(" [").append(status.name.lowercase())
+    walk.stepsOf(hunk.id).takeIf { it.isNotEmpty() }?.let { steps -> append(" in ").append(steps.joinToString(",") { it.id }) }
+    walk.triage?.get(hunk.id)?.let { append("; ").append(it.kind.wire) }
+    append("] ")
+    if (hunk.fileStatus != "modified") append(hunk.fileStatus).append(' ')
+    append("+${hunk.added} -${hunk.removed}")
+    if (hunk.header.isNotEmpty()) append(' ').append(hunk.header.clipLine(HUNK_HEADER_CHARS))
+    else append(" (whole file")
+        .append(hunk.previousPath?.let { ", from $it" } ?: "").append(')')
+}
+
+private const val HUNK_HEADER_CHARS = 120
+
 /** 1-based display rows of [hunk]: old and new line numbers, then the patch row with tabs expanded and cut when overlong. */
-internal fun hunkRows(hunk: WalkHunk): List<String> = if (hunk.patch.isEmpty()) emptyList() else wallLines(hunk.patch).map { line ->
+internal fun hunkRows(hunk: WalkHunk): List<String> = if (hunk.patch.isEmpty()) emptyList() else wallLines(hunk.patch).map(::hunkRow)
+
+/** One row of [hunkRows], so a caller showing only a prefix formats only that. */
+internal fun hunkRow(line: WallLine): String {
     val text = if (line.text.length <= 400) line.text else line.text.take(399) + "…"
-    "%5s %5s %s".format(line.old?.toString() ?: "", line.new?.toString() ?: "", text)
+    return "%5s %5s %s".format(line.old?.toString() ?: "", line.new?.toString() ?: "", text)
 }
 
 internal fun coverageLine(coverage: WalkCoverage): String =
