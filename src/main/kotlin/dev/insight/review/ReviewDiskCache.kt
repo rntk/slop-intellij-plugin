@@ -116,8 +116,14 @@ class ReviewDiskCache(private val directory: Path) {
 internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private val mode: String, private val paths: Set<String>?) {
     private var slot = ""
 
+    /** The values last merged per kind; immutable, so an unchanged one is not encoded and merged again on every save. */
+    private val lastSaved = HashMap<String, Any>()
+    /** Hashed cache keys by their inputs; a run saves the same files and nodes many times. */
+    private val keys = HashMap<String, String>()
+
     fun load(context: Any) {
         if (disk != null) slot = reviewJson.toJson(listOf(mode, paths?.sorted(), context))
+        lastSaved.clear()
     }
 
     /** Fills nodes without text from saved entries with the same key. A parent is restored only with all its children. */
@@ -167,6 +173,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     /** Regenerate: drops the kinds' entries of every snapshot, since parents elsewhere were condensed from the old texts. */
     fun forget(vararg names: String) {
         if (disk == null || slot.isEmpty()) return
+        names.forEach(lastSaved::remove)
         disk.results(slot) { results -> names.forEach { results[it]?.clear() } }
     }
 
@@ -179,12 +186,17 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     ) {
         if (disk == null || slot.isEmpty()) return
         fun texts(value: ReviewSummaries) = value.tree.nodes.mapNotNull { node -> value.summary(node.id)?.takeIf { node.key.isNotEmpty() }?.let { summaryKey(node.key) to it.encode() } }
+        fun labels(value: ReviewTopics) = value.files.mapNotNull { file -> value.labels[file.path]?.let { topicKey(file) to it } }
+        val changed = listOf(
+            ReviewDiskCache.SUMMARIES to summaries, ReviewDiskCache.TOPICS to topics, ReviewDiskCache.FILLED to filled,
+            ReviewDiskCache.GROUPING to grouping, ReviewDiskCache.GROUPING_FILLED to groupingFilled,
+        ).filter { (name, value) -> lastSaved[name] !== value }
+        if (changed.isEmpty()) return
         disk.results(slot, save = true) { results ->
-            merge(results.getValue(ReviewDiskCache.SUMMARIES), texts(summaries))
-            merge(results.getValue(ReviewDiskCache.TOPICS), topics.files.mapNotNull { file -> topics.labels[file.path]?.let { topicKey(file) to it } })
-            merge(results.getValue(ReviewDiskCache.FILLED), texts(filled))
-            merge(results.getValue(ReviewDiskCache.GROUPING), grouping.files.mapNotNull { file -> grouping.labels[file.path]?.let { topicKey(file) to it } })
-            merge(results.getValue(ReviewDiskCache.GROUPING_FILLED), texts(groupingFilled))
+            for ((name, value) in changed) {
+                merge(results.getValue(name), if (value is ReviewTopics) labels(value) else texts(value as ReviewSummaries))
+                lastSaved[name] = value
+            }
         }
     }
 
@@ -201,10 +213,11 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
         while (excess-- > 0) { iterator.next(); iterator.remove() }
     }
 
-    private fun topicKey(file: ReviewSource) = reviewFingerprint("topic", file.path, file.fingerprint)
+    private fun topicKey(file: ReviewSource) =
+        keys.getOrPut("topic\u0000${file.path}\u0000${file.fingerprint}") { reviewFingerprint("topic", file.path, file.fingerprint) }
 
     // Prompt and grounding rules changed. Invalidate generated prose without discarding topics or review marks.
-    private fun summaryKey(evidenceKey: String) = reviewFingerprint("summary-rules-3", evidenceKey)
+    private fun summaryKey(evidenceKey: String) = keys.getOrPut("summary\u0000$evidenceKey") { reviewFingerprint("summary-rules-3", evidenceKey) }
 
     companion object {
         /** Per kind and slot; enough for several snapshots of a large scope, while keeping each save small. */

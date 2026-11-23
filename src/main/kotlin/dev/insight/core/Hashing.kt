@@ -13,5 +13,5 @@ internal object Hashing {
         return hex(digest.digest())
     }
 
-    private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+    private fun hex(bytes: ByteArray): String = java.util.HexFormat.of().formatHex(bytes)
 }

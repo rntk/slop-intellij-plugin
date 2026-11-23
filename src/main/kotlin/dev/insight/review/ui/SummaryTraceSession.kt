@@ -419,12 +419,14 @@ internal fun hasSelectionMenu(area: JComponent): Boolean = ClientProperty.get(ar
 
 /** Gives [component] and everything in it the entry's [menu]; a traced summary puts it above its own word actions. */
 internal fun installSummaryEntryMenu(component: JComponent, menu: () -> JPopupMenu) {
+    // One menu per entry, built when it first opens: cards rebuild often during a run and most menus never open.
+    val shared by lazy(LazyThreadSafetyMode.NONE) { LazyPopupMenu(menu) }
     fun install(part: java.awt.Component) {
         if (part is JComponent) {
             ClientProperty.put(part, SUMMARY_ENTRY_MENU, menu)
             // Traced and linked summaries show the entry's items within their own menus.
             if (part !is JTextComponent || ClientProperty.get(part, SELECTION_MENU) == null && summaryTextLinks(part) == null)
-                part.componentPopupMenu = menu()
+                part.componentPopupMenu = shared
         }
         if (part is java.awt.Container) part.components.forEach(::install)
     }

@@ -21,7 +21,8 @@ internal fun addSummaryContextItem(menu: JPopupMenu, project: Project?, node: Su
     reviewDestinations: Map<ReviewDestination, () -> Unit> = emptyMap(), summaryActions: ContextSummaryActions? = null,
     declaration: OutlineDeclaration? = null) {
     if (project == null) return
-    val files = sources.filter { it.path in node.files }.distinctBy { it.path }
+    val paths = node.files.toHashSet()
+    val files = sources.filter { it.path in paths }.distinctBy { it.path }
     if (files.isEmpty()) return
     menu.add(JMenuItem("Context…").apply {
         name = "summary-action:Context"

@@ -887,10 +887,12 @@ internal class NoteCanvas(
         if (!canSummarize && summaryActions.chatNode == null && summaryActions.openOnWall == null) return null
         val seeded by lazy { seedTopicSummaries(content.topicSummaries, content.summaries) }
         val nodes by lazy { seeded.tree.nodes.associateBy { it.identity } }
+        val sources by lazy { content.summaries.tree.nodes.mapNotNull { it.file } }
+        val sourcesByPath by lazy { sources.associateBy { it.path } }
         return { identity ->
             JPopupMenu().apply {
                 val node = nodes[identity] ?: return@apply
-                addSummaryContextItem(this, project, node, content.summaries.tree.nodes.mapNotNull { it.file },
+                addSummaryContextItem(this, project, node, sources,
                     openOnWall = summaryActions.openOnWall, reviewDestinations = reviewDestinations(),
                     summaryActions = summaryActions.contextSummaryActions)
                 val enabled = content.canRun && !summaryGenerationRunning
@@ -907,9 +909,8 @@ internal class NoteCanvas(
                 }
                 summaryActions.openOnWall?.let { openWall ->
                     if (node.file == null && node.files.isNotEmpty()) {
-                        val sources = content.summaries.tree.nodes.mapNotNull { it.file }.associateBy { it.path }
                         item(vocabulary.openOnWall, true, vocabulary.openOnWallTooltip) {
-                            openWall(node.files.mapNotNull(sources::get), wallTitle(node))
+                            openWall(node.files.mapNotNull(sourcesByPath::get), wallTitle(node))
                         }
                     }
                 }

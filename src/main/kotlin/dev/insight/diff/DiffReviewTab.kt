@@ -664,7 +664,7 @@ internal class DiffReviewTab(
     }
 
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]; the timer renders the last save too. */
-    private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
+    override fun scheduleCanvasRefresh() { if (!disposed && !canvasTimer.isRunning) canvasTimer.start() }
 
     override fun summariesChanged() {
         canvasTimer.stop()
@@ -701,13 +701,13 @@ internal class DiffReviewTab(
             when (change) {
                 ReviewContextChange.SOURCE -> renderCanvas()
                 ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
-                ReviewContextChange.TOPICS_STARTED, ReviewContextChange.TOPIC_ASSIGNED -> canvas.updateTopics(topicsCard())
-                ReviewContextChange.GROUPING_STARTED, ReviewContextChange.GROUPING_ASSIGNED -> canvas.updateGrouping(groupingCard())
+                ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
+                ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
                 ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
                     scopedSummaryFill.cancel()
                     summariesChanged()
                 }
-                ReviewContextChange.SUMMARIES_SAVED -> scheduleCanvasRefresh()
+                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED -> scheduleCanvasRefresh()
             }
         }), DiffReviewContext {
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {

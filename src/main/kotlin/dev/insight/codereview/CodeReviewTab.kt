@@ -627,7 +627,7 @@ internal class CodeReviewTab(
     }
 
     /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
-    private fun scheduleCanvasRefresh() { if (!canvasTimer.isRunning) canvasTimer.start() }
+    override fun scheduleCanvasRefresh() { if (!disposed && !canvasTimer.isRunning) canvasTimer.start() }
 
     /**
      * The per-turn overview of a focused chat: only the focused files, with their notes and source blocks. Their source and

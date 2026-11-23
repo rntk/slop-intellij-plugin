@@ -315,7 +315,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
             before()
             scopedSummaryFill.resume()
             updateControls()
-            summariesChanged()
+            // A busy turn notifies on every request and tool call; its saves refresh the cards through the run timer.
+            if (session.busy) scheduleCanvasRefresh() else summariesChanged()
             scheduleTileRefresh()
             if (explanations.update(session.messages, session.busy)) {
                 renderCanvas()
@@ -550,6 +551,9 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun topicsCard() = if (state.topicsVisible) TopicsCard(state.topics, state.summaries, canSummarize, state.topicSummaries) else null
 
     protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
+
+    /** Redraws the cards soon, once for a burst of saves or session updates; tabs without a run timer redraw now. */
+    protected open fun scheduleCanvasRefresh() = summariesChanged()
 
     /** The topics and grouping cards show the file summaries too, so they follow every summary and chat update. */
     protected open fun summariesChanged() {
