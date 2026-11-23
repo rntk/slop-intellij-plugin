@@ -1,6 +1,7 @@
 package dev.insight.review.wall
 
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
@@ -71,7 +72,7 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             .actionPerformed(ActionEvent(surface, 0, null))
     }
 
-    private fun paintBlock(block: WallView.BlockView) {
+    private fun paintBlock(block: WallView.BlockView): BufferedImage {
         val image = BufferedImage(block.width.coerceAtLeast(1), block.height.coerceAtLeast(1), BufferedImage.TYPE_INT_ARGB)
         val g = image.createGraphics()
         try {
@@ -79,6 +80,7 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
         } finally {
             g.dispose()
         }
+        return image
     }
 
     private fun clickSummaryToggle(block: WallView.BlockView) {
@@ -140,9 +142,34 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
                     pane.renderedLinks.any { it.contextual && it.primaryPath == "src/B.kt" && it.lines == 2..2 }
             }
 
+            layoutTree(scrollPane)
+            val blank = Point(summaryPane.width - 3, summaryPane.insets.top / 2)
+            val blankOnCard = javax.swing.SwingUtilities.convertPoint(summaryPane, blank, blockA)
+            val cardBackground = EditorColorsManager.getInstance().globalScheme.defaultBackground
+            assertEquals(cardBackground.rgb, paintBlock(blockA).getRGB(blankOnCard.x, blankOnCard.y))
+
+            fun clickSummary(point: Point) {
+                for (id in listOf(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED)) {
+                    summaryPane.dispatchEvent(MouseEvent(summaryPane, id, 0L, 0, point.x, point.y, 1, false, MouseEvent.BUTTON1))
+                }
+            }
+            val overviewWidth = blockA.preferredSize.width
+            clickSummary(blank)
+            PlatformTestUtil.waitWithEventsDispatching("Clicking the summary should zoom to its card", {
+                blockA.preferredSize.width > overviewWidth
+            }, 5)
+            assertTrue(blockA.showsSummary)
+            pressKey(surface, "ESCAPE")
+            assertEquals(overviewWidth, blockA.preferredSize.width)
+            layoutTree(scrollPane)
+
             // Leading bare L2 resolves via defaultFile to src/A.kt, switches back from summary to diff body, and highlights line 2.
-            val linkToSelfL2 = summaryPane.renderedLinks.first { it.contextual && it.primaryPath == "src/A.kt" && it.lines == 2..2 }
-            summaryPane.activateLink(linkToSelfL2)
+            val text = summaryPane.document.getText(0, summaryPane.document.length)
+            val linkOffset = text.indexOf("L2")
+            assertTrue(linkOffset >= 0)
+            val linkStart = summaryPane.modelToView2D(linkOffset)
+            val linkNext = summaryPane.modelToView2D(linkOffset + 1)
+            clickSummary(Point(((linkStart.x + linkNext.x) / 2).toInt(), linkStart.centerY.toInt()))
             val updatedA = blocks(tab.canvas).single { it.block.path == "src/A.kt" }
             assertFalse("Line link on same card should reveal diff body", updatedA.showsSummary)
             assertTrue(updatedA.active)

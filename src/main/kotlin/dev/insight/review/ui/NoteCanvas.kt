@@ -26,6 +26,7 @@ import dev.insight.review.explanationCard
 import dev.insight.review.fillSummaryRequest
 import dev.insight.review.resummaryRequest
 import dev.insight.review.seedTopicSummaries
+import dev.insight.review.wall.WallView
 import dev.insight.ui.layoutZoomContent
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -265,9 +266,16 @@ internal class NoteCanvas(
             val page = page(card)
             pages[key] = page
             installStickyScrolling(key, page, card)
-            val host = if (project == null) page else editorPage(key).apply {
+            // A wall's header (mode, chat, zoom) sits above the scroll pane so it stays in reach however far the wall scrolls.
+            val pageContent = if (card is WallView.Card) {
+                JPanel(BorderLayout()).apply {
+                    add(card.header, BorderLayout.NORTH)
+                    add(page, BorderLayout.CENTER)
+                }
+            } else page
+            val host = if (project == null) pageContent else editorPage(key).apply {
                 removeAll()
-                add(page, BorderLayout.CENTER)
+                add(pageContent, BorderLayout.CENTER)
                 revalidate()
                 repaint()
             }

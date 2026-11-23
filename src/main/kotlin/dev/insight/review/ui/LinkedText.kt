@@ -390,8 +390,11 @@ internal class LinkedTextPane(private val project: Project, private val scope: C
                 HyperlinkEvent.EventType.ENTERED ->
                     toolTipText = contextNavigator?.linkTooltip(link) ?: linkTooltip(link, inReviewScope = false, isDiffReview = false)
                 HyperlinkEvent.EventType.EXITED -> toolTipText = null
-                HyperlinkEvent.EventType.ACTIVATED -> activate(link, mouse?.point ?: Point(width / 2, height / 2), mouse?.isShiftDown == true,
-                    inEditor = mouse != null && (mouse.isControlDown || mouse.isMetaDown))
+                HyperlinkEvent.EventType.ACTIVATED -> {
+                    mouse?.consume()
+                    activate(link, mouse?.point ?: Point(width / 2, height / 2), mouse?.isShiftDown == true,
+                        inEditor = mouse != null && (mouse.isControlDown || mouse.isMetaDown))
+                }
             }
         }
         addMouseListener(object : MouseAdapter() {

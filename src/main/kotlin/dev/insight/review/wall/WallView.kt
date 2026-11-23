@@ -32,6 +32,7 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import dev.insight.links.SymbolCandidate
 import dev.insight.links.SymbolCandidateFile
 import dev.insight.links.SymbolHints
@@ -195,7 +196,7 @@ internal class WallView(
         isVisible = false
     }
     private val surface = Surface()
-    private val header = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), JBUI.scale(4))).apply {
+    private val header = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(8), JBUI.scale(4))).apply {
         isOpaque = false
         add(label)
         add(zoomLabel)
@@ -204,7 +205,10 @@ internal class WallView(
         add(allLink)
         add(canvasChatLink)
     }
-    val card: JPanel = JPanel(BorderLayout()).apply {
+    /** The wall's card; a page lifts [header] out of it to pin the header above its scroll pane. */
+    internal class Card(val header: JPanel) : JPanel(BorderLayout())
+
+    val card: JPanel = Card(header).apply {
         name = labels.id
         background = UIUtil.getPanelBackground()
         add(header, BorderLayout.NORTH)
@@ -982,14 +986,14 @@ internal class WallView(
     }
 
     /**
-     * The size the wall has to spread over: the page's scroll pane less a scrollbar each way and the label row, which stays put
-     * whether scrollbars show; null while the page is too small to be real yet.
+     * The size the wall has to spread over, reserving room for scrollbars and any header inside the scroll pane.
      */
     private fun available(): Dimension? {
         val pane = scrollPane() ?: return null
         val insets = pane.insets
         val width = pane.width - insets.left - insets.right - pane.verticalScrollBar.preferredSize.width
-        val height = pane.height - insets.top - insets.bottom - pane.horizontalScrollBar.preferredSize.height - header.preferredSize.height
+        val headerHeight = if (header.parent === card) header.preferredSize.height else 0
+        val height = pane.height - insets.top - insets.bottom - pane.horizontalScrollBar.preferredSize.height - headerHeight
         return Dimension(width, height).takeIf { width >= JBUI.scale(240) && height >= JBUI.scale(120) }
     }
 
@@ -1058,7 +1062,7 @@ internal class WallView(
         if (changed) views.forEach { it.syncSummary() }
     }
 
-    /** Where the surface starts in the scrolled view, below the label row. */
+    /** Where the surface starts in the scrolled view. */
     private fun surfaceOffset(viewport: JViewport): Point =
         viewport.view?.let { SwingUtilities.convertPoint(surface, 0, 0, it) } ?: Point(0, 0)
 
@@ -2367,6 +2371,7 @@ internal class WallView(
                 addMouseListener(object : MouseAdapter() {
                     override fun mousePressed(e: MouseEvent) {
                         if (SwingUtilities.isLeftMouseButton(e)) {
+                            if (!skim) stopAnimation()
                             surface.requestFocusInWindow()
                             activate(this@BlockView)
                         } else if (SwingUtilities.isMiddleMouseButton(e)) {
@@ -2388,6 +2393,11 @@ internal class WallView(
                             activate(this@BlockView)
                             onContext?.invoke(block, null, RelativePoint(e))
                             e.consume()
+                        }
+                    }
+                    override fun mouseClicked(e: MouseEvent) {
+                        if (!skim && !e.isConsumed && SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
+                            focusOnClick(block.path)
                         }
                     }
                 })
@@ -2607,7 +2617,7 @@ internal class WallView(
                 fun rowTop(index: Int) = (top + index * lineHeight).roundToInt()
                 val clip = g2.clipBounds ?: Rectangle(0, 0, width, height)
                 val from = floor((clip.y - top) / lineHeight).toInt().coerceAtLeast(0)
-                val wrapped = if (replacesBody) summaryRows() else null
+                val wrapped = if (replacesBody && summaryScroll?.parent !== this) summaryRows() else null
                 val first = wrapped?.let { (summaryScrolls[block.path] ?: 0).coerceAtMost((it.size - 1).coerceAtLeast(0)) } ?: 0
                 val shown = wrapped?.drop(first)
                 val rowCount = shown?.size ?: block.lines.size
@@ -2620,11 +2630,8 @@ internal class WallView(
                 val removed = tint(scheme, DiffColors.DIFF_DELETED, REMOVED, background)
                 val highlighted = highlightedRows(block.path)
                 val focusColor = JBUI.CurrentTheme.Focus.focusColor()
-                if (shown != null) {
-                    if (summaryScroll?.parent === this) {
-                        g2.color = UIUtil.getListBackground()
-                        g2.fillRect(1, bodyTop, width - 2, (height - bodyTop - 1).coerceAtLeast(0))
-                    } else {
+                if (replacesBody) {
+                    if (shown != null) {
                         g2.color = scheme.defaultForeground
                         for (index in from until to) {
                             val y = rowTop(index)

@@ -11,6 +11,7 @@ import dev.insight.agent.ChatRole
 import dev.insight.llm.Completion
 import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmRole
+import dev.insight.review.CanvasTabKey
 import dev.insight.review.ui.LinkedTextPane
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.chooseView
@@ -18,11 +19,14 @@ import dev.insight.review.wall.WallChatPanel
 import dev.insight.review.wall.WallView
 import java.awt.Component
 import java.awt.Container
+import java.awt.Point
+import java.awt.Rectangle
 import java.awt.event.InputEvent
 import java.awt.event.MouseEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.JComponent
 import javax.swing.JButton
+import javax.swing.JScrollPane
 import javax.swing.SwingUtilities
 
 /** A Diffs wall block's Chat tab unfolds independent chats about that file, which outlast folding and the wall's scopes. */
@@ -37,6 +41,58 @@ class DiffsWallChatPlatformTest : BasePlatformTestCase() {
 
     private fun press(component: JComponent) = component.dispatchEvent(MouseEvent(component, MouseEvent.MOUSE_PRESSED, 0L,
         InputEvent.BUTTON1_DOWN_MASK, 2, 2, 1, false, MouseEvent.BUTTON1))
+
+    fun testWallHeaderStaysInReachAfterScrolling() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { Completion("Reply.") })
+        try {
+            val files = (1..40).map { file("src/File$it.kt") }
+            tab.update(ReviewSnapshot(files, emptyList()))
+            chooseView(tab, "Diffs wall")
+            val host = tab.canvas.editorPage(CanvasTabKey.Wall)
+            val links = descendants(host).filterIsInstance<ActionLink>()
+            val mode = links.single { it.name == "diffs-wall-mode" }
+            val chat = links.single { it.name == "diffs-wall-canvas-chat-link" }
+            mode.doClick()
+            assertEquals("Cards", mode.text)
+            host.setSize(800, 400)
+            fun layout(container: Container) {
+                container.doLayout()
+                container.components.filterIsInstance<Container>().forEach(::layout)
+            }
+            layout(host)
+            val pane = descendants(host).filterIsInstance<JScrollPane>().single()
+            val viewport = pane.viewport
+            fun position(link: ActionLink) = SwingUtilities.convertPoint(link, 0, 0, host)
+            val modeAtTop = position(mode)
+            val chatAtTop = position(chat)
+            val distance = viewport.view.height - viewport.height
+            assertTrue(distance > viewport.height)
+            viewport.viewPosition = Point(0, distance)
+            assertEquals(distance, viewport.viewPosition.y)
+            assertEquals(modeAtTop, position(mode))
+            assertEquals(chatAtTop, position(chat))
+            for (link in listOf(mode, chat)) {
+                val bounds = SwingUtilities.convertRectangle(link.parent, link.bounds, host)
+                assertTrue(Rectangle(0, 0, host.width, host.height).contains(bounds))
+            }
+            // The skim column's stuck file headers stack below the page header rather than under it.
+            // A header the next file pushes up is clipped at the viewport's top, which sits below the page header.
+            val headerBottom = SwingUtilities.convertPoint(mode.parent, 0, mode.parent.height, host).y
+            val viewportTop = SwingUtilities.convertPoint(viewport, 0, 0, host).y
+            assertTrue(viewportTop >= headerBottom)
+            val stuck = descendants(host).filterIsInstance<WallView.BlockView>()
+                .filter { !it.visibleRect.isEmpty && it.stickyTop > 0 && it.stickyTop == it.visibleRect.y }
+            for (block in stuck) {
+                assertEquals(viewportTop, SwingUtilities.convertPoint(block, 0, block.stickyTop, host).y)
+            }
+
+            chat.doClick()
+            assertEquals(distance, viewport.viewPosition.y)
+            assertTrue(descendants(host).any { it is WallChatPanel })
+            mode.doClick()
+            assertEquals("Skim", mode.text)
+        } finally { Disposer.dispose(tab) }
+    }
 
     fun `test long provider labels leave room for the chat controls`() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { Completion("Reply.") })
