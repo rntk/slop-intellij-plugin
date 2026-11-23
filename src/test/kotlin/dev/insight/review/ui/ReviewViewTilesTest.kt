@@ -8,9 +8,9 @@ import org.junit.Test
 class ReviewViewTilesTest {
     @Test fun `view tiles have stable ids distinct from the source and chat tiles`() {
         val keys = listOf(CanvasTabKey.Summaries, CanvasTabKey.Hierarchy, CanvasTabKey.Document, CanvasTabKey.Charts, CanvasTabKey.ReportViewer, CanvasTabKey.Topics, CanvasTabKey.Grouping, CanvasTabKey.Wall, CanvasTabKey.Words,
-            CanvasTabKey.Semantic, CanvasTabKey.Moves)
+            CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.Walkthrough)
         assertEquals(listOf("view-summaries", "view-hierarchy", "view-document", "view-charts", "view-report-viewer", "view-topics", "view-grouping", "view-wall", "view-words",
-            "view-metrics", "view-moves"), keys.map(::viewTileId))
+            "view-metrics", "view-moves", "view-walkthrough"), keys.map(::viewTileId))
         assertTrue(keys.map(::viewTileId).none { it == SOURCE_TILE || it == CHAT_TILE })
     }
 

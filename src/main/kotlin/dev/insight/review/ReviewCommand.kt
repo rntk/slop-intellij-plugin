@@ -12,7 +12,9 @@ internal enum class ReviewCommand(
     SUMMARIES("/summaries", bareAlias = true, arguments = true),
     TOPIC_SUMMARIES("/topic-summaries"),
     GROUPING_SUMMARIES("/grouping-summaries"),
-    EXPLAIN("/explain", arguments = true, multiline = true);
+    EXPLAIN("/explain", arguments = true, multiline = true),
+    /** Builds the Diff Review's walkthrough; diff reviews only. */
+    WALKTHROUGH("/walkthrough", arguments = true);
 
     private fun matches(text: String): Boolean = text == command ||
         (bareAlias && text == command.drop(1)) ||
@@ -41,6 +43,7 @@ internal fun reviewProgressTitle(text: String, subject: String, supported: Colle
     ReviewCommand.TOPICS -> "Generating $subject topics"
     ReviewCommand.GROUPING -> "Generating $subject grouping"
     ReviewCommand.EXPLAIN -> "Explaining the $subject"
+    ReviewCommand.WALKTHROUGH -> "Walking through the $subject"
     ReviewCommand.SUMMARIES, ReviewCommand.TOPIC_SUMMARIES, ReviewCommand.GROUPING_SUMMARIES -> "Generating $subject summaries"
     null -> "Insight $subject review chat"
 }

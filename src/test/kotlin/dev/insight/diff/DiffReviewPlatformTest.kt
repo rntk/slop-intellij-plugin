@@ -102,7 +102,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         val tab = DiffReviewTab(project, null, { emptyList() }, {})
         val manager = FileEditorManager.getInstance(project)
         try {
-            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Report viewer",
+            assertEquals(listOf("Diff", "Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Walkthrough", "Report viewer",
                 "Open chat"), tab.tileGrid.tiles.map { it.title })
             assertFalse("No files, nothing to open", viewsEnabled(tab))
             assertTrue("The source and chat tiles stay enabled", tab.tileGrid.isTileEnabled("source") && tab.tileGrid.isTileEnabled("chat"))
@@ -116,6 +116,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals(listOf("1 file"), tileStats(tab, "view-wall"))
             assertTrue(tileStats(tab, "view-words").isEmpty())
             assertTrue(tileStats(tab, "view-moves").isEmpty())
+            assertTrue(tileStats(tab, "view-walkthrough").isEmpty())
             assertTrue(tileStats(tab, "view-metrics").isEmpty())
             assertTrue(tileStats(tab, "view-topics").isEmpty())
             assertTrue(tileStats(tab, "chat").isEmpty())
@@ -891,6 +892,32 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
         } finally { Disposer.dispose(tab) }
     }
 
+    fun `test the walkthrough view shows every change pending, then runs and lists what the assistant did not link`() {
+        val requests = java.util.concurrent.CopyOnWriteArrayList<dev.insight.llm.CompletionRequest>()
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { requests += it; Completion("Done.") })
+        try {
+            tab.update(ReviewSnapshot(listOf(file("src/a.kt").copy(patch = "@@ -1 +1 @@\n-old\n+new\n")), emptyList()))
+            chooseView(tab, "Walkthrough")
+            assertEquals(dev.insight.review.CanvasTabKey.Walkthrough, tab.canvas.selectedKey)
+            assertNull(tab.state.walkthrough)
+            val job = tab.startWalkthrough()!!
+            assertSame("A second start joins the run", job, tab.startWalkthrough())
+            PlatformTestUtil.waitWithEventsDispatching("The walkthrough should finish", { job.isCompleted }, 20 /* seconds */)
+            val walkthrough = tab.state.walkthrough!!
+            assertTrue(walkthrough.complete)
+            assertEquals(dev.insight.diff.walk.HunkStatus.UNLINKED, walkthrough.statusOf("src/a.kt#1"))
+            assertTrue(requests.isNotEmpty())
+            assertEquals(listOf("0 steps", "0 / 1 changes linked"), tileStats(tab, "view-walkthrough"))
+
+            tab.session.send("/walkthrough error handling")
+            PlatformTestUtil.waitWithEventsDispatching("The command should finish", { !tab.session.busy }, 20 /* seconds */)
+            assertTrue(tab.session.messages.any { it.text.startsWith("Built the walkthrough: 0 steps") })
+
+            tab.update(ReviewSnapshot(listOf(file("src/b.kt").copy(patch = "@@ -1 +1 @@\n-x\n+y\n")), emptyList()))
+            assertNull("A new diff hides the old walkthrough", tab.state.walkthrough)
+        } finally { Disposer.dispose(tab) }
+    }
+
     fun `test untracked inclusion and exclusion leave unrelated tabs usable during panel refresh`() {
         val panel = DiffReviewPanel(project)
         try {
@@ -992,7 +1019,7 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             assertEquals("All changes", tabs.selectedInfo!!.text)
             assertVisibleHeader(hub, tabs, tabs.selectedInfo!!)
             val first = tabs.selectedInfo!!.component as DiffReviewTab
-            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Report viewer"), viewLabels(first))
+            assertEquals(listOf("Summaries", "Hierarchy", "Document", "Topics", "Grouping", "Charts", "Diffs wall", "Words", "Metrics", "Moves", "Walkthrough", "Report viewer"), viewLabels(first))
             assertTrue(descendants(first).any { it === first.tileGrid })
             assertTrue(descendants(first).none { it is JComboBox<*> })
             assertTrue(descendants(first).none { it is JButton && it.text in viewLabels(first) })

@@ -17,6 +17,8 @@ internal sealed interface CanvasTabKey {
     data object Words : CanvasTabKey
     data object Semantic : CanvasTabKey
     data object Moves : CanvasTabKey
+    /** The walkthrough of a diff: steps of linked hunks on a canvas of their own. */
+    data object Walkthrough : CanvasTabKey
     /** The review's wall of file blocks: the Diffs wall, or a code review's wall of source files. */
     data object Wall : CanvasTabKey
     sealed interface SummaryPage : CanvasTabKey

@@ -11,6 +11,8 @@ import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import dev.insight.review.diffCardKey
 import dev.insight.review.wall.WallScope
+import dev.insight.diff.walk.Walkthrough
+import dev.insight.diff.walk.walkHunks
 
 internal const val DIFF_CHANGED = "The diff changed. Start a new request to review the current snapshot."
 
@@ -106,6 +108,28 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showMoves() { movesVisible = true }
     fun hideMoves() { movesVisible = false }
 
+    /** Whether the Walkthrough page is on the canvas. */
+    var walkthroughVisible = false
+        private set
+    private var walked: Walkthrough? = null
+    private var walkedRevision = -1
+    /** The latest walkthrough of the current snapshot, from a run or a missing model; null before one, or once the diff changed. */
+    internal val walkthrough: Walkthrough? get() = walked?.takeIf { walkedRevision == revision }
+    private var previewOf: List<ReviewFile>? = null
+    private var preview: Walkthrough? = null
+    /** [walkthrough], else every hunk of the snapshot pending, split once per snapshot, so the page can show them before a run. */
+    internal val walkthroughOrPending: Walkthrough get() = walkthrough
+        ?: preview?.takeIf { previewOf === snapshot.files }
+        ?: Walkthrough.pending(walkHunks(snapshot.files)).also { preview = it; previewOf = snapshot.files }
+    /** Keeps [result] unless the diff changed since the run captured [revision]. */
+    internal fun setWalkthrough(revision: Int, result: Walkthrough): Boolean {
+        if (revision != this.revision) return false
+        walked = result; walkedRevision = revision
+        return true
+    }
+    fun showWalkthrough() { walkthroughVisible = true }
+    fun hideWalkthrough() { walkthroughVisible = false }
+
     /** The scope of the Diffs wall while it is on the canvas; see [wallFiles]. */
     var wallScope: WallScope? = null
         private set
@@ -144,6 +168,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         super.clearNotes()
         diffCards.clear()
         wordsVisible = false; semanticVisible = false; movesVisible = false
+        walkthroughVisible = false
         wallScope = null
     }
 }

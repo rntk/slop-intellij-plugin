@@ -16,6 +16,9 @@ import dev.insight.review.ui.SummaryDiffView
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
+import dev.insight.diff.walk.ui.WalkthroughActions
+import dev.insight.diff.walk.ui.WalkthroughContent
+import dev.insight.diff.walk.ui.WalkthroughPage
 import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
@@ -34,6 +37,7 @@ internal data class DiffCanvasContent(
     val semantic: SemanticResult? = null,
     val moves: CodeMoves? = null,
     val wall: DiffsWallContent? = null,
+    val walkthrough: WalkthroughContent? = null,
 )
 
 /** Optional context-aware wall link dependencies passed to [DiffCanvasCards]. */
@@ -104,6 +108,15 @@ internal class DiffCanvasCards(
             { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree)
     }
     private val wall by wallView
+    /** What the Walkthrough page asks of the review; set by the tab before the page is shown. */
+    internal var walkthroughActions = WalkthroughActions()
+    // One page for the tab session, so its canvas keeps cards, pan and zoom across canvas rebuilds and run updates.
+    private val walkView = lazy {
+        WalkthroughPage(project, wallLinks?.scope, WalkthroughActions(
+            run = { walkthroughActions.run(it) }, stop = { walkthroughActions.stop() },
+            openDiff = { file, line -> walkthroughActions.openDiff(file, line) }))
+    }
+    internal val walkthroughPage by walkView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
         removeSemantic = metricActions.removeSemantic,
@@ -124,6 +137,7 @@ internal class DiffCanvasCards(
 
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
         content.wall?.let { CanvasTabKey.Wall to wallCard(it) },
+        content.walkthrough?.let { CanvasTabKey.Walkthrough to walkthroughCard(it) },
         content.words?.let { CanvasTabKey.Words to metricsCards.wordsCard(it) },
         content.semantic?.let { CanvasTabKey.Semantic to metricsCards.semanticCard(it) },
         content.moves?.let { CanvasTabKey.Moves to metricsCards.movesCard(it) },
@@ -137,6 +151,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.Semantic -> content.semantic?.let(metricsCards::semanticCard)
         CanvasTabKey.Moves -> content.moves?.let(metricsCards::movesCard)
         CanvasTabKey.Wall -> content.wall?.let(::wallCard)
+        CanvasTabKey.Walkthrough -> content.walkthrough?.let(::walkthroughCard)
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { diffCard(it, snapshots) }
         else -> null
     }
@@ -146,6 +161,7 @@ internal class DiffCanvasCards(
         CanvasTabKey.Semantic -> "Semantic changes"
         CanvasTabKey.Moves -> "Moved code"
         CanvasTabKey.Wall -> ReviewVocabulary.DIFF.wallName
+        CanvasTabKey.Walkthrough -> "Walkthrough"
         is ReviewNoteKey -> content.diffs.firstOrNull { it.diffKey == key }?.let { "Diff · ${it.path.substringAfterLast('/')}" }
         else -> null
     }
@@ -159,6 +175,16 @@ internal class DiffCanvasCards(
     internal fun chooseWordScope(scope: WordScope) = metricsCards.chooseWordScope(scope)
 
     private fun wallCard(content: DiffsWallContent): JPanel = wall.card.also { wall.show(content) }
+
+    private fun walkthroughCard(content: WalkthroughContent): JPanel = walkthroughPage.card.also { walkthroughPage.show(content) }
+
+    /** Shows a run's latest walkthrough on its page without rebuilding the canvas; false when the page is not on it. */
+    fun updateWalkthrough(walkthrough: WalkthroughContent): Boolean {
+        if (content.walkthrough == null) return false
+        content = content.copy(walkthrough = walkthrough)
+        walkthroughPage.show(walkthrough)
+        return true
+    }
 
     /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
     fun updateWallSummaries(summaries: Map<String, String>, summarizing: Set<String>) {
@@ -180,5 +206,6 @@ internal class DiffCanvasCards(
         diffEditors.clear()
         metricsCards.dispose()
         if (wallView.isInitialized()) wall.dispose()
+        if (walkView.isInitialized()) Disposer.dispose(walkthroughPage)
     }
 }

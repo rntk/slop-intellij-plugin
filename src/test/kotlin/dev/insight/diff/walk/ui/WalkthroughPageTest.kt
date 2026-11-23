@@ -1,0 +1,150 @@
+package dev.insight.diff.walk.ui
+
+import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.insight.diff.DiffCanvasCards
+import dev.insight.diff.DiffCanvasContent
+import dev.insight.diff.DiffReviewState
+import dev.insight.diff.ReviewSnapshot
+import dev.insight.diff.showNotes
+import dev.insight.diff.walk.LinkDirection
+import dev.insight.diff.walk.RenameFixture
+import dev.insight.diff.walk.WalkRelation
+import dev.insight.diff.walk.Walkthrough
+import dev.insight.diff.walk.reviewFile
+import dev.insight.review.CanvasTabKey
+import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.wall.WallLine
+import java.awt.Container
+import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
+
+class WalkthroughPageTest : BasePlatformTestCase() {
+    private val files = RenameFixture.files
+
+    private fun layout(component: Container) {
+        component.doLayout()
+        component.components.forEach { if (it is Container) layout(it) }
+    }
+
+    private fun paint(canvas: WalkCanvas) {
+        val image = BufferedImage(canvas.width, canvas.height, BufferedImage.TYPE_INT_ARGB)
+        val g = image.createGraphics()
+        try { canvas.paint(g) } finally { g.dispose() }
+    }
+
+    fun testThePageListsEveryHunkBeforeARunAndFollowsARunInPlace() {
+        val runs = mutableListOf<String?>()
+        val page = WalkthroughPage(null, null, WalkthroughActions(run = { runs += it }))
+        try {
+            page.card.setSize(1400, 900)
+            page.show(WalkthroughContent(Walkthrough.pending(WalkedFixture.hunks), files))
+            layout(page.card)
+            assertEquals(1 + WalkedFixture.hunks.size, page.listRows().size)
+            assertTrue(page.messageLabel.isVisible)
+            assertTrue(page.messageLabel.text.contains("Not built yet"))
+
+            page.show(WalkthroughContent(WalkedFixture.running, files, running = true, progress = "Walking · 5 / 7 handled", built = true))
+            assertEquals("Walking · 5 / 7 handled", page.progressLabel.text)
+            assertEquals(listOf("S1", "S2", WALK_PENDING_GROUP), page.listRows().filterIsInstance<WalkListRow.Group>().map { it.id })
+
+            page.activate(page.listRows().first())
+            val board = page.canvas.board
+            assertEquals(listOf(walkNoteId("S1"), WalkedFixture.DECL), board.cards.map { it.id })
+            assertEquals(WalkedFixture.DECL, board.focused)
+            assertTrue("The step's hunks unfold under it", page.listRows().filterIsInstance<WalkListRow.Hunk>().any { it.hunk.id == WalkedFixture.A })
+            assertTrue(page.trail.components.isNotEmpty())
+
+            page.canvas.openGroup(WalkedFixture.DECL, WalkGroupKey(WalkRelation.CAUSES, LinkDirection.OUTGOING))
+            assertTrue(WalkedFixture.A in board && WalkedFixture.B in board)
+            page.canvas.openGroup(WalkedFixture.A, WalkGroupKey(WalkRelation.SAME_EDIT, LinkDirection.SYMMETRIC))
+            assertEquals("B is revealed, not opened twice", 4, board.cards.size)
+            assertEquals(WalkedFixture.B, board.focused)
+
+            // A later snapshot keeps the cards; one whose hunk changed is dropped.
+            page.show(WalkthroughContent(WalkedFixture.finished, files, built = true))
+            assertEquals(4, board.cards.size)
+            assertTrue(page.listRows().filterIsInstance<WalkListRow.Group>().last().flagged)
+            assertTrue(page.messageLabel.text.contains("budget"))
+            val edited = files.map { if (it.path == "src/B.kt") reviewFile("src/B.kt", "@@ -7,3 +7,3 @@ fun b\n fun b() {\n-    x()\n+    y()\n }\n") else it }
+            page.show(WalkthroughContent(Walkthrough.pending(dev.insight.diff.walk.walkHunks(edited)), edited))
+            assertFalse(WalkedFixture.B in board)
+            assertTrue(WalkedFixture.A in board)
+        } finally {
+            Disposer.dispose(page)
+        }
+    }
+
+    fun testTheCanvasPaintsCardsAndOpensTheDiffOnDoubleClick() {
+        val opened = mutableListOf<Pair<String, WallLine?>>()
+        val canvas = WalkCanvas(null, WalkCanvasActions(openDiff = { hunk, line -> opened += hunk.id to line }))
+        try {
+            canvas.setSize(1200, 900)
+            canvas.show(WalkedFixture.finished, files)
+            paint(canvas)
+            canvas.openStep("S1")
+            canvas.openAllLinked(WalkedFixture.DECL)
+            assertEquals(setOf(walkNoteId("S1"), WalkedFixture.DECL, WalkedFixture.A, WalkedFixture.B, WalkedFixture.TEST),
+                canvas.board.cards.map { it.id }.toSet())
+            canvas.openStepHunks("S1")
+            canvas.openStep("unlinked")
+            canvas.reveal(WalkedFixture.DECL, glide = false)
+            paint(canvas)
+            canvas.dispatchEvent(MouseEvent(canvas, MouseEvent.MOUSE_CLICKED, 0, 0, canvas.width / 2, canvas.height / 2, 2, false, MouseEvent.BUTTON1))
+            assertEquals(WalkedFixture.DECL, opened.single().first)
+            canvas.zoomTo(0.2)
+            paint(canvas)
+            canvas.fit()
+            assertTrue(canvas.zoom <= 1.0)
+            paint(canvas)
+            canvas.clear()
+            assertTrue(canvas.board.isEmpty)
+            paint(canvas)
+        } finally {
+            Disposer.dispose(canvas)
+        }
+    }
+
+    fun testStateKeepsTheWalkthroughOfItsRevisionOnly() {
+        val state = DiffReviewState()
+        state.update(ReviewSnapshot(files, emptyList()))
+        assertNull(state.walkthrough)
+        assertEquals(WalkedFixture.hunks.size, state.walkthroughOrPending.hunks.size)
+        assertSame(state.walkthroughOrPending, state.walkthroughOrPending)
+        val revision = state.revision
+        assertTrue(state.setWalkthrough(revision, WalkedFixture.finished))
+        assertSame(WalkedFixture.finished, state.walkthroughOrPending)
+        assertEquals(walkTileStats(WalkedFixture.finished), walkTileStats(state.walkthrough))
+        state.update(ReviewSnapshot(files.dropLast(1), emptyList()))
+        assertNull("A changed diff hides the old walkthrough", state.walkthrough)
+        assertFalse(state.setWalkthrough(revision, WalkedFixture.finished))
+        state.showWalkthrough()
+        assertTrue(state.walkthroughVisible)
+        state.clearNotes()
+        assertFalse(state.walkthroughVisible)
+    }
+
+    fun testTheReviewCanvasHostsTheWalkthroughPage() {
+        val cards = DiffCanvasCards({})
+        val canvas = NoteCanvas({}, {}, extension = cards).apply { setSize(1200, 800) }
+        try {
+            val content = WalkthroughContent(Walkthrough.unlinked(files), files, message = "No assistant is configured.")
+            canvas.showNotes(cards, DiffCanvasContent(walkthrough = content))
+            assertTrue(CanvasTabKey.Walkthrough in canvas.pageKeys)
+            assertEquals("Walkthrough", canvas.pageTitle(CanvasTabKey.Walkthrough))
+            val page = cards.walkthroughPage
+            assertEquals(listOf("unlinked"), page.listRows().filterIsInstance<WalkListRow.Group>().map { it.id })
+            assertTrue(cards.updateWalkthrough(content.copy(walkthrough = WalkedFixture.finished, message = null, built = true)))
+            assertEquals(3, page.listRows().filterIsInstance<WalkListRow.Group>().size)
+            canvas.showNotes(cards, DiffCanvasContent(walkthrough = content))
+            assertSame("One page lives across rebuilds", page, cards.walkthroughPage)
+            canvas.showNotes(cards, DiffCanvasContent())
+            assertFalse(CanvasTabKey.Walkthrough in canvas.pageKeys)
+            assertFalse(cards.updateWalkthrough(content))
+        } finally {
+            cards.dispose()
+            canvas.dispose()
+        }
+    }
+
+}

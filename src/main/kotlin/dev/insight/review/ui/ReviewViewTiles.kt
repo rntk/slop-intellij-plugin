@@ -37,6 +37,7 @@ internal fun viewTileId(key: CanvasTabKey): String = when (key) {
     CanvasTabKey.Words -> "view-words"
     CanvasTabKey.Semantic -> "view-metrics"
     CanvasTabKey.Moves -> "view-moves"
+    CanvasTabKey.Walkthrough -> "view-walkthrough"
     else -> "view-" + key.toString().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
 }
 

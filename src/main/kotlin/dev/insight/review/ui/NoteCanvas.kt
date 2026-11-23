@@ -322,6 +322,7 @@ internal class NoteCanvas(
     internal fun focusSemantic() { focusCard(CanvasTabKey.Semantic) }
     internal fun focusMoves() { focusCard(CanvasTabKey.Moves) }
     internal fun focusWall() { focusCard(CanvasTabKey.Wall) }
+    internal fun focusWalkthrough() { focusCard(CanvasTabKey.Walkthrough) }
     internal fun focusExplanation() { focusCard(CanvasTabKey.Explanation) }
 
     /** Selects the source tab. */
@@ -364,6 +365,7 @@ internal class NoteCanvas(
         CanvasTabKey.FileView -> "File · ${fileView?.file?.path?.substringAfterLast('/').orEmpty()}"
         CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.Wall -> vocabulary.wallName
+        CanvasTabKey.Walkthrough -> "Walkthrough"
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
         is ReviewNoteKey -> {
@@ -1019,7 +1021,7 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.Wall ->
+            CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.Wall, CanvasTabKey.Walkthrough ->
                 extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)

@@ -82,6 +82,16 @@ import dev.insight.review.wall.WALL_CANVAS_CHAT
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
 import dev.insight.review.ui.viewTileId
+import dev.insight.decisions.configuredDecisions
+import dev.insight.diff.walk.WalkOptions
+import dev.insight.diff.walk.Walkthrough
+import dev.insight.diff.walk.WalkthroughWorkflow
+import dev.insight.diff.walk.ui.WalkthroughActions
+import dev.insight.diff.walk.ui.WalkthroughContent
+import dev.insight.diff.walk.ui.walkCoverageText
+import dev.insight.diff.walk.ui.walkProgressText
+import dev.insight.diff.walk.ui.walkStoryCount
+import dev.insight.diff.walk.ui.walkTileStats
 
 private val LOG = logger<DiffReviewTab>()
 
@@ -244,6 +254,10 @@ internal class DiffReviewTab(
             "Find code removed from one file and added to another, and chart where each file's code went") {
             state.foundMoves?.let { listOf(countStat(it.blocks.size, "moved block")) }.orEmpty()
         },
+        ReviewViewOption(CanvasTabKey.Walkthrough, "Walkthrough",
+            "Walk the change step by step as linked chains of diffs: what caused each change and what it leads to (/walkthrough)") {
+            walkTileStats(state.walkthrough)
+        },
         ReviewViewOption(CanvasTabKey.ReportViewer, "Report viewer",
             "Read Markdown or text files and agent reports with smart clickable project paths, line links, and context picker support") {
             canvas.reportViewerStats()
@@ -266,6 +280,7 @@ internal class DiffReviewTab(
             CanvasTabKey.Words -> openWords()
             CanvasTabKey.Semantic -> openSemantic()
             CanvasTabKey.Moves -> openMoves()
+            CanvasTabKey.Walkthrough -> openWalkthrough()
             CanvasTabKey.Wall -> openDiffsWall(state.snapshot.files, ALL_CHANGES)
             else -> super.openView(key)
         }
@@ -292,6 +307,17 @@ internal class DiffReviewTab(
             val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
             val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
             val command = ReviewCommand.parse(question, ReviewCommand.diff)
+            if (command == ReviewCommand.WALKTHROUGH) {
+                val job = withContext(Dispatchers.EDT) { openWalkthrough(); startWalkthrough(summariesFocus(question).ifEmpty { null }) }
+                    ?: return "There are no changed files to walk through."
+                try {
+                    job.join()
+                } catch (e: CancellationException) {
+                    job.cancel()
+                    throw e
+                }
+                return withContext(Dispatchers.EDT) { walkthroughReply() }
+            }
             if (command == ReviewCommand.TOPICS) {
                 val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
                     diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, contextCharsForOutput = configuredContextCharsForOutput(48_000))
@@ -393,8 +419,10 @@ internal class DiffReviewTab(
 
     init {
         minimumSize = Dimension(300, 200)
-        chat.input.emptyText.text = "/summaries, /topics, /grouping, /explain or ask about this tab's changes…"
+        chat.input.emptyText.text = "/summaries, /topics, /grouping, /walkthrough, /explain or ask about this tab's changes…"
         add(tileArea(scopeLabel) { state.clearNotes(); renderCanvas() }, BorderLayout.CENTER)
+        diffCards.walkthroughActions = WalkthroughActions(run = { startWalkthrough(it) }, stop = { walkJob?.cancel() },
+            openDiff = { file, line -> openWallDiff(project, file, line, ::diffSession) })
         Disposer.register(this, chat)
         Disposer.register(this, canvas)
         Disposer.register(this, wallChats)
@@ -422,6 +450,7 @@ internal class DiffReviewTab(
         if (state.revision != previousRevision) {
             scopedSummaryFill.cancel()
             requeueRunningPipeline(); session.stop(); wallChats.stop(); sourcePoints.clear(); fullFileSnapshots.clear()
+            walkJob?.cancel(); walkJob = null; walkProgress = null; walkMessage = null
         }
         renderCanvas()
         updateControls()
@@ -460,6 +489,109 @@ internal class DiffReviewTab(
         state.showMoves()
         renderCanvas()
         showCanvas { canvas.focusMoves() }
+    }
+
+    private var walkJob: Job? = null
+    private var walkProgress: String? = null
+    private var walkMessage: String? = null
+
+    /** Shows the Walkthrough page: the latest walkthrough, or every hunk pending so the diffs can be browsed before a run. */
+    fun openWalkthrough() {
+        if (disposed) return
+        state.showWalkthrough()
+        renderCanvas()
+        showCanvas { canvas.focusWalkthrough() }
+    }
+
+    private fun walkthroughContent(): WalkthroughContent? {
+        if (!state.walkthroughVisible) return null
+        val built = state.walkthrough
+        return WalkthroughContent(built ?: state.walkthroughOrPending, state.snapshot.files, running = walkJob?.isActive == true,
+            progress = walkProgress, message = walkMessage, canRun = !state.refreshing && state.snapshot.files.isNotEmpty(),
+            built = built != null && walkMessage == null)
+    }
+
+    /** Updates the page and tile after a run's update, without rebuilding the canvas. */
+    private fun walkthroughChanged() {
+        if (disposed) return
+        walkthroughContent()?.let(diffCards::updateWalkthrough)
+        scheduleTileRefresh()
+    }
+
+    /**
+     * Builds the walkthrough of the current snapshot with an optional reviewer [focus], or returns the run in progress. The
+     * workflow runs off the EDT; its snapshots land on the page as they come, unless the diff changed meanwhile. Without a
+     * configured model every hunk is listed as not linked.
+     */
+    internal fun startWalkthrough(focus: String? = null): Job? {
+        walkJob?.takeIf { it.isActive }?.let { return it }
+        if (disposed || state.refreshing || state.snapshot.files.isEmpty()) return null
+        val snapshot = state.snapshot
+        val files = snapshot.files
+        val revision = state.revision
+        fun current() = !disposed && state.revision == revision
+        walkMessage = null
+        walkProgress = "Starting…"
+        val job = scope.launch {
+            val run = coroutineContext[Job]
+            try {
+                val client = complete?.let { Result.success(it) } ?: withContext(Dispatchers.IO) {
+                    try {
+                        Result.success<CompletionFn>(ChatSettings.getInstance().createClient()::complete)
+                    } catch (e: IllegalArgumentException) {
+                        Result.failure(e)
+                    }
+                }
+                val raw = client.getOrElse { e ->
+                    if (current()) {
+                        walkMessage = "No assistant is configured (${e.message}). Every change is listed as not linked; " +
+                            "set up a model in Settings, then build the walkthrough."
+                        state.setWalkthrough(revision, Walkthrough.unlinked(files))
+                    }
+                    return@launch
+                }
+                val decide = if (complete == null) configuredDecisions() else null
+                val traced = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, raw)
+                val options = if (complete == null) WalkOptions(contextChars = configuredContextChars(WalkOptions().contextChars)) else WalkOptions()
+                val workflow = WalkthroughWorkflow(traced, decide, projectContextTools(project), options)
+                withContext(Dispatchers.Default) {
+                    workflow.run(snapshot, focus,
+                        onUpdate = { walkthrough -> withContext(Dispatchers.EDT) {
+                            if (current() && state.setWalkthrough(revision, walkthrough)) walkthroughChanged()
+                        } },
+                        onProgress = { progress -> withContext(Dispatchers.EDT) {
+                            if (current()) { walkProgress = walkProgressText(progress); walkthroughChanged() }
+                        } })
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.warn("Walkthrough failed", e)
+                if (current()) walkMessage = "The walkthrough failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                if (walkJob === run) walkJob = null
+                if (current()) {
+                    walkProgress = null
+                    walkthroughChanged()
+                }
+            }
+        }
+        walkJob = job
+        walkthroughChanged()
+        return job
+    }
+
+    /** The chat's answer to /walkthrough once its run ended. */
+    private fun walkthroughReply(): String {
+        val walkthrough = state.walkthrough ?: return walkMessage ?: "The walkthrough did not run."
+        val coverage = walkthrough.coverage()
+        return buildString {
+            walkMessage?.let { append(it).append("\n\n") }
+            append(if (walkthrough.complete) "Built the walkthrough: " else "The walkthrough stopped early: ")
+            append("${walkStoryCount(walkthrough)} steps; ${walkCoverageText(coverage)}.")
+            walkthrough.warnings.forEach { append("\n- ").append(it) }
+            append("\n\nOpen the Walkthrough view to follow each step from its root through what it leads to.")
+        }
     }
 
     /**
@@ -544,7 +676,8 @@ internal class DiffReviewTab(
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) })
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) },
+            walkthrough = walkthroughContent())
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
             charts = chartsCard(), reportViewer = reportViewerCard()))
         countSemantic()

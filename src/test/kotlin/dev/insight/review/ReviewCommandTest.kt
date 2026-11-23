@@ -16,6 +16,7 @@ class ReviewCommandTest {
         assertEquals(ReviewCommand.SUMMARIES, ReviewCommand.parse("summaries"))
         assertEquals(ReviewCommand.SUMMARIES, ReviewCommand.parse("/summaries data flow"))
         assertEquals(ReviewCommand.EXPLAIN, ReviewCommand.parse("/explain\nwhy is this cached?"))
+        assertEquals(ReviewCommand.WALKTHROUGH, ReviewCommand.parse("/walkthrough error handling", ReviewCommand.diff))
         assertTrue(isTopicsRequest("/topics architecture"))
         assertTrue(isGroupingRequest("/grouping error handling"))
         assertTrue(isSummariesRequest("/summaries data flow"))
@@ -44,11 +45,12 @@ class ReviewCommandTest {
         assertEquals("Generating code topics", reviewProgressTitle("/topics", "code"))
         assertEquals("Generating change grouping", reviewProgressTitle("/grouping", "change"))
         assertEquals("Explaining the change", reviewProgressTitle("/explain file.kt", "change"))
+        assertEquals("Walking through the change", reviewProgressTitle("/walkthrough error handling", "change", ReviewCommand.diff))
         assertEquals("Insight code review chat", reviewProgressTitle("What does this do?", "code"))
     }
 
     @Test fun `code reviews do not recognize grouping`() {
-        listOf("/grouping", "grouping", "/grouping-summaries", "/grouping errors").forEach {
+        listOf("/grouping", "grouping", "/grouping-summaries", "/grouping errors", "/walkthrough").forEach {
             assertNull(it, ReviewCommand.parse(it, ReviewCommand.code))
         }
         assertEquals(ReviewCommand.TOPICS, ReviewCommand.parse("/topics", ReviewCommand.code))
