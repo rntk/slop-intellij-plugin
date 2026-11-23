@@ -9,6 +9,7 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.JBSplitter
 import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
@@ -18,6 +19,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.walk.HunkStatus
 import dev.insight.diff.walk.WalkCoverage
+import dev.insight.diff.walk.WalkHunk
 import dev.insight.diff.walk.WalkStepKind
 import dev.insight.diff.walk.Walkthrough
 import dev.insight.review.ui.LinkedTextPane
@@ -65,6 +67,7 @@ internal class WalkthroughActions(
     val stop: () -> Unit = {},
     /** Opens the native diff of a file, at a double-clicked row when there is one. */
     val openDiff: (ReviewFile, WallLine?) -> Unit = { _, _ -> },
+    val showContext: ((ReviewFile, WalkHunk, WallLine?, RelativePoint) -> Unit)? = null,
 )
 
 /**
@@ -87,6 +90,9 @@ internal class WalkthroughPage(
         focusChanged = { focusChanged(it) },
         boardChanged = { if (filter.selectedItem == WalkListFilter.NOT_ON_CANVAS) refreshList() },
         zoomChanged = { zoomLabel.text = "${(it * 100).roundToInt()}%" },
+        showContext = actions.showContext?.let { show ->
+            { hunk, line, point -> files[hunk.path]?.let { show(it, hunk, line, point) } }
+        },
     ))
 
     private val build = JButton("Build walkthrough", AllIcons.Actions.Execute).apply {

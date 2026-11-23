@@ -50,7 +50,6 @@ import dev.insight.review.explainChartPrompt
 import dev.insight.review.explainCommand
 import dev.insight.review.explainRequest
 import dev.insight.review.explainTarget
-import dev.insight.review.isDone
 import dev.insight.review.isExplainRequest
 import dev.insight.review.openReviewCanvas
 import dev.insight.review.textOf
@@ -312,6 +311,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         }
         canvas.onReportViewerChanged = { scheduleTileRefresh() }
         return session.subscribe {
+            if (!session.busy) runningPipeline = null
             before()
             scopedSummaryFill.resume()
             updateControls()
@@ -483,7 +483,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     private val pipelines = ReviewPipelineQueue()
     private var pipelineCheck = false
     /** The scheduled pipeline whose chat turn runs now, if any. */
-    private var runningPipeline: ReviewPipeline? = null
+    protected var runningPipeline: ReviewPipeline? = null
+        private set
 
     /** The pipelines still waiting to run; see [schedule]. */
     val scheduledPipelines: Set<ReviewPipeline> get() = pipelines.scheduled
@@ -505,7 +506,6 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         SwingUtilities.invokeLater {
             pipelineCheck = false
             if (disposed) return@invokeLater
-            if (!session.busy) runningPipeline = null
             pipelines.next(canSummarize) { state.isDone(it) }?.let {
                 runningPipeline = it
                 session.send(it.command.command)

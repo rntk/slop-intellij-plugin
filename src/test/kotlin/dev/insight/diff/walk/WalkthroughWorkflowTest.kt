@@ -159,4 +159,21 @@ class WalkthroughWorkflowTest {
         assertEquals(HunkStatus.COVERED, last.statusOf("src/A.kt#1"))
         assertTrue(last.warnings.any { it.contains("cancelled") })
     }
+
+    @Test fun `cancellation during triage shows all hunks as unlinked`() = runBlocking<Unit> {
+        val triageStarted = CompletableDeferred<Unit>()
+        val workflow = WalkthroughWorkflow(complete = { error("No seed turn should start") }, decide = {
+            triageStarted.complete(Unit)
+            awaitCancellation()
+        })
+        val updates = mutableListOf<Walkthrough>()
+        val job = launch { workflow.run(files, "", onUpdate = { updates += it }) }
+        triageStarted.await()
+        job.cancelAndJoin()
+        val last = updates.last()
+        assertFalse(last.complete)
+        assertEveryHunkShown(last)
+        assertTrue(last.status.values.all { it == HunkStatus.UNLINKED })
+        assertTrue(last.warnings.any { it.contains("cancelled") })
+    }
 }

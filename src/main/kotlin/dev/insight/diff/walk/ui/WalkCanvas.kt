@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.ui.JBColor
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.canvas.CanvasMotion
@@ -67,6 +68,7 @@ internal class WalkCanvasActions(
     /** Cards were added or removed, so "not on the canvas" lists change. */
     val boardChanged: () -> Unit = {},
     val zoomChanged: (Double) -> Unit = {},
+    val showContext: ((WalkHunk, WallLine?, RelativePoint) -> Unit)? = null,
 )
 
 /**
@@ -92,8 +94,10 @@ internal class WalkCanvas(
     internal var zoom = 1.0
         private set
     /** The canvas point at the viewport's top left. */
-    private var cameraX = 0.0
-    private var cameraY = 0.0
+    internal var cameraX = 0.0
+        private set
+    internal var cameraY = 0.0
+        private set
     private val cameraMotion = CanvasMotion(260_000_000L)
     private val cardMotion = CanvasMotion()
     private val animatedCards = HashSet<String>()
@@ -138,7 +142,7 @@ internal class WalkCanvas(
         val title = ui.height + JBUI.scale(4)
         val place = small.height + JBUI.scale(4)
         val chips = small.height + JBUI.scale(10)
-        val width = pad + gutter + char * 84 + pad
+        val width = (pad + gutter + char * 84 + pad) * 6 / 5
         val noteLines = 12
     }
 
@@ -346,6 +350,34 @@ internal class WalkCanvas(
         bind("walk-next", "TAB") { step(forward = true) }
         bind("walk-previous", "shift TAB") { step(forward = false) }
         bind("walk-open-linked", "ENTER") { board.focused?.takeIf { board.card(it)?.kind == WalkCard.Kind.HUNK }?.let(::openAllLinked) }
+        val step = { JBUI.scale(48) / zoom }
+        fun page(vertical: Boolean): Double = maxOf((if (vertical) height else width) / zoom - step(), step())
+        fun move(dx: Double, dy: Double) {
+            stopGlide()
+            cameraX += dx
+            cameraY += dy
+            repaint()
+        }
+        fun edge(end: Boolean, horizontal: Boolean = false) {
+            val bounds = board.bounds() ?: return
+            stopGlide()
+            val margin = JBUI.scale(24) / zoom
+            cameraY = if (end) bounds.bottom + margin - height / zoom else bounds.y - margin
+            if (horizontal) cameraX = if (end) bounds.right + margin - width / zoom else bounds.x - margin
+            repaint()
+        }
+        bind("walk-up", "UP", "KP_UP") { move(0.0, -step()) }
+        bind("walk-down", "DOWN", "KP_DOWN") { move(0.0, step()) }
+        bind("walk-left", "LEFT", "KP_LEFT", "shift LEFT", "shift KP_LEFT", "shift UP", "shift KP_UP") { move(-step(), 0.0) }
+        bind("walk-right", "RIGHT", "KP_RIGHT", "shift RIGHT", "shift KP_RIGHT", "shift DOWN", "shift KP_DOWN") { move(step(), 0.0) }
+        bind("walk-page-up", "PAGE_UP", "shift SPACE") { move(0.0, -page(true)) }
+        bind("walk-page-down", "PAGE_DOWN", "SPACE") { move(0.0, page(true)) }
+        bind("walk-page-left", "shift PAGE_UP") { move(-page(false), 0.0) }
+        bind("walk-page-right", "shift PAGE_DOWN") { move(page(false), 0.0) }
+        bind("walk-top", "HOME") { edge(end = false) }
+        bind("walk-bottom", "END") { edge(end = true) }
+        bind("walk-start", "ctrl HOME", "meta HOME") { edge(end = false, horizontal = true) }
+        bind("walk-end", "ctrl END", "meta END") { edge(end = true, horizontal = true) }
     }
 
     private fun step(forward: Boolean) {
@@ -381,6 +413,7 @@ internal class WalkCanvas(
     private fun pressed(e: MouseEvent) {
         requestFocusInWindow()
         stopGlide()
+        if (showContext(e)) return
         val hit = hitAt(e)
         val panAnywhere = e.isAltDown || javax.swing.SwingUtilities.isMiddleMouseButton(e)
         if (panAnywhere || (javax.swing.SwingUtilities.isLeftMouseButton(e) && (hit == null || hit is Hit.Edge))) {
@@ -403,8 +436,33 @@ internal class WalkCanvas(
         val moved = pan?.moved == true
         pan = null
         cursor = Cursor.getDefaultCursor()
-        if (moved) e.consume()
+        if (moved) e.consume() else showContext(e)
     }
+
+    private fun showContext(e: MouseEvent): Boolean {
+        val show = actions.showContext ?: return false
+        if (!e.isPopupTrigger || e.isAltDown || e.isConsumed) return false
+        val hit = hitAt(e)
+        val id = when (hit) {
+            is Hit.Card -> hit.card
+            is Hit.Row -> hit.card
+            is Hit.Status -> hit.card
+            is Hit.Step -> hit.card
+            is Hit.Chip -> hit.card
+            is Hit.More -> hit.card
+            is Hit.OpenAll -> hit.card
+            else -> return false
+        }
+        val hunk = walkthrough.hunk(id) ?: return false
+        focus(id)
+        val line = (hit as? Hit.Row)?.line?.takeIf { it.old != null || it.new != null } ?: firstChangedRow(hunk)
+        show(hunk, line, RelativePoint(e))
+        e.consume()
+        return true
+    }
+
+    private fun firstChangedRow(hunk: WalkHunk): WallLine? =
+        rows[hunk.id]?.second?.lines?.firstOrNull { it.kind == WallLine.Kind.ADDED || it.kind == WallLine.Kind.REMOVED }
 
     private fun clicked(e: MouseEvent) {
         if (e.isConsumed || !javax.swing.SwingUtilities.isLeftMouseButton(e) || e.isAltDown) return
@@ -413,7 +471,7 @@ internal class WalkCanvas(
             when (hit) {
                 is Hit.Row -> walkthrough.hunk(hit.card)?.let { actions.openDiff(it, hit.line) }
                 is Hit.Card -> walkthrough.hunk(hit.card)?.let { hunk ->
-                    actions.openDiff(hunk, rows[hunk.id]?.second?.lines?.firstOrNull { it.kind == WallLine.Kind.ADDED || it.kind == WallLine.Kind.REMOVED })
+                    actions.openDiff(hunk, firstChangedRow(hunk))
                 }
                 else -> {}
             }

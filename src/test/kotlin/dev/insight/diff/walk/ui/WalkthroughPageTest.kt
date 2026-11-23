@@ -18,6 +18,8 @@ import dev.insight.review.wall.WallLine
 import java.awt.Container
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import javax.swing.JComponent
+import javax.swing.KeyStroke
 
 class WalkthroughPageTest : BasePlatformTestCase() {
     private val files = RenameFixture.files
@@ -75,9 +77,13 @@ class WalkthroughPageTest : BasePlatformTestCase() {
         }
     }
 
-    fun testTheCanvasPaintsCardsAndOpensTheDiffOnDoubleClick() {
+    fun testTheCanvasPaintsCardsAndOffersDiffAndContextNavigation() {
         val opened = mutableListOf<Pair<String, WallLine?>>()
-        val canvas = WalkCanvas(null, WalkCanvasActions(openDiff = { hunk, line -> opened += hunk.id to line }))
+        val contexts = mutableListOf<Pair<String, WallLine?>>()
+        val canvas = WalkCanvas(null, WalkCanvasActions(
+            openDiff = { hunk, line -> opened += hunk.id to line },
+            showContext = { hunk, line, _ -> contexts += hunk.id to line },
+        ))
         try {
             canvas.setSize(1200, 900)
             canvas.show(WalkedFixture.finished, files)
@@ -92,6 +98,10 @@ class WalkthroughPageTest : BasePlatformTestCase() {
             paint(canvas)
             canvas.dispatchEvent(MouseEvent(canvas, MouseEvent.MOUSE_CLICKED, 0, 0, canvas.width / 2, canvas.height / 2, 2, false, MouseEvent.BUTTON1))
             assertEquals(WalkedFixture.DECL, opened.single().first)
+            canvas.dispatchEvent(MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0, 0, canvas.width / 2, canvas.height / 2, 1, true, MouseEvent.BUTTON3))
+            assertEquals(opened.single(), contexts.single())
+            canvas.dispatchEvent(MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0, 0, canvas.width / 2, canvas.height / 2, 1, false, MouseEvent.BUTTON3))
+            assertEquals("Only a platform popup trigger opens the picker", 1, contexts.size)
             canvas.zoomTo(0.2)
             paint(canvas)
             canvas.fit()
@@ -100,6 +110,33 @@ class WalkthroughPageTest : BasePlatformTestCase() {
             canvas.clear()
             assertTrue(canvas.board.isEmpty)
             paint(canvas)
+        } finally {
+            Disposer.dispose(canvas)
+        }
+    }
+
+    fun testCanvasNavigationKeysMoveTheCamera() {
+        val canvas = WalkCanvas(null)
+        try {
+            canvas.setSize(800, 600)
+            fun press(stroke: String) {
+                val key = canvas.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke(stroke))
+                assertNotNull("Missing binding for $stroke", key)
+                canvas.actionMap.get(key).actionPerformed(null)
+            }
+            press("DOWN")
+            val afterDown = canvas.cameraY
+            assertTrue(afterDown > 0)
+            press("PAGE_DOWN")
+            assertTrue(canvas.cameraY > afterDown)
+            press("shift PAGE_UP")
+            assertTrue(canvas.cameraX < 0)
+            canvas.show(WalkedFixture.finished, files)
+            canvas.openStep("S1")
+            press("ctrl HOME")
+            val bounds = canvas.board.bounds()!!
+            assertTrue(canvas.cameraX < bounds.x)
+            assertTrue(canvas.cameraY < bounds.y)
         } finally {
             Disposer.dispose(canvas)
         }

@@ -32,6 +32,7 @@ import dev.insight.llm.LlmToolCall
 import dev.insight.review.ReviewCanvasEditorProvider
 import dev.insight.review.ReviewCanvasFile
 import dev.insight.review.ReviewNote
+import dev.insight.review.ReviewPipeline
 import dev.insight.review.ReviewSourceRange
 import java.awt.BorderLayout
 import java.awt.Container
@@ -889,6 +890,35 @@ class DiffReviewPlatformTest : FileEditorManagerTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("The reply should finish", { !tab.session.busy }, 10 /* seconds */)
             assertEquals(1, requests.size)
             assertTrue(tab.session.messages.any { it.text == "Injected reply." })
+        } finally { Disposer.dispose(tab) }
+    }
+
+    fun `test scheduled walkthrough waits for the diff and runs after the other selected pipeline`() {
+        val tab = DiffReviewTab(project, null, { emptyList() }, {}, complete = { Completion("Done.") })
+        try {
+            val pipelines = listOf(ReviewPipeline.WALKTHROUGH, ReviewPipeline.SUMMARIES)
+            tab.schedule(pipelines)
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            assertEquals(pipelines.toSet(), tab.scheduledPipelines)
+            assertFalse(tab.session.busy)
+
+            tab.update(ReviewSnapshot(listOf(file("src/a.kt").copy(patch = "@@ -1 +1 @@\n-old\n+new\n")), emptyList()))
+            PlatformTestUtil.waitWithEventsDispatching("The scheduled pipelines should finish",
+                { tab.scheduledPipelines.isEmpty() && !tab.session.busy }, 20)
+            assertTrue(tab.state.walkthrough?.complete == true)
+            assertFalse(tab.state.walkthroughVisible)
+            val expected = listOf("/summaries", "/walkthrough")
+            assertEquals(expected, tab.session.messages.filter { it.role == ChatRole.USER }.map { it.text })
+
+            tab.schedule(listOf(ReviewPipeline.WALKTHROUGH))
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            assertTrue(tab.scheduledPipelines.isEmpty())
+            assertEquals(expected, tab.session.messages.filter { it.role == ChatRole.USER }.map { it.text })
+
+            tab.session.send("/walkthrough")
+            PlatformTestUtil.waitWithEventsDispatching("The explicit command should finish", { !tab.session.busy }, 20)
+            assertTrue(tab.state.walkthroughVisible)
+            assertEquals(dev.insight.review.CanvasTabKey.Walkthrough, tab.canvas.selectedKey)
         } finally { Disposer.dispose(tab) }
     }
 

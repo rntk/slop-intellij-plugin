@@ -1,24 +1,34 @@
 package dev.insight.diff
 
-import dev.insight.review.WordScope
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.ui.awt.RelativePoint
+import dev.insight.agent.SourceSide
+import dev.insight.agent.findSourceFile
+import dev.insight.canvas.OpenCanvasSessionAction
+import dev.insight.context.ContextData
+import dev.insight.context.ContextKeys
+import dev.insight.context.ContextOrigin
 import dev.insight.context.ContextSummaryActions
+import dev.insight.context.reviewDiffPick
+import dev.insight.context.showContextPicker
+import dev.insight.diff.walk.WalkHunk
+import dev.insight.diff.walk.ui.WalkthroughActions
+import dev.insight.diff.walk.ui.WalkthroughContent
+import dev.insight.diff.walk.ui.WalkthroughPage
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewVocabulary
+import dev.insight.review.WordScope
 import dev.insight.review.ui.CanvasExtension
 import dev.insight.review.ui.ChangeSummariesViewState
 import dev.insight.review.ui.ChangeSummaryActions
 import dev.insight.review.ui.SnapshotCanvasCards
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
-import dev.insight.review.ReviewVocabulary
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
-import dev.insight.diff.walk.ui.WalkthroughActions
-import dev.insight.diff.walk.ui.WalkthroughContent
-import dev.insight.diff.walk.ui.WalkthroughPage
 import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
@@ -114,7 +124,8 @@ internal class DiffCanvasCards(
     private val walkView = lazy {
         WalkthroughPage(project, wallLinks?.scope, WalkthroughActions(
             run = { walkthroughActions.run(it) }, stop = { walkthroughActions.stop() },
-            openDiff = { file, line -> walkthroughActions.openDiff(file, line) }))
+            openDiff = { file, line -> walkthroughActions.openDiff(file, line) },
+            showContext = project?.let { ::showWalkthroughContext }))
     }
     internal val walkthroughPage by walkView
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
@@ -177,6 +188,28 @@ internal class DiffCanvasCards(
     private fun wallCard(content: DiffsWallContent): JPanel = wall.card.also { wall.show(content) }
 
     private fun walkthroughCard(content: WalkthroughContent): JPanel = walkthroughPage.card.also { walkthroughPage.show(content) }
+
+    private fun showWalkthroughContext(file: ReviewFile, hunk: WalkHunk, line: WallLine?, point: RelativePoint) {
+        val project = project ?: return
+        val data = ContextData()
+        diffSession?.let { data.put(REVIEW_CONTEXT_SESSION, it) }
+        val session = diffSession?.invoke()
+        session?.let {
+            data.put(ContextKeys.REVIEW_DESTINATIONS, it.destinations)
+            it.summaryActionsFor(file)?.let { summary -> data.put(ContextKeys.SUMMARY_GENERATION, summary) }
+            data.put(ContextKeys.OPEN_ON_DIFFS_WALL) { context -> it.openContext(file, context) }
+        }
+        val (side, number) = wallLineSide(line)
+        findSourceFile(project, file.path, file.absolutePath)?.let { currentFile ->
+            data.put(ContextKeys.OPEN_ON_CANVAS) { context ->
+                val currentLine = context.lines?.first?.takeIf { context.side == SourceSide.AFTER }
+                    ?: line?.new ?: hunk.newStart.takeIf { it > 0 }
+                if (currentFile.isValid) OpenCanvasSessionAction().open(project, currentFile, currentLine)
+            }
+        }
+        val files = session?.files ?: content.walkthrough?.files
+        showContextPicker(project, reviewDiffPick(project, ContextOrigin.OTHER, file, number, side, files, data), point.component, point)
+    }
 
     /** Shows a run's latest walkthrough on its page without rebuilding the canvas; false when the page is not on it. */
     fun updateWalkthrough(walkthrough: WalkthroughContent): Boolean {

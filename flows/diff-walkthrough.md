@@ -6,7 +6,15 @@ Every change is shown. Before a run, the page lists every hunk as pending so the
 
 A run first triages hunks cheaply with the Decisions API (falling back to heuristics) to start from likely roots, then works through seed hunks in independent, bounded turns that record steps and links with dedicated tools. A turn can delegate focused questions to a subagent with read-only tools. Afterwards, decisions verify each link and store a confidence; weak links are kept but drawn as such. Limits and failures are reported as warnings, and a stopped run keeps what it reached.
 
+On the Diff setup tab, select **Walkthrough** and click **Start review and generate** to queue it for the selected files. It runs after the other selected pipelines and skips a walkthrough already completed for the current diff revision.
+
+Scheduled runs and runs started from the Walkthrough page or chat appear in IntelliJ's background tasks. The progress bar tracks how many hunks the assistant has handled during seed turns and shows activity during triage and link verification. Cancelling the IDE task stops the same run as the page's Stop button.
+
 The page streams the run's updates in place. Its canvas follows the [canvas session](canvas-session.md) conventions: unbounded pan and zoom, diff cards with their link groups as chips that open linked cards beside them, a step chip on each card that leads back to the step showing it (its root and note open on the left, joined by an arrow), arrows labelled with the relation, a trail from the step's root, and gliding moves.
+
+With the canvas focused, the arrow keys pan it. Page Up and Page Down move by a screenful with a small overlap. Hold Shift to page horizontally. Home and End move to the top and bottom of the opened cards.
+
+Right-click a hunk card to open the [context picker](context-picker.md). Clicking a diff row uses that row's side and line. The picker can open the current project file in a [canvas session](canvas-session.md) when the file exists locally.
 
 Entry points for further exploration:
 

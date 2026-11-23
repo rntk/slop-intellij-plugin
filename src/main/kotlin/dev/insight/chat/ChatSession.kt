@@ -80,7 +80,7 @@ open class ChatSession(
         val request = messages
         turn = scope.launch(Dispatchers.EDT) {
             try {
-                val reply = withBackgroundProgress(project, replyProgressTitle(text.trim())) {
+                suspend fun requestReply(): String =
                     withContext(Dispatchers.IO + FileTraceContext(fileTrace)) {
                         backendFactory.create { proposed = it }.reply(request) { event ->
                             withContext(Dispatchers.EDT) {
@@ -90,7 +90,9 @@ open class ChatSession(
                             }
                         }
                     }
-                }
+                val reply = replyProgressTitle(text.trim())?.let { title ->
+                    withBackgroundProgress(project, title) { requestReply() }
+                } ?: requestReply()
                 history += ChatMessage(ChatRole.ASSISTANT, reply, chartReferences?.revision, chartReferences?.storyId)
                 followups = proposed
             } catch (e: CancellationException) {
@@ -179,7 +181,8 @@ open class ChatSession(
     private fun notifyViews() = listeners.forEach { it() }
 
     /** The whole turn, including tool calls and retries, shares one native IDE progress task. */
-    protected open fun replyProgressTitle(text: String): String = "Insight chat"
+    /** Returns null when the backend owns the reply's progress. */
+    protected open fun replyProgressTitle(text: String): String? = "Insight chat"
 
     private fun describe(event: ToolCallEvent): String {
         val arguments = event.arguments.entrySet().joinToString(", ") { (key, value) ->

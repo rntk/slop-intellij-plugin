@@ -3,6 +3,7 @@ package dev.insight.diff
 import dev.insight.callgraph.LineChange
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.PatchSource
+import dev.insight.review.ReviewPipeline
 import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewStateMessages
@@ -115,6 +116,8 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     private var walkedRevision = -1
     /** The latest walkthrough of the current snapshot, from a run or a missing model; null before one, or once the diff changed. */
     internal val walkthrough: Walkthrough? get() = walked?.takeIf { walkedRevision == revision }
+    internal override fun isDone(pipeline: ReviewPipeline): Boolean =
+        if (pipeline == ReviewPipeline.WALKTHROUGH) walkthrough?.complete == true else super.isDone(pipeline)
     private var previewOf: List<ReviewFile>? = null
     private var preview: Walkthrough? = null
     /** [walkthrough], else every hunk of the snapshot pending, split once per snapshot, so the page can show them before a run. */

@@ -133,9 +133,18 @@ class WalkthroughWorkflow(
         onToolCall: suspend (ToolCallEvent) -> Unit = {},
     ): Walkthrough {
         val hunks = walkHunks(files)
-        onUpdate(Walkthrough.pending(hunks))
-        onProgress(WalkProgress(WalkPhase.TRIAGE, 0, hunks.size, 0, message = "Classifying ${hunks.size} hunks…"))
-        val triaged = WalkTriage(decide.takeIf { options.triage }, options.triageBatchSize, maxRequests = options.maxTriageRequests).classify(hunks)
+        val pending = Walkthrough.pending(hunks)
+        val cancelled = "The walkthrough was cancelled; changes it did not reach are shown as not linked."
+        val triaged = try {
+            onUpdate(pending)
+            onProgress(WalkProgress(WalkPhase.TRIAGE, 0, hunks.size, 0, message = "Classifying ${hunks.size} hunks…"))
+            WalkTriage(decide.takeIf { options.triage }, options.triageBatchSize, maxRequests = options.maxTriageRequests).classify(hunks)
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                onUpdate(pending.ensureEveryHunkShown().copy(warnings = listOf(cancelled)))
+            }
+            throw e
+        }
         val ledger = WalkLedger(hunks, triaged.triage, onUpdate)
         triaged.warnings.forEach(ledger::warn)
         val order = seedOrder(hunks, triaged.triage)
@@ -147,7 +156,6 @@ class WalkthroughWorkflow(
             contextChars = options.subagentContextChars, answerChars = options.subagentAnswerChars,
             toolResultChars = options.toolResultChars, knownHunk = { ledger.hunk(it) != null }, onToolCall = onToolCall)
         val baseTools = tools.readOnly().filter { it !== tools.readSnapshotSource } + tools.recording()
-        ledger.emit()
 
         var turn = 0
         var failed = 0
@@ -157,6 +165,7 @@ class WalkthroughWorkflow(
         suspend fun progress(phase: WalkPhase, seed: List<String>, message: String) = onProgress(WalkProgress(phase,
             ledger.snapshot().coverage().handled, hunks.size, ledger.stepCount, seed, turn, options.maxSeedTurns, budget.used, failed, message))
         try {
+            ledger.emit()
             while (true) {
                 val seed = nextSeed(order, ledger, attempted) ?: break
                 if (turn >= options.maxSeedTurns) {
@@ -210,7 +219,7 @@ class WalkthroughWorkflow(
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
                 ledger.finalize()
-                ledger.warn("The walkthrough was cancelled; changes it did not reach are shown as not linked.")
+                ledger.warn(cancelled)
                 ledger.emit()
             }
             throw e

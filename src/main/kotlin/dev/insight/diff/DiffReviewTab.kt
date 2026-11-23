@@ -13,6 +13,8 @@ import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import dev.insight.agent.ChatBackend
 import dev.insight.agent.ChatMessage
 import dev.insight.agent.ChatTool
@@ -30,6 +32,7 @@ import dev.insight.llm.CompletionFn
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
+import dev.insight.review.ReviewPipeline
 import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewCodeLocation
@@ -84,6 +87,7 @@ import dev.insight.review.wall.WallScope
 import dev.insight.review.ui.viewTileId
 import dev.insight.decisions.configuredDecisions
 import dev.insight.diff.walk.WalkOptions
+import dev.insight.diff.walk.WalkPhase
 import dev.insight.diff.walk.Walkthrough
 import dev.insight.diff.walk.WalkthroughWorkflow
 import dev.insight.diff.walk.ui.WalkthroughActions
@@ -293,7 +297,9 @@ internal class DiffReviewTab(
         "Ask about ${if (paths == null) "the current changes" else "the selected files' changes"}, or type /summaries to read the change from the whole down to each file. " +
             "Use /topics to read every diff as one document grouped by code topic, or /grouping to group by shared change cause. " +
             "Use Explain on a summary, or /explain with a path, to learn how a change works and why.") {
-        override fun replyProgressTitle(text: String): String = reviewProgressTitle(text, "change", ReviewCommand.diff)
+        override fun replyProgressTitle(text: String): String? =
+            reviewProgressTitle(text, "change", ReviewCommand.diff)
+                .takeUnless { ReviewCommand.parse(text, ReviewCommand.diff) == ReviewCommand.WALKTHROUGH }
     }
 
     private fun createBackend(): ChatBackend = object : ChatBackend {
@@ -304,12 +310,12 @@ internal class DiffReviewTab(
             }
             val files = snapshot.files
             val question = messages.lastOrNull()?.text.orEmpty()
-            val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
-            val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
             val command = ReviewCommand.parse(question, ReviewCommand.diff)
             if (command == ReviewCommand.WALKTHROUGH) {
-                val job = withContext(Dispatchers.EDT) { openWalkthrough(); startWalkthrough(summariesFocus(question).ifEmpty { null }) }
-                    ?: return "There are no changed files to walk through."
+                val job = withContext(Dispatchers.EDT) {
+                    if (runningPipeline != ReviewPipeline.WALKTHROUGH) openWalkthrough()
+                    startWalkthrough(summariesFocus(question).ifEmpty { null })
+                } ?: return "There are no changed files to walk through."
                 try {
                     job.join()
                 } catch (e: CancellationException) {
@@ -318,6 +324,8 @@ internal class DiffReviewTab(
                 }
                 return withContext(Dispatchers.EDT) { walkthroughReply() }
             }
+            val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+            val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
             if (command == ReviewCommand.TOPICS) {
                 val run = withCountProgress("Classifying changed files…", "files classified") { onProgress ->
                     diffTopicGenerator(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, contextCharsForOutput = configuredContextCharsForOutput(48_000))
@@ -529,11 +537,11 @@ internal class DiffReviewTab(
         val snapshot = state.snapshot
         val files = snapshot.files
         val revision = state.revision
-        fun current() = !disposed && state.revision == revision
         walkMessage = null
         walkProgress = "Starting…"
-        val job = scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             val run = coroutineContext[Job]
+            fun current() = walkJob === run && !disposed && state.revision == revision
             try {
                 val client = complete?.let { Result.success(it) } ?: withContext(Dispatchers.IO) {
                     try {
@@ -554,14 +562,27 @@ internal class DiffReviewTab(
                 val traced = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, raw)
                 val options = if (complete == null) WalkOptions(contextChars = configuredContextChars(WalkOptions().contextChars)) else WalkOptions()
                 val workflow = WalkthroughWorkflow(traced, decide, projectContextTools(project), options)
-                withContext(Dispatchers.Default) {
-                    workflow.run(snapshot, focus,
-                        onUpdate = { walkthrough -> withContext(Dispatchers.EDT) {
-                            if (current() && state.setWalkthrough(revision, walkthrough)) walkthroughChanged()
-                        } },
-                        onProgress = { progress -> withContext(Dispatchers.EDT) {
-                            if (current()) { walkProgress = walkProgressText(progress); walkthroughChanged() }
-                        } })
+                withBackgroundProgress(project, "Building diff walkthrough", cancellable = true) {
+                    reportRawProgress { reporter ->
+                        withContext(Dispatchers.Default) {
+                            workflow.run(snapshot, focus,
+                                onUpdate = { walkthrough -> withContext(Dispatchers.EDT) {
+                                    if (current() && state.setWalkthrough(revision, walkthrough)) walkthroughChanged()
+                                } },
+                                onProgress = { progress ->
+                                    val text = walkProgressText(progress)
+                                    reporter.text(text)
+                                    reporter.fraction(when (progress.phase) {
+                                        WalkPhase.WALKING -> if (progress.total > 0) progress.handled.toDouble() / progress.total else null
+                                        WalkPhase.DONE -> 1.0
+                                        WalkPhase.TRIAGE, WalkPhase.VERIFYING -> null
+                                    })
+                                    withContext(Dispatchers.EDT) {
+                                        if (current()) { walkProgress = text; walkthroughChanged() }
+                                    }
+                                })
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -569,14 +590,15 @@ internal class DiffReviewTab(
                 LOG.warn("Walkthrough failed", e)
                 if (current()) walkMessage = "The walkthrough failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
-                if (walkJob === run) walkJob = null
                 if (current()) {
                     walkProgress = null
+                    walkJob = null
                     walkthroughChanged()
                 }
             }
         }
         walkJob = job
+        job.start()
         walkthroughChanged()
         return job
     }

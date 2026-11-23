@@ -79,6 +79,16 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     var groupingVisible = false
         private set
 
+    /** Whether a scheduled pipeline can be skipped because it is complete or unavailable for this review. */
+    internal open fun isDone(pipeline: ReviewPipeline): Boolean = when (pipeline) {
+        ReviewPipeline.SUMMARIES -> summaries.complete
+        ReviewPipeline.TOPICS -> topics.complete
+        ReviewPipeline.TOPIC_SUMMARIES -> topics.labels.isEmpty() || topicSummaries.complete
+        ReviewPipeline.GROUPING -> grouping.complete
+        ReviewPipeline.GROUPING_SUMMARIES -> grouping.labels.isEmpty() || groupingSummaries.complete
+        ReviewPipeline.WALKTHROUGH -> true
+    }
+
     /**
      * Moves to a new revision of [next]: drops the notes and source blocks of [changed] paths, keeps the summaries and
      * topics of unchanged files and restores those saved for [slot]. [reset] discards everything, as for a new request.
