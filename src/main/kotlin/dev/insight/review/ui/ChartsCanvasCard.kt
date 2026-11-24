@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
@@ -36,6 +37,7 @@ import dev.insight.review.ReviewSource
 import dev.insight.review.SourceOutlines
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.review.TreeFileConnectionIndex
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -55,7 +57,11 @@ import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -137,11 +143,18 @@ internal class ChartsCanvasCard(
     private var activeSymbolKey: String? = null
     private val pendingSymbols = mutableSetOf<String>()
     private val symbolErrors = mutableMapOf<String, String>()
+    private val treeConnectionScope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+    private var treeConnectionJob: Job? = null
+    private var treeConnectionIndex: TreeFileConnectionIndex? = null
+    private var treeConnectionSelection: TreeConnectionSelection? = null
+    private var currentTreeBoard: TreeBoardPanel? = null
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
 
     fun update(content: ChartsCard?) {
         if (content == null) {
+            resetTreeConnections()
+            currentTreeBoard = null
             preview?.let(Disposer::dispose)
             preview = null
             currentCard = null
@@ -161,6 +174,7 @@ internal class ChartsCanvasCard(
         val lines = tabbed && !circles && !tree
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
+        if (searchRevision != content.revision) resetTreeConnections()
         searchRevision = content.revision
         // A search names the files of the revision it ran against; a new revision may have removed or changed them.
         if (view.searchResult?.let { it.revision != content.revision } == true) {
@@ -241,6 +255,11 @@ internal class ChartsCanvasCard(
             canSummarizeDeclaration = { symbolSummaries != null && it.summarySpan != null },
         ) else null
         val circleChart = if (hierarchy != null && circles) circleChart(hierarchy, content.tree, inner) else null
+        if (tree && project != null && treeConnectionIndex == null) {
+            val sources = content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
+                .distinctBy { it.path }
+            treeConnectionIndex = TreeFileConnectionIndex(project, sources)
+        }
         val treeBoard = if (hierarchy != null && tree) TreeBoardPanel(
             hierarchy,
             vocabulary.rootName,
@@ -258,10 +277,13 @@ internal class ChartsCanvasCard(
                 view.treePanX = px
                 view.treePanY = py
             },
+            toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
         ).apply {
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
+            connectionSelection = treeConnectionSelection
         } else null
+        currentTreeBoard = treeBoard
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -363,6 +385,39 @@ internal class ChartsCanvasCard(
             SwingUtilities.invokeLater { if (currentCard === card) focusTarget.requestFocusInWindow() }
         }
         return card
+    }
+
+    private fun toggleTreeConnections(index: TreeFileConnectionIndex, path: String) {
+        treeConnectionJob?.cancel()
+        if (treeConnectionSelection?.path == path) {
+            showTreeConnections(null)
+            return
+        }
+        showTreeConnections(TreeConnectionSelection(path, message = "Resolving code connections…"))
+        treeConnectionJob = treeConnectionScope.launch {
+            val selection = try {
+                val connections = index.connections(path)
+                if (connections == null) TreeConnectionSelection(path, message = "No live source available")
+                else TreeConnectionSelection(path, connections)
+            } catch (e: Exception) {
+                if (e is CancellationException || e is ControlFlowException) throw e
+                logger<ChartsCanvasCard>().warn("Could not resolve code connections for $path", e)
+                TreeConnectionSelection(path, message = "Could not resolve code connections. See the IDE log.")
+            }
+            if (isActive) showTreeConnections(selection)
+        }
+    }
+
+    private fun showTreeConnections(selection: TreeConnectionSelection?) {
+        treeConnectionSelection = selection
+        currentTreeBoard?.connectionSelection = selection
+    }
+
+    private fun resetTreeConnections() {
+        treeConnectionJob?.cancel()
+        treeConnectionJob = null
+        treeConnectionIndex = null
+        treeConnectionSelection = null
     }
 
     private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent) =
@@ -664,6 +719,9 @@ internal class ChartsCanvasCard(
     private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)
 
     override fun dispose() {
+        treeConnectionScope.cancel()
+        resetTreeConnections()
+        currentTreeBoard = null
         preview?.let(Disposer::dispose)
         preview = null
         currentCard = null
