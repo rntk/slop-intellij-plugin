@@ -69,7 +69,7 @@ internal class LineChartPanel(
     /** Parses a file's outline in the background, then calls back; null keeps files as leaves. */
     private val loadOutline: ((ReviewSource, () -> Unit) -> Unit)? = null,
     private val canSummarizeDeclaration: (OutlineDeclaration) -> Boolean = { false },
-) : JPanel(BorderLayout(0, JBUI.scale(12))) {
+) : JPanel(BorderLayout(0, JBUI.scale(4))) {
     private val metric = chart.metric
     private val outlineHint = loadOutline != null && metric.outlines
     private val numberColor get() = metric.diffSeries?.let { RadarChartPanel.color(it) } ?: UIUtil.getLabelForeground()
@@ -101,19 +101,19 @@ internal class LineChartPanel(
         isOpaque = false
         isFocusable = true
         getAccessibleContext().accessibleName = "${metric.label} chart"
-        add(JPanel(VerticalLayout(JBUI.scale(6))).apply {
+        add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
             isOpaque = false
             add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
                 name = "charts-lines-breadcrumbs"
                 isOpaque = false
                 chart.breadcrumbs(directory).forEachIndexed { index, entry ->
-                    if (index > 0) add(JLabel(" / ").apply { font = chartFont(font); foreground = UIUtil.getContextHelpForeground() })
+                    if (index > 0) add(JLabel(" / ").apply { font = JBFont.small(); foreground = UIUtil.getContextHelpForeground() })
                     val title = if (index == 0) rootLabel + entry.path.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() else entry.label
                     val activeCrumb = entry.path == preview?.path
                     add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { explore(entry.path) }).apply {
                         name = "charts-lines-crumb:${entry.path}"
                         toolTipText = entry.path.ifEmpty { rootLabel } + if (activeCrumb) " · Showing in preview" else ""
-                        font = chartFont(font).let { if (activeCrumb) it.deriveFont(it.style or Font.BOLD) else it }
+                        font = JBFont.small().let { if (activeCrumb) it.deriveFont(it.style or Font.BOLD) else it }
                         if (activeCrumb) {
                             border = JBUI.Borders.compound(
                                 JBUI.Borders.customLine(JBUI.CurrentTheme.Focus.focusColor(), 1),
@@ -123,18 +123,22 @@ internal class LineChartPanel(
                         componentPopupMenu = contextMenu?.invoke(entry)
                     })
                 }
-            })
-            add(JLabel(valueText(directory.value) + if (metric == LineChartMetric.ITEMS) "" else " · " + fileCount(directory)).apply {
-                name = "charts-lines-total"
-                font = chartFont(JBFont.small())
-                foreground = numberColor
-                toolTipText = metric.description
-            })
-            add(JLabel(if (outlineHint) "Click a directory to explore or unfold a file for its declarations · ↑↓ move, ←→ fold, Enter opens"
-                else "Click a directory to explore · ↑↓ move, ←→ fold, Enter opens").apply {
-                font = chartFont(JBFont.small())
-                foreground = UIUtil.getContextHelpForeground()
-            })
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+                add(JLabel(valueText(directory.value) + if (metric == LineChartMetric.ITEMS) "" else " · " + fileCount(directory)).apply {
+                    name = "charts-lines-total"
+                    font = JBFont.small()
+                    foreground = numberColor
+                    toolTipText = metric.description
+                })
+                add(JLabel(AllIcons.General.ContextHelp).apply {
+                    toolTipText = if (outlineHint) "Click a directory to explore or unfold a file for its declarations · ↑↓ move, ←→ fold, Enter opens"
+                        else "Click a directory to explore · ↑↓ move, ←→ fold, Enter opens"
+                    accessibleContext.accessibleName = "Chart navigation help"
+                    accessibleContext.accessibleDescription = toolTipText
+                })
+            }, BorderLayout.EAST)
         }, BorderLayout.NORTH)
         add(list, BorderLayout.CENTER)
         rebuildRows(cursorPath)

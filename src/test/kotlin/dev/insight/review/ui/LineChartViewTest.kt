@@ -9,6 +9,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBTabbedPane
+import com.intellij.util.ui.JBUI
 import dev.insight.callgraph.ProgressiveSchematic
 import dev.insight.canvas.SymbolSummaryCache
 import dev.insight.canvas.relativePath
@@ -44,6 +45,7 @@ import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JSplitPane
 import javax.swing.JToggleButton
+import javax.swing.SwingUtilities
 import javax.swing.text.StyleConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +55,36 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 
 class LineChartViewTest : BasePlatformTestCase() {
+    fun testLineChartControlsAndDirectoryHeaderUseCompactRows() {
+        val file = CodeFile("src/a.kt", "/repo/src/a.kt", "one\n")
+        val scope = CoroutineScope(SupervisorJob())
+        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, search = ChartSearchActions(scope) { error("Unused") })
+        try {
+            builder.view.linesPath = "src"
+            builder.view.searchStatus = "The search failed. ${"Long message. ".repeat(20)}"
+            val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file)))))
+            card.setSize(JBUI.scale(860), JBUI.scale(740))
+            val components = descendants(card)
+            components.filterIsInstance<Container>().forEach { it.doLayout() }
+            fun bounds(name: String) = components.single { it.name == name }.let {
+                SwingUtilities.convertRectangle(it.parent, it.bounds, card)
+            }
+
+            val tabs = bounds("charts-lines-metric-tabs")
+            val toolbar = listOf("charts-type-selector", "charts-search-field", "charts-search-send").map(::bounds)
+            assertTrue(toolbar.all { it.width > 0 && it.x >= 0 && it.maxX <= card.width && it.maxY <= tabs.y })
+            assertTrue(toolbar.maxOf { it.y } < toolbar.minOf { it.maxY })
+
+            val crumb = bounds("charts-lines-crumb:src")
+            val total = bounds("charts-lines-total")
+            assertTrue(crumb.width > 0 && crumb.maxX <= total.x)
+            assertTrue(crumb.y < total.maxY && total.y < crumb.maxY)
+        } finally {
+            builder.dispose()
+            scope.cancel()
+        }
+    }
+
     fun testChartPreviewActionsSelectFileAndDirectory() {
         val files = listOf("src/a.kt", "readme.md").map { CodeFile(it, "/repo/$it", "one\ntwo") }
         val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE)

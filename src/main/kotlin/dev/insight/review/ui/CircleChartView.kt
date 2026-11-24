@@ -1,7 +1,7 @@
 package dev.insight.review.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.ui.components.ActionLink
-import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -47,7 +47,7 @@ internal class CircleChartPanel(
     private val open: (String) -> Unit,
     private val scope: ReviewLineChart.Entry? = null,
     private val contextMenu: ((ReviewLineChart.Entry) -> JPopupMenu)? = null,
-) : JPanel(BorderLayout(0, JBUI.scale(12))) {
+) : JPanel(BorderLayout(0, JBUI.scale(4))) {
     private val metric = chart.metric
     private val root = scope ?: chart.root
     val directory = chart.directory(path).let {
@@ -62,31 +62,35 @@ internal class CircleChartPanel(
         isOpaque = false
         isFocusable = true
         getAccessibleContext().accessibleName = "${metric.label} circles"
-        add(JPanel(VerticalLayout(JBUI.scale(6))).apply {
+        add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
             isOpaque = false
             if (scope == null || directory.path != root.path) add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
                 name = "charts-circles-breadcrumbs"
                 isOpaque = false
                 chart.breadcrumbs(directory).dropWhile { it.path != root.path }.forEachIndexed { index, entry ->
-                    if (index > 0) add(JLabel(" / ").apply { font = chartFont(font); foreground = UIUtil.getContextHelpForeground() })
+                    if (index > 0) add(JLabel(" / ").apply { font = JBFont.small(); foreground = UIUtil.getContextHelpForeground() })
                     val title = if (index == 0) rootLabel + entry.path.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() else entry.label
                     add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { navigate(entry.path) }).apply {
                         name = "charts-circles-crumb:${entry.path}"
                         toolTipText = entry.path.ifEmpty { rootLabel }
-                        font = chartFont(font)
+                        font = JBFont.small()
                     })
                 }
-            })
-            add(JLabel(valueText(directory.value) + if (metric == LineChartMetric.ITEMS) "" else " · " + fileCount(directory.files)).apply {
-                name = "charts-circles-total"
-                font = chartFont(JBFont.small())
-                foreground = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
-                toolTipText = metric.description
-            })
-            if (scope == null) add(JLabel("Click a folder to walk in, a file to open it, the background to go up · Backspace goes up").apply {
-                font = chartFont(JBFont.small())
-                foreground = UIUtil.getContextHelpForeground()
-            })
+            }, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+                add(JLabel(valueText(directory.value) + if (metric == LineChartMetric.ITEMS) "" else " · " + fileCount(directory.files)).apply {
+                    name = "charts-circles-total"
+                    font = JBFont.small()
+                    foreground = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
+                    toolTipText = metric.description
+                })
+                if (scope == null) add(JLabel(AllIcons.General.ContextHelp).apply {
+                    toolTipText = "Click a folder to walk in, a file to open it, the background to go up · Backspace goes up"
+                    accessibleContext.accessibleName = "Chart navigation help"
+                    accessibleContext.accessibleDescription = toolTipText
+                })
+            }, BorderLayout.EAST)
         }, BorderLayout.NORTH)
         add(if (packed == null) JLabel(if (metric.hidesEmpty) "No ${metric.plural} here" else "Nothing to measure here").apply {
             name = "charts-circles-empty"

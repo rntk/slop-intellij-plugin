@@ -3,6 +3,7 @@ package dev.insight.review.ui
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBTabbedPane
+import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -13,8 +14,45 @@ import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import javax.swing.JComboBox
 import javax.swing.JLabel
+import javax.swing.SwingUtilities
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 class CircleChartViewTest : BasePlatformTestCase() {
+    fun testCircleChartControlsAndDirectoryHeaderUseCompactRows() {
+        val file = CodeFile("src/a.kt", "/repo/src/a.kt", "one\n")
+        val scope = CoroutineScope(SupervisorJob())
+        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, search = ChartSearchActions(scope) { error("Unused") })
+        try {
+            builder.view.chart = "Circles"
+            builder.view.linesPath = "src"
+            builder.view.searchStatus = "The search failed. ${"Long message. ".repeat(20)}"
+            val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file)))))
+            card.setSize(JBUI.scale(860), JBUI.scale(740))
+            val components = descendants(card)
+            components.filterIsInstance<Container>().forEach { it.doLayout() }
+            fun bounds(component: Component) = SwingUtilities.convertRectangle(component.parent, component.bounds, card)
+            fun named(name: String) = components.single { it.name == name }
+
+            val tabs = bounds(named("charts-lines-metric-tabs"))
+            val toolbar = listOf("charts-type-selector", "charts-search-field", "charts-search-send").map { bounds(named(it)) }
+            assertTrue(toolbar.all { it.width > 0 && it.x >= 0 && it.maxX <= card.width && it.maxY <= tabs.y })
+            assertTrue(toolbar.maxOf { it.y } < toolbar.minOf { it.maxY })
+
+            val help = components.filterIsInstance<JLabel>().single { it.accessibleContext.accessibleName == "Chart navigation help" }
+            val header = listOf(bounds(named("charts-circles-crumb:src")), bounds(named("charts-circles-total")), bounds(help))
+            assertTrue(header.all { it.width > 0 && it.maxY <= bounds(named("charts-circles-canvas")).y })
+            assertTrue(header.zipWithNext().all { (left, right) -> left.maxX <= right.x })
+            assertTrue(header.maxOf { it.y } < header.minOf { it.maxY })
+            assertNotNull(help.icon)
+            assertTrue(help.toolTipText.contains("Backspace goes up"))
+        } finally {
+            builder.dispose()
+            scope.cancel()
+        }
+    }
+
     fun testCirclesDrillDownOnClickOpenFilesWalkUpAndShareTheDirectory() {
         val files = listOf("src/a.kt", "src/nested/b.kt", "readme.md").map { CodeFile(it, "/repo/$it", "one\ntwo\n") }
         val opened = mutableListOf<String>()

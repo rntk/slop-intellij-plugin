@@ -308,7 +308,7 @@ internal class ChartsCanvasCard(
         currentTreeBoard = treeBoard
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            border = JBUI.Borders.empty(if (tabbed) 4 else 10, PADDING, 12, PADDING)
             if (lineChart != null) add(lineChart)
             else if (circleChart != null) add(circleChart)
             else {
@@ -392,9 +392,9 @@ internal class ChartsCanvasCard(
         }
         val searchRow = search?.takeIf { tabbed }?.let { actions ->
             searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
-                content.revision, compact = tree)
+                content.revision)
         }
-        val header = if (treeBoard != null) treeToolbar(chartOptions, treeBoard, searchRow) else JPanel(BorderLayout(scaled(8), 0)).apply {
+        val header = if (tabbed) compactToolbar(chartOptions, searchRow, treeBoard) else JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "charts-controls"
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
@@ -405,11 +405,7 @@ internal class ChartsCanvasCard(
                     else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, inspect the whole project tree on a board, walk through them as circles, or compare code structure on the radar"
             }, BorderLayout.CENTER)
         }
-        card.add(if (searchRow == null || tree) header else JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(searchRow, BorderLayout.NORTH)
-            add(header, BorderLayout.CENTER)
-        }, BorderLayout.NORTH)
+        card.add(header, BorderLayout.NORTH)
         card.add(if (tabbed) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
         currentCard = card
         val focusTarget: JComponent? = lineChart ?: circleChart ?: treeBoard
@@ -420,7 +416,7 @@ internal class ChartsCanvasCard(
         return card
     }
 
-    private fun treeToolbar(chartOptions: JComponent, board: TreeBoardPanel, search: JComponent?) = JPanel(GridBagLayout()).apply {
+    private fun compactToolbar(chartOptions: JComponent, search: JComponent?, board: TreeBoardPanel?) = JPanel(GridBagLayout()).apply {
         name = "charts-controls"
         isOpaque = false
         border = JBUI.Borders.empty(3, 4)
@@ -428,13 +424,14 @@ internal class ChartsCanvasCard(
             gridy = 0
             fill = GridBagConstraints.HORIZONTAL
             insets = JBUI.insets(0, 4)
+            weightx = if (search == null && board == null) 1.0 else 0.0
         }
         add(chartOptions, constraints)
-        add(board.controls, constraints)
-        constraints.weightx = 0.55
+        board?.let { add(it.controls, constraints) }
+        constraints.weightx = if (board == null) 1.0 else 0.55
         search?.let { add(it, constraints) }
         constraints.weightx = 0.45
-        add(board.status, constraints)
+        board?.let { add(it.status, constraints) }
     }
 
     private fun toggleTreeConnections(index: TreeFileConnectionIndex, path: String) {
@@ -518,20 +515,20 @@ internal class ChartsCanvasCard(
      * A one-line query and Send: the model lists and reads the review's files and names the matching paths. The result
      * becomes a Search tab rather than filtering the current one.
      */
-    private fun searchRow(actions: ChartSearchActions, files: List<ReviewSource>, revision: Int, compact: Boolean): JComponent {
+    private fun searchRow(actions: ChartSearchActions, files: List<ReviewSource>, revision: Int): JComponent {
         val status = object : JLabel(view.searchStatus.orEmpty()) {
             override fun getPreferredSize(): Dimension = super.getPreferredSize().apply {
-                if (compact) width = minOf(width, scaled(100))
+                width = minOf(width, scaled(100))
             }
         }.apply {
             name = "charts-search-status"
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-            if (compact) toolTipText = view.searchStatus
-            isVisible = !compact || text.isNotEmpty()
+            toolTipText = view.searchStatus
+            isVisible = text.isNotEmpty()
         }
         val field = JBTextField(view.searchQuery).apply {
             name = "charts-search-field"
-            if (compact) columns = 12
+            columns = 12
             emptyText.text = if (vocabulary == ReviewVocabulary.DIFF) "Find changed files, e.g. “error handling”"
                 else "Find files, e.g. “settings persistence”"
             accessibleContext.accessibleName = "Search query"
@@ -553,10 +550,8 @@ internal class ChartsCanvasCard(
                 send.isEnabled = false
                 send.text = "Searching…"
                 status.text = view.searchStatus
-                if (compact) {
-                    status.toolTipText = view.searchStatus
-                    status.isVisible = true
-                }
+                status.toolTipText = view.searchStatus
+                status.isVisible = true
             }
         }
         field.addActionListener { start() }
@@ -564,7 +559,6 @@ internal class ChartsCanvasCard(
         return JPanel(BorderLayout(scaled(6), 0)).apply {
             name = "charts-search"
             isOpaque = false
-            if (!compact) border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 8))
             add(field, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
                 isOpaque = false
