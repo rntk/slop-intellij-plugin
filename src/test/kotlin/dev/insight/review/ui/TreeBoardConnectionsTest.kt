@@ -3,13 +3,18 @@ package dev.insight.review.ui
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import com.intellij.ui.components.JBTabbedPane
+import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
+import dev.insight.context.ContextKeys
+import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
+import java.awt.Cursor
 import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
@@ -35,9 +40,18 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                     public static void run() { new model.Model(); new model.Model(); }
                 }
             """.trimIndent(),
-            client to "package client; class Client { void run() { api.Api.run(); } }",
+            client to """
+                package client;
+                import api.Api;
+                class Client {
+                    void run() {
+                        Api.run();
+                        Api.run();
+                    }
+                }
+            """.trimIndent(),
             model to "package model; public class Model {}",
-            imported to "package model; public class Imported {}",
+            imported to "package model;\n\npublic class Imported {}",
         ).map { (path, source) ->
             val psi = myFixture.addFileToProject(path, source)
             CodeFile(path, psi.virtualFile.path, source)
@@ -60,7 +74,10 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             clickConnections(initial, api)
             PlatformTestUtil.waitWithEventsDispatching("Tree code connections should resolve",
                 { initial.connectionSelection?.connections != null }, 20)
-            assertEquals(TreeFileConnections(setOf(client), setOf(model, imported)), initial.connectionSelection?.connections)
+            assertEquals(TreeFileConnections(
+                mapOf(client to TreeConnectionSite(5, 5)),
+                mapOf(model to TreeConnectionSite(5, 1), imported to TreeConnectionSite(2, 3)),
+            ), initial.connectionSelection?.connections)
             assertTrue(opened.isEmpty())
 
             descendants(canvas).filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }.selectedIndex = 1
@@ -86,6 +103,14 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                 return image.getRGB(gutter, 0, 900 - gutter, 500, null, 0, 900 - gutter)
             }
             val connected = paintGutter()
+            val clientRow = checkNotNull(resized.rowScreenBounds(client))
+            val nearIncoming = MouseEvent(resized.canvas, MouseEvent.MOUSE_MOVED, 0, 0, gutter,
+                clientRow.centerY.toInt() - JBUI.scale(8), 0, false)
+            resized.canvas.dispatchEvent(nearIncoming)
+            assertTrue(resized.canvas.getToolTipText(nearIncoming).orEmpty().contains("$client → $api"))
+            assertFalse("Hover should highlight the incoming link", connected.contentEquals(paintGutter()))
+            resized.canvas.dispatchEvent(MouseEvent(resized.canvas, MouseEvent.MOUSE_EXITED, 0, 0, -1, -1, 0, false))
+            assertTrue(connected.contentEquals(paintGutter()))
             val binding = resized.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
                 .get(KeyStroke.getKeyStroke(KeyEvent.VK_C, 0))
             resized.actionMap.get(binding).actionPerformed(ActionEvent(resized, 0, binding.toString()))
@@ -95,6 +120,45 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testLinkHitAreaAndPickerPreserveDirection() {
+        val a = CodeFile("a.kt", "/src/a.kt", "val a = 1")
+        val b = CodeFile("b.kt", "/src/b.kt", "val b = a")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(a, b)))
+        val incoming = TreeConnectionSite(3, 7)
+        val outgoing = TreeConnectionSite(4, 9)
+        val opened = mutableListOf<Triple<String, String, TreeConnectionSite>>()
+        val board = TreeBoardPanel(chart, "Project", {}, openConnection = { from, to, site, _ -> opened += Triple(from, to, site) })
+        val canvas = board.canvas
+        canvas.setSize(800, 400)
+        board.connectionSelection = TreeConnectionSelection(a.path, TreeFileConnections(mapOf(b.path to incoming), mapOf(b.path to outgoing)))
+        val bounds = checkNotNull(board.rowScreenBounds(b.path))
+        val x = board.board.nodes.maxOf {
+            checkNotNull(board.rowScreenBounds(it.entry.path)).let { row -> row.x + row.width }
+        } + JBUI.scale(12)
+        fun event(id: Int, offset: Int, button: Int, popup: Boolean = false) =
+            MouseEvent(canvas, id, 0, 0, x, bounds.centerY.toInt() + JBUI.scale(offset), 1, popup, button)
+        // Four pixels beyond either horizontal stroke, including the gaps in the dashed incoming link.
+        val hover = event(MouseEvent.MOUSE_MOVED, -8, MouseEvent.NOBUTTON)
+        canvas.dispatchEvent(hover)
+        assertEquals(Cursor.HAND_CURSOR, canvas.cursor.type)
+        assertTrue(canvas.getToolTipText(hover).orEmpty().contains("b.kt → a.kt"))
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, -8, MouseEvent.BUTTON1))
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_PRESSED, 8, MouseEvent.BUTTON3))
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_RELEASED, 8, MouseEvent.BUTTON3, popup = true))
+        assertEquals(listOf(Triple(b.path, a.path, incoming), Triple(a.path, b.path, outgoing)), opened)
+
+        val pick = treeConnectionPick(b, a, incoming, emptyMap(), null)
+        assertEquals(listOf(b.path, a.path), pick.candidates.single().files)
+        assertEquals(listOf(b.absolutePath, a.absolutePath), pick.data[ContextKeys.LINKED_FILES]?.map { it.absolutePath })
+
+        assertEquals(listOf(3..3, 7..7), pick.data[ContextKeys.LINKED_FILES]?.map { it.lines })
+
+        board.connectionSelection = null
+        canvas.dispatchEvent(hover)
+        assertEquals(Cursor.DEFAULT_CURSOR, canvas.cursor.type)
+        assertNull(canvas.getToolTipText(hover))
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +

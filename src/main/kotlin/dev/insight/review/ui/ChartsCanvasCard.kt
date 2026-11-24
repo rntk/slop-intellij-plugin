@@ -11,6 +11,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.panels.VerticalLayout
@@ -21,6 +22,7 @@ import dev.insight.canvas.CanvasSummaryException
 import dev.insight.canvas.SymbolSummarySource
 import dev.insight.canvas.relativePath
 import dev.insight.canvas.summarySource
+import dev.insight.context.showContextPicker
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
 import dev.insight.review.ChartSearchResult
@@ -276,6 +278,16 @@ internal class ChartsCanvasCard(
                 view.treeZoom = z
                 view.treePanX = px
                 view.treePanY = py
+            },
+            openConnection = project?.let { ownerProject ->
+                { from, to, site, event ->
+                    val source = hierarchy.source(from)
+                    val target = hierarchy.source(to)
+                    if (source != null && target != null) {
+                        val pick = treeConnectionPick(source, target, site, reviewDestinations(), openOnWall)
+                        showContextPicker(ownerProject, pick, event.component, RelativePoint(event))
+                    }
+                }
             },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
         ).apply {

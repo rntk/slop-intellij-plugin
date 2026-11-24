@@ -52,14 +52,15 @@ object ProjectGraphAnalyzer {
         scope: PsiElement = file,
         foldFunctions: Boolean = false,
         emit: (PsiElement, PsiElement, RelationKind) -> Unit) =
-        relations(file, occurrence, scope, foldFunctions, null, emit)
+        relationsWithSites(file, occurrence, scope, foldFunctions) { from, to, relation, _ -> emit(from, to, relation) }
 
-    internal fun relations(file: PsiFile,
+    /** The fourth callback argument identifies the source occurrence within the analyzed file. */
+    internal fun relationsWithSites(file: PsiFile,
         occurrence: (PsiElement, PsiElement, CallResolution) -> Unit = { _, _, _ -> },
         scope: PsiElement = file,
         foldFunctions: Boolean = false,
-        lineRange: TextRange?,
-        emit: (PsiElement, PsiElement, RelationKind) -> Unit) {
+        lineRange: TextRange? = null,
+        emit: (PsiElement, PsiElement, RelationKind, PsiElement) -> Unit) {
         fun owner(element: PsiElement?): PsiElement {
             var current = element
             while (current != null && current !is PsiFile) {
@@ -75,14 +76,14 @@ object ProjectGraphAnalyzer {
                 if (lineRange != null &&
                     (element.textRange.endOffset <= lineRange.startOffset || element.textRange.startOffset >= lineRange.endOffset)) return
                 if (foldFunctions && element !== scope && kind(element) == SymbolKind.FUNCTION) {
-                    headlineReferences(element) { target -> emit(element, source(target), RelationKind.REFERENCE) }
+                    headlineReferences(element) { target -> emit(element, source(target), RelationKind.REFERENCE, element) }
                     return
                 }
                 val inRange = lineRange == null || element.textOffset in lineRange.startOffset..lineRange.endOffset
-                if (inRange && element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS)
+                if (inRange && element !== file && kind(element) != null) emit(owner(element.parent), element, RelationKind.CONTAINS, element)
                 if (inRange) {
                     for (method in supports.flatMap { it.superMethods(element) }) {
-                        emit(element, source(method), RelationKind.INHERITS)
+                        emit(element, source(method), RelationKind.INHERITS, element)
                     }
                 }
                 var context: PsiElement? = element
@@ -97,11 +98,11 @@ object ProjectGraphAnalyzer {
                 if (call != null) {
                     occurrence(from, element, call)
                     val callKind = if (call.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
-                    call.targets.forEach { emit(from, source(it), relation ?: callKind) }
+                    call.targets.forEach { emit(from, source(it), relation ?: callKind, call.callee) }
                 }
                 if (inRange && relation == RelationKind.IMPORT && element !is PsiFile) {
                     supports.firstNotNullOfOrNull { it.unwrapImport(element) }?.let { imported ->
-                        emit(from, source(imported), RelationKind.IMPORT)
+                        emit(from, source(imported), RelationKind.IMPORT, element)
                     }
                 }
                 for (reference in element.navigationReferences()) {
@@ -109,7 +110,7 @@ object ProjectGraphAnalyzer {
                         val range = referenceRange(reference) ?: continue
                         if (range.startOffset < lineRange.startOffset || range.endOffset > lineRange.endOffset) continue
                     }
-                    for (target in resolveTargets(reference)) emit(from, source(target), relation ?: RelationKind.REFERENCE)
+                    for (target in resolveTargets(reference)) emit(from, source(target), relation ?: RelationKind.REFERENCE, reference.element)
                 }
                 super.visitElement(element)
             }
@@ -241,8 +242,8 @@ object ProjectGraphAnalyzer {
         }
         if (!declarationsOnly) files.forEachIndexed { index, file ->
             progress("Resolving references (${index + 1}/${files.size}): ${file.virtualFile.path}")
-            relations(file, occurrence = { from, site, resolution ->
-                val owner = key(from)?.let(ids::get) ?: return@relations
+            relationsWithSites(file, occurrence = { from, site, resolution ->
+                val owner = key(from)?.let(ids::get) ?: return@relationsWithSites
                 val scopeElement = generateSequence(site.parent) { it.parent }.firstOrNull {
                     it is PsiFile || kind(it) in setOf(SymbolKind.FUNCTION, SymbolKind.CLASS)
                 } ?: file
@@ -272,7 +273,7 @@ object ProjectGraphAnalyzer {
                 occurrences += record
                 val relation = if (resolution.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
                 record.displayTargets.forEach { edges += CallGraphEdge(owner, it, relation) }
-            }, scope = scope ?: file, foldFunctions = selectedFiles != null && foldFunctions, lineRange = lineRange) { from, to, relation ->
+            }, scope = scope ?: file, foldFunctions = selectedFiles != null && foldFunctions, lineRange = lineRange) { from, to, relation, _ ->
                 val fromId = key(from)?.let(ids::get)
                 // Package imports (for example Go) resolve to a directory: link every graph file directly inside it.
                 val toIds = if (to is PsiDirectory) filesByDirectory[to.virtualFile.path].orEmpty()

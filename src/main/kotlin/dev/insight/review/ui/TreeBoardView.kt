@@ -14,6 +14,7 @@ import dev.insight.review.ReviewTreeBoard
 import dev.insight.review.TreeBoardHighlight
 import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
+import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.ui.FloatingPanel
 import java.awt.BasicStroke
@@ -37,6 +38,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
+import java.awt.geom.Line2D
 import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import java.util.Locale
@@ -60,6 +62,21 @@ internal data class TreeConnectionSelection(
     val message: String? = null,
 )
 
+private data class ConnectionRoute(
+    val from: String, val to: String, val outgoing: Boolean,
+    val x1: Double, val y1: Double, val bend: Double, val x2: Double, val y2: Double,
+) {
+    fun distanceSq(point: Point): Double {
+        val x = point.x.toDouble()
+        val y = point.y.toDouble()
+        return minOf(
+            Line2D.ptSegDistSq(x1, y1, bend, y1, x, y),
+            Line2D.ptSegDistSq(bend, y1, bend, y2, x, y),
+            Line2D.ptSegDistSq(bend, y2, x2, y2, x, y),
+        )
+    }
+}
+
 /**
  * A pannable, zoomable whole-project tree board with foldable directories, a keyboard/mouse cursor, and branch
  * highlighting for the active and hovered paths.
@@ -78,6 +95,7 @@ internal class TreeBoardPanel(
     initialPanY: Double = 0.0,
     private val viewportChanged: (Double, Double, Double) -> Unit = { _, _, _ -> },
     private val toggleConnections: ((String) -> Unit)? = null,
+    private val openConnection: ((String, String, TreeConnectionSite, MouseEvent) -> Unit)? = null,
 ) : JPanel(BorderLayout(0, JBUI.scale(8))) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -95,6 +113,7 @@ internal class TreeBoardPanel(
     var connectionSelection: TreeConnectionSelection? = null
         set(value) {
             field = value
+            canvas.invalidateRoutes()
             updateConnectionStatus()
             canvas.repaint()
         }
@@ -325,7 +344,7 @@ internal class TreeBoardPanel(
             links == null || (links.incoming.isEmpty() && links.outgoing.isEmpty()) ->
                 "${selection.path} · No code connections within this review"
             else -> {
-                val hidden = (links.incoming + links.outgoing).count { board.indexOf(it) < 0 }
+                val hidden = (links.incoming.keys + links.outgoing.keys).count { board.indexOf(it) < 0 }
                 val hint = when {
                     board.indexOf(selection.path) < 0 -> " · Selected file is hidden"
                     hidden > 0 -> " · $hidden hidden by folds or the current tab"
@@ -337,7 +356,10 @@ internal class TreeBoardPanel(
         }
     }
 
-    private fun notifyViewportChanged() = viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
+    private fun notifyViewportChanged() {
+        canvas.invalidateRoutes()
+        viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
+    }
 
     private fun zoomText() = "${(viewport.zoom * 100).roundToInt()}%"
 
@@ -416,26 +438,39 @@ internal class TreeBoardPanel(
         private var dragged = false
         private var rowWidthAtZoom: Pair<Double, Int>? = null
 
+        private var routes: List<ConnectionRoute>? = null
+        private var hoveredRoute: ConnectionRoute? = null
+
+        fun invalidateRoutes() {
+            routes = null
+            hoveredRoute = null
+        }
+
         init {
             name = "charts-tree-canvas"
             isOpaque = true
             toolTipText = ""
 
             val mouse = object : MouseAdapter() {
+                private var popupShown = false
+
                 override fun mouseMoved(e: MouseEvent) {
                     val hit = nodeAt(e.x, e.y)
                     val nextHover = hit?.index ?: -1
-                    if (nextHover != hoveredIndex) {
+                    val route = if (hit == null) connectionAt(e.point) else null
+                    if (nextHover != hoveredIndex || route != hoveredRoute) {
+                        hoveredRoute = route
                         hoveredIndex = nextHover
                         updateStatus()
                         repaint()
                     }
-                    cursor = if (hit != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    cursor = if (hit != null || route != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                     else Cursor.getDefaultCursor()
                 }
 
                 override fun mouseExited(e: MouseEvent) {
-                    if (hoveredIndex != -1) {
+                    if (hoveredIndex != -1 || hoveredRoute != null) {
+                        hoveredRoute = null
                         hoveredIndex = -1
                         updateStatus()
                         repaint()
@@ -445,11 +480,12 @@ internal class TreeBoardPanel(
 
                 override fun mousePressed(e: MouseEvent) {
                     this@TreeBoardPanel.requestFocusInWindow()
-                    if (showPopup(e)) return
+                    dragged = false
+                    popupShown = showPopup(e)
+                    if (popupShown) return
                     if (SwingUtilities.isLeftMouseButton(e) || SwingUtilities.isMiddleMouseButton(e)) {
                         dragStart = e.point
                         dragPanStart = viewport.panX to viewport.panY
-                        dragged = false
                     }
                 }
 
@@ -475,14 +511,16 @@ internal class TreeBoardPanel(
                     val wasDragged = dragged
                     dragStart = null
                     dragPanStart = null
-                    cursor = if (nodeAt(e.x, e.y) != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    else Cursor.getDefaultCursor()
-                    if (!wasDragged) showPopup(e)
+                    mouseMoved(e)
+                    if (!wasDragged && !popupShown) popupShown = showPopup(e)
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
-                    if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger || e.isAltDown || dragged) return
-                    val node = nodeAt(e.x, e.y) ?: return
+                    if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger || popupShown || e.isAltDown || dragged) return
+                    val node = nodeAt(e.x, e.y) ?: run {
+                        if (e.clickCount == 1) activateConnection(e)
+                        return
+                    }
                     if (connectionButtonBounds(node)?.contains(e.point) == true) {
                         moveCursor(node.index, reveal = false)
                         if (e.clickCount == 1) toggleConnections?.invoke(node.entry.path)
@@ -517,7 +555,7 @@ internal class TreeBoardPanel(
 
                 private fun showPopup(e: MouseEvent): Boolean {
                     if (!e.isPopupTrigger) return false
-                    val node = nodeAt(e.x, e.y) ?: return false
+                    val node = nodeAt(e.x, e.y) ?: return activateConnection(e)
                     moveCursor(node.index, reveal = false)
                     val menu = contextMenu?.invoke(node.entry)?.takeIf { it.componentCount > 0 } ?: return false
                     menu.show(this@TreeBoardCanvas, e.x, e.y)
@@ -569,6 +607,7 @@ internal class TreeBoardPanel(
 
         fun invalidateRowWidth() {
             rowWidthAtZoom = null
+            invalidateRoutes()
         }
 
         fun contentWorldBounds(): Pair<Double, Double> {
@@ -620,7 +659,9 @@ internal class TreeBoardPanel(
         }
 
         override fun getToolTipText(event: MouseEvent): String? {
-            val node = nodeAt(event.x, event.y) ?: return null
+            val node = nodeAt(event.x, event.y) ?: return connectionAt(event.point)?.let {
+                "${it.from} → ${it.to} · Click for context"
+            }
             if (connectionButtonBounds(node)?.contains(event.point) == true) {
                 return if (connectionSelection?.path == node.entry.path) "Hide code connections (C)"
                 else "Show incoming and outgoing code connections (C)"
@@ -787,7 +828,7 @@ internal class TreeBoardPanel(
                         paintConnectionButton(g, startX + rowWidth - buttonWidth / 2.0, centerY, node.entry.path)
                     }
                 }
-                paintConnections(g, boldMetrics, plainMetrics)
+                paintConnections(g)
             } finally {
                 g.dispose()
             }
@@ -816,35 +857,69 @@ internal class TreeBoardPanel(
             val links = selection.connections ?: return emptyList()
             val selected = board.indexOf(selection.path)
             if (selected < 0) return emptyList()
-            return links.incoming.mapNotNull { path -> board.indexOf(path).takeIf { it >= 0 }?.let { it to selected } } +
-                links.outgoing.mapNotNull { path -> board.indexOf(path).takeIf { it >= 0 }?.let { selected to it } }
+            return links.incoming.keys.mapNotNull { path -> board.indexOf(path).takeIf { it >= 0 }?.let { it to selected } } +
+                links.outgoing.keys.mapNotNull { path -> board.indexOf(path).takeIf { it >= 0 }?.let { selected to it } }
         }
 
         private fun connectionLaneOffset(index: Int) = JBUI.scale(24) + index * JBUI.scale(12)
 
-        private fun paintConnections(g: Graphics2D, bold: FontMetrics, plain: FontMetrics) {
+        private fun connectionRoutes(): List<ConnectionRoute> {
+            routes?.let { return it }
+            val bold = getFontMetrics(scaledFont(true))
+            val plain = getFontMetrics(scaledFont(false))
             val links = visibleConnections().sortedBy { (from, to) -> kotlin.math.abs(from - to) }
-            if (links.isEmpty()) return
+            if (links.isEmpty()) return emptyList<ConnectionRoute>().also { routes = it }
             val selected = board.indexOf(connectionSelection?.path)
             fun rowRight(node: TreeBoardNode) = (nodeContentStartWorldX(node.depth) * viewport.zoom).roundToInt() +
                 rowContentScreenWidth(node, bold, plain)
             val right = rowWidthAtZoom?.takeIf { it.first == viewport.zoom }?.second
                 ?: board.nodes.maxOf(::rowRight).also { rowWidthAtZoom = viewport.zoom to it }
-            val strokeWidth = (1.5 * viewport.zoom).toFloat().coerceAtLeast(1f)
-            val solid = BasicStroke(strokeWidth)
-            val dashed = BasicStroke(strokeWidth, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 1f,
-                floatArrayOf(strokeWidth * 3, strokeWidth * 2), 0f)
-            val arrow = (JBUI.scale(6) * viewport.zoom).coerceAtLeast(3.0)
-            for ((index, link) in links.withIndex()) {
-                val (from, to) = link
+            return links.mapIndexed { index, (from, to) ->
                 val outgoing = from == selected
                 val offset = JBUI.scale(4) * viewport.zoom * if (outgoing) 1 else -1
                 val y1 = viewport.worldToScreenY(rowCenterWorld(from)) + offset
                 val y2 = viewport.worldToScreenY(rowCenterWorld(to)) + offset
-                if (maxOf(y1, y2) < 0 || minOf(y1, y2) > height) continue
                 val x1 = rowRight(board.nodes[from]) + viewport.panX
                 val x2 = rowRight(board.nodes[to]) + viewport.panX
                 val bend = right + viewport.panX + connectionLaneOffset(index) * viewport.zoom
+                ConnectionRoute(board.nodes[from].entry.path, board.nodes[to].entry.path, outgoing, x1, y1, bend, x2, y2)
+            }.also { routes = it }
+        }
+
+        private fun connectionAt(point: Point): ConnectionRoute? {
+            if (openConnection == null) return null
+            val radius = JBUI.scale(7)
+            var best = (radius * radius).toDouble()
+            var nearest: ConnectionRoute? = null
+            for (route in connectionRoutes().asReversed()) {
+                val distance = route.distanceSq(point)
+                if (distance < best) {
+                    nearest = route
+                    best = distance
+                }
+            }
+            return nearest
+        }
+
+        private fun activateConnection(event: MouseEvent): Boolean {
+            val route = connectionAt(event.point) ?: return false
+            val links = connectionSelection?.connections ?: return false
+            val site = if (route.outgoing) links.outgoing.getValue(route.to) else links.incoming.getValue(route.from)
+            openConnection?.invoke(route.from, route.to, site, event)
+            return true
+        }
+
+        private fun paintConnections(g: Graphics2D) {
+            val links = connectionRoutes()
+            val arrow = (JBUI.scale(6) * viewport.zoom).coerceAtLeast(3.0)
+            fun draw(route: ConnectionRoute, highlighted: Boolean) {
+                val (_, _, outgoing, x1, y1, bend, x2, y2) = route
+                if (maxOf(y1, y2) < 0 || minOf(y1, y2) > height) return
+                val weight = JBUI.scale(if (highlighted) 4 else 2)
+                val strokeWidth = (weight * viewport.zoom).toFloat().coerceAtLeast(weight.toFloat())
+                val solid = BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                val dashed = BasicStroke(strokeWidth, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 1f,
+                    floatArrayOf(strokeWidth * 3, strokeWidth * 2), 0f)
                 g.color = if (outgoing) outgoingColor else incomingColor
                 g.stroke = if (outgoing) solid else dashed
                 g.draw(Path2D.Double().apply {
@@ -857,6 +932,8 @@ internal class TreeBoardPanel(
                 g.drawLine(x2.roundToInt(), y2.roundToInt(), (x2 + arrow).roundToInt(), (y2 - arrow / 2).roundToInt())
                 g.drawLine(x2.roundToInt(), y2.roundToInt(), (x2 + arrow).roundToInt(), (y2 + arrow / 2).roundToInt())
             }
+            for (route in links) if (route != hoveredRoute) draw(route, false)
+            hoveredRoute?.let { draw(it, true) }
         }
 
         private fun paintGrid(g: Graphics2D) {

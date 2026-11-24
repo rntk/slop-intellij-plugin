@@ -11,8 +11,6 @@ import dev.insight.context.LinkedFile
 import dev.insight.context.ReportSelectionActions
 import dev.insight.context.ReviewDestination
 import dev.insight.context.capContext
-import dev.insight.diff.ReviewFile
-import dev.insight.review.PatchSource
 import dev.insight.review.ReportLink
 import dev.insight.review.ReportSourceMap
 import dev.insight.review.ReportSourceText
@@ -111,26 +109,6 @@ internal fun reportSelectionContextPick(
         capContext(linked.preview), files = linked.files.map { it.path })
     if (openOnWall != null) putWallOpeners(data, linked.files, reviewFiles, openOnWall)
     return ContextPick(ContextOrigin.OTHER, listOf(text, scope), data)
-}
-
-/** Wall openers for the linked files the review covers: changed files on the Diffs wall, source files on the Code wall. */
-private fun putWallOpeners(
-    data: ContextData,
-    files: List<LinkedFile>,
-    reviewFiles: List<ReviewSource>,
-    open: (List<ReviewSource>, String) -> Unit,
-) {
-    val sources = files.mapNotNull { file -> matchingReviewSource(reviewFiles, file.path, file.absolutePath)?.let { file.path to it } }
-    fun opener(accept: (ReviewSource) -> Boolean): ((CodeContext) -> Unit)? {
-        val accepted = sources.filter { accept(it.second) }.takeIf { it.isNotEmpty() } ?: return null
-        return { context ->
-            val paths = context.files.toSet()
-            val selected = accepted.filter { it.first in paths }.map { it.second }.distinct()
-            if (selected.isNotEmpty()) open(selected, context.label)
-        }
-    }
-    opener { it is ReviewFile }?.let { data.put(ContextKeys.OPEN_ON_DIFFS_WALL, it) }
-    opener { it !is ReviewFile && it !is PatchSource }?.let { data.put(ContextKeys.OPEN_ON_CODE_WALL, it) }
 }
 
 /** Replays display-only removals when the same report text is rendered again. */
