@@ -195,7 +195,7 @@ internal class CodeReviewTab(
             },
             explainConnection = { from, to, site ->
                 val completion = complete ?: ChatSettings.getInstance().createClient()::complete
-                TreeConnectionExplainer.forProject(project, completion).explain(from, to, site)
+                TreeConnectionExplainer.explainWithProgress(project, completion, from, to, site)
             },
             chartSearch = ChartSearchActions(scope) {
                 val tools = codeReviewTools(captureContext()).filter { it.definition.name in CODE_CHART_SEARCH_TOOLS }

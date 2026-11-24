@@ -122,16 +122,17 @@ internal class TreeFileConnectionIndex(private val project: Project, private val
     @Volatile
     private var snapshot: Snapshot? = null
 
-    suspend fun connections(path: String): TreeFileConnections? = constrainedReadAction(
+    /** [onProgress] reports file counts while the index is (re)built; it stays silent when the snapshot is current. */
+    suspend fun connections(path: String, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): TreeFileConnections? = constrainedReadAction(
         ReadConstraint.inSmartMode(project),
         ReadConstraint.withDocumentsCommitted(project),
     ) {
         val stamp = PsiModificationTracker.getInstance(project).modificationCount
-        val current = snapshot?.takeIf { it.stamp == stamp } ?: Snapshot(stamp, build()).also { snapshot = it }
+        val current = snapshot?.takeIf { it.stamp == stamp } ?: Snapshot(stamp, build(onProgress)).also { snapshot = it }
         current.links[path]
     }
 
-    private fun build(): Map<String, TreeFileConnections> {
+    private fun build(onProgress: (done: Int, total: Int) -> Unit): Map<String, TreeFileConnections> {
         val manager = PsiManager.getInstance(project)
         val files = sources.mapNotNull { source ->
             ProgressManager.checkCanceled()
@@ -144,7 +145,10 @@ internal class TreeFileConnectionIndex(private val project: Project, private val
             .groupBy({ (_, file) -> file.virtualFile.parent }, { (path, _) -> path })
         val incoming = mutableMapOf<String, MutableMap<String, TreeConnectionSite>>()
         val outgoing = mutableMapOf<String, MutableMap<String, TreeConnectionSite>>()
-        for ((from, file) in files) {
+        for ((done, entry) in files.entries.withIndex()) {
+            val (from, file) = entry
+            ProgressManager.checkCanceled()
+            onProgress(done, files.size)
             val priorities = mutableMapOf<String, Int>()
             val primaries = mutableMapOf<String, Pair<Int?, Int?>>()
             val collected = mutableMapOf<String, MutableList<RawOccurrence>>()

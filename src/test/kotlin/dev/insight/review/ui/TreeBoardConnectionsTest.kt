@@ -2,7 +2,9 @@ package dev.insight.review.ui
 
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
+import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
@@ -78,6 +80,74 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals(1, requests.get())
         } finally {
             panel.cancelExplanation()
+        }
+    }
+
+    fun testExplanationSectionResizesWithWindowAndSplitter() {
+        fun layoutRecursively(component: Component) {
+            component.doLayout()
+            if (component is Container) {
+                component.components.forEach(::layoutRecursively)
+            }
+        }
+
+        val siteWithExplanation = TreeConnectionSite(1, 1).apply {
+            explanation = "Calls `B`."
+        }
+        val panel = TreeConnectionPreviewPanel(
+            "src/A.java", "src/B.java", siteWithExplanation, pinned = true,
+            project = project,
+            explain = { "Calls `B`." },
+        )
+        try {
+            val splitter = descendants(panel).filterIsInstance<OnePixelSplitter>()
+                .single { it.name == "charts-tree-connection-split" }
+            assertTrue(splitter.orientation)
+            val explanation = descendants(panel).filterIsInstance<JComponent>()
+                .single { it.name == "charts-tree-connection-explanation" }
+            assertTrue(explanation.isVisible)
+
+            panel.setSize(640, 420)
+            layoutRecursively(panel)
+            val smallHeight = explanation.height
+            assertTrue("Explanation height should be positive at 420px window height", smallHeight > 0)
+
+            panel.setSize(640, 720)
+            layoutRecursively(panel)
+            val largeHeight = explanation.height
+            assertTrue("Explanation height ($largeHeight) should grow with window height ($smallHeight)", largeHeight > smallHeight)
+
+            splitter.proportion = 0.65f
+            layoutRecursively(panel)
+            val smallerProportionHeight = explanation.height
+            splitter.proportion = 0.30f
+            layoutRecursively(panel)
+            val largerProportionHeight = explanation.height
+            assertTrue(
+                "Moving splitter up should grow explanation height ($largerProportionHeight vs $smallerProportionHeight)",
+                largerProportionHeight > smallerProportionHeight,
+            )
+        } finally {
+            panel.cancelExplanation()
+        }
+
+        val hiddenPanel = TreeConnectionPreviewPanel(
+            "src/A.java", "src/B.java", TreeConnectionSite(1, 1), pinned = true,
+            project = project,
+            explain = { "Calls `B`." },
+        )
+        try {
+            val hiddenSplitter = descendants(hiddenPanel).filterIsInstance<OnePixelSplitter>()
+                .single { it.name == "charts-tree-connection-split" }
+            val snippetsScroll = hiddenSplitter.firstComponent as JBScrollPane
+            val hiddenExplanation = hiddenSplitter.secondComponent as JComponent
+            assertFalse(hiddenExplanation.isVisible)
+
+            hiddenPanel.setSize(640, 420)
+            layoutRecursively(hiddenPanel)
+            assertEquals(hiddenSplitter.height, snippetsScroll.height)
+        } finally {
+            hiddenPanel.cancelExplanation()
         }
     }
 

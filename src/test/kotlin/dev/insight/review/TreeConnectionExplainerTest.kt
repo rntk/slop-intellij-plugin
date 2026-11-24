@@ -29,6 +29,10 @@ class TreeConnectionExplainerTest {
         assertEquals("Calls `Service.execute` at `src/A.kt:12`.", explainer.explain("src/A.kt", "src/Service.kt", site))
         val messages = request!!.messages
         assertEquals(listOf(LlmRole.SYSTEM, LlmRole.USER), messages.map { it.role })
+        val systemPrompt = messages.first().content
+        assertFalse(systemPrompt.contains("chart", ignoreCase = true))
+        assertTrue(systemPrompt.contains("concise", ignoreCase = true))
+        assertTrue(systemPrompt.contains("supplied snippets", ignoreCase = true))
         val evidence = messages.last().content
         assertTrue(evidence.contains("Source file: src/A.kt"))
         assertTrue(evidence.contains("Target file: src/Service.kt"))

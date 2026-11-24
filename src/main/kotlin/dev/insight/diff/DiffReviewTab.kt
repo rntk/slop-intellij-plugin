@@ -195,7 +195,7 @@ internal class DiffReviewTab(
         summaryActions = SummaryCanvasActions(
             explainConnection = { from, to, site ->
                 val completion = complete ?: ChatSettings.getInstance().createClient()::complete
-                TreeConnectionExplainer.forProject(project, completion).explain(from, to, site)
+                TreeConnectionExplainer.explainWithProgress(project, completion, from, to, site)
             },
             chartSearch = ChartSearchActions(scope) {
                 val tools = diffReviewTools(captureContext()).filter { it.definition.name in DIFF_CHART_SEARCH_TOOLS }

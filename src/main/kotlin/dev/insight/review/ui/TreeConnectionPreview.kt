@@ -14,6 +14,7 @@ import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
+import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
@@ -28,6 +29,7 @@ import dev.insight.review.TreeConnectionSite
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
@@ -50,6 +52,7 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
@@ -69,8 +72,10 @@ internal class TreeConnectionPreviewPanel(
     explain: (suspend () -> String)? = null,
 ) : JPanel(BorderLayout()) {
 
+    internal var onExplanationShown: () -> Unit = {}
+
     private val explanation = if (pinned && project != null && explain != null) {
-        TreeConnectionExplanationPanel(project, site, explain)
+        TreeConnectionExplanationPanel(project, site, explain) { onExplanationShown() }
     } else null
 
     fun cancelExplanation() {
@@ -89,6 +94,7 @@ internal class TreeConnectionPreviewPanel(
         horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
         verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
         verticalScrollBar.unitIncrement = JBUI.scale(16)
+        minimumSize = Dimension(0, JBUI.scale(MIN_PANE_HEIGHT))
     }
 
     init {
@@ -161,15 +167,28 @@ internal class TreeConnectionPreviewPanel(
         }
 
         add(header, BorderLayout.NORTH)
-        add(scrollPane, BorderLayout.CENTER)
-        explanation?.let { add(it, BorderLayout.SOUTH) }
+        if (explanation != null) {
+            val splitter = OnePixelSplitter(true, EXPLANATION_SPLIT_PROPORTION).apply {
+                name = "charts-tree-connection-split"
+                setHonorComponentsMinimumSize(true)
+                firstComponent = scrollPane
+                secondComponent = explanation
+            }
+            add(splitter, BorderLayout.CENTER)
+        } else {
+            add(scrollPane, BorderLayout.CENTER)
+        }
     }
 
     override fun getPreferredSize(): Dimension {
         val raw = super.getPreferredSize()
         val width = raw.width.coerceIn(JBUI.scale(MIN_WIDTH), JBUI.scale(MAX_WIDTH))
-        val minHeight = if (explanation != null) JBUI.scale(300) else 0
-        val height = raw.height.coerceIn(minHeight, JBUI.scale(MAX_HEIGHT))
+        val height = if (explanation?.isVisible == true) {
+            raw.height.coerceIn(JBUI.scale(EXPLANATION_MIN_HEIGHT), JBUI.scale(EXPLANATION_MAX_HEIGHT))
+        } else {
+            val minHeight = if (explanation != null) JBUI.scale(300) else 0
+            raw.height.coerceIn(minHeight, JBUI.scale(MAX_HEIGHT))
+        }
         return Dimension(width, height)
     }
 
@@ -320,9 +339,13 @@ internal class TreeConnectionPreviewPanel(
     private fun fileName(path: String): String = path.substringAfterLast('/')
 
     private companion object {
-        const val MIN_WIDTH = 520
-        const val MAX_WIDTH = 720
+        const val MIN_WIDTH = 560
+        const val MAX_WIDTH = 780
         const val MAX_HEIGHT = 420
+        const val EXPLANATION_MIN_HEIGHT = 500
+        const val EXPLANATION_MAX_HEIGHT = 640
+        const val MIN_PANE_HEIGHT = 80
+        const val EXPLANATION_SPLIT_PROPORTION = 0.48f
     }
 }
 
@@ -330,6 +353,7 @@ private class TreeConnectionExplanationPanel(
     private val project: Project,
     private val site: TreeConnectionSite,
     private val explain: suspend () -> String,
+    private val onShown: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private val scope = project.service<LinkedTextLinks>().coroutineScope
     private var request: Job? = null
@@ -341,7 +365,7 @@ private class TreeConnectionExplanationPanel(
 
     init {
         name = "charts-tree-connection-explanation"
-        border = JBUI.Borders.customLineTop(JBColor.border())
+        minimumSize = Dimension(0, JBUI.scale(80))
         isVisible = false
         site.explanation?.let(::showSummary)
     }
@@ -361,6 +385,11 @@ private class TreeConnectionExplanationPanel(
                 showSummary(summary)
                 site.explanation = summary
             } catch (e: CancellationException) {
+                // Cancelled from the progress UI rather than by closing the preview: allow another attempt.
+                if (isActive) {
+                    showStatus("Explanation cancelled.")
+                    button.isEnabled = true
+                }
                 throw e
             } catch (e: Exception) {
                 if (e is ControlFlowException) throw e
@@ -374,20 +403,23 @@ private class TreeConnectionExplanationPanel(
     private fun showSummary(summary: String) {
         button.isEnabled = false
         val pane = LinkedTextPane(project, scope).apply {
-            border = JBUI.Borders.empty(6, 10)
+            border = JBUI.Borders.empty(8, 10)
             markdown = summary
         }
         showContent(JBScrollPane(pane).apply {
             border = JBUI.Borders.empty()
-            preferredSize = Dimension(0, JBUI.scale(144))
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
         })
+        onShown()
     }
 
     private fun showStatus(message: String) {
         showContent(JLabel(message).apply {
-            border = JBUI.Borders.empty(6, 10)
+            border = JBUI.Borders.empty(8, 10)
             foreground = UIUtil.getContextHelpForeground()
+            verticalAlignment = SwingConstants.TOP
         })
     }
 
@@ -397,6 +429,8 @@ private class TreeConnectionExplanationPanel(
         isVisible = true
         revalidate()
         repaint()
+        parent?.revalidate()
+        parent?.repaint()
     }
 }
 
@@ -563,7 +597,18 @@ internal class TreeConnectionPreviewController(
             onClose = { hide() },
             project = project,
             explain = explainConnection?.let { callback -> suspend { callback(from, to, site) } },
-        )
+        ).apply {
+            onExplanationShown = {
+                val current = popup
+                if (current != null && !current.isDisposed && activePanel === this) {
+                    val size = current.size
+                    val minHeight = JBUI.scale(500)
+                    if (size.height < minHeight) {
+                        current.size = Dimension(maxOf(size.width, JBUI.scale(560)), minHeight)
+                    }
+                }
+            }
+        }
 
         if (!pinned) {
             val hoverKeepAlive = object : MouseAdapter() {

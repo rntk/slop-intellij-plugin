@@ -5,9 +5,11 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.openapi.util.Disposer
+import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
@@ -444,11 +446,23 @@ internal class ChartsCanvasCard(
         showTreeConnections(TreeConnectionSelection(path, message = "Resolving code connections…"))
         treeConnectionJob = treeConnectionScope.launch {
             val selection = try {
-                val connections = index.connections(path)
+                val connections = if (project == null) index.connections(path) else withBackgroundProgress(project, "Building code connections") {
+                    reportRawProgress { reporter ->
+                        reporter.text("Resolving links between files…")
+                        index.connections(path) { done, total ->
+                            reporter.text("Resolving links between files ($done of $total)")
+                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                        }
+                    }
+                }
                 if (connections == null) TreeConnectionSelection(path, message = "No live source available")
                 else TreeConnectionSelection(path, connections)
+            } catch (e: CancellationException) {
+                // Cancelled from the progress UI rather than by toggling or closing the chart: clear the pending message.
+                if (isActive) showTreeConnections(null)
+                throw e
             } catch (e: Exception) {
-                if (e is CancellationException || e is ControlFlowException) throw e
+                if (e is ControlFlowException) throw e
                 logger<ChartsCanvasCard>().warn("Could not resolve code connections for $path", e)
                 TreeConnectionSelection(path, message = "Could not resolve code connections. See the IDE log.")
             }
