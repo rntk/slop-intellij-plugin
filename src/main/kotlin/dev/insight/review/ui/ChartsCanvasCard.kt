@@ -88,6 +88,13 @@ internal class ChartsViewState {
     var linesDivider: Int? = null
     /** Whether the chart had keyboard focus when it was last rebuilt. */
     var linesFocused = false
+    /** Collapsed directories in the Tree board, kept across metric changes. */
+    var treeCollapsed: Set<String> = emptySet()
+    /** The active row path in the Tree board. */
+    var treeCursor: String? = null
+    var treeZoom: Double = 1.0
+    var treePanX: Double = 0.0
+    var treePanY: Double = 0.0
     var lineMetric: LineChartMetric? = null
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -148,9 +155,10 @@ internal class ChartsCanvasCard(
         activeSymbolKey = null
         val radar = view.chart == "Radar"
         val circles = view.chart == CIRCLES
-        // The line hierarchy and the circles share the metric tabs, the directory and the search.
+        val tree = view.chart == TREE
+        // The line hierarchy, the tree board and the circles share the metric tabs, the directory and the search.
         val tabbed = !radar
-        val lines = tabbed && !circles
+        val lines = tabbed && !circles && !tree
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
         searchRevision = content.revision
@@ -172,15 +180,15 @@ internal class ChartsCanvasCard(
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("Charts").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = if (diff) "Explore added or removed lines by directory, walk through them as circles, or compare changes on the radar"
-                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, walk through them as circles, or compare code structure on the radar"
+                toolTipText = if (diff) "Explore added or removed lines by directory, inspect the whole tree on a board, walk through them as circles, or compare changes on the radar"
+                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, inspect the whole project tree on a board, walk through them as circles, or compare code structure on the radar"
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
-                add(JComboBox(arrayOf(linesTitle, CIRCLES, "Radar")).apply {
+                add(JComboBox(arrayOf(linesTitle, TREE, CIRCLES, "Radar")).apply {
                     name = "charts-type-selector"
                     font = scaledFont(JBFont.small())
-                    selectedItem = when { lines -> linesTitle; circles -> CIRCLES; else -> "Radar" }
+                    selectedItem = when { lines -> linesTitle; tree -> TREE; circles -> CIRCLES; else -> "Radar" }
                     addActionListener { view.chart = selectedItem as String; refresh() }
                 })
                 if (radar && chart.levels > 1) add(radarLevels(chart))
@@ -233,6 +241,27 @@ internal class ChartsCanvasCard(
             canSummarizeDeclaration = { symbolSummaries != null && it.summarySpan != null },
         ) else null
         val circleChart = if (hierarchy != null && circles) circleChart(hierarchy, content.tree, inner) else null
+        val treeBoard = if (hierarchy != null && tree) TreeBoardPanel(
+            hierarchy,
+            vocabulary.rootName,
+            open,
+            contextMenu = project?.let { { entry -> contextMenu(content.tree, entry, hierarchy.files(entry.path)) } },
+            collapsed = view.treeCollapsed,
+            collapsedChanged = { view.treeCollapsed = it },
+            cursorPath = view.treeCursor,
+            cursorChanged = { view.treeCursor = it },
+            initialZoom = view.treeZoom,
+            initialPanX = view.treePanX,
+            initialPanY = view.treePanY,
+            viewportChanged = { z, px, py ->
+                view.treeZoom = z
+                view.treePanX = px
+                view.treePanY = py
+            },
+        ).apply {
+            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
+        } else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -300,19 +329,23 @@ internal class ChartsCanvasCard(
                 }
             }
         }
-        val readingArea = if (lineChart != null) {
-            val hint = "Use the icons on a file or directory to open a preview."
-            HierarchyPreviewPanel(bodyScroll, project, hint, detail = detail,
-                dividerLocation = view.linesDivider,
-                rememberDivider = { if (currentCard === card) view.linesDivider = it },
-            ).also {
-                if (activePreview?.kind == LineChartPreviewKind.SOURCE && declaration != null) {
-                    it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
+        val readingArea = when {
+            treeBoard != null -> treeBoard
+            lineChart != null -> {
+                val hint = "Use the icons on a file or directory to open a preview."
+                HierarchyPreviewPanel(bodyScroll, project, hint, detail = detail,
+                    dividerLocation = view.linesDivider,
+                    rememberDivider = { if (currentCard === card) view.linesDivider = it },
+                ).also {
+                    if (activePreview?.kind == LineChartPreviewKind.SOURCE && declaration != null) {
+                        it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
+                    }
+                    else if (detail == null) it.showFiles(previewFiles)
+                    preview = it
                 }
-                else if (detail == null) it.showFiles(previewFiles)
-                preview = it
             }
-        } else bodyScroll
+            else -> bodyScroll
+        }
         val searchRow = search?.takeIf { tabbed }?.let { actions ->
             searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
                 content.revision)
@@ -324,7 +357,7 @@ internal class ChartsCanvasCard(
         }, BorderLayout.NORTH)
         card.add(if (tabbed) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
         currentCard = card
-        val focusTarget: JComponent? = lineChart ?: circleChart
+        val focusTarget: JComponent? = lineChart ?: circleChart ?: treeBoard
         if (focusTarget != null && view.linesFocused) {
             view.linesFocused = false
             SwingUtilities.invokeLater { if (currentCard === card) focusTarget.requestFocusInWindow() }
@@ -642,7 +675,9 @@ internal class ChartsCanvasCard(
         const val MIN_PREVIEW_HEIGHT = 560
         const val MAX_HEIGHT = 820
         const val SEARCH_TAB_CHARS = 28
+        const val TREE = "Tree"
         const val CIRCLES = "Circles"
         const val MAX_CIRCLES_DIAMETER = 680
+        const val BOARD_HEIGHT = 680
     }
 }
