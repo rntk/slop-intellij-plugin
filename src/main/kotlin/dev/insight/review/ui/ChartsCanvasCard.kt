@@ -146,7 +146,11 @@ internal class ChartsCanvasCard(
         preview?.let(Disposer::dispose)
         preview = null
         activeSymbolKey = null
-        val lines = view.chart != "Radar"
+        val radar = view.chart == "Radar"
+        val circles = view.chart == CIRCLES
+        // The line hierarchy and the circles share the metric tabs, the directory and the search.
+        val tabbed = !radar
+        val lines = tabbed && !circles
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
         searchRevision = content.revision
@@ -168,23 +172,23 @@ internal class ChartsCanvasCard(
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel("Charts").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = if (diff) "Explore added or removed lines by directory, or compare changes on the radar"
-                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, or compare code structure on the radar"
+                toolTipText = if (diff) "Explore added or removed lines by directory, walk through them as circles, or compare changes on the radar"
+                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, walk through them as circles, or compare code structure on the radar"
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
-                add(JComboBox(arrayOf(linesTitle, "Radar")).apply {
+                add(JComboBox(arrayOf(linesTitle, CIRCLES, "Radar")).apply {
                     name = "charts-type-selector"
                     font = scaledFont(JBFont.small())
-                    selectedItem = if (lines) linesTitle else "Radar"
+                    selectedItem = when { lines -> linesTitle; circles -> CIRCLES; else -> "Radar" }
                     addActionListener { view.chart = selectedItem as String; refresh() }
                 })
-                if (!lines && chart.levels > 1) add(radarLevels(chart))
-                if (!lines && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
+                if (radar && chart.levels > 1) add(radarLevels(chart))
+                if (radar && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
                     "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines") {
                     view.radarSymbols = it
                 })
-                if (!lines) add(checkBox("Log scale", "charts-radar-log", view.radarLog,
+                if (radar) add(checkBox("Log scale", "charts-radar-log", view.radarLog,
                     "Space the rings logarithmically, so small folders stay visible beside a large one") { view.radarLog = it })
                 close?.let { remove ->
                     add(InplaceButton(IconButton("Remove charts", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove() }
@@ -193,12 +197,12 @@ internal class ChartsCanvasCard(
             }, BorderLayout.WEST)
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
-        val hierarchy = if (lines) ReviewLineChart(content.tree, metric, outlines,
+        val hierarchy = if (tabbed) ReviewLineChart(content.tree, metric, outlines,
             only = view.searchResult?.files?.takeIf { metric == LineChartMetric.FOUND }) else null
-        val activePreview = hierarchy?.let { chart ->
+        val activePreview = hierarchy?.takeIf { lines }?.let { chart ->
             view.linesPreview?.takeIf { chart.hasEntry(it.path) }.also { view.linesPreview = it }
         }
-        val lineChart = if (hierarchy != null) LineChartPanel(
+        val lineChart = if (hierarchy != null && lines) LineChartPanel(
             hierarchy,
             view.linesPath,
             vocabulary.rootName,
@@ -223,10 +227,12 @@ internal class ChartsCanvasCard(
             loadOutline = outlines?.let { provider -> { file, done -> provider.load(file, done) } },
             canSummarizeDeclaration = { symbolSummaries != null && it.summarySpan != null },
         ) else null
+        val circleChart = if (hierarchy != null && circles) circleChart(hierarchy, content.tree, inner) else null
         val body = JPanel(VerticalLayout(scaled(8))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             if (lineChart != null) add(lineChart)
+            else if (circleChart != null) add(circleChart)
             else {
                 val status = JLabel(radarStatus(chart, view.radarSeries)).apply {
                     name = "charts-radar-status"
@@ -292,7 +298,7 @@ internal class ChartsCanvasCard(
                 preview = it
             }
         } else bodyScroll
-        val searchRow = search?.takeIf { lines }?.let { actions ->
+        val searchRow = search?.takeIf { tabbed }?.let { actions ->
             searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
                 content.revision)
         }
@@ -301,11 +307,12 @@ internal class ChartsCanvasCard(
             add(searchRow, BorderLayout.NORTH)
             add(header, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
-        card.add(if (lines) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
+        card.add(if (tabbed) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
         currentCard = card
-        if (lineChart != null && view.linesFocused) {
+        val focusTarget: JComponent? = lineChart ?: circleChart
+        if (focusTarget != null && view.linesFocused) {
             view.linesFocused = false
-            SwingUtilities.invokeLater { if (currentCard === card) lineChart.requestFocusInWindow() }
+            SwingUtilities.invokeLater { if (currentCard === card) focusTarget.requestFocusInWindow() }
         }
         return card
     }
@@ -442,6 +449,18 @@ internal class ChartsCanvasCard(
         view.linesFocused = owner != null && currentCard?.let { SwingUtilities.isDescendingFrom(owner, it) } == true
         refresh()
     }
+
+    /** The circles of the shown directory; walking into a folder keeps the hierarchy's directory in step. */
+    private fun circleChart(hierarchy: ReviewLineChart, tree: ReviewSummaryTree, width: Int): CircleChartPanel =
+        CircleChartPanel(hierarchy, view.linesPath, vocabulary.rootName, minOf(width, scaled(MAX_CIRCLES_DIAMETER)),
+            navigate = { path ->
+                view.linesPath = path
+                view.linesScroll = 0
+                rebuildKeepingFocus()
+            },
+            open = open,
+            contextMenu = project?.let { { entry -> contextMenu(tree, entry, hierarchy.files(hierarchy.root.path)) } },
+        )
 
     private fun summaryPreview(node: SummaryNode, content: ChartsCard) = JPanel(BorderLayout()).apply {
         val summary = content.summaries.text(node.id)
@@ -608,5 +627,7 @@ internal class ChartsCanvasCard(
         const val MIN_PREVIEW_HEIGHT = 560
         const val MAX_HEIGHT = 820
         const val SEARCH_TAB_CHARS = 28
+        const val CIRCLES = "Circles"
+        const val MAX_CIRCLES_DIAMETER = 680
     }
 }
