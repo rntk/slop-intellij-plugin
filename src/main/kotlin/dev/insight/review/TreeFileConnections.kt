@@ -41,7 +41,10 @@ internal data class TreeConnectionSite(
     val toLine: Int?,
     val occurrences: List<TreeConnectionOccurrence> = emptyList(),
     val totalOccurrences: Int = occurrences.size,
-)
+) {
+    /** Completed Markdown for this directed edge in the live-source index. Accessed on the EDT. */
+    var explanation: String? = null
+}
 
 internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)
 

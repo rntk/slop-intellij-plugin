@@ -39,6 +39,7 @@ import dev.insight.review.ReviewSource
 import dev.insight.review.SourceOutlines
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnectionIndex
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
@@ -139,6 +140,7 @@ internal class ChartsCanvasCard(
     private val symbolSummaries: SymbolSummaryActions? = null,
     /** Finds files for a query typed above the hierarchy; null hides the search. */
     private val search: ChartSearchActions? = null,
+    private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -285,6 +287,16 @@ internal class ChartsCanvasCard(
                 }
             },
             openAt = openAt ?: { path, _ -> open(path) },
+            project = project,
+            explainConnection = explainConnection?.let { explain ->
+                { from, to, site ->
+                    fun projectPath(path: String): String {
+                        val absolute = hierarchy.source(path)?.absolutePath
+                        return if (project != null && !absolute.isNullOrBlank()) relativePath(project, absolute) else path
+                    }
+                    explain(projectPath(from), projectPath(to), site)
+                }
+            },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
         ).apply {
             border = JBUI.Borders.empty(4)

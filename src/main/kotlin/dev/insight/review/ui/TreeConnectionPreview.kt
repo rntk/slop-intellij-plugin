@@ -2,6 +2,11 @@ package dev.insight.review.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.ui.popup.IconButton
@@ -20,6 +25,11 @@ import dev.insight.graph.RelationKind
 import dev.insight.review.CodeSnippet
 import dev.insight.review.TreeConnectionOccurrence
 import dev.insight.review.TreeConnectionSite
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
@@ -35,6 +45,7 @@ import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -54,7 +65,17 @@ internal class TreeConnectionPreviewPanel(
     private val openAt: ((String, Int) -> Unit)? = null,
     private val openContext: (() -> Unit)? = null,
     private val onClose: () -> Unit = {},
+    project: Project? = null,
+    explain: (suspend () -> String)? = null,
 ) : JPanel(BorderLayout()) {
+
+    private val explanation = if (pinned && project != null && explain != null) {
+        TreeConnectionExplanationPanel(project, site, explain)
+    } else null
+
+    fun cancelExplanation() {
+        explanation?.cancel()
+    }
 
     private val listPanel = JPanel(VerticalLayout(JBUI.scale(8))).apply {
         isOpaque = false
@@ -105,6 +126,7 @@ internal class TreeConnectionPreviewPanel(
             }
             val actionsRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                 isOpaque = false
+                explanation?.let { add(it.button) }
                 if (openContext != null) {
                     add(ActionLink("Open context…") {
                         onClose()
@@ -140,12 +162,14 @@ internal class TreeConnectionPreviewPanel(
 
         add(header, BorderLayout.NORTH)
         add(scrollPane, BorderLayout.CENTER)
+        explanation?.let { add(it, BorderLayout.SOUTH) }
     }
 
     override fun getPreferredSize(): Dimension {
         val raw = super.getPreferredSize()
         val width = raw.width.coerceIn(JBUI.scale(MIN_WIDTH), JBUI.scale(MAX_WIDTH))
-        val height = raw.height.coerceAtMost(JBUI.scale(MAX_HEIGHT))
+        val minHeight = if (explanation != null) JBUI.scale(300) else 0
+        val height = raw.height.coerceIn(minHeight, JBUI.scale(MAX_HEIGHT))
         return Dimension(width, height)
     }
 
@@ -302,6 +326,80 @@ internal class TreeConnectionPreviewPanel(
     }
 }
 
+private class TreeConnectionExplanationPanel(
+    private val project: Project,
+    private val site: TreeConnectionSite,
+    private val explain: suspend () -> String,
+) : JPanel(BorderLayout()) {
+    private val scope = project.service<LinkedTextLinks>().coroutineScope
+    private var request: Job? = null
+
+    val button = JButton("Explain connection").apply {
+        name = "charts-tree-explain-connection"
+        addActionListener { requestExplanation() }
+    }
+
+    init {
+        name = "charts-tree-connection-explanation"
+        border = JBUI.Borders.customLineTop(JBColor.border())
+        isVisible = false
+        site.explanation?.let(::showSummary)
+    }
+
+    fun cancel() {
+        request?.cancel()
+    }
+
+    private fun requestExplanation() {
+        if (request?.isActive == true || project.isDisposed) return
+        button.isEnabled = false
+        showStatus("Explaining connection…")
+        request = scope.launch(Dispatchers.EDT) {
+            try {
+                val summary = withContext(Dispatchers.IO) { explain() }
+                check(summary.isNotBlank()) { "The model returned an empty explanation" }
+                showSummary(summary)
+                site.explanation = summary
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is ControlFlowException) throw e
+                logger<TreeConnectionExplanationPanel>().warn("Could not explain tree connection", e)
+                showStatus("Could not explain this connection. Try again.")
+                button.isEnabled = true
+            }
+        }
+    }
+
+    private fun showSummary(summary: String) {
+        button.isEnabled = false
+        val pane = LinkedTextPane(project, scope).apply {
+            border = JBUI.Borders.empty(6, 10)
+            markdown = summary
+        }
+        showContent(JBScrollPane(pane).apply {
+            border = JBUI.Borders.empty()
+            preferredSize = Dimension(0, JBUI.scale(144))
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        })
+    }
+
+    private fun showStatus(message: String) {
+        showContent(JLabel(message).apply {
+            border = JBUI.Borders.empty(6, 10)
+            foreground = UIUtil.getContextHelpForeground()
+        })
+    }
+
+    private fun showContent(content: JComponent) {
+        removeAll()
+        add(content, BorderLayout.CENTER)
+        isVisible = true
+        revalidate()
+        repaint()
+    }
+}
+
 /** Compact read-only code snippet renderer with line numbers and highlight on [CodeSnippet.highlightLine]. */
 internal class SnippetCodeView(private val snippet: CodeSnippet) : JComponent() {
     private val scheme = runCatching { EditorColorsManager.getInstance().globalScheme }.getOrNull()
@@ -380,6 +478,8 @@ internal class TreeConnectionPreviewController(
     private val owner: JComponent,
     private val openAt: ((String, Int) -> Unit)? = null,
     private val openContext: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
+    private val project: Project? = null,
+    private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
 ) : Disposable {
 
     var activePanel: TreeConnectionPreviewPanel? = null
@@ -461,6 +561,8 @@ internal class TreeConnectionPreviewController(
             openAt = openAt,
             openContext = openContext?.let { callback -> { callback(from, to, site, relativePoint) } },
             onClose = { hide() },
+            project = project,
+            explain = explainConnection?.let { callback -> suspend { callback(from, to, site) } },
         )
 
         if (!pinned) {
@@ -487,7 +589,7 @@ internal class TreeConnectionPreviewController(
                 .setCancelOnClickOutside(true)
                 .setCancelKeyEnabled(true)
                 .setCancelCallback {
-                    clearState()
+                    if (activePanel === panel) clearState()
                     true
                 }
                 .createPopup()
@@ -511,6 +613,7 @@ internal class TreeConnectionPreviewController(
 
     private fun clearState() {
         popup = null
+        activePanel?.cancelExplanation()
         activePanel = null
         activePair = null
         isPinned = false

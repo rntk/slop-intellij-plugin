@@ -87,6 +87,7 @@ import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.SymbolSummaryActions
 import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
+import dev.insight.review.TreeConnectionExplainer
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.findReportSourceFile
 import dev.insight.review.ui.openHighlightedLines
@@ -191,6 +192,10 @@ internal class CodeReviewTab(
         summaryActions = SummaryCanvasActions(
             symbolSummaries = SymbolSummaryActions(scope, project.service<SymbolSummaryCache>()) {
                 complete ?: ChatSettings.getInstance().createClient()::complete
+            },
+            explainConnection = { from, to, site ->
+                val completion = complete ?: ChatSettings.getInstance().createClient()::complete
+                TreeConnectionExplainer.forProject(project, completion).explain(from, to, site)
             },
             chartSearch = ChartSearchActions(scope) {
                 val tools = codeReviewTools(captureContext()).filter { it.definition.name in CODE_CHART_SEARCH_TOOLS }

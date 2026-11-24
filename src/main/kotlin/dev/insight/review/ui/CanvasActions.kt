@@ -11,6 +11,7 @@ import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSymbol
 import dev.insight.review.SummaryNode
+import dev.insight.review.TreeConnectionSite
 import dev.insight.llm.CompletionFn
 import kotlinx.coroutines.CoroutineScope
 
@@ -61,6 +62,7 @@ internal data class SummaryCanvasActions(
     val symbolSummaries: SymbolSummaryActions? = null,
     /** Finds files for a Charts query; null hides the search. */
     val chartSearch: ChartSearchActions? = null,
+    val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
 )
 
 /** Topic classification and summary updates supplied by the review hosting the canvas. */

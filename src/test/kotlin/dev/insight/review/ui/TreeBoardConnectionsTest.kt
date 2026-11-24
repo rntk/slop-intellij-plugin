@@ -21,12 +21,66 @@ import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
+import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.KeyStroke
 
 class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
+    fun testPinnedConnectionExplainsOnDemandWithLinkedMarkdown() {
+        myFixture.addFileToProject("src/B.java", "class B {}")
+        val requests = AtomicInteger()
+        val response = CompletableDeferred<String>()
+        val site = TreeConnectionSite(1, 1)
+        fun preview(edge: TreeConnectionSite) = TreeConnectionPreviewPanel(
+            "src/A.java", "src/B.java", edge, pinned = true,
+            project = project,
+            explain = { requests.incrementAndGet(); response.await() },
+        )
+        val panel = preview(site)
+        try {
+            val button = descendants(panel).filterIsInstance<JButton>()
+                .single { it.name == "charts-tree-explain-connection" }
+            val explanation = descendants(panel).filterIsInstance<JComponent>()
+                .single { it.name == "charts-tree-connection-explanation" }
+            assertEquals(0, requests.get())
+            assertFalse(explanation.isVisible)
+
+            button.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Explanation should start on request", { requests.get() == 1 }, 10)
+            assertTrue(explanation.isVisible)
+            assertFalse(button.isEnabled)
+            assertTrue(descendants(explanation).filterIsInstance<JLabel>().any { it.text.contains("Explaining") })
+
+            val markdown = "Calls the declaration in `src/B.java:L1`."
+            response.complete(markdown)
+            PlatformTestUtil.waitWithEventsDispatching("Explanation should display", {
+                descendants(explanation).filterIsInstance<LinkedTextPane>().isNotEmpty()
+            }, 10)
+            val text = descendants(explanation).filterIsInstance<LinkedTextPane>().single()
+            assertEquals(markdown, text.markdown)
+            text.addNotify()
+            try {
+                PlatformTestUtil.waitWithEventsDispatching("Explanation should resolve its file link", {
+                    text.renderedLinks.any { it.primaryPath == "src/B.java" && it.lines == 1..1 }
+                }, 10)
+            } finally {
+                text.removeNotify()
+            }
+            panel.cancelExplanation()
+            val reopened = preview(site)
+            assertEquals(markdown, descendants(reopened).filterIsInstance<LinkedTextPane>().single().markdown)
+            assertFalse(descendants(reopened).filterIsInstance<JButton>().single { it.name == button.name }.isEnabled)
+            assertTrue(descendants(preview(site.copy())).filterIsInstance<LinkedTextPane>().isEmpty())
+            assertEquals(1, requests.get())
+        } finally {
+            panel.cancelExplanation()
+        }
+    }
+
     fun testFileButtonShowsResolvedConnectionsAcrossMetricChangesAndFolds() {
         val api = "api/Api.java"
         val client = "client/Client.java"

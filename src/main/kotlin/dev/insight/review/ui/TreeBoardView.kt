@@ -3,6 +3,7 @@ package dev.insight.review.ui
 import com.intellij.ide.ui.UISettings
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
+import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.JBFont
@@ -98,6 +99,8 @@ internal class TreeBoardPanel(
     private val toggleConnections: ((String) -> Unit)? = null,
     private val openConnection: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
     private val openAt: ((String, Int) -> Unit)? = null,
+    project: Project? = null,
+    explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -185,7 +188,7 @@ internal class TreeBoardPanel(
     }
 
     internal val canvas = TreeBoardCanvas()
-    internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection)
+    internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection, project, explainConnection)
 
     fun hideConnectionPreview() = connectionPreview.hide()
 
