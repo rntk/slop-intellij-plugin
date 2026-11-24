@@ -7,6 +7,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.review.RadarAxis
 import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
+import dev.insight.review.ScopedRadar
 import dev.insight.review.radarRingValue
 import dev.insight.review.radarScale
 import dev.insight.review.radarValueText
@@ -23,6 +24,7 @@ import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.geom.Ellipse2D
 import java.awt.geom.Path2D
 import java.util.Locale
 import javax.swing.JComponent
@@ -40,23 +42,45 @@ import kotlin.math.sin
  * series. Hovering a spoke shows its path and counts; clicking a file's spoke calls [openFile], and clicking a legend
  * entry isolates or restores that series.
  */
-internal class RadarChartPanel(
+internal class RadarChartPanel private constructor(
     val chart: RadarChart,
     private val availableWidth: Int,
     private val zoom: Double,
     private val logarithmic: Boolean,
     private val openFile: (String) -> Unit,
-    selectedSeries: RadarSeries? = null,
-    private val axisMenu: ((RadarAxis) -> JPopupMenu?)? = null,
-    private val selectSeries: (RadarSeries?) -> Unit = {},
+    selectedSeries: RadarSeries?,
+    private val axisMenu: ((RadarAxis) -> JPopupMenu?)?,
+    private val selectSeries: (RadarSeries?) -> Unit,
+    private val scoped: ScopedRadar?,
 ) : JComponent() {
+    constructor(
+        chart: RadarChart,
+        availableWidth: Int,
+        zoom: Double,
+        logarithmic: Boolean,
+        openFile: (String) -> Unit,
+        selectedSeries: RadarSeries? = null,
+        axisMenu: ((RadarAxis) -> JPopupMenu?)? = null,
+        selectSeries: (RadarSeries?) -> Unit = {},
+    ) : this(chart, availableWidth, zoom, logarithmic, openFile, selectedSeries, axisMenu, selectSeries, null)
+
+    constructor(
+        scoped: ScopedRadar,
+        availableWidth: Int,
+        zoom: Double,
+        logarithmic: Boolean,
+        openFile: (String) -> Unit,
+    ) : this(scoped.chart, availableWidth, zoom, logarithmic, openFile, null, null, {}, scoped)
+
     private val axes = chart.axes
     var selectedSeries: RadarSeries? = selectedSeries?.takeIf { it in chart.series }
         private set
     val shownSeries: List<RadarSeries>
         get() = selectedSeries?.takeIf { it in chart.series }?.let(::listOf) ?: chart.series
-    private val max: Int
-        get() = axes.maxOfOrNull { axis -> shownSeries.maxOf { it.value(axis.lines) } } ?: 0
+    internal fun scopedMetricValue(axis: RadarAxis): Long? = scoped?.measures?.get(axis)?.value
+    private fun value(axis: RadarAxis, series: RadarSeries): Long = scopedMetricValue(axis) ?: series.value(axis.lines).toLong()
+    private val max: Long
+        get() = axes.maxOfOrNull { axis -> shownSeries.maxOf { value(axis, it) } } ?: 0L
     private var hovered: Int? = null
     private var hoveredSeries: RadarSeries? = null
 
@@ -118,17 +142,18 @@ internal class RadarChartPanel(
 
     override fun getToolTipText(event: MouseEvent): String? {
         seriesAt(event.point)?.let { series ->
-            val total = String.format(Locale.US, "%,d", series.value(chart.total))
+            val total = String.format(Locale.US, "%,d", axes.sumOf { value(it, series) })
             val hint = when {
                 series == selectedSeries -> " · Click to show all"
                 chart.series.size > 1 -> " · Click to show only ${series.label.lowercase(Locale.US)}"
                 else -> ""
             }
-            return "<html><b>${escape(series.label)}</b><br>$total total$hint</html>"
+            return "<html><b>${escape(seriesLabel(series))}</b><br>$total total$hint</html>"
         }
         val axis = axisAt(event.point)?.let(axes::get) ?: return null
         val counts = axisValueText(axis)
-        val files = if (axis.files.size == 1) "1 file" else String.format(Locale.US, "%,d files", axis.files.size)
+        val fileCount = scoped?.measures?.get(axis)?.files ?: axis.files.size
+        val files = if (fileCount == 1) "1 file" else String.format(Locale.US, "%,d files", fileCount)
         val symbols = if (chart.series.any { it.isSymbol }) {
             "<br>" + RadarSeries.entries.filter { it.isSymbol }.joinToString("<br>") { "${it.label}: ${it.value(axis.lines)}" } + "<br>" + radarSymbolCoverage(axis.files)
         } else ""
@@ -136,9 +161,16 @@ internal class RadarChartPanel(
         return "<html><b>${escape(axis.label)}</b><br>${escape(axis.tooltip).replace("\n", "<br>")}<br>$counts · $files$symbols$open</html>"
     }
 
-    private fun axisValueText(axis: dev.insight.review.RadarAxis): String =
-        if (chart.series.any { it.isSymbol } && axis.files.none { it.symbolCounts != null }) "Symbols unavailable"
+    private fun axisValueText(axis: RadarAxis): String {
+        if (scoped != null) {
+            val value = scoped.measures.getValue(axis).value
+            return String.format(Locale.US, "%,d %s", value, scoped.metric.unitText(value))
+        }
+        return if (chart.series.any { it.isSymbol } && axis.files.none { it.symbolCounts != null }) "Symbols unavailable"
         else radarValueText(axis.lines, chart.series, selectedSeries)
+    }
+
+    private fun seriesLabel(series: RadarSeries) = scoped?.metric?.label ?: series.label
 
     private fun scaled(n: Int) = zoomScaled(n, zoom)
     private val center get() = Point(width / 2, height / 2)
@@ -171,7 +203,7 @@ internal class RadarChartPanel(
         var y = scaled(4)
         return chart.series.map { series ->
             val font = if (series == selectedSeries) bold else plain
-            val rowWidth = swatch + gap + getFontMetrics(font).stringWidth(series.label)
+            val rowWidth = swatch + gap + getFontMetrics(font).stringWidth(seriesLabel(series))
             val bounds = Rectangle(width - scaled(8) - rowWidth, y, rowWidth, height)
             y += height + scaled(2)
             series to bounds
@@ -208,7 +240,12 @@ internal class RadarChartPanel(
         for (ring in 1..RINGS) {
             val share = ring.toDouble() / RINGS
             g.color = grid
-            g.draw(polygon(axes.indices.map { point(it, share) }))
+            if (axes.size < 3) {
+                val r = radius * share
+                g.draw(Ellipse2D.Double(center.x - r, center.y - r, 2 * r, 2 * r))
+            } else {
+                g.draw(polygon(axes.indices.map { point(it, share) }))
+            }
             g.color = help
             // Ring values sit between the first two spokes, clear of the first spoke's label.
             val between = -PI / 2 + PI / axes.size.coerceAtLeast(2)
@@ -225,13 +262,18 @@ internal class RadarChartPanel(
 
     private fun paintSeries(g: Graphics2D, series: RadarSeries) {
         val color = color(series)
-        val points = axes.indices.map { point(it, radarScale(series.value(axes[it].lines), max, logarithmic)) }
-        val shape = polygon(points)
-        g.color = ColorUtil.withAlpha(color, 0.14)
-        g.fill(shape)
-        g.color = color
+        val points = axes.indices.map { point(it, radarScale(value(axes[it], series), max, logarithmic)) }
         g.stroke = BasicStroke(zoomScaled(2, zoom).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        g.draw(shape)
+        if (points.size < 3) {
+            g.color = color
+            for ((x, y) in points) g.drawLine(center.x, center.y, x.toInt(), y.toInt())
+        } else {
+            val shape = polygon(points)
+            g.color = ColorUtil.withAlpha(color, 0.14)
+            g.fill(shape)
+            g.color = color
+            g.draw(shape)
+        }
         val dot = scaled(3)
         for ((x, y) in points) g.fillOval(x.toInt() - dot, y.toInt() - dot, 2 * dot, 2 * dot)
     }
@@ -244,7 +286,17 @@ internal class RadarChartPanel(
         for ((index, axis) in axes.withIndex()) {
             val (x, y) = point(index, 1.0 + scaled(10).toDouble() / radius)
             val cosine = cos(angle(index))
-            val lines = listOf(clip(axis.label, room, g, bold) to bold, clip(axisValueText(axis), room, g, plain) to plain)
+            val labelRoom = if (scoped == null) room else {
+                val available = when {
+                    cosine > 0.2 -> width - x
+                    cosine < -0.2 -> x
+                    else -> 2 * minOf(x, width - x)
+                }
+                minOf(room, available.toInt() - scaled(4))
+            }
+            if (labelRoom <= 0) continue
+            val lines = listOf(clip(axis.label, labelRoom, g, bold) to bold,
+                clip(axisValueText(axis), labelRoom, g, plain) to plain)
             val heights = lines.map { (_, font) -> g.getFontMetrics(font).height }
             var top = y - heights.sum() * (1 - sin(angle(index))) / 2
             for ((line, font) in lines) {
@@ -283,7 +335,7 @@ internal class RadarChartPanel(
                 dimmed -> UIUtil.getContextHelpForeground()
                 else -> UIUtil.getLabelForeground()
             }
-            g.drawString(series.label, bounds.x + swatch + gap, bounds.y + metrics.ascent)
+            g.drawString(seriesLabel(series), bounds.x + swatch + gap, bounds.y + metrics.ascent)
         }
         if (logarithmic) {
             g.font = plain

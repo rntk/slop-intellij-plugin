@@ -139,6 +139,10 @@ internal class ReviewLineChart(
 
     fun hasEntry(path: String): Boolean = path == root.path || path in entries || declaration(path) != null
 
+    /** The file or directory at [path] when it is visible in the current metric. */
+    fun entry(path: String): Entry? = if (path == root.path) root
+        else entries[path]?.takeIf { it.value > 0 || !metric.hidesEmpty }
+
     fun files(path: String): List<ReviewSource> {
         if (path == root.path) {
             return if (root.path.isEmpty()) sources else sources.filter { it.path.startsWith("${root.path}/") }

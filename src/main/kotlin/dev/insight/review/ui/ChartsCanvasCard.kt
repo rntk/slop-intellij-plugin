@@ -200,7 +200,12 @@ internal class ChartsCanvasCard(
         val hierarchy = if (tabbed) ReviewLineChart(content.tree, metric, outlines,
             only = view.searchResult?.files?.takeIf { metric == LineChartMetric.FOUND }) else null
         val activePreview = hierarchy?.takeIf { lines }?.let { chart ->
-            view.linesPreview?.takeIf { chart.hasEntry(it.path) }.also { view.linesPreview = it }
+            view.linesPreview?.takeIf {
+                when (it.kind) {
+                    LineChartPreviewKind.CIRCLES, LineChartPreviewKind.RADAR -> chart.entry(it.path) != null
+                    else -> chart.hasEntry(it.path)
+                }
+            }.also { view.linesPreview = it }
         }
         val lineChart = if (hierarchy != null && lines) LineChartPanel(
             hierarchy,
@@ -269,10 +274,22 @@ internal class ChartsCanvasCard(
                 node?.let { summaryPreview(it, content) }
             }
         }
+        val scopedChart = activePreview?.let { selection ->
+            when (selection.kind) {
+                LineChartPreviewKind.CIRCLES, LineChartPreviewKind.RADAR -> hierarchy?.let { chart ->
+                    chart.entry(selection.path)?.let { entry ->
+                        scopedChartPreview(chart, entry, selection.kind, scaled(MAX_CIRCLES_DIAMETER), zoom,
+                            view.radarLog, open)
+                    }
+                }
+                else -> null
+            }
+        }
+        val detail = summary ?: scopedChart
         val bodyScroll = JBScrollPane(body).apply {
             border = null; isOpaque = false; viewport.isOpaque = false
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-            val minHeight = if (previewFiles.isNotEmpty() || summary != null) scaled(MIN_PREVIEW_HEIGHT) else 0
+            val minHeight = if (previewFiles.isNotEmpty() || detail != null) scaled(MIN_PREVIEW_HEIGHT) else 0
             preferredSize = Dimension(width, minOf(maxOf(body.preferredSize.height, minHeight), scaled(MAX_HEIGHT)))
             verticalScrollBar.unitIncrement = scaled(16)
             if (lines) {
@@ -284,17 +301,15 @@ internal class ChartsCanvasCard(
             }
         }
         val readingArea = if (lineChart != null) {
-            val actionLabel = if (diff) "Show diff" else "Show source"
-            val hint = if (symbolSummaries == null) "Choose Show summary or $actionLabel on a file or directory."
-                else "Choose Show summary or $actionLabel on a file, directory, or declaration."
-            HierarchyPreviewPanel(bodyScroll, project, hint, detail = summary,
+            val hint = "Use the icons on a file or directory to open a preview."
+            HierarchyPreviewPanel(bodyScroll, project, hint, detail = detail,
                 dividerLocation = view.linesDivider,
                 rememberDivider = { if (currentCard === card) view.linesDivider = it },
             ).also {
                 if (activePreview?.kind == LineChartPreviewKind.SOURCE && declaration != null) {
                     it.showLines(declaration.first, declaration.second.lines, declaration.second.name)
                 }
-                else if (summary == null) it.showFiles(previewFiles)
+                else if (detail == null) it.showFiles(previewFiles)
                 preview = it
             }
         } else bodyScroll

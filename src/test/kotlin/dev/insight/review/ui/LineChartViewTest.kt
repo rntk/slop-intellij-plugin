@@ -42,6 +42,7 @@ import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JComponent
 import javax.swing.JMenuItem
+import javax.swing.JSplitPane
 import javax.swing.JToggleButton
 import javax.swing.text.StyleConstants
 import kotlinx.coroutines.CoroutineScope
@@ -52,6 +53,25 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 
 class LineChartViewTest : BasePlatformTestCase() {
+    fun testChartPreviewActionsSelectFileAndDirectory() {
+        val files = listOf("src/a.kt", "readme.md").map { CodeFile(it, "/repo/$it", "one\ntwo") }
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE)
+        fun toggle(kind: String, path: String) = descendants(canvas).filterIsInstance<JToggleButton>()
+            .single { it.name == "charts-lines-$kind-toggle:$path" }
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            toggle("circles", "src").doClick()
+            assertEquals(LineChartPreview("src", LineChartPreviewKind.CIRCLES), canvas.chartsView.linesPreview)
+            assertTrue(toggle("circles", "src").isSelected)
+            toggle("radar", "readme.md").doClick()
+            assertEquals(LineChartPreview("readme.md", LineChartPreviewKind.RADAR), canvas.chartsView.linesPreview)
+            assertTrue(toggle("radar", "readme.md").isSelected)
+            assertFalse(toggle("circles", "src").isSelected)
+            toggle("radar", "readme.md").doClick()
+            assertNull(canvas.chartsView.linesPreview)
+        } finally { canvas.dispose() }
+    }
+
     fun testDirectoryPickerKeepsTheDirectoryScopeWhenOnlyOneFileIsInReview() {
         val path = "src/deep/file.kt"
         val files = listOf(CodeFile(path, "/repo/$path", "val captured = 1"), CodeFile("other.kt", "/repo/other.kt", "outside"))
@@ -206,6 +226,53 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals(1, tabs().selectedIndex)
             assertColor(RadarSeries.REMOVED)
         } finally { canvas.dispose() }
+    }
+
+    fun testScopedChartsKeepHierarchyAndFollowTheSelectedMetric() {
+        for (vocabulary in listOf(ReviewVocabulary.CODE, ReviewVocabulary.DIFF)) {
+            val path = "src/a.kt"
+            val files = listOf(path, "src/b.kt", "readme.md").map {
+                if (vocabulary == ReviewVocabulary.CODE) CodeFile(it, "/repo/$it", "val captured = 1\n")
+                else dev.insight.diff.ReviewFile(it, "/repo/$it", null, "modified", "@@ -1 +1,2 @@\n-old\n+new\n+extra", it)
+            }
+            val canvas = NoteCanvas({}, {}, vocabulary = vocabulary)
+            fun components() = descendants(canvas)
+            fun toggle(name: String) = components().filterIsInstance<JToggleButton>().single { it.name == name }
+            fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
+            fun split() = components().filterIsInstance<JSplitPane>().single { it.name == "hierarchy-preview-split" }
+            fun chartComponents(name: String): List<Component> {
+                assertTrue(descendants(split().leftComponent).any { it is LineChartPanel })
+                return descendants(descendants(split().rightComponent).single { it.name == name })
+            }
+            val code = vocabulary == ReviewVocabulary.CODE
+            fun assertCircles(value: Long) {
+                val right = chartComponents("charts-lines-circles:src")
+                val circles = right.filterIsInstance<CircleChartPanel>().single()
+                assertEquals("src", circles.directory.path)
+                assertEquals(2, circles.directory.files)
+                assertEquals(value, circles.directory.value)
+            }
+            fun assertRadar(value: Long) {
+                val radar = chartComponents("charts-lines-radar:$path").filterIsInstance<RadarChartPanel>().single()
+                assertEquals(path, radar.chart.axes.single().path)
+                assertEquals(value, radar.scopedMetricValue(radar.chart.axes.single()))
+            }
+            try {
+                canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+                toggle("charts-lines-circles-toggle:src").doClick()
+                assertCircles(if (code) 2L else 4L)
+
+                tabs().selectedIndex = 1
+                val fileValue = if (code) "val captured = 1\n".toByteArray().size.toLong() else 1L
+                assertCircles(2 * fileValue)
+
+                components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
+                toggle("charts-lines-radar-toggle:$path").doClick()
+                assertRadar(fileValue)
+                tabs().selectedIndex = 0
+                assertRadar(if (code) 1L else 2L)
+            } finally { canvas.dispose() }
+        }
     }
 
     fun testToggleShowsAndHidesFileAndDirectoryPreviewWithVisualHighlightAndDisposal() {
@@ -496,6 +563,10 @@ class LineChartViewTest : BasePlatformTestCase() {
             assertEquals(listOf("src"), entries())
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src" }.doClick()
             assertEquals(setOf("src/ui", "src/model"), entries().toSet())
+            components().filterIsInstance<JToggleButton>().single { it.name == "charts-lines-radar-toggle:src/ui" }.doClick()
+            val radar = components().filterIsInstance<RadarChartPanel>().single()
+            assertEquals(listOf("src/ui/a.kt"), radar.chart.axes.map { it.path })
+            assertEquals(2L, radar.scopedMetricValue(radar.chart.axes.single()))
             components().filterIsInstance<ActionLink>().single { it.name == "charts-lines-entry:src/ui" }.doClick()
             assertEquals(listOf("src/ui/a.kt"), entries())
             assertEquals("user interface", components().filterIsInstance<JBTextField>().single { it.name == "charts-search-field" }.text)

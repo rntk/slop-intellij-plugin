@@ -196,6 +196,35 @@ fun topicRadar(outline: TopicOutline, level: Int, unclassified: String = "Awaiti
 
 private fun sum(files: List<ReviewSource>) = files.fold(RadarLines.ZERO) { total, file -> total + radarLines(file) }
 
+internal data class ScopedRadarMeasure(val value: Long, val files: Int)
+
+internal class ScopedRadar(
+    val chart: RadarChart,
+    val metric: LineChartMetric,
+    val measures: Map<RadarAxis, ScopedRadarMeasure>,
+)
+
+/** A scoped radar compares the entries directly inside a folder, or shows the selected file on one spoke. */
+internal fun scopedRadar(chart: ReviewLineChart, scope: ReviewLineChart.Entry): ScopedRadar {
+    val entries = if (scope.directory) chart.children(scope) else listOf(scope)
+    val series = listOf(chart.metric.diffSeries ?: RadarSeries.SOURCE)
+    val measures = linkedMapOf<RadarAxis, ScopedRadarMeasure>()
+    val kept = if (entries.size > MAX_RADAR_AXES) MAX_RADAR_AXES - 1 else entries.size
+    // The hierarchy orders siblings from largest to smallest in the active metric.
+    for (entry in entries.take(kept)) {
+        val axis = RadarAxis("path:${entry.path}", entry.label + if (entry.directory) "/" else "",
+            entry.path, emptyList(), RadarLines.ZERO, entry.path.takeUnless { entry.directory })
+        measures[axis] = ScopedRadarMeasure(entry.value, entry.files)
+    }
+    if (kept < entries.size) {
+        val rest = entries.drop(kept)
+        val other = RadarAxis("other", "Other (${rest.size})", rest.joinToString("\n") { it.label }.take(2000),
+            emptyList(), RadarLines.ZERO, merged = rest.size)
+        measures[other] = ScopedRadarMeasure(rest.sumOf { it.value }, rest.sumOf { it.files })
+    }
+    return ScopedRadar(RadarChart(measures.keys.toList(), series, 1, 1), chart.metric, measures)
+}
+
 /** Keeps the largest [MAX_RADAR_AXES] - 1 spokes in their reading order and merges the rest into "Other". */
 internal fun capped(axes: List<RadarAxis>, max: Int = MAX_RADAR_AXES, series: List<RadarSeries> = listOf(RadarSeries.SOURCE, RadarSeries.ADDED, RadarSeries.REMOVED)): List<RadarAxis> {
     if (axes.size <= max) return axes
@@ -212,7 +241,10 @@ internal fun capped(axes: List<RadarAxis>, max: Int = MAX_RADAR_AXES, series: Li
  * The share of the radius [value] reaches when the outer ring is [max]. A logarithmic scale keeps small entries visible
  * beside one huge entry; zero is always the center.
  */
-fun radarScale(value: Int, max: Int, logarithmic: Boolean): Double = when {
+fun radarScale(value: Int, max: Int, logarithmic: Boolean): Double =
+    radarScale(value.toLong(), max.toLong(), logarithmic)
+
+internal fun radarScale(value: Long, max: Long, logarithmic: Boolean): Double = when {
     value <= 0 || max <= 0 -> 0.0
     logarithmic -> (kotlin.math.ln(1.0 + value) / kotlin.math.ln(1.0 + max)).coerceIn(0.0, 1.0)
     else -> (value.toDouble() / max).coerceIn(0.0, 1.0)
@@ -220,12 +252,15 @@ fun radarScale(value: Int, max: Int, logarithmic: Boolean): Double = when {
 
 /** The value of ring [ring] of [rings] (the outermost being [max]), inverting [radarScale]. */
 fun radarRingValue(ring: Int, rings: Int, max: Int, logarithmic: Boolean): Int {
-    val share = ring.toDouble() / rings
-    return if (logarithmic) (kotlin.math.exp(share * kotlin.math.ln(1.0 + max)) - 1).roundToIntSafely()
-        else (share * max).roundToIntSafely()
+    return radarRingValue(ring, rings, max.toLong(), logarithmic).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 }
 
-private fun Double.roundToIntSafely(): Int = kotlin.math.round(this).toInt().coerceAtLeast(0)
+internal fun radarRingValue(ring: Int, rings: Int, max: Long, logarithmic: Boolean): Long {
+    if (ring == rings && rings > 0) return max.coerceAtLeast(0L)
+    val share = ring.toDouble() / rings
+    return kotlin.math.round(if (logarithmic) kotlin.math.exp(share * kotlin.math.ln(1.0 + max)) - 1
+        else share * max).toLong().coerceAtLeast(0L)
+}
 
 /** Compact labels for line or symbol counts; comments stay separate from declarations unless one series is selected. */
 fun radarValueText(lines: RadarLines, series: List<RadarSeries>, selected: RadarSeries? = null): String {

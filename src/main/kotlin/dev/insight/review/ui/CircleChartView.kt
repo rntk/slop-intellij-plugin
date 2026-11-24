@@ -45,10 +45,14 @@ internal class CircleChartPanel(
     diameter: Int,
     private val navigate: (String) -> Unit,
     private val open: (String) -> Unit,
+    private val scope: ReviewLineChart.Entry? = null,
     private val contextMenu: ((ReviewLineChart.Entry) -> JPopupMenu)? = null,
 ) : JPanel(BorderLayout(0, JBUI.scale(12))) {
     private val metric = chart.metric
-    val directory = chart.directory(path)
+    private val root = scope ?: chart.root
+    val directory = chart.directory(path).let {
+        if (scope == null || scope.path.isEmpty() || ReviewLineChart.isBeneath(it.path, scope.path)) it else scope
+    }
     internal val packed: PackedCircle? = packCircles(chart, directory, MAX_DEPTH)
     private val baseColor: Color = RadarChartPanel.color(metric.diffSeries ?: RadarSeries.SOURCE)
     internal val canvas = CircleCanvas(diameter)
@@ -60,10 +64,10 @@ internal class CircleChartPanel(
         getAccessibleContext().accessibleName = "${metric.label} circles"
         add(JPanel(VerticalLayout(JBUI.scale(6))).apply {
             isOpaque = false
-            add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            if (scope == null || directory.path != root.path) add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
                 name = "charts-circles-breadcrumbs"
                 isOpaque = false
-                chart.breadcrumbs(directory).forEachIndexed { index, entry ->
+                chart.breadcrumbs(directory).dropWhile { it.path != root.path }.forEachIndexed { index, entry ->
                     if (index > 0) add(JLabel(" / ").apply { font = chartFont(font); foreground = UIUtil.getContextHelpForeground() })
                     val title = if (index == 0) rootLabel + entry.path.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() else entry.label
                     add((if (entry.path == directory.path) JLabel(title) else ActionLink(title) { navigate(entry.path) }).apply {
@@ -79,7 +83,7 @@ internal class CircleChartPanel(
                 foreground = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
                 toolTipText = metric.description
             })
-            add(JLabel("Click a folder to walk in, a file to open it, the background to go up · Backspace goes up").apply {
+            if (scope == null) add(JLabel("Click a folder to walk in, a file to open it, the background to go up · Backspace goes up").apply {
                 font = chartFont(JBFont.small())
                 foreground = UIUtil.getContextHelpForeground()
             })
@@ -91,15 +95,15 @@ internal class CircleChartPanel(
         installKeys()
     }
 
-    /** Walks into a folder or opens a file; the shown directory walks up. */
+    /** Walks into a folder or opens a file; the shown directory walks up within the chart's scope. */
     fun activate(circle: PackedCircle) = when {
+        !circle.entry.directory -> open(circle.entry.path)
         circle.depth == 0 -> up()
-        circle.entry.directory -> navigate(circle.entry.path)
-        else -> open(circle.entry.path)
+        else -> navigate(circle.entry.path)
     }
 
     fun up() {
-        if (directory.path != chart.root.path) navigate(directory.path.substringBeforeLast('/', ""))
+        if (directory.path != root.path) navigate(directory.path.substringBeforeLast('/', ""))
     }
 
     private fun installKeys() {
@@ -159,13 +163,13 @@ internal class CircleChartPanel(
 
         /** Moves the keyboard pick among the shown directory's entries. */
         fun step(delta: Int) {
-            val top = packed?.children.orEmpty()
+            val top = packed?.let { if (it.entry.directory) it.children else listOf(it) }.orEmpty()
             if (top.isEmpty()) return
             val index = top.indexOfFirst { it === current || current?.let { c -> ReviewLineChart.isBeneath(c.entry.path, it.entry.path) } == true }
             hover(top[if (index < 0) (if (delta > 0) 0 else top.lastIndex) else (index + delta).mod(top.size)])
         }
 
-        private val scale get() = packed?.let { (min(width, height) / 2.0 - JBUI.scale(MARGIN)) / it.r } ?: 1.0
+        private val scale get() = packed?.let { (min(width, height) / 2.0 - JBUI.scale(MARGIN)).coerceAtLeast(1.0) / it.r } ?: 1.0
         private fun sx(x: Double) = width / 2.0 + x * scale
         private fun sy(y: Double) = height / 2.0 + y * scale
 
@@ -181,7 +185,7 @@ internal class CircleChartPanel(
             val circle = circleAt(event.x, event.y) ?: return null
             val entry = circle.entry
             val what = when {
-                circle.depth == 0 -> if (directory.path == chart.root.path) "" else " · Click to go up"
+                circle.depth == 0 && entry.directory -> if (directory.path == root.path) "" else " · Click to go up"
                 entry.directory -> " · Click to explore"
                 metric.diffSeries == null -> " · Open file"
                 else -> " · View diff"
@@ -206,7 +210,7 @@ internal class CircleChartPanel(
                     g.draw(shape)
                 }
                 // The hovered circle, and the shown entry that holds it, stand out over their neighbours.
-                if (highlight != null && highlight.depth > 0) {
+                if (highlight != null && (highlight.depth > 0 || !highlight.entry.directory)) {
                     val r = highlight.r * scale
                     g.color = JBUI.CurrentTheme.Focus.focusColor()
                     g.stroke = BasicStroke(JBUI.scale(2).toFloat())
@@ -217,7 +221,7 @@ internal class CircleChartPanel(
         }
 
         private fun fill(circle: PackedCircle): Color = when {
-            circle.depth == 0 -> alpha(baseColor, 18)
+            circle.depth == 0 && circle.entry.directory -> alpha(baseColor, 18)
             circle.entry.directory -> alpha(baseColor, 30 + 14 * circle.depth)
             else -> alpha(baseColor, if (circle === current) 200 else 130)
         }
@@ -227,10 +231,10 @@ internal class CircleChartPanel(
             val labelFont = chartFont(JBFont.label())
             val small = chartFont(JBFont.small())
             for (circle in circles) {
-                if (circle.depth == 0 || (circle.depth > 2 && circle.entry.directory)) continue
+                if (circle.entry.directory && (circle.depth == 0 || circle.depth > 2)) continue
                 val r = circle.r * scale
                 val nested = circle.entry.directory && circle.children.isNotEmpty()
-                g.font = if (circle.depth == 1) labelFont else small
+                g.font = if (circle.depth <= 1) labelFont else small
                 val metrics = g.fontMetrics
                 val label = circle.entry.label + if (circle.entry.directory) "/" else ""
                 if (metrics.stringWidth(label) > 1.8 * r || metrics.height > r) continue
@@ -238,7 +242,7 @@ internal class CircleChartPanel(
                 // Folders with nested circles carry their name near the top rim, clear of their contents.
                 val y = if (nested) sy(circle.y) - r + metrics.ascent + JBUI.scale(4) else sy(circle.y) + metrics.ascent / 2.0 - metrics.descent / 2.0
                 drawHalo(g, label, x - metrics.stringWidth(label) / 2.0, y)
-                if (!nested && circle.depth == 1) {
+                if (!nested && circle.depth <= 1) {
                     g.font = small
                     val value = number(circle.entry.value)
                     val vm = g.fontMetrics

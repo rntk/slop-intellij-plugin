@@ -42,7 +42,7 @@ import javax.swing.JToggleButton
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 
-internal enum class LineChartPreviewKind { SOURCE, SUMMARY }
+internal enum class LineChartPreviewKind { SOURCE, SUMMARY, CIRCLES, RADAR }
 
 internal data class LineChartPreview(val path: String, val kind: LineChartPreviewKind)
 
@@ -353,6 +353,10 @@ internal class LineChartPanel(
                 add(previewToggle(entry.path, LineChartPreviewKind.SUMMARY, location))
             }
             if (!placeholder) add(previewToggle(entry.path, LineChartPreviewKind.SOURCE, location))
+            if (entry.kind == ReviewLineChart.Kind.FILE || entry.kind == ReviewLineChart.Kind.DIRECTORY) {
+                add(previewToggle(entry.path, LineChartPreviewKind.CIRCLES, location))
+                add(previewToggle(entry.path, LineChartPreviewKind.RADAR, location))
+            }
         }, BorderLayout.EAST)
         trackCursor(this, index)
     }
@@ -422,16 +426,29 @@ internal class LineChartPanel(
         val selection = LineChartPreview(path, mode)
         val active = preview == selection
         val summary = mode == LineChartPreviewKind.SUMMARY
-        val kind = if (summary) "summary" else if (metric.diffSeries == null) "source" else "diff"
+        val kind = when (mode) {
+            LineChartPreviewKind.SUMMARY -> "summary"
+            LineChartPreviewKind.SOURCE -> if (metric.diffSeries == null) "source" else "diff"
+            LineChartPreviewKind.CIRCLES -> "circles chart"
+            LineChartPreviewKind.RADAR -> "radar chart"
+        }
         val label = if (active) "Hide $kind" else "Show $kind"
         return JToggleButton().apply {
             if (summary) {
                 text = "S"
                 font = JBFont.small().asBold()
                 margin = JBUI.emptyInsets()
-            } else icon = AllIcons.Actions.Preview
+            } else icon = when (mode) {
+                LineChartPreviewKind.CIRCLES, LineChartPreviewKind.RADAR -> chartPreviewIcon(mode)
+                else -> AllIcons.Actions.Preview
+            }
             isSelected = active
-            name = if (summary) "charts-lines-summary-toggle:$path" else "charts-lines-toggle:$path"
+            name = when (mode) {
+                LineChartPreviewKind.SUMMARY -> "charts-lines-summary-toggle:$path"
+                LineChartPreviewKind.SOURCE -> "charts-lines-toggle:$path"
+                LineChartPreviewKind.CIRCLES -> "charts-lines-circles-toggle:$path"
+                LineChartPreviewKind.RADAR -> "charts-lines-radar-toggle:$path"
+            }
             val size = Dimension(JBUI.scale(28), JBUI.scale(24))
             preferredSize = size; minimumSize = size; maximumSize = size
             isBorderPainted = false
@@ -445,6 +462,28 @@ internal class LineChartPanel(
             toolTipText = "$label of $location"
             accessibleContext.accessibleName = "$label of $location"
             addActionListener { togglePreview(selection) }
+        }
+    }
+
+    private fun chartPreviewIcon(mode: LineChartPreviewKind): Icon = object : Icon {
+        override fun getIconWidth() = JBUI.scale(16)
+        override fun getIconHeight() = JBUI.scale(16)
+        override fun paintIcon(c: Component, g: Graphics, x: Int, y: Int) {
+            val graphics = g.create(x, y, iconWidth, iconHeight)
+            try {
+                graphics.color = c.foreground
+                if (mode == LineChartPreviewKind.CIRCLES) {
+                    graphics.drawOval(1, 1, iconWidth - 2, iconHeight - 2)
+                    graphics.drawOval(iconWidth / 4, iconHeight / 4, iconWidth / 2, iconHeight / 2)
+                } else {
+                    val xs = intArrayOf(iconWidth / 2, iconWidth - 2, iconWidth - 4, 3, 1)
+                    val ys = intArrayOf(1, iconHeight / 3, iconHeight - 2, iconHeight - 2, iconHeight / 3)
+                    graphics.drawPolygon(xs, ys, xs.size)
+                    graphics.drawLine(iconWidth / 2, 1, iconWidth / 2, iconHeight - 3)
+                    graphics.drawLine(1, iconHeight / 3, iconWidth - 4, iconHeight - 2)
+                    graphics.drawLine(iconWidth - 2, iconHeight / 3, 3, iconHeight - 2)
+                }
+            } finally { graphics.dispose() }
         }
     }
 
