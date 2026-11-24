@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBTabbedPane
+import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -15,8 +16,49 @@ import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.KeyStroke
+import javax.swing.SwingUtilities
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 class TreeBoardViewTest : BasePlatformTestCase() {
+    fun testTreeToolbarKeepsSearchAndBoardControlsOnOneRow() {
+        val file = CodeFile("a.kt", "/repo/a.kt", "one\n")
+        val scope = CoroutineScope(SupervisorJob())
+        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, search = ChartSearchActions(scope) { error("Unused") })
+        try {
+            builder.view.chart = "Tree"
+            builder.view.searchStatus = "The search failed. ${"Long message. ".repeat(20)}"
+            val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file)))))
+            card.setSize(JBUI.scale(860), JBUI.scale(740))
+            layoutTree(card)
+            val components = descendants(card)
+            fun component(name: String) = components.single { it.name == name }
+            val tabs = component("charts-lines-metric-tabs")
+            val toolbar = component("charts-controls")
+            val controls = listOf("charts-type-selector", "charts-search-field", "charts-search-send",
+                "charts-tree-fit", "charts-tree-zoom-in", "charts-tree-total").map(::component)
+            val bounds = controls.map { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
+
+            assertTrue(bounds.all { it.width > 0 && it.x >= 0 && it.maxX <= card.width && it.maxY <= tabs.y })
+            assertTrue(bounds.maxOf { it.y } < bounds.minOf { it.maxY })
+            assertEquals(toolbar.y + toolbar.height, tabs.y)
+            val board = components.filterIsInstance<TreeBoardPanel>().single()
+            assertEquals(board.insets.top, board.canvas.y)
+
+            val boardBounds = board.canvas.bounds
+            board.connectionSelection = TreeConnectionSelection("${"nested/".repeat(30)}a.kt", message = "Resolving code connections…")
+            layoutTree(card)
+            val status = component("charts-tree-connections") as JLabel
+            assertTrue(status.isVisible)
+            assertEquals(status.text, status.toolTipText)
+            assertEquals(boardBounds, board.canvas.bounds)
+        } finally {
+            builder.dispose()
+            scope.cancel()
+        }
+    }
+
     fun testTreeBoardSharesTabsFoldsDirectoriesNavigatesHighlightsAndZooms() {
         val files = listOf(
             CodeFile("src/a.kt", "/repo/src/a.kt", "one\ntwo\n"),
@@ -116,4 +158,9 @@ class TreeBoardViewTest : BasePlatformTestCase() {
 
     private fun descendants(component: Component): List<Component> = listOf(component) +
         if (component is Container) component.components.flatMap(::descendants) else emptyList()
+
+    private fun layoutTree(component: Container) {
+        component.doLayout()
+        component.components.filterIsInstance<Container>().forEach(::layoutTree)
+    }
 }

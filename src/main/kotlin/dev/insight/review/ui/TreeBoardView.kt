@@ -16,9 +16,9 @@ import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
-import dev.insight.ui.FloatingPanel
 import java.awt.BasicStroke
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
@@ -96,7 +96,7 @@ internal class TreeBoardPanel(
     private val viewportChanged: (Double, Double, Double) -> Unit = { _, _, _ -> },
     private val toggleConnections: ((String) -> Unit)? = null,
     private val openConnection: ((String, String, TreeConnectionSite, MouseEvent) -> Unit)? = null,
-) : JPanel(BorderLayout(0, JBUI.scale(8))) {
+) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
     private val accentColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: JBUI.CurrentTheme.Focus.focusColor()
@@ -126,7 +126,8 @@ internal class TreeBoardPanel(
         name = "charts-tree-total"
         font = JBFont.small().asBold()
         foreground = numberColor
-        toolTipText = metric.description
+        toolTipText = "${metric.description} · Drag to pan · Ctrl/⌘+wheel to zoom · ↑↓ move, ←→ fold, Enter opens" +
+            if (toggleConnections == null) "" else " · C shows code connections"
     }
     private val statusLabel = JLabel().apply {
         name = "charts-tree-status"
@@ -150,8 +151,9 @@ internal class TreeBoardPanel(
         foreground = UIUtil.getContextHelpForeground()
     }
 
-    private val controls = FloatingPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+    val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
         name = "charts-tree-controls"
+        isOpaque = false
         add(controlButton("Unfold all", "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
         add(controlButton("Fold all", "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
         add(controlButton("Fit", "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
@@ -164,22 +166,22 @@ internal class TreeBoardPanel(
         })
     }
 
-    internal val canvas = TreeBoardCanvas()
-
-    private val boardLayer = object : JPanel(null) {
-        init {
-            isOpaque = false
-            add(controls)
-            add(canvas)
-        }
-
-        override fun doLayout() {
-            canvas.setBounds(0, 0, width, height)
-            val pad = JBUI.scale(10)
-            val pref = controls.preferredSize
-            controls.setBounds((width - pref.width - pad).coerceAtLeast(pad), pad, pref.width, pref.height)
-        }
+    private val details = object : JPanel(CardLayout()) {
+        // Paths and connection messages may be much wider than the toolbar.
+        override fun getPreferredSize() = Dimension(0, super.getPreferredSize().height)
+    }.apply {
+        isOpaque = false
+        add(statusLabel, statusLabel.name)
+        add(connectionStatus, connectionStatus.name)
     }
+
+    val status = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        isOpaque = false
+        add(totalLabel, BorderLayout.WEST)
+        add(details, BorderLayout.CENTER)
+    }
+
+    internal val canvas = TreeBoardCanvas()
 
     init {
         name = "charts-tree-board"
@@ -187,17 +189,7 @@ internal class TreeBoardPanel(
         isFocusable = true
         getAccessibleContext().accessibleName = "${metric.label} tree board"
 
-        val header = JPanel(BorderLayout(JBUI.scale(12), JBUI.scale(2))).apply {
-            isOpaque = false
-            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(10), 0)).apply {
-                isOpaque = false
-                add(totalLabel)
-                add(statusLabel)
-            }, BorderLayout.CENTER)
-            add(connectionStatus, BorderLayout.SOUTH)
-        }
-        add(header, BorderLayout.NORTH)
-        add(boardLayer, BorderLayout.CENTER)
+        add(canvas, BorderLayout.CENTER)
 
         updateStatus()
         updateConnectionStatus()
@@ -323,26 +315,24 @@ internal class TreeBoardPanel(
 
     private fun updateStatus() {
         val node = board.nodes.getOrNull(hoveredIndex) ?: board.nodes.getOrNull(cursorIndex)
-        if (node == null) {
-            statusLabel.text = if (metric.hidesEmpty) "No ${metric.plural} here" else "No files in scope"
-            return
+        statusLabel.text = if (node == null) {
+            if (metric.hidesEmpty) "No ${metric.plural} here" else "No files in scope"
+        } else {
+            val path = node.entry.path.ifEmpty { rootLabel }
+            val files = if (node.entry.directory && metric != LineChartMetric.ITEMS) " · ${fileCount(node.entry.files)}" else ""
+            "$path · ${valueText(node.entry.value)}$files"
         }
-        val path = node.entry.path.ifEmpty { rootLabel }
-        val files = if (node.entry.directory && metric != LineChartMetric.ITEMS) " · ${fileCount(node.entry.files)}" else ""
-        statusLabel.text = "$path · ${valueText(node.entry.value)}$files"
         statusLabel.toolTipText = statusLabel.text
     }
 
     private fun updateConnectionStatus() {
         val selection = connectionSelection
         val links = selection?.connections
-        connectionStatus.toolTipText = null
         connectionStatus.text = when {
-            selection == null -> "Drag to pan · Ctrl/⌘+wheel to zoom · ↑↓ move, ←→ fold, Enter opens" +
-                if (toggleConnections == null) "" else " · C shows code connections"
-            selection.message != null -> "${selection.path} · ${selection.message}"
+            selection == null -> ""
+            selection.message != null -> "${selection.message} · ${selection.path}"
             links == null || (links.incoming.isEmpty() && links.outgoing.isEmpty()) ->
-                "${selection.path} · No code connections within this review"
+                "No code connections within this review · ${selection.path}"
             else -> {
                 val hidden = (links.incoming.keys + links.outgoing.keys).count { board.indexOf(it) < 0 }
                 val hint = when {
@@ -350,10 +340,15 @@ internal class TreeBoardPanel(
                     hidden > 0 -> " · $hidden hidden by folds or the current tab"
                     else -> ""
                 }
-                connectionStatus.toolTipText = "Incoming links are dashed. Outgoing links are solid. Arrows point to the referenced file."
-                "${selection.path} · ${links.incoming.size} incoming · ${links.outgoing.size} outgoing$hint"
+                "${links.incoming.size} incoming · ${links.outgoing.size} outgoing$hint · ${selection.path}"
             }
         }
+        connectionStatus.toolTipText = when {
+            selection == null -> null
+            links == null || (links.incoming.isEmpty() && links.outgoing.isEmpty()) -> connectionStatus.text
+            else -> "${connectionStatus.text} · Incoming links are dashed. Outgoing links are solid. Arrows point to the referenced file."
+        }
+        (details.layout as CardLayout).show(details, if (selection == null) statusLabel.name else connectionStatus.name)
     }
 
     private fun notifyViewportChanged() {

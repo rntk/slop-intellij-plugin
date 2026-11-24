@@ -47,6 +47,8 @@ import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.awt.KeyboardFocusManager
 import com.intellij.ui.components.JBTextField
 import javax.swing.JButton
@@ -190,35 +192,26 @@ internal class ChartsCanvasCard(
         val metric = view.lineMetric?.takeIf { it in metrics } ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
-        val header = JPanel(BorderLayout(scaled(8), 0)).apply {
-            name = "charts-controls"
+        val chartOptions = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel("Charts").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = if (diff) "Explore added or removed lines by directory, inspect the whole tree on a board, walk through them as circles, or compare changes on the radar"
-                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, inspect the whole project tree on a board, walk through them as circles, or compare code structure on the radar"
-            }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                add(JComboBox(arrayOf(linesTitle, TREE, CIRCLES, "Radar")).apply {
-                    name = "charts-type-selector"
-                    font = scaledFont(JBFont.small())
-                    selectedItem = when { lines -> linesTitle; tree -> TREE; circles -> CIRCLES; else -> "Radar" }
-                    addActionListener { view.chart = selectedItem as String; refresh() }
-                })
-                if (radar && chart.levels > 1) add(radarLevels(chart))
-                if (radar && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
-                    "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines") {
-                    view.radarSymbols = it
-                })
-                if (radar) add(checkBox("Log scale", "charts-radar-log", view.radarLog,
-                    "Space the rings logarithmically, so small folders stay visible beside a large one") { view.radarLog = it })
-                close?.let { remove ->
-                    add(InplaceButton(IconButton("Remove charts", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove() }
-                        .apply { cursor = Cursor.getDefaultCursor() })
-                }
-            }, BorderLayout.WEST)
+            add(JComboBox(arrayOf(linesTitle, TREE, CIRCLES, "Radar")).apply {
+                name = "charts-type-selector"
+                accessibleContext.accessibleName = "Chart type"
+                font = scaledFont(JBFont.small())
+                selectedItem = when { lines -> linesTitle; tree -> TREE; circles -> CIRCLES; else -> "Radar" }
+                addActionListener { view.chart = selectedItem as String; refresh() }
+            })
+            if (radar && chart.levels > 1) add(radarLevels(chart))
+            if (radar && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
+                "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines") {
+                view.radarSymbols = it
+            })
+            if (radar) add(checkBox("Log scale", "charts-radar-log", view.radarLog,
+                "Space the rings logarithmically, so small folders stay visible beside a large one") { view.radarLog = it })
+            close?.let { remove ->
+                add(InplaceButton(IconButton("Remove charts", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove() }
+                    .apply { cursor = Cursor.getDefaultCursor() })
+            }
         }
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val hierarchy = if (tabbed) ReviewLineChart(content.tree, metric, outlines,
@@ -291,7 +284,7 @@ internal class ChartsCanvasCard(
             },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
         ).apply {
-            border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
+            border = JBUI.Borders.empty(4)
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
         } else null
@@ -382,9 +375,20 @@ internal class ChartsCanvasCard(
         }
         val searchRow = search?.takeIf { tabbed }?.let { actions ->
             searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
-                content.revision)
+                content.revision, compact = tree)
         }
-        card.add(if (searchRow == null) header else JPanel(BorderLayout()).apply {
+        val header = if (treeBoard != null) treeToolbar(chartOptions, treeBoard, searchRow) else JPanel(BorderLayout(scaled(8), 0)).apply {
+            name = "charts-controls"
+            isOpaque = false
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            add(chartOptions, BorderLayout.WEST)
+            add(JLabel("Charts").apply {
+                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+                toolTipText = if (diff) "Explore added or removed lines by directory, inspect the whole tree on a board, walk through them as circles, or compare changes on the radar"
+                    else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, inspect the whole project tree on a board, walk through them as circles, or compare code structure on the radar"
+            }, BorderLayout.CENTER)
+        }
+        card.add(if (searchRow == null || tree) header else JPanel(BorderLayout()).apply {
             isOpaque = false
             add(searchRow, BorderLayout.NORTH)
             add(header, BorderLayout.CENTER)
@@ -397,6 +401,23 @@ internal class ChartsCanvasCard(
             SwingUtilities.invokeLater { if (currentCard === card) focusTarget.requestFocusInWindow() }
         }
         return card
+    }
+
+    private fun treeToolbar(chartOptions: JComponent, board: TreeBoardPanel, search: JComponent?) = JPanel(GridBagLayout()).apply {
+        name = "charts-controls"
+        isOpaque = false
+        border = JBUI.Borders.empty(3, 4)
+        val constraints = GridBagConstraints().apply {
+            gridy = 0
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(0, 4)
+        }
+        add(chartOptions, constraints)
+        add(board.controls, constraints)
+        constraints.weightx = 0.55
+        search?.let { add(it, constraints) }
+        constraints.weightx = 0.45
+        add(board.status, constraints)
     }
 
     private fun toggleTreeConnections(index: TreeFileConnectionIndex, path: String) {
@@ -467,13 +488,20 @@ internal class ChartsCanvasCard(
      * A one-line query and Send: the model lists and reads the review's files and names the matching paths. The result
      * becomes a Search tab rather than filtering the current one.
      */
-    private fun searchRow(actions: ChartSearchActions, files: List<ReviewSource>, revision: Int): JComponent {
-        val status = JLabel(view.searchStatus.orEmpty()).apply {
+    private fun searchRow(actions: ChartSearchActions, files: List<ReviewSource>, revision: Int, compact: Boolean): JComponent {
+        val status = object : JLabel(view.searchStatus.orEmpty()) {
+            override fun getPreferredSize(): Dimension = super.getPreferredSize().apply {
+                if (compact) width = minOf(width, scaled(100))
+            }
+        }.apply {
             name = "charts-search-status"
             font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
+            if (compact) toolTipText = view.searchStatus
+            isVisible = !compact || text.isNotEmpty()
         }
         val field = JBTextField(view.searchQuery).apply {
             name = "charts-search-field"
+            if (compact) columns = 12
             emptyText.text = if (vocabulary == ReviewVocabulary.DIFF) "Find changed files, e.g. “error handling”"
                 else "Find files, e.g. “settings persistence”"
             accessibleContext.accessibleName = "Search query"
@@ -495,6 +523,10 @@ internal class ChartsCanvasCard(
                 send.isEnabled = false
                 send.text = "Searching…"
                 status.text = view.searchStatus
+                if (compact) {
+                    status.toolTipText = view.searchStatus
+                    status.isVisible = true
+                }
             }
         }
         field.addActionListener { start() }
@@ -502,7 +534,7 @@ internal class ChartsCanvasCard(
         return JPanel(BorderLayout(scaled(6), 0)).apply {
             name = "charts-search"
             isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 8))
+            if (!compact) border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 8))
             add(field, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), 0)).apply {
                 isOpaque = false

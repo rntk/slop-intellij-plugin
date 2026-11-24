@@ -59,7 +59,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         val opened = mutableListOf<String>()
         val canvas = NoteCanvas({ opened += it }, {}, project = project, vocabulary = ReviewVocabulary.CODE)
         fun panel() = descendants(canvas).filterIsInstance<TreeBoardPanel>().single()
-        fun status() = descendants(panel()).filterIsInstance<JLabel>().single { it.name == "charts-tree-connections" }.text
+        fun status() = descendants(canvas).filterIsInstance<JLabel>().single { it.name == "charts-tree-connections" }.text
         fun clickConnections(board: TreeBoardPanel, path: String) {
             val button = checkNotNull(board.connectionButtonScreenBounds(path))
             board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
