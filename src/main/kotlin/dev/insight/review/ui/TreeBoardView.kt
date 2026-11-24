@@ -4,6 +4,7 @@ import com.intellij.ide.ui.UISettings
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.ui.JBColor
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -95,7 +96,8 @@ internal class TreeBoardPanel(
     initialPanY: Double = 0.0,
     private val viewportChanged: (Double, Double, Double) -> Unit = { _, _, _ -> },
     private val toggleConnections: ((String) -> Unit)? = null,
-    private val openConnection: ((String, String, TreeConnectionSite, MouseEvent) -> Unit)? = null,
+    private val openConnection: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
+    private val openAt: ((String, Int) -> Unit)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -113,6 +115,7 @@ internal class TreeBoardPanel(
     var connectionSelection: TreeConnectionSelection? = null
         set(value) {
             field = value
+            connectionPreview.hide()
             canvas.invalidateRoutes()
             updateConnectionStatus()
             canvas.repaint()
@@ -182,6 +185,14 @@ internal class TreeBoardPanel(
     }
 
     internal val canvas = TreeBoardCanvas()
+    internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection)
+
+    fun hideConnectionPreview() = connectionPreview.hide()
+
+    override fun removeNotify() {
+        connectionPreview.dispose()
+        super.removeNotify()
+    }
 
     init {
         name = "charts-tree-board"
@@ -352,6 +363,7 @@ internal class TreeBoardPanel(
     }
 
     private fun notifyViewportChanged() {
+        connectionPreview.hide()
         canvas.invalidateRoutes()
         viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
     }
@@ -402,6 +414,7 @@ internal class TreeBoardPanel(
         bind(KeyEvent.VK_SUBTRACT, "charts-tree-zoom-sub") { zoomTo(viewport.zoom / TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_0, "charts-tree-zoom-reset") { resetView() }
         bind(KeyEvent.VK_NUMPAD0, "charts-tree-zoom-reset-num") { resetView() }
+        bind(KeyEvent.VK_ESCAPE, "charts-tree-dismiss-preview") { connectionPreview.hide() }
     }
 
     private fun baseMonospaceFont(): Font {
@@ -459,11 +472,19 @@ internal class TreeBoardPanel(
                         updateStatus()
                         repaint()
                     }
+                    if (route != null) {
+                        connectionSiteFor(route)?.let { site ->
+                            connectionPreview.scheduleHover(route.from, route.to, site, e.point)
+                        }
+                    } else {
+                        connectionPreview.onHoverCleared()
+                    }
                     cursor = if (hit != null || route != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                     else Cursor.getDefaultCursor()
                 }
 
                 override fun mouseExited(e: MouseEvent) {
+                    connectionPreview.onHoverCleared()
                     if (hoveredIndex != -1 || hoveredRoute != null) {
                         hoveredRoute = null
                         hoveredIndex = -1
@@ -513,7 +534,7 @@ internal class TreeBoardPanel(
                 override fun mouseClicked(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger || popupShown || e.isAltDown || dragged) return
                     val node = nodeAt(e.x, e.y) ?: run {
-                        if (e.clickCount == 1) activateConnection(e)
+                        if (e.clickCount == 1) previewConnection(e)
                         return
                     }
                     if (connectionButtonBounds(node)?.contains(e.point) == true) {
@@ -550,7 +571,10 @@ internal class TreeBoardPanel(
 
                 private fun showPopup(e: MouseEvent): Boolean {
                     if (!e.isPopupTrigger) return false
-                    val node = nodeAt(e.x, e.y) ?: return activateConnection(e)
+                    val node = nodeAt(e.x, e.y) ?: run {
+                        connectionPreview.hide()
+                        return activateConnection(e)
+                    }
                     moveCursor(node.index, reveal = false)
                     val menu = contextMenu?.invoke(node.entry)?.takeIf { it.componentCount > 0 } ?: return false
                     menu.show(this@TreeBoardCanvas, e.x, e.y)
@@ -655,7 +679,7 @@ internal class TreeBoardPanel(
 
         override fun getToolTipText(event: MouseEvent): String? {
             val node = nodeAt(event.x, event.y) ?: return connectionAt(event.point)?.let {
-                "${it.from} → ${it.to} · Click for context"
+                "${it.from} → ${it.to} · Click to inspect snippets · Right-click for context"
             }
             if (connectionButtonBounds(node)?.contains(event.point) == true) {
                 return if (connectionSelection?.path == node.entry.path) "Hide code connections (C)"
@@ -882,7 +906,7 @@ internal class TreeBoardPanel(
         }
 
         private fun connectionAt(point: Point): ConnectionRoute? {
-            if (openConnection == null) return null
+            if (connectionSelection?.connections == null) return null
             val radius = JBUI.scale(7)
             var best = (radius * radius).toDouble()
             var nearest: ConnectionRoute? = null
@@ -896,11 +920,22 @@ internal class TreeBoardPanel(
             return nearest
         }
 
+        private fun connectionSiteFor(route: ConnectionRoute): TreeConnectionSite? {
+            val links = connectionSelection?.connections ?: return null
+            return if (route.outgoing) links.outgoing[route.to] else links.incoming[route.from]
+        }
+
+        private fun previewConnection(event: MouseEvent): Boolean {
+            val route = connectionAt(event.point) ?: return false
+            val site = connectionSiteFor(route) ?: return false
+            connectionPreview.showPinned(route.from, route.to, site, event.point)
+            return true
+        }
+
         private fun activateConnection(event: MouseEvent): Boolean {
             val route = connectionAt(event.point) ?: return false
-            val links = connectionSelection?.connections ?: return false
-            val site = if (route.outgoing) links.outgoing.getValue(route.to) else links.incoming.getValue(route.from)
-            openConnection?.invoke(route.from, route.to, site, event)
+            val site = connectionSiteFor(route) ?: return false
+            openConnection?.invoke(route.from, route.to, site, RelativePoint(event))
             return true
         }
 

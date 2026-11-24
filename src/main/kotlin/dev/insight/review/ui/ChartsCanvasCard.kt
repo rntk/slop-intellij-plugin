@@ -158,6 +158,7 @@ internal class ChartsCanvasCard(
     fun update(content: ChartsCard?) {
         if (content == null) {
             resetTreeConnections()
+            currentTreeBoard?.hideConnectionPreview()
             currentTreeBoard = null
             preview?.let(Disposer::dispose)
             preview = null
@@ -167,6 +168,7 @@ internal class ChartsCanvasCard(
     }
 
     fun card(content: ChartsCard): JPanel {
+        currentTreeBoard?.hideConnectionPreview()
         preview?.let(Disposer::dispose)
         preview = null
         activeSymbolKey = null
@@ -273,15 +275,16 @@ internal class ChartsCanvasCard(
                 view.treePanY = py
             },
             openConnection = project?.let { ownerProject ->
-                { from, to, site, event ->
+                { from, to, site, point ->
                     val source = hierarchy.source(from)
                     val target = hierarchy.source(to)
                     if (source != null && target != null) {
                         val pick = treeConnectionPick(source, target, site, reviewDestinations(), openOnWall)
-                        showContextPicker(ownerProject, pick, event.component, RelativePoint(event))
+                        showContextPicker(ownerProject, pick, point.component, point)
                     }
                 }
             },
+            openAt = openAt ?: { path, _ -> open(path) },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
         ).apply {
             border = JBUI.Borders.empty(4)
@@ -451,6 +454,7 @@ internal class ChartsCanvasCard(
         treeConnectionJob = null
         treeConnectionIndex = null
         treeConnectionSelection = null
+        currentTreeBoard?.hideConnectionPreview()
     }
 
     private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent) =
@@ -765,6 +769,7 @@ internal class ChartsCanvasCard(
     override fun dispose() {
         treeConnectionScope.cancel()
         resetTreeConnections()
+        currentTreeBoard?.hideConnectionPreview()
         currentTreeBoard = null
         preview?.let(Disposer::dispose)
         preview = null

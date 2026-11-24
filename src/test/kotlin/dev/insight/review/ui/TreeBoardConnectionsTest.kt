@@ -2,10 +2,12 @@ package dev.insight.review.ui
 
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
+import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.context.ContextKeys
+import dev.insight.graph.RelationKind
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -74,10 +76,37 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             clickConnections(initial, api)
             PlatformTestUtil.waitWithEventsDispatching("Tree code connections should resolve",
                 { initial.connectionSelection?.connections != null }, 20)
-            assertEquals(TreeFileConnections(
-                mapOf(client to TreeConnectionSite(5, 5)),
-                mapOf(model to TreeConnectionSite(5, 1), imported to TreeConnectionSite(2, 3)),
-            ), initial.connectionSelection?.connections)
+            val connections = checkNotNull(initial.connectionSelection?.connections)
+            val incomingClient = checkNotNull(connections.incoming[client])
+            assertEquals(5, incomingClient.fromLine)
+            assertEquals(5, incomingClient.toLine)
+            assertEquals(3, incomingClient.totalOccurrences)
+            assertEquals(
+                listOf(
+                    Triple(RelationKind.CALL, 5, 5),
+                    Triple(RelationKind.CALL, 6, 5),
+                    Triple(RelationKind.IMPORT, 2, 4),
+                ),
+                incomingClient.occurrences.map { Triple(it.kind, it.fromLine, it.toLine) },
+            )
+            assertTrue(incomingClient.occurrences[0].fromSnippet?.lines?.any { it.contains("Api.run();") } == true)
+            assertTrue(incomingClient.occurrences[0].toSnippet?.lines?.any { it.contains("public static void run()") } == true)
+            assertTrue(incomingClient.occurrences[2].fromSnippet?.lines?.any { it.contains("import api.Api;") } == true)
+            assertTrue(incomingClient.occurrences[2].toSnippet?.lines?.any { it.contains("public class Api") } == true)
+
+            val outgoingModel = checkNotNull(connections.outgoing[model])
+            assertEquals(5, outgoingModel.fromLine)
+            assertEquals(1, outgoingModel.toLine)
+            assertTrue(outgoingModel.occurrences.isNotEmpty())
+            assertTrue(outgoingModel.occurrences.first().fromSnippet?.lines?.any { it.contains("new model.Model()") } == true)
+            assertTrue(outgoingModel.occurrences.first().toSnippet?.lines?.any { it.contains("public class Model") } == true)
+
+            val outgoingImported = checkNotNull(connections.outgoing[imported])
+            assertEquals(2, outgoingImported.fromLine)
+            assertEquals(3, outgoingImported.toLine)
+            assertEquals(RelationKind.IMPORT, outgoingImported.occurrences.single().kind)
+            assertTrue(outgoingImported.occurrences.single().fromSnippet?.lines?.any { it.contains("import model.Imported;") } == true)
+            assertTrue(outgoingImported.occurrences.single().toSnippet?.lines?.any { it.contains("public class Imported") } == true)
             assertTrue(opened.isEmpty())
 
             descendants(canvas).filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }.selectedIndex = 1
@@ -144,10 +173,31 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         canvas.dispatchEvent(hover)
         assertEquals(Cursor.HAND_CURSOR, canvas.cursor.type)
         assertTrue(canvas.getToolTipText(hover).orEmpty().contains("b.kt → a.kt"))
+
+        // Left-clicking a link pins the snippet preview window rather than immediately opening the context picker.
         canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, -8, MouseEvent.BUTTON1))
+        assertTrue(board.connectionPreview.isPinned)
+        assertEquals(b.path to a.path, board.connectionPreview.activePair)
+        val preview = checkNotNull(board.connectionPreview.activePanel)
+        assertTrue(opened.isEmpty())
+        descendants(preview).filterIsInstance<ActionLink>()
+            .single { it.name == "charts-tree-connection-open-context" }
+            .doClick()
+        assertNull(board.connectionPreview.activePanel)
+
+        // Right-clicking a link directly opens the context picker for that link.
         canvas.dispatchEvent(event(MouseEvent.MOUSE_PRESSED, 8, MouseEvent.BUTTON3))
         canvas.dispatchEvent(event(MouseEvent.MOUSE_RELEASED, 8, MouseEvent.BUTTON3, popup = true))
         assertEquals(listOf(Triple(b.path, a.path, incoming), Triple(a.path, b.path, outgoing)), opened)
+
+        // Clearing selection also dismisses any pinned preview.
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_PRESSED, -8, MouseEvent.BUTTON1))
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_RELEASED, -8, MouseEvent.BUTTON1))
+        canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, -8, MouseEvent.BUTTON1))
+        assertNotNull(board.connectionPreview.activePanel)
+        board.connectionSelection = null
+        assertNull(board.connectionPreview.activePanel)
+        assertFalse(board.connectionPreview.isPinned)
 
         val pick = treeConnectionPick(b, a, incoming, emptyMap(), null)
         assertEquals(listOf(b.path, a.path), pick.candidates.single().files)
@@ -155,7 +205,6 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
 
         assertEquals(listOf(3..3, 7..7), pick.data[ContextKeys.LINKED_FILES]?.map { it.lines })
 
-        board.connectionSelection = null
         canvas.dispatchEvent(hover)
         assertEquals(Cursor.DEFAULT_CURSOR, canvas.cursor.type)
         assertNull(canvas.getToolTipText(hover))
