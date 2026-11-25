@@ -336,6 +336,36 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         assertNull(canvas.getToolTipText(hover))
     }
 
+    fun testConnectionsStartRightOfExpandedSummaryBlocks() {
+        val a = CodeFile("a.kt", "/src/a.kt", "val a = 1")
+        val b = CodeFile("b.kt", "/src/b.kt", "val b = a")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(a, b)))
+        val site = TreeConnectionSite(1, 1)
+        val board = TreeBoardPanel(
+            chart,
+            "Project",
+            {},
+            fileSummaries = mapOf(
+                a.path to "Adds a detailed diff summary explaining the validation and formatting changes across the file so the summary block extends well past the file row.",
+            ),
+            expandedSummaries = setOf(a.path),
+            diffMode = true,
+        )
+        val canvas = board.canvas
+        canvas.setSize(1000, 500)
+        board.connectionSelection = TreeConnectionSelection(a.path, TreeFileConnections(emptyMap(), mapOf(b.path to site)))
+
+        val aRow = checkNotNull(board.rowScreenBounds(a.path))
+        val aSummary = checkNotNull(board.summaryBlockScreenBounds(a.path))
+        assertTrue(aSummary.x + aSummary.width > aRow.x + aRow.width)
+
+        val insideSummary = MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0, 0, aSummary.centerX.toInt(), aSummary.centerY.toInt(), 0, false)
+        assertNull(canvas.getToolTipText(insideSummary))
+
+        val onLane = MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0, 0, aSummary.x + aSummary.width + JBUI.scale(24), aSummary.centerY.toInt(), 0, false)
+        assertTrue(canvas.getToolTipText(onLane).orEmpty().contains("a.kt → b.kt"))
+    }
+
     fun testFocusModeReducesTreeToLinkedSubtreeAcrossTabsConnectionsAndExitPaths() {
         val api = "api/Api.java"
         val client = "client/Client.java"

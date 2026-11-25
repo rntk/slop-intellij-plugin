@@ -265,3 +265,45 @@ internal class TreeBoardViewport(
         const val ZOOM_STEP = 1.2
     }
 }
+
+/** Wraps [text] into display lines bounded by [maxWidth] using [measureWidth]. */
+internal fun wrapSummaryLines(text: String, maxWidth: Int, measureWidth: (String) -> Int): List<String> {
+    if (text.isBlank()) return emptyList()
+    val limit = maxWidth.coerceAtLeast(1)
+    val lines = mutableListOf<String>()
+    val paragraphs = text.replace("\r\n", "\n").replace('\r', '\n').replace('\u2028', '\n').replace('\u2029', '\n')
+        .split('\n')
+    for (raw in paragraphs) {
+        val cleaned = raw.trim().replace(Regex("[ \\t]+"), " ")
+        if (cleaned.isEmpty()) continue
+        var current = StringBuilder()
+        for (word in cleaned.split(' ')) {
+            val candidate = if (current.isEmpty()) word else "$current $word"
+            if (measureWidth(candidate) <= limit) {
+                current.clear()
+                current.append(candidate)
+                continue
+            }
+            if (current.isNotEmpty()) {
+                lines += current.toString()
+                current = StringBuilder()
+            }
+            if (measureWidth(word) <= limit) {
+                current.append(word)
+            } else {
+                var idx = 0
+                while (idx < word.length) {
+                    var end = idx + 1
+                    while (end < word.length && measureWidth(word.substring(idx, end + 1)) <= limit) {
+                        end++
+                    }
+                    val piece = word.substring(idx, end)
+                    if (end == word.length) current.append(piece) else lines += piece
+                    idx = end
+                }
+            }
+        }
+        if (current.isNotEmpty()) lines += current.toString()
+    }
+    return lines
+}

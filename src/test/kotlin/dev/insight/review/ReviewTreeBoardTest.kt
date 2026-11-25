@@ -211,4 +211,18 @@ class ReviewTreeBoardTest {
         assertNull(collectRelatedFiles(listOf("missing/File.kt"), links))
         assertNull(collectRelatedFiles(emptyList(), links))
     }
+
+    @Test fun `wrapSummaryLines wraps words, preserves paragraphs, and breaks long tokens`() {
+        val measure: (String) -> Int = { it.length * 10 }
+        assertEquals(emptyList<String>(), wrapSummaryLines("   \n\t ", 100, measure))
+        assertEquals(listOf("Short summary."), wrapSummaryLines("Short summary.", 200, measure))
+        assertEquals(
+            listOf("Adds validation", "for user inputs", "Second part."),
+            wrapSummaryLines("Adds  validation   for user inputs\r\n\r\nSecond part.", 150, measure),
+        )
+        assertEquals(
+            listOf("abcde", "fghij", "kl"),
+            wrapSummaryLines("abcdefghijkl", 50, measure),
+        )
+    }
 }

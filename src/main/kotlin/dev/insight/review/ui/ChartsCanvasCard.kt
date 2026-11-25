@@ -111,6 +111,10 @@ internal class ChartsViewState {
     var linesFocused = false
     /** Collapsed directories in the Tree board, kept across metric changes. */
     var treeCollapsed: Set<String> = emptySet()
+    /** File summaries expanded inline in the Tree board, kept across metric changes. */
+    var treeExpandedSummaries: Set<String> = emptySet()
+    /** Whether all available file summaries are shown in the Tree board. */
+    var treeShowAllSummaries: Boolean = false
     /** The active row path in the Tree board. */
     var treeCursor: String? = null
     var treeZoom: Double = 1.0
@@ -277,6 +281,15 @@ internal class ChartsCanvasCard(
                 treeConnectionIndex = TreeFileConnectionIndex(project, sources, treeConnectionScope)
             }
         }
+        val fileSummaries = if (tree) {
+            content.tree.nodes.asSequence()
+                .filter { it.kind == SummaryKind.FILE && !it.isTopicBranch }
+                .mapNotNull { node -> content.summaries.text(node.id)?.let { node.path to it } }
+                .toMap()
+        } else emptyMap()
+        val expandedSummaries = if (view.treeShowAllSummaries) fileSummaries.keys.toSet()
+        else view.treeExpandedSummaries.intersect(fileSummaries.keys)
+        if (tree) view.treeExpandedSummaries = expandedSummaries
         val treeBoard = if (hierarchy != null && tree) TreeBoardPanel(
             hierarchy,
             vocabulary.rootName,
@@ -313,6 +326,13 @@ internal class ChartsCanvasCard(
             toggleBriefs = treeConnectionIndex?.takeIf { treeBriefer != null }?.let { index ->
                 { path -> toggleTreeBriefs(index, hierarchy, path) }
             },
+            fileSummaries = fileSummaries,
+            expandedSummaries = expandedSummaries,
+            expandedSummariesChanged = { paths, allShown ->
+                view.treeExpandedSummaries = paths
+                view.treeShowAllSummaries = allShown
+            },
+            diffMode = diff,
             initialFocusSelection = treeFocusSelection,
             toggleFocus = treeConnectionIndex?.let { index ->
                 { path, directory -> toggleTreeFocus(index, path, directory, hierarchy.files(path).map { it.path }) }
