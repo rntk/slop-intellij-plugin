@@ -225,4 +225,35 @@ class ReviewTreeBoardTest {
             wrapSummaryLines("abcdefghijkl", 50, measure),
         )
     }
+
+    @Test fun `wrapSummaryText and lineLinkSpans preserve offsets across wrapped lines`() {
+        val measure: (String) -> Int = { it.length * 10 }
+        val text = "Calls `computeHelper` from src/pkg/Service.kt at L2."
+        val wrapped = wrapSummaryText(text, 270, measure)
+        assertEquals(listOf("Calls `computeHelper` from", "src/pkg/Service.kt at L2."), wrapped.map { it.text })
+
+        val symStart = text.indexOf("computeHelper")
+        val fileStart = text.indexOf("src/pkg/Service.kt")
+        val lineStart = text.indexOf("L2")
+        val matches = listOf(
+            LineLinkMatch(symStart, symStart + "computeHelper".length, ReportLink(0, "computeHelper", ReportTargetKind.SYMBOL)),
+            LineLinkMatch(fileStart, fileStart + "src/pkg/Service.kt".length, ReportLink(1, "src/pkg/Service.kt", ReportTargetKind.FILE, listOf("src/pkg/Service.kt"))),
+            LineLinkMatch(lineStart, lineStart + 2, ReportLink(2, "L2", ReportTargetKind.FILE, listOf("src/A.kt"), lines = 2..2, contextual = true)),
+        )
+        val spans0 = lineLinkSpans(wrapped[0], matches)
+        assertEquals(1, spans0.size)
+        assertEquals("computeHelper", wrapped[0].text.substring(spans0[0].startCol, spans0[0].endCol))
+
+        val spans1 = lineLinkSpans(wrapped[1], matches)
+        assertEquals(2, spans1.size)
+        assertEquals("src/pkg/Service.kt", wrapped[1].text.substring(spans1[0].startCol, spans1[0].endCol))
+        assertEquals("L2", wrapped[1].text.substring(spans1[1].startCol, spans1[1].endCol))
+
+        // A link spanning across a wrap boundary highlights its portion on both lines.
+        val splitWrapped = wrapSummaryText(text, 100, measure)
+        val fileSpans = splitWrapped.mapNotNull { line ->
+            lineLinkSpans(line, listOf(matches[1])).firstOrNull()?.let { line.text.substring(it.startCol, it.endCol) }
+        }
+        assertEquals("src/pkg/Service.kt", fileSpans.joinToString(""))
+    }
 }

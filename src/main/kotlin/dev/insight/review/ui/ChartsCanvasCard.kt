@@ -63,6 +63,7 @@ import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
@@ -287,6 +288,13 @@ internal class ChartsCanvasCard(
                 .mapNotNull { node -> content.summaries.text(node.id)?.let { node.path to it } }
                 .toMap()
         } else emptyMap()
+        val treeContextSources = if (tree) {
+            content.tree.nodes.asSequence()
+                .mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
+                .distinctBy { it.path }
+                .toList()
+        } else emptyList()
+        val treeScopeFiles = treeContextSources.map { it.path }
         val expandedSummaries = if (view.treeShowAllSummaries) fileSummaries.keys.toSet()
         else view.treeExpandedSummaries.intersect(fileSummaries.keys)
         if (tree) view.treeExpandedSummaries = expandedSummaries
@@ -333,6 +341,22 @@ internal class ChartsCanvasCard(
                 view.treeShowAllSummaries = allShown
             },
             diffMode = diff,
+            summaryLinkNavigator = project?.let { ownerProject ->
+                { filePath ->
+                    summaryTextNavigator(ownerProject, filePath, listOf(filePath), treeScopeFiles, diff) { link, path, absolutePath ->
+                        reportLinkContextPick(ownerProject, link.kind, path, link.lines, treeContextSources, content.tree,
+                            reviewDestinations(), summaryActions, openOnWall, openOnCanvas, absolutePath)
+                    }
+                }
+            },
+            summaryFileMenuItems = if (diff) { path, _ ->
+                val target = matchingReviewSource(treeContextSources, path, null)
+                if (target == null) emptyList() else listOf(JMenuItem("Open diff").apply {
+                    name = "summary-link-action:OpenDiff"
+                    toolTipText = "Open the diff of ${target.path} in this review"
+                    addActionListener { open(target.path) }
+                })
+            } else null,
             initialFocusSelection = treeFocusSelection,
             toggleFocus = treeConnectionIndex?.let { index ->
                 { path, directory -> toggleTreeFocus(index, path, directory, hierarchy.files(path).map { it.path }) }

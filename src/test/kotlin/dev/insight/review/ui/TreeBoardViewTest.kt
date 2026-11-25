@@ -1,10 +1,13 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.diff.ReviewFile
+import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.Summary
@@ -12,6 +15,7 @@ import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
+import java.awt.Cursor
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -239,6 +243,56 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             assertTrue(afterTab.shownSummaryPaths.isEmpty())
             assertEquals("Show summaries", button("charts-tree-toggle-summaries").text)
             assertNull(afterTab.summaryBlockScreenBounds("src/a.kt"))
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testTreeBoardSummaryLinksResolveHoverAndOpenFile() {
+        val aPsi = myFixture.addFileToProject("src/A.kt", "fun alpha() = 1\nfun second() = 2\n")
+        val bPsi = myFixture.addFileToProject("src/B.kt", "fun computeHelper(x: Int) = x + 1\n")
+        val files = listOf(
+            ReviewFile("src/A.kt", aPsi.virtualFile.path, null, "modified", "@@ -1 +1,2 @@\n-fun old() = 0\n+fun second() = 2\n", "fp1"),
+            ReviewFile("src/B.kt", bPsi.virtualFile.path, null, "modified", "@@ -1 +1 @@\n+fun computeHelper(x: Int) = x + 1\n", "fp2"),
+        )
+        val tree = buildSummaryTree(files)
+        val aNode = tree.scopeNode("src/A.kt", SummaryKind.FILE)!!
+        val summaryText = "The guard at L2 returns early, then calls `computeHelper` from src/B.kt."
+        val summaries = ReviewSummaries(tree).summarize(mapOf(aNode.id to Summary.plain(summaryText)))
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.DIFF).apply { setSize(1200, 800) }
+        fun components() = descendants(canvas)
+        fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
+        fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
+
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
+            selector().selectedItem = "Tree"
+            val board = boardPanel().apply { setSize(1000, 700); doLayout() }
+            board.addNotify()
+            board.toggleSummary("src/A.kt")
+
+            PlatformTestUtil.waitWithEventsDispatching("Tree summary links should resolve", {
+                val links = board.summaryLinksFor("src/A.kt")
+                links.any { it.link.kind == ReportTargetKind.SYMBOL } &&
+                    links.any { it.link.primaryPath == "src/B.kt" && !it.link.contextual } &&
+                    links.any { it.link.contextual && it.link.primaryPath == "src/A.kt" && it.link.lines == 2..2 }
+            }, 20)
+
+            val fileLink = board.summaryLinksFor("src/A.kt").first { it.link.primaryPath == "src/B.kt" && !it.link.contextual }
+            val linkBounds = checkNotNull(board.summaryLinkScreenBounds("src/A.kt", fileLink))
+            val hover = MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, linkBounds.centerX.toInt(), linkBounds.centerY.toInt(), 0, false)
+            board.canvas.dispatchEvent(hover)
+            assertEquals(Cursor.HAND_CURSOR, board.canvas.cursor.type)
+            assertTrue(board.canvas.getToolTipText(hover).orEmpty().contains("src/B.kt"))
+
+            val image = BufferedImage(1000, 700, BufferedImage.TYPE_INT_ARGB)
+            image.createGraphics().also { board.paint(it) }.dispose()
+
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                linkBounds.centerX.toInt(), linkBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            PlatformTestUtil.waitWithEventsDispatching("Clicking summary file link should open src/B.kt", {
+                FileEditorManager.getInstance(project).selectedFiles.any { it.path.endsWith("src/B.kt") }
+            }, 20)
         } finally {
             canvas.dispose()
         }

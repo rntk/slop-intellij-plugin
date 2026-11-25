@@ -266,44 +266,111 @@ internal class TreeBoardViewport(
     }
 }
 
-/** Wraps [text] into display lines bounded by [maxWidth] using [measureWidth]. */
-internal fun wrapSummaryLines(text: String, maxWidth: Int, measureWidth: (String) -> Int): List<String> {
+/** One wrapped display line of a summary together with each character's offset in the source text. */
+internal class WrappedSummaryLine(
+    val text: String,
+    val startOffset: Int,
+    val endOffset: Int,
+    val sourceOffsets: IntArray,
+)
+
+/** One link span within a [WrappedSummaryLine], in `[startCol, endCol)` character indices of [WrappedSummaryLine.text]. */
+internal data class SummaryLinkSpan(val startCol: Int, val endCol: Int, val match: LineLinkMatch)
+
+/** Wraps [text] into display lines bounded by [maxWidth] using [measureWidth], preserving source character offsets. */
+internal fun wrapSummaryText(text: String, maxWidth: Int, measureWidth: (String) -> Int): List<WrappedSummaryLine> {
     if (text.isBlank()) return emptyList()
     val limit = maxWidth.coerceAtLeast(1)
-    val lines = mutableListOf<String>()
-    val paragraphs = text.replace("\r\n", "\n").replace('\r', '\n').replace('\u2028', '\n').replace('\u2029', '\n')
-        .split('\n')
-    for (raw in paragraphs) {
-        val cleaned = raw.trim().replace(Regex("[ \\t]+"), " ")
-        if (cleaned.isEmpty()) continue
-        var current = StringBuilder()
-        for (word in cleaned.split(' ')) {
-            val candidate = if (current.isEmpty()) word else "$current $word"
-            if (measureWidth(candidate) <= limit) {
-                current.clear()
-                current.append(candidate)
-                continue
+    val lines = mutableListOf<WrappedSummaryLine>()
+    val len = text.length
+    var pStart = 0
+    while (pStart < len) {
+        var pEnd = pStart
+        while (pEnd < len && text[pEnd] !in charArrayOf('\n', '\r', '\u2028', '\u2029')) {
+            pEnd++
+        }
+        val words = mutableListOf<IntRange>()
+        var idx = pStart
+        while (idx < pEnd) {
+            while (idx < pEnd && (text[idx] == ' ' || text[idx] == '\t')) idx++
+            if (idx >= pEnd) break
+            val wStart = idx
+            while (idx < pEnd && text[idx] != ' ' && text[idx] != '\t') idx++
+            words += wStart until idx
+        }
+        if (words.isNotEmpty()) {
+            val lineChars = StringBuilder()
+            val lineOffsets = ArrayList<Int>()
+            fun flushLine() {
+                if (lineChars.isEmpty()) return
+                val offsets = lineOffsets.toIntArray()
+                lines += WrappedSummaryLine(lineChars.toString(), offsets.first(), offsets.last() + 1, offsets)
+                lineChars.clear()
+                lineOffsets.clear()
             }
-            if (current.isNotEmpty()) {
-                lines += current.toString()
-                current = StringBuilder()
-            }
-            if (measureWidth(word) <= limit) {
-                current.append(word)
-            } else {
-                var idx = 0
-                while (idx < word.length) {
-                    var end = idx + 1
-                    while (end < word.length && measureWidth(word.substring(idx, end + 1)) <= limit) {
-                        end++
+            for (wordRange in words) {
+                val word = text.substring(wordRange.first, wordRange.last + 1)
+                if (lineChars.isNotEmpty()) {
+                    val candidate = "$lineChars $word"
+                    if (measureWidth(candidate) <= limit) {
+                        lineChars.append(' ').append(word)
+                        lineOffsets += wordRange.first - 1
+                        for (k in wordRange) lineOffsets += k
+                        continue
                     }
-                    val piece = word.substring(idx, end)
-                    if (end == word.length) current.append(piece) else lines += piece
-                    idx = end
+                    flushLine()
+                }
+                if (measureWidth(word) <= limit) {
+                    lineChars.append(word)
+                    for (k in wordRange) lineOffsets += k
+                } else {
+                    var pos = 0
+                    while (pos < word.length) {
+                        var end = pos + 1
+                        while (end < word.length && measureWidth(word.substring(pos, end + 1)) <= limit) {
+                            end++
+                        }
+                        for (k in pos until end) {
+                            lineChars.append(word[k])
+                            lineOffsets += wordRange.first + k
+                        }
+                        if (end < word.length) flushLine()
+                        pos = end
+                    }
                 }
             }
+            flushLine()
         }
-        if (current.isNotEmpty()) lines += current.toString()
+        pStart = if (pEnd + 1 < len && text[pEnd] == '\r' && text[pEnd + 1] == '\n') pEnd + 2 else pEnd + 1
     }
     return lines
+}
+
+/** Wraps [text] into display lines bounded by [maxWidth] using [measureWidth]. */
+internal fun wrapSummaryLines(text: String, maxWidth: Int, measureWidth: (String) -> Int): List<String> =
+    wrapSummaryText(text, maxWidth, measureWidth).map { it.text }
+
+/** Maps [matches] against source offsets of [line] into non-overlapping column spans. */
+internal fun lineLinkSpans(line: WrappedSummaryLine, matches: List<LineLinkMatch>): List<SummaryLinkSpan> {
+    if (matches.isEmpty() || line.sourceOffsets.isEmpty()) return emptyList()
+    val raw = mutableListOf<SummaryLinkSpan>()
+    for (match in matches) {
+        if (match.end <= line.startOffset || match.start >= line.endOffset) continue
+        val startCol = line.sourceOffsets.indexOfFirst { it >= match.start }
+        val endCol = line.sourceOffsets.indexOfLast { it < match.end }
+        if (startCol >= 0 && endCol >= startCol) {
+            raw += SummaryLinkSpan(startCol, endCol + 1, match)
+        }
+    }
+    if (raw.size <= 1) return raw
+    raw.sortBy { it.startCol }
+    val result = ArrayList<SummaryLinkSpan>(raw.size)
+    var prevEnd = 0
+    for (span in raw) {
+        if (span.startCol >= prevEnd) {
+            result += span
+            prevEnd = span.endCol
+        }
+    }
+    return result
 }
