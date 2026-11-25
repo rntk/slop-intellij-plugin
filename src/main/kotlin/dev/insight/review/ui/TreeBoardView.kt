@@ -17,6 +17,7 @@ import dev.insight.review.RadarSeries
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewTreeBoard
+import dev.insight.review.SummaryLinkSpan
 import dev.insight.review.TreeBoardHighlight
 import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
@@ -90,7 +91,9 @@ internal data class TreeFocusSelection(
 )
 
 /** One brief beside a Tree row: a [prefix] in the link or accent [color], then the readable [text]. */
-internal data class BriefSegment(val prefix: String, val color: Color, val text: String)
+internal data class BriefSegment(val prefix: String, val color: Color, val text: String, val ready: Boolean)
+
+private data class SummaryText(val path: String, val text: String)
 
 private data class ConnectionRoute(
     val from: String, val to: String, val outgoing: Boolean,
@@ -148,10 +151,10 @@ internal class TreeBoardPanel(
     private var collapsedPaths: Set<String> = collapsed
     private var focusCollapsedPaths: Set<String> = emptySet()
     private var expandedSummaryPaths: Set<String> = expandedSummaries.intersect(fileSummaries.keys)
-    private val resolvedSummaryLinks = HashMap<String, PlainTextLinks>()
-    private val summaryLinkJobs = HashMap<String, Job>()
+    private val resolvedSummaryLinks = HashMap<SummaryText, PlainTextLinks>()
+    private val summaryLinkJobs = HashMap<SummaryText, Job>()
     private var listeningSummaryLinks = false
-    private val summaryLinksChanged: () -> Unit = { loadExpandedSummaryLinks() }
+    private val summaryLinksChanged: () -> Unit = { loadSummaryLinks() }
     private var savedViewport: Triple<Double, Double, Double>? = null
     private val isFocused: Boolean get() = focusSelection?.links != null
     private val activeCollapsedPaths: Set<String> get() = if (isFocused) focusCollapsedPaths else collapsedPaths
@@ -300,6 +303,7 @@ internal class TreeBoardPanel(
         set(value) {
             field = value
             canvas.invalidateRowWidth()
+            loadSummaryLinks()
             updateConnectionStatus()
             canvas.repaint()
         }
@@ -329,7 +333,7 @@ internal class TreeBoardPanel(
         canvas.invalidateRowLayout()
         updateSummariesButton()
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
-        loadExpandedSummaryLinks()
+        loadSummaryLinks()
         canvas.repaint()
     }
 
@@ -339,11 +343,11 @@ internal class TreeBoardPanel(
         canvas.invalidateRowLayout()
         updateSummariesButton()
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
-        loadExpandedSummaryLinks()
+        loadSummaryLinks()
         canvas.repaint()
     }
 
-    internal fun summaryLinksFor(path: String): List<LineLinkMatch> = resolvedSummaryLinks[path]?.matches.orEmpty()
+    internal fun summaryLinksFor(path: String): List<LineLinkMatch> = fileSummaries[path]?.let { resolvedSummaryLinks[SummaryText(path, it)]?.matches }.orEmpty()
 
     internal fun summaryLinkScreenBounds(path: String, match: LineLinkMatch): Rectangle? =
         board.nodes.getOrNull(board.indexOf(path))?.let { canvas.summaryLinkScreenBounds(it, match) }
@@ -356,25 +360,39 @@ internal class TreeBoardPanel(
         if (on) links.addListener(summaryLinksChanged) else links.removeListener(summaryLinksChanged)
     }
 
-    private fun loadExpandedSummaryLinks() {
+    private fun loadSummaryLinks() {
         val ownerProject = project?.takeUnless { it.isDisposed } ?: return
-        if (expandedSummaryPaths.isEmpty()) return
+        val texts = buildSet {
+            for (path in expandedSummaryPaths) {
+                fileSummaries[path]?.let { add(SummaryText(path, it)) }
+            }
+            briefs?.let { current ->
+                for (path in setOf(current.path) + current.incoming.keys + current.outgoing.keys) {
+                    for (segment in canvas.briefSegments(path)) {
+                        if (segment.ready) add(SummaryText(path, segment.text))
+                    }
+                }
+            }
+        }
+        resolvedSummaryLinks.keys.retainAll(texts)
+        for (key in summaryLinkJobs.keys - texts) summaryLinkJobs.remove(key)?.cancel()
+        if (texts.isEmpty()) return
         val links = ownerProject.service<LinkedTextLinks>()
-        for (path in expandedSummaryPaths) {
-            val text = fileSummaries[path] ?: continue
+        for (key in texts) {
+            val (path, text) = key
             val navigator = summaryLinkNavigator?.invoke(path)
             val defaultFile = navigator?.defaultFile() ?: path
             val extras = navigator?.extraFiles().orEmpty()
             val cached = links.cachedPlain(text, defaultFile, extras)
             if (cached != null) {
-                if (resolvedSummaryLinks[path] !== cached) {
-                    resolvedSummaryLinks[path] = cached
+                if (resolvedSummaryLinks[key] !== cached) {
+                    resolvedSummaryLinks[key] = cached
                     canvas.repaint()
                 }
                 continue
             }
-            if (summaryLinkJobs[path]?.isActive == true) continue
-            summaryLinkJobs[path] = links.coroutineScope.launch(Dispatchers.EDT) {
+            if (summaryLinkJobs[key]?.isActive == true) continue
+            summaryLinkJobs[key] = links.coroutineScope.launch(Dispatchers.EDT) {
                 while (true) {
                     val next = try {
                         links.findPlain(text, defaultFile, extras)
@@ -382,8 +400,8 @@ internal class TreeBoardPanel(
                         currentCoroutineContext().ensureActive()
                         continue
                     }
-                    if (resolvedSummaryLinks[path] !== next) {
-                        resolvedSummaryLinks[path] = next
+                    if (resolvedSummaryLinks[key] !== next) {
+                        resolvedSummaryLinks[key] = next
                         canvas.repaint()
                     }
                     break
@@ -392,11 +410,11 @@ internal class TreeBoardPanel(
         }
     }
 
-    private fun summaryFollower(path: String): LinkedTextFollower? {
+    private fun summaryFollower(key: SummaryText): LinkedTextFollower? {
         val ownerProject = project?.takeUnless { it.isDisposed } ?: return null
         val links = ownerProject.service<LinkedTextLinks>()
         return LinkedTextFollower(ownerProject, links.coroutineScope, canvas,
-            { summaryLinkNavigator?.invoke(path) }, { resolvedSummaryLinks[path]?.index })
+            { summaryLinkNavigator?.invoke(key.path) }, { resolvedSummaryLinks[key]?.index })
     }
 
     fun hideConnectionPreview() = connectionPreview.hide()
@@ -404,7 +422,7 @@ internal class TreeBoardPanel(
     override fun addNotify() {
         super.addNotify()
         listenSummaryLinks(true)
-        loadExpandedSummaryLinks()
+        loadSummaryLinks()
     }
 
     override fun removeNotify() {
@@ -430,7 +448,7 @@ internal class TreeBoardPanel(
         updateConnectionStatus()
         updateFocusStatus()
         updateSummariesButton()
-        loadExpandedSummaryLinks()
+        loadSummaryLinks()
         installKeys()
         addFocusListener(object : FocusAdapter() {
             override fun focusGained(e: FocusEvent) = canvas.repaint()
@@ -771,7 +789,7 @@ internal class TreeBoardPanel(
         val blockHeight: Double,
     )
 
-    private data class SummaryLinkHit(val path: String, val match: LineLinkMatch)
+    private data class SummaryLinkHit(val text: SummaryText, val match: LineLinkMatch)
 
     private data class SummaryBlockGeometry(
         val boxX: Double,
@@ -892,9 +910,9 @@ internal class TreeBoardPanel(
                 private var popupShown = false
 
                 override fun mouseMoved(e: MouseEvent) {
-                    val hit = nodeAt(e.x, e.y)
+                    val linkHit = textLinkAt(e.point)
+                    val hit = if (linkHit == null) nodeAt(e.x, e.y) else null
                     val nextHover = hit?.index ?: -1
-                    val linkHit = if (hit == null) summaryLinkAt(e.point) else null
                     val route = if (hit == null && linkHit == null) connectionAt(e.point) else null
                     if (nextHover != hoveredIndex || route != hoveredRoute || linkHit != hoveredSummaryLink) {
                         hoveredSummaryLink = linkHit
@@ -965,19 +983,19 @@ internal class TreeBoardPanel(
 
                 override fun mouseClicked(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger || popupShown || e.isAltDown || dragged) return
-                    val node = nodeAt(e.x, e.y) ?: run {
+                    textLinkAt(e.point)?.let { hit ->
                         if (e.clickCount == 1) {
-                            summaryLinkAt(e.point)?.let { hit ->
-                                summaryFollower(hit.path)?.activate(
-                                    hit.match.link,
-                                    e.point,
-                                    shift = e.isShiftDown,
-                                    inEditor = e.isControlDown || e.isMetaDown,
-                                )
-                                return
-                            }
-                            previewConnection(e)
+                            summaryFollower(hit.text)?.activate(
+                                hit.match.link,
+                                e.point,
+                                shift = e.isShiftDown,
+                                inEditor = e.isControlDown || e.isMetaDown,
+                            )
                         }
+                        return
+                    }
+                    val node = nodeAt(e.x, e.y) ?: run {
+                        if (e.clickCount == 1) previewConnection(e)
                         return
                     }
                     if (focusButtonBounds(node)?.contains(e.point) == true) {
@@ -1029,11 +1047,12 @@ internal class TreeBoardPanel(
 
                 private fun showPopup(e: MouseEvent): Boolean {
                     if (!e.isPopupTrigger) return false
+                    textLinkAt(e.point)?.let { hit ->
+                        connectionPreview.hide()
+                        return showSummaryLinkPopup(hit, e)
+                    }
                     val node = nodeAt(e.x, e.y) ?: run {
                         connectionPreview.hide()
-                        summaryLinkAt(e.point)?.let { hit ->
-                            return showSummaryLinkPopup(hit, e)
-                        }
                         return activateConnection(e)
                     }
                     moveCursor(node.index, reveal = false)
@@ -1163,11 +1182,13 @@ internal class TreeBoardPanel(
                 is TreeBrief.Ready -> brief.text
             }
             if (path == current.path) {
-                return listOf(BriefSegment("— ", accentColor, text(current.file, "summarizing…")!!))
+                return listOf(BriefSegment("— ", accentColor, text(current.file, "summarizing…")!!, current.file is TreeBrief.Ready))
             }
+            val incoming = current.incoming[path]
+            val outgoing = current.outgoing[path]
             return listOfNotNull(
-                text(current.incoming[path], "…")?.let { BriefSegment("→ $name: ", incomingColor, it) },
-                text(current.outgoing[path], "…")?.let { BriefSegment("← $name: ", outgoingColor, it) },
+                text(incoming, "…")?.let { BriefSegment("→ $name: ", incomingColor, it, incoming is TreeBrief.Ready) },
+                text(outgoing, "…")?.let { BriefSegment("← $name: ", outgoingColor, it, outgoing is TreeBrief.Ready) },
             )
         }
 
@@ -1176,7 +1197,7 @@ internal class TreeBoardPanel(
             val segments = briefSegments(node.entry.path)
             if (segments.isEmpty()) return 0
             val separator = metrics.stringWidth(BRIEF_SEPARATOR) * (segments.size - 1)
-            return (gap + segments.sumOf { metrics.stringWidth(it.prefix + it.text) } + separator).roundToInt()
+            return (gap + segments.sumOf { metrics.stringWidth(it.prefix) + metrics.stringWidth(it.text) } + separator).roundToInt()
         }
 
         fun invalidateRowWidth() {
@@ -1238,11 +1259,11 @@ internal class TreeBoardPanel(
         }
 
         override fun getToolTipText(event: MouseEvent): String? {
+            textLinkAt(event.point)?.let { hit ->
+                return summaryFollower(hit.text)?.tooltip(hit.match.link)
+                    ?: linkTooltip(hit.match.link, inReviewScope = false, isDiffReview = diffMode)
+            }
             val node = nodeAt(event.x, event.y) ?: run {
-                summaryLinkAt(event.point)?.let { hit ->
-                    return summaryFollower(hit.path)?.tooltip(hit.match.link)
-                        ?: linkTooltip(hit.match.link, inReviewScope = false, isDiffReview = diffMode)
-                }
                 return connectionAt(event.point)?.let {
                     "${it.from} → ${it.to} · Click to inspect snippets · Right-click for context"
                 }
@@ -1443,7 +1464,7 @@ internal class TreeBoardPanel(
                         val summaryW = (summaryButtonWidth * viewport.zoom).roundToInt()
                         paintSummaryButton(g, buttonRightX - summaryW / 2.0, centerY, node.entry.path)
                     }
-                    paintBriefs(g, node, startX + rowWidth + briefGap * viewport.zoom, centerY, plainFont)
+                    paintBriefs(g, node, centerY, plainFont)
                     layout.summaries[i]?.let { block ->
                         paintSummaryBlock(g, node, block, summaryFont)
                     }
@@ -1531,13 +1552,29 @@ internal class TreeBoardPanel(
             return result
         }
 
-        private fun summaryLinkAt(point: Point): SummaryLinkHit? {
-            if (expandedSummaryPaths.isEmpty()) return null
+        private fun textLinkAt(point: Point): SummaryLinkHit? {
             val wy = viewport.screenToWorldY(point.y.toDouble())
-            val index = rowIndexAtWorldY(wy)
-            val node = board.nodes.getOrNull(index) ?: return null
-            val block = rowLayout().summaries[index] ?: return null
-            val matches = resolvedSummaryLinks[node.entry.path]?.matches.orEmpty()
+            val node = board.nodes.getOrNull(rowIndexAtWorldY(wy)) ?: return null
+            if (wy >= rowHeaderBottomWorld(node.index)) return summaryLinkAt(node, point)
+            if (briefs == null) return null
+            val metrics = getFontMetrics(scaledFont(bold = false))
+            for ((segment, x) in positionedBriefs(node, metrics)) {
+                val key = SummaryText(node.entry.path, segment.text)
+                val match = briefLinkSpans(key, segment).firstOrNull {
+                    val start = x + metrics.stringWidth(segment.text.substring(0, it.startCol))
+                    val end = x + metrics.stringWidth(segment.text.substring(0, it.endCol))
+                    point.x >= start && point.x < end
+                }
+                if (match != null) return SummaryLinkHit(key, match.match)
+            }
+            return null
+        }
+
+        private fun summaryLinkAt(node: TreeBoardNode, point: Point): SummaryLinkHit? {
+            val block = rowLayout().summaries[node.index] ?: return null
+            val path = node.entry.path
+            val key = SummaryText(path, fileSummaries.getValue(path))
+            val matches = resolvedSummaryLinks[key]?.matches.orEmpty()
             if (matches.isEmpty()) return null
             val metrics = getFontMetrics(scaledSummaryFont())
             val geom = summaryBlockGeometry(node, block, metrics)
@@ -1550,14 +1587,14 @@ internal class TreeBoardPanel(
                 val startX = geom.textX + geom.metrics.stringWidth(line.text.substring(0, span.startCol))
                 val endX = geom.textX + geom.metrics.stringWidth(line.text.substring(0, span.endCol))
                 if (point.x >= startX && point.x <= endX) {
-                    return SummaryLinkHit(node.entry.path, span.match)
+                    return SummaryLinkHit(key, span.match)
                 }
             }
             return null
         }
 
         private fun showSummaryLinkPopup(hit: SummaryLinkHit, e: MouseEvent): Boolean {
-            val follower = summaryFollower(hit.path) ?: return false
+            val follower = summaryFollower(hit.text) ?: return false
             val link = hit.match.link
             val menu = JPopupMenu()
             follower.addMenuItems(menu, link, e.point, hasSelection = false)
@@ -1583,44 +1620,44 @@ internal class TreeBoardPanel(
             val barMargin = 2.0 * viewport.zoom
             g.color = alpha(accentColor, 180)
             g.fill(RoundRectangle2D.Double(geom.boxX, geom.boxY + barMargin, geom.barW, (geom.boxH - barMargin * 2).coerceAtLeast(1.0), geom.barW, geom.barW))
-            val matches = resolvedSummaryLinks[node.entry.path]?.matches.orEmpty()
-            val textColor = UIUtil.getLabelForeground()
-            val linkColor = JBUI.CurrentTheme.Link.Foreground.ENABLED
-            val normalStroke = BasicStroke((1.0f * viewport.zoom.toFloat()).coerceAtLeast(1.0f))
-            val hoverStroke = BasicStroke((1.6f * viewport.zoom.toFloat()).coerceAtLeast(1.5f))
+            val path = node.entry.path
+            val key = SummaryText(path, fileSummaries.getValue(path))
+            val matches = resolvedSummaryLinks[key]?.matches.orEmpty()
             for ((idx, line) in block.lines.withIndex()) {
                 val baseline = (geom.firstBaseline + idx * geom.stepY).toFloat()
-                val spans = lineLinkSpans(line, matches)
-                if (spans.isEmpty()) {
-                    g.color = textColor
-                    g.drawString(line.text, geom.textX, baseline)
-                    continue
-                }
-                var col = 0
-                var drawX = geom.textX
-                val underlineY = (baseline + 1.5f * viewport.zoom.toFloat()).roundToInt()
-                for (span in spans) {
-                    if (span.startCol > col) {
-                        val plain = line.text.substring(col, span.startCol)
-                        g.color = textColor
-                        g.drawString(plain, drawX, baseline)
-                        drawX += geom.metrics.stringWidth(plain)
-                    }
-                    val linked = line.text.substring(span.startCol, span.endCol)
-                    val linkW = geom.metrics.stringWidth(linked)
-                    val hovered = hoveredSummaryLink?.path == node.entry.path && hoveredSummaryLink?.match == span.match
-                    g.color = linkColor
-                    g.drawString(linked, drawX, baseline)
-                    g.stroke = if (hovered) hoverStroke else normalStroke
-                    g.drawLine(drawX.roundToInt(), underlineY, (drawX + linkW).roundToInt().coerceAtLeast(drawX.roundToInt() + 1), underlineY)
-                    drawX += linkW
-                    col = span.endCol
-                }
-                if (col < line.text.length) {
-                    g.color = textColor
-                    g.drawString(line.text.substring(col), drawX, baseline)
-                }
+                paintLinkedLine(g, key, line.text, lineLinkSpans(line, matches), geom.textX, baseline, geom.metrics)
             }
+        }
+
+        private fun paintLinkedLine(
+            g: Graphics2D,
+            key: SummaryText,
+            text: String,
+            spans: List<SummaryLinkSpan>,
+            x: Float,
+            baseline: Float,
+            metrics: FontMetrics,
+        ) {
+            var col = 0
+            var start = x
+            val underlineY = (baseline + 1.5f * viewport.zoom.toFloat()).roundToInt()
+            for (span in spans) {
+                g.color = UIUtil.getLabelForeground()
+                g.drawString(text.substring(col, span.startCol), start, baseline)
+                start = x + metrics.stringWidth(text.substring(0, span.startCol))
+                val end = x + metrics.stringWidth(text.substring(0, span.endCol))
+                val hovered = hoveredSummaryLink == SummaryLinkHit(key, span.match)
+                g.color = JBUI.CurrentTheme.Link.Foreground.ENABLED
+                g.drawString(text.substring(span.startCol, span.endCol), start, baseline)
+                val weight = if (hovered) 1.6f else 1.0f
+                val minimum = if (hovered) 1.5f else 1.0f
+                g.stroke = BasicStroke((weight * viewport.zoom.toFloat()).coerceAtLeast(minimum))
+                g.drawLine(start.roundToInt(), underlineY, end.roundToInt().coerceAtLeast(start.roundToInt() + 1), underlineY)
+                start = end
+                col = span.endCol
+            }
+            g.color = UIUtil.getLabelForeground()
+            g.drawString(text.substring(col), start, baseline)
         }
 
         private fun paintBriefButton(g: Graphics2D, x: Double, y: Double, path: String) {
@@ -1637,25 +1674,43 @@ internal class TreeBoardPanel(
             }
         }
 
-        private fun paintBriefs(g: Graphics2D, node: TreeBoardNode, x: Double, centerY: Double, font: Font) {
+        private fun positionedBriefs(node: TreeBoardNode, metrics: FontMetrics): List<Pair<BriefSegment, Float>> {
             val segments = briefSegments(node.entry.path)
-            if (segments.isEmpty()) return
+            if (segments.isEmpty()) return emptyList()
+            val rowStart = viewport.worldToScreenX(nodeContentStartWorldX(node.depth))
+            val rowWidth = rowContentScreenWidth(node, getFontMetrics(scaledFont(bold = true)), metrics)
+            var x = (rowStart + rowWidth + briefGap * viewport.zoom).toFloat()
+            val separatorWidth = metrics.stringWidth(BRIEF_SEPARATOR)
+            return segments.map { segment ->
+                val textStart = x + metrics.stringWidth(segment.prefix)
+                x = textStart + metrics.stringWidth(segment.text) + separatorWidth
+                segment to textStart
+            }
+        }
+
+        private fun briefLinkSpans(key: SummaryText, segment: BriefSegment): List<SummaryLinkSpan> {
+            if (!segment.ready) return emptyList()
+            val matches = resolvedSummaryLinks[key]?.matches.orEmpty()
+            if (matches.isEmpty()) return emptyList()
+            val text = segment.text
+            return lineLinkSpans(WrappedSummaryLine(text, 0, text.length, IntArray(text.length) { it }), matches)
+        }
+
+        private fun paintBriefs(g: Graphics2D, node: TreeBoardNode, centerY: Double, font: Font) {
             g.font = font
             val metrics = g.getFontMetrics(font)
-            val baselineY = (centerY + (metrics.ascent - metrics.descent) / 2.0).toFloat()
-            var textX = x.toFloat()
-            for ((index, segment) in segments.withIndex()) {
+            val baseline = (centerY + (metrics.ascent - metrics.descent) / 2.0).toFloat()
+            for ((index, positioned) in positionedBriefs(node, metrics).withIndex()) {
+                val (segment, x) = positioned
+                val prefixX = x - metrics.stringWidth(segment.prefix)
                 if (index > 0) {
                     g.color = UIUtil.getContextHelpForeground()
-                    g.drawString(BRIEF_SEPARATOR, textX, baselineY)
-                    textX += metrics.stringWidth(BRIEF_SEPARATOR)
+                    g.drawString(BRIEF_SEPARATOR, prefixX - metrics.stringWidth(BRIEF_SEPARATOR), baseline)
                 }
                 g.color = segment.color
-                g.drawString(segment.prefix, textX, baselineY)
-                textX += metrics.stringWidth(segment.prefix)
-                g.color = UIUtil.getLabelForeground()
-                g.drawString(segment.text, textX, baselineY)
-                textX += metrics.stringWidth(segment.text)
+                g.drawString(segment.prefix, prefixX, baseline)
+                val key = SummaryText(node.entry.path, segment.text)
+                paintLinkedLine(g, key, segment.text, briefLinkSpans(key, segment), x, baseline, metrics)
             }
         }
 

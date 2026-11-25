@@ -12,8 +12,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TreeLinkBriefsTest {
-    @Test fun `replies are flattened into one plain line`() {
-        assertEquals("Calls Store.save to persist drafts and reloads them.",
+    @Test fun `replies are flattened into one line with inline code`() {
+        assertEquals("Calls `Store.save` to persist drafts and reloads them.",
             oneLineBrief("- Calls `Store.save` to persist drafts\n\n* and **reloads** them."))
         assertEquals("Parses settings", oneLineBrief("  \"Parses   settings\"  "))
         assertEquals("Reads files", oneLineBrief("1. Reads files"))
@@ -29,9 +29,9 @@ class TreeLinkBriefsTest {
             CodeSnippet(5, 5, listOf("api.run()")), CodeSnippet(2, 2, listOf("fun run() {}")))))
         val briefer = TreeBriefer({ request = it; Completion("calls `Api.run`\nto start the service") }, emptyList())
 
-        assertEquals("calls Api.run to start the service", briefer.link("src/Client.kt", "src/Api.kt", site))
+        assertEquals("calls `Api.run` to start the service", briefer.link("src/Client.kt", "src/Api.kt", site))
         val system = request!!.messages.first().content
-        assertTrue(system.contains("one plain line", ignoreCase = true))
+        assertTrue(system.contains("one line", ignoreCase = true))
         val user = request!!.messages.last().content
         assertTrue(user.contains("Source file: src/Client.kt"))
         assertTrue(user.contains("CALL: src/Client.kt:5 → src/Api.kt:2"))

@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import com.intellij.ui.OnePixelSplitter
@@ -513,7 +514,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             val input = request.messages.last().content
             Completion(when {
                 input.startsWith("File:") -> "Starts the service\nand creates models"
-                input.lineSequence().first().endsWith("Client.java") -> "calls `Api.run` to start"
+                input.lineSequence().first().endsWith("Client.java") -> "calls `Api.run` to start at api/Api.java:L3"
                 else -> "- creates `Model` instances"
             })
         }, emptyList())
@@ -543,16 +544,40 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals("Starts the service and creates models", apiBrief.text)
             val clientBrief = board.canvas.briefSegments(client).single()
             assertEquals("→ Api.java: ", clientBrief.prefix)
-            assertEquals("calls Api.run to start", clientBrief.text)
+            assertEquals("calls `Api.run` to start at api/Api.java:L3", clientBrief.text)
             val modelBrief = board.canvas.briefSegments(model).single()
             assertEquals("← Api.java: ", modelBrief.prefix)
-            assertEquals("creates Model instances", modelBrief.text)
+            assertEquals("creates `Model` instances", modelBrief.text)
             assertTrue(board.canvas.briefSegments("").isEmpty())
             assertTrue(descendants(canvas).filterIsInstance<JLabel>()
                 .single { it.name == "charts-tree-connections" }.text.contains("Summarized"))
 
-            // Links start right of the longest row brief, so a point just after the row is no longer on a link.
             val clientRow = checkNotNull(board.rowScreenBounds(client))
+            val y = clientRow.centerY.toInt()
+            fun linkX(text: String): Int? = (clientRow.x + clientRow.width until clientRow.x + clientRow.width + JBUI.scale(600))
+                .firstOrNull { x ->
+                    val event = MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, x, y, 0, false)
+                    board.canvas.getToolTipText(event).orEmpty().contains(text)
+                }
+
+            board.addNotify()
+            try {
+                PlatformTestUtil.waitWithEventsDispatching("Brief file and symbol links should resolve", {
+                    linkX("Symbol: Api.run") != null && linkX("api/Api.java:L3") != null
+                }, 20)
+                val fileLinkX = checkNotNull(linkX("api/Api.java:L3"))
+                board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, fileLinkX, y, 0, false))
+                assertEquals(Cursor.HAND_CURSOR, board.canvas.cursor.type)
+                board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                    fileLinkX, y, 1, false, MouseEvent.BUTTON1))
+                PlatformTestUtil.waitWithEventsDispatching("Clicking a brief link should open Api.java", {
+                    FileEditorManager.getInstance(project).selectedFiles.any { it.path.endsWith(api) }
+                }, 20)
+            } finally {
+                board.removeNotify()
+            }
+
+            // Connection routes start to the right of the longest row brief.
             val justAfterRow = MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
                 board.board.nodes.maxOf { checkNotNull(board.rowScreenBounds(it.entry.path)).let { r -> r.x + r.width } } + JBUI.scale(12),
                 clientRow.centerY.toInt() - JBUI.scale(4), 0, false)
@@ -581,7 +606,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                 rebuilt.connectionSelection?.path == client && rebuilt.connectionSelection?.connections != null
             }, 20)
             assertSame(summarizedClientSite, rebuilt.connectionSelection?.connections?.outgoing?.get(api))
-            assertEquals("calls Api.run to start", summarizedClientSite.brief)
+            assertEquals("calls `Api.run` to start at api/Api.java:L3", summarizedClientSite.brief)
 
             // A new review revision with the same file scope retains the live-source graph and its cached briefs.
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)), revision = 1)))
