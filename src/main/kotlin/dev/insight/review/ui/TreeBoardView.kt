@@ -19,6 +19,7 @@ import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewTreeBoard
 import dev.insight.review.SummaryLinkSpan
 import dev.insight.review.TreeBoardHighlight
+import dev.insight.review.TreeBoardGroupHighlight
 import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
 import dev.insight.review.TreeBrief
@@ -26,6 +27,10 @@ import dev.insight.review.TreeBriefs
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.TreeFocusLinks
+import dev.insight.review.TreeRailCard
+import dev.insight.review.TreeRailMode
+import dev.insight.review.TreeRailModel
+import dev.insight.review.computeTreeRailPlacements
 import dev.insight.review.WrappedSummaryLine
 import dev.insight.review.lineLinkSpans
 import dev.insight.review.linkTooltip
@@ -143,6 +148,19 @@ internal class TreeBoardPanel(
     private val diffMode: Boolean = false,
     private val summaryLinkNavigator: ((String) -> ContextualLinkedTextNavigator)? = null,
     private val summaryFileMenuItems: ((String, IntRange?) -> List<JMenuItem>)? = null,
+    private val nodeSummaries: Map<String, String> = fileSummaries,
+    private val railModel: TreeRailModel? = null,
+    allowGroupingRail: Boolean = false,
+    private val railMode: TreeRailMode = TreeRailMode.TOPICS,
+    railModeChanged: (TreeRailMode) -> Unit = {},
+    railLevel: Int? = null,
+    railLevelChanged: (Int?) -> Unit = {},
+    initialSelectedRailKey: String? = null,
+    private val selectedRailKeyChanged: (String?) -> Unit = {},
+    initialRailVisible: Boolean = true,
+    private val railVisibleChanged: (Boolean) -> Unit = {},
+    showEmptyRail: Boolean = false,
+    summaryLinkContext: ((String?, List<String>) -> SummaryTextLinkContext?)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -163,6 +181,41 @@ internal class TreeBoardPanel(
     private val viewport = TreeBoardViewport(initialPanX, initialPanY, initialZoom)
     private var cursorIndex: Int = -1
     private var hoveredIndex: Int = -1
+    private var hoveredRailCard: TreeRailCard? = null
+    private var selectedRailKey: String? = initialSelectedRailKey?.takeIf { railModel?.cardByKey(it) != null }
+    private var railVisible: Boolean = initialRailVisible
+    private var groupHighlight: TreeBoardGroupHighlight? = null
+
+    val isRailVisible: Boolean get() = railVisible && railPanel != null
+    val activeRailCard: TreeRailCard? get() = if (isRailVisible) hoveredRailCard ?: railModel?.cardByKey(selectedRailKey) else null
+    val selectedRailCardKey: String? get() = selectedRailKey
+
+    internal val summaryPanel: TreeBoardSummaryPanel? =
+        if (nodeSummaries.isNotEmpty() || railModel?.cards?.isNotEmpty() == true) {
+            TreeBoardSummaryPanel(project, summaryLinkContext)
+        } else null
+
+    internal val railPanel: TreeBoardRailPanel? =
+        if (railModel != null && (railModel.cards.isNotEmpty() || showEmptyRail)) {
+            TreeBoardRailPanel(
+                model = railModel,
+                allowGrouping = allowGroupingRail,
+                mode = railMode,
+                level = railLevel,
+                onModeChanged = railModeChanged,
+                onLevelChanged = railLevelChanged,
+                onHover = ::hoverRailCard,
+                onSelect = ::toggleRailCardSelection,
+                rowScreenBoundsY = { rowIdx ->
+                    viewport.worldToScreenY(rowTopWorld(rowIdx)) to viewport.worldToScreenY(rowBottomWorld(rowIdx))
+                },
+                canvasYOffset = {
+                    val rp = railPanel
+                    if (rp == null) 0 else (rp.y + rp.railCanvas.y) - canvas.y
+                },
+                onWheelScroll = ::handleRailWheel,
+            )
+        } else null
 
     private val totalLabel = JLabel(totalSummaryText()).apply {
         name = "charts-tree-total"
@@ -211,11 +264,33 @@ internal class TreeBoardPanel(
         toggleAllSummaries()
     }
 
+    private fun handleRailWheel(e: MouseWheelEvent) {
+        if (e.isControlDown || e.isMetaDown) {
+            val factor = ZOOM_WHEEL_BASE.pow(-e.preciseWheelRotation)
+            val rp = railPanel
+            val anchorY = if (rp != null) e.y + ((rp.y + rp.railCanvas.y) - canvas.y) else e.y
+            zoomTo(viewport.zoom * factor, Point(canvas.width / 2, anchorY))
+        } else if (e.isShiftDown) {
+            viewport.panBy(-e.preciseWheelRotation * JBUI.scale(32), 0.0)
+            notifyViewportChanged()
+            canvas.repaint()
+        } else {
+            viewport.panBy(0.0, -e.preciseWheelRotation * JBUI.scale(32))
+            notifyViewportChanged()
+            canvas.repaint()
+        }
+    }
+
+    private val railToggleButton = controlButton("", "charts-tree-toggle-rail", "") {
+        toggleRailVisible()
+    }
+
     val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
         name = "charts-tree-controls"
         isOpaque = false
         add(exitFocusButton)
         add(summariesButton)
+        add(railToggleButton)
         add(controlButton("Unfold all", "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
         add(controlButton("Fold all", "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
         add(controlButton("Fit", "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
@@ -335,6 +410,7 @@ internal class TreeBoardPanel(
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
         loadSummaryLinks()
         canvas.repaint()
+        railPanel?.repaintRail()
     }
 
     fun toggleAllSummaries() {
@@ -345,6 +421,7 @@ internal class TreeBoardPanel(
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
         loadSummaryLinks()
         canvas.repaint()
+        railPanel?.repaintRail()
     }
 
     internal fun summaryLinksFor(path: String): List<LineLinkMatch> = fileSummaries[path]?.let { resolvedSummaryLinks[SummaryText(path, it)]?.matches }.orEmpty()
@@ -443,11 +520,18 @@ internal class TreeBoardPanel(
         getAccessibleContext().accessibleName = "${metric.label} tree board"
 
         add(canvas, BorderLayout.CENTER)
+        summaryPanel?.let { add(it, BorderLayout.WEST) }
+        railPanel?.let { add(it, BorderLayout.EAST) }
+        applySidePanelVisibility()
 
         updateStatus()
         updateConnectionStatus()
         updateFocusStatus()
         updateSummariesButton()
+        updateRailToggleButton()
+        updateGroupHighlight()
+        updateSidePanels()
+        syncRailPlacements()
         loadSummaryLinks()
         installKeys()
         addFocusListener(object : FocusAdapter() {
@@ -525,6 +609,7 @@ internal class TreeBoardPanel(
             notifyViewportChanged()
         }
         updateStatus()
+        updateSidePanels()
         canvas.repaint()
         cursorChanged(cursorPath)
     }
@@ -588,9 +673,160 @@ internal class TreeBoardPanel(
         updateStatus()
         updateConnectionStatus()
         updateFocusStatus()
+        updateGroupHighlight()
+        updateSidePanels()
+        syncRailPlacements()
         canvas.invalidateRowLayout()
         canvas.repaint()
         cursorChanged(cursorPath)
+    }
+
+    private fun hoverRailCard(card: TreeRailCard?) {
+        if (hoveredRailCard == card) return
+        hoveredRailCard = card
+        updateGroupHighlight()
+        updateSidePanels()
+        canvas.repaint()
+    }
+
+    private fun toggleRailCardSelection(card: TreeRailCard) {
+        selectedRailKey = if (selectedRailKey == card.key) null else card.key
+        selectedRailKeyChanged(selectedRailKey)
+        updateGroupHighlight()
+        updateSidePanels()
+        if (selectedRailKey != null && canvas.height > 0) {
+            val targets = (groupHighlight?.matchingRows.orEmpty() + groupHighlight?.collapsedContainers.orEmpty()).sorted()
+            val anyVisible = targets.any { idx ->
+                val top = viewport.worldToScreenY(rowTopWorld(idx))
+                val bottom = viewport.worldToScreenY(rowBottomWorld(idx))
+                bottom > 0.0 && top < canvas.height
+            }
+            if (!anyVisible && targets.isNotEmpty()) {
+                val first = targets.first()
+                viewport.ensureRowVisible(rowTopWorld(first), rowBottomWorld(first), canvas.height, margin = JBUI.scale(24).toDouble())
+                notifyViewportChanged()
+            }
+        }
+        canvas.repaint()
+    }
+
+    private fun applySidePanelVisibility() {
+        railPanel?.isVisible = railVisible
+        summaryPanel?.isVisible = nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true)
+    }
+
+    private fun updateRailToggleButton() {
+        railToggleButton.isVisible = railPanel != null
+        if (railVisible) {
+            railToggleButton.text = "Hide ${railMode.plural}"
+            railToggleButton.toolTipText = "Hide the ${railMode.plural} rail"
+        } else {
+            railToggleButton.text = "Show ${railMode.plural}"
+            railToggleButton.toolTipText = "Show the ${railMode.plural} rail"
+        }
+    }
+
+    fun toggleRailVisible() {
+        if (railPanel == null) return
+        railVisible = !railVisible
+        if (!railVisible) hoveredRailCard = null
+        railVisibleChanged(railVisible)
+        applySidePanelVisibility()
+        updateRailToggleButton()
+        updateGroupHighlight()
+        updateSidePanels()
+        canvas.invalidateRowWidth()
+        revalidate()
+        repaint()
+        if (railVisible) railPanel?.repaintRail()
+    }
+
+    private fun syncRailPlacements() {
+        val model = railModel ?: return
+        val placements = computeTreeRailPlacements(model, board) { dir -> chart.files(dir).map { it.path } }
+        railPanel?.setPlacements(placements)
+    }
+
+    private fun updateGroupHighlight() {
+        val active = activeRailCard
+        groupHighlight = if (active == null) null else board.highlightFiles(active.files) { dir ->
+            chart.files(dir).map { it.path }
+        }
+    }
+
+    private fun updateSidePanels() {
+        val hoveredNode = board.nodes.getOrNull(hoveredIndex)
+        val cursorNode = board.nodes.getOrNull(cursorIndex)
+        val selectedCard = if (isRailVisible) railModel?.cardByKey(selectedRailKey) else null
+        val display = when {
+            isRailVisible && hoveredRailCard != null -> railSummaryDisplay(hoveredRailCard!!)
+            hoveredNode != null -> nodeSummaryDisplay(hoveredNode)
+            selectedCard != null -> railSummaryDisplay(selectedCard)
+            cursorNode != null -> nodeSummaryDisplay(cursorNode)
+            else -> null
+        }
+        summaryPanel?.show(display)
+        if (isRailVisible) {
+            railPanel?.updateHighlights(hoveredRailCard?.key, selectedRailKey, matchingRailKeys(hoveredNode ?: cursorNode))
+        }
+    }
+
+    private fun matchingRailKeys(node: TreeBoardNode?): Set<String> {
+        val model = railModel ?: return emptySet()
+        if (node == null) return emptySet()
+        return when {
+            node.entry.kind == ReviewLineChart.Kind.FILE -> model.matchingCardKeys(node.entry.path)
+            node.entry.directory -> model.matchingCardKeysForFiles(chart.files(node.entry.path).map { it.path })
+            else -> emptySet()
+        }
+    }
+
+    private fun railSummaryDisplay(card: TreeRailCard): TreeSummaryDisplay {
+        val mode = railModel?.mode ?: railMode
+        val kindLabel = if (mode == TreeRailMode.GROUPING) "Group summary" else "Topic summary"
+        val countText = fileCount(card.files.size)
+        val subtitle = if (card.fullPath != card.name) "${card.fullPath} · $countText" else countText
+        val missingText = if (card.placeholder) card.fullPath else "No ${mode.singular} summary yet"
+        return TreeSummaryDisplay(
+            kindLabel = kindLabel,
+            title = card.name,
+            subtitle = subtitle,
+            summary = card.summary,
+            missingText = missingText,
+            accent = card.family?.let(DocumentColumnsPanel::accent),
+            linkSourcePath = card.files.singleOrNull(),
+            linkEntryFiles = card.files.toList(),
+        )
+    }
+
+    private fun nodeSummaryDisplay(node: TreeBoardNode): TreeSummaryDisplay {
+        val path = node.entry.path
+        val summary = nodeSummaries[path]
+        if (node.entry.kind == ReviewLineChart.Kind.FILE) {
+            val label = railModel?.fileLabels?.get(path)
+            val prefix = if (railModel?.mode == TreeRailMode.GROUPING) "Group: " else "Topic: "
+            val family = railModel?.fileFamilies?.get(path)
+            return TreeSummaryDisplay(
+                kindLabel = if (diffMode) "Diff summary" else "File summary",
+                title = node.entry.label,
+                subtitle = path.takeIf { it != node.entry.label },
+                topicBadge = label?.let { "$prefix$it" },
+                summary = summary,
+                accent = family?.let(DocumentColumnsPanel::accent),
+                linkSourcePath = path,
+                linkEntryFiles = listOf(path),
+            )
+        }
+        val filesText = fileCount(node.entry.files)
+        val dirFiles = chart.files(path).map { it.path }
+        return TreeSummaryDisplay(
+            kindLabel = if (node.depth == 0) "Scope summary" else "Folder summary",
+            title = if (node.depth == 0) rootLabel else "${node.entry.label}/",
+            subtitle = if (node.depth == 0 || path == node.entry.label) filesText else "$path · $filesText",
+            summary = summary,
+            linkSourcePath = null,
+            linkEntryFiles = dirFiles,
+        )
     }
 
     private fun totalSummaryText(): String {
@@ -677,6 +913,7 @@ internal class TreeBoardPanel(
         connectionPreview.hide()
         canvas.invalidateRoutes()
         viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
+        railPanel?.repaintRail()
     }
 
     private fun zoomText() = "${(viewport.zoom * 100).roundToInt()}%"
@@ -742,6 +979,13 @@ internal class TreeBoardPanel(
         bind(KeyEvent.VK_ESCAPE, "charts-tree-dismiss-preview") {
             if (connectionPreview.activePanel != null) connectionPreview.hide()
             else if (focusSelection != null) clearFocus?.invoke() ?: run { focusSelection = null }
+            else if (selectedRailKey != null) {
+                selectedRailKey = null
+                selectedRailKeyChanged(null)
+                updateGroupHighlight()
+                updateSidePanels()
+                canvas.repaint()
+            }
         }
     }
 
@@ -781,6 +1025,7 @@ internal class TreeBoardPanel(
     private val summaryTopGap get() = JBUI.scale(2).toDouble()
     private val summaryBottomGap get() = JBUI.scale(6).toDouble()
     private val summaryIndent get() = JBUI.scale(4).toDouble()
+    private val familyDotSpace get() = JBUI.scale(10)
 
     internal data class WrappedSummaryBlock(
         val lines: List<WrappedSummaryLine>,
@@ -917,8 +1162,10 @@ internal class TreeBoardPanel(
                     if (nextHover != hoveredIndex || route != hoveredRoute || linkHit != hoveredSummaryLink) {
                         hoveredSummaryLink = linkHit
                         hoveredRoute = route
+                        val hoverChanged = nextHover != hoveredIndex
                         hoveredIndex = nextHover
                         updateStatus()
+                        if (hoverChanged) updateSidePanels()
                         repaint()
                     }
                     if (route != null) {
@@ -937,8 +1184,10 @@ internal class TreeBoardPanel(
                     if (hoveredIndex != -1 || hoveredRoute != null || hoveredSummaryLink != null) {
                         hoveredSummaryLink = null
                         hoveredRoute = null
+                        val hoverChanged = hoveredIndex != -1
                         hoveredIndex = -1
                         updateStatus()
+                        if (hoverChanged) updateSidePanels()
                         repaint()
                     }
                     cursor = Cursor.getDefaultCursor()
@@ -1089,12 +1338,16 @@ internal class TreeBoardPanel(
             "  ${valueText(node.entry.value)}"
         }
 
+        private fun hasFamilyDot(node: TreeBoardNode): Boolean =
+            isRailVisible && node.entry.kind == ReviewLineChart.Kind.FILE && railModel?.fileFamilies?.get(node.entry.path) != null
+
         private fun rowContentScreenWidth(node: TreeBoardNode, boldMetrics: FontMetrics, plainMetrics: FontMetrics): Int {
             val labelWidth = boldMetrics.stringWidth(nodeLabel(node))
             val badgeWidth = plainMetrics.stringWidth(nodeBadge(node))
             val toggleScreen = if (node.collapsible) (toggleWidth * viewport.zoom).roundToInt() else 0
+            val dotScreen = if (hasFamilyDot(node)) (familyDotSpace * viewport.zoom).roundToInt() else 0
             val padRight = (JBUI.scale(10) * viewport.zoom).roundToInt()
-            return toggleScreen + labelWidth + badgeWidth + padRight + buttonScreenWidth(node)
+            return toggleScreen + dotScreen + labelWidth + badgeWidth + padRight + buttonScreenWidth(node)
         }
 
         private fun hasFocusButton(node: TreeBoardNode): Boolean =
@@ -1216,10 +1469,11 @@ internal class TreeBoardPanel(
             for (node in board.nodes) {
                 val left = nodeContentStartWorldX(node.depth)
                 val toggle = if (node.collapsible) toggleWidth else 0.0
+                val dot = if (hasFamilyDot(node)) familyDotSpace else 0
                 val textW = boldMetrics.stringWidth(nodeLabel(node)) + plainMetrics.stringWidth(nodeBadge(node))
                 val button = buttonWorldWidth(node)
                 val brief = briefWidth(node, plainMetrics, briefGap.toDouble())
-                maxRight = maxOf(maxRight, left + toggle + textW + JBUI.scale(24) + button + brief)
+                maxRight = maxOf(maxRight, left + toggle + dot + textW + JBUI.scale(24) + button + brief)
                 layout.summaries[node.index]?.let { block ->
                     maxRight = maxOf(maxRight, left + summaryIndent + block.blockWidth)
                 }
@@ -1324,6 +1578,7 @@ internal class TreeBoardPanel(
 
                 val cursorHl = board.highlight(cursorIndex)
                 val hoverHl = hoveredIndex.takeIf { it >= 0 && it != cursorIndex }?.let(board::highlight)
+                val groupHl = groupHighlight
 
                 val plainFont = scaledFont(bold = false)
                 val boldFont = scaledFont(bold = true)
@@ -1334,6 +1589,8 @@ internal class TreeBoardPanel(
                 val baseLineColor = JBColor(Color(0xB0B7C0), Color(0x525964))
                 val primaryAccent = accentColor
                 val hoverAccent = alpha(primaryAccent, 195)
+                val groupColor = activeRailCard?.family?.let(DocumentColumnsPanel::accent) ?: primaryAccent
+                val groupBranchColor = alpha(groupColor, 175)
                 val normalStroke = BasicStroke((1.0f * viewport.zoom.toFloat()).coerceAtLeast(1.0f))
                 val highlightStroke = BasicStroke((2.0f * viewport.zoom.toFloat()).coerceAtLeast(1.8f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
                 val panelFocused = this@TreeBoardPanel.isFocusOwner
@@ -1347,19 +1604,32 @@ internal class TreeBoardPanel(
                     val startX = viewport.worldToScreenX(nodeContentStartWorldX(node.depth))
 
                     // Row highlight pill
-                    if (i == cursorIndex || i == hoveredIndex) {
+                    val isGroupRow = groupHl != null && (i in groupHl.matchingRows || i in groupHl.collapsedContainers)
+                    if (i == cursorIndex || i == hoveredIndex || isGroupRow) {
                         val rowW = rowContentScreenWidth(node, boldMetrics, plainMetrics).toDouble()
                         val padX = 4.0 * viewport.zoom
                         val padY = 1.5 * viewport.zoom
                         val arc = 6.0 * viewport.zoom
                         val pill = RoundRectangle2D.Double(startX - padX, topY + padY, rowW + padX * 2, (headerBottomY - topY) - padY * 2, arc, arc)
-                        g.color = if (i == cursorIndex) JBUI.CurrentTheme.List.Selection.background(panelFocused)
-                        else JBUI.CurrentTheme.List.Hover.background(true)
-                        g.fill(pill)
-                        if (i == cursorIndex) {
-                            g.color = primaryAccent
-                            g.stroke = BasicStroke((1.2f * viewport.zoom.toFloat()).coerceAtLeast(1.0f))
-                            g.draw(pill)
+                        when {
+                            i == cursorIndex -> {
+                                g.color = JBUI.CurrentTheme.List.Selection.background(panelFocused)
+                                g.fill(pill)
+                                g.color = primaryAccent
+                                g.stroke = BasicStroke((1.2f * viewport.zoom.toFloat()).coerceAtLeast(1.0f))
+                                g.draw(pill)
+                            }
+                            i == hoveredIndex -> {
+                                g.color = JBUI.CurrentTheme.List.Hover.background(true)
+                                g.fill(pill)
+                            }
+                            isGroupRow -> {
+                                g.color = alpha(groupColor, 38)
+                                g.fill(pill)
+                                g.color = alpha(groupColor, 160)
+                                g.stroke = BasicStroke((1.0f * viewport.zoom.toFloat()).coerceAtLeast(1.0f))
+                                g.draw(pill)
+                            }
                         }
                     }
 
@@ -1370,6 +1640,7 @@ internal class TreeBoardPanel(
                         val lineColor = when {
                             cursorHl?.verticalLineHighlighted(node, col, board.nodes) == true -> primaryAccent
                             hoverHl?.verticalLineHighlighted(node, col, board.nodes) == true -> hoverAccent
+                            groupHl?.verticalLineHighlighted(node, col, board.nodes) == true -> groupBranchColor
                             else -> null
                         }
                         g.color = lineColor ?: baseLineColor
@@ -1387,6 +1658,7 @@ internal class TreeBoardPanel(
                         val topColor = when {
                             cursorHl?.let { it.connectorHighlighted(node) || it.verticalLineHighlighted(node, col, board.nodes) } == true -> primaryAccent
                             hoverHl?.let { it.connectorHighlighted(node) || it.verticalLineHighlighted(node, col, board.nodes) } == true -> hoverAccent
+                            groupHl?.let { it.connectorHighlighted(node) || it.verticalLineHighlighted(node, col, board.nodes) } == true -> groupBranchColor
                             else -> null
                         }
                         g.color = topColor ?: baseLineColor
@@ -1397,6 +1669,7 @@ internal class TreeBoardPanel(
                             val bottomColor = when {
                                 cursorHl?.verticalLineHighlighted(node, col, board.nodes) == true -> primaryAccent
                                 hoverHl?.verticalLineHighlighted(node, col, board.nodes) == true -> hoverAccent
+                                groupHl?.verticalLineHighlighted(node, col, board.nodes) == true -> groupBranchColor
                                 else -> null
                             }
                             g.color = bottomColor ?: baseLineColor
@@ -1407,6 +1680,7 @@ internal class TreeBoardPanel(
                         val horizColor = when {
                             cursorHl?.connectorHighlighted(node) == true -> primaryAccent
                             hoverHl?.connectorHighlighted(node) == true -> hoverAccent
+                            groupHl?.connectorHighlighted(node) == true -> groupBranchColor
                             else -> null
                         }
                         g.color = horizColor ?: baseLineColor
@@ -1417,9 +1691,24 @@ internal class TreeBoardPanel(
                     // Fold chevron
                     var textX = startX.toFloat()
                     if (node.collapsible) {
-                        val chevronColor = if (cursorHl?.contains(i) == true || hoverHl?.contains(i) == true) primaryAccent else UIUtil.getContextHelpForeground()
+                        val chevronColor = if (cursorHl?.contains(i) == true || hoverHl?.contains(i) == true) primaryAccent
+                        else if (groupHl?.contains(i) == true) groupColor
+                        else UIUtil.getContextHelpForeground()
                         drawChevron(g, startX, centerY, node.collapsed, chevronColor)
                         textX += (toggleWidth * viewport.zoom).toFloat()
+                    }
+
+                    // Topic/Group family dot for files
+                    if (hasFamilyDot(node)) {
+                        val family = railModel?.fileFamilies?.get(node.entry.path)
+                        if (family != null) {
+                            val dotSize = (JBUI.scale(5) * viewport.zoom).roundToInt().coerceAtLeast(3)
+                            val dotX = textX.roundToInt()
+                            val dotY = (centerY - dotSize / 2.0).roundToInt()
+                            g.color = DocumentColumnsPanel.accent(family)
+                            g.fillOval(dotX, dotY, dotSize, dotSize)
+                        }
+                        textX += (familyDotSpace * viewport.zoom).toFloat()
                     }
 
                     // Label & metric badge
@@ -1440,9 +1729,17 @@ internal class TreeBoardPanel(
                     g.drawString(labelText, textX, baselineY)
 
                     val badgeX = textX + lm.stringWidth(labelText)
+                    val badgeText = nodeBadge(node)
                     g.font = plainFont
                     g.color = if (metric.diffSeries != null) numberColor else UIUtil.getContextHelpForeground()
-                    g.drawString(nodeBadge(node), badgeX, baselineY)
+                    g.drawString(badgeText, badgeX, baselineY)
+                    if (groupHl != null && i in groupHl.collapsedContainers) {
+                        val dotSize = (JBUI.scale(5) * viewport.zoom).roundToInt().coerceAtLeast(3)
+                        val dotX = (badgeX + plainMetrics.stringWidth(badgeText) + JBUI.scale(3) * viewport.zoom).roundToInt()
+                        val dotY = (centerY - dotSize / 2.0).roundToInt()
+                        g.color = groupColor
+                        g.fillOval(dotX, dotY, dotSize, dotSize)
+                    }
                     val rowWidth = rowContentScreenWidth(node, boldMetrics, plainMetrics)
                     var buttonRightX = startX + rowWidth
                     if (hasConnectionButton(node)) {

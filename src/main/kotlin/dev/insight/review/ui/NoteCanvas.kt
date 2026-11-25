@@ -974,6 +974,7 @@ internal class NoteCanvas(
         chartsCardBuilder.update(content)
         state = state.copy(charts = content)
         if (content?.tree != previous?.tree ||
+            chartsView.chart == "Tree" ||
             (chartsView.chart != "Radar" && chartsView.linesPreview?.kind == LineChartPreviewKind.SUMMARY)) {
             refreshCard(CanvasTabKey.Charts)
         }

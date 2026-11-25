@@ -50,6 +50,36 @@ internal data class TreeBoardHighlight(
 }
 
 /**
+ * Highlights all visible rows belonging to a Topic or Group card: [matchingRows] for visible files,
+ * [collapsedContainers] for collapsed directories containing matching files, and [ancestorRows] along with
+ * [lastHighlightedChildRow] for connecting branch trunks.
+ */
+internal data class TreeBoardGroupHighlight(
+    val matchingRows: Set<Int>,
+    val ancestorRows: Set<Int>,
+    val collapsedContainers: Set<Int>,
+    val lastHighlightedChildRow: Map<Int, Int>,
+) {
+    fun contains(index: Int): Boolean =
+        index in matchingRows || index in ancestorRows || index in collapsedContainers
+
+    /** Whether the vertical trunk passing through [ancestorColumn] on [row] belongs to the highlighted group. */
+    fun verticalLineHighlighted(row: TreeBoardNode, ancestorColumn: Int, nodes: List<TreeBoardNode>): Boolean {
+        if (ancestorColumn !in 0 until row.depth) return false
+        var current: TreeBoardNode? = row
+        while (current != null && current.depth > ancestorColumn) {
+            current = current.parentIndex?.let(nodes::getOrNull)
+        }
+        val ancestorIdx = current?.index ?: return false
+        return lastHighlightedChildRow[ancestorIdx]?.let { row.index < it } == true
+    }
+
+    /** Whether the elbow/tee connector entering [row] from its parent belongs to the highlighted group. */
+    fun connectorHighlighted(row: TreeBoardNode): Boolean =
+        row.parentIndex?.let { parent -> contains(row.index) && contains(parent) } == true
+}
+
+/**
  * Flattened visible tree for the Charts Tree board view. Directories start expanded unless their path is in
  * [collapsed]; files remain leaves (no PSI declaration children). When [visibleFiles] is non-null, only those files
  * and their ancestor directories are kept, preserving the tree structure as a compact subtree.
@@ -157,6 +187,44 @@ internal class ReviewTreeBoard(
 
     fun firstChildIndex(index: Int): Int? =
         nodes.getOrNull(index + 1)?.takeIf { it.parentIndex == index }?.index
+
+    /**
+     * Highlights the visible rows matching [targetFiles] (plus collapsed directories containing any of them via
+     * [filesInDir]) and all ancestor branch connectors leading to them. Returns null if no visible row matches.
+     */
+    fun highlightFiles(targetFiles: Set<String>, filesInDir: (String) -> Collection<String>): TreeBoardGroupHighlight? {
+        if (targetFiles.isEmpty() || nodes.isEmpty()) return null
+        val matchingRows = HashSet<Int>()
+        val collapsedContainers = HashSet<Int>()
+        for (node in nodes) {
+            if (node.entry.kind == ReviewLineChart.Kind.FILE) {
+                if (node.entry.path in targetFiles) matchingRows += node.index
+            } else if (node.entry.directory && node.collapsed) {
+                if (filesInDir(node.entry.path).any { it in targetFiles }) collapsedContainers += node.index
+            }
+        }
+        if (matchingRows.isEmpty() && collapsedContainers.isEmpty()) return null
+        val ancestorRows = HashSet<Int>()
+        val all = HashSet<Int>(matchingRows.size + collapsedContainers.size + 16)
+        all += matchingRows
+        all += collapsedContainers
+        for (idx in matchingRows + collapsedContainers) {
+            var current = nodes[idx].parentIndex?.let(nodes::getOrNull)
+            while (current != null) {
+                ancestorRows += current.index
+                all += current.index
+                current = current.parentIndex?.let(nodes::getOrNull)
+            }
+        }
+        val lastChild = HashMap<Int, Int>()
+        for (idx in all) {
+            val parent = nodes[idx].parentIndex ?: continue
+            if (parent in all) {
+                lastChild[parent] = max(lastChild[parent] ?: -1, idx)
+            }
+        }
+        return TreeBoardGroupHighlight(matchingRows, ancestorRows, collapsedContainers, lastChild)
+    }
 
     private fun childEntries(entry: ReviewLineChart.Entry): List<ReviewLineChart.Entry> =
         if (!entry.directory) emptyList()

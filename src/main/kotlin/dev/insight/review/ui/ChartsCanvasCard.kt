@@ -36,6 +36,7 @@ import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
 import dev.insight.review.SourceOutlines
@@ -45,7 +46,9 @@ import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnectionIndex
 import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeBriefs
+import dev.insight.review.TreeRailMode
 import dev.insight.review.briefTreeLinks
+import dev.insight.review.buildTreeRailModel
 import dev.insight.review.collectRelatedFiles
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
@@ -85,6 +88,10 @@ internal data class ChartsCard(
     val pendingEntries: Set<Int> = emptySet(),
     /** The review state's revision; search results of another revision are discarded. */
     val revision: Int = 0,
+    val topics: ReviewTopics? = null,
+    val topicSummaries: ReviewSummaries? = null,
+    val grouping: ReviewTopics? = null,
+    val groupingSummaries: ReviewSummaries? = null,
 ) {
     val tree get() = summaries.tree
     val connectionSources by lazy {
@@ -121,6 +128,10 @@ internal class ChartsViewState {
     var treeZoom: Double = 1.0
     var treePanX: Double = 0.0
     var treePanY: Double = 0.0
+    var treeRailMode: TreeRailMode? = null
+    var treeRailLevel: Int? = null
+    var treeSelectedRailKey: String? = null
+    var treeShowRail: Boolean = true
     var lineMetric: LineChartMetric? = null
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -288,6 +299,20 @@ internal class ChartsCanvasCard(
                 .mapNotNull { node -> content.summaries.text(node.id)?.let { node.path to it } }
                 .toMap()
         } else emptyMap()
+        val nodeSummaries = if (tree) {
+            val readingSummaries = content.summaries.withAbsorbedFolderSummary()
+            buildMap {
+                for (node in content.tree.nodes) {
+                    if ((node.kind == SummaryKind.FILE || node.kind == SummaryKind.DIRECTORY || node.kind == SummaryKind.ROOT) && !node.isTopicBranch) {
+                        readingSummaries.text(node.id)?.let { put(node.path, it) }
+                    }
+                }
+                val prefix = content.tree.rootDirectoryPrefix
+                if (prefix.isNotEmpty() && prefix !in this) {
+                    readingSummaries.text(content.tree.root.id)?.let { put(prefix, it) }
+                }
+            }
+        } else emptyMap()
         val treeContextSources = if (tree) {
             content.tree.nodes.asSequence()
                 .mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
@@ -298,6 +323,27 @@ internal class ChartsCanvasCard(
         val expandedSummaries = if (view.treeShowAllSummaries) fileSummaries.keys.toSet()
         else view.treeExpandedSummaries.intersect(fileSummaries.keys)
         if (tree) view.treeExpandedSummaries = expandedSummaries
+        val hasTopics = content.topics?.labels?.isNotEmpty() == true
+        val hasGrouping = diff && content.grouping?.labels?.isNotEmpty() == true
+        val activeRailMode = if (!diff) TreeRailMode.TOPICS
+        else view.treeRailMode ?: if (hasTopics) TreeRailMode.TOPICS else if (hasGrouping) TreeRailMode.GROUPING else TreeRailMode.TOPICS
+        val railModel = if (hierarchy != null && tree) {
+            val (activeTopics, activeTopicSummaries) = if (activeRailMode == TreeRailMode.GROUPING) {
+                content.grouping to content.groupingSummaries
+            } else {
+                content.topics to content.topicSummaries
+            }
+            val chartFiles = hierarchy.files(hierarchy.root.path).mapTo(LinkedHashSet()) { it.path }
+            buildTreeRailModel(activeRailMode, activeTopics, activeTopicSummaries, content.summaries, chartFiles, view.treeRailLevel)
+        } else null
+        val summaryFileItems: ((String, IntRange?) -> List<JMenuItem>)? = if (diff) { path, _ ->
+            val target = matchingReviewSource(treeContextSources, path, null)
+            if (target == null) emptyList() else listOf(JMenuItem("Open diff").apply {
+                name = "summary-link-action:OpenDiff"
+                toolTipText = "Open the diff of ${target.path} in this review"
+                addActionListener { open(target.path) }
+            })
+        } else null
         val treeBoard = if (hierarchy != null && tree) TreeBoardPanel(
             hierarchy,
             vocabulary.rootName,
@@ -349,14 +395,41 @@ internal class ChartsCanvasCard(
                     }
                 }
             },
-            summaryFileMenuItems = if (diff) { path, _ ->
-                val target = matchingReviewSource(treeContextSources, path, null)
-                if (target == null) emptyList() else listOf(JMenuItem("Open diff").apply {
-                    name = "summary-link-action:OpenDiff"
-                    toolTipText = "Open the diff of ${target.path} in this review"
-                    addActionListener { open(target.path) }
-                })
-            } else null,
+            summaryFileMenuItems = summaryFileItems,
+            nodeSummaries = nodeSummaries,
+            railModel = railModel,
+            allowGroupingRail = diff,
+            railMode = activeRailMode,
+            railModeChanged = { mode ->
+                view.treeRailMode = mode
+                view.treeSelectedRailKey = null
+                refresh()
+            },
+            railLevel = view.treeRailLevel,
+            railLevelChanged = { level ->
+                view.treeRailLevel = level
+                refresh()
+            },
+            initialSelectedRailKey = view.treeSelectedRailKey,
+            selectedRailKeyChanged = { view.treeSelectedRailKey = it },
+            initialRailVisible = view.treeShowRail,
+            railVisibleChanged = { view.treeShowRail = it },
+            showEmptyRail = diff && (hasTopics || hasGrouping),
+            summaryLinkContext = project?.let { ownerProject ->
+                { sourcePath, entryFiles ->
+                    val nav = summaryTextNavigator(ownerProject, sourcePath, entryFiles, treeScopeFiles, diff) { link, path, absolutePath ->
+                        reportLinkContextPick(ownerProject, link.kind, path, link.lines, treeContextSources, content.tree,
+                            reviewDestinations(), summaryActions, openOnWall, openOnCanvas, absolutePath)
+                    }
+                    SummaryTextLinkContext(
+                        navigator = nav,
+                        reviewDestinations = reviewDestinations,
+                        reviewFiles = treeContextSources,
+                        openOnWall = openOnWall,
+                        fileItems = summaryFileItems ?: { _, _ -> emptyList() },
+                    )
+                }
+            },
             initialFocusSelection = treeFocusSelection,
             toggleFocus = treeConnectionIndex?.let { index ->
                 { path, directory -> toggleTreeFocus(index, path, directory, hierarchy.files(path).map { it.path }) }
@@ -367,7 +440,9 @@ internal class ChartsCanvasCard(
             },
         ).apply {
             border = JBUI.Borders.empty(4)
-            preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
+            val summaryWidth = if (summaryPanel?.isVisible == true) summaryPanel.preferredSize.width else 0
+            val railWidth = if (railPanel?.isVisible == true) railPanel.preferredSize.width else 0
+            preferredSize = Dimension(width + summaryWidth + railWidth, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
             briefs = treeBriefs
         } else null

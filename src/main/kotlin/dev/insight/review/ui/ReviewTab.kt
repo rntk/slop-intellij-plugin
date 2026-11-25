@@ -542,7 +542,16 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun chartsCard(): ChartsCard? {
         if (!state.chartsVisible) return null
         val summaries = state.summaries
-        return ChartsCard(summaries, summariesAvailable, pendingSummaryEntries(summaries), state.revision)
+        return ChartsCard(
+            summaries = summaries,
+            canGenerateSummaries = summariesAvailable,
+            pendingEntries = pendingSummaryEntries(summaries),
+            revision = state.revision,
+            topics = state.topics,
+            topicSummaries = state.topicSummaries,
+            grouping = state.grouping,
+            groupingSummaries = state.groupingSummaries,
+        )
     }
 
     protected fun reportViewerCard(): ReportViewerCard? =
