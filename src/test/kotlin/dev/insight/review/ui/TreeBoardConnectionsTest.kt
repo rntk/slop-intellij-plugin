@@ -15,7 +15,9 @@ import dev.insight.llm.Completion
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.TreeBrief
 import dev.insight.review.TreeBriefer
+import dev.insight.review.TreeBriefs
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.buildSummaryTree
@@ -549,10 +551,10 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             val apiBrief = board.canvas.briefSegments(api).single()
             assertEquals("Starts the service and creates models", apiBrief.text)
             val clientBrief = board.canvas.briefSegments(client).single()
-            assertEquals("→ Api.java: ", clientBrief.prefix)
+            assertEquals("→ ", clientBrief.prefix)
             assertEquals("calls `Api.run` to start at api/Api.java:L3", clientBrief.text)
             val modelBrief = board.canvas.briefSegments(model).single()
-            assertEquals("← Api.java: ", modelBrief.prefix)
+            assertEquals("← ", modelBrief.prefix)
             assertEquals("creates `Model` instances", modelBrief.text)
             assertTrue(board.canvas.briefSegments("").isEmpty())
             assertTrue(descendants(canvas).filterIsInstance<JLabel>()
@@ -639,6 +641,82 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testBriefsAlignPerDirectoryWithLeaderLinesAndFullRowHoverBand() {
+        val shortA = CodeFile("dirA/a.kt", "/src/dirA/a.kt", "val a = 1")
+        val longA = CodeFile("dirA/very_long_target_file_name_for_alignment.kt", "/src/dirA/very_long_target_file_name_for_alignment.kt", "val l = 1")
+        val targetA = CodeFile("dirA/target.kt", "/src/dirA/target.kt", "val t = 1")
+        val shortB = CodeFile("dirB/b.kt", "/src/dirB/b.kt", "val b = 1")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(shortA, longA, targetA, shortB)))
+        val board = TreeBoardPanel(chart, "Project", {})
+        board.setSize(1200, 600)
+        board.doLayout()
+        board.canvas.setSize(1200, 600)
+
+        val site = TreeConnectionSite(1, 1)
+        board.connectionSelection = TreeConnectionSelection(
+            targetA.path,
+            TreeFileConnections(
+                incoming = mapOf(shortA.path to site, shortB.path to site),
+                outgoing = mapOf(longA.path to site),
+            ),
+        )
+        board.briefs = TreeBriefs(
+            path = targetA.path,
+            file = TreeBrief.Ready("Coordinates dirA flow"),
+            incoming = mapOf(
+                shortA.path to TreeBrief.Ready("Calls target"),
+                shortB.path to TreeBrief.Ready("Calls target from dirB"),
+            ),
+            outgoing = mapOf(longA.path to TreeBrief.Ready("Reads aligned helper")),
+        )
+
+        val shortABriefX = checkNotNull(board.briefStartScreenX(shortA.path))
+        val longABriefX = checkNotNull(board.briefStartScreenX(longA.path))
+        val targetABriefX = checkNotNull(board.briefStartScreenX(targetA.path))
+        val shortBBriefX = checkNotNull(board.briefStartScreenX(shortB.path))
+
+        assertEquals(longABriefX, shortABriefX)
+        assertEquals(longABriefX, targetABriefX)
+        assertTrue("Separate directory should align tighter ($shortBBriefX < $shortABriefX)", shortBBriefX < shortABriefX)
+
+        fun render(): BufferedImage = BufferedImage(1200, 600, BufferedImage.TYPE_INT_ARGB).also { img ->
+            val g = img.createGraphics()
+            try {
+                board.canvas.paint(g)
+            } finally {
+                g.dispose()
+            }
+        }
+
+        val beforeHover = render()
+        val aRow = checkNotNull(board.rowScreenBounds(shortA.path))
+        val rootRow = checkNotNull(board.rowScreenBounds(""))
+        val bgRgb = beforeHover.getRGB(0, aRow.centerY.toInt())
+
+        val leaderProbeStart = aRow.x + aRow.width + JBUI.scale(8)
+        val leaderProbeEnd = shortABriefX - JBUI.scale(8)
+        assertTrue(leaderProbeEnd > leaderProbeStart)
+        val hasLeaderPixels = (leaderProbeStart..leaderProbeEnd).any { x ->
+            beforeHover.getRGB(x, aRow.centerY.toInt()) != bgRgb
+        }
+        assertTrue("Gap between short sibling row and aligned brief should contain leader line", hasLeaderPixels)
+
+        val bandProbeX = rootRow.x.coerceAtLeast(0)
+        val bandProbeY = aRow.y + JBUI.scale(4)
+        val beforeBandRgb = beforeHover.getRGB(bandProbeX, bandProbeY)
+
+        board.canvas.dispatchEvent(
+            MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, shortABriefX + JBUI.scale(12), aRow.centerY.toInt(), 0, false),
+        )
+        assertEquals(shortA.path, board.hoveredPath)
+
+        val afterHover = render()
+        assertFalse(
+            "Hovering over a row's brief should paint the full-row highlight band from the tree's left edge",
+            beforeBandRgb == afterHover.getRGB(bandProbeX, bandProbeY),
+        )
     }
 
     private fun descendants(component: Component): List<Component> = listOf(component) +
