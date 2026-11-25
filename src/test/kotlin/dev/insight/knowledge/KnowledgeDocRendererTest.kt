@@ -77,6 +77,18 @@ class KnowledgeDocRendererTest {
         assertEquals(3, root.usedClaimIds.size)
     }
 
+    @Test fun suspectClaimsAreExcludedFromProseAndModelInput() = runBlocking {
+        val state = stateOf(docClaim("live", "Verified."), docClaim("stale", "Outdated.").copy(status = ClaimStatus.Suspect("changed")))
+        val completion = FakeCompletion { """{"paragraphs":[{"text":"Verified.","claimIds":["live"]}]}""" }
+        val doc = renderer(complete = completion).render(state, target)
+        assertEquals(listOf(ExcludedClaim("stale", ExclusionReason.SUSPECT)), doc.excluded)
+        assertEquals(listOf("live"), doc.usedClaimIds)
+        assertFalse(doc.markdown.contains("Outdated"))
+        assertFalse(completion.requests.single().messages.last().content.contains("stale"))
+        val deterministic = renderer().render(state, target)
+        assertFalse(deterministic.markdown.contains("Outdated"))
+    }
+
     @Test fun detailAndVolatileClaimsAreExcludedWithReason() = runBlocking {
         val state = stateOf(
             docClaim("ok", "Readers browse the results."),

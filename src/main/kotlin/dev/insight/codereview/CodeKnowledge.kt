@@ -15,6 +15,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.PsiManager
+import dev.insight.agent.ToolRegistry
 import dev.insight.agent.projectContextTools
 import dev.insight.decisions.DecisionFn
 import dev.insight.decisions.configuredDecisions
@@ -119,7 +120,12 @@ internal class CodeKnowledge(
 
     /** Loads the ledger in the background so the tile and the page can show counts; a damaged ledger is reported on the page. */
     fun load() {
-        if (disposed || loading || service.peek() != null) return
+        if (disposed || loading) return
+        service.peek()?.let {
+            subscribe(it)
+            loadError = null
+            return
+        }
         loading = true
         scope.launch {
             try {
@@ -188,8 +194,9 @@ internal class CodeKnowledge(
         val completion = completion().getOrElse {
             return@start Outcome("No assistant is configured (${it.message}). Set up a model in Settings, then distill the scope.")
         }
+        val registry = ToolRegistry().register("locating, reading and searching current project files", projectContextTools(project))
         val result = DistillationWorkflow(base, DirectoryPartitioner(project), PsiEvidenceProvider(project), PsiAnchorResolver(project),
-            completion, decisions(), projectContextTools(project)).run(files, progress) { event -> describeEvent(event)?.let(::record) }
+            completion, decisions(), registry = registry).run(files, progress) { event -> describeEvent(event)?.let(::record) }
         Outcome("Distilled ${result.distilled} of ${result.partitions} areas (${result.skipped} unchanged): ${result.submitted} ops, " +
             "${result.rejected} rejected by the ratchet.", result.warnings)
     }
@@ -394,7 +401,7 @@ internal class CodeKnowledge(
     }
 
     private fun subscribe(base: KnowledgeBase) {
-        if (subscribedTo === base) return
+        if (disposed || subscribedTo === base) return
         unsubscribe?.invoke()
         subscribedTo = base
         unsubscribe = base.addListener { _, _ -> scope.launch { queueRefresh() } }

@@ -2,9 +2,11 @@ package dev.insight.knowledge
 
 import dev.insight.decisions.DecisionFn
 import dev.insight.llm.CompletionFn
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -21,7 +23,8 @@ class DriftCheckWorkflowTest {
         complete: CompletionFn? = null,
         evidence: EvidenceProvider = RecordingEvidence(),
         limits: DriftLimits = DriftLimits(parallelism = 1),
-    ) = DriftCheckWorkflow(base, LinkAnchorer(), resolver, evidence, decide, complete, limits)
+        anchorer: ClaimAnchorer = LinkAnchorer(),
+    ) = DriftCheckWorkflow(base, anchorer, resolver, evidence, decide, complete, limits)
 
     private fun run(workflow: DriftCheckWorkflow, text: String = DEMO_TEXT, onFinding: (DriftFinding) -> Unit = {}) =
         runBlocking { workflow.check(listOf(DocInput(DEMO_DOC, text)), NoProgress(), onFinding) }
@@ -133,6 +136,35 @@ class DriftCheckWorkflowTest {
         assertEquals("drift", base.entries().last { it.op is KnowledgeOp.Reanchor }.actor)
     }
 
+    @Test fun `a previously unanchored statement is reanchored and verified when an anchor becomes available`() {
+        val base = driftBase()
+        val text = "# Demo\n\nThe parser validates input."
+        val anchor = Anchor(AnchorKind.FILE, "src/Parser.kt")
+        var available = false
+        var anchorAttempts = 0
+        val anchorer = ClaimAnchorer { _, _ ->
+            anchorAttempts++
+            if (available) listOf(anchor) else emptyList()
+        }
+        val wf = workflow(base, anchorer = anchorer)
+
+        assertEquals(1, run(wf, text).counts[DriftKind.UNANCHORED])
+        assertEquals(1, anchorAttempts)
+        val id = base.snapshot().active().single().id
+
+        available = true
+        val report = run(wf, text)
+        assertEquals(0, report.counts.added)
+        assertEquals(1, report.counts.reanchored)
+        assertEquals(listOf(DriftKind.OK), report.findings.map { it.kind })
+        assertEquals(listOf(anchor.copy(fingerprint = "fp1")), base.snapshot()[id]!!.anchors)
+        val reanchor = base.entries().single { it.op is KnowledgeOp.Reanchor }
+        assertEquals(DriftCheckWorkflow.ACTOR, reanchor.actor)
+        assertTrue(reanchor.verdict.accepted)
+        assertEquals(1, run(wf, text).counts.unchanged)
+        assertEquals(2, anchorAttempts)
+    }
+
     @Test fun `accurate statement is confirmed with refreshed fingerprints`() {
         val base = driftBase()
         val resolver = resolver()
@@ -202,6 +234,35 @@ class DriftCheckWorkflowTest {
         assertEquals(1, fake.requests.size)
         assertEquals(1, report.counts.skipped)
         assertTrue(report.warnings.any { "run limit" in it })
+    }
+
+    @Test fun `concurrent reads reserve their shares of the evidence budget`() = runBlocking {
+        val budgets = mutableListOf<Int>()
+        val bothStarted = CompletableDeferred<Unit>()
+        val reader = EvidenceProvider { anchors, maxChars ->
+            budgets += maxChars
+            if (budgets.size == 2) bothStarted.complete(Unit)
+            bothStarted.await()
+            listOf(Evidence(anchors.single().ref, "x".repeat(maxChars)))
+        }
+        val limits = DriftLimits(parallelism = 2, evidenceCharsPerClaim = 7, maxEvidenceChars = 10)
+        val report = withTimeout(5_000) {
+            workflow(driftBase(), evidence = reader, limits = limits).check(listOf(DocInput(DEMO_DOC, DEMO_TEXT)), NoProgress())
+        }
+        assertEquals(listOf(3, 7), budgets.sorted())
+        assertEquals(2, report.counts.verified)
+    }
+
+    @Test fun `a short evidence read returns its unused budget to later reads`() {
+        val budgets = mutableListOf<Int>()
+        val reader = EvidenceProvider { anchors, maxChars ->
+            budgets += maxChars
+            listOf(Evidence(anchors.single().ref, "xx"))
+        }
+        val limits = DriftLimits(parallelism = 1, evidenceCharsPerClaim = 7, maxEvidenceChars = 8)
+        val report = run(workflow(driftBase(), evidence = reader, limits = limits))
+        assertEquals(listOf(7, 6), budgets)
+        assertEquals(2, report.counts.verified)
     }
 
     @Test fun `statements without evidence are not judged`() {

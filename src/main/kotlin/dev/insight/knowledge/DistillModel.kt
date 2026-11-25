@@ -30,9 +30,7 @@ data class DistillLimits(
     val shortlistSimilarity: Double = 0.35,
     /** Pairs at least this similar are asked "contradict?". */
     val conflictSimilarity: Double = 0.25,
-    /** Without decisions, only pairs at least this similar count as duplicates; conservative on purpose. */
-    val lexicalDuplicateSimilarity: Double = 0.85,
-    /** Decision probabilities: same claim, contradiction, support for a confirmation, entailment of a lifted claim. */
+    /** Decision probabilities: same claim, contradiction, support from current evidence, entailment of a lifted claim. */
     val sameThreshold: Double = 0.8,
     val contradictThreshold: Double = 0.8,
     val supportThreshold: Double = 0.7,
@@ -47,7 +45,7 @@ data class DistillLimits(
         require(parallelism >= 1 && maxPartitions >= 0 && maxToolRounds >= 1 && maxFollowUps >= 0 && maxToolCalls >= 0)
         require(evidenceChars > 0 && maxProposals >= 1 && liftThreshold >= 2 && maxClaimsInPrompt >= 0 && maxClaimChars >= 40)
         require(contextChars > 0 && toolResultChars >= 1_000 && decisionBatchSize >= 1 && maxDecisionPairs >= 0)
-        listOf(shortlistSimilarity, conflictSimilarity, lexicalDuplicateSimilarity, sameThreshold, contradictThreshold,
+        listOf(shortlistSimilarity, conflictSimilarity, sameThreshold, contradictThreshold,
             supportThreshold, refuteConfidence, suspectConfidence).forEach { require(it in 0.0..1.0) }
         require(suspectConfidence <= refuteConfidence)
     }

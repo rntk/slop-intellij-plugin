@@ -32,7 +32,7 @@ class DirectoryPartitioner(
         val index = ProjectFileIndex.getInstance(project)
         val files = LinkedHashSet<String>()
         fun keep(file: VirtualFile): Boolean {
-            if (file.isDirectory || !index.isInContent(file) || index.isInGeneratedSources(file)) return false
+            if (file.isDirectory || !ProjectPaths.contains(project, file) || !index.isInContent(file) || index.isInGeneratedSources(file)) return false
             return !file.fileType.isBinary && file.length <= MAX_FILE_BYTES
         }
         for (entry in scope) {
@@ -47,7 +47,7 @@ class DirectoryPartitioner(
                     ProgressManager.checkCanceled()
                     if (files.size >= MAX_FILES) return SKIP_CHILDREN
                     if (file.isDirectory) {
-                        val skip = file != root && (isExcludedPath(file.name, isDirectory = true) || !index.isInContent(file))
+                        val skip = file != root && (isExcludedPath(file.name, isDirectory = true) || !ProjectPaths.contains(project, file) || !index.isInContent(file))
                         return if (skip) SKIP_CHILDREN else CONTINUE
                     }
                     if (keep(file)) files += ProjectPaths.relative(project, file)

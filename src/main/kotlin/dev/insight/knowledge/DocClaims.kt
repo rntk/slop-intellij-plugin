@@ -153,17 +153,35 @@ private class DocParser(private val lines: List<String>) {
                 if (FENCE.find(line)?.groupValues?.get(1)?.let { it[0] == open[0] && it.length >= open.length } == true) fence = null
                 return@forEachIndexed
             }
-            if (inComment) {
-                if ("-->" in line) inComment = false
-                return@forEachIndexed
+            if (!inComment) FENCE.find(line)?.let { flush(); fence = it.groupValues[1]; return@forEachIndexed }
+            if (!inComment && line.isBlank()) { flush(); return@forEachIndexed }
+            // Remove comments while retaining surrounding prose and its source line.
+            val visible = StringBuilder()
+            var i = 0
+            var codeTicks = 0
+            while (i < line.length) {
+                if (inComment) {
+                    val end = line.indexOf("-->", i)
+                    if (end < 0) break
+                    inComment = false
+                    i = end + 3
+                    visible.append(' ')
+                } else if (codeTicks == 0 && line.startsWith("<!--", i)) {
+                    inComment = true
+                    i += 4
+                } else if (line[i] == '`') {
+                    var end = i + 1
+                    while (end < line.length && line[end] == '`') end++
+                    val count = end - i
+                    if (codeTicks == 0) codeTicks = count else if (codeTicks == count) codeTicks = 0
+                    visible.append(line, i, end)
+                    i = end
+                } else {
+                    visible.append(line[i++])
+                }
             }
-            FENCE.find(line)?.let { flush(); fence = it.groupValues[1]; return@forEachIndexed }
-            if (line.isBlank()) { flush(); return@forEachIndexed }
-            if (line.trimStart().startsWith("<!--")) {
-                flush()
-                if ("-->" !in line) inComment = true
-                return@forEachIndexed
-            }
+            line = visible.toString()
+            if (line.isBlank()) return@forEachIndexed
             HEADING.find(line)?.let {
                 flush()
                 val title = it.groupValues[1].trim()

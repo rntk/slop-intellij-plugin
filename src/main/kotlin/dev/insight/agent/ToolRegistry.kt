@@ -20,6 +20,11 @@ class ToolRegistry {
 
     val tools: List<ChatTool> get() = entries.values.map { it.tool }
 
+    /** Copies this registry with transformed tools under their original topics. */
+    internal fun mapTools(transform: (ChatTool) -> ChatTool): ToolRegistry = ToolRegistry().also { copy ->
+        entries.values.forEach { copy.register(it.topic, transform(it.tool)) }
+    }
+
     /** Adds [tools] under [topic], a phrase such as "opening cards on the canvas". */
     fun register(topic: String, vararg tools: ChatTool): ToolRegistry = register(topic, tools.toList())
 

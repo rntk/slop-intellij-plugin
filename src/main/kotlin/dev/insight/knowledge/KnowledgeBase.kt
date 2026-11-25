@@ -1,5 +1,7 @@
 package dev.insight.knowledge
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.CopyOnWriteArrayList
@@ -10,9 +12,9 @@ fun interface KnowledgeListener {
 }
 
 /**
- * The single writer of a project's knowledge. Loads and replays [store] on construction; [submit] runs ops one at a time:
- * the [guard] judges the op against the current state, the entry (accepted or rejected) is appended to [store], and only
- * then is the state advanced and listeners notified. Seqs are gapless and in submission order. Reads never block.
+ * Loads and replays [store] on construction. [submit] refreshes from the store before asking the [guard] to judge an op
+ * and retries if the ledger changes before append. An appended entry advances the state and notifies listeners.
+ * Reads of the in-memory view never block.
  */
 class KnowledgeBase(
     private val store: KnowledgeStore,
@@ -21,26 +23,32 @@ class KnowledgeBase(
 ) {
     private val mutex = Mutex()
     private val listeners = CopyOnWriteArrayList<KnowledgeListener>()
-    @Volatile private var state: KnowledgeState
-    @Volatile private var log: List<LedgerEntry>
-
-    init {
-        log = store.load().sortedBy { it.seq }
-        state = KnowledgeState.replay(log)
+    private val distillOffsets = mutableMapOf<List<String>, Int>()
+    @Synchronized internal fun distillOffset(scope: List<String>): Int = distillOffsets[scope] ?: 0
+    @Synchronized internal fun setDistillOffset(scope: List<String>, offset: Int) {
+        if (offset == 0) distillOffsets.remove(scope) else distillOffsets[scope.toList()] = offset
     }
+    @Volatile private var view = store.load().sortedBy { it.seq }.let { View(it, KnowledgeState.replay(it)) }
 
-    fun snapshot(): KnowledgeState = state
-    fun entries(): List<LedgerEntry> = log
+    fun snapshot(): KnowledgeState = view.state
+    fun entries(): List<LedgerEntry> = view.entries
 
     /** Judges, records and (when accepted) applies [op] by [actor]; returns the recorded entry. Store failures propagate. */
     suspend fun submit(op: KnowledgeOp, actor: String): LedgerEntry = mutex.withLock {
-        val before = state
-        val verdict = guard.check(before, op, actor)
-        val entry = LedgerEntry((log.lastOrNull()?.seq ?: 0) + 1, op, actor, clock(), verdict)
-        store.append(entry)
-        val after = if (verdict.accepted) before.apply(op) else before
-        log = log + entry
-        state = after
+        var before: View
+        var entry: LedgerEntry
+        do {
+            val stored = store.load()
+            val ordered = stored.sortedBy { it.seq }
+            before = view.takeIf { it.entries == ordered } ?: View(ordered, KnowledgeState.replay(ordered))
+            view = before
+            val verdict = guard.check(before.state, op, actor)
+            currentCoroutineContext().ensureActive()
+            entry = LedgerEntry((before.entries.lastOrNull()?.seq ?: 0) + 1, op, actor, clock(), verdict)
+        } while (!store.appendIfUnchanged(stored, entry))
+
+        val after = if (entry.verdict.accepted) before.state.apply(op) else before.state
+        view = View(before.entries + entry, after)
         listeners.forEach { runCatching { it.onEntry(entry, after) } }
         entry
     }
@@ -50,4 +58,6 @@ class KnowledgeBase(
         listeners += listener
         return { listeners -= listener }
     }
+
+    private data class View(val entries: List<LedgerEntry>, val state: KnowledgeState)
 }

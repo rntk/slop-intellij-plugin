@@ -16,14 +16,13 @@ import java.util.concurrent.atomic.AtomicReference
  * the one slot a knowledge run (drift check, distillation, doc rendering) occupies, so only one runs at a time whichever
  * review tab started it. Holds no UI: views read [peek] and subscribe with [KnowledgeBase.addListener].
  *
- * The ratchet guard asks the configured Decisions API for meaning checks; it is resolved when first needed, so opening a
+ * The ratchet guard resolves the current Decisions configuration whenever it needs a meaning check, so opening a
  * project never touches the password safe.
  */
 @Service(Service.Level.PROJECT)
 class KnowledgeService(private val project: Project) : Disposable {
     @Volatile private var base: KnowledgeBase? = null
     @Volatile private var directoryOverride: Path? = null
-    @Volatile private var cachedDecisions: DecisionFn? = null
     private val running = AtomicReference<Job?>(null)
 
     /** Where decisions come from; tests replace it. */
@@ -52,8 +51,7 @@ class KnowledgeService(private val project: Project) : Disposable {
     }
 
     private suspend fun decide(request: DecisionRequest): DecisionResponse {
-        val fn = cachedDecisions ?: decisions()?.also { cachedDecisions = it }
-            ?: throw IllegalStateException("decisions are not configured")
+        val fn = decisions() ?: throw IllegalStateException("decisions are not configured")
         return fn(request)
     }
 

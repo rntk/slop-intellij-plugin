@@ -16,7 +16,7 @@ import kotlinx.coroutines.ensureActive
  * (never taken on a worker's word); new proposals are anchored with [resolver], deduplicated against each other and the
  * area's active claims (lexical shortlist, then "same claim?" judgments), added, and checked for contradictions. Lifting
  * adds parent-level claims for ideas several child areas share, leaving the children in place. Without [judge],
- * duplicates are lexical only, contradictions are not checked and confirmations are not applied.
+ * only identical normalized texts count as duplicates, contradictions are not checked and confirmations are not applied.
  */
 internal class DistillOrganizer(
     private val base: KnowledgeBase,
@@ -84,7 +84,7 @@ internal class DistillOrganizer(
             confirmWarned = true
             return
         }
-        val p = judge.supports(claim.text, evidenceText(anchors))
+        val p = judge.supports(claim.text, evidenceText(anchors) ?: NO_EVIDENCE)
         if (p != null && p >= limits.supportThreshold) submit(KnowledgeOp.Confirm(claim.id, anchors))
         else warn("The confirmation of ${claim.id} was not supported by the evidence (${fmt(p)}); it stays ${statusName(claim.status)}.")
     }
@@ -95,16 +95,28 @@ internal class DistillOrganizer(
                 "(${proposal.reason.clipLine(120)})"))
             return
         }
+        val anchors = current[claim.id].orEmpty()
+        if (!canRewrite(claim, proposal.text, anchors)) return
         val to = claim.copy(id = base.snapshot().newId(proposal.text, claim.area), text = proposal.text, origin = ClaimOrigin.GENERATED,
-            anchors = current[claim.id]?.takeIf { it.isNotEmpty() } ?: claim.anchors, status = ClaimStatus.Live, source = null)
+            anchors = anchors.ifEmpty { claim.anchors }, status = ClaimStatus.Live, source = null)
         val entry = submit(KnowledgeOp.Rewrite(claim.id, to))
         if (!entry.verdict.accepted && active(claim.id) != null)
             submit(KnowledgeOp.MarkSuspect(claim.id, "Revision not verified: ${proposal.reason.clipLine(200)}"))
     }
 
+    /** The guard checks equivalence separately. A suspect claim also needs support from current source. */
+    private suspend fun canRewrite(claim: Claim, text: String, anchors: List<Anchor>): Boolean {
+        if (claim.status == ClaimStatus.Live) return true
+        val excerpts = if (judge != null && anchors.isNotEmpty()) evidenceText(anchors) else null
+        val p = if (excerpts != null) judge?.supports(text, excerpts) else null
+        if (p != null && p >= limits.supportThreshold) return true
+        warn("The revision of ${claim.id} was not supported by current evidence (${fmt(p)}); it stays suspect.")
+        return false
+    }
+
     private suspend fun refute(claim: Claim, proposal: DistillProposal.Refute) {
         val reason = "Refuted by ${proposal.actor}: ${proposal.reason.clipLine(200)}"
-        val p = judge?.refutes(claim.text, evidenceText(current[claim.id] ?: claim.anchors))
+        val p = judge?.refutes(claim.text, evidenceText(current[claim.id] ?: claim.anchors) ?: NO_EVIDENCE)
         when {
             p == null -> submit(KnowledgeOp.MarkSuspect(claim.id, "$reason (not verified)"))
             p >= limits.refuteConfidence && claim.origin == ClaimOrigin.GENERATED -> {
@@ -168,8 +180,11 @@ internal class DistillOrganizer(
         }
         for ((target, candidate) in rewrites) {
             val (anchors, citations) = merged.getValue(candidate)
+            val existingAnchors = if (target.status == ClaimStatus.Live) target.anchors else current[target.id].orEmpty()
+            val rewriteAnchors = (anchors + existingAnchors).distinctBy { it.kind to it.ref }.take(MAX_MERGED)
+            if (!canRewrite(target, candidate.text, rewriteAnchors)) continue
             val to = Claim(base.snapshot().newId(candidate.text, area), candidate.text, candidate.proposal.level, ClaimOrigin.GENERATED,
-                area, (anchors + target.anchors).distinctBy { it.kind to it.ref }.take(MAX_MERGED),
+                area, rewriteAnchors,
                 (citations + target.citations).distinct().take(MAX_MERGED), target.tags, target.stability)
             if (submit(KnowledgeOp.Rewrite(target.id, to)).verdict.accepted) claims += to
         }
@@ -178,16 +193,17 @@ internal class DistillOrganizer(
         return claims to same
     }
 
-    /** Index pairs of [texts] that state the same claim: exact matches, then shortlisted pairs judged (or lexical without decisions). */
+    /** Index pairs of [texts] that state the same claim: normalized exact matches and shortlisted pairs judged equivalent. */
     private suspend fun judgedSame(texts: List<String>, eligible: (Int, Int) -> Boolean): List<Pair<Int, Int>> {
         val judge = judge
-        val threshold = if (judge != null) limits.shortlistSimilarity else limits.lexicalDuplicateSimilarity
+        val threshold = if (judge != null) limits.shortlistSimilarity else 1.0
         val pairs = similarPairs(texts, threshold, limits.maxDecisionPairs, eligible)
-        if (judge == null) return pairs.map { it.a to it.b }
-        val asked = pairs.filter { it.similarity < 1.0 }
+        val normalized = texts.map(::normalizeClaimText)
+        val (exact, asked) = pairs.partition { normalized[it.a] == normalized[it.b] }
+        if (judge == null) return exact.map { it.a to it.b }
         val answers = if (asked.isEmpty()) emptyList() else judge.same(asked.map { texts[it.a] to texts[it.b] })
         val confirmed = asked.zip(answers).filter { (_, p) -> p != null && p >= limits.sameThreshold }.map { it.first }
-        return (pairs.filter { it.similarity >= 1.0 } + confirmed).map { it.a to it.b }
+        return (exact + confirmed).map { it.a to it.b }
     }
 
     private suspend fun checkConflicts(area: String, adds: List<Claim>, same: Set<Set<String>>) {
@@ -277,7 +293,7 @@ internal class DistillOrganizer(
         null
     }
 
-    private suspend fun evidenceText(anchors: List<Anchor>): String {
+    private suspend fun evidenceText(anchors: List<Anchor>): String? {
         val excerpts = try {
             evidence.evidence(anchors, limits.evidenceChars)
         } catch (e: CancellationException) {
@@ -286,7 +302,7 @@ internal class DistillOrganizer(
             warn("Could not read evidence for ${anchors.joinToString { it.ref }}: ${e.message ?: e.javaClass.simpleName}")
             emptyList()
         }
-        return DistillPrompts.renderEvidence(excerpts, limits.evidenceChars).ifEmpty { "(no evidence could be read)" }
+        return DistillPrompts.renderEvidence(excerpts.filter { it.text.isNotBlank() }, limits.evidenceChars).ifEmpty { null }
     }
 
     companion object {
@@ -294,6 +310,7 @@ internal class DistillOrganizer(
         /** Tag of claims lifted from child areas. */
         const val LIFTED_TAG = "lifted"
         private const val MAX_MERGED = 8
+        private const val NO_EVIDENCE = "(no evidence could be read)"
     }
 }
 

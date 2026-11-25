@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicLong
 
 class KnowledgeBaseTest {
@@ -68,5 +69,40 @@ class KnowledgeBaseTest {
         kb.submit(KnowledgeOp.Add(claim("b")), "user")
         assertEquals(1, calls)
         assertEquals(2, kb.snapshot().active().size)
+    }
+
+    @Test fun `submit sees entries appended by another file store`() = runBlocking<Unit> {
+        val dir = temp.root.toPath()
+        val kb = KnowledgeBase(FileKnowledgeStore(dir), RatchetGuard(null))
+        val other = KnowledgeBase(FileKnowledgeStore(dir), RatchetGuard(null))
+        val added = other.submit(KnowledgeOp.Add(claim("a", "A holds.")), "user")
+
+        val marked = kb.submit(KnowledgeOp.MarkSuspect("a", "drift"), "drift")
+
+        assertEquals(2L, marked.seq)
+        assertTrue(marked.verdict.accepted)
+        assertEquals(listOf(added, marked), kb.entries())
+        assertEquals(kb.entries(), FileKnowledgeStore(dir).load())
+        assertEquals(KnowledgeState.replay(kb.entries()), kb.snapshot())
+    }
+
+    @Test fun `submit rechecks the verdict when the ledger is replaced during the guard check`() = runBlocking<Unit> {
+        val store = FileKnowledgeStore(temp.root.toPath())
+        val replacement = LedgerEntry(1, KnowledgeOp.Add(claim("a", "A changed.").copy(origin = ClaimOrigin.HUMAN)),
+            "user", clock.incrementAndGet(), Verdict.Accepted())
+        val guard = RatchetGuard({
+            Files.writeString(store.file, KnowledgeJson.encodeEntry(replacement) + "\n")
+            slowDecisions.decide(it)
+        })
+        val kb = KnowledgeBase(store, guard, clock::incrementAndGet)
+        kb.submit(KnowledgeOp.Add(claim("a", "A holds.")), "worker:src")
+
+        val rejected = kb.submit(KnowledgeOp.Rewrite("a", claim("b", "A holds, restated.")), "worker:src")
+
+        assertEquals(2L, rejected.seq)
+        assertFalse(rejected.verdict.accepted)
+        assertEquals(listOf(replacement, rejected), store.load())
+        assertEquals(store.load(), kb.entries())
+        assertEquals(KnowledgeState.replay(store.load()), kb.snapshot())
     }
 }

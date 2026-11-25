@@ -84,7 +84,7 @@ class PsiEvidenceProvider(private val project: Project) : EvidenceProvider {
 
     private fun directory(ref: String): Evidence {
         val directory = ProjectPaths.find(project, ref)?.takeIf { it.isDirectory } ?: return missing(ref)
-        val children = directory.children.filter { !isExcludedPath(it.name, it.isDirectory) }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
+        val children = directory.children.filter { ProjectPaths.contains(project, it) && !isExcludedPath(it.name, it.isDirectory) }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
         val lines = children.take(MAX_ENTRIES).map { child ->
             if (child.isDirectory) child.name + "/" else child.name + oneLine(child).let { if (it.isEmpty()) "" else " — $it" }
         }

@@ -48,7 +48,7 @@ class PsiAnchorResolver(private val project: Project) : AnchorResolver {
 
     internal fun resolveDirectoryNow(ref: String): AnchorState {
         val directory = ProjectPaths.find(project, ref)?.takeIf { it.isDirectory } ?: return AnchorState.Gone
-        val entries = directory.children.sortedBy { it.name }.take(MAX_DIRECTORY_ENTRIES).map { child ->
+        val entries = directory.children.filter { ProjectPaths.contains(project, it) }.sortedBy { it.name }.take(MAX_DIRECTORY_ENTRIES).map { child ->
             when {
                 child.isDirectory -> child.name + "/"
                 else -> child.name + ":" + fileFingerprint(child)

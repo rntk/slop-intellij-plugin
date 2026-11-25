@@ -61,7 +61,10 @@ internal class FakeDistillModel(
 }
 
 /** Answers distillation judgments with [answer] (kind and the question's fields); records requests. */
-internal class FakeDistillDecisions(private val answer: (DistillJudgment, Map<String, String>) -> Double?) {
+internal class FakeDistillDecisions(
+    private val answer: (DistillJudgment, Map<String, String>) -> Double?,
+    private val rewriteEntailment: Double = 0.95,
+) {
     val requests: MutableList<DecisionRequest> = Collections.synchronizedList(mutableListOf())
 
     suspend fun decide(request: DecisionRequest): DecisionResponse {
@@ -75,8 +78,7 @@ internal class FakeDistillDecisions(private val answer: (DistillJudgment, Map<St
         return DecisionResponse("fake", answers, DecisionUsage(0, 0))
     }
 
-    /** The guard's own entailment questions (rewrites) are answered yes. */
-    private fun answerEntailment(key: String) = key to DecisionAnswer.Noul(0.95)
+    private fun answerEntailment(key: String) = key to DecisionAnswer.Noul(rewriteEntailment)
 
     fun count(kind: DistillJudgment) = requests.count { r -> r.questions.keys.any { it.startsWith(kind.key + "_") } }
 }
@@ -100,8 +102,9 @@ internal class DistillHarness(
     judgment: (DistillJudgment, Map<String, String>) -> Double? = { kind, _ -> defaultJudgment(kind) },
     withDecisions: Boolean = true,
     val anchors: MutableMap<String, AnchorState> = mutableMapOf(),
+    rewriteEntailment: Double = 0.95,
 ) {
-    val decisions = FakeDistillDecisions(judgment)
+    val decisions = FakeDistillDecisions(judgment, rewriteEntailment)
     val decide = if (withDecisions) decisions::decide else null
     val store = InMemoryKnowledgeStore()
     val base = KnowledgeBase(store, RatchetGuard(decide))

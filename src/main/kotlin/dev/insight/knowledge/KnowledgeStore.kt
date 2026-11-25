@@ -21,6 +21,13 @@ interface KnowledgeStore {
     /** Every stored entry in order. */
     fun load(): List<LedgerEntry>
     fun append(entry: LedgerEntry)
+
+    /** Appends [entry] only if the stored ledger still equals [expected]. */
+    fun appendIfUnchanged(expected: List<LedgerEntry>, entry: LedgerEntry): Boolean = synchronized(this) {
+        if (load() != expected) return@synchronized false
+        append(entry)
+        true
+    }
 }
 
 /** A store in memory, for tests and transient knowledge bases. */
@@ -40,8 +47,19 @@ class KnowledgeStoreException(message: String, cause: Throwable? = null) : IOExc
  */
 class FileKnowledgeStore(dir: Path) : KnowledgeStore {
     val file: Path = dir.resolve(LEDGER_FILE)
+    private val lock = locks[Math.floorMod(file.toAbsolutePath().normalize().hashCode(), locks.size)]
 
-    @Synchronized override fun load(): List<LedgerEntry> {
+    override fun load(): List<LedgerEntry> = synchronized(lock) { loadEntries() }
+
+    override fun append(entry: LedgerEntry) = synchronized(lock) { appendEntry(entry) }
+
+    override fun appendIfUnchanged(expected: List<LedgerEntry>, entry: LedgerEntry): Boolean = synchronized(lock) {
+        if (loadEntries() != expected) return@synchronized false
+        appendEntry(entry)
+        true
+    }
+
+    private fun loadEntries(): List<LedgerEntry> {
         if (!Files.exists(file)) return emptyList()
         val bytes = Files.readAllBytes(file)
         val entries = mutableListOf<LedgerEntry>()
@@ -66,7 +84,7 @@ class FileKnowledgeStore(dir: Path) : KnowledgeStore {
         return entries
     }
 
-    @Synchronized override fun append(entry: LedgerEntry) {
+    private fun appendEntry(entry: LedgerEntry) {
         Files.createDirectories(file.parent)
         val prefix = if (Files.exists(file) && Files.size(file) > 0 && !endsWithNewline()) "\n" else ""
         Files.writeString(file, prefix + KnowledgeJson.encodeEntry(entry) + "\n",
@@ -87,6 +105,7 @@ class FileKnowledgeStore(dir: Path) : KnowledgeStore {
 
     companion object {
         const val LEDGER_FILE = "ledger.jsonl"
+        private val locks = Array(64) { Any() }
     }
 }
 

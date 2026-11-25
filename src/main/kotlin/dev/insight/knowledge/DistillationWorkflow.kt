@@ -39,7 +39,7 @@ private val LOG = logger<DistillationWorkflow>()
  *
  * [tools] are read-only project tools offered to every worker (limited per worker); [registry] holds more the model can
  * load with search_tools. Both are shared by parallel workers, so they must be safe to call concurrently. Without
- * [decide], dedupe is lexical and conservative, contradictions are not checked and meaning-preserving ops are rejected
+ * [decide], dedupe only matches identical normalized texts, contradictions are not checked and meaning-preserving ops are rejected
  * by the guard; a warning says so.
  */
 class DistillationWorkflow(
@@ -54,7 +54,7 @@ class DistillationWorkflow(
     private val limits: DistillLimits = DistillLimits(),
 ) {
     init {
-        val clash = tools.map { it.definition.name }.filter { it in DistillToolNames.ALL }
+        val clash = (tools + registry?.tools.orEmpty()).map { it.definition.name }.filter { it in DistillToolNames.ALL }
         require(clash.isEmpty()) { "Project tools must not use the distillation tool names: ${clash.joinToString()}" }
     }
 
@@ -82,10 +82,12 @@ class DistillationWorkflow(
 
         report(PHASE_PARTITION, 0, 1)
         val all = partitioner.partitions(scope)
-        val partitions = if (all.size > limits.maxPartitions) {
-            warn("Distilling the first ${limits.maxPartitions} of ${all.size} partitions; run again for the rest.")
-            all.take(limits.maxPartitions)
-        } else all
+        val scopeKey = scope.map { it.trim().trim('/') }.distinct().sorted()
+        val offset = if (all.size <= limits.maxPartitions) 0 else base.distillOffset(scopeKey).takeIf { it < all.size } ?: 0
+        val partitions = all.drop(offset).take(limits.maxPartitions)
+        if (partitions.size < all.size) {
+            warn("Distilling ${partitions.size} of ${all.size} partitions; run again to continue through the scope.")
+        }
         report(PHASE_PARTITION, 1, 1)
 
         val areas = partitions.mapTo(HashSet()) { it.area } + partitions.mapNotNull { it.parent }
@@ -165,6 +167,9 @@ class DistillationWorkflow(
         if (audit.isNotEmpty()) warn("Ratchet audit: ${audit.size} claims left the live set without an accepted op naming them.")
         report(PHASE_DONE, 1, 1)
         val entries = organizer.entries
+        if (all.isEmpty() || partitions.isNotEmpty()) {
+            base.setDistillOffset(scopeKey, if (offset + partitions.size >= all.size) 0 else offset + partitions.size)
+        }
         return DistillResult(
             partitions = partitions.size,
             distilled = distilled,
@@ -221,7 +226,7 @@ class DistillationWorkflow(
         val runner = ToolChatRunner(complete, recording.recording() + tools.map { LimitedTool(it, allowance) },
             maxToolRounds = limits.maxToolRounds, maxToolResultChars = limits.toolResultChars, maxContextChars = limits.contextChars,
             maxHistoryChars = 0, evictionTarget = 0.85, followUp = { recording.followUp() }, maxFollowUps = limits.maxFollowUps,
-            registry = registry)
+            registry = registry?.mapTools { LimitedTool(it, allowance) })
         val message = DistillPrompts.workerMessage(partition, claims.filter { it.id !in verifyIds }, verify, excerpts,
             limits.evidenceChars, limits.maxClaimsInPrompt)
         var error: String? = null
@@ -245,8 +250,8 @@ class DistillationWorkflow(
         const val PHASE_LIFT = "Lifting"
         const val PHASE_AUDIT = "Auditing"
         const val PHASE_DONE = "Done"
-        const val NO_DECISIONS = "Decisions are not configured: duplicates are found lexically only, contradictions are not " +
-            "checked, and rewrites and confirmations cannot be verified, so they are not applied."
+        const val NO_DECISIONS = "Decisions are not configured. Duplicate detection requires identical normalized text. " +
+            "Contradiction checks, rewrites and confirmations require Decisions."
     }
 }
 

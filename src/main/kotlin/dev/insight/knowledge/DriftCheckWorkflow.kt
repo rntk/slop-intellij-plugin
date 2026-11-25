@@ -13,7 +13,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 private val LOG = logger<DriftCheckWorkflow>()
 
@@ -60,8 +59,9 @@ data class DriftLimits(
  * MarkSuspect; a moved one is reanchored. A claim whose fingerprint changed, that was never confirmed, or that is suspect is
  * verified with [decide] against [evidence]: inaccurate is [DriftKind.STALE] (MarkSuspect), accurate is [DriftKind.OK]
  * (Confirm with refreshed fingerprints), and accurate but an implementation detail or volatile value is
- * [DriftKind.TOO_DETAILED] (finding only, no op, so it shows again until the doc changes). A claim without anchors is
- * [DriftKind.UNANCHORED]. Without [decide] only anchor-based findings are made and a warning says so.
+ * [DriftKind.TOO_DETAILED] (finding only, no op, so it shows again until the doc changes). Existing claims without anchors
+ * are tried again and reported as [DriftKind.UNANCHORED] if they still have none. Without [decide] only anchor-based
+ * findings are made and a warning says so.
  *
  * With [complete], each doc with stale or broken findings gets suggested replacements ([DocPatch]) in the report. Failures
  * become warnings. Cancellation propagates; findings already delivered to `onFinding` and ops already submitted stay.
@@ -82,7 +82,7 @@ class DriftCheckWorkflow(
     ): DriftReport = Run(docs, progress, onFinding).execute()
 
     /** A statement of a doc and the claim that stands for it. */
-    private class Tracked(val claimId: String, val doc: DocInput, val statement: DocClaim)
+    private class Tracked(val claimId: String, val doc: DocInput, val statement: DocClaim, val newlyAdded: Boolean = false)
 
     private inner class Run(
         private val docs: List<DocInput>,
@@ -101,7 +101,7 @@ class DriftCheckWorkflow(
         private val skippedByLimit = AtomicInteger()
         private val skippedNoEvidence = AtomicInteger()
         private val unchanged = AtomicInteger()
-        private val evidenceUsed = AtomicLong()
+        private val evidenceRemaining = AtomicInteger(limits.maxEvidenceChars)
         private val confirmedBefore: Set<String> = base.entries()
             .filter { it.verdict.accepted && it.op is KnowledgeOp.Confirm }.map { (it.op as KnowledgeOp.Confirm).id }.toSet()
 
@@ -185,7 +185,7 @@ class DriftCheckWorkflow(
                 )
                 if (submit(KnowledgeOp.Add(claim), RatchetGuard.USER, "Adding ${doc.path}:${statement.startLine}")) {
                     added.incrementAndGet()
-                    tracked += Tracked(claim.id, doc, statement)
+                    tracked += Tracked(claim.id, doc, statement, newlyAdded = true)
                 }
             }
             return tracked
@@ -203,7 +203,16 @@ class DriftCheckWorkflow(
         // ---- check ----------------------------------------------------------------------------------------------
 
         private suspend fun checkClaim(item: Tracked) {
-            val claim = base.snapshot()[item.claimId]?.takeIf { it.isActive } ?: return
+            var claim = base.snapshot()[item.claimId]?.takeIf { it.isActive } ?: return
+            var newlyAnchored = false
+            if (claim.anchors.isEmpty() && !item.newlyAdded) {
+                val retry = guarded("Anchoring") { anchorsFor(item.statement, item.doc.path) }.orEmpty()
+                if (retry.isNotEmpty() && submit(KnowledgeOp.Reanchor(claim.id, retry), ACTOR, "Reanchoring ${claim.id}")) {
+                    reanchored.incrementAndGet()
+                    newlyAnchored = true
+                    claim = claim.copy(anchors = retry)
+                }
+            }
             if (claim.anchors.isEmpty()) {
                 emit(item, claim, DriftKind.UNANCHORED, "The statement names no code, so it cannot be checked automatically.")
                 return
@@ -231,30 +240,39 @@ class DriftCheckWorkflow(
                 } to anchor.fingerprint
             }
             val changed = current.any { (now, was) -> now != null && now != was }
-            val needsVerification = changed || claim.id !in confirmedBefore || claim.status is ClaimStatus.Suspect
+            val needsVerification = newlyAnchored || changed || claim.id !in confirmedBefore || claim.status is ClaimStatus.Suspect
             if (!needsVerification) { unchanged.incrementAndGet(); return }
             val decide = decide ?: return
             anchors = anchors.zip(current) { anchor, (now, _) -> if (now != null) anchor.copy(fingerprint = now) else anchor }
             verify(item, claim, anchors, decide)
         }
 
+        private fun reserveEvidence(): Int {
+            while (true) {
+                val remaining = evidenceRemaining.get()
+                if (remaining <= 0) return 0
+                val budget = minOf(limits.evidenceCharsPerClaim, remaining)
+                if (evidenceRemaining.compareAndSet(remaining, remaining - budget)) return budget
+            }
+        }
+
         private suspend fun verify(item: Tracked, claim: Claim, refreshed: List<Anchor>, decide: DecisionFn) {
             if (verified.incrementAndGet() > limits.maxClaimsVerified) { verified.decrementAndGet(); skippedByLimit.incrementAndGet(); return }
-            val room = limits.maxEvidenceChars - evidenceUsed.get()
-            if (room <= 0) { verified.decrementAndGet(); skippedByLimit.incrementAndGet(); return }
-            val budget = minOf(limits.evidenceCharsPerClaim.toLong(), room).toInt()
+            val budget = reserveEvidence()
+            if (budget == 0) { verified.decrementAndGet(); skippedByLimit.incrementAndGet(); return }
+            var used = 0
             val found = try {
-                evidence.evidence(refreshed, budget)
+                evidence.evidence(refreshed, budget).also { excerpts -> used = excerpts.sumOf { it.text.length } }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 verified.decrementAndGet()
                 fail("Reading evidence", e)
                 return
+            } finally {
+                evidenceRemaining.addAndGet(budget - used)
             }
-            val text = found.sumOf { it.text.length }
-            if (found.isEmpty() || text == 0) { verified.decrementAndGet(); skippedNoEvidence.incrementAndGet(); return }
-            evidenceUsed.addAndGet(text.toLong())
+            if (used == 0) { verified.decrementAndGet(); skippedNoEvidence.incrementAndGet(); return }
             evidenceByClaim[claim.id] = found.joinToString(" | ") { "${it.ref}: ${it.text}" }.take(limits.patchEvidenceChars)
 
             val response = try {

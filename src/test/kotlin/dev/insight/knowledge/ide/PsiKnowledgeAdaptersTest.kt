@@ -216,6 +216,42 @@ class PsiKnowledgeAdaptersTest : LightJavaCodeInsightFixtureTestCase() {
         )
     }
 
+    fun `test project paths reject absolute and parent paths`() {
+        val file = myFixture.addFileToProject("safe/Path.java", "class Path {} ").virtualFile
+        assertNotNull(ProjectPaths.find(project, "safe/Path.java"))
+        assertNull(ProjectPaths.find(project, "safe/../safe/Path.java"))
+        assertNull(ProjectPaths.find(project, "/safe/Path.java"))
+        assertNull(ProjectPaths.find(project, "C:\\safe\\Path.java"))
+        assertEquals(file, ProjectPaths.findAbsolute(project, file.path))
+    }
+
+    fun `test containment rejects symlinks outside root`() {
+        val temp = java.nio.file.Files.createTempDirectory("project-paths")
+        try {
+            val rootPath = java.nio.file.Files.createDirectory(temp.resolve("root"))
+            val outside = java.nio.file.Files.writeString(temp.resolve("outside.txt"), "secret")
+            val outsideDir = java.nio.file.Files.createDirectory(temp.resolve("outside-dir"))
+            java.nio.file.Files.writeString(outsideDir.resolve("nested.txt"), "secret")
+            java.nio.file.Files.writeString(rootPath.resolve("inside.txt"), "inside")
+            java.nio.file.Files.createSymbolicLink(rootPath.resolve("escape.txt"), outside)
+            java.nio.file.Files.createSymbolicLink(rootPath.resolve("escape-dir"), outsideDir)
+            val fs = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+            val root = fs.refreshAndFindFileByNioFile(rootPath)!!
+            val inside = fs.refreshAndFindFileByNioFile(rootPath.resolve("inside.txt"))!!
+            val escape = fs.refreshAndFindFileByNioFile(rootPath.resolve("escape.txt"))!!
+            val outsideFile = fs.refreshAndFindFileByNioFile(outside)!!
+            val escapedDirectory = fs.refreshAndFindFileByNioFile(rootPath.resolve("escape-dir"))!!
+            val escapedDescendant = fs.refreshAndFindFileByNioFile(rootPath.resolve("escape-dir/nested.txt"))!!
+            assertTrue(ProjectPaths.contains(root, inside))
+            assertFalse(ProjectPaths.contains(root, escape))
+            assertFalse(ProjectPaths.contains(root, outsideFile))
+            assertFalse(ProjectPaths.contains(root, escapedDirectory))
+            assertFalse(ProjectPaths.contains(root, escapedDescendant))
+        } finally {
+            temp.toFile().deleteRecursively()
+        }
+    }
+
     private fun replace(file: com.intellij.psi.PsiFile, text: String) {
         com.intellij.openapi.application.runWriteActionAndWait {
             VfsUtil.saveText(file.virtualFile, text)

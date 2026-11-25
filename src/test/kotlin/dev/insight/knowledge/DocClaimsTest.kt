@@ -86,6 +86,17 @@ class DocClaimsTest {
         assertEquals(4, parsed.single { it.text == "Next one." }.startLine)
     }
 
+    @Test fun `inline and multiline comments are excluded while prose and line ranges survive`() {
+        val parsed = parseDocClaims("First sentence. <!-- c-1 --> Next sentence.\nWrapped <!-- hidden\nstill hidden --> sentence.\n\nEntry points:\n\n- [A](a) <!-- c-2 --> — description\n")
+        assertEquals(listOf("First sentence.", "Next sentence.", "Wrapped sentence.", "[A](a) — description"), parsed.map { it.text })
+        assertEquals(1, parsed[1].startLine)
+        assertEquals(2, parsed[2].startLine)
+        assertEquals(3, parsed[2].endLine)
+        assertEquals(7, parsed[3].startLine)
+        assertEquals(DocClaimKind.ENTRY_POINT, parsed[3].kind)
+        assertEquals("Use `<!-- literal -->` here.", parseDocClaims("Use `<!-- literal -->` here.").single().text)
+    }
+
     @Test fun `entry point bullets become one claim each and keep their links`() {
         val entries = claims.filter { it.kind == DocClaimKind.ENTRY_POINT }
         assertEquals(2, entries.size)

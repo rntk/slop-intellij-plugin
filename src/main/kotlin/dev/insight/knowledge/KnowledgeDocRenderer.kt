@@ -33,14 +33,14 @@ data class DocRenderLimits(
     val embedCitations: Boolean = true,
 )
 
-enum class ExclusionReason { DETAIL, VOLATILE, OVER_LIMIT }
+enum class ExclusionReason { SUSPECT, DETAIL, VOLATILE, OVER_LIMIT }
 
 /** A claim left out of the doc, with why. It stays in the ledger. */
 data class ExcludedClaim(val claimId: String, val reason: ExclusionReason)
 
 /**
  * A proposed doc. [usedClaimIds] are the selected claims the text cites; [unplaced] are selected claims that nothing cited
- * (they are listed in a final "Not placed" section of [markdown]); [excluded] were left out as detail, volatile or over the limit.
+ * (they are listed in a final "Not placed" section of [markdown]); [excluded] includes suspect, detail, volatile and over-limit claims.
  */
 data class RenderedDoc(
     val path: String,
@@ -52,7 +52,7 @@ data class RenderedDoc(
 )
 
 /**
- * Renders the active claims of a target as a short flows-style doc. Selection, entry-point choice, citation checks and
+ * Renders the live claims of a target as a short flows-style doc. Selection, entry-point choice, citation checks and
  * Markdown assembly are deterministic; [complete], when present, only words the paragraphs, strictly from the selected claims.
  * Every selected claim ends up cited or in the "Not placed" section. Never writes files.
  */
@@ -63,9 +63,11 @@ class KnowledgeDocRenderer(
 ) {
     suspend fun render(state: KnowledgeState, target: DocTarget): RenderedDoc {
         val warnings = mutableListOf<String>()
-        val candidates = state.active().filter { claim -> target.areas.any { inArea(claim.area, it) } }
+        val scoped = state.active().filter { claim -> target.areas.any { inArea(claim.area, it) } }
+        val candidates = scoped.filter { it.status == ClaimStatus.Live }
         val classes = classifier.classify(candidates)
-        val excluded = mutableListOf<ExcludedClaim>()
+        val excluded = scoped.filter { it.status is ClaimStatus.Suspect }
+            .mapTo(mutableListOf()) { ExcludedClaim(it.id, ExclusionReason.SUSPECT) }
         val usable = ArrayList<Claim>()
         for (claim in candidates) {
             val cls = classes[claim.id]

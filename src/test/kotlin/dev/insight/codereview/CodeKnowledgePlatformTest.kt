@@ -9,8 +9,10 @@ import com.intellij.ui.treeStructure.Tree
 import dev.insight.knowledge.Claim
 import dev.insight.knowledge.ClaimLevel
 import dev.insight.knowledge.ClaimOrigin
+import dev.insight.knowledge.FakeEntailment
 import dev.insight.knowledge.KnowledgeOp
 import dev.insight.knowledge.KnowledgeService
+import dev.insight.knowledge.accepted
 import dev.insight.knowledge.ui.KnowledgeColors
 import dev.insight.llm.Completion
 import dev.insight.review.CanvasTabKey
@@ -69,6 +71,10 @@ class CodeKnowledgePlatformTest : FileEditorManagerTestCase() {
     private fun openTab(): CodeReviewTab {
         myFixture.addFileToProject("src/demo/Widget.java", widget)
         myFixture.addFileToProject("flows/widget.md", flowDoc)
+        return createTab()
+    }
+
+    private fun createTab(): CodeReviewTab {
         val tab = CodeReviewTab(project, null, { emptyList() }, { _, _ -> }, complete = { Completion("Nothing to add.") })
         tab.update(codeSnapshot(codeFile("src/demo/Widget.java", widget)))
         return tab
@@ -139,6 +145,44 @@ class CodeKnowledgePlatformTest : FileEditorManagerTestCase() {
         } finally {
             Disposer.dispose(tab)
         }
+    }
+
+    fun `test a later tab refreshes when the shared knowledge base changes`() {
+        val first = openTab()
+        try {
+            wait("The first tab should load the ledger") { service.peek() != null }
+            val second = createTab()
+            try {
+                chooseView(second, "Knowledge")
+                val counts = second.canvas.named<JLabel>("knowledge-counts")
+                assertTrue(counts.text.contains("0 live"))
+                val claim = Claim("c-1", "The widget doubles its input.", ClaimLevel.FILE, ClaimOrigin.HUMAN, "src/demo", emptyList())
+                runBlocking { service.peek()!!.submit(KnowledgeOp.Add(claim), "user") }
+                wait("The second tab should show the added claim") { counts.text.contains("1 live") }
+            } finally {
+                Disposer.dispose(second)
+            }
+        } finally {
+            Disposer.dispose(first)
+        }
+    }
+
+    fun `test the loaded knowledge base uses the current Decisions configuration`() = runBlocking<Unit> {
+        val first = FakeEntailment()
+        val second = FakeEntailment { 0.1 }
+        val base = service.base()
+        val claim = Claim("c-1", "The widget doubles its input.", ClaimLevel.FILE, ClaimOrigin.GENERATED, "src/demo", emptyList())
+        val rewrite = claim.copy(id = "c-2", text = "The widget multiplies the input by two.")
+        base.submit(KnowledgeOp.Add(claim), "user")
+
+        service.decisions = { first::decide }
+        assertTrue(base.submit(KnowledgeOp.Rewrite(claim.id, rewrite), "organizer").verdict.accepted)
+
+        service.decisions = { second::decide }
+        val next = claim.copy(id = "c-3", text = "The widget triples its input.")
+        assertFalse(base.submit(KnowledgeOp.Rewrite(rewrite.id, next), "organizer").verdict.accepted)
+        assertEquals(1, first.requests.size)
+        assertEquals(1, second.requests.size)
     }
 
     fun `test rejected ledger entries are highlighted with their reason`() {
