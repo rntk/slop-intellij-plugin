@@ -153,8 +153,10 @@ internal class ChartsCanvasCard(
     private val symbolErrors = mutableMapOf<String, String>()
     private val treeConnectionScope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private var treeConnectionJob: Job? = null
+    private var treeFocusJob: Job? = null
     private var treeConnectionIndex: TreeFileConnectionIndex? = null
     private var treeConnectionSelection: TreeConnectionSelection? = null
+    private var treeFocusSelection: TreeFocusSelection? = null
     private var currentTreeBoard: TreeBoardPanel? = null
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
@@ -300,6 +302,14 @@ internal class ChartsCanvasCard(
                 }
             },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
+            initialFocusSelection = treeFocusSelection,
+            toggleFocus = treeConnectionIndex?.let { index ->
+                { path, directory -> toggleTreeFocus(index, path, directory, hierarchy.files(path).map { it.path }) }
+            },
+            clearFocus = {
+                treeFocusJob?.cancel()
+                showTreeFocus(null)
+            },
         ).apply {
             border = JBUI.Borders.empty(4)
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
@@ -472,11 +482,51 @@ internal class ChartsCanvasCard(
         currentTreeBoard?.connectionSelection = selection
     }
 
+    private fun toggleTreeFocus(index: TreeFileConnectionIndex, path: String, directory: Boolean, files: List<String>) {
+        treeFocusJob?.cancel()
+        if (treeFocusSelection?.path == path) {
+            showTreeFocus(null)
+            return
+        }
+        showTreeFocus(TreeFocusSelection(path, directory, message = "Resolving linked files…"))
+        treeFocusJob = treeConnectionScope.launch {
+            val selection = try {
+                val links = if (project == null) index.relatedFiles(files) else withBackgroundProgress(project, "Resolving linked files") {
+                    reportRawProgress { reporter ->
+                        reporter.text("Resolving links between files…")
+                        index.relatedFiles(files) { done, total ->
+                            reporter.text("Resolving links between files ($done of $total)")
+                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                        }
+                    }
+                }
+                if (links == null) TreeFocusSelection(path, directory, message = "No live source available")
+                else TreeFocusSelection(path, directory, links)
+            } catch (e: CancellationException) {
+                if (isActive) showTreeFocus(null)
+                throw e
+            } catch (e: Exception) {
+                if (e is ControlFlowException) throw e
+                logger<ChartsCanvasCard>().warn("Could not resolve linked files for $path", e)
+                TreeFocusSelection(path, directory, message = "Could not resolve linked files. See the IDE log.")
+            }
+            if (isActive) showTreeFocus(selection)
+        }
+    }
+
+    private fun showTreeFocus(selection: TreeFocusSelection?) {
+        treeFocusSelection = selection
+        currentTreeBoard?.focusSelection = selection
+    }
+
     private fun resetTreeConnections() {
         treeConnectionJob?.cancel()
         treeConnectionJob = null
+        treeFocusJob?.cancel()
+        treeFocusJob = null
         treeConnectionIndex = null
         treeConnectionSelection = null
+        treeFocusSelection = null
         currentTreeBoard?.hideConnectionPreview()
     }
 

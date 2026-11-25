@@ -133,4 +133,82 @@ class ReviewTreeBoardTest {
         viewport.ensureRowVisible(rowTopWorld = 1000.0, rowBottomWorld = 1024.0, viewHeight = 300, margin = 24.0)
         assertTrue(viewport.worldToScreenY(1024.0) <= 300.0 - 24.0 + 1e-6)
     }
+
+    @Test fun `visibleFiles reduces tree to compact subtree while preserving structure and topology`() {
+        val tree = buildSummaryTree(listOf(
+            file("alpha/one.kt", "1\n2\n"),
+            file("alpha/two.kt", "1\n"),
+            file("beta/sub/deep.kt", "1\n"),
+            file("beta/sub/other.kt", "1\n"),
+            file("gamma/unused.kt", "1\n"),
+        ))
+        val chart = ReviewLineChart(tree)
+        val focused = ReviewTreeBoard(chart, visibleFiles = setOf("alpha/two.kt", "beta/sub/deep.kt"))
+
+        assertEquals(
+            listOf("", "alpha", "alpha/two.kt", "beta", "beta/sub", "beta/sub/deep.kt"),
+            focused.nodes.map { it.entry.path },
+        )
+
+        val alpha = focused.nodes[focused.indexOf("alpha")]
+        assertFalse(alpha.isLastChild)
+        assertEquals(1, alpha.directChildCount)
+        assertTrue(alpha.collapsible)
+
+        val alphaTwo = focused.nodes[focused.indexOf("alpha/two.kt")]
+        assertTrue(alphaTwo.isLastChild)
+        assertEquals(listOf(true), alphaTwo.ancestorHasNextSibling)
+
+        val beta = focused.nodes[focused.indexOf("beta")]
+        assertTrue(beta.isLastChild)
+
+        val deep = focused.nodes[focused.indexOf("beta/sub/deep.kt")]
+        assertTrue(deep.isLastChild)
+        assertEquals(listOf(false, false), deep.ancestorHasNextSibling)
+
+        assertEquals(setOf("alpha", "beta", "beta/sub"), focused.allCollapsiblePaths())
+    }
+
+    @Test fun `collectRelatedFiles resolves file and directory links and handles isolated or missing entries`() {
+        val site = TreeConnectionSite(1, 1)
+        val links = mapOf(
+            "api/Api.kt" to TreeFileConnections(
+                incoming = mapOf("client/Client.kt" to site),
+                outgoing = mapOf("model/Model.kt" to site),
+            ),
+            "client/Client.kt" to TreeFileConnections(
+                incoming = emptyMap(),
+                outgoing = mapOf("api/Api.kt" to site),
+            ),
+            "model/Model.kt" to TreeFileConnections(
+                incoming = mapOf("api/Api.kt" to site),
+                outgoing = mapOf("model/Helper.kt" to site),
+            ),
+            "model/Helper.kt" to TreeFileConnections(
+                incoming = mapOf("model/Model.kt" to site),
+                outgoing = emptyMap(),
+            ),
+            "alone/Solo.kt" to TreeFileConnections(emptyMap(), emptyMap()),
+        )
+
+        val single = checkNotNull(collectRelatedFiles(listOf("api/Api.kt"), links))
+        assertEquals(setOf("api/Api.kt"), single.targets)
+        assertEquals(setOf("client/Client.kt"), single.incoming)
+        assertEquals(setOf("model/Model.kt"), single.outgoing)
+        assertEquals(setOf("api/Api.kt", "client/Client.kt", "model/Model.kt"), single.visibleFiles)
+
+        // Focusing a directory keeps internal files as targets and excludes them from incoming/outgoing.
+        val dir = checkNotNull(collectRelatedFiles(listOf("model/Model.kt", "model/Helper.kt"), links))
+        assertEquals(setOf("model/Model.kt", "model/Helper.kt"), dir.targets)
+        assertEquals(setOf("api/Api.kt"), dir.incoming)
+        assertEquals(emptySet<String>(), dir.outgoing)
+        assertEquals(setOf("model/Model.kt", "model/Helper.kt", "api/Api.kt"), dir.visibleFiles)
+
+        val isolated = checkNotNull(collectRelatedFiles(listOf("alone/Solo.kt"), links))
+        assertEquals(emptySet<String>(), isolated.linkedFiles)
+        assertEquals(setOf("alone/Solo.kt"), isolated.visibleFiles)
+
+        assertNull(collectRelatedFiles(listOf("missing/File.kt"), links))
+        assertNull(collectRelatedFiles(emptyList(), links))
+    }
 }

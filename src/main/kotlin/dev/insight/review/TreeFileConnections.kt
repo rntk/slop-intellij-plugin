@@ -48,6 +48,32 @@ internal data class TreeConnectionSite(
 
 internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)
 
+/** Files included in Tree Focus mode: the focused [targets], plus direct [incoming] and [outgoing] neighbors. */
+internal data class TreeFocusLinks(
+    val targets: Set<String>,
+    val incoming: Set<String>,
+    val outgoing: Set<String>,
+) {
+    val visibleFiles: Set<String> get() = targets + incoming + outgoing
+    val linkedFiles: Set<String> get() = incoming + outgoing
+}
+
+internal fun collectRelatedFiles(
+    paths: Collection<String>,
+    links: Map<String, TreeFileConnections>,
+): TreeFocusLinks? {
+    if (paths.none { it in links }) return null
+    val targets = paths.toCollection(LinkedHashSet())
+    val incoming = LinkedHashSet<String>()
+    val outgoing = LinkedHashSet<String>()
+    for (path in targets) {
+        val fileLinks = links[path] ?: continue
+        for (src in fileLinks.incoming.keys) if (src !in targets) incoming += src
+        for (dst in fileLinks.outgoing.keys) if (dst !in targets) outgoing += dst
+    }
+    return TreeFocusLinks(targets, incoming, outgoing)
+}
+
 internal fun extractCodeSnippet(
     text: CharSequence,
     line: Int,
@@ -122,15 +148,25 @@ internal class TreeFileConnectionIndex(private val project: Project, private val
     @Volatile
     private var snapshot: Snapshot? = null
 
+    private suspend fun currentLinks(onProgress: (done: Int, total: Int) -> Unit): Map<String, TreeFileConnections> =
+        constrainedReadAction(
+            ReadConstraint.inSmartMode(project),
+            ReadConstraint.withDocumentsCommitted(project),
+        ) {
+            val stamp = PsiModificationTracker.getInstance(project).modificationCount
+            val current = snapshot?.takeIf { it.stamp == stamp } ?: Snapshot(stamp, build(onProgress)).also { snapshot = it }
+            current.links
+        }
+
     /** [onProgress] reports file counts while the index is (re)built; it stays silent when the snapshot is current. */
-    suspend fun connections(path: String, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): TreeFileConnections? = constrainedReadAction(
-        ReadConstraint.inSmartMode(project),
-        ReadConstraint.withDocumentsCommitted(project),
-    ) {
-        val stamp = PsiModificationTracker.getInstance(project).modificationCount
-        val current = snapshot?.takeIf { it.stamp == stamp } ?: Snapshot(stamp, build(onProgress)).also { snapshot = it }
-        current.links[path]
-    }
+    suspend fun connections(path: String, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): TreeFileConnections? =
+        currentLinks(onProgress)[path]
+
+    /** Direct incoming and outgoing neighbor files for [paths], excluding [paths] themselves from the link sets. */
+    suspend fun relatedFiles(
+        paths: Collection<String>,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): TreeFocusLinks? = collectRelatedFiles(paths, currentLinks(onProgress))
 
     private fun build(onProgress: (done: Int, total: Int) -> Unit): Map<String, TreeFileConnections> {
         val manager = PsiManager.getInstance(project)

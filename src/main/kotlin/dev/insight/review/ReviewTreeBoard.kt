@@ -51,22 +51,33 @@ internal data class TreeBoardHighlight(
 
 /**
  * Flattened visible tree for the Charts Tree board view. Directories start expanded unless their path is in
- * [collapsed]; files remain leaves (no PSI declaration children).
+ * [collapsed]; files remain leaves (no PSI declaration children). When [visibleFiles] is non-null, only those files
+ * and their ancestor directories are kept, preserving the tree structure as a compact subtree.
  */
 internal class ReviewTreeBoard(
     private val chart: ReviewLineChart,
     collapsed: Set<String> = emptySet(),
+    private val visibleFiles: Set<String>? = null,
 ) {
     val nodes: List<TreeBoardNode>
     private val indexByPath: Map<String, Int>
+    private val filteredChildren: Map<String, List<ReviewLineChart.Entry>>? = visibleFiles?.let { allowed ->
+        val kept = HashMap<String, List<ReviewLineChart.Entry>>()
+        fun filterDir(entry: ReviewLineChart.Entry): Boolean {
+            if (entry.kind == ReviewLineChart.Kind.FILE) return entry.path in allowed
+            if (!entry.directory) return false
+            val children = chart.children(entry).filter {
+                (it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE) && filterDir(it)
+            }
+            if (children.isNotEmpty()) kept[entry.path] = children
+            return children.isNotEmpty()
+        }
+        filterDir(chart.root)
+        kept
+    }
 
     init {
         val built = mutableListOf<TreeBoardNode>()
-        fun childEntries(entry: ReviewLineChart.Entry): List<ReviewLineChart.Entry> =
-            if (!entry.directory) emptyList()
-            else chart.children(entry).filter {
-                it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE
-            }
 
         fun visit(
             entry: ReviewLineChart.Entry,
@@ -147,14 +158,19 @@ internal class ReviewTreeBoard(
     fun firstChildIndex(index: Int): Int? =
         nodes.getOrNull(index + 1)?.takeIf { it.parentIndex == index }?.index
 
+    private fun childEntries(entry: ReviewLineChart.Entry): List<ReviewLineChart.Entry> =
+        if (!entry.directory) emptyList()
+        else if (filteredChildren != null) filteredChildren[entry.path].orEmpty()
+        else chart.children(entry).filter {
+            it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE
+        }
+
     /** All non-root directory paths in [chart] that have at least one visible child, including inside collapsed branches. */
     fun allCollapsiblePaths(): Set<String> {
         val paths = LinkedHashSet<String>()
         fun collect(entry: ReviewLineChart.Entry, isRoot: Boolean) {
             if (!entry.directory) return
-            val children = chart.children(entry).filter {
-                it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE
-            }
+            val children = childEntries(entry)
             if (!isRoot && children.isNotEmpty()) paths += entry.path
             children.forEach { collect(it, isRoot = false) }
         }

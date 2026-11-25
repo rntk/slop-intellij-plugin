@@ -334,6 +334,135 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         assertNull(canvas.getToolTipText(hover))
     }
 
+    fun testFocusModeReducesTreeToLinkedSubtreeAcrossTabsConnectionsAndExitPaths() {
+        val api = "api/Api.java"
+        val client = "client/Client.java"
+        val model = "model/Model.java"
+        val helper = "model/Helper.java"
+        val unrelated = "unrelated/Other.java"
+        val files = mapOf(
+            api to """
+                package api;
+                public class Api {
+                    public static void run() { new model.Model(); }
+                }
+            """.trimIndent(),
+            client to """
+                package client;
+                import api.Api;
+                class Client {
+                    void go() { Api.run(); }
+                }
+            """.trimIndent(),
+            model to """
+                package model;
+                public class Model {
+                    public Model() { new Helper(); }
+                }
+            """.trimIndent(),
+            helper to "package model; public class Helper {}",
+            unrelated to "package unrelated; public class Other {}",
+        ).map { (path, source) ->
+            val psi = myFixture.addFileToProject(path, source)
+            CodeFile(path, psi.virtualFile.path, source)
+        }
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE)
+        fun panel() = descendants(canvas).filterIsInstance<TreeBoardPanel>().single()
+        fun paths(board: TreeBoardPanel) = board.board.nodes.map { it.entry.path }
+        fun clickFocus(board: TreeBoardPanel, path: String) {
+            val button = checkNotNull(board.focusButtonScreenBounds(path))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+        }
+        fun clickConnections(board: TreeBoardPanel, path: String) {
+            val button = checkNotNull(board.connectionButtonScreenBounds(path))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+        }
+        fun triggerKey(board: TreeBoardPanel, keyCode: Int) {
+            val stroke = KeyStroke.getKeyStroke(keyCode, 0)
+            val actionId = board.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(stroke)
+                ?: error("No binding for $keyCode")
+            board.actionMap.get(actionId).actionPerformed(ActionEvent(board, 0, actionId.toString()))
+        }
+        try {
+            canvas.setSize(1200, 800)
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }.selectedItem = "Tree"
+            val initial = panel()
+
+            // Root has no focus button; directories and files have non-overlapping focus & connection buttons.
+            assertNull(initial.focusButtonScreenBounds(""))
+            assertNotNull(initial.focusButtonScreenBounds("api"))
+            val apiFocusBounds = checkNotNull(initial.focusButtonScreenBounds(api))
+            val apiConnBounds = checkNotNull(initial.connectionButtonScreenBounds(api))
+            assertFalse(apiFocusBounds.intersects(apiConnBounds))
+
+            // Collapse `unrelated` beforehand; exiting focus mode should restore prior collapsed folders.
+            initial.toggleCollapsed("unrelated")
+            assertEquals(setOf("unrelated"), canvas.chartsView.treeCollapsed)
+
+            // Focus on file `api/Api.java`: keeps api, client, model and their parent folders; hides helper and unrelated.
+            clickFocus(initial, api)
+            PlatformTestUtil.waitWithEventsDispatching("Tree focus should resolve for file",
+                { initial.focusSelection?.links != null }, 20)
+            assertEquals(listOf("", "client", client, "model", model, "api", api), paths(initial))
+
+            val exitButton = descendants(canvas).filterIsInstance<JButton>()
+                .single { it.name == "charts-tree-exit-focus" }
+            assertTrue(exitButton.isVisible)
+            val focusLabel = descendants(canvas).filterIsInstance<JLabel>()
+                .single { it.name == "charts-tree-focus-status" }
+            assertTrue(focusLabel.text.contains("Focused: $api"))
+
+            // Focus persists across metric tab switches and composes with code connections.
+            descendants(canvas).filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }.selectedIndex = 1
+            val afterTab = panel()
+            assertEquals(listOf("", "model", model, "api", api, "client", client), paths(afterTab))
+            clickConnections(afterTab, api)
+            PlatformTestUtil.waitWithEventsDispatching("Connections should resolve while focused",
+                { afterTab.connectionSelection?.connections != null }, 20)
+            assertEquals(api, afterTab.connectionSelection?.path)
+
+            // Exit via clicking the focus icon again.
+            clickFocus(afterTab, api)
+            assertNull(afterTab.focusSelection)
+            assertFalse(descendants(canvas).filterIsInstance<JButton>().single { it.name == "charts-tree-exit-focus" }.isVisible)
+            assertTrue(paths(afterTab).containsAll(listOf("api", api, "model", model, helper, "unrelated")))
+            // Prior collapsed directory `unrelated` is restored (its child `Other.java` remains hidden).
+            assertFalse(unrelated in paths(afterTab))
+            assertEquals(setOf("unrelated"), canvas.chartsView.treeCollapsed)
+
+            // Focus on directory `model`: includes `model/Model.java`, `model/Helper.java`, and incoming `api/Api.java`.
+            clickFocus(afterTab, "model")
+            PlatformTestUtil.waitWithEventsDispatching("Tree focus should resolve for directory",
+                { afterTab.focusSelection?.links != null }, 20)
+            assertEquals(listOf("", "model", model, helper, "api", api), paths(afterTab))
+
+            // Exit via "Show all" button.
+            descendants(canvas).filterIsInstance<JButton>().single { it.name == "charts-tree-exit-focus" }.doClick()
+            assertNull(afterTab.focusSelection)
+            assertFalse(unrelated in paths(afterTab))
+
+            // Toggle focus on and off via `F` key, and exit via `Esc` key.
+            afterTab.moveCursor(afterTab.board.indexOf(api))
+            triggerKey(afterTab, KeyEvent.VK_F)
+            PlatformTestUtil.waitWithEventsDispatching("F key should enable focus",
+                { afterTab.focusSelection?.links != null }, 20)
+            assertEquals(listOf("", "model", model, "api", api, "client", client), paths(afterTab))
+            triggerKey(afterTab, KeyEvent.VK_F)
+            assertNull(afterTab.focusSelection)
+
+            triggerKey(afterTab, KeyEvent.VK_F)
+            PlatformTestUtil.waitWithEventsDispatching("F key should re-enable focus",
+                { afterTab.focusSelection?.links != null }, 20)
+            triggerKey(afterTab, KeyEvent.VK_ESCAPE)
+            assertNull(afterTab.focusSelection)
+        } finally {
+            canvas.dispose()
+        }
+    }
+
     private fun descendants(component: Component): List<Component> = listOf(component) +
         if (component is Container) component.components.flatMap(::descendants) else emptyList()
 }

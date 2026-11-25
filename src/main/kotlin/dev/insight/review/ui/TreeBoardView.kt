@@ -18,6 +18,7 @@ import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
+import dev.insight.review.TreeFocusLinks
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.CardLayout
@@ -64,6 +65,13 @@ internal data class TreeConnectionSelection(
     val message: String? = null,
 )
 
+internal data class TreeFocusSelection(
+    val path: String,
+    val directory: Boolean,
+    val links: TreeFocusLinks? = null,
+    val message: String? = null,
+)
+
 private data class ConnectionRoute(
     val from: String, val to: String, val outgoing: Boolean,
     val x1: Double, val y1: Double, val bend: Double, val x2: Double, val y2: Double,
@@ -101,39 +109,32 @@ internal class TreeBoardPanel(
     private val openAt: ((String, Int) -> Unit)? = null,
     project: Project? = null,
     explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
+    initialFocusSelection: TreeFocusSelection? = null,
+    private val toggleFocus: ((String, Boolean) -> Unit)? = null,
+    private val clearFocus: (() -> Unit)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
     private val accentColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: JBUI.CurrentTheme.Focus.focusColor()
 
     private var collapsedPaths: Set<String> = collapsed
-    var board: ReviewTreeBoard = ReviewTreeBoard(chart, collapsedPaths)
-        private set
+    private var focusCollapsedPaths: Set<String> = emptySet()
+    private var savedViewport: Triple<Double, Double, Double>? = null
+    private val isFocused: Boolean get() = focusSelection?.links != null
+    private val activeCollapsedPaths: Set<String> get() = if (isFocused) focusCollapsedPaths else collapsedPaths
+    private val visibleFocusFiles: Set<String>? get() = focusSelection?.links?.visibleFiles
+
     private val viewport = TreeBoardViewport(initialPanX, initialPanY, initialZoom)
-    private var cursorIndex: Int = board.indexOf(cursorPath).let {
-        if (it >= 0) it else if (board.nodes.isNotEmpty()) 0 else -1
-    }
+    private var cursorIndex: Int = -1
     private var hoveredIndex: Int = -1
-
-    var connectionSelection: TreeConnectionSelection? = null
-        set(value) {
-            field = value
-            connectionPreview.hide()
-            canvas.invalidateRoutes()
-            updateConnectionStatus()
-            canvas.repaint()
-        }
-
-    val cursorPath: String? get() = board.nodes.getOrNull(cursorIndex)?.entry?.path
-    val hoveredPath: String? get() = board.nodes.getOrNull(hoveredIndex)?.entry?.path
-    val zoom: Double get() = viewport.zoom
 
     private val totalLabel = JLabel(totalSummaryText()).apply {
         name = "charts-tree-total"
         font = JBFont.small().asBold()
         foreground = numberColor
         toolTipText = "${metric.description} · Drag to pan · Ctrl/⌘+wheel to zoom · ↑↓ move, ←→ fold, Enter opens" +
-            if (toggleConnections == null) "" else " · C shows code connections"
+            (if (toggleConnections == null) "" else " · C shows code connections") +
+            (if (toggleFocus == null) "" else " · F focuses on related files")
     }
     private val statusLabel = JLabel().apply {
         name = "charts-tree-status"
@@ -156,10 +157,22 @@ internal class TreeBoardPanel(
         font = JBFont.small()
         foreground = UIUtil.getContextHelpForeground()
     }
+    private val focusStatus = JLabel().apply {
+        name = "charts-tree-focus-status"
+        font = JBFont.small()
+        foreground = UIUtil.getContextHelpForeground()
+    }
+
+    private val exitFocusButton = controlButton("Show all", "charts-tree-exit-focus", "Exit focus mode and show the full tree (Esc)") {
+        clearFocus?.invoke() ?: run { focusSelection = null }
+    }.apply {
+        isVisible = initialFocusSelection != null
+    }
 
     val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
         name = "charts-tree-controls"
         isOpaque = false
+        add(exitFocusButton)
         add(controlButton("Unfold all", "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
         add(controlButton("Fold all", "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
         add(controlButton("Fit", "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
@@ -179,6 +192,7 @@ internal class TreeBoardPanel(
         isOpaque = false
         add(statusLabel, statusLabel.name)
         add(connectionStatus, connectionStatus.name)
+        add(focusStatus, focusStatus.name)
     }
 
     val status = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
@@ -190,6 +204,62 @@ internal class TreeBoardPanel(
     internal val canvas = TreeBoardCanvas()
     internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection, project, explainConnection)
 
+    var focusSelection: TreeFocusSelection? = initialFocusSelection
+        set(value) {
+            val wasFocused = field?.links != null
+            val nowFocused = value?.links != null
+            val targetChanged = field?.path != value?.path || field?.links != value?.links
+            field = value
+            if (!wasFocused && nowFocused) {
+                savedViewport = Triple(viewport.zoom, viewport.panX, viewport.panY)
+            }
+            if (nowFocused && targetChanged) {
+                focusCollapsedPaths = emptySet()
+                rebuildBoard(value?.path ?: cursorPath)
+                viewport.reset()
+                if (canvas.height > 0 && cursorIndex >= 0) {
+                    viewport.ensureRowVisible(rowTopWorld(cursorIndex), rowBottomWorld(cursorIndex), canvas.height, margin = JBUI.scale(24).toDouble())
+                }
+                zoomLabel.text = zoomText()
+                notifyViewportChanged()
+            } else if (wasFocused && !nowFocused) {
+                rebuildBoard(cursorPath)
+                savedViewport?.let { (z, px, py) ->
+                    savedViewport = null
+                    viewport.reset()
+                    viewport.zoomAround(0.0, 0.0, z)
+                    viewport.panX = px
+                    viewport.panY = py
+                }
+                zoomLabel.text = zoomText()
+                notifyViewportChanged()
+            }
+            exitFocusButton.isVisible = value != null
+            updateFocusStatus()
+            canvas.invalidateRoutes()
+            canvas.repaint()
+        }
+
+    var board: ReviewTreeBoard = ReviewTreeBoard(
+        chart,
+        if (initialFocusSelection?.links != null) emptySet() else collapsedPaths,
+        initialFocusSelection?.links?.visibleFiles,
+    )
+        private set
+
+    var connectionSelection: TreeConnectionSelection? = null
+        set(value) {
+            field = value
+            connectionPreview.hide()
+            canvas.invalidateRoutes()
+            updateConnectionStatus()
+            canvas.repaint()
+        }
+
+    val cursorPath: String? get() = board.nodes.getOrNull(cursorIndex)?.entry?.path
+    val hoveredPath: String? get() = board.nodes.getOrNull(hoveredIndex)?.entry?.path
+    val zoom: Double get() = viewport.zoom
+
     fun hideConnectionPreview() = connectionPreview.hide()
 
     override fun removeNotify() {
@@ -198,6 +268,9 @@ internal class TreeBoardPanel(
     }
 
     init {
+        cursorIndex = board.indexOf(cursorPath).let {
+            if (it >= 0) it else if (board.nodes.isNotEmpty()) 0 else -1
+        }
         name = "charts-tree-board"
         isOpaque = false
         isFocusable = true
@@ -207,6 +280,7 @@ internal class TreeBoardPanel(
 
         updateStatus()
         updateConnectionStatus()
+        updateFocusStatus()
         installKeys()
         addFocusListener(object : FocusAdapter() {
             override fun focusGained(e: FocusEvent) = canvas.repaint()
@@ -231,29 +305,46 @@ internal class TreeBoardPanel(
         val node = board.nodes.getOrNull(currentIdx) ?: return
         if (!node.collapsible) return
         val nextCursor = if (node.collapsed) cursorPath else board.cursorAfterCollapse(cursorPath, path)
-        collapsedPaths = if (path in collapsedPaths) collapsedPaths - path else collapsedPaths + path
-        rebuildBoard(nextCursor ?: path)
-        collapsedChanged(collapsedPaths)
+        val current = activeCollapsedPaths
+        val next = if (path in current) current - path else current + path
+        if (isFocused) {
+            focusCollapsedPaths = next
+            rebuildBoard(nextCursor ?: path)
+        } else {
+            collapsedPaths = next
+            rebuildBoard(nextCursor ?: path)
+            collapsedChanged(collapsedPaths)
+        }
     }
 
     fun foldAll() {
         val all = board.allCollapsiblePaths()
-        if (all == collapsedPaths) return
+        if (all == activeCollapsedPaths) return
         val nextCursor = cursorPath?.let { path ->
             val topDir = all.firstOrNull { path == it || (it.isNotEmpty() && ReviewLineChart.isBeneath(path, it)) }
             topDir ?: path
         }
-        collapsedPaths = all
-        rebuildBoard(nextCursor)
-        collapsedChanged(collapsedPaths)
+        if (isFocused) {
+            focusCollapsedPaths = all
+            rebuildBoard(nextCursor)
+        } else {
+            collapsedPaths = all
+            rebuildBoard(nextCursor)
+            collapsedChanged(collapsedPaths)
+        }
     }
 
     fun unfoldAll() {
-        if (collapsedPaths.isEmpty()) return
+        if (activeCollapsedPaths.isEmpty()) return
         val keep = cursorPath
-        collapsedPaths = emptySet()
-        rebuildBoard(keep)
-        collapsedChanged(collapsedPaths)
+        if (isFocused) {
+            focusCollapsedPaths = emptySet()
+            rebuildBoard(keep)
+        } else {
+            collapsedPaths = emptySet()
+            rebuildBoard(keep)
+            collapsedChanged(collapsedPaths)
+        }
     }
 
     fun moveCursor(index: Int, reveal: Boolean = true) {
@@ -307,15 +398,19 @@ internal class TreeBoardPanel(
     fun connectionButtonScreenBounds(path: String): Rectangle? =
         board.nodes.getOrNull(board.indexOf(path))?.let(canvas::connectionButtonBounds)
 
+    fun focusButtonScreenBounds(path: String): Rectangle? =
+        board.nodes.getOrNull(board.indexOf(path))?.let(canvas::focusButtonBounds)
+
     private fun rebuildBoard(preferredCursorPath: String?) {
         val previousHover = hoveredPath
-        board = ReviewTreeBoard(chart, collapsedPaths)
+        board = ReviewTreeBoard(chart, activeCollapsedPaths, visibleFocusFiles)
         cursorIndex = board.indexOf(preferredCursorPath).let {
             if (it >= 0) it else if (board.nodes.isNotEmpty()) 0 else -1
         }
         hoveredIndex = board.indexOf(previousHover)
         updateStatus()
         updateConnectionStatus()
+        updateFocusStatus()
         canvas.invalidateRowWidth()
         canvas.repaint()
         cursorChanged(cursorPath)
@@ -362,7 +457,37 @@ internal class TreeBoardPanel(
             links == null || (links.incoming.isEmpty() && links.outgoing.isEmpty()) -> connectionStatus.text
             else -> "${connectionStatus.text} · Incoming links are dashed. Outgoing links are solid. Arrows point to the referenced file."
         }
-        (details.layout as CardLayout).show(details, if (selection == null) statusLabel.name else connectionStatus.name)
+        updateDetailsCard()
+    }
+
+    private fun updateFocusStatus() {
+        val selection = focusSelection
+        val links = selection?.links
+        focusStatus.text = when {
+            selection == null -> ""
+            selection.message != null -> "${selection.message} · ${selection.path}"
+            links == null || links.linkedFiles.isEmpty() -> "Focused: ${selection.path} · No linked files within this review"
+            else -> {
+                val hiddenByTab = links.visibleFiles.count { path ->
+                    board.indexOf(path) < 0 && activeCollapsedPaths.none { collapsed ->
+                        path == collapsed || (collapsed.isNotEmpty() && ReviewLineChart.isBeneath(path, collapsed))
+                    }
+                }
+                val hiddenHint = if (hiddenByTab > 0) " · $hiddenByTab hidden by current tab" else ""
+                "Focused: ${selection.path} · ${links.incoming.size} incoming · ${links.outgoing.size} outgoing$hiddenHint"
+            }
+        }
+        focusStatus.toolTipText = focusStatus.text.takeIf { it.isNotEmpty() }
+        updateDetailsCard()
+    }
+
+    private fun updateDetailsCard() {
+        val name = when {
+            connectionSelection != null -> connectionStatus.name
+            focusSelection != null -> focusStatus.name
+            else -> statusLabel.name
+        }
+        (details.layout as CardLayout).show(details, name)
     }
 
     private fun notifyViewportChanged() {
@@ -410,6 +535,12 @@ internal class TreeBoardPanel(
             val entry = board.nodes.getOrNull(cursorIndex)?.entry ?: return@bind
             if (entry.kind == ReviewLineChart.Kind.FILE) toggleConnections.invoke(entry.path)
         }
+        if (toggleFocus != null) bind(KeyEvent.VK_F, "charts-tree-focus") {
+            val node = board.nodes.getOrNull(cursorIndex) ?: return@bind
+            if (node.depth > 0 && (node.entry.kind == ReviewLineChart.Kind.FILE || node.entry.kind == ReviewLineChart.Kind.DIRECTORY)) {
+                toggleFocus.invoke(node.entry.path, node.entry.directory)
+            }
+        }
         bind(KeyEvent.VK_EQUALS, "charts-tree-zoom-eq") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_PLUS, "charts-tree-zoom-plus") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_ADD, "charts-tree-zoom-add") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
@@ -417,7 +548,10 @@ internal class TreeBoardPanel(
         bind(KeyEvent.VK_SUBTRACT, "charts-tree-zoom-sub") { zoomTo(viewport.zoom / TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_0, "charts-tree-zoom-reset") { resetView() }
         bind(KeyEvent.VK_NUMPAD0, "charts-tree-zoom-reset-num") { resetView() }
-        bind(KeyEvent.VK_ESCAPE, "charts-tree-dismiss-preview") { connectionPreview.hide() }
+        bind(KeyEvent.VK_ESCAPE, "charts-tree-dismiss-preview") {
+            if (connectionPreview.activePanel != null) connectionPreview.hide()
+            else if (focusSelection != null) clearFocus?.invoke() ?: run { focusSelection = null }
+        }
     }
 
     private fun baseMonospaceFont(): Font {
@@ -441,6 +575,7 @@ internal class TreeBoardPanel(
     private val indentStep get() = JBUI.scale(28).toDouble()
     private val connectorStub get() = JBUI.scale(16).toDouble()
     private val toggleWidth get() = JBUI.scale(16).toDouble()
+    private val focusButtonWidth get() = JBUI.scale(22)
     private val connectionButtonWidth get() = JBUI.scale(22)
 
     internal inner class TreeBoardCanvas : JComponent() {
@@ -540,6 +675,11 @@ internal class TreeBoardPanel(
                         if (e.clickCount == 1) previewConnection(e)
                         return
                     }
+                    if (focusButtonBounds(node)?.contains(e.point) == true) {
+                        moveCursor(node.index, reveal = false)
+                        if (e.clickCount == 1) toggleFocus?.invoke(node.entry.path, node.entry.directory)
+                        return
+                    }
                     if (connectionButtonBounds(node)?.contains(e.point) == true) {
                         moveCursor(node.index, reveal = false)
                         if (e.clickCount == 1) toggleConnections?.invoke(node.entry.path)
@@ -615,16 +755,40 @@ internal class TreeBoardPanel(
             return toggleScreen + labelWidth + badgeWidth + padRight + buttonScreenWidth(node)
         }
 
-        private fun buttonScreenWidth(node: TreeBoardNode): Int =
-            if (toggleConnections != null && node.entry.kind == ReviewLineChart.Kind.FILE) {
-                (connectionButtonWidth * viewport.zoom).roundToInt()
-            } else 0
+        private fun hasFocusButton(node: TreeBoardNode): Boolean =
+            toggleFocus != null && node.depth > 0 &&
+                (node.entry.kind == ReviewLineChart.Kind.FILE || node.entry.kind == ReviewLineChart.Kind.DIRECTORY)
+
+        private fun hasConnectionButton(node: TreeBoardNode): Boolean =
+            toggleConnections != null && node.entry.kind == ReviewLineChart.Kind.FILE
+
+        private fun buttonScreenWidth(node: TreeBoardNode): Int {
+            var width = 0
+            if (hasFocusButton(node)) width += (focusButtonWidth * viewport.zoom).roundToInt()
+            if (hasConnectionButton(node)) width += (connectionButtonWidth * viewport.zoom).roundToInt()
+            return width
+        }
+
+        private fun buttonWorldWidth(node: TreeBoardNode): Int {
+            var width = 0
+            if (hasFocusButton(node)) width += focusButtonWidth
+            if (hasConnectionButton(node)) width += connectionButtonWidth
+            return width
+        }
 
         fun connectionButtonBounds(node: TreeBoardNode): Rectangle? {
-            val width = buttonScreenWidth(node)
-            if (width == 0) return null
+            if (!hasConnectionButton(node)) return null
+            val width = (connectionButtonWidth * viewport.zoom).roundToInt()
             val row = rowScreenBounds(node)
             return Rectangle(row.x + row.width - width, row.y, width, row.height)
+        }
+
+        fun focusButtonBounds(node: TreeBoardNode): Rectangle? {
+            if (!hasFocusButton(node)) return null
+            val width = (focusButtonWidth * viewport.zoom).roundToInt()
+            val connWidth = if (hasConnectionButton(node)) (connectionButtonWidth * viewport.zoom).roundToInt() else 0
+            val row = rowScreenBounds(node)
+            return Rectangle(row.x + row.width - connWidth - width, row.y, width, row.height)
         }
 
         fun invalidateRowWidth() {
@@ -643,7 +807,7 @@ internal class TreeBoardPanel(
                 val left = nodeContentStartWorldX(node.depth)
                 val toggle = if (node.collapsible) toggleWidth else 0.0
                 val textW = boldMetrics.stringWidth(nodeLabel(node)) + plainMetrics.stringWidth(nodeBadge(node))
-                val button = if (buttonScreenWidth(node) > 0) connectionButtonWidth else 0
+                val button = buttonWorldWidth(node)
                 maxRight = maxOf(maxRight, left + toggle + textW + JBUI.scale(24) + button)
             }
             val laneCount = visibleConnections().size
@@ -683,6 +847,10 @@ internal class TreeBoardPanel(
         override fun getToolTipText(event: MouseEvent): String? {
             val node = nodeAt(event.x, event.y) ?: return connectionAt(event.point)?.let {
                 "${it.from} → ${it.to} · Click to inspect snippets · Right-click for context"
+            }
+            if (focusButtonBounds(node)?.contains(event.point) == true) {
+                return if (focusSelection?.path == node.entry.path) "Exit focus mode (F)"
+                else "Focus tree on linked files (F)"
             }
             if (connectionButtonBounds(node)?.contains(event.point) == true) {
                 return if (connectionSelection?.path == node.entry.path) "Hide code connections (C)"
@@ -844,16 +1012,42 @@ internal class TreeBoardPanel(
                     g.font = plainFont
                     g.color = if (metric.diffSeries != null) numberColor else UIUtil.getContextHelpForeground()
                     g.drawString(nodeBadge(node), badgeX, baselineY)
-                    val buttonWidth = buttonScreenWidth(node)
-                    if (buttonWidth > 0) {
-                        val rowWidth = rowContentScreenWidth(node, boldMetrics, plainMetrics)
-                        paintConnectionButton(g, startX + rowWidth - buttonWidth / 2.0, centerY, node.entry.path)
+                    val rowWidth = rowContentScreenWidth(node, boldMetrics, plainMetrics)
+                    var buttonRightX = startX + rowWidth
+                    if (hasConnectionButton(node)) {
+                        val connWidth = (connectionButtonWidth * viewport.zoom).roundToInt()
+                        paintConnectionButton(g, buttonRightX - connWidth / 2.0, centerY, node.entry.path)
+                        buttonRightX -= connWidth
+                    }
+                    if (hasFocusButton(node)) {
+                        val focusW = (focusButtonWidth * viewport.zoom).roundToInt()
+                        paintFocusButton(g, buttonRightX - focusW / 2.0, centerY, node.entry.path)
                     }
                 }
                 paintConnections(g)
             } finally {
                 g.dispose()
             }
+        }
+
+        private fun paintFocusButton(g: Graphics2D, x: Double, y: Double, path: String) {
+            val active = focusSelection?.path == path
+            val radius = (JBUI.scale(4) * viewport.zoom).coerceAtLeast(2.0)
+            val tick = (JBUI.scale(2) * viewport.zoom).coerceAtLeast(1.0)
+            val cx = x.roundToInt()
+            val cy = y.roundToInt()
+            val r = radius.roundToInt()
+            val t = tick.roundToInt()
+            val dot = (JBUI.scale(2) * viewport.zoom).roundToInt().coerceAtLeast(2)
+            val strokeBase = viewport.zoom.toFloat().coerceAtLeast(1f)
+            g.color = if (active) accentColor else UIUtil.getContextHelpForeground()
+            g.stroke = BasicStroke(if (active) strokeBase * 1.4f else strokeBase)
+            g.drawOval(cx - r, cy - r, r * 2, r * 2)
+            g.fillOval(cx - dot / 2, cy - dot / 2, dot, dot)
+            g.drawLine(cx, cy - r - t, cx, cy - r + 1)
+            g.drawLine(cx, cy + r - 1, cx, cy + r + t)
+            g.drawLine(cx - r - t, cy, cx - r + 1, cy)
+            g.drawLine(cx + r - 1, cy, cx + r + t, cy)
         }
 
         private fun paintConnectionButton(g: Graphics2D, x: Double, y: Double, path: String) {
