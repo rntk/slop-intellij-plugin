@@ -26,15 +26,13 @@ run_agent() {
     echo "1. claude-code"
     echo "2. codex-cli"
     echo "3. antigravity-cli"
-    echo "4. muse-code-cli"
-    read -rp "Select agent (1-4): " choice
+    read -rp "Select agent (1-3): " choice
     local project_name
     project_name="$(basename "$(pwd)")"
     case "$choice" in
         1) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.claude:/home/appuser/.claude" -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" "${project_name}-claude-code:latest" --verbose --dangerously-skip-permissions ;;
         2) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.codex:/home/appuser/.codex" -e OPENAI_API_KEY="${OPENAI_API_KEY}" "${project_name}-codex-cli:latest" -a never --sandbox danger-full-access --no-daemon;;
         3) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.gemini:/home/appuser/.gemini" -v "$HOME/.config/Antigravity:/home/appuser/.config/Antigravity" -v "$HOME/.config/Antigravity IDE:/home/appuser/.config/Antigravity IDE" "${project_name}-antigravity-cli:latest" --dangerously-skip-permissions ;;
-        4) docker run --rm -it -v "$(pwd):/app" -v "$HOME/.config/muse:/home/appuser/.config/muse" "${project_name}-muse-code-cli:latest" --yolo ;;
         *) echo "Invalid selection" ; exit 1 ;;
     esac
 }
@@ -44,8 +42,7 @@ build_agent() {
     echo "1. claude-code"
     echo "2. codex-cli"
     echo "3. antigravity-cli"
-    echo "4. muse-code-cli"
-    read -rp "Select agent to build (1-4): " choice
+    read -rp "Select agent to build (1-3): " choice
     local project_name
     project_name="$(basename "$(pwd)")"
     local base_image="${project_name}-code-agent:latest"
@@ -59,7 +56,6 @@ build_agent() {
         1) docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.claude-code -t "${project_name}-claude-code:latest" . ;;
         2) docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.codex-cli -t "${project_name}-codex-cli:latest" . ;;
         3) docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.antigravity-cli -t "${project_name}-antigravity-cli:latest" . ;;
-        4) docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.muse-code-cli -t "${project_name}-muse-code-cli:latest" . ;;
         *) echo "Unknown agent" ; exit 1 ;;
     esac
 }
@@ -77,14 +73,12 @@ rebuild_all() {
         docker build --no-cache -f .code_agents/Dockerfile.code_agent -t "${base_image}" .
     fi
 
-    echo "[1/4] claude-code"
+    echo "[1/3] claude-code"
     docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.claude-code -t "${project_name}-claude-code:latest" . && succeeded+=("claude-code") || failed+=("claude-code")
-    echo "[2/4] codex-cli"
+    echo "[2/3] codex-cli"
     docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.codex-cli -t "${project_name}-codex-cli:latest" . && succeeded+=("codex-cli") || failed+=("codex-cli")
-    echo "[3/4] antigravity-cli"
+    echo "[3/3] antigravity-cli"
     docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.antigravity-cli -t "${project_name}-antigravity-cli:latest" . && succeeded+=("antigravity-cli") || failed+=("antigravity-cli")
-    echo "[4/4] muse-code-cli"
-    docker build --no-cache --build-arg BASE_IMAGE="${base_image}" -f .code_agents/Dockerfile.muse-code-cli -t "${project_name}-muse-code-cli:latest" . && succeeded+=("muse-code-cli") || failed+=("muse-code-cli")
 
     echo ""
     echo -e "\033[1;32m[DONE]\033[0m Rebuild complete."
