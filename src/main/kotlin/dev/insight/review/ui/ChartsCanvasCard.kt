@@ -126,7 +126,8 @@ internal class ChartsViewState {
     /** The active row path in the Tree board. */
     var treeCursor: String? = null
     var treeZoom: Double = 1.0
-    var treePanX: Double = 0.0
+    /** The Tree board's horizontal pan, or null before it is first shown so the board leaves room for its summary. */
+    var treePanX: Double? = null
     var treePanY: Double = 0.0
     var treeRailMode: TreeRailMode? = null
     var treeRailLevel: Int? = null
@@ -440,9 +441,7 @@ internal class ChartsCanvasCard(
             },
         ).apply {
             border = JBUI.Borders.empty(4)
-            val summaryWidth = if (summaryPanel?.isVisible == true) summaryPanel.preferredSize.width else 0
-            val railWidth = if (railPanel?.isVisible == true) railPanel.preferredSize.width else 0
-            preferredSize = Dimension(width + summaryWidth + railWidth, scaled(BOARD_HEIGHT))
+            preferredSize = Dimension(width + sideLanesPreferredWidth, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
             briefs = treeBriefs
         } else null

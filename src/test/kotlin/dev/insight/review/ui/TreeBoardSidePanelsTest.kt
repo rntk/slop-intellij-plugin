@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBTabbedPane
+import com.intellij.util.ui.JBFont
 import dev.insight.codereview.CodeFile
 import dev.insight.diff.ReviewFile
 import dev.insight.review.ReviewSummaries
@@ -13,6 +14,7 @@ import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
 import java.awt.Component
 import java.awt.Container
+import java.awt.Rectangle
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -24,7 +26,7 @@ import javax.swing.KeyStroke
 import kotlin.math.abs
 
 class TreeBoardSidePanelsTest : BasePlatformTestCase() {
-    fun testThreeColumnLayoutAndBidirectionalHighlightingInCodeReview() {
+    fun testSummaryAndTopicCardsArePartOfTheCanvasAndHighlightBothWays() {
         val files = listOf(
             CodeFile("src/auth/Login.kt", "/repo/src/auth/Login.kt", "fun login() = true\n"),
             CodeFile("src/auth/Session.kt", "/repo/src/auth/Session.kt", "fun session() = true\n"),
@@ -42,10 +44,11 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
                 loginNode.id to Summary.plain("Handles login validation."),
             ),
         )
+        val longLeaf = "Login Flow With Remembered Devices"
         val topics = ReviewTopics(
             files = files,
             labels = mapOf(
-                "src/auth/Login.kt" to "Security > Login Flow",
+                "src/auth/Login.kt" to "Security > $longLeaf",
                 "src/auth/Session.kt" to "Security > Session Store",
                 "src/ui/Panel.kt" to "UI > View Rendering",
             ),
@@ -63,6 +66,10 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
         fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
         fun textOf(name: String) = components().filterIsInstance<JTextArea>().single { it.name == name }.text
+        fun TreeBoardPanel.hoverAt(x: Int, y: Int) =
+            this.canvas.dispatchEvent(MouseEvent(this.canvas, MouseEvent.MOUSE_MOVED, 0, 0, x, y, 0, false))
+        fun TreeBoardPanel.card(key: String): Rectangle = checkNotNull(checkNotNull(rail).cardScreenBounds(key)) { key }
+        fun TreeBoardPanel.row(path: String): Rectangle = checkNotNull(rowScreenBounds(path)) { path }
 
         try {
             canvas.showNotes(
@@ -82,65 +89,80 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
                 layoutTree(this)
             }
 
+            // One canvas: the summary is a child of the tree canvas, left of the tree; the cards sit right of it.
             val summaryPanel = checkNotNull(board.summaryPanel)
-            val railPanel = checkNotNull(board.railPanel)
-            assertTrue(summaryPanel.width > 0)
-            assertTrue(railPanel.width > 0)
-            assertTrue(board.canvas.width > 0)
-            assertEquals(summaryPanel.x + summaryPanel.width, board.canvas.x)
-            assertEquals(board.canvas.x + board.canvas.width, railPanel.x)
-            // Code Review shows a static "Topics" label without a Groups switcher.
-            assertTrue(components().any { it.name == "charts-tree-rail-title" })
+            assertSame(board.canvas, summaryPanel.parent)
+            assertEquals(board.width - board.insets.left - board.insets.right, board.canvas.width)
+            assertTrue(summaryPanel.isVisible)
+            val treeLeft = board.row("src/auth/Login.kt").x
+            assertTrue(summaryPanel.x >= 0)
+            assertTrue(summaryPanel.x + summaryPanel.width <= board.row(board.board.nodes.first().entry.path).x)
+            val treeRight = board.board.nodes.map { it.entry.path }
+                .mapNotNull(board::rowScreenBounds).maxOf { it.x + it.width }
+            assertTrue(board.card("1:security > ${longLeaf.lowercase()}").x > treeRight)
+            assertTrue(treeLeft > 0)
+            // Code Review has no Groups switcher.
             assertTrue(components().none { it.name == "charts-tree-rail-mode" })
 
-            // Initial cursor at root shows scope summary.
+            // Card columns grow to fit their titles instead of cutting them.
+            val titleWidth = board.canvas.getFontMetrics(JBFont.label().asBold().forReviewName()).stringWidth(longLeaf)
+            val leafCard = board.card("1:security > ${longLeaf.lowercase()}")
+            assertTrue("${leafCard.width} < $titleWidth", leafCard.width > titleWidth)
+            // Leaf level innermost, broadest level outermost.
+            val securityBounds = board.card("0:security")
+            assertTrue(leafCard.x + leafCard.width <= securityBounds.x)
+
+            // Initial cursor at root shows the scope summary, anchored at the root row.
             assertEquals("Overview of the review scope.", textOf("charts-tree-summary-text"))
 
-            // Hovering a file updates the left summary panel and topic badge.
-            val loginBounds = checkNotNull(board.rowScreenBounds("src/auth/Login.kt"))
-            board.canvas.dispatchEvent(
-                MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, loginBounds.centerX.toInt(), loginBounds.centerY.toInt(), 0, false),
-            )
+            // Hovering a file updates the summary, its topic badge, and moves the card beside the file.
+            val loginBounds = board.row("src/auth/Login.kt")
+            board.hoverAt(loginBounds.centerX.toInt(), loginBounds.centerY.toInt())
             assertEquals("Handles login validation.", textOf("charts-tree-summary-text"))
-            assertEquals("Topic: Security > Login Flow", textOf("charts-tree-summary-topic"))
+            assertEquals("Topic: Security > $longLeaf", textOf("charts-tree-summary-topic"))
+            assertEquals(loginBounds.y, summaryPanel.y)
 
             // Hovering a folder shows the folder summary.
-            val authBounds = checkNotNull(board.rowScreenBounds("src/auth"))
-            board.canvas.dispatchEvent(
-                MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, authBounds.centerX.toInt(), authBounds.centerY.toInt(), 0, false),
-            )
+            val authBounds = board.row("src/auth")
+            board.hoverAt(authBounds.centerX.toInt(), authBounds.centerY.toInt())
             assertEquals("Authentication package files.", textOf("charts-tree-summary-text"))
 
-            // Clear canvas hover before interacting with right rail cards.
-            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_EXITED, 0, 0, 0, 0, 0, false))
+            // Cards stay aligned with the rows they cover.
+            val sessionBounds = board.row("src/auth/Session.kt")
+            assertTrue(abs(leafCard.y - loginBounds.y) <= 2)
+            assertTrue(abs(securityBounds.y - minOf(loginBounds.y, sessionBounds.y)) <= 2)
+            assertTrue(abs(securityBounds.y + securityBounds.height - (sessionBounds.y + sessionBounds.height)) <= 2)
 
-            // Verify hierarchical columns (leaf innermost, parent outermost) and vertical alignment with tree rows.
-            val securityBounds = checkNotNull(railPanel.cardScreenBounds("0:security"))
-            val loginFlowBounds = checkNotNull(railPanel.cardScreenBounds("1:security > login flow"))
-            assertTrue(loginFlowBounds.x < securityBounds.x)
-            val sessionBounds = checkNotNull(board.rowScreenBounds("src/auth/Session.kt"))
-            val railOriginY = railPanel.y + railPanel.railCanvas.y
-            val treeOriginY = board.canvas.y
-            assertTrue(abs((railOriginY + loginFlowBounds.y) - (treeOriginY + loginBounds.y)) <= 2)
-            val expectedAuthTop = minOf(loginBounds.y, sessionBounds.y)
-            val expectedAuthBottom = maxOf(loginBounds.y + loginBounds.height, sessionBounds.y + sessionBounds.height)
-            assertTrue(abs((railOriginY + securityBounds.y) - (treeOriginY + expectedAuthTop)) <= 2)
-            assertTrue(abs((railOriginY + securityBounds.y + securityBounds.height) - (treeOriginY + expectedAuthBottom)) <= 2)
-
-            // Hovering a topic card shows the topic summary on the left and activates the card.
-            val railCanvas = railPanel.railCanvas
-            railCanvas.dispatchEvent(
-                MouseEvent(railCanvas, MouseEvent.MOUSE_MOVED, 0, 0, securityBounds.centerX.toInt(), securityBounds.centerY.toInt(), 0, false),
-            )
+            // Hovering a topic card shows the topic summary next to the card and activates it.
+            board.hoverAt(securityBounds.centerX.toInt(), securityBounds.centerY.toInt())
             assertEquals("0:security", board.activeRailCard?.key)
             assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
-            railCanvas.dispatchEvent(MouseEvent(railCanvas, MouseEvent.MOUSE_EXITED, 0, 0, -10, -10, 0, false))
+            assertEquals(securityBounds.y, summaryPanel.y)
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_EXITED, 0, 0, -10, -10, 0, false))
+            assertNull(board.activeRailCard?.takeIf { board.selectedRailCardKey == null })
+
+            // Panning moves the tree, the cards, and the summary together.
+            val beforeRow = board.row("src/auth/Login.kt")
+            val beforeCard = board.card("0:security")
+            val beforeSummary = summaryPanel.bounds
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_PRESSED, 0, MouseEvent.BUTTON1_DOWN_MASK, 600, 400, 1, false, MouseEvent.BUTTON1))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_DRAGGED, 0, MouseEvent.BUTTON1_DOWN_MASK, 640, 430, 1, false, MouseEvent.BUTTON1))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_RELEASED, 0, 0, 640, 430, 1, false, MouseEvent.BUTTON1))
+            assertEquals(40, board.row("src/auth/Login.kt").x - beforeRow.x)
+            assertEquals(30, board.row("src/auth/Login.kt").y - beforeRow.y)
+            assertEquals(40, board.card("0:security").x - beforeCard.x)
+            assertEquals(30, board.card("0:security").y - beforeCard.y)
+            assertEquals(40, summaryPanel.x - beforeSummary.x)
 
             // Clicking a topic card selects it; selection survives metric tab switches.
-            railCanvas.dispatchEvent(
-                MouseEvent(railCanvas, MouseEvent.MOUSE_CLICKED, 0, 0, securityBounds.centerX.toInt(), securityBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1),
-            )
+            val selectBounds = board.card("0:security")
+            for (id in listOf(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED)) {
+                board.canvas.dispatchEvent(
+                    MouseEvent(board.canvas, id, 0, 0, selectBounds.centerX.toInt(), selectBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1),
+                )
+            }
             assertEquals("0:security", board.selectedRailCardKey)
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_EXITED, 0, 0, -10, -10, 0, false))
             assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
 
             tabs().selectedIndex = 1
@@ -148,29 +170,26 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             assertEquals("0:security", afterMetricSwitch.selectedRailCardKey)
             assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
 
-            // Control panel button hides and shows the Topics rail and persists across metric tab switches.
+            // Hiding the cards keeps the tree where it was.
             val toggleRailBtn = components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }
-            assertTrue(toggleRailBtn.isVisible)
             assertEquals("Hide topics", toggleRailBtn.text)
-            assertTrue(afterMetricSwitch.isRailVisible)
+            val rowBeforeHide = afterMetricSwitch.row("src/ui/Panel.kt")
             toggleRailBtn.doClick()
             assertFalse(afterMetricSwitch.isRailVisible)
-            assertFalse(checkNotNull(afterMetricSwitch.railPanel).isVisible)
             assertNull(afterMetricSwitch.activeRailCard)
             assertEquals("Show topics", toggleRailBtn.text)
+            assertEquals(rowBeforeHide.location, afterMetricSwitch.row("src/ui/Panel.kt").location)
 
             tabs().selectedIndex = 0
             val afterHideSwitch = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
             assertFalse(afterHideSwitch.isRailVisible)
-            assertFalse(checkNotNull(afterHideSwitch.railPanel).isVisible)
             val toggleBtnAfterSwitch = components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }
             assertEquals("Show topics", toggleBtnAfterSwitch.text)
             toggleBtnAfterSwitch.doClick()
             assertTrue(afterHideSwitch.isRailVisible)
-            assertTrue(checkNotNull(afterHideSwitch.railPanel).isVisible)
             assertEquals("Hide topics", toggleBtnAfterSwitch.text)
 
-            // Pressing Escape clears the rail selection.
+            // Pressing Escape clears the card selection.
             triggerKey(afterHideSwitch, KeyEvent.VK_ESCAPE)
             assertNull(afterHideSwitch.selectedRailCardKey)
 
@@ -179,19 +198,25 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             image.createGraphics().also { afterHideSwitch.paint(it) }.dispose()
             afterHideSwitch.zoomTo(1.4)
             image.createGraphics().also { afterHideSwitch.paint(it) }.dispose()
+            val zoomedLeaf = afterHideSwitch.card("1:security > ${longLeaf.lowercase()}")
+            assertTrue(abs(zoomedLeaf.y - afterHideSwitch.row("src/auth/Login.kt").y) <= 2)
+            // Zooming in scales the cards with the canvas.
+            assertTrue(zoomedLeaf.width > leafCard.width)
 
-            val zoomedRail = checkNotNull(afterHideSwitch.railPanel)
-            val zoomedCardBounds = checkNotNull(zoomedRail.cardScreenBounds("1:security > login flow"))
-            val zoomedRowBounds = checkNotNull(afterHideSwitch.rowScreenBounds("src/auth/Login.kt"))
-            val zoomedRailY = zoomedRail.y + zoomedRail.railCanvas.y
-            val zoomedTreeY = afterHideSwitch.canvas.y
-            assertTrue(abs((zoomedRailY + zoomedCardBounds.y) - (zoomedTreeY + zoomedRowBounds.y)) <= 2)
+            // Zooming out keeps the cards' on-screen width, so titles stay readable.
+            afterHideSwitch.zoomTo(0.5)
+            assertEquals(leafCard.width.toDouble(), afterHideSwitch.card("1:security > ${longLeaf.lowercase()}").width.toDouble(), 2.0)
+            image.createGraphics().also { afterHideSwitch.paint(it) }.dispose()
 
+            afterHideSwitch.zoomTo(1.0)
+            val cardXBeforeFold = afterHideSwitch.card("0:security").x
             afterHideSwitch.toggleCollapsed("src/auth")
-            val collapsedAuthBounds = checkNotNull(afterHideSwitch.rowScreenBounds("src/auth"))
-            val collapsedSecurityBounds = checkNotNull(zoomedRail.cardScreenBounds("0:security"))
-            assertTrue(abs((zoomedRailY + collapsedSecurityBounds.y) - (zoomedTreeY + collapsedAuthBounds.y)) <= 2)
-            assertNull(zoomedRail.cardScreenBounds("1:security > login flow"))
+            val collapsedAuthBounds = afterHideSwitch.row("src/auth")
+            val collapsedSecurityBounds = afterHideSwitch.card("0:security")
+            assertTrue(abs(collapsedSecurityBounds.y - collapsedAuthBounds.y) <= 2)
+            // Folding doesn't move the cards sideways.
+            assertEquals(cardXBeforeFold, collapsedSecurityBounds.x)
+            assertNull(checkNotNull(afterHideSwitch.rail).cardScreenBounds("1:security > ${longLeaf.lowercase()}"))
         } finally {
             canvas.dispose()
         }
@@ -249,28 +274,31 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
 
             // Initially shows Topics with all 3 levels (Core, Parsing, Tokens, Formatting).
             assertEquals("Topics", modeCombo().selectedItem)
-            assertNotNull(checkNotNull(boardPanel().railPanel).cardScreenBounds("2:core > parsing > tokens"))
+            assertNotNull(checkNotNull(boardPanel().rail).cardScreenBounds("2:core > parsing > tokens"))
 
             // Level selector filters depth to level 1 (index 0).
             levelCombo().selectedIndex = 0
             val filteredBoard = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
-            val filteredRail = checkNotNull(filteredBoard.railPanel)
+            val filteredRail = checkNotNull(filteredBoard.rail)
             assertNull(filteredRail.cardScreenBounds("2:core > parsing > tokens"))
             assertNotNull(filteredRail.cardScreenBounds("0:core"))
 
-            // Switching to Groups shows the grouping cards, updates the rail toggle label, and shows group summaries.
+            // Switching to Groups shows the grouping cards, updates the toggle label, and shows group summaries.
             modeCombo().selectedItem = "Groups"
             assertEquals("Groups", modeCombo().selectedItem)
             assertEquals("Hide groups", components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }.text)
             val groupBoard = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
-            val groupRail = checkNotNull(groupBoard.railPanel)
-            val groupBounds = checkNotNull(groupRail.cardScreenBounds("0:fix bug"))
-            groupRail.railCanvas.dispatchEvent(
-                MouseEvent(groupRail.railCanvas, MouseEvent.MOUSE_CLICKED, 0, 0, groupBounds.centerX.toInt(), groupBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1),
+            val groupBounds = checkNotNull(checkNotNull(groupBoard.rail).cardScreenBounds("0:fix bug"))
+            groupBoard.canvas.dispatchEvent(
+                MouseEvent(groupBoard.canvas, MouseEvent.MOUSE_CLICKED, 0, 0, groupBounds.centerX.toInt(), groupBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1),
             )
             val summaryText = components().filterIsInstance<JTextArea>().single { it.name == "charts-tree-summary-text" }.text
             assertEquals("Guards against missing tokens.", summaryText)
             assertEquals("Group summary", components().filterIsInstance<JLabel>().single { it.name == "charts-tree-summary-kind" }.text)
+
+            // Hiding the groups hides their selectors too.
+            components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }.doClick()
+            assertFalse(modeCombo().isVisible)
         } finally {
             canvas.dispose()
         }

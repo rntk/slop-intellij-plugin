@@ -1,6 +1,5 @@
 package dev.insight.review.ui
 
-import com.intellij.ide.ui.UISettings
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -8,38 +7,32 @@ import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.insight.review.TreeRailCard
 import dev.insight.review.TreeRailMode
 import dev.insight.review.TreeRailModel
 import dev.insight.review.TreeRailPlacement
+import dev.insight.review.treeRailColumnLefts
+import dev.insight.review.treeRailColumnWidth
+import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
-import java.awt.Container
-import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.FontMetrics
-import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.Rectangle
-import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
-import javax.swing.JComboBox
-import javax.swing.JComponent
+import java.awt.geom.RoundRectangle2D
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
-import javax.swing.SwingUtilities
 import javax.swing.border.MatteBorder
 import kotlin.math.roundToInt
 
-/** Content displayed in the left summary margin of the Tree board. */
+/** Content displayed in the Tree board's floating summary card. */
 internal data class TreeSummaryDisplay(
     val kindLabel: String,
     val title: String,
@@ -53,33 +46,34 @@ internal data class TreeSummaryDisplay(
 )
 
 /**
- * Left-column summary panel in the Tree board's Document-style layout: shows the summary of the hovered or selected
- * Topic/Group card, file, or folder, with clickable file/symbol links when available.
+ * The floating summary card on the Tree canvas: shows the summary of the hovered or selected Topic/Group card,
+ * file, or folder, with clickable file/symbol links when available. The board places it beside the tree in canvas
+ * coordinates, so it moves with the canvas, and [show] scales its text with the canvas zoom.
  */
 internal class TreeBoardSummaryPanel(
     private val project: Project?,
     private val linkContext: ((String?, List<String>) -> SummaryTextLinkContext?)?,
+    /** Receives wheel events the card doesn't use to scroll its own text. */
+    private val onWheel: (MouseWheelEvent) -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private var currentDisplay: TreeSummaryDisplay? = null
+    private var currentScale = 1.0
+
+    /** The content shown now, or null when there is nothing to show. */
+    val display: TreeSummaryDisplay? get() = currentDisplay
 
     private val kindLabel = JLabel("Summary").apply {
         name = "charts-tree-summary-kind"
-        font = JBFont.small()
         foreground = UIUtil.getContextHelpForeground()
     }
 
     private val header = JPanel(BorderLayout()).apply {
         isOpaque = false
-        border = JBUI.Borders.compound(
-            JBUI.Borders.customLineBottom(JBColor.border()),
-            JBUI.Borders.empty(6, 10),
-        )
         add(kindLabel, BorderLayout.CENTER)
     }
 
     private val contentHost = ScrollableWidthPanel(VerticalLayout(JBUI.scale(6))).apply {
         isOpaque = false
-        border = JBUI.Borders.empty(10)
     }
 
     private val scrollPane = JBScrollPane(contentHost).apply {
@@ -89,73 +83,112 @@ internal class TreeBoardSummaryPanel(
         horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
         verticalScrollBar.unitIncrement = JBUI.scale(16)
+        // The card scrolls only while its text overflows; otherwise the wheel pans or zooms the canvas.
+        isWheelScrollingEnabled = false
+        addMouseWheelListener { e -> handleWheel(e) }
     }
 
     init {
         name = "charts-tree-summary-panel"
         background = UIUtil.getListBackground()
         isOpaque = true
-        border = MatteBorder(0, 0, 0, 1, JBColor.border())
-        preferredSize = Dimension(JBUI.scale(DEFAULT_WIDTH), 0)
-        minimumSize = Dimension(JBUI.scale(MIN_WIDTH), 0)
+        isVisible = false
         add(header, BorderLayout.NORTH)
         add(scrollPane, BorderLayout.CENTER)
+        applyScale(1.0)
     }
 
-    fun show(display: TreeSummaryDisplay?) {
-        if (display == currentDisplay) return
-        currentDisplay = display
-        contentHost.removeAll()
-        if (display == null) {
-            kindLabel.text = "Summary"
-            contentHost.add(JLabel("Hover or select an entry to read its summary.").apply {
-                name = "charts-tree-summary-empty"
-                font = JBFont.small().deriveFont(Font.ITALIC)
-                foreground = UIUtil.getContextHelpForeground()
-            })
+    private fun handleWheel(e: MouseWheelEvent) {
+        val bar = scrollPane.verticalScrollBar
+        val scrollable = bar.isVisible && bar.maximum - bar.visibleAmount > bar.minimum
+        if (scrollable && !e.isControlDown && !e.isMetaDown && !e.isShiftDown) {
+            val step = (e.preciseWheelRotation * bar.unitIncrement * 3).roundToInt()
+            bar.value = (bar.value + step).coerceIn(bar.minimum, bar.maximum - bar.visibleAmount)
+            e.consume()
         } else {
+            onWheel(e)
+        }
+    }
+
+    private fun applyScale(scale: Double) {
+        currentScale = scale
+        kindLabel.font = JBFont.small().scaledBy(scale)
+        border = JBUI.Borders.customLine(JBColor.border(), (1 * scale).roundToInt().coerceAtLeast(1))
+        header.border = JBUI.Borders.compound(
+            JBUI.Borders.customLineBottom(JBColor.border()),
+            JBUI.Borders.empty((5 * scale).roundToInt(), (10 * scale).roundToInt()),
+        )
+        contentHost.border = JBUI.Borders.empty((10 * scale).roundToInt())
+    }
+
+    /** Shows [display] with text scaled by [scale]; rebuilds only when either changes. */
+    fun show(display: TreeSummaryDisplay?, scale: Double = currentScale) {
+        val nextScale = (scale * 20).roundToInt() / 20.0
+        if (display == currentDisplay && nextScale == currentScale) return
+        val scrollTop = if (display == currentDisplay) scrollPane.verticalScrollBar.value else 0
+        currentDisplay = display
+        if (nextScale != currentScale) applyScale(nextScale)
+        contentHost.removeAll()
+        if (display != null) {
             kindLabel.text = display.kindLabel
-            val bodyCard = JPanel(VerticalLayout(JBUI.scale(5))).apply {
-                isOpaque = false
-                border = JBUI.Borders.compound(
-                    MatteBorder(0, JBUI.scale(2), 0, 0, display.accent ?: JBColor.border()),
-                    JBUI.Borders.empty(2, 8, 2, 2),
-                )
-                add(readOnlyText(display.title, JBFont.label().asBold(), UIUtil.getLabelForeground()).apply {
-                    name = "charts-tree-summary-title"
-                })
-                display.subtitle?.takeIf { it.isNotBlank() }?.let { sub ->
-                    add(readOnlyText(sub, JBFont.small(), UIUtil.getContextHelpForeground()).apply {
-                        name = "charts-tree-summary-subtitle"
-                    })
-                }
-                display.topicBadge?.takeIf { it.isNotBlank() }?.let { badge ->
-                    add(readOnlyText(badge, JBFont.small(), UIUtil.getContextHelpForeground()).apply {
-                        name = "charts-tree-summary-topic"
-                    })
-                }
-                val summary = display.summary
-                if (summary != null) {
-                    val area = readOnlyText(summary, JBFont.label().forSummaryText(), UIUtil.getLabelForeground()).apply {
-                        name = "charts-tree-summary-text"
-                    }
-                    if (project != null) {
-                        linkContext?.invoke(display.linkSourcePath, display.linkEntryFiles)?.let { ctx ->
-                            installSummaryTextLinks(area, summary, project, ctx)
-                        }
-                    }
-                    add(area)
-                } else {
-                    add(readOnlyText(display.missingText, JBFont.small().deriveFont(Font.ITALIC), UIUtil.getContextHelpForeground()).apply {
-                        name = "charts-tree-summary-empty"
-                    })
-                }
-            }
-            contentHost.add(bodyCard)
+            contentHost.add(bodyCard(display, nextScale))
+        } else {
+            kindLabel.text = "Summary"
         }
         contentHost.revalidate()
         contentHost.repaint()
-        scrollPane.verticalScrollBar.value = 0
+        scrollPane.verticalScrollBar.value = scrollTop
+    }
+
+    private fun bodyCard(display: TreeSummaryDisplay, scale: Double) = JPanel(VerticalLayout(JBUI.scale(5))).apply {
+        isOpaque = false
+        border = JBUI.Borders.compound(
+            MatteBorder(0, (JBUI.scale(2) * scale).roundToInt(), 0, 0, display.accent ?: JBColor.border()),
+            JBUI.Borders.empty(2, (8 * scale).roundToInt(), 2, 2),
+        )
+        add(readOnlyText(display.title, JBFont.label().asBold().scaledBy(scale), UIUtil.getLabelForeground()).apply {
+            name = "charts-tree-summary-title"
+        })
+        display.subtitle?.takeIf { it.isNotBlank() }?.let { sub ->
+            add(readOnlyText(sub, JBFont.small().scaledBy(scale), UIUtil.getContextHelpForeground()).apply {
+                name = "charts-tree-summary-subtitle"
+            })
+        }
+        display.topicBadge?.takeIf { it.isNotBlank() }?.let { badge ->
+            add(readOnlyText(badge, JBFont.small().scaledBy(scale), UIUtil.getContextHelpForeground()).apply {
+                name = "charts-tree-summary-topic"
+            })
+        }
+        val summary = display.summary
+        if (summary != null) {
+            val area = readOnlyText(summary, JBFont.label().forSummaryText().scaledBy(scale), UIUtil.getLabelForeground()).apply {
+                name = "charts-tree-summary-text"
+            }
+            if (project != null) {
+                linkContext?.invoke(display.linkSourcePath, display.linkEntryFiles)?.let { ctx ->
+                    installSummaryTextLinks(area, summary, project, ctx)
+                }
+            }
+            add(area)
+        } else {
+            add(readOnlyText(display.missingText, JBFont.small().deriveFont(Font.ITALIC).scaledBy(scale), UIUtil.getContextHelpForeground()).apply {
+                name = "charts-tree-summary-empty"
+            })
+        }
+    }
+
+    /** The height the card needs to show all of its content at [width]. */
+    fun preferredHeightFor(width: Int): Int {
+        val outer = insets
+        val innerWidth = (width - outer.left - outer.right).coerceAtLeast(1)
+        // Wrapped text measures its height from its width: lay out at the target width, then measure.
+        contentHost.setSize(innerWidth, contentHost.height.coerceAtLeast(1))
+        contentHost.doLayout()
+        for (child in contentHost.components) {
+            child.setSize(child.width, child.preferredSize.height)
+            (child as? java.awt.Container)?.doLayout()
+        }
+        return outer.top + outer.bottom + header.preferredSize.height + contentHost.preferredSize.height
     }
 
     private fun readOnlyText(value: String, textFont: Font, color: Color): JTextArea = JTextArea(value).apply {
@@ -170,305 +203,207 @@ internal class TreeBoardSummaryPanel(
     }
 
     companion object {
-        const val DEFAULT_WIDTH = 280
-        const val MIN_WIDTH = 200
+        /** Width of the card at zoom 1 and below. */
+        const val DEFAULT_WIDTH = 300
+        /** Gap between the card and the tree at zoom 1 and below. */
+        const val GAP = 12
+        /** Distance the card keeps from the canvas's top and bottom edges. */
+        const val MARGIN = 12
     }
 }
 
 /**
- * Right-column rail panel in the Tree board's Document-style layout: renders Topic or Group cards in hierarchical
- * columns (leaf level innermost next to the tree, broadest level outermost), vertically aligned with the matching
- * file rows in the tree canvas.
+ * The Tree canvas's Topic or Group cards, painted in hierarchical columns to the right of the tree (leaf level
+ * innermost, broadest level outermost) and aligned with the rows they cover. Cards are part of the canvas: they pan
+ * with it, and each column is as wide as its titles need, so deep hierarchies grow the board to the right.
  */
-internal class TreeBoardRailPanel(
-    private val model: TreeRailModel,
-    allowGrouping: Boolean,
-    mode: TreeRailMode,
-    level: Int?,
-    onModeChanged: (TreeRailMode) -> Unit,
-    onLevelChanged: (Int?) -> Unit,
-    private val onHover: (TreeRailCard?) -> Unit,
-    private val onSelect: (TreeRailCard) -> Unit,
-    private val rowScreenBoundsY: (Int) -> Pair<Double, Double>,
-    private val canvasYOffset: () -> Int,
-    private val onWheelScroll: (MouseWheelEvent) -> Unit,
-) : JPanel(BorderLayout()) {
+internal class TreeBoardRail(
+    val model: TreeRailModel,
+    private val metricsFor: (Font) -> FontMetrics,
+    /** Screen x of the innermost column's left edge. */
+    private val startX: () -> Double,
+    /** Screen scale of the cards; see [dev.insight.review.treeCanvasCardScale]. */
+    private val scale: () -> Double,
+    /** Screen top and bottom of a tree row. */
+    private val rowScreenY: (Int) -> Pair<Double, Double>,
+) {
     private var placements: List<TreeRailPlacement> = emptyList()
-    private var lastHoveredKey: String? = null
-    private var lastSelectedKey: String? = null
-    private var lastMatchingKeys: Set<String> = emptySet()
+    private var hoveredKey: String? = null
+    private var selectedKey: String? = null
+    private var matchingKeys: Set<String> = emptySet()
 
-    internal val railCanvas: JComponent = RailCanvas()
+    private val titleFont: Font get() = JBFont.label().asBold().forReviewName()
+    private val placeholderFont: Font get() = JBFont.label().deriveFont(Font.ITALIC).forReviewName()
+    private val countFont: Font get() = JBFont.small()
+    private val emptyFont: Font get() = JBFont.small().deriveFont(Font.ITALIC)
+    private val headingFont: Font get() = JBFont.small().asBold()
 
-    init {
-        name = "charts-tree-rail-panel"
-        background = UIUtil.getListBackground()
-        isOpaque = true
-        border = MatteBorder(0, 1, 0, 0, JBColor.border())
-        val columnCount = model.visibleDepth.coerceAtLeast(1)
-        val cardWidth = JBUI.scale(when (columnCount) {
-            1 -> 190
-            2 -> 145
-            3 -> 130
-            else -> 120
-        })
-        val preferredWidth = if (model.cards.isEmpty()) {
-            JBUI.scale(DEFAULT_WIDTH)
-        } else {
-            maxOf(
-                JBUI.scale(MIN_WIDTH),
-                columnCount * cardWidth + (columnCount - 1) * JBUI.scale(COLUMN_GAP) + 2 * JBUI.scale(RAIL_PAD_X),
-            )
-        }
-        preferredSize = Dimension(preferredWidth, 0)
-        minimumSize = Dimension(JBUI.scale(MIN_WIDTH), 0)
+    private val padLeft get() = 1 + JBUI.scale(ACCENT_WIDTH) + JBUI.scale(8)
+    private val padRight get() = 1 + JBUI.scale(8)
 
-        val headerLeft: JComponent = if (allowGrouping) {
-            JComboBox(arrayOf(TreeRailMode.TOPICS.title, TreeRailMode.GROUPING.title)).apply {
-                name = "charts-tree-rail-mode"
-                font = JBFont.small()
-                isFocusable = false
-                selectedIndex = if (mode == TreeRailMode.GROUPING) 1 else 0
-                toolTipText = "Switch between code Topics and change Groups"
-                addActionListener {
-                    val chosen = if (selectedIndex == 1) TreeRailMode.GROUPING else TreeRailMode.TOPICS
-                    if (chosen != mode) onModeChanged(chosen)
-                }
+    /** Each column's width at zoom 1, measured once from the titles of its cards. */
+    val baseColumnWidths: List<Int> by lazy {
+        val columns = model.visibleDepth.coerceAtLeast(1)
+        val title = metricsFor(titleFont)
+        val placeholder = metricsFor(placeholderFont)
+        val count = metricsFor(countFont)
+        List(columns) { column ->
+            val level = model.visibleDepth - 1 - column
+            val widths = model.cards.filter { it.level == level }.map { card ->
+                val metrics = if (card.placeholder) placeholder else title
+                maxOf(metrics.stringWidth(card.name), count.stringWidth(fileCountText(card.files.size)))
             }
-        } else {
-            JLabel(mode.title).apply {
-                name = "charts-tree-rail-title"
-                font = JBFont.small().asBold()
-                foreground = UIUtil.getContextHelpForeground()
-            }
-        }
-
-        val header = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-            isOpaque = false
-            border = JBUI.Borders.compound(
-                JBUI.Borders.customLineBottom(JBColor.border()),
-                JBUI.Borders.empty(4, 8),
-            )
-            add(headerLeft, BorderLayout.WEST)
-            if (this@TreeBoardRailPanel.model.depth > 1) {
-                val railModel = this@TreeBoardRailPanel.model
-                val options = (0 until railModel.depth - 1).map { "${it + 1}" } + "All"
-                val levelCombo = JComboBox(options.toTypedArray()).apply {
-                    name = "charts-tree-rail-level"
-                    font = JBFont.small()
-                    isFocusable = false
-                    selectedIndex = if (level == null || level >= railModel.depth - 1) options.lastIndex else level.coerceIn(0, railModel.depth - 2)
-                    toolTipText = "Show ${railModel.mode.plural} up to the selected depth"
-                    addActionListener {
-                        val nextLevel = if (selectedIndex >= railModel.depth - 1) null else selectedIndex
-                        if (nextLevel != level) onLevelChanged(nextLevel)
-                    }
-                }
-                add(levelCombo, BorderLayout.EAST)
-            }
-        }
-        add(header, BorderLayout.NORTH)
-
-        if (model.cards.isEmpty()) {
-            val command = if (mode == TreeRailMode.GROUPING) "/grouping" else "/topics"
-            val emptyPanel = JPanel(BorderLayout()).apply {
-                isOpaque = false
-                border = JBUI.Borders.empty(8)
-                add(JLabel("No ${mode.plural} yet ($command)").apply {
-                    name = "charts-tree-rail-empty"
-                    font = JBFont.small().deriveFont(Font.ITALIC)
-                    foreground = UIUtil.getContextHelpForeground()
-                }, BorderLayout.NORTH)
-            }
-            add(emptyPanel, BorderLayout.CENTER)
-        } else {
-            add(railCanvas, BorderLayout.CENTER)
+            treeRailColumnWidth(widths, padLeft + padRight, JBUI.scale(MIN_CARD_WIDTH), JBUI.scale(MAX_CARD_WIDTH))
         }
     }
+
+    /** Width of all columns and their gaps at zoom 1. */
+    val baseWidth: Int
+        get() = if (model.cards.isEmpty()) {
+            metricsFor(emptyFont).stringWidth(emptyText()) + JBUI.scale(8)
+        } else {
+            baseColumnWidths.sum() + (baseColumnWidths.size - 1) * JBUI.scale(COLUMN_GAP)
+        }
 
     fun setPlacements(next: List<TreeRailPlacement>) {
-        if (placements == next) return
         placements = next
-        railCanvas.repaint()
     }
 
-    fun repaintRail() {
-        railCanvas.repaint()
+    fun updateHighlights(hovered: String?, selected: String?, matching: Set<String>) {
+        hoveredKey = hovered
+        selectedKey = selected
+        matchingKeys = matching
     }
 
-    fun updateHighlights(hoveredKey: String?, selectedKey: String?, matchingKeys: Set<String>) {
-        if (hoveredKey == lastHoveredKey && selectedKey == lastSelectedKey && matchingKeys == lastMatchingKeys) return
-        lastHoveredKey = hoveredKey
-        lastSelectedKey = selectedKey
-        lastMatchingKeys = matchingKeys
-        railCanvas.repaint()
-    }
-
+    /** The first placement of the card [key] in canvas coordinates, or null when it isn't placed. */
     fun cardScreenBounds(key: String): Rectangle? =
         allPlacementBounds().firstOrNull { it.first.card.key == key }?.second
 
+    /** The placement of the card [key] that anchors its summary: the first one in view, else the first one. */
+    fun anchorBounds(key: String, viewHeight: Int): Rectangle? {
+        val bounds = allPlacementBounds().filter { it.first.card.key == key }.map { it.second }
+        return bounds.firstOrNull { it.y + it.height > 0 && it.y < viewHeight } ?: bounds.firstOrNull()
+    }
+
     fun allPlacementBounds(): List<Pair<TreeRailPlacement, Rectangle>> {
         if (placements.isEmpty() || model.visibleDepth <= 0) return emptyList()
-        val columnCount = model.visibleDepth.coerceAtLeast(1)
-        val padX = JBUI.scale(RAIL_PAD_X)
-        val gap = JBUI.scale(COLUMN_GAP)
-        val colW = ((railCanvas.width - 2 * padX - (columnCount - 1) * gap) / columnCount).coerceAtLeast(JBUI.scale(60))
-        val offset = canvasYOffset()
-        return placements.map { placement ->
-            val x = padX + placement.column * (colW + gap)
-            val rawTop = rowScreenBoundsY(placement.firstRow).first - offset
-            val rawBottom = rowScreenBoundsY(placement.lastRow).second - offset
-            val y = rawTop.roundToInt() + 1
-            val h = (rawBottom.roundToInt() - 1 - y).coerceAtLeast(10)
-            placement to Rectangle(x, y, colW, h)
+        val s = scale()
+        val widths = baseColumnWidths
+        val lefts = treeRailColumnLefts(startX(), widths, JBUI.scale(COLUMN_GAP), s)
+        return placements.mapNotNull { placement ->
+            val column = placement.column.takeIf { it in widths.indices } ?: return@mapNotNull null
+            val top = rowScreenY(placement.firstRow).first.roundToInt() + 1
+            val bottom = rowScreenY(placement.lastRow).second.roundToInt() - 1
+            placement to Rectangle(lefts[column].roundToInt(), top, (widths[column] * s).roundToInt(), (bottom - top).coerceAtLeast(4))
         }
     }
+
+    fun hitTest(point: Point): TreeRailPlacement? =
+        allPlacementBounds().firstOrNull { (_, rect) -> rect.contains(point) }?.first
+
+    fun tooltip(placement: TreeRailPlacement): String = "${placement.card.fullPath} · ${countText(placement)}"
+
+    private fun emptyText(): String =
+        "No ${model.mode.plural} yet (${if (model.mode == TreeRailMode.GROUPING) "/grouping" else "/topics"})"
 
     private fun countText(placement: TreeRailPlacement): String {
         val total = placement.card.files.size
-        return when {
-            placement.fileCountInSpan < total -> "${placement.fileCountInSpan} of $total files"
-            total == 1 -> "1 file"
-            else -> "$total files"
-        }
+        return if (placement.fileCountInSpan < total) "${placement.fileCountInSpan} of $total files" else fileCountText(total)
     }
 
-    private inner class RailCanvas : JComponent() {
-        init {
-            name = "charts-tree-rail-canvas"
-            isOpaque = true
-            background = UIUtil.getListBackground()
-            toolTipText = ""
+    private fun fileCountText(count: Int) = if (count == 1) "1 file" else "$count files"
 
-            val mouse = object : MouseAdapter() {
-                override fun mouseMoved(e: MouseEvent) {
-                    val hit = hitTest(e.point)?.takeUnless { it.card.placeholder }
-                    onHover(hit?.card)
-                    cursor = if (hit != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
-                }
+    fun paint(g: Graphics2D, viewWidth: Int, viewHeight: Int) {
+        val s = scale()
+        val left = startX()
+        if (left > viewWidth) return
+        val firstRow = rowScreenY(0)
 
-                override fun mouseExited(e: MouseEvent) {
-                    onHover(null)
-                    cursor = Cursor.getDefaultCursor()
-                }
+        // A heading above the innermost column names what the cards show.
+        g.font = headingFont.scaledBy(s)
+        g.color = UIUtil.getContextHelpForeground()
+        g.drawString(model.mode.title, left.toFloat(), (firstRow.first - JBUI.scale(4) * s).toFloat())
 
-                override fun mouseClicked(e: MouseEvent) {
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
-                        hitTest(e.point)?.takeUnless { it.card.placeholder }?.let { onSelect(it.card) }
-                    }
-                }
-            }
-            addMouseListener(mouse)
-            addMouseMotionListener(mouse)
-            addMouseWheelListener { onWheelScroll(it) }
+        if (model.cards.isEmpty()) {
+            g.font = emptyFont.scaledBy(s)
+            val metrics = g.fontMetrics
+            val center = (firstRow.first + firstRow.second) / 2.0
+            g.drawString(emptyText(), left.toFloat(), (center + (metrics.ascent - metrics.descent) / 2.0).toFloat())
+            return
         }
 
-        private fun hitTest(point: Point): TreeRailPlacement? =
-            allPlacementBounds().firstOrNull { (_, rect) -> rect.contains(point) }?.first
+        val boldTitle = titleFont.scaledBy(s)
+        val italicTitle = placeholderFont.scaledBy(s)
+        val counts = countFont.scaledBy(s)
+        val boldMetrics = g.getFontMetrics(boldTitle)
+        val placeholderMetrics = g.getFontMetrics(italicTitle)
+        val countMetrics = g.getFontMetrics(counts)
 
-        override fun getToolTipText(event: MouseEvent): String? =
-            hitTest(event.point)?.let { placement -> "${placement.card.fullPath} · ${countText(placement)}" }
+        val accentW = (JBUI.scale(ACCENT_WIDTH) * s).roundToInt()
+        val textPadLeft = (padLeft * s).roundToInt()
+        val textPadRight = (padRight * s).roundToInt()
+        val padY = (JBUI.scale(4) * s).roundToInt()
+        val titleGap = (JBUI.scale(2) * s).roundToInt()
+        val arc = JBUI.scale(6) * s
 
-        override fun paintComponent(graphics: Graphics) {
-            val g = graphics.create() as Graphics2D
+        for ((placement, rect) in allPlacementBounds()) {
+            if (rect.y + rect.height < 0 || rect.y > viewHeight || rect.x > viewWidth || rect.x + rect.width < 0) continue
+            val card = placement.card
+            val hovered = card.key == hoveredKey
+            val selected = card.key == selectedKey
+            val active = hovered || selected || card.key in matchingKeys
+
+            val shape = RoundRectangle2D.Double(rect.x.toDouble(), rect.y.toDouble(), rect.width - 1.0, rect.height - 1.0, arc, arc)
+            g.color = when {
+                selected -> UIUtil.getListSelectionBackground(false)
+                hovered -> JBUI.CurrentTheme.List.Hover.background(true)
+                else -> UIUtil.getListBackground()
+            }
+            g.fill(shape)
+
+            val oldClip = g.clip
+            g.clip(shape)
             try {
-                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-                UISettings.setupAntialiasing(g)
+                g.color = card.family?.let(DocumentColumnsPanel::accent) ?: JBColor.border()
+                g.fillRect(rect.x, rect.y, accentW, rect.height)
 
-                g.color = UIUtil.getListBackground()
-                g.fillRect(0, 0, width, height)
-
-                val boldTitleFont = JBFont.label().asBold().forReviewName()
-                val placeholderFont = JBFont.label().deriveFont(Font.ITALIC).forReviewName()
-                val countFont = JBFont.small()
-                val boldMetrics = g.getFontMetrics(boldTitleFont)
-                val placeholderMetrics = g.getFontMetrics(placeholderFont)
-                val countMetrics = g.getFontMetrics(countFont)
-
-                val accentW = JBUI.scale(ACCENT_WIDTH)
-                val padLeft = 1 + accentW + JBUI.scale(6)
-                val padRight = 1 + JBUI.scale(5)
-                val padY = JBUI.scale(4)
-                val titleGap = JBUI.scale(2)
-
-                for ((placement, rect) in allPlacementBounds()) {
-                    if (rect.y + rect.height < 0 || rect.y > height) continue
-                    val card = placement.card
-                    val key = card.key
-                    val hovered = key == lastHoveredKey
-                    val selected = key == lastSelectedKey
-                    val matched = key in lastMatchingKeys
-                    val active = hovered || selected || matched
-
-                    g.color = when {
-                        selected -> UIUtil.getListSelectionBackground(false)
-                        hovered -> JBUI.CurrentTheme.List.Hover.background(true)
-                        else -> UIUtil.getListBackground()
+                val textX = rect.x + textPadLeft
+                val textW = (rect.width - textPadLeft - textPadRight).coerceAtLeast(8)
+                val font = if (card.placeholder) italicTitle else boldTitle
+                val metrics = if (card.placeholder) placeholderMetrics else boldMetrics
+                g.color = if (card.placeholder) UIUtil.getContextHelpForeground() else UIUtil.getLabelForeground()
+                val fullBlock = metrics.height + countMetrics.height + padY * 2 + titleGap
+                if (rect.height >= fullBlock) {
+                    val maxLines = ((rect.height - padY * 2 - countMetrics.height - titleGap) / metrics.height).coerceAtLeast(1)
+                    val lines = wrapLines(card.name, metrics, textW, maxLines)
+                    val blockHeight = lines.size * metrics.height + titleGap + countMetrics.height
+                    // Keep the title in view while the card's top is scrolled above the canvas.
+                    val maxTop = rect.y + rect.height - padY - blockHeight
+                    val startY = if (rect.y < 0) minOf(padY, maxTop).coerceAtLeast(rect.y + padY) else rect.y + padY
+                    g.font = font
+                    for ((index, line) in lines.withIndex()) {
+                        g.drawString(line, textX, startY + index * metrics.height + metrics.ascent)
                     }
-                    g.fillRect(rect.x, rect.y, rect.width, rect.height)
-
-                    g.color = card.family?.let(DocumentColumnsPanel::accent) ?: JBColor.border()
-                    g.fillRect(rect.x + 1, rect.y + 1, accentW, (rect.height - 2).coerceAtLeast(1))
-
-                    g.color = if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()
-                    g.drawRect(rect.x, rect.y, (rect.width - 1).coerceAtLeast(1), (rect.height - 1).coerceAtLeast(1))
-
-                    val textX = rect.x + padLeft
-                    val textW = (rect.width - padLeft - padRight).coerceAtLeast(8)
-                    val titleFont = if (card.placeholder) placeholderFont else boldTitleFont
-                    val titleMetrics = if (card.placeholder) placeholderMetrics else boldMetrics
-                    val titleColor = if (card.placeholder) UIUtil.getContextHelpForeground() else UIUtil.getLabelForeground()
-
-                    val oldClip = g.clip
-                    g.clipRect(
-                        rect.x + 1 + accentW,
-                        rect.y + 1,
-                        (rect.width - 2 - accentW).coerceAtLeast(1),
-                        (rect.height - 2).coerceAtLeast(1),
-                    )
-                    try {
-                        val fullBlockMinHeight = titleMetrics.height + countMetrics.height + padY * 2 + titleGap
-                        if (rect.height >= fullBlockMinHeight) {
-                            val availableForTitle = rect.height - padY * 2 - countMetrics.height - titleGap
-                            val maxLines = (availableForTitle / titleMetrics.height).coerceAtLeast(1)
-                            val lines = wrapLines(card.name, titleMetrics, textW, maxLines)
-                            val headerHeight = lines.size * titleMetrics.height + titleGap + countMetrics.height
-                            val maxTop = rect.y + rect.height - padY - headerHeight
-                            val startY = if (rect.y < 0) {
-                                minOf(JBUI.scale(4), maxTop).coerceAtLeast(rect.y + padY)
-                            } else {
-                                rect.y + padY
-                            }
-                            g.font = titleFont
-                            g.color = titleColor
-                            for ((idx, line) in lines.withIndex()) {
-                                g.drawString(line, textX, startY + idx * titleMetrics.height + titleMetrics.ascent)
-                            }
-                            g.font = countFont
-                            g.color = UIUtil.getContextHelpForeground()
-                            val countY = startY + lines.size * titleMetrics.height + titleGap + countMetrics.ascent
-                            g.drawString(ellipsize(countText(placement), countMetrics, textW), textX, countY)
-                        } else if (rect.height >= 10) {
-                            val line = ellipsize(card.name, titleMetrics, textW)
-                            g.font = titleFont
-                            g.color = titleColor
-                            val baselineY = if (rect.y < 0 && rect.height >= titleMetrics.height + 2) {
-                                val maxTop = rect.y + rect.height - titleMetrics.height - 1
-                                val top = minOf(JBUI.scale(2), maxTop).coerceAtLeast(rect.y + 1)
-                                top + titleMetrics.ascent
-                            } else {
-                                (rect.y + (rect.height + titleMetrics.ascent - titleMetrics.descent) / 2.0).roundToInt()
-                            }
-                            g.drawString(line, textX, baselineY)
-                        }
-                    } finally {
-                        g.clip = oldClip
-                    }
+                    g.font = counts
+                    g.color = UIUtil.getContextHelpForeground()
+                    g.drawString(ellipsize(countText(placement), countMetrics, textW), textX,
+                        startY + lines.size * metrics.height + titleGap + countMetrics.ascent)
+                } else if (rect.height >= 6) {
+                    // Short cards keep one title line, shrunk to their height when needed.
+                    val fitFont = if (metrics.height <= rect.height) font
+                    else font.deriveFont((font.size2D * rect.height / metrics.height).coerceAtLeast(6f))
+                    val fitMetrics = g.getFontMetrics(fitFont)
+                    g.font = fitFont
+                    val baseline = (rect.y + (rect.height + fitMetrics.ascent - fitMetrics.descent) / 2.0).roundToInt()
+                    g.drawString(ellipsize(card.name, fitMetrics, textW), textX, baseline)
                 }
             } finally {
-                g.dispose()
+                g.clip = oldClip
             }
+
+            g.color = if (active) JBUI.CurrentTheme.Focus.focusColor() else JBColor.border()
+            g.stroke = BasicStroke(if (active) 1.5f * s.toFloat() else s.toFloat())
+            g.draw(shape)
         }
     }
 
@@ -532,13 +467,16 @@ internal class TreeBoardRailPanel(
     }
 
     companion object {
-        const val DEFAULT_WIDTH = 250
-        const val MIN_WIDTH = 180
-        const val COLUMN_GAP = 6
-        const val RAIL_PAD_X = 6
+        const val MIN_CARD_WIDTH = 140
+        const val MAX_CARD_WIDTH = 560
+        const val COLUMN_GAP = 8
+        /** Gap between the tree's widest row and the innermost column at zoom 1. */
+        const val TREE_GAP = 32
         const val ACCENT_WIDTH = 4
     }
 }
+
+private fun Font.scaledBy(scale: Double): Font = if (scale == 1.0) this else deriveFont((size2D * scale).toFloat())
 
 /** A vertical panel that tracks its scroll viewport width so wrapped text areas wrap cleanly without horizontal scroll. */
 private class ScrollableWidthPanel(layout: LayoutManager) : JPanel(layout), Scrollable {

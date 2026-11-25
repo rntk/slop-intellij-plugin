@@ -1,5 +1,7 @@
 package dev.insight.review
 
+import kotlin.math.max
+
 /** Whether the Tree board's right rail shows code Topics or change Groups. */
 internal enum class TreeRailMode(val title: String, val singular: String, val plural: String) {
     TOPICS("Topics", "topic", "topics"),
@@ -236,4 +238,38 @@ internal fun computeTreeRailPlacements(
         flush()
     }
     return placements
+}
+
+/**
+ * Screen scale for the Tree canvas's cards and floating summary at [zoom]: they follow the canvas when it zooms in
+ * and keep their on-screen size when it zooms out, so titles and summaries stay readable at any zoom.
+ */
+internal fun treeCanvasCardScale(zoom: Double): Double = max(1.0, zoom)
+
+/**
+ * Screen-space left edges of the rail columns, starting at [startX] with [baseWidths] and [baseGap] at zoom 1,
+ * all scaled by [scale]. Column `0` sits innermost, next to the tree.
+ */
+internal fun treeRailColumnLefts(startX: Double, baseWidths: List<Int>, baseGap: Int, scale: Double): List<Double> {
+    var x = startX
+    return baseWidths.map { width ->
+        x.also { x += (width + baseGap) * scale }
+    }
+}
+
+/**
+ * Base (zoom 1) width of one rail column: wide enough for its widest [contentWidths] plus [padding], within
+ * [minWidth]..[maxWidth]. Empty columns use [minWidth].
+ */
+internal fun treeRailColumnWidth(contentWidths: Collection<Int>, padding: Int, minWidth: Int, maxWidth: Int): Int =
+    ((contentWidths.maxOrNull() ?: 0) + padding).coerceIn(minWidth, maxOf(minWidth, maxWidth))
+
+/**
+ * Screen top of a floating card of [height] anchored at [anchorTop]..[anchorBottom] in a view of [viewHeight],
+ * kept [margin] inside the view while the anchor stays visible; null once the anchor leaves the view.
+ */
+internal fun floatingCardTop(anchorTop: Double, anchorBottom: Double, height: Double, viewHeight: Double, margin: Double): Double? {
+    if (viewHeight <= 0.0 || anchorBottom <= 0.0 || anchorTop >= viewHeight) return null
+    val lowest = viewHeight - margin - height
+    return anchorTop.coerceAtMost(lowest).coerceAtLeast(margin)
 }

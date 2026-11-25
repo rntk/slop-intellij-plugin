@@ -30,7 +30,10 @@ import dev.insight.review.TreeFocusLinks
 import dev.insight.review.TreeRailCard
 import dev.insight.review.TreeRailMode
 import dev.insight.review.TreeRailModel
+import dev.insight.review.TreeRailPlacement
 import dev.insight.review.computeTreeRailPlacements
+import dev.insight.review.floatingCardTop
+import dev.insight.review.treeCanvasCardScale
 import dev.insight.review.WrappedSummaryLine
 import dev.insight.review.lineLinkSpans
 import dev.insight.review.linkTooltip
@@ -63,6 +66,7 @@ import java.awt.geom.RoundRectangle2D
 import java.util.Locale
 import javax.swing.AbstractAction
 import javax.swing.JButton
+import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JMenuItem
@@ -129,7 +133,7 @@ internal class TreeBoardPanel(
     cursorPath: String? = null,
     private val cursorChanged: (String?) -> Unit = {},
     initialZoom: Double = 1.0,
-    initialPanX: Double = 0.0,
+    initialPanX: Double? = null,
     initialPanY: Double = 0.0,
     private val viewportChanged: (Double, Double, Double) -> Unit = { _, _, _ -> },
     private val toggleConnections: ((String) -> Unit)? = null,
@@ -178,7 +182,7 @@ internal class TreeBoardPanel(
     private val activeCollapsedPaths: Set<String> get() = if (isFocused) focusCollapsedPaths else collapsedPaths
     private val visibleFocusFiles: Set<String>? get() = focusSelection?.links?.visibleFiles
 
-    private val viewport = TreeBoardViewport(initialPanX, initialPanY, initialZoom)
+    private val viewport = TreeBoardViewport(initialPanX ?: 0.0, initialPanY, initialZoom)
     private var cursorIndex: Int = -1
     private var hoveredIndex: Int = -1
     private var hoveredRailCard: TreeRailCard? = null
@@ -186,36 +190,70 @@ internal class TreeBoardPanel(
     private var railVisible: Boolean = initialRailVisible
     private var groupHighlight: TreeBoardGroupHighlight? = null
 
-    val isRailVisible: Boolean get() = railVisible && railPanel != null
+    val isRailVisible: Boolean get() = railVisible && rail != null
     val activeRailCard: TreeRailCard? get() = if (isRailVisible) hoveredRailCard ?: railModel?.cardByKey(selectedRailKey) else null
     val selectedRailCardKey: String? get() = selectedRailKey
 
+    /** What the floating summary is anchored to: a tree row or a Topic/Group card. */
+    private sealed interface SummaryAnchor {
+        data class Row(val index: Int) : SummaryAnchor
+        data class Card(val key: String) : SummaryAnchor
+    }
+
+    private var summaryAnchor: SummaryAnchor? = null
+
+    /** The floating summary card, placed on the canvas to the left of the tree; null when nothing can be summarized. */
     internal val summaryPanel: TreeBoardSummaryPanel? =
         if (nodeSummaries.isNotEmpty() || railModel?.cards?.isNotEmpty() == true) {
-            TreeBoardSummaryPanel(project, summaryLinkContext)
+            TreeBoardSummaryPanel(project, summaryLinkContext) { e ->
+                canvas.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, canvas))
+            }
         } else null
 
-    internal val railPanel: TreeBoardRailPanel? =
+    /** The Topic or Group cards, painted on the canvas to the right of the tree. */
+    internal val rail: TreeBoardRail? =
         if (railModel != null && (railModel.cards.isNotEmpty() || showEmptyRail)) {
-            TreeBoardRailPanel(
+            TreeBoardRail(
                 model = railModel,
-                allowGrouping = allowGroupingRail,
-                mode = railMode,
-                level = railLevel,
-                onModeChanged = railModeChanged,
-                onLevelChanged = railLevelChanged,
-                onHover = ::hoverRailCard,
-                onSelect = ::toggleRailCardSelection,
-                rowScreenBoundsY = { rowIdx ->
-                    viewport.worldToScreenY(rowTopWorld(rowIdx)) to viewport.worldToScreenY(rowBottomWorld(rowIdx))
-                },
-                canvasYOffset = {
-                    val rp = railPanel
-                    if (rp == null) 0 else (rp.y + rp.railCanvas.y) - canvas.y
-                },
-                onWheelScroll = ::handleRailWheel,
+                metricsFor = { font -> canvas.getFontMetrics(font) },
+                startX = { viewport.worldToScreenX(railStartWorldX()) },
+                scale = { treeCanvasCardScale(viewport.zoom) },
+                rowScreenY = { row -> viewport.worldToScreenY(rowTopWorld(row)) to viewport.worldToScreenY(rowBottomWorld(row)) },
             )
         } else null
+
+    /** Whether the floating summary has anything to show. */
+    private val summaryEnabled: Boolean
+        get() = summaryPanel != null && (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
+
+    private val railModeSelector: JComboBox<String>? = if (rail != null && allowGroupingRail) {
+        JComboBox(arrayOf(TreeRailMode.TOPICS.title, TreeRailMode.GROUPING.title)).apply {
+            name = "charts-tree-rail-mode"
+            font = JBFont.small()
+            isFocusable = false
+            selectedIndex = if (railMode == TreeRailMode.GROUPING) 1 else 0
+            toolTipText = "Switch between code Topics and change Groups"
+            addActionListener {
+                val chosen = if (selectedIndex == 1) TreeRailMode.GROUPING else TreeRailMode.TOPICS
+                if (chosen != railMode) railModeChanged(chosen)
+            }
+        }
+    } else null
+
+    private val railLevelSelector: JComboBox<String>? = railModel?.takeIf { rail != null && it.depth > 1 }?.let { model ->
+        val options = (0 until model.depth - 1).map { "Level ${it + 1}" } + "All levels"
+        JComboBox(options.toTypedArray()).apply {
+            name = "charts-tree-rail-level"
+            font = JBFont.small()
+            isFocusable = false
+            selectedIndex = if (railLevel == null || railLevel >= model.depth - 1) options.lastIndex else railLevel.coerceIn(0, model.depth - 2)
+            toolTipText = "Show ${model.mode.plural} up to the selected depth"
+            addActionListener {
+                val nextLevel = if (selectedIndex >= model.depth - 1) null else selectedIndex
+                if (nextLevel != railLevel) railLevelChanged(nextLevel)
+            }
+        }
+    }
 
     private val totalLabel = JLabel(totalSummaryText()).apply {
         name = "charts-tree-total"
@@ -264,23 +302,6 @@ internal class TreeBoardPanel(
         toggleAllSummaries()
     }
 
-    private fun handleRailWheel(e: MouseWheelEvent) {
-        if (e.isControlDown || e.isMetaDown) {
-            val factor = ZOOM_WHEEL_BASE.pow(-e.preciseWheelRotation)
-            val rp = railPanel
-            val anchorY = if (rp != null) e.y + ((rp.y + rp.railCanvas.y) - canvas.y) else e.y
-            zoomTo(viewport.zoom * factor, Point(canvas.width / 2, anchorY))
-        } else if (e.isShiftDown) {
-            viewport.panBy(-e.preciseWheelRotation * JBUI.scale(32), 0.0)
-            notifyViewportChanged()
-            canvas.repaint()
-        } else {
-            viewport.panBy(0.0, -e.preciseWheelRotation * JBUI.scale(32))
-            notifyViewportChanged()
-            canvas.repaint()
-        }
-    }
-
     private val railToggleButton = controlButton("", "charts-tree-toggle-rail", "") {
         toggleRailVisible()
     }
@@ -291,6 +312,8 @@ internal class TreeBoardPanel(
         add(exitFocusButton)
         add(summariesButton)
         add(railToggleButton)
+        railModeSelector?.let(::add)
+        railLevelSelector?.let(::add)
         add(controlButton("Unfold all", "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
         add(controlButton("Fold all", "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
         add(controlButton("Fit", "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
@@ -334,7 +357,7 @@ internal class TreeBoardPanel(
             if (nowFocused && targetChanged) {
                 focusCollapsedPaths = emptySet()
                 rebuildBoard(value?.path ?: cursorPath)
-                viewport.reset()
+                resetViewport()
                 if (canvas.height > 0 && cursorIndex >= 0) {
                     viewport.ensureRowVisible(rowTopWorld(cursorIndex), rowBottomWorld(cursorIndex), canvas.height, margin = JBUI.scale(24).toDouble())
                 }
@@ -369,8 +392,10 @@ internal class TreeBoardPanel(
         set(value) {
             field = value
             connectionPreview.hide()
-            canvas.invalidateRoutes()
+            // Link lanes widen the tree, which moves the cards beyond them.
+            canvas.invalidateRowWidth()
             updateConnectionStatus()
+            positionSummary()
             canvas.repaint()
         }
 
@@ -410,7 +435,6 @@ internal class TreeBoardPanel(
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
         loadSummaryLinks()
         canvas.repaint()
-        railPanel?.repaintRail()
     }
 
     fun toggleAllSummaries() {
@@ -421,7 +445,6 @@ internal class TreeBoardPanel(
         expandedSummariesChanged(expandedSummaryPaths, allSummariesShown())
         loadSummaryLinks()
         canvas.repaint()
-        railPanel?.repaintRail()
     }
 
     internal fun summaryLinksFor(path: String): List<LineLinkMatch> = fileSummaries[path]?.let { resolvedSummaryLinks[SummaryText(path, it)]?.matches }.orEmpty()
@@ -520,9 +543,9 @@ internal class TreeBoardPanel(
         getAccessibleContext().accessibleName = "${metric.label} tree board"
 
         add(canvas, BorderLayout.CENTER)
-        summaryPanel?.let { add(it, BorderLayout.WEST) }
-        railPanel?.let { add(it, BorderLayout.EAST) }
-        applySidePanelVisibility()
+        summaryPanel?.let(canvas::add)
+        // A fresh board leaves room for the summary to the left of the tree.
+        if (initialPanX == null) viewport.panX = homePanX()
 
         updateStatus()
         updateConnectionStatus()
@@ -530,8 +553,8 @@ internal class TreeBoardPanel(
         updateSummariesButton()
         updateRailToggleButton()
         updateGroupHighlight()
-        updateSidePanels()
         syncRailPlacements()
+        updateSidePanels()
         loadSummaryLinks()
         installKeys()
         addFocusListener(object : FocusAdapter() {
@@ -615,8 +638,16 @@ internal class TreeBoardPanel(
     }
 
     fun fitToView() {
-        val bounds = canvas.contentWorldBounds()
-        viewport.fitToBounds(bounds.first, bounds.second, canvas.width, canvas.height, JBUI.scale(24).toDouble())
+        val (_, contentHeight) = canvas.contentWorldBounds()
+        // The summary and cards keep their screen size when zooming out, so refine the fit a few times.
+        repeat(3) {
+            val scale = treeCanvasCardScale(viewport.zoom)
+            val left = summaryLaneScreenWidth(scale)
+            val railWidth = rail?.takeIf { isRailVisible }?.let { it.baseWidth * scale / viewport.zoom } ?: 0.0
+            val right = if (railWidth > 0.0) railStartWorldX() + railWidth else canvas.treeRightWorldX()
+            viewport.fitToBounds(right + worldPadX, contentHeight, (canvas.width - left.roundToInt()).coerceAtLeast(1), canvas.height, JBUI.scale(24).toDouble())
+            viewport.panX += left
+        }
         zoomLabel.text = zoomText()
         notifyViewportChanged()
         canvas.repaint()
@@ -632,7 +663,7 @@ internal class TreeBoardPanel(
     }
 
     fun resetView() {
-        viewport.reset()
+        resetViewport()
         zoomLabel.text = zoomText()
         notifyViewportChanged()
         canvas.repaint()
@@ -674,9 +705,9 @@ internal class TreeBoardPanel(
         updateConnectionStatus()
         updateFocusStatus()
         updateGroupHighlight()
-        updateSidePanels()
-        syncRailPlacements()
         canvas.invalidateRowLayout()
+        syncRailPlacements()
+        updateSidePanels()
         canvas.repaint()
         cursorChanged(cursorPath)
     }
@@ -710,13 +741,69 @@ internal class TreeBoardPanel(
         canvas.repaint()
     }
 
-    private fun applySidePanelVisibility() {
-        railPanel?.isVisible = railVisible
-        summaryPanel?.isVisible = nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true)
+    /** Screen width the floating summary and its gap take to the left of the tree at card [scale]. */
+    private fun summaryLaneScreenWidth(scale: Double): Double =
+        if (summaryEnabled) (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) + 2 * JBUI.scale(TreeBoardSummaryPanel.GAP)) * scale else 0.0
+
+    /** Horizontal pan of a reset board: the tree starts after room for the floating summary. */
+    private fun homePanX(): Double = summaryLaneScreenWidth(1.0)
+
+    private fun resetViewport() {
+        viewport.reset()
+        viewport.panX = homePanX()
+    }
+
+    /** World x of the innermost card column: past the tree's widest row, with a gap that keeps its screen size. */
+    private fun railStartWorldX(): Double =
+        canvas.treeRightWorldX() + JBUI.scale(TreeBoardRail.TREE_GAP) * treeCanvasCardScale(viewport.zoom) / viewport.zoom
+
+    /** Screen width of the board's summary and card lanes at zoom 1, for callers sizing the board. */
+    val sideLanesPreferredWidth: Int
+        get() = summaryLaneScreenWidth(1.0).roundToInt() +
+            (rail?.takeIf { isRailVisible }?.let { it.baseWidth + JBUI.scale(TreeBoardRail.TREE_GAP) } ?: 0)
+
+    /** Places the floating summary beside the tree, next to what it describes, or hides it. */
+    internal fun positionSummary() {
+        val panel = summaryPanel ?: return
+        val anchor = summaryAnchorScreenY()
+        if (!summaryEnabled || panel.display == null || anchor == null || canvas.width <= 0 || canvas.height <= 0) {
+            panel.isVisible = false
+            return
+        }
+        val scale = treeCanvasCardScale(viewport.zoom)
+        panel.show(panel.display, scale)
+        val width = (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) * scale).roundToInt()
+        val margin = JBUI.scale(TreeBoardSummaryPanel.MARGIN).toDouble()
+        val height = panel.preferredHeightFor(width).coerceAtMost((canvas.height - 2 * margin).roundToInt().coerceAtLeast(JBUI.scale(60)))
+        val top = floatingCardTop(anchor.first, anchor.second, height.toDouble(), canvas.height.toDouble(), margin)
+        if (top == null) {
+            panel.isVisible = false
+            return
+        }
+        val right = viewport.worldToScreenX(0.0) - JBUI.scale(TreeBoardSummaryPanel.GAP) * scale
+        val bounds = Rectangle((right - width).roundToInt(), top.roundToInt(), width, height)
+        if (panel.bounds != bounds) {
+            panel.bounds = bounds
+            panel.revalidate()
+        }
+        panel.isVisible = true
+        panel.repaint()
+    }
+
+    private fun summaryAnchorScreenY(): Pair<Double, Double>? = when (val anchor = summaryAnchor) {
+        null -> null
+        is SummaryAnchor.Row -> anchor.index.takeIf { it in board.nodes.indices }?.let {
+            viewport.worldToScreenY(rowTopWorld(it)) to viewport.worldToScreenY(rowHeaderBottomWorld(it))
+        }
+        is SummaryAnchor.Card -> rail?.anchorBounds(anchor.key, canvas.height)?.let {
+            it.y.toDouble() to (it.y + it.height).toDouble()
+        }
     }
 
     private fun updateRailToggleButton() {
-        railToggleButton.isVisible = railPanel != null
+        railToggleButton.isVisible = rail != null
+        railModeSelector?.isVisible = railVisible
+        railLevelSelector?.isVisible = railVisible
         if (railVisible) {
             railToggleButton.text = "Hide ${railMode.plural}"
             railToggleButton.toolTipText = "Hide the ${railMode.plural} rail"
@@ -727,24 +814,22 @@ internal class TreeBoardPanel(
     }
 
     fun toggleRailVisible() {
-        if (railPanel == null) return
+        if (rail == null) return
         railVisible = !railVisible
         if (!railVisible) hoveredRailCard = null
         railVisibleChanged(railVisible)
-        applySidePanelVisibility()
         updateRailToggleButton()
         updateGroupHighlight()
-        updateSidePanels()
+        // The tree keeps its place on the canvas; only the cards and family dots appear or disappear.
         canvas.invalidateRowWidth()
-        revalidate()
-        repaint()
-        if (railVisible) railPanel?.repaintRail()
+        updateSidePanels()
+        canvas.repaint()
     }
 
     private fun syncRailPlacements() {
         val model = railModel ?: return
         val placements = computeTreeRailPlacements(model, board) { dir -> chart.files(dir).map { it.path } }
-        railPanel?.setPlacements(placements)
+        rail?.setPlacements(placements)
     }
 
     private fun updateGroupHighlight() {
@@ -758,17 +843,20 @@ internal class TreeBoardPanel(
         val hoveredNode = board.nodes.getOrNull(hoveredIndex)
         val cursorNode = board.nodes.getOrNull(cursorIndex)
         val selectedCard = if (isRailVisible) railModel?.cardByKey(selectedRailKey) else null
-        val display = when {
-            isRailVisible && hoveredRailCard != null -> railSummaryDisplay(hoveredRailCard!!)
-            hoveredNode != null -> nodeSummaryDisplay(hoveredNode)
-            selectedCard != null -> railSummaryDisplay(selectedCard)
-            cursorNode != null -> nodeSummaryDisplay(cursorNode)
-            else -> null
+        val hoveredCard = hoveredRailCard?.takeIf { isRailVisible }
+        val (display, anchor) = when {
+            hoveredCard != null -> railSummaryDisplay(hoveredCard) to SummaryAnchor.Card(hoveredCard.key)
+            hoveredNode != null -> nodeSummaryDisplay(hoveredNode) to SummaryAnchor.Row(hoveredNode.index)
+            selectedCard != null -> railSummaryDisplay(selectedCard) to SummaryAnchor.Card(selectedCard.key)
+            cursorNode != null -> nodeSummaryDisplay(cursorNode) to SummaryAnchor.Row(cursorNode.index)
+            else -> null to null
         }
+        summaryAnchor = anchor
         summaryPanel?.show(display)
         if (isRailVisible) {
-            railPanel?.updateHighlights(hoveredRailCard?.key, selectedRailKey, matchingRailKeys(hoveredNode ?: cursorNode))
+            rail?.updateHighlights(hoveredRailCard?.key, selectedRailKey, matchingRailKeys(hoveredNode ?: cursorNode))
         }
+        positionSummary()
     }
 
     private fun matchingRailKeys(node: TreeBoardNode?): Set<String> {
@@ -913,7 +1001,7 @@ internal class TreeBoardPanel(
         connectionPreview.hide()
         canvas.invalidateRoutes()
         viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
-        railPanel?.repaintRail()
+        positionSummary()
     }
 
     private fun zoomText() = "${(viewport.zoom * 100).roundToInt()}%"
@@ -1146,28 +1234,37 @@ internal class TreeBoardPanel(
             return if (first <= last) first..last else IntRange.EMPTY
         }
 
+        /** Places the floating summary, the canvas's only child, whenever the canvas is laid out. */
+        override fun doLayout() = positionSummary()
+
+        private fun railCardAt(point: Point): TreeRailPlacement? =
+            rail?.takeIf { isRailVisible }?.hitTest(point)?.takeUnless { it.card.placeholder }
+
         init {
             name = "charts-tree-canvas"
             isOpaque = true
             toolTipText = ""
+            layout = null
 
             val mouse = object : MouseAdapter() {
                 private var popupShown = false
 
                 override fun mouseMoved(e: MouseEvent) {
-                    val linkHit = textLinkAt(e.point)
-                    val hit = if (linkHit == null) nodeAt(e.x, e.y) else null
+                    val cardHit = railCardAt(e.point)
+                    val linkHit = if (cardHit == null) textLinkAt(e.point) else null
+                    val hit = if (linkHit == null && cardHit == null) nodeAt(e.x, e.y) else null
                     val nextHover = hit?.index ?: -1
-                    val route = if (hit == null && linkHit == null) connectionAt(e.point) else null
+                    val route = if (hit == null && linkHit == null && cardHit == null) connectionAt(e.point) else null
                     if (nextHover != hoveredIndex || route != hoveredRoute || linkHit != hoveredSummaryLink) {
                         hoveredSummaryLink = linkHit
                         hoveredRoute = route
                         val hoverChanged = nextHover != hoveredIndex
                         hoveredIndex = nextHover
                         updateStatus()
-                        if (hoverChanged) updateSidePanels()
+                        if (hoverChanged && hoveredRailCard == cardHit?.card) updateSidePanels()
                         repaint()
                     }
+                    hoverRailCard(cardHit?.card)
                     if (route != null) {
                         connectionSiteFor(route)?.let { site ->
                             connectionPreview.scheduleHover(route.from, route.to, site, e.point)
@@ -1175,12 +1272,15 @@ internal class TreeBoardPanel(
                     } else {
                         connectionPreview.onHoverCleared()
                     }
-                    cursor = if (hit != null || linkHit != null || route != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    cursor = if (hit != null || cardHit != null || linkHit != null || route != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                     else Cursor.getDefaultCursor()
                 }
 
                 override fun mouseExited(e: MouseEvent) {
                     connectionPreview.onHoverCleared()
+                    // Moving onto the floating summary keeps what it shows, so its links stay reachable.
+                    if (summaryPanel?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
+                    hoverRailCard(null)
                     if (hoveredIndex != -1 || hoveredRoute != null || hoveredSummaryLink != null) {
                         hoveredSummaryLink = null
                         hoveredRoute = null
@@ -1232,6 +1332,10 @@ internal class TreeBoardPanel(
 
                 override fun mouseClicked(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger || popupShown || e.isAltDown || dragged) return
+                    railCardAt(e.point)?.let { placement ->
+                        if (e.clickCount == 1) toggleRailCardSelection(placement.card)
+                        return
+                    }
                     textLinkAt(e.point)?.let { hit ->
                         if (e.clickCount == 1) {
                             summaryFollower(hit.text)?.activate(
@@ -1332,7 +1436,7 @@ internal class TreeBoardPanel(
             else -> node.entry.label
         }
 
-        private fun nodeBadge(node: TreeBoardNode): String = if (node.collapsed) {
+        private fun nodeBadge(node: TreeBoardNode, collapsed: Boolean = node.collapsed): String = if (collapsed) {
             "  (${fileCount(node.entry.files)} · ${valueText(node.entry.value)})"
         } else {
             "  ${valueText(node.entry.value)}"
@@ -1455,32 +1559,50 @@ internal class TreeBoardPanel(
 
         fun invalidateRowWidth() {
             rowWidthAtZoom = null
+            cachedTreeRight = null
             invalidateRoutes()
+        }
+
+        private var cachedTreeRight: Double? = null
+        private var cachedUnfoldedRight: Pair<Any?, Double>? = null
+
+        /** World right edge of one row's header, briefs, and inline summary, measured with the base fonts. */
+        private fun rowRightWorld(node: TreeBoardNode, boldMetrics: FontMetrics, plainMetrics: FontMetrics, layout: RowLayout?): Double {
+            val left = nodeContentStartWorldX(node.depth)
+            val toggle = if (node.collapsible) toggleWidth else 0.0
+            val dot = if (hasFamilyDot(node)) familyDotSpace else 0
+            val textW = boldMetrics.stringWidth(nodeLabel(node)) + plainMetrics.stringWidth(nodeBadge(node, node.collapsed || (layout == null && node.collapsible)))
+            var right = left + toggle + dot + textW + JBUI.scale(24) + buttonWorldWidth(node)
+            if (layout != null) {
+                right += briefWidth(node, plainMetrics, briefGap.toDouble())
+                layout.summaries[node.index]?.let { block -> right = maxOf(right, left + summaryIndent + block.blockWidth) }
+            }
+            return right
+        }
+
+        /**
+         * World right edge of the tree: its widest row when every folder is unfolded, so folding doesn't move the
+         * cards, or wider while briefs, inline summaries, or link lanes extend the visible rows.
+         */
+        fun treeRightWorldX(): Double {
+            cachedTreeRight?.let { return it }
+            val boldMetrics = getFontMetrics(baseMonospaceFont().let { it.deriveFont(it.style or Font.BOLD) })
+            val plainMetrics = getFontMetrics(baseMonospaceFont())
+            val layout = rowLayout()
+            var maxRight = board.nodes.maxOfOrNull { rowRightWorld(it, boldMetrics, plainMetrics, layout) } ?: 0.0
+            val laneCount = visibleConnections().size
+            if (laneCount > 0) maxRight += connectionLaneOffset(laneCount - 1)
+            val unfoldedKey = visibleFocusFiles to isRailVisible
+            val unfolded = cachedUnfoldedRight?.takeIf { it.first == unfoldedKey }?.second
+                ?: ReviewTreeBoard(chart, emptySet(), visibleFocusFiles).nodes
+                    .maxOfOrNull { rowRightWorld(it, boldMetrics, plainMetrics, null) }.let { it ?: 0.0 }
+                    .also { cachedUnfoldedRight = unfoldedKey to it }
+            return maxOf(maxRight, unfolded).also { cachedTreeRight = it }
         }
 
         fun contentWorldBounds(): Pair<Double, Double> {
             if (board.nodes.isEmpty()) return 200.0 to 100.0
-            val baseBold = baseMonospaceFont().let { it.deriveFont(it.style or Font.BOLD) }
-            val basePlain = baseMonospaceFont()
-            val boldMetrics = getFontMetrics(baseBold)
-            val plainMetrics = getFontMetrics(basePlain)
-            val layout = rowLayout()
-            var maxRight = 0.0
-            for (node in board.nodes) {
-                val left = nodeContentStartWorldX(node.depth)
-                val toggle = if (node.collapsible) toggleWidth else 0.0
-                val dot = if (hasFamilyDot(node)) familyDotSpace else 0
-                val textW = boldMetrics.stringWidth(nodeLabel(node)) + plainMetrics.stringWidth(nodeBadge(node))
-                val button = buttonWorldWidth(node)
-                val brief = briefWidth(node, plainMetrics, briefGap.toDouble())
-                maxRight = maxOf(maxRight, left + toggle + dot + textW + JBUI.scale(24) + button + brief)
-                layout.summaries[node.index]?.let { block ->
-                    maxRight = maxOf(maxRight, left + summaryIndent + block.blockWidth)
-                }
-            }
-            val laneCount = visibleConnections().size
-            if (laneCount > 0) maxRight += connectionLaneOffset(laneCount - 1)
-            return (maxRight + worldPadX) to layout.totalHeight
+            return (treeRightWorldX() + worldPadX) to rowLayout().totalHeight
         }
 
         fun toggleScreenBounds(node: TreeBoardNode): Rectangle {
@@ -1513,6 +1635,7 @@ internal class TreeBoardPanel(
         }
 
         override fun getToolTipText(event: MouseEvent): String? {
+            rail?.takeIf { isRailVisible }?.hitTest(event.point)?.let { return rail.tooltip(it) }
             textLinkAt(event.point)?.let { hit ->
                 return summaryFollower(hit.text)?.tooltip(hit.match.link)
                     ?: linkTooltip(hit.match.link, inReviewScope = false, isDiffReview = diffMode)
@@ -1573,7 +1696,10 @@ internal class TreeBoardPanel(
                 val worldTop = viewport.screenToWorldY(0.0)
                 val worldBottom = viewport.screenToWorldY(height.toDouble())
                 val visibleRange = visibleRowRange(worldTop, worldBottom)
-                if (visibleRange.isEmpty()) return
+                if (visibleRange.isEmpty()) {
+                    paintRail(g)
+                    return
+                }
                 val layout = rowLayout()
 
                 val cursorHl = board.highlight(cursorIndex)
@@ -1767,11 +1893,16 @@ internal class TreeBoardPanel(
                     }
                 }
                 paintConnections(g)
+                paintRail(g)
             } finally {
                 g.dispose()
             }
         }
 
+
+        private fun paintRail(g: Graphics2D) {
+            if (isRailVisible) rail?.paint(g, width, height)
+        }
         private fun paintFocusButton(g: Graphics2D, x: Double, y: Double, path: String) {
             val active = focusSelection?.path == path
             val radius = (JBUI.scale(4) * viewport.zoom).coerceAtLeast(2.0)

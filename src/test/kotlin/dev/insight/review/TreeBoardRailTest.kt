@@ -239,4 +239,34 @@ class TreeBoardRailTest {
         // Returns null when no visible files match
         assertNull(openBoard.highlightFiles(setOf("missing.kt")) { dir -> chart.files(dir).map { it.path } })
     }
+
+    @Test fun `canvas cards follow zoom-in and keep their screen size on zoom-out`() {
+        assertEquals(1.0, treeCanvasCardScale(0.25), 0.0)
+        assertEquals(1.0, treeCanvasCardScale(1.0), 0.0)
+        assertEquals(2.0, treeCanvasCardScale(2.0), 0.0)
+    }
+
+    @Test fun `rail columns sit side by side and scale with the cards`() {
+        assertEquals(listOf(100.0, 228.0, 378.0), treeRailColumnLefts(100.0, listOf(120, 142, 90), 8, 1.0))
+        assertEquals(listOf(10.0, 266.0), treeRailColumnLefts(10.0, listOf(120, 90), 8, 2.0))
+        assertEquals(emptyList<Double>(), treeRailColumnLefts(0.0, emptyList(), 8, 1.0))
+    }
+
+    @Test fun `rail column width fits its widest title within limits`() {
+        assertEquals(236, treeRailColumnWidth(listOf(80, 216), 20, 140, 560))
+        assertEquals(140, treeRailColumnWidth(listOf(40), 20, 140, 560))
+        assertEquals(140, treeRailColumnWidth(emptyList(), 20, 140, 560))
+        assertEquals(560, treeRailColumnWidth(listOf(900), 20, 140, 560))
+    }
+
+    @Test fun `floating card follows its anchor and stays inside the view while the anchor is visible`() {
+        assertEquals(120.0, floatingCardTop(120.0, 144.0, 200.0, 600.0, 12.0)!!, 0.0)
+        // Near the bottom it rises to stay in view; near the top it stops at the margin.
+        assertEquals(388.0, floatingCardTop(560.0, 584.0, 200.0, 600.0, 12.0)!!, 0.0)
+        assertEquals(12.0, floatingCardTop(-10.0, 14.0, 200.0, 600.0, 12.0)!!, 0.0)
+        // Taller than the view: it keeps its top in view.
+        assertEquals(12.0, floatingCardTop(300.0, 324.0, 900.0, 600.0, 12.0)!!, 0.0)
+        assertNull(floatingCardTop(-40.0, -16.0, 200.0, 600.0, 12.0))
+        assertNull(floatingCardTop(600.0, 624.0, 200.0, 600.0, 12.0))
+    }
 }
