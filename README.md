@@ -19,6 +19,8 @@ Settings → Tools → Insight Chat includes separate maximum concurrent request
 
 Each LLM provider also has a **Context window (tokens)** setting; the Decisions API has its own input limit. Set it to the capacity supported by your selected model and server. LLM windows include input and output, with the requested output budget reserved first. The plugin estimates input at four serialized characters per token; server tokenization and limits remain authoritative. Zero preserves existing budgets. Changes apply to new chats and jobs. Chat evicts older context as needed; requests that still exceed the configured estimate fail locally with an explanation.
 
+For local builds, set `JAVA_HOME` (and the IDE's Gradle JVM setting) to a patched JDK 21, such as Eclipse Temurin 21.0.13.1+2 or a later JDK 21 update. The Gradle toolchain selects Java 21 by major version.
+
 Run the plugin in a development IDE instance:
 
 ```sh

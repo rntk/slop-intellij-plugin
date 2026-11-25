@@ -40,6 +40,15 @@ kotlin {
     compilerOptions { jvmTarget.set(JvmTarget.JVM_21) }
 }
 
+// CVE-2026-114938 workaround for tasks that can launch the SDK's older bundled JBR.
+val disableBase64Intrinsics = "-XX:-UseBASE64Intrinsics"
+tasks.withType<Test>().configureEach {
+    jvmArgs(disableBase64Intrinsics)
+}
+tasks.withType<JavaExec>().configureEach {
+    jvmArgs(disableBase64Intrinsics)
+}
+
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {

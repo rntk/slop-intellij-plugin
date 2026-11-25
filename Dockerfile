@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM eclipse-temurin:21-jdk-jammy AS development
+FROM eclipse-temurin:21.0.13.1_2-jdk-jammy AS development
 
 # Java2D/Swing need fonts even when build and test tasks run without a display.
 RUN apt-get update \
