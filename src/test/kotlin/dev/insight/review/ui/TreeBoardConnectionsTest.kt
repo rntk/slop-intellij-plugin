@@ -10,9 +10,11 @@ import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.context.ContextKeys
 import dev.insight.graph.RelationKind
+import dev.insight.llm.Completion
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.buildSummaryTree
@@ -458,6 +460,92 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                 { afterTab.focusSelection?.links != null }, 20)
             triggerKey(afterTab, KeyEvent.VK_ESCAPE)
             assertNull(afterTab.focusSelection)
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testBriefButtonSummarizesFileAndLinksBesideRowsAndLinksStartAfterThem() {
+        val api = "api/Api.java"
+        val client = "client/Client.java"
+        val model = "model/Model.java"
+        val files = mapOf(
+            api to "package api;\npublic class Api {\n    public static void run() { new model.Model(); }\n}",
+            client to "package client;\nclass Client {\n    void go() { api.Api.run(); }\n}",
+            model to "package model; public class Model {}",
+        ).map { (path, source) ->
+            val psi = myFixture.addFileToProject(path, source)
+            CodeFile(path, psi.virtualFile.path, source)
+        }
+        val requests = AtomicInteger()
+        val briefer = TreeBriefer({ request ->
+            requests.incrementAndGet()
+            val input = request.messages.last().content
+            Completion(when {
+                input.startsWith("File:") -> "Starts the service\nand creates models"
+                input.lineSequence().first().endsWith("Client.java") -> "calls `Api.run` to start"
+                else -> "- creates `Model` instances"
+            })
+        }, emptyList())
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
+            summaryActions = SummaryCanvasActions(treeBriefer = { briefer }))
+        fun panel() = descendants(canvas).filterIsInstance<TreeBoardPanel>().single()
+        try {
+            canvas.setSize(1200, 800)
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }.selectedItem = "Tree"
+            val board = panel()
+            assertNull(board.briefButtonScreenBounds("api"))
+            val button = checkNotNull(board.briefButtonScreenBounds(api))
+            assertFalse(button.intersects(checkNotNull(board.connectionButtonScreenBounds(api))))
+            assertTrue(board.canvas.getToolTipText(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 0, false)).orEmpty().contains("Summarize"))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            PlatformTestUtil.waitWithEventsDispatching("Briefs should finish",
+                { board.briefs?.let { !it.running && it.total == 3 } == true }, 20)
+            // Clicking briefs also shows the file's links, so the briefs explain what is drawn.
+            assertEquals(api, board.connectionSelection?.path)
+            assertEquals(3, requests.get())
+
+            val apiBrief = board.canvas.briefSegments(api).single()
+            assertEquals("Starts the service and creates models", apiBrief.text)
+            val clientBrief = board.canvas.briefSegments(client).single()
+            assertEquals("→ Api.java: ", clientBrief.prefix)
+            assertEquals("calls Api.run to start", clientBrief.text)
+            val modelBrief = board.canvas.briefSegments(model).single()
+            assertEquals("← Api.java: ", modelBrief.prefix)
+            assertEquals("creates Model instances", modelBrief.text)
+            assertTrue(board.canvas.briefSegments("").isEmpty())
+            assertTrue(descendants(canvas).filterIsInstance<JLabel>()
+                .single { it.name == "charts-tree-connections" }.text.contains("Summarized"))
+
+            // Links start right of the longest row brief, so a point just after the row is no longer on a link.
+            val clientRow = checkNotNull(board.rowScreenBounds(client))
+            val justAfterRow = MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                board.board.nodes.maxOf { checkNotNull(board.rowScreenBounds(it.entry.path)).let { r -> r.x + r.width } } + JBUI.scale(12),
+                clientRow.centerY.toInt() - JBUI.scale(4), 0, false)
+            assertFalse(board.canvas.getToolTipText(justAfterRow).orEmpty().contains("→"))
+
+            // Briefs survive a metric change, reuse cached results, and S toggles them off.
+            descendants(canvas).filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }.selectedIndex = 1
+            val rebuilt = panel()
+            assertEquals(board.briefs, rebuilt.briefs)
+            rebuilt.moveCursor(rebuilt.board.indexOf(api))
+            val binding = rebuilt.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(KeyEvent.VK_S, 0))
+            rebuilt.actionMap.get(binding).actionPerformed(ActionEvent(rebuilt, 0, binding.toString()))
+            assertNull(rebuilt.briefs)
+            rebuilt.actionMap.get(binding).actionPerformed(ActionEvent(rebuilt, 0, binding.toString()))
+            PlatformTestUtil.waitWithEventsDispatching("Cached briefs should reappear",
+                { rebuilt.briefs?.running == false }, 20)
+            assertEquals(3, requests.get())
+
+            // Showing another file's links drops the briefs, which describe only the briefed file's links.
+            checkNotNull(rebuilt.connectionButtonScreenBounds(client)).let {
+                rebuilt.canvas.dispatchEvent(MouseEvent(rebuilt.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            }
+            assertNull(rebuilt.briefs)
         } finally {
             canvas.dispose()
         }

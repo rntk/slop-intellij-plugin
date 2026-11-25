@@ -88,6 +88,7 @@ import dev.insight.review.ui.SymbolSummaryActions
 import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
 import dev.insight.review.TreeConnectionExplainer
+import dev.insight.review.TreeBriefer
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.findReportSourceFile
 import dev.insight.review.ui.openHighlightedLines
@@ -197,6 +198,7 @@ internal class CodeReviewTab(
                 val completion = complete ?: ChatSettings.getInstance().createClient()::complete
                 TreeConnectionExplainer.explainWithProgress(project, completion, from, to, site)
             },
+            treeBriefer = { TreeBriefer.forProject(project, complete ?: ChatSettings.getInstance().createClient()::complete) },
             chartSearch = ChartSearchActions(scope) {
                 val tools = codeReviewTools(captureContext()).filter { it.definition.name in CODE_CHART_SEARCH_TOOLS }
                 val search = {

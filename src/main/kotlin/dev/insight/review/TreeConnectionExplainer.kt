@@ -74,7 +74,7 @@ internal class TreeConnectionExplainer(
     }
 }
 
-private fun connectionEvidence(fromPath: String, toPath: String, site: TreeConnectionSite): String = buildString {
+internal fun connectionEvidence(fromPath: String, toPath: String, site: TreeConnectionSite): String = buildString {
     appendLine("Source file: $fromPath")
     appendLine("Target file: $toPath")
     appendLine("Primary link: ${location(fromPath, site.fromLine)} → ${location(toPath, site.toLine)}")

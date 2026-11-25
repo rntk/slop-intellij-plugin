@@ -131,7 +131,7 @@ internal class NoteCanvas(
         openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() },
         summaryActions = summaryActions.contextSummaryActions, openAt = { path, line -> openFileAt(path, line) },
         outlines = sourceActions.outlines, symbolSummaries = summaryActions.symbolSummaries, search = summaryActions.chartSearch,
-        explainConnection = summaryActions.explainConnection)
+        explainConnection = summaryActions.explainConnection, treeBriefer = summaryActions.treeBriefer)
     internal val chartsView get() = chartsCardBuilder.view
     private val reportViewer: ReportViewerCard? get() = state.reportViewer
     /** What the Report viewer's close button does: take the page off the canvas. */

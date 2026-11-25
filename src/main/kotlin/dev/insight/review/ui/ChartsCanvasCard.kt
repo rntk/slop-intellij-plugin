@@ -43,6 +43,9 @@ import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnectionIndex
+import dev.insight.review.TreeBriefer
+import dev.insight.review.TreeBriefs
+import dev.insight.review.briefTreeLinks
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -143,6 +146,8 @@ internal class ChartsCanvasCard(
     /** Finds files for a query typed above the hierarchy; null hides the search. */
     private val search: ChartSearchActions? = null,
     private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
+    /** Creates the model client behind Tree one-line briefs; called off the EDT. Null hides the control. */
+    private val treeBriefer: (() -> TreeBriefer)? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -157,6 +162,10 @@ internal class ChartsCanvasCard(
     private var treeConnectionIndex: TreeFileConnectionIndex? = null
     private var treeConnectionSelection: TreeConnectionSelection? = null
     private var treeFocusSelection: TreeFocusSelection? = null
+    private var treeBriefJob: Job? = null
+    private var treeBriefs: TreeBriefs? = null
+    /** File briefs by review path, kept like link briefs until the connection index is rebuilt. */
+    private val treeFileBriefs = mutableMapOf<String, String>()
     private var currentTreeBoard: TreeBoardPanel? = null
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
@@ -293,15 +302,12 @@ internal class ChartsCanvasCard(
             openAt = openAt ?: { path, _ -> open(path) },
             project = project,
             explainConnection = explainConnection?.let { explain ->
-                { from, to, site ->
-                    fun projectPath(path: String): String {
-                        val absolute = hierarchy.source(path)?.absolutePath
-                        return if (project != null && !absolute.isNullOrBlank()) relativePath(project, absolute) else path
-                    }
-                    explain(projectPath(from), projectPath(to), site)
-                }
+                { from, to, site -> explain(projectPath(hierarchy, from), projectPath(hierarchy, to), site) }
             },
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
+            toggleBriefs = treeConnectionIndex?.takeIf { treeBriefer != null }?.let { index ->
+                { path -> toggleTreeBriefs(index, hierarchy, path) }
+            },
             initialFocusSelection = treeFocusSelection,
             toggleFocus = treeConnectionIndex?.let { index ->
                 { path, directory -> toggleTreeFocus(index, path, directory, hierarchy.files(path).map { it.path }) }
@@ -314,6 +320,7 @@ internal class ChartsCanvasCard(
             border = JBUI.Borders.empty(4)
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
+            briefs = treeBriefs
         } else null
         currentTreeBoard = treeBoard
         val body = JPanel(VerticalLayout(scaled(8))).apply {
@@ -453,33 +460,124 @@ internal class ChartsCanvasCard(
         showTreeConnections(TreeConnectionSelection(path, message = "Resolving code connections…"))
         treeConnectionJob = treeConnectionScope.launch {
             val selection = try {
-                val connections = if (project == null) index.connections(path) else withBackgroundProgress(project, "Building code connections") {
-                    reportRawProgress { reporter ->
-                        reporter.text("Resolving links between files…")
-                        index.connections(path) { done, total ->
-                            reporter.text("Resolving links between files ($done of $total)")
-                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                        }
-                    }
-                }
-                if (connections == null) TreeConnectionSelection(path, message = "No live source available")
-                else TreeConnectionSelection(path, connections)
+                resolveTreeConnections(index, path)
             } catch (e: CancellationException) {
                 // Cancelled from the progress UI rather than by toggling or closing the chart: clear the pending message.
                 if (isActive) showTreeConnections(null)
                 throw e
-            } catch (e: Exception) {
-                if (e is ControlFlowException) throw e
-                logger<ChartsCanvasCard>().warn("Could not resolve code connections for $path", e)
-                TreeConnectionSelection(path, message = "Could not resolve code connections. See the IDE log.")
             }
             if (isActive) showTreeConnections(selection)
         }
     }
 
+    /** The links of [path], or a selection whose message says why there are none. */
+    private suspend fun resolveTreeConnections(index: TreeFileConnectionIndex, path: String): TreeConnectionSelection = try {
+        val connections = if (project == null) index.connections(path) else withBackgroundProgress(project, "Building code connections") {
+            reportRawProgress { reporter ->
+                reporter.text("Resolving links between files…")
+                index.connections(path) { done, total ->
+                    reporter.text("Resolving links between files ($done of $total)")
+                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                }
+            }
+        }
+        if (connections == null) TreeConnectionSelection(path, message = "No live source available")
+        else TreeConnectionSelection(path, connections)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (e is ControlFlowException) throw e
+        logger<ChartsCanvasCard>().warn("Could not resolve code connections for $path", e)
+        TreeConnectionSelection(path, message = "Could not resolve code connections. See the IDE log.")
+    }
+
     private fun showTreeConnections(selection: TreeConnectionSelection?) {
         treeConnectionSelection = selection
         currentTreeBoard?.connectionSelection = selection
+        // Briefs describe the shown links; hiding them or showing another file's links drops the briefs.
+        if (treeBriefs != null && treeBriefs?.path != selection?.path) {
+            treeBriefJob?.cancel()
+            showTreeBriefs(null)
+        }
+    }
+
+    /**
+     * Shows [path]'s links, then writes one-line briefs beside the rows: what [path] does and how each linked file relates
+     * to it. Toggling the same file again hides the briefs and cancels those still running.
+     */
+    private fun toggleTreeBriefs(index: TreeFileConnectionIndex, hierarchy: ReviewLineChart, path: String) {
+        val newBriefer = treeBriefer ?: return
+        treeBriefJob?.cancel()
+        if (treeBriefs?.path == path) {
+            showTreeBriefs(null)
+            return
+        }
+        val shown = treeConnectionSelection?.takeIf { it.path == path && it.connections != null }
+        if (shown == null) {
+            treeConnectionJob?.cancel()
+            showTreeConnections(TreeConnectionSelection(path, message = "Resolving code connections…"))
+        }
+        showTreeBriefs(TreeBriefs.pending(path, shown?.connections))
+        treeBriefJob = treeConnectionScope.launch {
+            try {
+                val selection = shown ?: resolveTreeConnections(index, path).also { if (isActive) showTreeConnections(it) }
+                val connections = selection.connections ?: run {
+                    // The connection status already says why there are no links.
+                    showTreeBriefs(null)
+                    return@launch
+                }
+                val briefer = try {
+                    withContext(Dispatchers.IO) { newBriefer() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (e is ControlFlowException) throw e
+                    logger<ChartsCanvasCard>().warn("Could not create the model client for Tree briefs", e)
+                    showTreeBriefs(TreeBriefs.pending(path, connections).failedAll())
+                    return@launch
+                }
+                val writeBriefs: suspend (onUpdate: (TreeBriefs) -> Unit) -> Unit = { onUpdate ->
+                    briefTreeLinks(
+                        path, connections,
+                        briefFile = { file ->
+                            treeFileBriefs[file] ?: withContext(Dispatchers.IO) { briefer.file(projectPath(hierarchy, file)) }
+                                .also { treeFileBriefs[file] = it }
+                        },
+                        briefLink = { from, to, site ->
+                            site.brief ?: withContext(Dispatchers.IO) {
+                                briefer.link(projectPath(hierarchy, from), projectPath(hierarchy, to), site)
+                            }.also { site.brief = it }
+                        },
+                        onUpdate = { if (isActive) onUpdate(it) },
+                    )
+                }
+                if (project == null) writeBriefs(::showTreeBriefs)
+                else withBackgroundProgress(project, "Summarizing ${path.substringAfterLast('/')} and its links") {
+                    reportRawProgress { reporter ->
+                        writeBriefs { briefs ->
+                            showTreeBriefs(briefs)
+                            reporter.text("Summarized ${briefs.done} of ${briefs.total}")
+                            reporter.fraction(if (briefs.total > 0) briefs.done.toDouble() / briefs.total else null)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                // Cancelled from the progress UI: keep finished briefs and drop the pending ones.
+                if (isActive) treeBriefs?.let { showTreeBriefs(it.withoutPending()) }
+                throw e
+            }
+        }
+    }
+
+    private fun showTreeBriefs(briefs: TreeBriefs?) {
+        treeBriefs = briefs
+        currentTreeBoard?.briefs = briefs
+    }
+
+    /** The project-relative path the model's file tools understand for a review [path]. */
+    private fun projectPath(hierarchy: ReviewLineChart, path: String): String {
+        val absolute = hierarchy.source(path)?.absolutePath
+        return if (project != null && !absolute.isNullOrBlank()) relativePath(project, absolute) else path
     }
 
     private fun toggleTreeFocus(index: TreeFileConnectionIndex, path: String, directory: Boolean, files: List<String>) {
@@ -522,6 +620,10 @@ internal class ChartsCanvasCard(
     private fun resetTreeConnections() {
         treeConnectionJob?.cancel()
         treeConnectionJob = null
+        treeBriefJob?.cancel()
+        treeBriefJob = null
+        treeBriefs = null
+        treeFileBriefs.clear()
         treeFocusJob?.cancel()
         treeFocusJob = null
         treeConnectionIndex = null

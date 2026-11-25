@@ -44,6 +44,9 @@ internal data class TreeConnectionSite(
 ) {
     /** Completed Markdown for this directed edge in the live-source index. Accessed on the EDT. */
     var explanation: String? = null
+
+    /** Completed one-line brief of how the source uses the target, shown beside Tree rows. Accessed on the EDT. */
+    var brief: String? = null
 }
 
 internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)

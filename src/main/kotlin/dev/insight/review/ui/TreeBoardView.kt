@@ -16,6 +16,8 @@ import dev.insight.review.ReviewTreeBoard
 import dev.insight.review.TreeBoardHighlight
 import dev.insight.review.TreeBoardNode
 import dev.insight.review.TreeBoardViewport
+import dev.insight.review.TreeBrief
+import dev.insight.review.TreeBriefs
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.TreeFocusLinks
@@ -72,6 +74,9 @@ internal data class TreeFocusSelection(
     val message: String? = null,
 )
 
+/** One brief beside a Tree row: a [prefix] in the link or accent [color], then the readable [text]. */
+internal data class BriefSegment(val prefix: String, val color: Color, val text: String)
+
 private data class ConnectionRoute(
     val from: String, val to: String, val outgoing: Boolean,
     val x1: Double, val y1: Double, val bend: Double, val x2: Double, val y2: Double,
@@ -112,6 +117,8 @@ internal class TreeBoardPanel(
     initialFocusSelection: TreeFocusSelection? = null,
     private val toggleFocus: ((String, Boolean) -> Unit)? = null,
     private val clearFocus: (() -> Unit)? = null,
+    /** Briefs a file and each of its links beside the Tree rows, or hides them; null hides the control. */
+    private val toggleBriefs: ((String) -> Unit)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -134,7 +141,8 @@ internal class TreeBoardPanel(
         foreground = numberColor
         toolTipText = "${metric.description} · Drag to pan · Ctrl/⌘+wheel to zoom · ↑↓ move, ←→ fold, Enter opens" +
             (if (toggleConnections == null) "" else " · C shows code connections") +
-            (if (toggleFocus == null) "" else " · F focuses on related files")
+            (if (toggleFocus == null) "" else " · F focuses on related files") +
+            (if (toggleBriefs == null) "" else " · S summarizes a file and its links")
     }
     private val statusLabel = JLabel().apply {
         name = "charts-tree-status"
@@ -252,6 +260,14 @@ internal class TreeBoardPanel(
             field = value
             connectionPreview.hide()
             canvas.invalidateRoutes()
+            updateConnectionStatus()
+            canvas.repaint()
+        }
+
+    var briefs: TreeBriefs? = null
+        set(value) {
+            field = value
+            canvas.invalidateRowWidth()
             updateConnectionStatus()
             canvas.repaint()
         }
@@ -401,6 +417,9 @@ internal class TreeBoardPanel(
     fun focusButtonScreenBounds(path: String): Rectangle? =
         board.nodes.getOrNull(board.indexOf(path))?.let(canvas::focusButtonBounds)
 
+    fun briefButtonScreenBounds(path: String): Rectangle? =
+        board.nodes.getOrNull(board.indexOf(path))?.let(canvas::briefButtonBounds)
+
     private fun rebuildBoard(preferredCursorPath: String?) {
         val previousHover = hoveredPath
         board = ReviewTreeBoard(chart, activeCollapsedPaths, visibleFocusFiles)
@@ -449,7 +468,7 @@ internal class TreeBoardPanel(
                     hidden > 0 -> " · $hidden hidden by folds or the current tab"
                     else -> ""
                 }
-                "${links.incoming.size} incoming · ${links.outgoing.size} outgoing$hint · ${selection.path}"
+                "${links.incoming.size} incoming · ${links.outgoing.size} outgoing$hint${briefStatus(selection.path)} · ${selection.path}"
             }
         }
         connectionStatus.toolTipText = when {
@@ -458,6 +477,12 @@ internal class TreeBoardPanel(
             else -> "${connectionStatus.text} · Incoming links are dashed. Outgoing links are solid. Arrows point to the referenced file."
         }
         updateDetailsCard()
+    }
+
+    private fun briefStatus(path: String): String {
+        val current = briefs?.takeIf { it.path == path } ?: return ""
+        val failed = if (current.failed > 0) " · ${current.failed} unavailable" else ""
+        return if (current.running) " · Summarizing ${current.done} of ${current.total}…$failed" else " · Summarized$failed"
     }
 
     private fun updateFocusStatus() {
@@ -541,6 +566,10 @@ internal class TreeBoardPanel(
                 toggleFocus.invoke(node.entry.path, node.entry.directory)
             }
         }
+        if (toggleBriefs != null) bind(KeyEvent.VK_S, "charts-tree-briefs") {
+            val entry = board.nodes.getOrNull(cursorIndex)?.entry ?: return@bind
+            if (entry.kind == ReviewLineChart.Kind.FILE) toggleBriefs.invoke(entry.path)
+        }
         bind(KeyEvent.VK_EQUALS, "charts-tree-zoom-eq") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_PLUS, "charts-tree-zoom-plus") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_ADD, "charts-tree-zoom-add") { zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP) }
@@ -577,6 +606,8 @@ internal class TreeBoardPanel(
     private val toggleWidth get() = JBUI.scale(16).toDouble()
     private val focusButtonWidth get() = JBUI.scale(22)
     private val connectionButtonWidth get() = JBUI.scale(22)
+    private val briefButtonWidth get() = JBUI.scale(22)
+    private val briefGap get() = JBUI.scale(12)
 
     internal inner class TreeBoardCanvas : JComponent() {
         private var dragStart: Point? = null
@@ -685,6 +716,11 @@ internal class TreeBoardPanel(
                         if (e.clickCount == 1) toggleConnections?.invoke(node.entry.path)
                         return
                     }
+                    if (briefButtonBounds(node)?.contains(e.point) == true) {
+                        moveCursor(node.index, reveal = false)
+                        if (e.clickCount == 1) toggleBriefs?.invoke(node.entry.path)
+                        return
+                    }
                     if (node.collapsible && toggleScreenBounds(node).contains(e.point)) {
                         moveCursor(node.index, reveal = false)
                         toggleCollapsed(node.entry.path)
@@ -762,10 +798,14 @@ internal class TreeBoardPanel(
         private fun hasConnectionButton(node: TreeBoardNode): Boolean =
             toggleConnections != null && node.entry.kind == ReviewLineChart.Kind.FILE
 
+        private fun hasBriefButton(node: TreeBoardNode): Boolean =
+            toggleBriefs != null && node.entry.kind == ReviewLineChart.Kind.FILE
+
         private fun buttonScreenWidth(node: TreeBoardNode): Int {
             var width = 0
             if (hasFocusButton(node)) width += (focusButtonWidth * viewport.zoom).roundToInt()
             if (hasConnectionButton(node)) width += (connectionButtonWidth * viewport.zoom).roundToInt()
+            if (hasBriefButton(node)) width += (briefButtonWidth * viewport.zoom).roundToInt()
             return width
         }
 
@@ -773,6 +813,7 @@ internal class TreeBoardPanel(
             var width = 0
             if (hasFocusButton(node)) width += focusButtonWidth
             if (hasConnectionButton(node)) width += connectionButtonWidth
+            if (hasBriefButton(node)) width += briefButtonWidth
             return width
         }
 
@@ -789,6 +830,42 @@ internal class TreeBoardPanel(
             val connWidth = if (hasConnectionButton(node)) (connectionButtonWidth * viewport.zoom).roundToInt() else 0
             val row = rowScreenBounds(node)
             return Rectangle(row.x + row.width - connWidth - width, row.y, width, row.height)
+        }
+
+        fun briefButtonBounds(node: TreeBoardNode): Rectangle? {
+            if (!hasBriefButton(node)) return null
+            val width = (briefButtonWidth * viewport.zoom).roundToInt()
+            val connWidth = if (hasConnectionButton(node)) (connectionButtonWidth * viewport.zoom).roundToInt() else 0
+            val focusWidth = if (hasFocusButton(node)) (focusButtonWidth * viewport.zoom).roundToInt() else 0
+            val row = rowScreenBounds(node)
+            return Rectangle(row.x + row.width - connWidth - focusWidth - width, row.y, width, row.height)
+        }
+
+        /** The one-line briefs beside [path]: the file's own summary, or how it links with the briefed file. */
+        fun briefSegments(path: String): List<BriefSegment> {
+            val current = briefs ?: return emptyList()
+            val name = current.path.substringAfterLast('/')
+            fun text(brief: TreeBrief?, pending: String) = when (brief) {
+                null -> null
+                TreeBrief.Pending -> pending
+                TreeBrief.Failed -> "summary unavailable"
+                is TreeBrief.Ready -> brief.text
+            }
+            if (path == current.path) {
+                return listOf(BriefSegment("— ", accentColor, text(current.file, "summarizing…")!!))
+            }
+            return listOfNotNull(
+                text(current.incoming[path], "…")?.let { BriefSegment("→ $name: ", incomingColor, it) },
+                text(current.outgoing[path], "…")?.let { BriefSegment("← $name: ", outgoingColor, it) },
+            )
+        }
+
+        /** Width of [node]'s briefs, including the gap after its row, measured with [metrics]. */
+        fun briefWidth(node: TreeBoardNode, metrics: FontMetrics, gap: Double): Int {
+            val segments = briefSegments(node.entry.path)
+            if (segments.isEmpty()) return 0
+            val separator = metrics.stringWidth(BRIEF_SEPARATOR) * (segments.size - 1)
+            return (gap + segments.sumOf { metrics.stringWidth(it.prefix + it.text) } + separator).roundToInt()
         }
 
         fun invalidateRowWidth() {
@@ -808,7 +885,8 @@ internal class TreeBoardPanel(
                 val toggle = if (node.collapsible) toggleWidth else 0.0
                 val textW = boldMetrics.stringWidth(nodeLabel(node)) + plainMetrics.stringWidth(nodeBadge(node))
                 val button = buttonWorldWidth(node)
-                maxRight = maxOf(maxRight, left + toggle + textW + JBUI.scale(24) + button)
+                val brief = briefWidth(node, plainMetrics, briefGap.toDouble())
+                maxRight = maxOf(maxRight, left + toggle + textW + JBUI.scale(24) + button + brief)
             }
             val laneCount = visibleConnections().size
             if (laneCount > 0) maxRight += connectionLaneOffset(laneCount - 1)
@@ -855,6 +933,10 @@ internal class TreeBoardPanel(
             if (connectionButtonBounds(node)?.contains(event.point) == true) {
                 return if (connectionSelection?.path == node.entry.path) "Hide code connections (C)"
                 else "Show incoming and outgoing code connections (C)"
+            }
+            if (briefButtonBounds(node)?.contains(event.point) == true) {
+                return if (briefs?.path == node.entry.path) "Hide one-line summaries (S)"
+                else "Summarize this file and how each linked file relates to it, beside the rows (S)"
             }
             val entry = node.entry
             val files = if (entry.directory && metric != LineChartMetric.ITEMS) " · ${fileCount(entry.files)}" else ""
@@ -1022,7 +1104,13 @@ internal class TreeBoardPanel(
                     if (hasFocusButton(node)) {
                         val focusW = (focusButtonWidth * viewport.zoom).roundToInt()
                         paintFocusButton(g, buttonRightX - focusW / 2.0, centerY, node.entry.path)
+                        buttonRightX -= focusW
                     }
+                    if (hasBriefButton(node)) {
+                        val briefW = (briefButtonWidth * viewport.zoom).roundToInt()
+                        paintBriefButton(g, buttonRightX - briefW / 2.0, centerY, node.entry.path)
+                    }
+                    paintBriefs(g, node, startX + rowWidth + briefGap * viewport.zoom, centerY, plainFont)
                 }
                 paintConnections(g)
             } finally {
@@ -1048,6 +1136,42 @@ internal class TreeBoardPanel(
             g.drawLine(cx, cy + r - 1, cx, cy + r + t)
             g.drawLine(cx - r - t, cy, cx - r + 1, cy)
             g.drawLine(cx + r - 1, cy, cx + r + t, cy)
+        }
+
+        private fun paintBriefButton(g: Graphics2D, x: Double, y: Double, path: String) {
+            val active = briefs?.path == path
+            val half = (JBUI.scale(5) * viewport.zoom).coerceAtLeast(2.0)
+            val gap = (JBUI.scale(3) * viewport.zoom).coerceAtLeast(1.5)
+            val left = (x - half).roundToInt()
+            g.color = if (active) accentColor else UIUtil.getContextHelpForeground()
+            g.stroke = BasicStroke(viewport.zoom.toFloat().coerceAtLeast(1f) * if (active) 1.4f else 1f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            // Three text lines of decreasing length.
+            for ((row, length) in listOf(1.0, 0.75, 0.5).withIndex()) {
+                val lineY = (y + (row - 1) * gap).roundToInt()
+                g.drawLine(left, lineY, (left + 2 * half * length).roundToInt(), lineY)
+            }
+        }
+
+        private fun paintBriefs(g: Graphics2D, node: TreeBoardNode, x: Double, centerY: Double, font: Font) {
+            val segments = briefSegments(node.entry.path)
+            if (segments.isEmpty()) return
+            g.font = font
+            val metrics = g.getFontMetrics(font)
+            val baselineY = (centerY + (metrics.ascent - metrics.descent) / 2.0).toFloat()
+            var textX = x.toFloat()
+            for ((index, segment) in segments.withIndex()) {
+                if (index > 0) {
+                    g.color = UIUtil.getContextHelpForeground()
+                    g.drawString(BRIEF_SEPARATOR, textX, baselineY)
+                    textX += metrics.stringWidth(BRIEF_SEPARATOR)
+                }
+                g.color = segment.color
+                g.drawString(segment.prefix, textX, baselineY)
+                textX += metrics.stringWidth(segment.prefix)
+                g.color = UIUtil.getLabelForeground()
+                g.drawString(segment.text, textX, baselineY)
+                textX += metrics.stringWidth(segment.text)
+            }
         }
 
         private fun paintConnectionButton(g: Graphics2D, x: Double, y: Double, path: String) {
@@ -1086,8 +1210,10 @@ internal class TreeBoardPanel(
             val links = visibleConnections().sortedBy { (from, to) -> kotlin.math.abs(from - to) }
             if (links.isEmpty()) return emptyList<ConnectionRoute>().also { routes = it }
             val selected = board.indexOf(connectionSelection?.path)
+            // Links start after a row's briefs so their lines never cross the text.
             fun rowRight(node: TreeBoardNode) = (nodeContentStartWorldX(node.depth) * viewport.zoom).roundToInt() +
-                rowContentScreenWidth(node, bold, plain)
+                rowContentScreenWidth(node, bold, plain) +
+                briefWidth(node, plain, briefGap * viewport.zoom).let { if (it > 0) it + (JBUI.scale(6) * viewport.zoom).roundToInt() else 0 }
             val right = rowWidthAtZoom?.takeIf { it.first == viewport.zoom }?.second
                 ?: board.nodes.maxOf(::rowRight).also { rowWidthAtZoom = viewport.zoom to it }
             return links.mapIndexed { index, (from, to) ->
@@ -1219,6 +1345,7 @@ internal class TreeBoardPanel(
         const val PAGE_ROWS = 12
         const val PAN_THRESHOLD_PX = 4.0
         const val ZOOM_WHEEL_BASE = 1.15
+        const val BRIEF_SEPARATOR = "   ·   "
         val outgoingColor = JBColor(Color(0x087D76), Color(0x65C9BD))
         val incomingColor = JBColor(Color(0x7050AA), Color(0xBD9BFD))
     }
