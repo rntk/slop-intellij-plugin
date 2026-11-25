@@ -229,6 +229,7 @@ internal class TreeBoardRail(
 ) {
     private var placements: List<TreeRailPlacement> = emptyList()
     private var hoveredKey: String? = null
+    private var hoveredAncestorKeys: Set<String> = emptySet()
     private var selectedKey: String? = null
     private var matchingKeys: Set<String> = emptySet()
 
@@ -271,6 +272,7 @@ internal class TreeBoardRail(
 
     fun updateHighlights(hovered: String?, selected: String?, matching: Set<String>) {
         hoveredKey = hovered
+        hoveredAncestorKeys = model.ancestorCardKeys(hovered)
         selectedKey = selected
         matchingKeys = matching
     }
@@ -351,7 +353,7 @@ internal class TreeBoardRail(
             val card = placement.card
             val hovered = card.key == hoveredKey
             val selected = card.key == selectedKey
-            val active = hovered || selected || card.key in matchingKeys
+            val active = hovered || selected || card.key in matchingKeys || card.key in hoveredAncestorKeys
 
             val shape = RoundRectangle2D.Double(rect.x.toDouble(), rect.y.toDouble(), rect.width - 1.0, rect.height - 1.0, arc, arc)
             g.color = when {

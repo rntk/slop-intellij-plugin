@@ -18,6 +18,7 @@ internal data class TreeRailCard(
     val files: Set<String>,
     val summary: String?,
     val placeholder: Boolean = false,
+    val parentKey: String? = null,
 )
 
 /** One Topic or Group card placement in the Tree board's right rail, aligned to visible tree rows. */
@@ -44,6 +45,11 @@ internal data class TreeRailModel(
     private val cardsByKey: Map<String, TreeRailCard> = cards.associateBy { it.key }
 
     fun cardByKey(key: String?): TreeRailCard? = key?.let(cardsByKey::get)
+
+    fun ancestorCardKeys(key: String?): Set<String> =
+        generateSequence(cardByKey(cardByKey(key)?.parentKey)) { cardByKey(it.parentKey) }
+            .map { it.key }
+            .toSet()
 
     fun matchingCardKeys(filePath: String): Set<String> =
         cards.asSequence().filter { filePath in it.files }.mapTo(LinkedHashSet()) { it.key }
@@ -96,23 +102,25 @@ internal fun buildTreeRailModel(
         .toMap()
 
     val cards = mutableListOf<TreeRailCard>()
-    fun walk(entries: List<TopicEntry>) {
+    fun walk(entries: List<TopicEntry>, parentKey: String? = null) {
         for (entry in entries) {
             val node = (entry as? TopicEntry.Topic)?.node ?: continue
             if (node.level > effectiveMaxLevel) continue
             val files = (node.first..node.last).mapTo(LinkedHashSet()) { outline.files[it].path }
             val summary = topicTexts["topic:${node.identity}"] ?: sharedByFiles[files]
+            val key = "${node.level}:${node.identity}"
             cards += TreeRailCard(
-                key = "${node.level}:${node.identity}",
+                key = key,
                 name = node.name,
                 fullPath = node.fullPath,
                 family = node.path.firstOrNull(),
                 level = node.level,
                 files = files,
                 summary = summary,
+                parentKey = parentKey,
             )
             if (node.level < effectiveMaxLevel) {
-                walk(outline.children(node))
+                walk(outline.children(node), key)
             }
         }
     }

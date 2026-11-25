@@ -22,6 +22,7 @@ import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
 import java.awt.Cursor
+import java.awt.Rectangle
 import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
@@ -35,6 +36,13 @@ import javax.swing.JLabel
 import javax.swing.KeyStroke
 
 class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
+    private fun clickRowAction(board: TreeBoardPanel, bounds: Rectangle) {
+        val x = bounds.centerX.toInt()
+        val y = bounds.centerY.toInt()
+        board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, x, y, 0, false))
+        board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0, x, y, 1, false, MouseEvent.BUTTON1))
+    }
+
     fun testPinnedConnectionExplainsOnDemandWithLinkedMarkdown() {
         myFixture.addFileToProject("src/B.java", "class B {}")
         val requests = AtomicInteger()
@@ -191,8 +199,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         fun status() = descendants(canvas).filterIsInstance<JLabel>().single { it.name == "charts-tree-connections" }.text
         fun clickConnections(board: TreeBoardPanel, path: String) {
             val button = checkNotNull(board.connectionButtonScreenBounds(path))
-            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            clickRowAction(board, button)
         }
         try {
             canvas.setSize(1200, 800)
@@ -404,13 +411,11 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         fun paths(board: TreeBoardPanel) = board.board.nodes.map { it.entry.path }
         fun clickFocus(board: TreeBoardPanel, path: String) {
             val button = checkNotNull(board.focusButtonScreenBounds(path))
-            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            clickRowAction(board, button)
         }
         fun clickConnections(board: TreeBoardPanel, path: String) {
             val button = checkNotNull(board.connectionButtonScreenBounds(path))
-            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            clickRowAction(board, button)
         }
         fun triggerKey(board: TreeBoardPanel, keyCode: Int) {
             val stroke = KeyStroke.getKeyStroke(keyCode, 0)
@@ -529,10 +534,11 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             assertNull(board.briefButtonScreenBounds("api"))
             val button = checkNotNull(board.briefButtonScreenBounds(api))
             assertFalse(button.intersects(checkNotNull(board.connectionButtonScreenBounds(api))))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 0, false))
             assertTrue(board.canvas.getToolTipText(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
                 button.centerX.toInt(), button.centerY.toInt(), 0, false)).orEmpty().contains("Summarize"))
-            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            clickRowAction(board, button)
             PlatformTestUtil.waitWithEventsDispatching("Briefs should finish",
                 { board.briefs?.let { !it.running && it.total == 3 } == true }, 20)
             // Clicking briefs also shows the file's links, so the briefs explain what is drawn.
@@ -598,8 +604,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
 
             // Showing another file's links drops the briefs, which describe only the briefed file's links.
             checkNotNull(rebuilt.connectionButtonScreenBounds(client)).let {
-                rebuilt.canvas.dispatchEvent(MouseEvent(rebuilt.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+                clickRowAction(rebuilt, it)
             }
             assertNull(rebuilt.briefs)
             PlatformTestUtil.waitWithEventsDispatching("Client links should resolve", {
@@ -612,8 +617,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)), revision = 1)))
             val refreshed = panel()
             checkNotNull(refreshed.connectionButtonScreenBounds(client)).let {
-                refreshed.canvas.dispatchEvent(MouseEvent(refreshed.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+                clickRowAction(refreshed, it)
             }
             PlatformTestUtil.waitWithEventsDispatching("Links should resolve after review refresh", {
                 refreshed.connectionSelection?.path == client && refreshed.connectionSelection?.connections != null
@@ -626,8 +630,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             )))
             val narrower = panel()
             checkNotNull(narrower.connectionButtonScreenBounds(api)).let {
-                narrower.canvas.dispatchEvent(MouseEvent(narrower.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
-                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+                clickRowAction(narrower, it)
             }
             PlatformTestUtil.waitWithEventsDispatching("Links should reflect the changed scope", {
                 narrower.connectionSelection?.path == api && narrower.connectionSelection?.connections != null

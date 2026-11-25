@@ -162,6 +162,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
                 )
             }
             assertEquals("0:security", board.selectedRailCardKey)
+            assertNull(board.cursorPath)
             board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_EXITED, 0, 0, -10, -10, 0, false))
             assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
 
@@ -192,6 +193,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             // Pressing Escape clears the card selection.
             triggerKey(afterHideSwitch, KeyEvent.VK_ESCAPE)
             assertNull(afterHideSwitch.selectedRailCardKey)
+            assertNull(checkNotNull(afterHideSwitch.summaryPanel).display)
 
             // Paint in normal and zoomed states without error, keeping alignment after zoom and fold.
             val image = BufferedImage(1360, 680, BufferedImage.TYPE_INT_ARGB)

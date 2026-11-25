@@ -69,9 +69,11 @@ class TreeBoardRailTest {
         val loginCard = model.cards[2]
         assertEquals("Validates login tokens.", loginCard.summary)
         assertEquals(setOf("src/auth/Login.kt"), loginCard.files)
+        assertEquals(setOf("0:security", "1:security > authentication"), model.ancestorCardKeys(loginCard.key))
 
         val pendingCard = model.cards.last()
         assertTrue(pendingCard.placeholder)
+        assertTrue(model.ancestorCardKeys(pendingCard.key).isEmpty())
         assertEquals(2, pendingCard.level)
         assertEquals(setOf("docs/README.md"), pendingCard.files)
 

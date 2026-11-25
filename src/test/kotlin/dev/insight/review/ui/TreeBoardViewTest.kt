@@ -136,6 +136,34 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             triggerKey(afterMetricSwitch, KeyEvent.VK_ENTER)
             assertEquals(listOf("src/nested/b.kt", "readme.md"), opened)
 
+            // A pan gesture keeps the selection, even when the pointer moves less than the pan threshold.
+            val boardCanvas = afterMetricSwitch.canvas
+            fun backgroundEvent(id: Int, x: Int, button: Int = MouseEvent.BUTTON1) {
+                boardCanvas.dispatchEvent(MouseEvent(boardCanvas, id, 0, 0, x, 500, 1, false, button))
+            }
+            backgroundEvent(MouseEvent.MOUSE_PRESSED, 800)
+            backgroundEvent(MouseEvent.MOUSE_DRAGGED, 801, MouseEvent.NOBUTTON)
+            backgroundEvent(MouseEvent.MOUSE_RELEASED, 801)
+            backgroundEvent(MouseEvent.MOUSE_CLICKED, 801)
+            assertEquals("readme.md", afterMetricSwitch.cursorPath)
+
+            backgroundEvent(MouseEvent.MOUSE_PRESSED, 800)
+            backgroundEvent(MouseEvent.MOUSE_RELEASED, 800)
+            backgroundEvent(MouseEvent.MOUSE_CLICKED, 800)
+            assertNull(afterMetricSwitch.cursorPath)
+            assertNull(canvas.chartsView.treeCursor)
+
+            triggerKey(afterMetricSwitch, KeyEvent.VK_DOWN)
+            assertEquals("", afterMetricSwitch.cursorPath)
+            val hovered = checkNotNull(afterMetricSwitch.rowScreenBounds("src/a.kt"))
+            boardCanvas.dispatchEvent(MouseEvent(boardCanvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                hovered.centerX.toInt(), hovered.centerY.toInt(), 0, false))
+            assertEquals("src/a.kt", afterMetricSwitch.hoveredPath)
+            triggerKey(afterMetricSwitch, KeyEvent.VK_ESCAPE)
+            assertNull(afterMetricSwitch.cursorPath)
+            assertNull(afterMetricSwitch.hoveredPath)
+            assertNull(afterMetricSwitch.summaryPanel?.display)
+
             // Zoom controls and fit.
             val baseZoom = afterMetricSwitch.zoom
             button("charts-tree-zoom-in").doClick()
@@ -196,8 +224,11 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             assertNotNull(board.summaryButtonScreenBounds("src/nested/b.kt"))
             board.connectionButtonScreenBounds("src/a.kt")?.let { assertFalse(aSummaryBtn.intersects(it)) }
             board.focusButtonScreenBounds("src/a.kt")?.let { assertFalse(aSummaryBtn.intersects(it)) }
-            assertTrue(board.canvas.getToolTipText(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
-                aSummaryBtn.centerX.toInt(), aSummaryBtn.centerY.toInt(), 0, false)).orEmpty().contains("Show diff summary"))
+            val hoverButton = MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                aSummaryBtn.centerX.toInt(), aSummaryBtn.centerY.toInt(), 0, false)
+            assertFalse(board.canvas.getToolTipText(hoverButton).orEmpty().contains("Show diff summary"))
+            board.canvas.dispatchEvent(hoverButton)
+            assertTrue(board.canvas.getToolTipText(hoverButton).orEmpty().contains("Show diff summary"))
 
             val bRowYBefore = checkNotNull(board.rowScreenBounds("src/nested/b.kt")).y
             board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,

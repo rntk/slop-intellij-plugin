@@ -124,7 +124,7 @@ internal class ChartsViewState {
     /** Whether all available file summaries are shown in the Tree board. */
     var treeShowAllSummaries: Boolean = false
     /** The active row path in the Tree board. */
-    var treeCursor: String? = null
+    var treeCursor: String? = ""
     var treeZoom: Double = 1.0
     /** The Tree board's horizontal pan, or null before it is first shown so the board leaves room for its summary. */
     var treePanX: Double? = null
