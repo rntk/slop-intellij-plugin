@@ -191,6 +191,8 @@ internal class TreeBoardPanel(
     private var groupHighlight: TreeBoardGroupHighlight? = null
 
     val isRailVisible: Boolean get() = railVisible && rail != null
+    private val railFileOrder: Map<String, Int>
+        get() = if (isRailVisible) railModel?.fileOrder.orEmpty() else emptyMap()
     val activeRailCard: TreeRailCard? get() = if (isRailVisible) hoveredRailCard ?: railModel?.cardByKey(selectedRailKey) else null
     val selectedRailCardKey: String? get() = selectedRailKey
 
@@ -385,6 +387,7 @@ internal class TreeBoardPanel(
         chart,
         if (initialFocusSelection?.links != null) emptySet() else collapsedPaths,
         initialFocusSelection?.links?.visibleFiles,
+        railFileOrder,
     )
         private set
 
@@ -638,14 +641,14 @@ internal class TreeBoardPanel(
     }
 
     fun fitToView() {
-        val (_, contentHeight) = canvas.contentWorldBounds()
+        val contentHeight = canvas.rowLayout().totalHeight
         // The summary and cards keep their screen size when zooming out, so refine the fit a few times.
         repeat(3) {
             val scale = treeCanvasCardScale(viewport.zoom)
             val left = summaryLaneScreenWidth(scale)
             val railWidth = rail?.takeIf { isRailVisible }?.let { it.baseWidth * scale / viewport.zoom } ?: 0.0
             val right = if (railWidth > 0.0) railStartWorldX() + railWidth else canvas.treeRightWorldX()
-            viewport.fitToBounds(right + worldPadX, contentHeight, (canvas.width - left.roundToInt()).coerceAtLeast(1), canvas.height, JBUI.scale(24).toDouble())
+            viewport.fitToBounds(right, contentHeight, (canvas.width - left.roundToInt()).coerceAtLeast(1), canvas.height, padding = 0.0)
             viewport.panX += left
         }
         zoomLabel.text = zoomText()
@@ -696,7 +699,7 @@ internal class TreeBoardPanel(
 
     private fun rebuildBoard(preferredCursorPath: String?) {
         val previousHover = hoveredPath
-        board = ReviewTreeBoard(chart, activeCollapsedPaths, visibleFocusFiles)
+        board = ReviewTreeBoard(chart, activeCollapsedPaths, visibleFocusFiles, railFileOrder)
         cursorIndex = board.indexOf(preferredCursorPath).let {
             if (it >= 0) it else if (preferredCursorPath != null && board.nodes.isNotEmpty()) 0 else -1
         }
@@ -779,11 +782,6 @@ internal class TreeBoardPanel(
     private fun railStartWorldX(): Double =
         canvas.treeRightWorldX() + JBUI.scale(TreeBoardRail.TREE_GAP) * treeCanvasCardScale(viewport.zoom) / viewport.zoom
 
-    /** Screen width of the board's summary and card lanes at zoom 1, for callers sizing the board. */
-    val sideLanesPreferredWidth: Int
-        get() = summaryLaneScreenWidth(1.0).roundToInt() +
-            (rail?.takeIf { isRailVisible }?.let { it.baseWidth + JBUI.scale(TreeBoardRail.TREE_GAP) } ?: 0)
-
     /** Places the floating summary beside the tree, next to what it describes, or hides it. */
     internal fun positionSummary() {
         val panel = summaryPanel ?: return
@@ -841,11 +839,7 @@ internal class TreeBoardPanel(
         if (!railVisible) hoveredRailCard = null
         railVisibleChanged(railVisible)
         updateRailToggleButton()
-        updateGroupHighlight()
-        // The tree keeps its place on the canvas; only the cards and family dots appear or disappear.
-        canvas.invalidateRowWidth()
-        updateSidePanels()
-        canvas.repaint()
+        rebuildBoard(cursorPath)
     }
 
     private fun syncRailPlacements() {
@@ -1106,17 +1100,14 @@ internal class TreeBoardPanel(
 
     private fun baseSummaryFont(): Font = JBFont.small().let { it.deriveFont(it.size2D * SUMMARY_FONT_SCALE) }
 
-    private fun rowTopWorld(index: Int): Double = canvas.rowLayout().tops.getOrElse(index) { worldPadY + index * rowHeight }
+    private fun rowTopWorld(index: Int): Double = canvas.rowLayout().tops.getOrElse(index) { index * rowHeight }
     private fun rowHeaderBottomWorld(index: Int): Double = rowTopWorld(index) + rowHeight
     private fun rowBottomWorld(index: Int): Double =
         rowTopWorld(index) + canvas.rowLayout().heights.getOrElse(index) { rowHeight }
     private fun rowCenterWorld(index: Int): Double = rowTopWorld(index) + rowHeight / 2.0
-    private fun columnWorldX(col: Int): Double = worldPadX + col * indentStep + JBUI.scale(6).toDouble()
+    private fun columnWorldX(col: Int): Double = col * indentStep + JBUI.scale(6).toDouble()
     private fun nodeContentStartWorldX(depth: Int): Double =
-        if (depth == 0) worldPadX else columnWorldX(depth - 1) + connectorStub
-
-    private val worldPadX get() = JBUI.scale(24).toDouble()
-    private val worldPadY get() = JBUI.scale(20).toDouble()
+        if (depth == 0) 0.0 else columnWorldX(depth - 1) + connectorStub
     private val rowHeight get() = JBUI.scale(24).toDouble()
     private val indentStep get() = JBUI.scale(28).toDouble()
     private val connectorStub get() = JBUI.scale(16).toDouble()
@@ -1194,7 +1185,7 @@ internal class TreeBoardPanel(
             val metrics = getFontMetrics(baseSummaryFont())
             val lineHeight = metrics.height.coerceAtLeast(1).toDouble()
             val wrapWidth = (summaryMaxWorldWidth - summaryPadX * 2).roundToInt().coerceAtLeast(80)
-            var y = worldPadY
+            var y = 0.0
             for (i in 0 until count) {
                 val node = board.nodes[i]
                 tops[i] = y
@@ -1214,7 +1205,7 @@ internal class TreeBoardPanel(
                 heights[i] = height
                 y += height
             }
-            return RowLayout(tops, heights, y + worldPadY, summaries).also { cachedRowLayout = it }
+            return RowLayout(tops, heights, y, summaries).also { cachedRowLayout = it }
         }
 
         private fun rowIndexAtWorldY(wy: Double): Int {
@@ -1634,11 +1625,6 @@ internal class TreeBoardPanel(
                     .maxOfOrNull { rowRightWorld(it, boldMetrics, plainMetrics, null) }.let { it ?: 0.0 }
                     .also { cachedUnfoldedRight = unfoldedKey to it }
             return maxOf(maxRight, unfolded).also { cachedTreeRight = it }
-        }
-
-        fun contentWorldBounds(): Pair<Double, Double> {
-            if (board.nodes.isEmpty()) return 200.0 to 100.0
-            return (treeRightWorldX() + worldPadX) to rowLayout().totalHeight
         }
 
         fun toggleScreenBounds(node: TreeBoardNode): Rectangle {

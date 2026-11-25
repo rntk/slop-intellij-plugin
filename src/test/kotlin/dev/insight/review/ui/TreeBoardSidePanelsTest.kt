@@ -5,13 +5,16 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBFont
 import dev.insight.codereview.CodeFile
 import dev.insight.diff.ReviewFile
+import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
+import dev.insight.review.TreeRailMode
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
+import dev.insight.review.buildTreeRailModel
 import java.awt.Component
 import java.awt.Container
 import java.awt.Rectangle
@@ -26,6 +29,32 @@ import javax.swing.KeyStroke
 import kotlin.math.abs
 
 class TreeBoardSidePanelsTest : BasePlatformTestCase() {
+    fun testVisibleCardsGroupSiblingFilesBeforeApplyingMetricOrder() {
+        val paths = listOf("a.kt", "b.kt", "c.kt", "d.kt", "e.kt")
+        val files = paths.mapIndexed { index, path -> CodeFile(path, "/repo/$path", "line\n".repeat(paths.size - index)) }
+        val tree = buildSummaryTree(files)
+        val topics = ReviewTopics(files, mapOf(
+            "a.kt" to "Core > Store",
+            "b.kt" to "UI > Panel",
+            "c.kt" to "Core > Parser",
+            "d.kt" to "core > store",
+        ))
+        fun panel(maxLevel: Int?) = TreeBoardPanel(
+            ReviewLineChart(tree), "Root", {}, cursorPath = "b.kt",
+            railModel = buildTreeRailModel(TreeRailMode.TOPICS, topics, null, ReviewSummaries(tree), paths.toSet(), maxLevel),
+        )
+        fun fileOrder(board: TreeBoardPanel) = board.board.nodes.drop(1).map { it.entry.path }
+
+        val board = panel(maxLevel = null)
+        assertEquals(listOf("c.kt", "a.kt", "d.kt", "b.kt", "e.kt"), fileOrder(board))
+        assertEquals(listOf("a.kt", "c.kt", "d.kt", "b.kt", "e.kt"), fileOrder(panel(maxLevel = 0)))
+        board.toggleRailVisible()
+        assertEquals(paths, fileOrder(board))
+        assertEquals("b.kt", board.cursorPath)
+        board.toggleRailVisible()
+        assertEquals(listOf("c.kt", "a.kt", "d.kt", "b.kt", "e.kt"), fileOrder(board))
+    }
+
     fun testSummaryAndTopicCardsArePartOfTheCanvasAndHighlightBothWays() {
         val files = listOf(
             CodeFile("src/auth/Login.kt", "/repo/src/auth/Login.kt", "fun login() = true\n"),

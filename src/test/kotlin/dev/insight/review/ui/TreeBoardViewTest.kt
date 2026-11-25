@@ -22,6 +22,7 @@ import java.awt.image.BufferedImage
 import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JLabel
+import javax.swing.JScrollPane
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +42,7 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             layoutTree(card)
             val components = descendants(card)
             fun component(name: String) = components.single { it.name == name }
-            val tabs = component("charts-lines-metric-tabs")
+            val tabs = component("charts-lines-metric-tabs").let { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
             val toolbar = component("charts-controls")
             val controls = listOf("charts-type-selector", "charts-search-field", "charts-search-send",
                 "charts-tree-fit", "charts-tree-zoom-in", "charts-tree-total").map(::component)
@@ -51,7 +52,14 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             assertTrue(bounds.maxOf { it.y } < bounds.minOf { it.maxY })
             assertEquals(toolbar.y + toolbar.height, tabs.y)
             val board = components.filterIsInstance<TreeBoardPanel>().single()
-            assertEquals(board.insets.top, board.canvas.y)
+            assertEquals(0, board.canvas.x)
+            assertEquals(0, board.canvas.y)
+            assertEquals(board.size, board.canvas.size)
+            val canvasBounds = SwingUtilities.convertRectangle(board, board.canvas.bounds, card)
+            assertEquals(0, canvasBounds.x)
+            assertEquals(card.width, canvasBounds.width)
+            assertEquals(card.height, canvasBounds.y + canvasBounds.height)
+            assertEquals(0, checkNotNull(board.rowScreenBounds("")).y)
 
             val boardBounds = board.canvas.bounds
             board.connectionSelection = TreeConnectionSelection("${"nested/".repeat(30)}a.kt", message = "Resolving code connections…")
@@ -83,6 +91,13 @@ class TreeBoardViewTest : BasePlatformTestCase() {
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
             selector().selectedItem = "Tree"
+
+            canvas.setSize(JBUI.scale(640), JBUI.scale(480))
+            layoutTree(canvas)
+            val page = canvas.tabs.selectedComponent as JScrollPane
+            assertEquals(page.viewport.extentSize, page.viewport.view.size)
+            assertFalse(page.horizontalScrollBar.isVisible)
+            assertFalse(page.verticalScrollBar.isVisible)
 
             assertNotNull(tabs())
             val panel = boardPanel().apply {

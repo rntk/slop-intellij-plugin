@@ -146,6 +146,9 @@ internal class ChartsViewState {
     var searchRunning = false
 }
 
+/** The Tree chart pans inside its board and fills the surrounding viewport. */
+internal class TreeChartCard : JPanel(BorderLayout())
+
 /**
  * The Charts page: charts that compare how much the folders and files of the review hold. Chart and
  * option changes rebuild only this card, through [refresh].
@@ -175,6 +178,7 @@ internal class ChartsCanvasCard(
     private val zoom = 1.0
     private var preview: HierarchyPreviewPanel? = null
     private var currentCard: JPanel? = null
+    private var currentMetricTabs: JBTabbedPane? = null
     private var activeSymbolKey: String? = null
     private val pendingSymbols = mutableSetOf<String>()
     private val symbolErrors = mutableMapOf<String, String>()
@@ -198,6 +202,7 @@ internal class ChartsCanvasCard(
             preview?.let(Disposer::dispose)
             preview = null
             currentCard = null
+            currentMetricTabs = null
             activeSymbolKey = null
         }
     }
@@ -440,8 +445,7 @@ internal class ChartsCanvasCard(
                 showTreeFocus(null)
             },
         ).apply {
-            border = JBUI.Borders.empty(4)
-            preferredSize = Dimension(width + sideLanesPreferredWidth, scaled(BOARD_HEIGHT))
+            preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
             briefs = treeBriefs
         } else null
@@ -466,9 +470,11 @@ internal class ChartsCanvasCard(
                 })
             }
         }
-        val card = JPanel(BorderLayout()).apply {
+        val card = (if (treeBoard != null) TreeChartCard() else JPanel(BorderLayout())).apply {
             background = UIUtil.getListBackground()
-            border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
+            if (treeBoard == null) {
+                border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border(), 1), JBUI.Borders.empty(1))
+            }
         }
         val declaration = lineChart?.previewDeclaration()
         val previewFiles = lineChart?.previewFiles().orEmpty() +
@@ -545,9 +551,20 @@ internal class ChartsCanvasCard(
                     else "Explore source lines, byte sizes, file counts and PSI lenses (classes, functions, tests…) by directory and down into each file's declarations, inspect the whole project tree on a board, walk through them as circles, or compare code structure on the radar"
             }, BorderLayout.CENTER)
         }
-        card.add(header, BorderLayout.NORTH)
-        card.add(if (tabbed) metricTabs(metrics, metric, readingArea) else readingArea, BorderLayout.CENTER)
+        val tabs = if (tabbed) metricTabs(metrics, metric, readingArea.takeUnless { treeBoard != null }) else null
+        if (treeBoard != null && tabs != null) {
+            // The tabs select the metric while the canvas fills the space below the tab strip.
+            card.add(JPanel(BorderLayout()).apply {
+                add(header, BorderLayout.NORTH)
+                add(tabs, BorderLayout.CENTER)
+            }, BorderLayout.NORTH)
+            card.add(readingArea, BorderLayout.CENTER)
+        } else {
+            card.add(header, BorderLayout.NORTH)
+            card.add(tabs ?: readingArea, BorderLayout.CENTER)
+        }
         currentCard = card
+        currentMetricTabs = tabs
         val focusTarget: JComponent? = lineChart ?: circleChart ?: treeBoard
         if (focusTarget != null && view.linesFocused) {
             view.linesFocused = false
@@ -748,9 +765,10 @@ internal class ChartsCanvasCard(
         currentTreeBoard?.hideConnectionPreview()
     }
 
-    private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent) =
+    private fun metricTabs(metrics: List<LineChartMetric>, selected: LineChartMetric, content: JComponent?) =
         JBTabbedPane().apply {
             name = "charts-lines-metric-tabs"
+            if (content == null) tabComponentInsets = JBUI.emptyInsets()
             // Lenses vary with the languages in scope; scrolling keeps one row of tabs and the selection in place.
             tabLayoutPolicy = javax.swing.JTabbedPane.SCROLL_TAB_LAYOUT
             accessibleContext.accessibleName = "Chart metric"
@@ -759,7 +777,10 @@ internal class ChartsCanvasCard(
                 val found = view.searchResult?.takeIf { metric == LineChartMetric.FOUND }
                 val title = found?.let { "Search: ${it.query.ellipsized(SEARCH_TAB_CHARS)}" } ?: metric.label
                 val tooltip = found?.let { "${it.files.size} files found for “${it.query}”" } ?: metric.description
-                addTab(title, null, if (metric == selected) content else JPanel(), tooltip)
+                val page = if (metric == selected && content != null) content else JPanel().apply {
+                    if (content == null) preferredSize = Dimension()
+                }
+                addTab(title, null, page, tooltip)
                 // Darcula's scrolling layout can leave JBTabbedPane's custom labels unpainted.
                 setTabComponentAt(index, null)
                 metric.diffSeries?.let { series ->
@@ -773,7 +794,7 @@ internal class ChartsCanvasCard(
                 refresh()
                 if (restoreFocus) {
                     val card = currentCard
-                    val tabs = (card?.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
+                    val tabs = currentMetricTabs
                     SwingUtilities.invokeLater { if (currentCard === card) tabs?.requestFocusInWindow() }
                 }
             }
@@ -1062,6 +1083,7 @@ internal class ChartsCanvasCard(
         preview?.let(Disposer::dispose)
         preview = null
         currentCard = null
+        currentMetricTabs = null
         activeSymbolKey = null
     }
 

@@ -83,11 +83,13 @@ internal data class TreeBoardGroupHighlight(
  * Flattened visible tree for the Charts Tree board view. Directories start expanded unless their path is in
  * [collapsed]; files remain leaves (no PSI declaration children). When [visibleFiles] is non-null, only those files
  * and their ancestor directories are kept, preserving the tree structure as a compact subtree.
+ * [fileOrder] gives sibling files their primary sort order when the topic or group cards are visible.
  */
 internal class ReviewTreeBoard(
     private val chart: ReviewLineChart,
     collapsed: Set<String> = emptySet(),
     private val visibleFiles: Set<String>? = null,
+    private val fileOrder: Map<String, Int> = emptyMap(),
 ) {
     val nodes: List<TreeBoardNode>
     private val indexByPath: Map<String, Int>
@@ -133,7 +135,7 @@ internal class ReviewTreeBoard(
             )
             if (!isCollapsed && children.isNotEmpty()) {
                 val childAncestors = if (depth == 0) emptyList() else ancestorHasNextSibling + !isLastChild
-                children.forEachIndexed { childPos, child ->
+                orderFiles(children).forEachIndexed { childPos, child ->
                     visit(
                         entry = child,
                         depth = depth + 1,
@@ -232,6 +234,13 @@ internal class ReviewTreeBoard(
         else chart.children(entry).filter {
             it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE
         }
+
+    private fun orderFiles(children: List<ReviewLineChart.Entry>): List<ReviewLineChart.Entry> {
+        if (fileOrder.isEmpty()) return children
+        // Keep directory slots and use the chart's metric order to break ties between files in the same card.
+        val files = children.filterNot { it.directory }.sortedBy { fileOrder[it.path] ?: Int.MAX_VALUE }.iterator()
+        return children.map { if (it.directory) it else files.next() }
+    }
 
     /** All non-root directory paths in [chart] that have at least one visible child, including inside collapsed branches. */
     fun allCollapsiblePaths(): Set<String> {

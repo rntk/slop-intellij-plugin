@@ -301,7 +301,11 @@ internal class NoteCanvas(
 
     fun highlight(paths: Set<String>) {
         highlighted = paths
-        cards.forEach { (key, card) -> card.border = cardBorder(key == focused || (key as? ReviewNoteKey)?.paths.orEmpty().any { it in paths }) }
+        cards.forEach { (key, card) ->
+            if (card !is TreeChartCard) {
+                card.border = cardBorder(key == focused || (key as? ReviewNoteKey)?.paths.orEmpty().any { it in paths })
+            }
+        }
         repaint()
     }
 
@@ -388,8 +392,9 @@ internal class NoteCanvas(
             override fun getScrollableUnitIncrement(r: Rectangle, orientation: Int, direction: Int) = scaled(16)
             override fun getScrollableBlockIncrement(r: Rectangle, orientation: Int, direction: Int) =
                 if (orientation == SwingConstants.VERTICAL) r.height else r.width
-            override fun getScrollableTracksViewportWidth() = parent.width >= preferredSize.width
-            override fun getScrollableTracksViewportHeight() = parent.height >= preferredSize.height
+            private fun fillsViewport() = components.firstOrNull() is TreeChartCard
+            override fun getScrollableTracksViewportWidth() = fillsViewport() || parent.width >= preferredSize.width
+            override fun getScrollableTracksViewportHeight() = fillsViewport() || parent.height >= preferredSize.height
         }
         return JBScrollPane(content).apply { border = null }
     }

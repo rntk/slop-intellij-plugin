@@ -44,6 +44,11 @@ internal data class TreeRailModel(
 ) {
     private val cardsByKey: Map<String, TreeRailCard> = cards.associateBy { it.key }
 
+    // Cards are built in hierarchy order. Each file takes the rank of its deepest visible card.
+    val fileOrder: Map<String, Int> = buildMap {
+        cards.forEachIndexed { index, card -> card.files.forEach { put(it, index) } }
+    }
+
     fun cardByKey(key: String?): TreeRailCard? = key?.let(cardsByKey::get)
 
     fun ancestorCardKeys(key: String?): Set<String> =
