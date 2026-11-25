@@ -100,6 +100,9 @@ import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallScope
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ui.viewTileId
+import dev.insight.knowledge.KnowledgeService
+import dev.insight.knowledge.ui.KnowledgeActions
+import dev.insight.knowledge.ui.knowledgeStats
 
 private val LOG = logger<CodeReviewTab>()
 
@@ -164,6 +167,11 @@ internal class CodeReviewTab(
     private var wordScopesOf: List<CodeFile>? = null
     private var wordsJob: Job? = null
     private var wordsTarget: Pair<List<CodeFile>, WordScope>? = null
+
+    /** The Knowledge page's runs and content; the knowledge base itself belongs to the project, not this tab. */
+    private val knowledge = CodeKnowledge(project, scope, project.service<KnowledgeService>(), complete,
+        scopeFiles = { state.snapshot.files.map { it.path } }, openFile = { path, line -> openFile(path, line) },
+        changed = { knowledgeChanged() })
 
     /** Uses the same source evidence and prompts as the review's /summaries command. */
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
@@ -264,6 +272,10 @@ internal class CodeReviewTab(
             "Read Markdown or text files and agent reports with smart clickable project paths, line links, and context picker support") {
             canvas.reportViewerStats()
         },
+        ReviewViewOption(CanvasTabKey.Knowledge, "Knowledge",
+            "Browse what the project's knowledge base holds, check hand-written docs against the code and distill the scope into claims") {
+            knowledgeStats(knowledge.counts())
+        },
     )
 
     override fun sourceStats(): List<ReviewTileStat> {
@@ -275,6 +287,7 @@ internal class CodeReviewTab(
     override fun openView(key: CanvasTabKey) {
         when (key) {
             CanvasTabKey.Words -> openWords()
+            CanvasTabKey.Knowledge -> openKnowledge()
             CanvasTabKey.Wall -> openCodeWall(state.snapshot.files, ALL_FILES)
             else -> super.openView(key)
         }
@@ -404,6 +417,12 @@ internal class CodeReviewTab(
         Disposer.register(this, wallChats)
         Disposer.register(this, sourcePoints)
         Disposer.register(this, followSession(before = { if (!session.busy) applyHeld() }, updateControls = ::updateControls))
+        codeCards.knowledgeActions = KnowledgeActions(checkDocs = { knowledge.checkDocs() }, chooseDocs = knowledge::chooseDocs,
+            distill = { knowledge.distill() }, renderDoc = { knowledge.renderDoc(it) }, stop = knowledge::stop,
+            retire = knowledge::retire, restore = knowledge::restore, openAnchor = knowledge::openAnchor,
+            openCitation = { knowledge.openCitation(it.path, it.startLine) }, close = { state.hideKnowledge(); renderCanvas() })
+        Disposer.register(this, knowledge)
+        knowledge.load()
         updateControls()
     }
 
@@ -453,6 +472,21 @@ internal class CodeReviewTab(
         countWords()
         renderCanvas()
         showCanvas { canvas.focusWords() }
+    }
+
+    /** Shows the Knowledge page: the claims, ledger and reports of the project's knowledge base, and the runs that update it. */
+    fun openKnowledge() {
+        state.showKnowledge()
+        knowledge.load()
+        renderCanvas()
+        showCanvas { canvas.focusKnowledge() }
+    }
+
+    /** Gives the page and tile what a run or the ledger changed, without rebuilding the canvas. */
+    private fun knowledgeChanged() {
+        if (disposed) return
+        if (state.knowledgeVisible) codeCards.updateKnowledge(knowledge.content())
+        scheduleTileRefresh()
     }
 
     /** Counts the words of one file or directory of the scope, or of every file again. */
@@ -670,6 +704,7 @@ internal class CodeReviewTab(
     override fun renderCanvas() {
         codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
             updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
+        codeCards.knowledge = if (state.knowledgeVisible) knowledge.content() else null
         codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result, charts = chartsCard(), reportViewer = reportViewerCard()))

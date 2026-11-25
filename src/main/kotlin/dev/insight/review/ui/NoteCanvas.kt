@@ -317,6 +317,7 @@ internal class NoteCanvas(
     internal fun focusTopics() { focusCard(CanvasTabKey.Topics) }
     internal fun focusCharts() { focusCard(CanvasTabKey.Charts) }
     internal fun focusReportViewer() { focusCard(CanvasTabKey.ReportViewer) }
+    internal fun focusKnowledge() { focusCard(CanvasTabKey.Knowledge) }
     internal fun focusGrouping() { focusCard(CanvasTabKey.Grouping) }
 
     internal fun focusWords() { focusCard(CanvasTabKey.Words) }
@@ -367,6 +368,7 @@ internal class NoteCanvas(
         CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves -> key.toString()
         CanvasTabKey.Wall -> vocabulary.wallName
         CanvasTabKey.Walkthrough -> "Walkthrough"
+        CanvasTabKey.Knowledge -> "Knowledge"
         CanvasTabKey.Explanation -> if (explanation?.running == true) "Explaining…" else "Explanation"
         CanvasTabKey.SymbolFlow -> "Symbol flow"
         is ReviewNoteKey -> {
@@ -1023,7 +1025,7 @@ internal class NoteCanvas(
     private fun refreshCard(key: CanvasTabKey) {
         if (key !in cards) return
         val card = when (key) {
-            CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.Wall, CanvasTabKey.Walkthrough ->
+            CanvasTabKey.Words, CanvasTabKey.Semantic, CanvasTabKey.Moves, CanvasTabKey.Wall, CanvasTabKey.Walkthrough, CanvasTabKey.Knowledge ->
                 extension?.card(key, snapshotCards)
             CanvasTabKey.Topics -> topics?.let(::topicsCard)
             CanvasTabKey.Grouping -> grouping?.let(::groupingCard)

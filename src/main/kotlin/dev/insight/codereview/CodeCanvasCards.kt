@@ -13,6 +13,9 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.context.ReviewDestination
 import dev.insight.context.ContextSummaryActions
+import dev.insight.knowledge.ui.KnowledgeActions
+import dev.insight.knowledge.ui.KnowledgeContent
+import dev.insight.knowledge.ui.KnowledgePage
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
@@ -96,6 +99,16 @@ internal class CodeCanvasCards(
     var words: CodeWordsPage? = null
     private var refresh: (CanvasTabKey) -> Unit = {}
     var wall: CodeWallContent? = null
+    /** The Knowledge page while it is shown. */
+    var knowledge: KnowledgeContent? = null
+    /** What the Knowledge page asks of the review; set by the tab before the page is first shown. */
+    internal var knowledgeActions = KnowledgeActions()
+    private val knowledgeView = lazy { KnowledgePage(project, wallLinks?.scope, KnowledgeActions(
+        checkDocs = { knowledgeActions.checkDocs() }, chooseDocs = { knowledgeActions.chooseDocs() }, distill = { knowledgeActions.distill() },
+        renderDoc = { knowledgeActions.renderDoc(it) }, stop = { knowledgeActions.stop() }, retire = { knowledgeActions.retire(it) },
+        restore = { knowledgeActions.restore(it) }, openAnchor = { knowledgeActions.openAnchor(it) },
+        openCitation = { knowledgeActions.openCitation(it) }, close = { knowledgeActions.close() })) }
+    private val knowledgePage by knowledgeView
     // One view for the tab session, so block positions survive canvas rebuilds.
     private val wallView = lazy {
         CodeWallView(openWallFile, showAllFiles, wallChats, project, reviewDestinations, contextSummaryActions,
@@ -117,6 +130,7 @@ internal class CodeCanvasCards(
     override fun leadingCards(): Map<CanvasTabKey, JPanel> = listOfNotNull(
         wall?.let { CanvasTabKey.Wall to wallCard(it) },
         words?.let { CanvasTabKey.Words to wordsCard(it) },
+        knowledge?.let { CanvasTabKey.Knowledge to knowledgeCard(it) },
     ).toMap()
 
     override fun trailingCards(snapshots: SnapshotCanvasCards): Map<CanvasTabKey, JPanel> = emptyMap()
@@ -124,12 +138,14 @@ internal class CodeCanvasCards(
     override fun card(key: CanvasTabKey, snapshots: SnapshotCanvasCards): JPanel? = when (key) {
         CanvasTabKey.Words -> words?.let(::wordsCard)
         CanvasTabKey.Wall -> wall?.let(::wallCard)
+        CanvasTabKey.Knowledge -> knowledge?.let(::knowledgeCard)
         else -> null
     }
 
     override fun title(key: CanvasTabKey): String? = when (key) {
         CanvasTabKey.Words -> "Words"
         CanvasTabKey.Wall -> ReviewVocabulary.CODE.wallName
+        CanvasTabKey.Knowledge -> "Knowledge"
         else -> null
     }
 
@@ -137,6 +153,16 @@ internal class CodeCanvasCards(
                                  actions: ChangeSummaryActions): SummaryDiffView? = null
 
     private fun wallCard(content: CodeWallContent): JPanel = wallPage.card.also { wallPage.show(content) }
+
+    private fun knowledgeCard(content: KnowledgeContent): JPanel = knowledgePage.card.also { knowledgePage.show(content) }
+
+    /** Shows the latest knowledge on its page without rebuilding the canvas; false when the page is not on it. */
+    fun updateKnowledge(content: KnowledgeContent): Boolean {
+        if (knowledge == null) return false
+        knowledge = content
+        knowledgePage.show(content)
+        return true
+    }
 
     /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
     fun updateWallSummaries(summaries: Map<String, String>) {
@@ -222,8 +248,10 @@ internal class CodeCanvasCards(
     override fun dispose() {
         words = null
         wall = null
+        knowledge = null
         cloud = null
         if (wallView.isInitialized()) wallPage.dispose()
+        if (knowledgeView.isInitialized()) knowledgePage.dispose()
     }
 
     private fun scaled(value: Int) = zoomScaled(value, 1.0)

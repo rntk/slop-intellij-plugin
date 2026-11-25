@@ -54,6 +54,12 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     fun showWords() { wordsVisible = true }
     fun hideWords() { wordsVisible = false }
 
+    /** Whether the Knowledge page is shown. */
+    var knowledgeVisible = false
+        private set
+    fun showKnowledge() { knowledgeVisible = true }
+    fun hideKnowledge() { knowledgeVisible = false }
+
     /** The scope of the Code wall while it is on the canvas; see [wallFiles]. */
     var wallScope: WallScope? = null
         private set
@@ -64,6 +70,7 @@ class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun clearNotes() {
         super.clearNotes()
         wordsVisible = false
+        knowledgeVisible = false
         wallScope = null
     }
 

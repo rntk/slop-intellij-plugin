@@ -29,6 +29,8 @@ internal sealed interface CanvasTabKey {
     data object Charts : CanvasTabKey
     /** Markdown and text report viewer with smart clickable project paths and context picker support. */
     data object ReportViewer : CanvasTabKey
+    /** The claims, ledger and reports of the project's knowledge base, with the runs that fill and check it. */
+    data object Knowledge : CanvasTabKey
     data object FileView : CanvasTabKey
     data object SymbolFlow : CanvasTabKey
     data class SummarySearch(val id: Int) : CanvasTabKey
