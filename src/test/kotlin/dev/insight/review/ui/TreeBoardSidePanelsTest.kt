@@ -84,9 +84,15 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         )
         val topicTree = buildTopicSummaryTree(topics)
         val securityTopic = topicTree.nodes.first { it.identity == "topic:security" }
+        val loginTopicPath = "security > ${longLeaf.lowercase()}"
+        val loginKey = "1:$loginTopicPath"
+        val loginTopic = topicTree.nodes.first { it.identity == "topic:$loginTopicPath" }
         val topicSummaries = ReviewSummaries(
             topicTree,
-            mapOf(securityTopic.id to Summary.plain("Coordinates authentication and session security.")),
+            mapOf(
+                securityTopic.id to Summary.plain("Coordinates authentication and session security."),
+                loginTopic.id to Summary.plain("Validates login and remembers devices."),
+            ),
         )
 
         val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
@@ -183,22 +189,25 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             assertEquals(30, board.card("0:security").y - beforeCard.y)
             assertEquals(40, summaryPanel.x - beforeSummary.x)
 
-            // Clicking a topic card selects it; selection survives metric tab switches.
-            val selectBounds = board.card("0:security")
+            // Selecting a nested card keeps its parent highlighted after hover ends and the metric changes.
+            val selectBounds = board.card(loginKey)
             for (id in listOf(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED)) {
                 board.canvas.dispatchEvent(
                     MouseEvent(board.canvas, id, 0, 0, selectBounds.centerX.toInt(), selectBounds.centerY.toInt(), 1, false, MouseEvent.BUTTON1),
                 )
             }
-            assertEquals("0:security", board.selectedRailCardKey)
+            assertEquals(loginKey, board.selectedRailCardKey)
             assertNull(board.cursorPath)
             board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_EXITED, 0, 0, -10, -10, 0, false))
-            assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
+            assertTrue(checkNotNull(board.rail).isCardHighlighted("0:security"))
+            assertFalse(checkNotNull(board.rail).isCardHighlighted("0:ui"))
+            assertEquals("Validates login and remembers devices.", textOf("charts-tree-summary-text"))
 
             tabs().selectedIndex = 1
             val afterMetricSwitch = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
-            assertEquals("0:security", afterMetricSwitch.selectedRailCardKey)
-            assertEquals("Coordinates authentication and session security.", textOf("charts-tree-summary-text"))
+            assertEquals(loginKey, afterMetricSwitch.selectedRailCardKey)
+            assertTrue(checkNotNull(afterMetricSwitch.rail).isCardHighlighted("0:security"))
+            assertEquals("Validates login and remembers devices.", textOf("charts-tree-summary-text"))
 
             // Hiding the cards keeps the tree where it was.
             val toggleRailBtn = components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }
@@ -222,6 +231,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             // Pressing Escape clears the card selection.
             triggerKey(afterHideSwitch, KeyEvent.VK_ESCAPE)
             assertNull(afterHideSwitch.selectedRailCardKey)
+            assertFalse(checkNotNull(afterHideSwitch.rail).isCardHighlighted("0:security"))
             assertNull(checkNotNull(afterHideSwitch.summaryPanel).display)
 
             // Paint in normal and zoomed states without error, keeping alignment after zoom and fold.
