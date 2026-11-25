@@ -93,6 +93,26 @@ class TreeLinkBriefsTest {
         assertEquals(done, updates.last())
     }
 
+    @Test fun `briefs only links to files that pass the filter`() = runBlocking {
+        val connections = TreeFileConnections(
+            incoming = mapOf("Client.kt" to TreeConnectionSite(1, 1), "Hidden.kt" to TreeConnectionSite(2, 2)),
+            outgoing = mapOf("Model.kt" to TreeConnectionSite(3, 3), "Folded.kt" to TreeConnectionSite(4, 4)),
+        )
+        val calls = mutableListOf<Pair<String, String>>()
+        val updates = mutableListOf<TreeBriefs>()
+        val done = briefTreeLinks("Api.kt", connections,
+            briefFile = { "serves it" },
+            briefLink = { from, to, _ -> calls += from to to; "uses it" },
+            linked = { it == "Client.kt" || it == "Model.kt" },
+            onUpdate = { updates += it },
+        )
+        assertEquals(setOf("Client.kt" to "Api.kt", "Api.kt" to "Model.kt"), calls.toSet())
+        assertEquals(3, updates.first().total)
+        assertEquals(setOf("Client.kt"), done.incoming.keys)
+        assertEquals(setOf("Model.kt"), done.outgoing.keys)
+        assertFalse(done.running)
+    }
+
     @Test fun `cancelled runs keep finished briefs`() {
         val briefs = TreeBriefs("Api.kt", TreeBrief.Pending,
             incoming = mapOf("A.kt" to TreeBrief.Ready("uses it"), "B.kt" to TreeBrief.Pending),

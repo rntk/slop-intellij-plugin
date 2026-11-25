@@ -670,9 +670,14 @@ internal class ChartsCanvasCard(
                     showTreeBriefs(TreeBriefs.pending(path, connections).failedAll())
                     return@launch
                 }
+                // Brief only the links drawn on the board; files hidden by folds or the current tab have no arrow to label.
+                val drawn = currentTreeBoard?.board?.let { board ->
+                    (connections.incoming.keys + connections.outgoing.keys).filterTo(HashSet()) { board.indexOf(it) >= 0 }
+                }
                 val writeBriefs: suspend (onUpdate: (TreeBriefs) -> Unit) -> Unit = { onUpdate ->
                     briefTreeLinks(
                         path, connections,
+                        linked = { drawn == null || it in drawn },
                         briefFile = { file ->
                             connections.brief ?: withContext(Dispatchers.IO) { briefer.file(projectPath(hierarchy, file)) }
                                 .also { connections.brief = it }

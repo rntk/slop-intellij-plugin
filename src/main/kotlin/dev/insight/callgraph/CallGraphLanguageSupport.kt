@@ -3,6 +3,7 @@ package dev.insight.callgraph
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
+import com.intellij.psi.ResolveResult
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
 import dev.insight.graph.SymbolTrait
@@ -33,6 +34,9 @@ interface CallGraphLanguageSupport {
 
     /** References with the same inference context as IDE navigation; null uses the platform references. */
     fun navigationReferences(element: PsiElement): List<PsiReference>? = null
+
+    /** True when [result] is a guess by name, for example a member access on a receiver of unknown type. */
+    fun isNameMatch(result: ResolveResult): Boolean = false
 
     fun supportsFile(file: com.intellij.psi.PsiFile): Boolean = false
 

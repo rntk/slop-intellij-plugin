@@ -30,11 +30,17 @@ internal fun referenceRange(reference: PsiReference): TextRange? = try {
     null
 }
 
-/** Resolve every candidate, keeping cancellation visible and isolating failures in individual references. */
-internal fun resolveTargets(reference: PsiReference): List<PsiElement> = try {
-    val raw = if (reference is PsiPolyVariantReference) reference.multiResolve(false).mapNotNull { it.element }
-    else listOfNotNull(reference.resolve())
+/**
+ * Resolve every candidate, keeping cancellation visible and isolating failures in individual references.
+ * With [inferredOnly], candidates a language support reports as name matches (see [CallGraphLanguageSupport.isNameMatch]) are dropped.
+ */
+internal fun resolveTargets(reference: PsiReference): List<PsiElement> = resolveTargets(reference, inferredOnly = false)
+
+internal fun resolveTargets(reference: PsiReference, inferredOnly: Boolean): List<PsiElement> = try {
     val supports = CallGraphLanguageSupport.EP_NAME.extensionList
+    val raw = if (reference is PsiPolyVariantReference) reference.multiResolve(false)
+        .filter { result -> !inferredOnly || supports.none { it.isNameMatch(result) } }.mapNotNull { it.element }
+    else listOfNotNull(reference.resolve())
     raw.map { target -> supports.firstNotNullOfOrNull { it.unwrapImport(target) } ?: target }.distinct()
 } catch (e: ProcessCanceledException) {
     throw e

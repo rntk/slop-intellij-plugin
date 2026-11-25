@@ -93,4 +93,41 @@ class TreeFileConnectionIndexTest : LightJavaCodeInsightFixtureTestCase() {
             scope.cancel()
         }
     }
+
+    fun testJavaScriptMemberMatchedOnlyByNameIsNotALink() {
+        val view = myFixture.addFileToProject("view.js", """
+            export class View {
+              render() {}
+              update(data) {}
+            }
+            export const widget = { title: 't' }
+        """.trimIndent())
+        // No import or typed receiver: `cfg` and `el` are untyped, so the IDE can only match members by name.
+        val loader = myFixture.addFileToProject("loader.js", """
+            export function load(cfg, el) {
+              cfg.render()
+              el.update({})
+              return cfg.title
+            }
+        """.trimIndent())
+        val app = myFixture.addFileToProject("app.js", """
+            import { View } from './view'
+            export function start() { new View().render() }
+        """.trimIndent())
+        val sources = listOf(view, loader, app).associate { it.name to it.virtualFile.path }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val index = TreeFileConnectionIndex(project, sources, scope)
+        try {
+            val request = scope.async { index.links() }
+            PlatformTestUtil.waitWithEventsDispatching("Links should resolve", { request.isCompleted }, 20)
+            val links = runBlocking { request.await() }
+            assertEquals(emptySet<String>(), links.getValue("loader.js").outgoing.keys)
+            assertEquals(setOf("app.js"), links.getValue("view.js").incoming.keys)
+            val site = links.getValue("app.js").outgoing.getValue("view.js")
+            assertTrue(site.occurrences.all { it.fromSnippet != null })
+        } finally {
+            index.cancel()
+            scope.cancel()
+        }
+    }
 }

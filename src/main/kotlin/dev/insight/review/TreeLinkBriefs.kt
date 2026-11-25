@@ -49,16 +49,17 @@ internal data class TreeBriefs(
         incoming.mapValues { TreeBrief.Failed }, outgoing.mapValues { TreeBrief.Failed })
 
     companion object {
-        fun pending(path: String, connections: TreeFileConnections? = null) = TreeBriefs(
+        /** Pending briefs for [path] and the links of [connections] whose other file passes [linked]. */
+        fun pending(path: String, connections: TreeFileConnections? = null, linked: (String) -> Boolean = { true }) = TreeBriefs(
             path, TreeBrief.Pending,
-            connections?.incoming?.mapValues { TreeBrief.Pending }.orEmpty(),
-            connections?.outgoing?.mapValues { TreeBrief.Pending }.orEmpty(),
+            connections?.incoming?.filterKeys(linked)?.mapValues { TreeBrief.Pending }.orEmpty(),
+            connections?.outgoing?.filterKeys(linked)?.mapValues { TreeBrief.Pending }.orEmpty(),
         )
     }
 }
 
 /**
- * Briefs [path] and each of its links, at most [parallelism] model calls at a time. [onUpdate] receives the whole state
+ * Briefs [path] and each of its links to a file passing [linked], at most [parallelism] model calls at a time. [onUpdate] receives the whole state
  * after every change, starting with all briefs pending; a failing brief is marked [TreeBrief.Failed] without stopping the rest.
  */
 internal suspend fun briefTreeLinks(
@@ -67,9 +68,10 @@ internal suspend fun briefTreeLinks(
     briefFile: suspend (String) -> String,
     briefLink: suspend (from: String, to: String, site: TreeConnectionSite) -> String,
     parallelism: Int = 4,
+    linked: (String) -> Boolean = { true },
     onUpdate: (TreeBriefs) -> Unit,
 ): TreeBriefs {
-    var state = TreeBriefs.pending(path, connections)
+    var state = TreeBriefs.pending(path, connections, linked)
     onUpdate(state)
     val lock = Mutex()
     val permits = Semaphore(parallelism)
@@ -90,10 +92,10 @@ internal suspend fun briefTreeLinks(
     }
     coroutineScope {
         launch { run(path, { briefFile(path) }) { s, b -> s.copy(file = b) } }
-        for ((from, site) in connections.incoming) launch {
+        for ((from, site) in connections.incoming) if (linked(from)) launch {
             run("$from → $path", { briefLink(from, path, site) }) { s, b -> s.copy(incoming = s.incoming + (from to b)) }
         }
-        for ((to, site) in connections.outgoing) launch {
+        for ((to, site) in connections.outgoing) if (linked(to)) launch {
             run("$path → $to", { briefLink(path, to, site) }) { s, b -> s.copy(outgoing = s.outgoing + (to to b)) }
         }
     }

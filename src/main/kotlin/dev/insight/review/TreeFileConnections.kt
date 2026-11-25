@@ -261,7 +261,8 @@ internal class TreeFileConnectionIndex(
             val priorities = mutableMapOf<String, Int>()
             val primaries = mutableMapOf<String, Pair<Int?, Int?>>()
             val collected = mutableMapOf<String, MutableList<RawOccurrence>>()
-            ProjectGraphAnalyzer.relationsWithSites(file) { _, target, kind, site ->
+            // Name-only matches (for example `x.render()` with `x` untyped) are guesses, not links between files.
+            ProjectGraphAnalyzer.relationsWithSites(file, inferredOnly = true) { _, target, kind, site ->
                 if (kind == RelationKind.CONTAINS) return@relationsWithSites
                 // Keep the first call in traversal order, then a usage, then an import for the primary site.
                 val priority = when (kind) {

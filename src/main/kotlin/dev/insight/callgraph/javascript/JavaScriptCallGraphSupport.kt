@@ -18,9 +18,11 @@ import com.intellij.lang.javascript.psi.ecma6.TypeScriptTypeParameter
 import com.intellij.lang.javascript.psi.ecmal4.JSAttributeList
 import com.intellij.lang.javascript.psi.ecmal4.JSClass
 import com.intellij.lang.javascript.psi.ecmal4.JSReferenceList
+import com.intellij.lang.javascript.psi.resolve.JSResolveResult
 import com.intellij.lang.javascript.psi.stubs.JSImplicitElement
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import com.intellij.psi.ResolveResult
 import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.CallResolution
@@ -147,9 +149,13 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
 
     override fun callSite(element: PsiElement): CallResolution? {
         val callee = (element as? JSCallExpression)?.methodExpression ?: return null
-        val targets = callee.references.flatMap(::resolveTargets).flatMap(::declarations).mapNotNull(::callTarget)
-            .filter { isFunction(it) || it is JSClass }.distinct()
-        return CallResolution(callee, targets, (callee as? JSReferenceExpression)?.qualifier)
+        fun targets(inferredOnly: Boolean) = callee.references.flatMap { resolveTargets(it, inferredOnly) }
+            .flatMap(::declarations).mapNotNull(::callTarget).filter { isFunction(it) || it is JSClass }.distinct()
+        // On a receiver of unknown type the IDE matches members by name; keep those only when nothing is inferred.
+        val inferred = targets(inferredOnly = true)
+        val targets = inferred.ifEmpty { targets(inferredOnly = false) }
+        return CallResolution(callee, targets, (callee as? JSReferenceExpression)?.qualifier,
+            byName = inferred.isEmpty() && targets.isNotEmpty())
     }
 
     private fun declarations(element: PsiElement): List<PsiElement> = when (element) {
@@ -175,6 +181,9 @@ class JavaScriptCallGraphSupport : CallGraphLanguageSupport {
     /** The function or class named by `export default function App` or `export default class App`, which imports resolve to. */
     private fun exported(element: PsiElement): PsiElement? =
         (element as? ES6ExportDefaultAssignment)?.namedElement?.takeIf { isFunction(it) || it is JSClass }
+
+    /** A partial result names a member found by name alone, as for `cfg.render()` when the type of `cfg` is unknown. */
+    override fun isNameMatch(result: ResolveResult): Boolean = (result as? JSResolveResult)?.status?.isPartial == true
 
     override fun unwrapImport(element: PsiElement): PsiElement? =
         declaration(element)?.takeIf { it !== element }

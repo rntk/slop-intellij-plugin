@@ -54,12 +54,17 @@ object ProjectGraphAnalyzer {
         emit: (PsiElement, PsiElement, RelationKind) -> Unit) =
         relationsWithSites(file, occurrence, scope, foldFunctions) { from, to, relation, _ -> emit(from, to, relation) }
 
-    /** The fourth callback argument identifies the source occurrence within the analyzed file. */
+    /**
+     * The fourth callback argument identifies the source occurrence within the analyzed file.
+     * With [inferredOnly], relations matched only by member name (see [CallResolution.byName]) are not emitted;
+     * [occurrence] still receives every call.
+     */
     internal fun relationsWithSites(file: PsiFile,
         occurrence: (PsiElement, PsiElement, CallResolution) -> Unit = { _, _, _ -> },
         scope: PsiElement = file,
         foldFunctions: Boolean = false,
         lineRange: TextRange? = null,
+        inferredOnly: Boolean = false,
         emit: (PsiElement, PsiElement, RelationKind, PsiElement) -> Unit) {
         fun owner(element: PsiElement?): PsiElement {
             var current = element
@@ -98,7 +103,7 @@ object ProjectGraphAnalyzer {
                 if (call != null) {
                     occurrence(from, element, call)
                     val callKind = if (call.operation == CallOperation.INVOKE) RelationKind.CALL else RelationKind.REFERENCE
-                    call.targets.forEach { emit(from, source(it), relation ?: callKind, call.callee) }
+                    if (!inferredOnly || !call.byName) call.targets.forEach { emit(from, source(it), relation ?: callKind, call.callee) }
                 }
                 if (inRange && relation == RelationKind.IMPORT && element !is PsiFile) {
                     supports.firstNotNullOfOrNull { it.unwrapImport(element) }?.let { imported ->
@@ -110,7 +115,7 @@ object ProjectGraphAnalyzer {
                         val range = referenceRange(reference) ?: continue
                         if (range.startOffset < lineRange.startOffset || range.endOffset > lineRange.endOffset) continue
                     }
-                    for (target in resolveTargets(reference)) emit(from, source(target), relation ?: RelationKind.REFERENCE, reference.element)
+                    for (target in resolveTargets(reference, inferredOnly)) emit(from, source(target), relation ?: RelationKind.REFERENCE, reference.element)
                 }
                 super.visitElement(element)
             }
