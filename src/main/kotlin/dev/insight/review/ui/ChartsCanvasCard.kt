@@ -46,6 +46,7 @@ import dev.insight.review.TreeFileConnectionIndex
 import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeBriefs
 import dev.insight.review.briefTreeLinks
+import dev.insight.review.collectRelatedFiles
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -85,6 +86,10 @@ internal data class ChartsCard(
     val revision: Int = 0,
 ) {
     val tree get() = summaries.tree
+    val connectionSources by lazy {
+        tree.nodes.asSequence().filter { it.kind == SummaryKind.FILE }.mapNotNull { it.file }
+            .associate { it.path to it.absolutePath }
+    }
 }
 
 /** Chart selection and navigation, kept while the page is rebuilt. */
@@ -164,8 +169,6 @@ internal class ChartsCanvasCard(
     private var treeFocusSelection: TreeFocusSelection? = null
     private var treeBriefJob: Job? = null
     private var treeBriefs: TreeBriefs? = null
-    /** File briefs by review path, kept like link briefs until the connection index is rebuilt. */
-    private val treeFileBriefs = mutableMapOf<String, String>()
     private var currentTreeBoard: TreeBoardPanel? = null
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
@@ -195,7 +198,7 @@ internal class ChartsCanvasCard(
         val lines = tabbed && !circles && !tree
         val diff = vocabulary == ReviewVocabulary.DIFF
         val linesTitle = if (diff) "Changed lines" else "File metrics"
-        if (searchRevision != content.revision) resetTreeConnections()
+        if (searchRevision != content.revision) resetTreeSelections()
         searchRevision = content.revision
         // A search names the files of the revision it ran against; a new revision may have removed or changed them.
         if (view.searchResult?.let { it.revision != content.revision } == true) {
@@ -267,10 +270,12 @@ internal class ChartsCanvasCard(
             canSummarizeDeclaration = { symbolSummaries != null && it.summarySpan != null },
         ) else null
         val circleChart = if (hierarchy != null && circles) circleChart(hierarchy, content.tree, inner) else null
-        if (tree && project != null && treeConnectionIndex == null) {
-            val sources = content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
-                .distinctBy { it.path }
-            treeConnectionIndex = TreeFileConnectionIndex(project, sources)
+        if (project != null && (tree || treeConnectionIndex != null)) {
+            val sources = content.connectionSources
+            if (treeConnectionIndex?.matchesSources(sources) == false) resetTreeConnections()
+            if (tree && treeConnectionIndex == null) {
+                treeConnectionIndex = TreeFileConnectionIndex(project, sources, treeConnectionScope)
+            }
         }
         val treeBoard = if (hierarchy != null && tree) TreeBoardPanel(
             hierarchy,
@@ -472,15 +477,7 @@ internal class ChartsCanvasCard(
 
     /** The links of [path], or a selection whose message says why there are none. */
     private suspend fun resolveTreeConnections(index: TreeFileConnectionIndex, path: String): TreeConnectionSelection = try {
-        val connections = if (project == null) index.connections(path) else withBackgroundProgress(project, "Building code connections") {
-            reportRawProgress { reporter ->
-                reporter.text("Resolving links between files…")
-                index.connections(path) { done, total ->
-                    reporter.text("Resolving links between files ($done of $total)")
-                    reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                }
-            }
-        }
+        val connections = index.links()[path]
         if (connections == null) TreeConnectionSelection(path, message = "No live source available")
         else TreeConnectionSelection(path, connections)
     } catch (e: CancellationException) {
@@ -510,17 +507,19 @@ internal class ChartsCanvasCard(
         treeBriefJob?.cancel()
         if (treeBriefs?.path == path) {
             showTreeBriefs(null)
+            if (treeConnectionSelection?.connections == null) showTreeConnections(null)
             return
         }
-        val shown = treeConnectionSelection?.takeIf { it.path == path && it.connections != null }
-        if (shown == null) {
-            treeConnectionJob?.cancel()
+        treeConnectionJob?.cancel()
+        if (treeConnectionSelection?.path != path) {
             showTreeConnections(TreeConnectionSelection(path, message = "Resolving code connections…"))
         }
-        showTreeBriefs(TreeBriefs.pending(path, shown?.connections))
+        showTreeBriefs(TreeBriefs.pending(path))
         treeBriefJob = treeConnectionScope.launch {
             try {
-                val selection = shown ?: resolveTreeConnections(index, path).also { if (isActive) showTreeConnections(it) }
+                val selection = resolveTreeConnections(index, path)
+                if (!isActive) return@launch
+                showTreeConnections(selection)
                 val connections = selection.connections ?: run {
                     // The connection status already says why there are no links.
                     showTreeBriefs(null)
@@ -540,8 +539,8 @@ internal class ChartsCanvasCard(
                     briefTreeLinks(
                         path, connections,
                         briefFile = { file ->
-                            treeFileBriefs[file] ?: withContext(Dispatchers.IO) { briefer.file(projectPath(hierarchy, file)) }
-                                .also { treeFileBriefs[file] = it }
+                            connections.brief ?: withContext(Dispatchers.IO) { briefer.file(projectPath(hierarchy, file)) }
+                                .also { connections.brief = it }
                         },
                         briefLink = { from, to, site ->
                             site.brief ?: withContext(Dispatchers.IO) {
@@ -563,7 +562,10 @@ internal class ChartsCanvasCard(
                 }
             } catch (e: CancellationException) {
                 // Cancelled from the progress UI: keep finished briefs and drop the pending ones.
-                if (isActive) treeBriefs?.let { showTreeBriefs(it.withoutPending()) }
+                if (isActive) {
+                    if (treeConnectionSelection?.connections == null) showTreeConnections(null)
+                    else treeBriefs?.let { showTreeBriefs(it.withoutPending()) }
+                }
                 throw e
             }
         }
@@ -589,15 +591,7 @@ internal class ChartsCanvasCard(
         showTreeFocus(TreeFocusSelection(path, directory, message = "Resolving linked files…"))
         treeFocusJob = treeConnectionScope.launch {
             val selection = try {
-                val links = if (project == null) index.relatedFiles(files) else withBackgroundProgress(project, "Resolving linked files") {
-                    reportRawProgress { reporter ->
-                        reporter.text("Resolving links between files…")
-                        index.relatedFiles(files) { done, total ->
-                            reporter.text("Resolving links between files ($done of $total)")
-                            reporter.fraction(if (total > 0) done.toDouble() / total else null)
-                        }
-                    }
-                }
+                val links = collectRelatedFiles(files, index.links())
                 if (links == null) TreeFocusSelection(path, directory, message = "No live source available")
                 else TreeFocusSelection(path, directory, links)
             } catch (e: CancellationException) {
@@ -618,15 +612,19 @@ internal class ChartsCanvasCard(
     }
 
     private fun resetTreeConnections() {
+        treeConnectionIndex?.cancel()
+        treeConnectionIndex = null
+        resetTreeSelections()
+    }
+
+    private fun resetTreeSelections() {
         treeConnectionJob?.cancel()
         treeConnectionJob = null
         treeBriefJob?.cancel()
         treeBriefJob = null
         treeBriefs = null
-        treeFileBriefs.clear()
         treeFocusJob?.cancel()
         treeFocusJob = null
-        treeConnectionIndex = null
         treeConnectionSelection = null
         treeFocusSelection = null
         currentTreeBoard?.hideConnectionPreview()

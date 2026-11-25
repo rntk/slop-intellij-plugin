@@ -507,6 +507,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             // Clicking briefs also shows the file's links, so the briefs explain what is drawn.
             assertEquals(api, board.connectionSelection?.path)
             assertEquals(3, requests.get())
+            val summarizedClientSite = checkNotNull(board.connectionSelection?.connections?.incoming?.get(client))
 
             val apiBrief = board.canvas.briefSegments(api).single()
             assertEquals("Starts the service and creates models", apiBrief.text)
@@ -546,6 +547,37 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                     it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
             }
             assertNull(rebuilt.briefs)
+            PlatformTestUtil.waitWithEventsDispatching("Client links should resolve", {
+                rebuilt.connectionSelection?.path == client && rebuilt.connectionSelection?.connections != null
+            }, 20)
+            assertSame(summarizedClientSite, rebuilt.connectionSelection?.connections?.outgoing?.get(api))
+            assertEquals("calls Api.run to start", summarizedClientSite.brief)
+
+            // A new review revision with the same file scope retains the live-source graph and its cached briefs.
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)), revision = 1)))
+            val refreshed = panel()
+            checkNotNull(refreshed.connectionButtonScreenBounds(client)).let {
+                refreshed.canvas.dispatchEvent(MouseEvent(refreshed.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            }
+            PlatformTestUtil.waitWithEventsDispatching("Links should resolve after review refresh", {
+                refreshed.connectionSelection?.path == client && refreshed.connectionSelection?.connections != null
+            }, 20)
+            assertSame(summarizedClientSite, refreshed.connectionSelection?.connections?.outgoing?.get(api))
+
+            // Removing a file from the review scope discards the old graph, including links to that file.
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(
+                ReviewSummaries(buildSummaryTree(files.filter { it.path != client })), revision = 2,
+            )))
+            val narrower = panel()
+            checkNotNull(narrower.connectionButtonScreenBounds(api)).let {
+                narrower.canvas.dispatchEvent(MouseEvent(narrower.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                    it.centerX.toInt(), it.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            }
+            PlatformTestUtil.waitWithEventsDispatching("Links should reflect the changed scope", {
+                narrower.connectionSelection?.path == api && narrower.connectionSelection?.connections != null
+            }, 20)
+            assertFalse(checkNotNull(narrower.connectionSelection?.connections).incoming.containsKey(client))
         } finally {
             canvas.dispose()
         }

@@ -5,6 +5,10 @@ import com.intellij.openapi.application.constrainedReadAction
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectRootModificationTracker
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -14,7 +18,16 @@ import com.intellij.psi.util.PsiTreeUtil
 import dev.insight.agent.findSourceFile
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.ProjectGraphAnalyzer
+import dev.insight.callgraph.callGraphCodeStamp
 import dev.insight.graph.RelationKind
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 
 /** Short source snippet around [highlightLine], with 1-based [firstLine] and common indentation stripped. */
 internal data class CodeSnippet(
@@ -49,7 +62,10 @@ internal data class TreeConnectionSite(
     var brief: String? = null
 }
 
-internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)
+internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>) {
+    /** Completed one-line file brief for this graph snapshot. Accessed on the EDT. */
+    var brief: String? = null
+}
 
 /** Files included in Tree Focus mode: the focused [targets], plus direct [incoming] and [outgoing] neighbors. */
 internal data class TreeFocusLinks(
@@ -138,8 +154,17 @@ private fun PsiElement.sourceLine(): Int? {
 }
 
 /** Direct file links in one review scope, resolved against the IDE's current source. */
-internal class TreeFileConnectionIndex(private val project: Project, private val sources: List<ReviewSource>) {
-    private data class Snapshot(val stamp: Long, val links: Map<String, TreeFileConnections>)
+internal class TreeFileConnectionIndex(
+    private val project: Project,
+    private val sources: Map<String, String?>,
+    ownerScope: CoroutineScope,
+) {
+    private data class Stamp(val psi: Long, val roots: Long, val fileStructure: Long)
+    private data class Snapshot(
+        val stamp: Stamp,
+        val codeOnly: Boolean,
+        val links: Map<String, TreeFileConnections>,
+    )
 
     private data class RawOccurrence(
         val kind: RelationKind,
@@ -148,39 +173,84 @@ internal class TreeFileConnectionIndex(private val project: Project, private val
         val target: PsiElement,
     )
 
+    private val scope = CoroutineScope(ownerScope.coroutineContext + SupervisorJob(ownerScope.coroutineContext[Job]))
+    private val requestLock = Any()
+    private var loading: Deferred<Unit>? = null
     @Volatile
     private var snapshot: Snapshot? = null
 
-    private suspend fun currentLinks(onProgress: (done: Int, total: Int) -> Unit): Map<String, TreeFileConnections> =
-        constrainedReadAction(
-            ReadConstraint.inSmartMode(project),
-            ReadConstraint.withDocumentsCommitted(project),
-        ) {
-            val stamp = PsiModificationTracker.getInstance(project).modificationCount
-            val current = snapshot?.takeIf { it.stamp == stamp } ?: Snapshot(stamp, build(onProgress)).also { snapshot = it }
-            current.links
+    /** Selection jobs share one build and can stop waiting independently. */
+    suspend fun links(): Map<String, TreeFileConnections> {
+        while (true) {
+            scope.coroutineContext.ensureActive()
+            cachedSnapshot()?.let { return it.links }
+            val request = synchronized(requestLock) {
+                loading?.takeUnless { it.isCompleted } ?: scope.async(start = CoroutineStart.LAZY) {
+                    snapshot = cachedSnapshot() ?: buildSnapshot()
+                }.also { loading = it }
+            }
+            request.start()
+            // Check the cache stamp again in case PSI changed while the shared request was finishing.
+            request.await()
+        }
+    }
+
+    fun cancel() = scope.cancel()
+
+    fun matchesSources(other: Map<String, String?>): Boolean = sources == other
+
+    private suspend fun cachedSnapshot(): Snapshot? {
+        val cached = snapshot ?: return null
+        return readSources { cached.takeIf { it.stamp == stamp(it.codeOnly) } }
+    }
+
+    private suspend fun buildSnapshot(): Snapshot =
+        withBackgroundProgress(project, "Building code connections") {
+            reportRawProgress { reporter ->
+                reporter.text("Resolving links between files…")
+                readSources {
+                    val files = resolveFiles()
+                    val supports = CallGraphLanguageSupport.EP_NAME.extensionList
+                    val supportedPaths = files.filterValues { file -> supports.any { it.supportsFile(file) } }.keys
+                    // Unsupported files can still contribute links through the platform's generic references.
+                    val codeOnly = supportedPaths.size == sources.size
+                    val stamp = stamp(codeOnly)
+                    val links = build(files, supportedPaths) { done, total ->
+                        reporter.text("Resolving links between files ($done of $total)")
+                        reporter.fraction(if (total > 0) done.toDouble() / total else null)
+                    }
+                    Snapshot(stamp, codeOnly, links)
+                }
+            }
         }
 
-    /** [onProgress] reports file counts while the index is (re)built; it stays silent when the snapshot is current. */
-    suspend fun connections(path: String, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): TreeFileConnections? =
-        currentLinks(onProgress)[path]
+    private fun stamp(codeOnly: Boolean): Stamp = Stamp(
+        psi = if (codeOnly) callGraphCodeStamp(project) else PsiModificationTracker.getInstance(project).modificationCount,
+        roots = ProjectRootModificationTracker.getInstance(project).modificationCount,
+        fileStructure = VirtualFileManager.getInstance().structureModificationCount,
+    )
 
-    /** Direct incoming and outgoing neighbor files for [paths], excluding [paths] themselves from the link sets. */
-    suspend fun relatedFiles(
-        paths: Collection<String>,
-        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
-    ): TreeFocusLinks? = collectRelatedFiles(paths, currentLinks(onProgress))
+    private suspend fun <T> readSources(action: () -> T): T = constrainedReadAction(
+        ReadConstraint.inSmartMode(project),
+        ReadConstraint.withDocumentsCommitted(project),
+    ) { action() }
 
-    private fun build(onProgress: (done: Int, total: Int) -> Unit): Map<String, TreeFileConnections> {
+    private fun resolveFiles(): Map<String, PsiFile> {
         val manager = PsiManager.getInstance(project)
-        val files = sources.mapNotNull { source ->
+        return sources.mapNotNull { (path, absolutePath) ->
             ProgressManager.checkCanceled()
-            val file = findSourceFile(project, source.path, source.absolutePath)
-            if (file == null || file.fileType.isBinary) null else manager.findFile(file)?.let { source.path to it }
+            val file = findSourceFile(project, path, absolutePath)
+            if (file == null || file.fileType.isBinary) null else manager.findFile(file)?.let { path to it }
         }.toMap()
+    }
+
+    private fun build(
+        files: Map<String, PsiFile>,
+        supportedPaths: Set<String>,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): Map<String, TreeFileConnections> {
         val paths = files.entries.associate { (path, file) -> file.virtualFile to path }
-        val supports = CallGraphLanguageSupport.EP_NAME.extensionList
-        val packageMembers = files.entries.filter { (_, file) -> supports.any { it.supportsFile(file) } }
+        val packageMembers = files.entries.filter { (path, _) -> path in supportedPaths }
             .groupBy({ (_, file) -> file.virtualFile.parent }, { (path, _) -> path })
         val incoming = mutableMapOf<String, MutableMap<String, TreeConnectionSite>>()
         val outgoing = mutableMapOf<String, MutableMap<String, TreeConnectionSite>>()

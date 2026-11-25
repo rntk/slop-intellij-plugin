@@ -27,6 +27,14 @@ data class CallGraphRequest(
     val maxNodes: Int = 150,
 )
 
+/** PSI changes in languages covered by the call graph extensions. */
+internal fun callGraphCodeStamp(project: Project): Long {
+    val supports = CallGraphLanguageSupport.EP_NAME.extensionList
+    return PsiModificationTracker.getInstance(project)
+        .forLanguages { language -> supports.any { it.supportsLanguage(language) } }
+        .modificationCount
+}
+
 @Service(Service.Level.PROJECT)
 class CallGraphService(private val project: Project, val scope: CoroutineScope) {
     private val log = logger<CallGraphService>()
@@ -80,11 +88,7 @@ class CallGraphService(private val project: Project, val scope: CoroutineScope) 
      * Changes to the PSI of languages the call graph reads (and to roots, file types and deleted directories, which count
      * for every language), so edits to Markdown, JSON or saved boards keep the graph. Any thread; needs no read action.
      */
-    fun codeStamp(): Long {
-        val supports = CallGraphLanguageSupport.EP_NAME.extensionList
-        return PsiModificationTracker.getInstance(project).forLanguages { language -> supports.any { it.supportsLanguage(language) } }
-            .modificationCount
-    }
+    fun codeStamp(): Long = callGraphCodeStamp(project)
 
     /**
      * Explores the graph in the background. Each expansion runs in its own read action that waits
