@@ -12,7 +12,7 @@ Card columns extend to the right as far as the hierarchy needs. Each level gets 
 
 The summary follows the file, folder, or card that is hovered or selected. It sits next to that element on the canvas and stays in view while its anchor is visible. As readers zoom out, cards and summaries widen and their text stays legible on screen. Layout changes, such as toggling the cards, changing the depth level, or switching between topics and groups, keep the tree where it was so the view doesn't jump.
 
-Escape or a click on the canvas background clears the active selection. Clicking a topic or group card clears the tree selection and lets readers explore the card. Dragging to pan preserves the selection. Row actions appear on hover or when the row is active, and hovering a nested card also highlights its parents.
+Escape or a click on the canvas background clears the active selection. Clicking a topic or group card clears the tree selection and lets readers explore the card, and right-clicking a card opens the [context picker](context-picker.md) menu for its files. Dragging to pan preserves the selection. Row actions appear on hover or when the row is active, and hovering a nested card also highlights its parents.
 
 The [example canvas](../example/canvas/) shows the intended interaction model: one transformed viewport holding the content, the hierarchy rail, and the floating summary.
 

@@ -444,6 +444,16 @@ internal class ChartsCanvasCard(
                 treeFocusJob?.cancel()
                 showTreeFocus(null)
             },
+            railContextMenu = project?.let {
+                { card, point ->
+                    JPopupMenu().apply {
+                        addTreeRailCardContextItem(
+                            this, project, card, hierarchy.files(hierarchy.root.path), content.tree,
+                            openOnCanvas, openOnWall, reviewDestinations(), summaryActions, point,
+                        )
+                    }
+                }
+            },
         ).apply {
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection

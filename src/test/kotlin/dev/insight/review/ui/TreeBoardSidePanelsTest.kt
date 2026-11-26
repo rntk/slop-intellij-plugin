@@ -4,13 +4,20 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBFont
 import dev.insight.codereview.CodeFile
+import dev.insight.context.ContextActionRegistry
+import dev.insight.context.ContextKeys
+import dev.insight.context.ContextRequest
+import dev.insight.context.ContextScopeKind
+import dev.insight.context.ReviewDestination
 import dev.insight.diff.ReviewFile
 import dev.insight.review.ReviewLineChart
+import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
+import dev.insight.review.TreeRailCard
 import dev.insight.review.TreeRailMode
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.buildTopicSummaryTree
@@ -24,6 +31,8 @@ import java.awt.image.BufferedImage
 import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JLabel
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
 import javax.swing.JTextArea
 import javax.swing.KeyStroke
 import kotlin.math.abs
@@ -399,6 +408,196 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testTopicCardContextPickSupportsDiffsWallEditorsAndCanvas() {
+        val diffFiles = listOf(
+            ReviewFile("src/a.kt", "/repo/src/a.kt", "val a = 1", "modified", "@@ -1 +1 @@\n-val a = 1\n+val a = 2\n", "fp1", "val a = 2"),
+            ReviewFile("src/b.kt", "/repo/src/b.kt", "val b = 1", "added", "@@ -0,0 +1 @@\n+val b = 2\n", "fp2", "val b = 2"),
+        )
+        val diffTree = buildSummaryTree(diffFiles)
+        val multiCard = TreeRailCard(
+            key = "0:core",
+            name = "Core",
+            fullPath = "Core > Auth",
+            family = "Core",
+            level = 0,
+            files = linkedSetOf("src/b.kt", "src/a.kt"),
+            summary = "Auth updates",
+        )
+        val openedWall = mutableListOf<Pair<List<ReviewSource>, String>>()
+        val diffPick = checkNotNull(
+            treeRailCardContextPick(
+                project = project,
+                card = multiCard,
+                sources = diffFiles,
+                tree = diffTree,
+                openOnWall = { files, title -> openedWall += files to title },
+                reviewDestinations = mapOf(ReviewDestination.TREE to {}),
+            ),
+        )
+        val diffScope = diffPick.candidates.single()
+        assertEquals(ContextScopeKind.CHANGE, diffScope.kind)
+        assertEquals("Core > Auth", diffScope.label)
+        assertEquals(listOf("src/b.kt", "src/a.kt"), diffScope.files)
+        assertTrue(diffScope.isPatch)
+        assertEquals(listOf("src/b.kt", "src/a.kt"), diffPick.data[ContextKeys.LINKED_FILES]?.map { it.path })
+        assertNotNull(diffPick.data[ContextKeys.REVIEW_DESTINATIONS])
+        assertNull(diffPick.data[ContextKeys.OPEN_ON_CODE_WALL])
+
+        checkNotNull(diffPick.data[ContextKeys.OPEN_ON_DIFFS_WALL]).invoke(diffScope)
+        assertEquals(listOf(listOf(diffFiles[1], diffFiles[0]) to "Core > Auth"), openedWall)
+
+        val diffActionIds = ContextActionRegistry.getInstance()
+            .actions(ContextRequest(project, diffScope, diffPick.candidates, diffPick.origin, diffPick.data, null))
+            .map { it.id }
+            .toSet()
+        assertTrue("explore.diffsWall" in diffActionIds)
+        assertTrue("open.linkedEditors" in diffActionIds)
+        assertTrue("explore.linkedCanvas" in diffActionIds)
+        assertTrue("ask.chat" in diffActionIds)
+        assertTrue("copy.markdown" in diffActionIds)
+        assertFalse("open.editor" in diffActionIds)
+        assertFalse("explore.canvas" in diffActionIds)
+
+        val codeFiles = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "fun a() = 1\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "fun b() = 2\n"),
+        )
+        val codeTree = buildSummaryTree(codeFiles)
+        openedWall.clear()
+        val codePick = checkNotNull(
+            treeRailCardContextPick(
+                project = project,
+                card = multiCard,
+                sources = codeFiles,
+                tree = codeTree,
+                openOnWall = { files, title -> openedWall += files to title },
+            ),
+        )
+        val codeScope = codePick.candidates.single()
+        assertFalse(codeScope.isPatch)
+        assertNull(codePick.data[ContextKeys.OPEN_ON_DIFFS_WALL])
+        checkNotNull(codePick.data[ContextKeys.OPEN_ON_CODE_WALL]).invoke(codeScope)
+        assertEquals(listOf(listOf(codeFiles[1], codeFiles[0]) to "Core > Auth"), openedWall)
+
+        val codeActionIds = ContextActionRegistry.getInstance()
+            .actions(ContextRequest(project, codeScope, codePick.candidates, codePick.origin, codePick.data, null))
+            .map { it.id }
+            .toSet()
+        assertTrue("explore.codeWall" in codeActionIds)
+        assertTrue("open.linkedEditors" in codeActionIds)
+        assertTrue("explore.linkedCanvas" in codeActionIds)
+        assertFalse("open.editor" in codeActionIds)
+        assertFalse("explore.canvas" in codeActionIds)
+
+        val singleCard = multiCard.copy(key = "1:single", files = setOf("src/a.kt"))
+        var openedCanvasPath: String? = null
+        val singleDiffPick = checkNotNull(
+            treeRailCardContextPick(
+                project = project,
+                card = singleCard,
+                sources = diffFiles,
+                tree = diffTree,
+                openOnCanvas = { node -> openedCanvasPath = node.path },
+                openOnWall = { files, title -> openedWall += files to title },
+            ),
+        )
+        assertTrue(singleDiffPick.candidates.any { it.kind == ContextScopeKind.FILE_DIFF })
+        assertNotNull(singleDiffPick.data[ContextKeys.OPEN_ON_DIFFS_WALL])
+        checkNotNull(singleDiffPick.data[ContextKeys.OPEN_ON_CANVAS]).invoke(singleDiffPick.candidates.first())
+        assertEquals("src/a.kt", openedCanvasPath)
+        val singleDiffActionIds = ContextActionRegistry.getInstance()
+            .actions(ContextRequest(project, singleDiffPick.candidates.first(), singleDiffPick.candidates, singleDiffPick.origin, singleDiffPick.data, null))
+            .map { it.id }
+            .toSet()
+        assertFalse("open.linkedEditors" in singleDiffActionIds)
+        assertFalse("explore.linkedCanvas" in singleDiffActionIds)
+
+        val singleCodePick = checkNotNull(
+            treeRailCardContextPick(
+                project = project,
+                card = singleCard,
+                sources = codeFiles,
+                tree = codeTree,
+                openOnWall = { files, title -> openedWall += files to title },
+            ),
+        )
+        assertTrue(singleCodePick.candidates.any { it.kind == ContextScopeKind.FILE })
+        assertNotNull(singleCodePick.data[ContextKeys.OPEN_ON_CODE_WALL])
+        val singleCodeActionIds = ContextActionRegistry.getInstance()
+            .actions(ContextRequest(project, singleCodePick.candidates.first(), singleCodePick.candidates, singleCodePick.origin, singleCodePick.data, null))
+            .map { it.id }
+            .toSet()
+        assertTrue("open.editor" in singleCodeActionIds)
+        assertTrue("explore.canvas" in singleCodeActionIds)
+        assertFalse("open.linkedEditors" in singleCodeActionIds)
+        assertFalse("explore.linkedCanvas" in singleCodeActionIds)
+    }
+
+    fun testRightClickingTopicOrGroupCardSelectsCardAndOpensContextMenu() {
+        val files = listOf(
+            ReviewFile("src/a.kt", "/repo/src/a.kt", null, "modified", "@@ -1 +1 @@\n-old\n+new\n", "fp1"),
+            ReviewFile("src/b.kt", "/repo/src/b.kt", null, "added", "@@ -0,0 +1 @@\n+added\n", "fp2"),
+            ReviewFile("src/c.kt", "/repo/src/c.kt", null, "added", "@@ -0,0 +1 @@\n+other\n", "fp3"),
+        )
+        val tree = buildSummaryTree(files)
+        val topics = ReviewTopics(
+            files = files,
+            labels = mapOf(
+                "src/a.kt" to "Core > Auth",
+                "src/b.kt" to "Core > Auth",
+            ),
+        )
+        val railModel = buildTreeRailModel(TreeRailMode.TOPICS, topics, null, ReviewSummaries(tree), files.map { it.path }.toSet())
+        val menuCards = mutableListOf<TreeRailCard>()
+        var shownAt: Pair<Int, Int>? = null
+        val board = TreeBoardPanel(
+            ReviewLineChart(tree),
+            "Root",
+            {},
+            cursorPath = "src/c.kt",
+            railModel = railModel,
+            railContextMenu = { card, _ ->
+                menuCards += card
+                object : JPopupMenu() {
+                    override fun show(invoker: Component?, x: Int, y: Int) {
+                        shownAt = x to y
+                    }
+                }.apply {
+                    addTreeRailCardContextItem(this, project, card, files, tree)
+                }
+            },
+        ).apply {
+            setSize(1360, 680)
+            layoutTree(this)
+        }
+
+        val topicCard = checkNotNull(railModel.cardByKey("0:core"))
+        val topicBounds = checkNotNull(checkNotNull(board.rail).cardScreenBounds(topicCard.key))
+        val cx = topicBounds.centerX.toInt()
+        val cy = topicBounds.centerY.toInt()
+        board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_PRESSED, 0, 0, cx, cy, 1, false, MouseEvent.BUTTON3))
+        board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_RELEASED, 0, 0, cx, cy, 1, true, MouseEvent.BUTTON3))
+
+        assertEquals(listOf(topicCard), menuCards)
+        assertEquals(cx to cy, shownAt)
+        assertEquals(topicCard.key, board.selectedRailCardKey)
+        assertNull(board.cursorPath)
+
+        // Placeholder ("Awaiting topic") cards do not offer the context menu.
+        val pendingBounds = checkNotNull(checkNotNull(board.rail).cardScreenBounds("pending"))
+        board.canvas.dispatchEvent(
+            MouseEvent(board.canvas, MouseEvent.MOUSE_RELEASED, 0, 0, pendingBounds.centerX.toInt(), pendingBounds.centerY.toInt(), 1, true, MouseEvent.BUTTON3),
+        )
+        assertEquals(1, menuCards.size)
+
+        val groupMenu = JPopupMenu().apply {
+            addTreeRailCardContextItem(this, project, topicCard, files, tree)
+        }
+        val item = groupMenu.components.filterIsInstance<JMenuItem>().single()
+        assertEquals("summary-action:Context", item.name)
+        assertEquals("Context…", item.text)
     }
 
     private fun triggerKey(panel: TreeBoardPanel, keyCode: Int) {

@@ -166,6 +166,7 @@ internal class TreeBoardPanel(
     private val railVisibleChanged: (Boolean) -> Unit = {},
     showEmptyRail: Boolean = false,
     summaryLinkContext: ((String?, List<String>) -> SummaryTextLinkContext?)? = null,
+    private val railContextMenu: ((TreeRailCard, RelativePoint) -> JPopupMenu)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -1466,6 +1467,15 @@ internal class TreeBoardPanel(
 
                 private fun showPopup(e: MouseEvent): Boolean {
                     if (!e.isPopupTrigger) return false
+                    railCardAt(e.point)?.let { placement ->
+                        connectionPreview.hide()
+                        val menu = railContextMenu?.invoke(placement.card, RelativePoint(this@TreeBoardCanvas, e.point))
+                            ?.takeIf { it.componentCount > 0 } ?: return false
+                        clearTreeSelection()
+                        selectRailCard(placement.card.key)
+                        menu.show(this@TreeBoardCanvas, e.x, e.y)
+                        return true
+                    }
                     textLinkAt(e.point)?.let { hit ->
                         connectionPreview.hide()
                         return showSummaryLinkPopup(hit, e)
