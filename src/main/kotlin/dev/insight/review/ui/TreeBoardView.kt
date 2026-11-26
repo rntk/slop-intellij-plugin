@@ -13,6 +13,8 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.review.LineChartMetric
 import dev.insight.review.LineLinkMatch
+import dev.insight.review.PreviewSide
+import dev.insight.review.ReviewSource
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewLineChart
@@ -61,12 +63,14 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
+import java.awt.geom.Ellipse2D
 import java.awt.geom.Line2D
 import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import java.util.Locale
 import javax.swing.AbstractAction
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -167,6 +171,17 @@ internal class TreeBoardPanel(
     showEmptyRail: Boolean = false,
     summaryLinkContext: ((String?, List<String>) -> SummaryTextLinkContext?)? = null,
     private val railContextMenu: ((TreeRailCard, RelativePoint) -> JPopupMenu)? = null,
+    /** Whether the floating source or diff preview follows the hovered or active row. */
+    sourcePreview: Boolean = false,
+    sourcePreviewChanged: (Boolean) -> Unit = {},
+    /** The row whose preview stays open whatever is hovered, even while following is off. */
+    initialPinnedPreview: String? = null,
+    pinnedPreviewChanged: (String?) -> Unit = {},
+    /** The preview's width once the reader resized it; null picks one from the board's width. */
+    previewWidth: Int? = null,
+    previewWidthChanged: (Int) -> Unit = {},
+    /** Builds a preview's viewer; null uses the IDE's read-only editor or diff viewer. */
+    createPreviewViewer: ((ReviewSource) -> JComponent)? = null,
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -274,7 +289,8 @@ internal class TreeBoardPanel(
             (if (toggleConnections == null) "" else " · C shows code connections") +
             (if (toggleFocus == null) "" else " · F focuses on related files") +
             (if (toggleBriefs == null) "" else " · S summarizes a file and its links") +
-            (if (fileSummaries.isEmpty()) "" else " · D toggles ${if (diffMode) "diff " else ""}summary")
+            (if (fileSummaries.isEmpty()) "" else " · D toggles ${if (diffMode) "diff " else ""}summary") +
+            " · P pins a ${if (diffMode) "diff" else "source"} preview"
     }
     private val statusLabel = JLabel().apply {
         name = "charts-tree-status"
@@ -323,9 +339,19 @@ internal class TreeBoardPanel(
         toggleRailVisible()
     }
 
+    private val sourcePreviewToggle: JCheckBox = JCheckBox("Preview", sourcePreview).apply {
+        name = "charts-tree-source-preview-toggle"
+        isOpaque = false
+        isFocusable = false
+        font = JBFont.small()
+        toolTipText = "Show the ${if (diffMode) "diff" else "source"} of the hovered or selected file or folder in a floating " +
+            "window. The eye icon on a row (or P) pins a preview, even while this is off."
+    }
+
     val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
         name = "charts-tree-controls"
         isOpaque = false
+        add(sourcePreviewToggle)
         add(exitFocusButton)
         add(summariesButton)
         add(showSummaryButton)
@@ -362,6 +388,35 @@ internal class TreeBoardPanel(
 
     internal val canvas = TreeBoardCanvas()
     internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection, project, explainConnection)
+
+    /** The floating source or diff window on the canvas, docked to its right edge. */
+    internal val sourcePreview = TreeSourcePreviewController(
+        host = canvas,
+        sources = { target ->
+            if (target.directory) {
+                val files = chart.files(target.path).filter { visibleFocusFiles?.contains(it.path) ?: true }
+                files.take(TreeSourcePreviewController.FOLDER_FILES) to files.size
+            } else {
+                listOfNotNull(chart.source(target.path)) to 1
+            }
+        },
+        anchorBounds = { path -> board.nodes.getOrNull(board.indexOf(path))?.let { canvas.rowScreenBounds(it) } },
+        project = project,
+        createViewer = createPreviewViewer,
+        open = open,
+        following = sourcePreview,
+        width = previewWidth,
+        followingChanged = { on ->
+            sourcePreviewToggle.isSelected = on
+            sourcePreviewChanged(on)
+        },
+        pinnedChanged = pinnedPreviewChanged,
+        widthChanged = previewWidthChanged,
+        escape = { requestFocusInWindow() },
+        changed = { canvas.repaint() },
+    ).also { controller ->
+        sourcePreviewToggle.addActionListener { controller.setFollowing(sourcePreviewToggle.isSelected) }
+    }
 
     var focusSelection: TreeFocusSelection? = initialFocusSelection
         set(value) {
@@ -538,10 +593,17 @@ internal class TreeBoardPanel(
 
     fun hideConnectionPreview() = connectionPreview.hide()
 
+    /** Closes the connection preview and releases the source preview's editors, as when the board is replaced. */
+    fun releasePreviews() {
+        connectionPreview.hide()
+        sourcePreview.release()
+    }
+
     override fun addNotify() {
         super.addNotify()
         listenSummaryLinks(true)
         loadSummaryLinks()
+        sourcePreview.restore()
     }
 
     override fun removeNotify() {
@@ -549,8 +611,28 @@ internal class TreeBoardPanel(
         summaryLinkJobs.values.forEach { it.cancel() }
         summaryLinkJobs.clear()
         connectionPreview.dispose()
+        sourcePreview.release()
         super.removeNotify()
     }
+
+    private fun previewTarget(node: TreeBoardNode?): TreeSourcePreviewTarget? {
+        node ?: return null
+        if (node.entry.kind != ReviewLineChart.Kind.FILE && node.entry.kind != ReviewLineChart.Kind.DIRECTORY) return null
+        return TreeSourcePreviewTarget(node.entry.path, node.entry.directory, if (node.depth == 0) rootLabel else node.entry.label)
+    }
+
+    /** Points the source preview at the hovered row, or else the cursor row. */
+    private fun syncSourcePreview() {
+        sourcePreview.track(previewTarget(board.nodes.getOrNull(hoveredIndex)), previewTarget(board.nodes.getOrNull(cursorIndex)))
+    }
+
+    /** Pins the preview of [path], or unpins it. */
+    fun togglePreview(path: String) {
+        val target = previewTarget(board.nodes.getOrNull(board.indexOf(path))) ?: return
+        sourcePreview.togglePin(target)
+    }
+
+    val pinnedPreviewPath: String? get() = sourcePreview.pinned?.path
 
     init {
         cursorIndex = board.indexOf(cursorPath).let {
@@ -576,6 +658,7 @@ internal class TreeBoardPanel(
         syncRailPlacements()
         updateSidePanels()
         loadSummaryLinks()
+        initialPinnedPreview?.let { path -> previewTarget(board.nodes.getOrNull(board.indexOf(path))) }?.let { this.sourcePreview.pin(it) }
         installKeys()
         addFocusListener(object : FocusAdapter() {
             override fun focusGained(e: FocusEvent) = canvas.repaint()
@@ -915,6 +998,7 @@ internal class TreeBoardPanel(
             rail?.updateHighlights(hoveredRailCard?.key, selectedRailKey, matchingRailKeys(hoveredNode ?: cursorNode))
         }
         positionSummary()
+        syncSourcePreview()
     }
 
     private fun matchingRailKeys(node: TreeBoardNode?): Set<String> {
@@ -1073,6 +1157,8 @@ internal class TreeBoardPanel(
             val stroke = KeyStroke.getKeyStroke(key, 0)
             getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(stroke, id)
             actionMap.put(id, object : AbstractAction() {
+                // Keys typed in the preview's editor belong to it, not to the tree.
+                override fun isEnabled() = !sourcePreview.hasFocus()
                 override fun actionPerformed(e: ActionEvent) = action()
             })
         }
@@ -1126,9 +1212,13 @@ internal class TreeBoardPanel(
         bind(KeyEvent.VK_SUBTRACT, "charts-tree-zoom-sub") { zoomTo(viewport.zoom / TreeBoardViewport.ZOOM_STEP) }
         bind(KeyEvent.VK_0, "charts-tree-zoom-reset") { resetView() }
         bind(KeyEvent.VK_NUMPAD0, "charts-tree-zoom-reset-num") { resetView() }
+        bind(KeyEvent.VK_P, "charts-tree-preview") {
+            board.nodes.getOrNull(cursorIndex)?.let { togglePreview(it.entry.path) }
+        }
         bind(KeyEvent.VK_ESCAPE, "charts-tree-clear-selection") {
             connectionPreview.hide()
-            clearSelection()
+            // A pinned preview closes first; the next Escape clears the selection.
+            if (sourcePreview.pinned != null) sourcePreview.dismiss() else clearSelection()
         }
     }
 
@@ -1158,6 +1248,7 @@ internal class TreeBoardPanel(
     private val connectionButtonWidth get() = JBUI.scale(22)
     private val briefButtonWidth get() = JBUI.scale(22)
     private val summaryButtonWidth get() = JBUI.scale(22)
+    private val previewButtonWidth get() = JBUI.scale(22)
     private val briefGap get() = JBUI.scale(12)
     private val summaryMaxWorldWidth get() = JBUI.scale(520).toDouble()
     private val summaryPadX get() = JBUI.scale(8).toDouble()
@@ -1287,8 +1378,11 @@ internal class TreeBoardPanel(
             return if (first <= last) first..last else IntRange.EMPTY
         }
 
-        /** Places the floating summary, the canvas's only child, whenever the canvas is laid out. */
-        override fun doLayout() = positionSummary()
+        /** Places the floating summary and the source preview whenever the canvas is laid out. */
+        override fun doLayout() {
+            positionSummary()
+            sourcePreview.position()
+        }
 
         private fun railCardAt(point: Point): TreeRailPlacement? =
             rail?.takeIf { isRailVisible }?.hitTest(point)?.takeUnless { it.card.placeholder }
@@ -1304,6 +1398,7 @@ internal class TreeBoardPanel(
                 private var pointerMoved = false
 
                 override fun mouseMoved(e: MouseEvent) {
+                    sourcePreview.pointerMoved(e.point)
                     val cardHit = railCardAt(e.point)
                     val linkHit = if (cardHit == null) textLinkAt(e.point) else null
                     val hit = if (linkHit == null && cardHit == null) nodeAt(e.x, e.y) else null
@@ -1316,6 +1411,7 @@ internal class TreeBoardPanel(
                         hoveredIndex = nextHover
                         updateStatus()
                         if (hoverChanged && hoveredRailCard == cardHit?.card) updateSidePanels()
+                        if (hoverChanged) syncSourcePreview()
                         repaint()
                     }
                     hoverRailCard(cardHit?.card)
@@ -1334,6 +1430,8 @@ internal class TreeBoardPanel(
                     connectionPreview.onHoverCleared()
                     // Moving onto the floating summary keeps what it shows, so its links stay reachable.
                     if (summaryPanel?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
+                    // The same holds for the source preview, so the reader can scroll it.
+                    if (sourcePreview.shown?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
                     hoverRailCard(null)
                     if (hoveredIndex != -1 || hoveredRoute != null || hoveredSummaryLink != null) {
                         hoveredSummaryLink = null
@@ -1438,6 +1536,11 @@ internal class TreeBoardPanel(
                         if (e.clickCount == 1) toggleSummary(node.entry.path)
                         return
                     }
+                    if (showRowActions(node) && previewButtonBounds(node)?.contains(e.point) == true) {
+                        moveCursor(node.index, reveal = false)
+                        if (e.clickCount == 1) togglePreview(node.entry.path)
+                        return
+                    }
                     if (node.collapsible && toggleScreenBounds(node).contains(e.point)) {
                         moveCursor(node.index, reveal = false)
                         toggleCollapsed(node.entry.path)
@@ -1539,7 +1642,8 @@ internal class TreeBoardPanel(
         }
 
         private fun showRowActions(node: TreeBoardNode): Boolean =
-            node.index == hoveredIndex || node.index == cursorIndex || node.entry.path == focusSelection?.path
+            node.index == hoveredIndex || node.index == cursorIndex || node.entry.path == focusSelection?.path ||
+                node.entry.path == sourcePreview.pinned?.path
 
         private fun hasFocusButton(node: TreeBoardNode): Boolean =
             toggleFocus != null && node.depth > 0 &&
@@ -1554,8 +1658,12 @@ internal class TreeBoardPanel(
         private fun hasSummaryButton(node: TreeBoardNode): Boolean =
             node.entry.kind == ReviewLineChart.Kind.FILE && node.entry.path in fileSummaries
 
+        private fun hasPreviewButton(node: TreeBoardNode): Boolean =
+            node.entry.kind == ReviewLineChart.Kind.FILE || node.entry.kind == ReviewLineChart.Kind.DIRECTORY
+
         private fun buttonScreenWidth(node: TreeBoardNode): Int {
             var width = 0
+            if (hasPreviewButton(node)) width += (previewButtonWidth * viewport.zoom).roundToInt()
             if (hasFocusButton(node)) width += (focusButtonWidth * viewport.zoom).roundToInt()
             if (hasConnectionButton(node)) width += (connectionButtonWidth * viewport.zoom).roundToInt()
             if (hasBriefButton(node)) width += (briefButtonWidth * viewport.zoom).roundToInt()
@@ -1565,6 +1673,7 @@ internal class TreeBoardPanel(
 
         private fun buttonWorldWidth(node: TreeBoardNode): Int {
             var width = 0
+            if (hasPreviewButton(node)) width += previewButtonWidth
             if (hasFocusButton(node)) width += focusButtonWidth
             if (hasConnectionButton(node)) width += connectionButtonWidth
             if (hasBriefButton(node)) width += briefButtonWidth
@@ -1604,6 +1713,15 @@ internal class TreeBoardPanel(
             val briefWidth = if (hasBriefButton(node)) (briefButtonWidth * viewport.zoom).roundToInt() else 0
             val row = rowScreenBounds(node)
             return Rectangle(row.x + row.width - connWidth - focusWidth - briefWidth - width, row.y, width, row.height)
+        }
+
+        /** The preview icon, left of every other row action. */
+        fun previewButtonBounds(node: TreeBoardNode): Rectangle? {
+            if (!hasPreviewButton(node)) return null
+            val width = (previewButtonWidth * viewport.zoom).roundToInt()
+            val others = buttonScreenWidth(node) - width
+            val row = rowScreenBounds(node)
+            return Rectangle(row.x + row.width - others - width, row.y, width, row.height)
         }
 
         fun summaryBlockScreenBounds(node: TreeBoardNode): Rectangle? {
@@ -1812,6 +1930,14 @@ internal class TreeBoardPanel(
                 return if (node.entry.path in expandedSummaryPaths) "Hide $label (D)"
                 else "Show $label (D)"
             }
+            if (showRowActions(node) && previewButtonBounds(node)?.contains(event.point) == true) {
+                val what = if (diffMode) "diff" else "source"
+                return when {
+                    sourcePreview.pinned?.path == node.entry.path -> "Close the pinned $what preview (P)"
+                    node.entry.directory -> "Pin a $what preview of this folder's files (P)"
+                    else -> "Pin a $what preview of this file (P)"
+                }
+            }
             val entry = node.entry
             val files = if (entry.directory && metric != LineChartMetric.ITEMS) " · ${fileCount(entry.files)}" else ""
             val action = when {
@@ -1888,6 +2014,7 @@ internal class TreeBoardPanel(
                     val isHoveredRow = i == hoveredIndex || i == hoveredLinkRow
                     val isActiveTarget = node.entry.path == briefs?.path ||
                         node.entry.path == connectionSelection?.path ||
+                        node.entry.path == sourcePreview.pinned?.path ||
                         node.entry.path == focusSelection?.path
                     val isGroupRow = groupHl != null && (i in groupHl.matchingRows || i in groupHl.collapsedContainers)
                     if (i == cursorIndex || isHoveredRow || isActiveTarget || isGroupRow) {
@@ -2079,6 +2206,11 @@ internal class TreeBoardPanel(
                         if (hasSummaryButton(node)) {
                             val summaryW = (summaryButtonWidth * viewport.zoom).roundToInt()
                             paintSummaryButton(g, buttonRightX - summaryW / 2.0, centerY, node.entry.path)
+                            buttonRightX -= summaryW
+                        }
+                        if (hasPreviewButton(node)) {
+                            val previewW = (previewButtonWidth * viewport.zoom).roundToInt()
+                            paintPreviewButton(g, buttonRightX - previewW / 2.0, centerY, node.entry.path)
                         }
                     }
                     paintBriefs(g, node, centerY, plainFont, visibleRowEndX, emphasized = i == cursorIndex || isHoveredRow || isActiveTarget)
@@ -2088,6 +2220,7 @@ internal class TreeBoardPanel(
                 }
                 paintConnections(g)
                 paintRail(g)
+                paintPreviewPointer(g)
             } finally {
                 g.dispose()
             }
@@ -2096,6 +2229,46 @@ internal class TreeBoardPanel(
 
         private fun paintRail(g: Graphics2D) {
             if (isRailVisible) rail?.paint(g, width, height)
+        }
+
+        /** A small notch on the preview's edge, pointing at the row it shows. */
+        private fun paintPreviewPointer(g: Graphics2D) {
+            val panel = sourcePreview.shown?.takeIf { it.isVisible } ?: return
+            val placement = sourcePreview.placement ?: return
+            val index = board.indexOf(panel.target.path).takeIf { it >= 0 } ?: return
+            val centerY = viewport.worldToScreenY(rowCenterWorld(index))
+            val size = JBUI.scale(7).toDouble()
+            if (centerY - size < placement.y + JBUI.scale(4) || centerY + size > placement.bottom - JBUI.scale(4)) return
+            val right = placement.side == PreviewSide.RIGHT
+            val edge = (if (right) placement.x else placement.right).toDouble()
+            val tip = if (right) edge - size else edge + size
+            g.color = if (sourcePreview.pinned != null) accentColor else JBColor.border()
+            g.fill(Path2D.Double().apply {
+                moveTo(edge, centerY - size)
+                lineTo(tip, centerY)
+                lineTo(edge, centerY + size)
+                closePath()
+            })
+        }
+
+        /** An eye: preview this row's source or diff. Filled while pinned, accented while shown. */
+        private fun paintPreviewButton(g: Graphics2D, x: Double, y: Double, path: String) {
+            val pinned = sourcePreview.pinned?.path == path
+            val shown = sourcePreview.shownTarget?.path == path
+            val halfW = (JBUI.scale(6) * viewport.zoom).coerceAtLeast(3.0)
+            val halfH = (JBUI.scale(4) * viewport.zoom).coerceAtLeast(2.0)
+            val strokeBase = viewport.zoom.toFloat().coerceAtLeast(1f)
+            g.color = if (pinned || shown) accentColor else UIUtil.getContextHelpForeground()
+            g.stroke = BasicStroke(if (pinned) strokeBase * 1.4f else strokeBase, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            g.draw(Path2D.Double().apply {
+                moveTo(x - halfW, y)
+                quadTo(x, y - halfH * 2, x + halfW, y)
+                quadTo(x, y + halfH * 2, x - halfW, y)
+                closePath()
+            })
+            val pupil = (JBUI.scale(2) * viewport.zoom).coerceAtLeast(1.5)
+            val eye = Ellipse2D.Double(x - pupil, y - pupil, pupil * 2, pupil * 2)
+            if (pinned) g.fill(eye) else g.draw(eye)
         }
         private fun paintFocusButton(g: Graphics2D, x: Double, y: Double, path: String) {
             val active = focusSelection?.path == path

@@ -38,7 +38,7 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             builder.view.chart = "Tree"
             builder.view.searchStatus = "The search failed. ${"Long message. ".repeat(20)}"
             val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file)))))
-            card.setSize(JBUI.scale(860), JBUI.scale(740))
+            card.setSize(JBUI.scale(900), JBUI.scale(740))
             layoutTree(card)
             val components = descendants(card)
             fun component(name: String) = components.single { it.name == name }

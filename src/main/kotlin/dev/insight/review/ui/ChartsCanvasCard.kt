@@ -133,6 +133,12 @@ internal class ChartsViewState {
     var treeRailLevel: Int? = null
     var treeSelectedRailKey: String? = null
     var treeShowRail: Boolean = true
+    /** Whether the Tree's floating source or diff preview follows the hovered or active row. */
+    var treeSourcePreview: Boolean = false
+    /** The Tree row whose preview is pinned open. */
+    var treePinnedPreview: String? = null
+    /** The preview's width once the reader resized it. */
+    var treePreviewWidth: Int? = null
     var lineMetric: LineChartMetric? = null
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -197,7 +203,7 @@ internal class ChartsCanvasCard(
     fun update(content: ChartsCard?) {
         if (content == null) {
             resetTreeConnections()
-            currentTreeBoard?.hideConnectionPreview()
+            currentTreeBoard?.releasePreviews()
             currentTreeBoard = null
             preview?.let(Disposer::dispose)
             preview = null
@@ -208,7 +214,7 @@ internal class ChartsCanvasCard(
     }
 
     fun card(content: ChartsCard): JPanel {
-        currentTreeBoard?.hideConnectionPreview()
+        currentTreeBoard?.releasePreviews()
         preview?.let(Disposer::dispose)
         preview = null
         activeSymbolKey = null
@@ -454,6 +460,12 @@ internal class ChartsCanvasCard(
                     }
                 }
             },
+            sourcePreview = view.treeSourcePreview,
+            sourcePreviewChanged = { view.treeSourcePreview = it },
+            initialPinnedPreview = view.treePinnedPreview,
+            pinnedPreviewChanged = { view.treePinnedPreview = it },
+            previewWidth = view.treePreviewWidth,
+            previewWidthChanged = { view.treePreviewWidth = it },
         ).apply {
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
@@ -1093,7 +1105,7 @@ internal class ChartsCanvasCard(
     override fun dispose() {
         treeConnectionScope.cancel()
         resetTreeConnections()
-        currentTreeBoard?.hideConnectionPreview()
+        currentTreeBoard?.releasePreviews()
         currentTreeBoard = null
         preview?.let(Disposer::dispose)
         preview = null
