@@ -345,6 +345,62 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         }
     }
 
+    fun testSummaryCardCloseButtonHidesAndToolbarRestoresItWithoutMovingTree() {
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "fun a() = 1\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "fun b() = 2\n"),
+        )
+        val tree = buildSummaryTree(files)
+        val aNode = tree.scopeNode("src/a.kt", SummaryKind.FILE)!!
+        val summaries = ReviewSummaries(
+            tree,
+            mapOf(
+                tree.root.id to Summary.plain("Root overview."),
+                aNode.id to Summary.plain("File A overview."),
+            ),
+        )
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE).apply { setSize(1400, 800) }
+        fun components() = descendants(canvas)
+        fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
+        fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
+        fun button(name: String) = components().filterIsInstance<JButton>().single { it.name == name }
+
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
+            selector().selectedItem = "Tree"
+            val board = boardPanel().apply {
+                setSize(1200, 680)
+                layoutTree(this)
+            }
+            val summaryPanel = checkNotNull(board.summaryPanel)
+            val showSummaryBtn = button("charts-tree-show-summary")
+            val closeSummaryBtn = descendants(summaryPanel).filterIsInstance<JButton>().single { it.name == "charts-tree-summary-close" }
+
+            assertTrue(summaryPanel.isVisible)
+            assertFalse(showSummaryBtn.isVisible)
+
+            val rowBeforeClose = checkNotNull(board.rowScreenBounds("src/a.kt"))
+            closeSummaryBtn.doClick()
+
+            assertFalse(summaryPanel.isVisible)
+            assertTrue(showSummaryBtn.isVisible)
+            assertEquals(rowBeforeClose, checkNotNull(board.rowScreenBounds("src/a.kt")))
+
+            // Hovering another row keeps the summary dismissed until explicitly restored.
+            board.canvas.dispatchEvent(
+                MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, rowBeforeClose.centerX.toInt(), rowBeforeClose.centerY.toInt(), 0, false),
+            )
+            assertEquals("src/a.kt", board.hoveredPath)
+            assertFalse(summaryPanel.isVisible)
+
+            showSummaryBtn.doClick()
+            assertTrue(summaryPanel.isVisible)
+            assertFalse(showSummaryBtn.isVisible)
+        } finally {
+            canvas.dispose()
+        }
+    }
+
     private fun triggerKey(panel: TreeBoardPanel, keyCode: Int) {
         val stroke = KeyStroke.getKeyStroke(keyCode, 0)
         val actionId = panel.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(stroke)

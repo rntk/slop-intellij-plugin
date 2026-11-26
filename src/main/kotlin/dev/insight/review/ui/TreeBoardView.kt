@@ -35,6 +35,7 @@ import dev.insight.review.computeTreeRailPlacements
 import dev.insight.review.floatingCardTop
 import dev.insight.review.treeCanvasCardScale
 import dev.insight.review.WrappedSummaryLine
+import dev.insight.review.dotLeader
 import dev.insight.review.lineLinkSpans
 import dev.insight.review.linkTooltip
 import dev.insight.review.wrapSummaryText
@@ -188,6 +189,7 @@ internal class TreeBoardPanel(
     private var hoveredRailCard: TreeRailCard? = null
     private var selectedRailKey: String? = initialSelectedRailKey?.takeIf { railModel?.cardByKey(it) != null }
     private var railVisible: Boolean = initialRailVisible
+    private var summaryDismissed: Boolean = false
     private var groupHighlight: TreeBoardGroupHighlight? = null
 
     val isRailVisible: Boolean get() = railVisible && rail != null
@@ -207,9 +209,14 @@ internal class TreeBoardPanel(
     /** The floating summary card, placed on the canvas to the left of the tree; null when nothing can be summarized. */
     internal val summaryPanel: TreeBoardSummaryPanel? =
         if (nodeSummaries.isNotEmpty() || railModel?.cards?.isNotEmpty() == true) {
-            TreeBoardSummaryPanel(project, summaryLinkContext) { e ->
-                canvas.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, canvas))
-            }
+            TreeBoardSummaryPanel(
+                project = project,
+                linkContext = summaryLinkContext,
+                onWheel = { e ->
+                    canvas.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, canvas))
+                },
+                onClose = { dismissSummary() },
+            )
         } else null
 
     /** The Topic or Group cards, painted on the canvas to the right of the tree. */
@@ -224,9 +231,10 @@ internal class TreeBoardPanel(
             )
         } else null
 
-    /** Whether the floating summary has anything to show. */
+    /** Whether the floating summary has anything to show and is not dismissed. */
     private val summaryEnabled: Boolean
-        get() = summaryPanel != null && (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
+        get() = !summaryDismissed && summaryPanel != null &&
+            (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
 
     private val railModeSelector: JComboBox<String>? = if (rail != null && allowGroupingRail) {
         JComboBox(arrayOf(TreeRailMode.TOPICS.title, TreeRailMode.GROUPING.title)).apply {
@@ -304,6 +312,12 @@ internal class TreeBoardPanel(
         toggleAllSummaries()
     }
 
+    private val showSummaryButton = controlButton("Summary", "charts-tree-show-summary", "Show floating summary card") {
+        showSummaryCard()
+    }.apply {
+        isVisible = false
+    }
+
     private val railToggleButton = controlButton("", "charts-tree-toggle-rail", "") {
         toggleRailVisible()
     }
@@ -313,6 +327,7 @@ internal class TreeBoardPanel(
         isOpaque = false
         add(exitFocusButton)
         add(summariesButton)
+        add(showSummaryButton)
         add(railToggleButton)
         railModeSelector?.let(::add)
         railLevelSelector?.let(::add)
@@ -554,6 +569,7 @@ internal class TreeBoardPanel(
         updateConnectionStatus()
         updateFocusStatus()
         updateSummariesButton()
+        updateShowSummaryButton()
         updateRailToggleButton()
         updateGroupHighlight()
         syncRailPlacements()
@@ -645,7 +661,7 @@ internal class TreeBoardPanel(
         // The summary and cards keep their screen size when zooming out, so refine the fit a few times.
         repeat(3) {
             val scale = treeCanvasCardScale(viewport.zoom)
-            val left = summaryLaneScreenWidth(scale)
+            val left = maxOf(summaryLaneScreenWidth(scale), canvas.metricLaneWorldWidth() * viewport.zoom)
             val railWidth = rail?.takeIf { isRailVisible }?.let { it.baseWidth * scale / viewport.zoom } ?: 0.0
             val right = if (railWidth > 0.0) railStartWorldX() + railWidth else canvas.treeRightWorldX()
             viewport.fitToBounds(right, contentHeight, (canvas.width - left.roundToInt()).coerceAtLeast(1), canvas.height, padding = 0.0)
@@ -773,8 +789,29 @@ internal class TreeBoardPanel(
     private fun summaryLaneScreenWidth(scale: Double): Double =
         if (summaryEnabled) (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) + 2 * JBUI.scale(TreeBoardSummaryPanel.GAP)) * scale else 0.0
 
-    /** Horizontal pan of a reset board: the tree starts after room for the floating summary. */
-    private fun homePanX(): Double = summaryLaneScreenWidth(1.0)
+    /** Horizontal pan of a reset board: leaves room for whichever left lane is wider (metric column or summary). */
+    private fun homePanX(): Double = maxOf(summaryLaneScreenWidth(1.0), canvas.metricLaneWorldWidth())
+
+    fun dismissSummary() {
+        if (summaryDismissed) return
+        summaryDismissed = true
+        updateShowSummaryButton()
+        positionSummary()
+        canvas.repaint()
+    }
+
+    fun showSummaryCard() {
+        if (!summaryDismissed) return
+        summaryDismissed = false
+        updateShowSummaryButton()
+        updateSidePanels()
+        canvas.repaint()
+    }
+
+    private fun updateShowSummaryButton() {
+        showSummaryButton.isVisible = summaryDismissed && summaryPanel != null &&
+            (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
+    }
 
     private fun resetViewport() {
         viewport.reset()
@@ -841,6 +878,7 @@ internal class TreeBoardPanel(
         railVisible = !railVisible
         if (!railVisible) hoveredRailCard = null
         railVisibleChanged(railVisible)
+        updateShowSummaryButton()
         updateRailToggleButton()
         rebuildBoard(cursorPath)
     }
@@ -1464,11 +1502,19 @@ internal class TreeBoardPanel(
             else -> node.entry.label
         }
 
-        private fun nodeBadge(node: TreeBoardNode, collapsed: Boolean = node.collapsed): String = if (collapsed) {
-            "  (${fileCount(node.entry.files)} · ${valueText(node.entry.value)})"
-        } else {
-            "  ${valueText(node.entry.value)}"
-        }
+        private fun nodeBadge(node: TreeBoardNode, collapsed: Boolean = node.collapsed): String =
+            if (collapsed && metric != LineChartMetric.ITEMS) "  (${fileCount(node.entry.files)})" else ""
+
+        private fun metricColumnChars(): Int =
+            maxOf(METRIC_MIN_CHARS, number(chart.root.value).length + METRIC_LEADER_PADDING)
+
+        fun metricColumnWorldWidth(): Double =
+            metricColumnChars() * getFontMetrics(baseMonospaceFont()).charWidth('0').coerceAtLeast(1).toDouble()
+
+        private val metricGapWorld: Double get() = JBUI.scale(12).toDouble()
+        private val metricPadLeftWorld: Double get() = JBUI.scale(6).toDouble()
+
+        fun metricLaneWorldWidth(): Double = metricColumnWorldWidth() + metricGapWorld + metricPadLeftWorld
 
         private fun hasFamilyDot(node: TreeBoardNode): Boolean =
             isRailVisible && node.entry.kind == ReviewLineChart.Kind.FILE && railModel?.fileFamilies?.get(node.entry.path) != null
@@ -1722,8 +1768,9 @@ internal class TreeBoardPanel(
             val boldMetrics = getFontMetrics(scaledFont(bold = true))
             val plainMetrics = getFontMetrics(scaledFont(bold = false))
             val briefRight = briefRightUnpanned(node, boldMetrics, plainMetrics)?.let { (it + viewport.panX).roundToInt() }
-            val right = maxOf(bounds.x + bounds.width, briefRight ?: 0)
-            val padded = Rectangle(bounds.x - JBUI.scale(6), bounds.y, right - bounds.x + JBUI.scale(12), bounds.height)
+            val left = minOf(bounds.x - JBUI.scale(6), viewport.worldToScreenX(-(metricColumnWorldWidth() + metricGapWorld)).roundToInt())
+            val right = maxOf(bounds.x + bounds.width, briefRight ?: 0) + JBUI.scale(6)
+            val padded = Rectangle(left, bounds.y, right - left, bounds.height)
             return if (padded.contains(sx, sy)) node else null
         }
 
@@ -1815,6 +1862,9 @@ internal class TreeBoardPanel(
                 val panelFocused = this@TreeBoardPanel.isFocusOwner
                 val treeRightScreen = viewport.worldToScreenX(treeRightWorldX())
                 val hoveredLinkRow = hoveredSummaryLink?.text?.path?.let(board::indexOf) ?: -1
+                val metricColumns = metricColumnChars()
+                val metricLeftWorld = -(metricColumnWorldWidth() + metricGapWorld)
+                val metricRightScreen = viewport.worldToScreenX(-metricGapWorld)
 
                 for (i in visibleRange) {
                     val node = board.nodes[i]
@@ -1834,7 +1884,7 @@ internal class TreeBoardPanel(
                         val padX = 4.0 * viewport.zoom
                         val padY = 1.5 * viewport.zoom
                         val arc = 6.0 * viewport.zoom
-                        val bandLeft = viewport.worldToScreenX(0.0) - padX
+                        val bandLeft = viewport.worldToScreenX(metricLeftWorld) - padX
                         val rowRightScreen = briefRightUnpanned(node, boldMetrics, plainMetrics)?.let { it + viewport.panX }
                             ?: (startX + rowContentScreenWidth(node, boldMetrics, plainMetrics))
                         val bandRight = maxOf(treeRightScreen, rowRightScreen) + padX
@@ -1874,6 +1924,19 @@ internal class TreeBoardPanel(
                             }
                         }
                     }
+
+                    // Left-side dot-leader metric column matching the Lines of code chart
+                    g.font = plainFont
+                    val metricCell = plainMetrics.charWidth('0').coerceAtLeast(1)
+                    val metricNumText = number(node.entry.value)
+                    val metricLine = dotLeader(metricNumText, metricColumns)
+                    val metricLeaderLen = metricLine.length - metricNumText.length
+                    val metricNumX = (metricRightScreen - metricLine.length * metricCell).toFloat()
+                    val metricBaselineY = (centerY + (plainMetrics.ascent - plainMetrics.descent) / 2.0).toFloat()
+                    g.color = alpha(UIUtil.getContextHelpForeground(), 150)
+                    g.drawString(metricLine.substring(0, metricLeaderLen), metricNumX, metricBaselineY)
+                    g.color = numberColor
+                    g.drawString(metricNumText, metricNumX + metricLeaderLen * metricCell, metricBaselineY)
 
                     // Ancestor vertical trunks
                     for (col in 0 until (node.depth - 1).coerceAtLeast(0)) {
@@ -2513,6 +2576,8 @@ internal class TreeBoardPanel(
         const val PAN_THRESHOLD_PX = 4.0
         const val ZOOM_WHEEL_BASE = 1.15
         const val BRIEF_SEPARATOR = "   ·   "
+        const val METRIC_MIN_CHARS = 10
+        const val METRIC_LEADER_PADDING = 4
         val outgoingColor = JBColor(Color(0x087D76), Color(0x65C9BD))
         val incomingColor = JBColor(Color(0x7050AA), Color(0xBD9BFD))
         val summaryBgColor = JBColor(Color(0xF6F8FA), Color(0x2B2D30))

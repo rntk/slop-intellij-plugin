@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -15,6 +16,7 @@ import dev.insight.review.treeRailColumnWidth
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.FontMetrics
@@ -24,6 +26,7 @@ import java.awt.Point
 import java.awt.Rectangle
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.RoundRectangle2D
+import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
@@ -55,6 +58,7 @@ internal class TreeBoardSummaryPanel(
     private val linkContext: ((String?, List<String>) -> SummaryTextLinkContext?)?,
     /** Receives wheel events the card doesn't use to scroll its own text. */
     private val onWheel: (MouseWheelEvent) -> Unit = {},
+    private val onClose: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private var currentDisplay: TreeSummaryDisplay? = null
     private var currentScale = 1.0
@@ -67,9 +71,22 @@ internal class TreeBoardSummaryPanel(
         foreground = UIUtil.getContextHelpForeground()
     }
 
+    private val closeButton = JButton(AllIcons.Actions.Close).apply {
+        name = "charts-tree-summary-close"
+        toolTipText = "Hide summary card"
+        isFocusable = false
+        isBorderPainted = false
+        isContentAreaFilled = false
+        isOpaque = false
+        margin = JBUI.emptyInsets()
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        addActionListener { onClose() }
+    }
+
     private val header = JPanel(BorderLayout()).apply {
         isOpaque = false
         add(kindLabel, BorderLayout.CENTER)
+        add(closeButton, BorderLayout.EAST)
     }
 
     private val contentHost = ScrollableWidthPanel(VerticalLayout(JBUI.scale(6))).apply {

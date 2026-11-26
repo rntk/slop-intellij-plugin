@@ -719,6 +719,38 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         )
     }
 
+    fun testMetricNumbersRenderInLeftDotLeaderColumnAndAreInteractive() {
+        val a = CodeFile("src/a.kt", "/src/dir/a.kt", "one\ntwo\nthree\n")
+        val b = CodeFile("b.kt", "/src/b.kt", "four\n")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(a, b)))
+        val board = TreeBoardPanel(chart, "Project", {})
+        board.setSize(900, 400)
+        board.doLayout()
+        board.canvas.setSize(900, 400)
+
+        val rootRow = checkNotNull(board.rowScreenBounds(""))
+        assertTrue("Left metric lane should reserve space left of root row", rootRow.x > JBUI.scale(20))
+
+        val image = BufferedImage(900, 400, BufferedImage.TYPE_INT_ARGB)
+        val g = image.createGraphics()
+        try {
+            board.canvas.paint(g)
+        } finally {
+            g.dispose()
+        }
+        val bgRgb = image.getRGB(0, rootRow.centerY.toInt())
+        val hasMetricPixels = (0 until (rootRow.x - JBUI.scale(4))).any { x ->
+            image.getRGB(x, rootRow.centerY.toInt()) != bgRgb
+        }
+        assertTrue("Left column should render dot-leader metric numbers", hasMetricPixels)
+
+        val aRow = checkNotNull(board.rowScreenBounds("src/a.kt"))
+        board.canvas.dispatchEvent(
+            MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, rootRow.x - JBUI.scale(16), aRow.centerY.toInt(), 0, false),
+        )
+        assertEquals("src/a.kt", board.hoveredPath)
+    }
+
     private fun descendants(component: Component): List<Component> = listOf(component) +
         if (component is Container) component.components.flatMap(::descendants) else emptyList()
 }
