@@ -8,10 +8,12 @@ import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.diff.ReviewFile
 import dev.insight.review.ReportTargetKind
+import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
+import dev.insight.review.TreeFocusLinks
 import dev.insight.review.buildSummaryTree
 import java.awt.Component
 import java.awt.Container
@@ -23,6 +25,7 @@ import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JScrollPane
+import javax.swing.JToggleButton
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.CoroutineScope
@@ -44,14 +47,17 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             fun component(name: String) = components.single { it.name == name }
             val tabs = component("charts-lines-metric-tabs").let { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
             val toolbar = component("charts-controls")
-            val controls = listOf("charts-type-selector", "charts-search-field", "charts-search-send",
-                "charts-tree-fit", "charts-tree-zoom-in", "charts-tree-total").map(::component)
+            val controls = listOf("charts-type-selector", "charts-tree-source-preview-toggle",
+                "charts-tree-unfold-all", "charts-tree-fold-all", "charts-search-field", "charts-search-send").map(::component)
             val bounds = controls.map { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
 
             assertTrue(bounds.all { it.width > 0 && it.x >= 0 && it.maxX <= card.width && it.maxY <= tabs.y })
             assertTrue(bounds.maxOf { it.y } < bounds.minOf { it.maxY })
             assertEquals(toolbar.y + toolbar.height, tabs.y)
             val board = components.filterIsInstance<TreeBoardPanel>().single()
+            val hudControls = listOf("charts-tree-fit", "charts-tree-zoom-in", "charts-tree-total").map(::component)
+            val hudBounds = hudControls.map { SwingUtilities.convertRectangle(it.parent, it.bounds, board.canvas) }
+            assertTrue(hudBounds.all { it.width > 0 && it.height > 0 && board.canvas.bounds.contains(it) })
             assertEquals(0, board.canvas.x)
             assertEquals(0, board.canvas.y)
             assertEquals(board.size, board.canvas.size)
@@ -219,20 +225,21 @@ class TreeBoardViewTest : BasePlatformTestCase() {
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
         fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
         fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
-        fun button(name: String) = components().filterIsInstance<JButton>().single { it.name == name }
+        fun summaryToggle() = components().filterIsInstance<PillToggleButton>().single { it.name == "charts-tree-toggle-summaries" }
 
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(emptySummaries)))
             selector().selectedItem = "Tree"
             val emptyBoard = boardPanel().apply { setSize(1000, 700); doLayout() }
-            assertFalse(button("charts-tree-toggle-summaries").isVisible)
+            assertFalse(summaryToggle().isVisible)
             assertNull(emptyBoard.summaryButtonScreenBounds("src/a.kt"))
 
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(withSummaries, revision = 1)))
             val board = boardPanel().apply { setSize(1000, 700); doLayout() }
-            val toggleAll = button("charts-tree-toggle-summaries")
+            val toggleAll = summaryToggle()
             assertTrue(toggleAll.isVisible)
-            assertEquals("Show summaries", toggleAll.text)
+            assertFalse(toggleAll.isSelected)
+            assertFalse(toggleAll.partial)
             assertNull(board.summaryButtonScreenBounds("src"))
             assertNull(board.summaryButtonScreenBounds("readme.md"))
             val aSummaryBtn = checkNotNull(board.summaryButtonScreenBounds("src/a.kt"))
@@ -251,7 +258,8 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             assertEquals(setOf("src/a.kt"), board.shownSummaryPaths)
             assertNotNull(board.summaryBlockScreenBounds("src/a.kt"))
             assertTrue(checkNotNull(board.rowScreenBounds("src/nested/b.kt")).y > bRowYBefore)
-            assertEquals("Show summaries", toggleAll.text)
+            assertFalse(toggleAll.isSelected)
+            assertTrue(toggleAll.partial)
             assertTrue(board.canvas.getToolTipText(MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
                 aSummaryBtn.centerX.toInt(), aSummaryBtn.centerY.toInt(), 0, false)).orEmpty().contains("Hide diff summary"))
 
@@ -259,6 +267,7 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
                 aSummaryBtn.centerX.toInt(), aSummaryBtn.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
             assertTrue(board.shownSummaryPaths.isEmpty())
+            assertFalse(toggleAll.partial)
             assertNull(board.summaryBlockScreenBounds("src/a.kt"))
             assertEquals(bRowYBefore, checkNotNull(board.rowScreenBounds("src/nested/b.kt")).y)
 
@@ -267,10 +276,11 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             triggerKey(board, KeyEvent.VK_D)
             assertEquals(setOf("src/a.kt"), board.shownSummaryPaths)
 
-            // Control panel button shows all available summaries and switches to "Hide summaries".
+            // Control panel toggle shows all available summaries and selects the pill.
             toggleAll.doClick()
             assertEquals(setOf("src/a.kt", "src/nested/b.kt"), board.shownSummaryPaths)
-            assertEquals("Hide summaries", button("charts-tree-toggle-summaries").text)
+            assertTrue(summaryToggle().isSelected)
+            assertFalse(summaryToggle().partial)
             assertNotNull(board.summaryBlockScreenBounds("src/a.kt"))
             assertNotNull(board.summaryBlockScreenBounds("src/nested/b.kt"))
 
@@ -278,16 +288,17 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             tabs().selectedIndex = 1
             val afterTab = boardPanel().apply { setSize(1000, 700); doLayout() }
             assertEquals(setOf("src/a.kt", "src/nested/b.kt"), afterTab.shownSummaryPaths)
-            assertEquals("Hide summaries", button("charts-tree-toggle-summaries").text)
+            assertTrue(summaryToggle().isSelected)
             val image = BufferedImage(1000, 700, BufferedImage.TYPE_INT_ARGB)
             image.createGraphics().also { afterTab.paint(it) }.dispose()
             afterTab.zoomTo(1.5)
             image.createGraphics().also { afterTab.paint(it) }.dispose()
 
-            // Control panel button hides all summaries again.
-            button("charts-tree-toggle-summaries").doClick()
+            // Control panel toggle hides all summaries again.
+            summaryToggle().doClick()
             assertTrue(afterTab.shownSummaryPaths.isEmpty())
-            assertEquals("Show summaries", button("charts-tree-toggle-summaries").text)
+            assertFalse(summaryToggle().isSelected)
+            assertFalse(summaryToggle().partial)
             assertNull(afterTab.summaryBlockScreenBounds("src/a.kt"))
         } finally {
             canvas.dispose()
@@ -341,6 +352,104 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             }, 20)
         } finally {
             canvas.dispose()
+        }
+    }
+
+    fun testHoveringRowAfterClearingSelectionRestoresStatusHudVisibility() {
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "one\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "two\n"),
+        )
+        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {})
+        try {
+            builder.view.chart = "Tree"
+            val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(files))))
+            card.setSize(JBUI.scale(900), JBUI.scale(600))
+            layoutTree(card)
+            val board = descendants(card).filterIsInstance<TreeBoardPanel>().single()
+            val statusLabel = descendants(card).filterIsInstance<JLabel>().single { it.name == "charts-tree-status" }
+            val totalLabel = descendants(card).filterIsInstance<JLabel>().single { it.name == "charts-tree-total" }
+            val statusHud = descendants(card).single { it.name == "charts-tree-status-hud" }
+
+            triggerKey(board, KeyEvent.VK_ESCAPE)
+            assertNull(board.cursorPath)
+            assertEquals("", statusLabel.text)
+            assertFalse(statusLabel.parent.isVisible)
+            val collapsedHudWidth = statusHud.width
+
+            val rowBounds = checkNotNull(board.rowScreenBounds("src/a.kt"))
+            board.canvas.dispatchEvent(
+                MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, rowBounds.centerX.toInt(), rowBounds.centerY.toInt(), 0, false),
+            )
+            assertTrue(statusLabel.text.contains("src/a.kt"))
+            assertTrue(statusLabel.parent.isVisible)
+            assertTrue(statusHud.width > collapsedHudWidth)
+            assertTrue(statusHud.width > totalLabel.width)
+        } finally {
+            builder.dispose()
+        }
+    }
+
+    fun testFocusChipKeepsShowAllVisibleOnOneRowForLongFilename() {
+        val longPath = "src/${"very_long_segment_".repeat(8)}File.kt"
+        val file = CodeFile(longPath, "/repo/$longPath", "one\n")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(file)), dev.insight.review.LineChartMetric.LINES)
+        val board = TreeBoardPanel(
+            chart = chart,
+            rootLabel = "Project",
+            open = {},
+            initialFocusSelection = TreeFocusSelection(longPath, false, TreeFocusLinks(setOf(longPath), emptySet(), emptySet())),
+        )
+        board.setSize(JBUI.scale(260), JBUI.scale(400))
+        layoutTree(board)
+
+        val exitButton = descendants(board).filterIsInstance<JButton>().single { it.name == "charts-tree-exit-focus" }
+        val chip = descendants(board).filterIsInstance<FocusModeChip>().single()
+        assertTrue(chip.isVisible)
+        assertTrue(exitButton.isVisible)
+        val exitInChip = SwingUtilities.convertRectangle(exitButton.parent, exitButton.bounds, chip)
+        assertTrue(exitInChip.width > 0 && exitInChip.height > 0)
+        assertTrue(chip.bounds.let { java.awt.Rectangle(0, 0, it.width, it.height) }.contains(exitInChip))
+        assertTrue(chip.height <= JBUI.scale(36))
+    }
+
+    fun testWideSourcePreviewKeepsZoomAndStatusHudsReachableAndNonOverlapping() {
+        val longCode = (1..200).joinToString("\n") { "val line$it = $it" }
+        val file = CodeFile("src/long.kt", "/repo/src/long.kt", longCode)
+
+        for (previewWidth in listOf(JBUI.scale(700), JBUI.scale(900))) {
+            val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, project = project)
+            try {
+                builder.view.chart = "Tree"
+                builder.view.treePreviewWidth = previewWidth
+                val card = builder.card(ChartsCard(ReviewSummaries(buildSummaryTree(listOf(file)))))
+                card.setSize(JBUI.scale(900), JBUI.scale(400))
+                layoutTree(card)
+                val board = descendants(card).filterIsInstance<TreeBoardPanel>().single()
+                val previewToggle = descendants(card).filterIsInstance<JToggleButton>()
+                    .single { it.name == "charts-tree-source-preview-toggle" }
+                previewToggle.doClick()
+
+                val rowBounds = checkNotNull(board.rowScreenBounds("src/long.kt"))
+                board.canvas.dispatchEvent(
+                    MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, rowBounds.x + JBUI.scale(4), rowBounds.centerY.toInt(), 0, false),
+                )
+                board.sourcePreview.flush()
+                layoutTree(card)
+
+                val preview = checkNotNull(board.sourcePreview.shown)
+                val zoomHud = descendants(card).single { it.name == "charts-tree-zoom-hud" }
+                val statusHud = descendants(card).single { it.name == "charts-tree-status-hud" }
+                assertTrue(board.canvas.bounds.contains(zoomHud.bounds))
+                assertTrue(board.canvas.bounds.contains(statusHud.bounds))
+                assertFalse("HUDs overlapped for previewWidth=$previewWidth: status=${statusHud.bounds}, zoom=${zoomHud.bounds}",
+                    statusHud.bounds.intersects(zoomHud.bounds))
+                if (preview.bounds.intersects(zoomHud.bounds)) {
+                    assertTrue(board.canvas.getComponentZOrder(zoomHud) < board.canvas.getComponentZOrder(preview))
+                }
+            } finally {
+                builder.dispose()
+            }
         }
     }
 

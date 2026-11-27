@@ -1,5 +1,6 @@
 package dev.insight.review.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.ide.ui.UISettings
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
@@ -70,14 +71,15 @@ import java.awt.geom.RoundRectangle2D
 import java.util.Locale
 import javax.swing.AbstractAction
 import javax.swing.JButton
-import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JToggleButton
 import javax.swing.KeyStroke
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -252,26 +254,48 @@ internal class TreeBoardPanel(
         get() = !summaryDismissed && summaryPanel != null &&
             (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
 
-    private val railModeSelector: JComboBox<String>? = if (rail != null && allowGroupingRail) {
-        JComboBox(arrayOf(TreeRailMode.TOPICS.title, TreeRailMode.GROUPING.title)).apply {
-            name = "charts-tree-rail-mode"
-            font = JBFont.small()
-            isFocusable = false
-            selectedIndex = if (railMode == TreeRailMode.GROUPING) 1 else 0
-            toolTipText = "Switch between code Topics and change Groups"
-            addActionListener {
-                val chosen = if (selectedIndex == 1) TreeRailMode.GROUPING else TreeRailMode.TOPICS
-                if (chosen != railMode) railModeChanged(chosen)
+    private val railModeSelector: SegmentedPillControl<TreeRailMode?>? = if (rail != null && allowGroupingRail) {
+        SegmentedPillControl(
+            name = "charts-tree-rail-mode",
+            items = listOf(
+                SegmentedPillControl.Segment(null, "Off", "charts-tree-rail-off", "Hide the Topics/Groups rail"),
+                SegmentedPillControl.Segment(TreeRailMode.TOPICS, TreeRailMode.TOPICS.title, "charts-tree-rail-topics", "Show code Topics"),
+                SegmentedPillControl.Segment(TreeRailMode.GROUPING, TreeRailMode.GROUPING.title, "charts-tree-rail-groups", "Show change Groups"),
+            ),
+            initial = if (railVisible) railMode else null,
+            accentProvider = { accentColor },
+        ) { chosen ->
+            if (chosen == null) {
+                if (railVisible) toggleRailVisible()
+            } else {
+                if (!railVisible) {
+                    if (chosen != railMode) {
+                        railVisible = true
+                        hoveredRailCard = null
+                        railVisibleChanged(true)
+                        railModeChanged(chosen)
+                    } else {
+                        toggleRailVisible()
+                    }
+                } else if (chosen != railMode) {
+                    railModeChanged(chosen)
+                }
             }
         }
     } else null
 
     private val railLevelSelector: JComboBox<String>? = railModel?.takeIf { rail != null && it.depth > 1 }?.let { model ->
         val options = (0 until model.depth - 1).map { "Level ${it + 1}" } + "All levels"
-        JComboBox(options.toTypedArray()).apply {
+        object : JComboBox<String>(options.toTypedArray()) {
+            override fun getPreferredSize(): Dimension {
+                val base = super.getPreferredSize()
+                return Dimension(base.width, JBUI.scale(TREE_CONTROL_HEIGHT_DP))
+            }
+        }.apply {
             name = "charts-tree-rail-level"
             font = JBFont.small()
             isFocusable = false
+            isEnabled = railVisible
             selectedIndex = if (railLevel == null || railLevel >= model.depth - 1) options.lastIndex else railLevel.coerceIn(0, model.depth - 2)
             toolTipText = "Show ${model.mode.plural} up to the selected depth"
             addActionListener {
@@ -297,12 +321,18 @@ internal class TreeBoardPanel(
         font = JBFont.small()
         foreground = UIUtil.getContextHelpForeground()
     }
-    private val zoomLabel = JLabel(zoomText()).apply {
+    private val zoomLabel = object : JLabel(zoomText(), SwingConstants.CENTER) {
+        override fun getPreferredSize(): Dimension = Dimension(JBUI.scale(44), JBUI.scale(TREE_CONTROL_HEIGHT_DP))
+        override fun getMinimumSize(): Dimension = preferredSize
+    }.apply {
         name = "charts-tree-zoom-level"
         font = JBFont.small()
+        foreground = UIUtil.getLabelForeground()
         toolTipText = "Reset zoom and pan (0)"
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         addMouseListener(object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) { foreground = accentColor }
+            override fun mouseExited(e: MouseEvent) { foreground = UIUtil.getLabelForeground() }
             override fun mouseClicked(e: MouseEvent) {
                 if (SwingUtilities.isLeftMouseButton(e)) resetView()
             }
@@ -319,60 +349,90 @@ internal class TreeBoardPanel(
         foreground = UIUtil.getContextHelpForeground()
     }
 
-    private val exitFocusButton = controlButton("Show all", "charts-tree-exit-focus", "Exit focus mode and show the full tree (Esc)") {
-        clearFocus?.invoke() ?: run { focusSelection = null }
-    }.apply {
-        isVisible = initialFocusSelection != null
-    }
-
-    private val summariesButton = controlButton("", "charts-tree-toggle-summaries", "") {
-        toggleAllSummaries()
-    }
-
-    private val showSummaryButton = controlButton("Summary", "charts-tree-show-summary", "Show floating summary card") {
-        showSummaryCard()
-    }.apply {
-        isVisible = false
-    }
-
-    private val railToggleButton = controlButton("", "charts-tree-toggle-rail", "") {
-        toggleRailVisible()
-    }
-
-    private val sourcePreviewToggle: JCheckBox = JCheckBox("Preview", sourcePreview).apply {
-        name = "charts-tree-source-preview-toggle"
-        isOpaque = false
+    private val exitFocusButton = JButton("Show all").apply {
+        name = "charts-tree-exit-focus"
+        toolTipText = "Exit focus mode and show the full tree (Esc)"
+        font = JBFont.small().asBold()
+        foreground = accentColor
         isFocusable = false
-        font = JBFont.small()
-        toolTipText = "Show the ${if (diffMode) "diff" else "source"} of the hovered or selected file or folder in a floating " +
-            "window. The eye icon on a row (or P) pins a preview, even while this is off."
+        isOpaque = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        border = JBUI.Borders.empty(2, 4)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        isVisible = initialFocusSelection != null
+        addActionListener { clearFocus?.invoke() ?: run { focusSelection = null } }
     }
 
-    val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+    private val focusChip = FocusModeChip(exitFocusButton) { accentColor }
+
+    private val summariesButton = PillToggleButton(
+        text = "Inline",
+        icon = AllIcons.General.Note,
+        name = "charts-tree-toggle-summaries",
+        accentProvider = { accentColor },
+    ).apply {
+        addActionListener { toggleAllSummaries() }
+    }
+
+    private val summaryCardToggle = PillToggleButton(
+        text = "Summary card",
+        icon = AllIcons.Actions.PreviewDetails,
+        name = "charts-tree-show-summary",
+        tooltip = "Show or hide the floating summary card",
+        selected = !summaryDismissed,
+        accentProvider = { accentColor },
+    ).apply {
+        addActionListener { if (isSelected) showSummaryCard() else dismissSummary() }
+    }
+
+    private val railToggleButton = PillToggleButton(
+        text = railMode.title,
+        icon = AllIcons.Nodes.Tag,
+        name = "charts-tree-toggle-rail",
+        tooltip = "Show or hide the ${railMode.plural} rail",
+        selected = railVisible,
+        accentProvider = { accentColor },
+    ).apply {
+        addActionListener { toggleRailVisible() }
+    }
+
+    private val sourcePreviewToggle = PillToggleButton(
+        text = "Preview",
+        icon = AllIcons.Actions.Preview,
+        name = "charts-tree-source-preview-toggle",
+        tooltip = "Show the ${if (diffMode) "diff" else "source"} of the hovered or selected file or folder in a floating " +
+            "window. The eye icon on a row (or P) pins a preview, even while this is off.",
+        selected = sourcePreview,
+        accentProvider = { accentColor },
+    )
+
+    val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
         name = "charts-tree-controls"
         isOpaque = false
         add(sourcePreviewToggle)
-        add(exitFocusButton)
+        add(summaryCardToggle)
         add(summariesButton)
-        add(showSummaryButton)
-        add(railToggleButton)
-        railModeSelector?.let(::add)
-        railLevelSelector?.let(::add)
-        add(controlButton("Unfold all", "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
-        add(controlButton("Fold all", "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
-        add(controlButton("Fit", "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
-        add(controlButton("−", "charts-tree-zoom-out", "Zoom out (− or Ctrl/⌘+wheel)") {
-            zoomTo(viewport.zoom / TreeBoardViewport.ZOOM_STEP)
-        })
-        add(zoomLabel)
-        add(controlButton("+", "charts-tree-zoom-in", "Zoom in (+ or Ctrl/⌘+wheel)") {
-            zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP)
-        })
+        if (rail != null) {
+            add(ToolbarDivider())
+            if (railModeSelector != null) add(railModeSelector) else add(railToggleButton)
+            railLevelSelector?.let(::add)
+        }
+        add(ToolbarDivider())
+        add(ToolbarIconButton(AllIcons.Actions.Expandall, "charts-tree-unfold-all", "Expand every directory") { unfoldAll() })
+        add(ToolbarIconButton(AllIcons.Actions.Collapseall, "charts-tree-fold-all", "Collapse every subdirectory") { foldAll() })
     }
 
     private val details = object : JPanel(CardLayout()) {
-        // Paths and connection messages may be much wider than the toolbar.
-        override fun getPreferredSize() = Dimension(0, super.getPreferredSize().height)
+        override fun getPreferredSize(): Dimension {
+            val active = when {
+                connectionSelection != null -> connectionStatus
+                focusSelection != null -> focusStatus
+                else -> statusLabel
+            }
+            val d = active.preferredSize
+            return Dimension(if (active.text.isNullOrEmpty()) 0 else d.width, maxOf(d.height, totalLabel.preferredSize.height))
+        }
     }.apply {
         isOpaque = false
         add(statusLabel, statusLabel.name)
@@ -384,6 +444,25 @@ internal class TreeBoardPanel(
         isOpaque = false
         add(totalLabel, BorderLayout.WEST)
         add(details, BorderLayout.CENTER)
+    }
+
+    private val statusHud = FloatingCanvasHud(BorderLayout()).apply {
+        name = "charts-tree-status-hud"
+        add(status, BorderLayout.CENTER)
+    }
+
+    private val zoomHud = FloatingCanvasHud(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+        name = "charts-tree-zoom-hud"
+        border = JBUI.Borders.empty(2, 4)
+        add(ToolbarIconButton(AllIcons.General.FitContent, "charts-tree-fit", "Fit the whole tree inside the board") { fitToView() })
+        add(ToolbarDivider())
+        add(ToolbarIconButton(AllIcons.General.ZoomOut, "charts-tree-zoom-out", "Zoom out (− or Ctrl/⌘+wheel)") {
+            zoomTo(viewport.zoom / TreeBoardViewport.ZOOM_STEP)
+        })
+        add(zoomLabel)
+        add(ToolbarIconButton(AllIcons.General.ZoomIn, "charts-tree-zoom-in", "Zoom in (+ or Ctrl/⌘+wheel)") {
+            zoomTo(viewport.zoom * TreeBoardViewport.ZOOM_STEP)
+        })
     }
 
     internal val canvas = TreeBoardCanvas()
@@ -413,7 +492,10 @@ internal class TreeBoardPanel(
         pinnedChanged = pinnedPreviewChanged,
         widthChanged = previewWidthChanged,
         escape = { requestFocusInWindow() },
-        changed = { canvas.repaint() },
+        changed = {
+            positionHuds()
+            canvas.repaint()
+        },
     ).also { controller ->
         sourcePreviewToggle.addActionListener { controller.setFollowing(sourcePreviewToggle.isSelected) }
     }
@@ -449,7 +531,9 @@ internal class TreeBoardPanel(
                 notifyViewportChanged()
             }
             exitFocusButton.isVisible = value != null
+            focusChip.update(value?.path)
             updateFocusStatus()
+            positionHuds()
             canvas.invalidateRoutes()
             canvas.repaint()
         }
@@ -492,12 +576,15 @@ internal class TreeBoardPanel(
 
     private fun updateSummariesButton() {
         summariesButton.isVisible = fileSummaries.isNotEmpty()
-        if (allSummariesShown()) {
-            summariesButton.text = "Hide summaries"
-            summariesButton.toolTipText = if (diffMode) "Hide all diff summaries" else "Hide all file summaries"
-        } else {
-            summariesButton.text = "Show summaries"
-            summariesButton.toolTipText = if (diffMode) "Show diff summaries for all summarized files" else "Show summaries for all summarized files"
+        val shownCount = expandedSummaryPaths.count { it in fileSummaries }
+        val allShown = allSummariesShown()
+        summariesButton.isSelected = allShown
+        summariesButton.partial = shownCount > 0 && !allShown
+        val kind = if (diffMode) "diff summaries" else "file summaries"
+        summariesButton.toolTipText = when {
+            allShown -> "Hide all inline $kind (D toggles current row)"
+            shownCount > 0 -> "$shownCount of ${fileSummaries.size} inline $kind shown · Click to show all (D toggles current row)"
+            else -> "Show inline $kind under all summarized files (D toggles current row)"
         }
     }
 
@@ -645,6 +732,10 @@ internal class TreeBoardPanel(
 
         add(canvas, BorderLayout.CENTER)
         summaryPanel?.let(canvas::add)
+        canvas.add(focusChip, 0)
+        canvas.add(statusHud, 0)
+        canvas.add(zoomHud, 0)
+        focusChip.update(initialFocusSelection?.path)
         // A fresh board leaves room for the summary to the left of the tree.
         if (initialPanX == null) viewport.panX = homePanX()
 
@@ -667,15 +758,6 @@ internal class TreeBoardPanel(
         addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { requestFocusInWindow() }
         })
-    }
-
-    private fun controlButton(text: String, name: String, tooltip: String, action: () -> Unit) = JButton(text).apply {
-        this.name = name
-        isFocusable = false
-        font = JBFont.small()
-        margin = JBUI.insets(2, 6)
-        toolTipText = tooltip
-        addActionListener { action() }
     }
 
     fun toggleCollapsed(path: String) {
@@ -893,8 +975,10 @@ internal class TreeBoardPanel(
     }
 
     private fun updateShowSummaryButton() {
-        showSummaryButton.isVisible = summaryDismissed && summaryPanel != null &&
+        val available = summaryPanel != null &&
             (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
+        summaryCardToggle.isVisible = available
+        summaryCardToggle.isSelected = available && !summaryDismissed
     }
 
     private fun resetViewport() {
@@ -945,16 +1029,11 @@ internal class TreeBoardPanel(
     }
 
     private fun updateRailToggleButton() {
-        railToggleButton.isVisible = rail != null
-        railModeSelector?.isVisible = railVisible
-        railLevelSelector?.isVisible = railVisible
-        if (railVisible) {
-            railToggleButton.text = "Hide ${railMode.plural}"
-            railToggleButton.toolTipText = "Hide the ${railMode.plural} rail"
-        } else {
-            railToggleButton.text = "Show ${railMode.plural}"
-            railToggleButton.toolTipText = "Show the ${railMode.plural} rail"
-        }
+        railToggleButton.isVisible = rail != null && railModeSelector == null
+        railToggleButton.isSelected = railVisible
+        railToggleButton.toolTipText = if (railVisible) "Hide the ${railMode.plural} rail" else "Show the ${railMode.plural} rail"
+        railModeSelector?.selected = if (railVisible) railMode else null
+        railLevelSelector?.isEnabled = railVisible
     }
 
     fun toggleRailVisible() {
@@ -1079,6 +1158,7 @@ internal class TreeBoardPanel(
             "$path · ${valueText(node.entry.value)}$files"
         }
         statusLabel.toolTipText = statusLabel.text
+        if (connectionSelection == null && focusSelection == null) updateDetailsCard()
     }
 
     private fun updateConnectionStatus() {
@@ -1135,12 +1215,101 @@ internal class TreeBoardPanel(
     }
 
     private fun updateDetailsCard() {
-        val name = when {
-            connectionSelection != null -> connectionStatus.name
-            focusSelection != null -> focusStatus.name
-            else -> statusLabel.name
+        val active = when {
+            connectionSelection != null -> connectionStatus
+            focusSelection != null -> focusStatus
+            else -> statusLabel
         }
-        (details.layout as CardLayout).show(details, name)
+        details.isVisible = !active.text.isNullOrEmpty()
+        (details.layout as CardLayout).show(details, active.name)
+        positionStatusHud()
+    }
+
+    private data class ZoomHudPlacement(val x: Int, val y: Int, val onTop: Boolean)
+
+    private fun computeZoomHudPlacement(w: Int, h: Int): ZoomHudPlacement {
+        val margin = JBUI.scale(HUD_MARGIN)
+        val gap = JBUI.scale(HUD_GAP)
+        val zoomPref = zoomHud.preferredSize
+        val bottomZy = (h - margin - zoomPref.height).coerceAtLeast(margin)
+        val defaultZx = (w - margin - zoomPref.width).coerceAtLeast(margin)
+        var zx = defaultZx
+        var zy = bottomZy
+        var zoomOnTop = false
+        val preview = sourcePreview.shown?.takeIf { it.isVisible }
+        if (preview != null) {
+            val previewRect = preview.bounds
+            fun overlapsZoom(x: Int, y: Int): Boolean =
+                previewRect.x < x + zoomPref.width + gap && previewRect.x + previewRect.width > x - gap &&
+                    previewRect.y < y + zoomPref.height + gap && previewRect.y + previewRect.height > y - gap
+            if (overlapsZoom(zx, zy)) {
+                val leftOfPreview = previewRect.x - gap - zoomPref.width
+                val abovePreview = previewRect.y - gap - zoomPref.height
+                when {
+                    leftOfPreview >= margin -> zx = leftOfPreview
+                    abovePreview >= margin -> zy = abovePreview
+                    else -> zoomOnTop = true
+                }
+            }
+        }
+        return ZoomHudPlacement(zx, zy, zoomOnTop)
+    }
+
+    /** Places the floating focus, status, and zoom HUDs over the canvas edges. */
+    private fun positionHuds() {
+        val w = canvas.width
+        val h = canvas.height
+        if (w <= 0 || h <= 0) return
+        val margin = JBUI.scale(HUD_MARGIN)
+
+        if (focusChip.isVisible) {
+            val pref = focusChip.preferredSize
+            val chipW = minOf(pref.width, (w - 2 * margin).coerceAtLeast(JBUI.scale(100)))
+            val chipX = ((w - chipW) / 2).coerceAtLeast(margin)
+            focusChip.setBounds(chipX, margin, chipW, pref.height)
+            focusChip.revalidate()
+        }
+
+        val zoomPref = zoomHud.preferredSize
+        val zoomPlacement = computeZoomHudPlacement(w, h)
+        zoomHud.setBounds(zoomPlacement.x, zoomPlacement.y, zoomPref.width, zoomPref.height)
+        zoomHud.revalidate()
+        if (zoomPlacement.onTop && zoomHud.parent === canvas && canvas.getComponentZOrder(zoomHud) != 0) {
+            canvas.setComponentZOrder(zoomHud, 0)
+        }
+
+        positionStatusHud(zoomPlacement)
+    }
+
+    private fun positionStatusHud(zoomPlacement: ZoomHudPlacement? = null) {
+        val w = canvas.width
+        val h = canvas.height
+        if (w <= 0 || h <= 0) return
+        val margin = JBUI.scale(HUD_MARGIN)
+        val gap = JBUI.scale(HUD_GAP)
+        val zoom = zoomPlacement ?: computeZoomHudPlacement(w, h)
+        val zoomPref = zoomHud.preferredSize
+        val statusPref = statusHud.preferredSize
+        val bottomSy = (h - margin - statusPref.height).coerceAtLeast(margin)
+        val zoomOnBottomRow = zoom.y + zoomPref.height > bottomSy - gap
+        var statusY = bottomSy
+        var statusW = minOf(statusPref.width, (w - 2 * margin).coerceAtLeast(1))
+        if (zoomOnBottomRow) {
+            val availW = zoom.x - margin - gap
+            if (availW >= JBUI.scale(60)) {
+                statusW = minOf(statusPref.width, availW)
+            } else {
+                statusY = (zoom.y - gap - statusPref.height).coerceAtLeast(margin)
+            }
+        }
+        statusHud.setBounds(margin, statusY, statusW, statusPref.height)
+        statusHud.revalidate()
+        val preview = sourcePreview.shown?.takeIf { it.isVisible }
+        if (preview != null && preview.bounds.intersects(statusHud.bounds) &&
+            statusHud.parent === canvas && canvas.getComponentZOrder(statusHud) != 0
+        ) {
+            canvas.setComponentZOrder(statusHud, 0)
+        }
     }
 
     private fun notifyViewportChanged() {
@@ -1378,10 +1547,11 @@ internal class TreeBoardPanel(
             return if (first <= last) first..last else IntRange.EMPTY
         }
 
-        /** Places the floating summary and the source preview whenever the canvas is laid out. */
+        /** Places the floating summary, source preview, and canvas HUDs whenever the canvas is laid out. */
         override fun doLayout() {
             positionSummary()
             sourcePreview.position()
+            positionHuds()
         }
 
         private fun railCardAt(point: Point): TreeRailPlacement? =
@@ -1432,6 +1602,7 @@ internal class TreeBoardPanel(
                     if (summaryPanel?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
                     // The same holds for the source preview, so the reader can scroll it.
                     if (sourcePreview.shown?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
+                    if (listOf(zoomHud, statusHud, focusChip).any { it.isVisible && it.bounds.contains(e.point) }) return
                     hoverRailCard(null)
                     if (hoveredIndex != -1 || hoveredRoute != null || hoveredSummaryLink != null) {
                         hoveredSummaryLink = null
@@ -2756,6 +2927,8 @@ internal class TreeBoardPanel(
         const val FONT_RATIO = 1.05f
         const val SUMMARY_FONT_SCALE = 1.1f
         const val PAGE_ROWS = 12
+        const val HUD_MARGIN = 10
+        const val HUD_GAP = 8
         const val PAN_THRESHOLD_PX = 4.0
         const val ZOOM_WHEEL_BASE = 1.15
         const val BRIEF_SEPARATOR = "   ·   "

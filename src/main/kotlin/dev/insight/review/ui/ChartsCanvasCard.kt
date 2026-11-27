@@ -607,10 +607,9 @@ internal class ChartsCanvasCard(
         }
         add(chartOptions, constraints)
         board?.let { add(it.controls, constraints) }
-        constraints.weightx = if (board == null) 1.0 else 0.55
-        search?.let { add(it, constraints) }
-        constraints.weightx = 0.45
-        board?.let { add(it.status, constraints) }
+        constraints.weightx = 1.0
+        if (search != null) add(search, constraints)
+        else if (board != null) add(JPanel().apply { isOpaque = false }, constraints)
     }
 
     private fun toggleTreeConnections(index: TreeFileConnectionIndex, path: String) {

@@ -11,7 +11,7 @@ import java.awt.Container
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
-import javax.swing.JCheckBox
+import javax.swing.JToggleButton
 import javax.swing.KeyStroke
 
 class TreeSourcePreviewTest : BasePlatformTestCase() {
@@ -28,7 +28,7 @@ class TreeSourcePreviewTest : BasePlatformTestCase() {
             card.setSize(JBUI.scale(1200), JBUI.scale(800))
             layoutTree(card)
             val board = descendants(card).filterIsInstance<TreeBoardPanel>().single()
-            val toggle = descendants(card).filterIsInstance<JCheckBox>().single { it.name == "charts-tree-source-preview-toggle" }
+            val toggle = descendants(card).filterIsInstance<JToggleButton>().single { it.name == "charts-tree-source-preview-toggle" }
             assertFalse(toggle.isSelected)
 
             // Off: hovering shows nothing.

@@ -34,6 +34,7 @@ import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 import javax.swing.JTextArea
+import javax.swing.JToggleButton
 import javax.swing.KeyStroke
 import kotlin.math.abs
 
@@ -219,23 +220,23 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             assertEquals("Validates login and remembers devices.", textOf("charts-tree-summary-text"))
 
             // Hiding the cards keeps the tree where it was.
-            val toggleRailBtn = components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }
-            assertEquals("Hide topics", toggleRailBtn.text)
+            val toggleRailBtn = components().filterIsInstance<JToggleButton>().single { it.name == "charts-tree-toggle-rail" }
+            assertTrue(toggleRailBtn.isSelected)
             val rowBeforeHide = afterMetricSwitch.row("src/ui/Panel.kt")
             toggleRailBtn.doClick()
             assertFalse(afterMetricSwitch.isRailVisible)
             assertNull(afterMetricSwitch.activeRailCard)
-            assertEquals("Show topics", toggleRailBtn.text)
+            assertFalse(toggleRailBtn.isSelected)
             assertEquals(rowBeforeHide.location, afterMetricSwitch.row("src/ui/Panel.kt").location)
 
             tabs().selectedIndex = 0
             val afterHideSwitch = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
             assertFalse(afterHideSwitch.isRailVisible)
-            val toggleBtnAfterSwitch = components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }
-            assertEquals("Show topics", toggleBtnAfterSwitch.text)
+            val toggleBtnAfterSwitch = components().filterIsInstance<JToggleButton>().single { it.name == "charts-tree-toggle-rail" }
+            assertFalse(toggleBtnAfterSwitch.isSelected)
             toggleBtnAfterSwitch.doClick()
             assertTrue(afterHideSwitch.isRailVisible)
-            assertEquals("Hide topics", toggleBtnAfterSwitch.text)
+            assertTrue(toggleBtnAfterSwitch.isSelected)
 
             // Pressing Escape clears the card selection.
             triggerKey(afterHideSwitch, KeyEvent.VK_ESCAPE)
@@ -303,7 +304,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.DIFF).apply { setSize(1600, 900) }
         fun components() = descendants(canvas)
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
-        fun modeCombo() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-tree-rail-mode" }
+        fun railSegment(name: String) = components().filterIsInstance<JToggleButton>().single { it.name == name }
         fun levelCombo() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-tree-rail-level" }
         fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
 
@@ -323,7 +324,9 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             boardPanel().apply { setSize(1360, 680); layoutTree(this) }
 
             // Initially shows Topics with all 3 levels (Core, Parsing, Tokens, Formatting).
-            assertEquals("Topics", modeCombo().selectedItem)
+            assertTrue(railSegment("charts-tree-rail-topics").isSelected)
+            assertFalse(railSegment("charts-tree-rail-groups").isSelected)
+            assertFalse(railSegment("charts-tree-rail-off").isSelected)
             assertNotNull(checkNotNull(boardPanel().rail).cardScreenBounds("2:core > parsing > tokens"))
 
             // Level selector filters depth to level 1 (index 0).
@@ -333,10 +336,10 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             assertNull(filteredRail.cardScreenBounds("2:core > parsing > tokens"))
             assertNotNull(filteredRail.cardScreenBounds("0:core"))
 
-            // Switching to Groups shows the grouping cards, updates the toggle label, and shows group summaries.
-            modeCombo().selectedItem = "Groups"
-            assertEquals("Groups", modeCombo().selectedItem)
-            assertEquals("Hide groups", components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }.text)
+            // Switching to Groups shows the grouping cards, updates the segmented control, and shows group summaries.
+            railSegment("charts-tree-rail-groups").doClick()
+            assertTrue(railSegment("charts-tree-rail-groups").isSelected)
+            assertTrue(levelCombo().isEnabled)
             val groupBoard = boardPanel().apply { setSize(1360, 680); layoutTree(this) }
             val groupBounds = checkNotNull(checkNotNull(groupBoard.rail).cardScreenBounds("0:fix bug"))
             groupBoard.canvas.dispatchEvent(
@@ -346,9 +349,11 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
             assertEquals("Guards against missing tokens.", summaryText)
             assertEquals("Group summary", components().filterIsInstance<JLabel>().single { it.name == "charts-tree-summary-kind" }.text)
 
-            // Hiding the groups hides their selectors too.
-            components().filterIsInstance<JButton>().single { it.name == "charts-tree-toggle-rail" }.doClick()
-            assertFalse(modeCombo().isVisible)
+            // Hiding the groups disables the depth selector without shifting the toolbar.
+            railSegment("charts-tree-rail-off").doClick()
+            assertTrue(railSegment("charts-tree-rail-off").isSelected)
+            assertFalse(boardPanel().isRailVisible)
+            assertFalse(levelCombo().isEnabled)
         } finally {
             canvas.dispose()
         }
@@ -372,7 +377,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         fun components() = descendants(canvas)
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
         fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
-        fun button(name: String) = components().filterIsInstance<JButton>().single { it.name == name }
+        fun toggleButton(name: String) = components().filterIsInstance<JToggleButton>().single { it.name == name }
 
         try {
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
@@ -382,17 +387,19 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
                 layoutTree(this)
             }
             val summaryPanel = checkNotNull(board.summaryPanel)
-            val showSummaryBtn = button("charts-tree-show-summary")
+            val showSummaryBtn = toggleButton("charts-tree-show-summary")
             val closeSummaryBtn = descendants(summaryPanel).filterIsInstance<JButton>().single { it.name == "charts-tree-summary-close" }
 
             assertTrue(summaryPanel.isVisible)
-            assertFalse(showSummaryBtn.isVisible)
+            assertTrue(showSummaryBtn.isVisible)
+            assertTrue(showSummaryBtn.isSelected)
 
             val rowBeforeClose = checkNotNull(board.rowScreenBounds("src/a.kt"))
             closeSummaryBtn.doClick()
 
             assertFalse(summaryPanel.isVisible)
             assertTrue(showSummaryBtn.isVisible)
+            assertFalse(showSummaryBtn.isSelected)
             assertEquals(rowBeforeClose, checkNotNull(board.rowScreenBounds("src/a.kt")))
 
             // Hovering another row keeps the summary dismissed until explicitly restored.
@@ -404,7 +411,7 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
 
             showSummaryBtn.doClick()
             assertTrue(summaryPanel.isVisible)
-            assertFalse(showSummaryBtn.isVisible)
+            assertTrue(showSummaryBtn.isSelected)
         } finally {
             canvas.dispose()
         }
